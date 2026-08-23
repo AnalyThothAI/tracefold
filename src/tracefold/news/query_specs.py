@@ -15,7 +15,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_feed_events",
             sql="""
-                SELECT e.event_id, e.leader_title, e.opened_at_ms, e.admission, e.priority, t.final_decision
+                SELECT e.event_id, e.leader_title, e.opened_at_ms, e.admission, e.queue_priority, t.final_decision
                   FROM news_events e
                   JOIN news_items i ON i.item_id = e.leader_item_id
                   LEFT JOIN LATERAL (

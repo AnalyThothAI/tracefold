@@ -5,7 +5,6 @@ import {
   NEWS_FEED_DECISIONS,
   NEWS_FEED_HOURS,
   NEWS_FEED_OUTCOMES,
-  NEWS_FEED_PRIORITIES,
   type NewsFeedCounts,
   type NewsFeedFilters,
   type NewsFeedOutcome,
@@ -16,13 +15,10 @@ import {
   FAMILY_FILTER_LABELS,
   KNOWN_ADMISSIONS,
   KNOWN_FAMILIES,
-  PRIORITY_FILTER_LABELS,
   type FeedFilterChanges,
   normalizeSymbol,
   parseDecision,
   parseHours,
-  parsePriority,
-  parseSort,
   withSelectedOption,
 } from "../../model/feedFilters";
 import { formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
@@ -166,17 +162,6 @@ function FeedControls({
           <option value="all">全部时间</option>
         </select>
       </label>
-      <label className="news-select">
-        <span className="sr-only">排序</span>
-        <select
-          aria-label="事件排序"
-          onChange={(event) => onChange({ sort: parseSort(event.target.value) })}
-          value={filters.sort}
-        >
-          <option value="latest">最新在前</option>
-          <option value="priority">高优先级在前</option>
-        </select>
-      </label>
       <details className="news-filter-disclosure">
         <summary data-active={hasAdvanced || undefined}>
           <SlidersHorizontal aria-hidden />
@@ -209,21 +194,6 @@ function FeedControls({
               {withSelectedOption(KNOWN_ADMISSIONS, filters.admission).map((value) => (
                 <option key={value} value={value}>
                   {ADMISSION_FILTER_LABELS[value] ?? value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>优先级</span>
-            <select
-              aria-label="事件优先级"
-              onChange={(event) => onChange({ priority: parsePriority(event.target.value) })}
-              value={filters.priority ?? ""}
-            >
-              <option value="">全部</option>
-              {NEWS_FEED_PRIORITIES.map((value) => (
-                <option key={value} value={value}>
-                  {PRIORITY_FILTER_LABELS[value]}
                 </option>
               ))}
             </select>
@@ -286,12 +256,6 @@ export function NewsActiveFilterChips({
       ? {
           label: `门禁：${ADMISSION_FILTER_LABELS[filters.admission] ?? filters.admission}`,
           remove: () => onRemove({ admission: null }),
-        }
-      : null,
-    filters.priority
-      ? {
-          label: `优先级：${PRIORITY_FILTER_LABELS[filters.priority]}`,
-          remove: () => onRemove({ priority: null }),
         }
       : null,
     filters.decision

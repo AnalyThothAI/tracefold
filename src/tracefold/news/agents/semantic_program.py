@@ -51,6 +51,7 @@ from ..semantic_contract import (
     TOLD_SOURCE_MAX,
     TOLD_STORYLINE_TIER_MAX,
     TOLD_WINDOW_MS,
+    EditorialEnvelope,
     FrozenEventEvidence,
     ModelVisibleCardInput,
     ModelVisibleSemanticsInput,
@@ -58,12 +59,15 @@ from ..semantic_contract import (
     ProgramNormalizationTrace,
     ProgramTrace,
     ProgramUsage,
+    ReaderCardSemanticView,
+    ScoredJudgment,
     SemanticGateContext,
     SemanticJudge,
     SemanticJudgeError,
     SemanticJudgment,
     ToldLedgerEntry,
     ToldLedgerSnapshot,
+    TradeRelevanceV1,
     TriageContext,
     aggregate_program_usage,
 )
@@ -72,7 +76,7 @@ PROGRAM_DEMOS_MAX: Final[int] = 32
 PROGRAM_DEMOS_MAX_ESTIMATED_TOKENS: Final[int] = 32_768
 PROGRAM_DEMO_JSON_MAX_BYTES: Final[int] = 32_768
 PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
-PROGRAM_RULE_PACK_MAX: Final[int] = 8
+PROGRAM_RULE_PACK_MAX: Final[int] = 9
 PROGRAM_RULE_PACK_BODY_MAX_BYTES: Final[int] = 16_384
 PROGRAM_LEARNED_STRATEGY_MAX_BYTES: Final[int] = 8_192
 PROGRAM_LEARNED_STRATEGY_MAX_ESTIMATED_TOKENS: Final[int] = 2_048
@@ -81,11 +85,9 @@ PROGRAM_DEMO_BANK_MAX_BYTES: Final[int] = 262_144
 PROGRAM_DEPENDENCY_LOCK_SHA256: Final[str] = "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37"
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v2"
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v3"
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v3"
-# The learning epoch counts input/metric contracts, the factory counts topologies; they have never been in
-# step.  `program_v3_rollback` below is an *epoch*-v3 rollback profile, not this factory version.
-PROGRAM_LEARNING_EPOCH: Final[str] = "program_v5"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v4"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v4"
+PROGRAM_LEARNING_EPOCH: Final[str] = "program_v6"
 PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
     {
         "nodes": ["event_semantics", "semantic_normalizer", "reader_card", "verdict_assembler"],
@@ -104,8 +106,17 @@ PROGRAM_ADAPTER_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
     {
-        "assembler": "verdict_assembler_v2",
-        "semantic_normalizer": "semantic_normalizer_v1",
+        "assembler": "verdict_editorial_assembler_v3",
+        "semantic_normalizer": "semantic_normalizer_v2",
+        "model_intent": "trade_relevance.reader_value",
+        "decision_projection": {
+            "escalate": "escalate",
+            "realtime": "push",
+            "background": "drop",
+            "none": "drop",
+        },
+        "actionable_projection": "direct_or_second_order_with_nonempty_channels_and_markets",
+        "reader_card_semantics": "ReaderCardSemanticView",
         "non_restatement_index": "normalize_to_minus_one",
         "restatement_index": "strict",
         "title_sentinel": "always_empty",
@@ -113,11 +124,12 @@ PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_INPUT_CONTRACT_SHA256: Final[str] = canonical_sha(
     {
-        "context": "tracefold.news.TriageContext.v3",
+        "context": "tracefold.news.TriageContext.v4",
         # Two payloads, not one.  EventSemantics interprets the Event against the selected ledger; ReaderCard
         # only ever sees the Event.
-        "event_semantics_payload": "bounded_with_selected_told_context.v1",
-        "reader_card_payload": "bounded_evidence_only.v1",
+        "event_semantics_payload": "bounded_with_selected_told_context.v2",
+        "reader_card_payload": "bounded_evidence_only.v2",
+        "reader_card_semantic_view": "ReaderCardSemanticView.v1",
         "told_selector": TOLD_SELECTOR_SHA256,
         "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
     }
@@ -138,11 +150,11 @@ PROGRAM_RENDERER_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_CONTEXT_RENDERER_SHA256: Final[str] = canonical_sha(
     {
-        "renderer": "triage_context_per_predictor_payload_v1",
+        "renderer": "triage_context_per_predictor_payload_v2",
         "event_semantics": "TriageContext.event_semantics_payload",
         "reader_card": "TriageContext.reader_card_payload",
         "canonical_json": True,
-        "audit_ids": "excluded",
+        "audit_and_queue_hints": "excluded",
         "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
     }
 )
@@ -150,27 +162,21 @@ PROGRAM_UNTRUSTED_DELIMITER_SHA256: Final[str] = canonical_sha(
     {"open": "<tracefold-untrusted-event-json-v1>", "close": "</tracefold-untrusted-event-json-v1>"}
 )
 PROGRAM_SEMANTIC_VALIDATOR_SHA256: Final[str] = canonical_sha(
-    {"validator": "event_semantics_context_v1", "restatement_index": "visible_told_only"}
+    {
+        "validator": "event_semantics_context_v2",
+        "restatement_index": "visible_told_only",
+        "trade_relevance": "typed_and_consistent",
+    }
 )
 PROGRAM_NORMALIZER_SHA256: Final[str] = canonical_sha(
-    {"normalizer": "semantic_normalizer_v1", "non_restatement_restates": -1}
+    {
+        "normalizer": "semantic_normalizer_v2",
+        "non_restatement_restates": -1,
+        "trade_code_sets": "deduplicate_then_code_owned_order",
+    }
 )
 _UNTRUSTED_EVENT_OPEN: Final[str] = "<tracefold-untrusted-event-json-v1>"
 _UNTRUSTED_EVENT_CLOSE: Final[str] = "</tracefold-untrusted-event-json-v1>"
-EVENT_SEMANTICS_SIGNATURE_SHA256: Final[str] = canonical_sha(
-    {
-        "signature": "EventSemantics.v1",
-        "inputs": ["evidence_json"],
-        "outputs": ["semantics"],
-    }
-)
-READER_CARD_SIGNATURE_SHA256: Final[str] = canonical_sha(
-    {
-        "signature": "ReaderCard.v2",
-        "inputs": ["evidence_json", "semantics_json"],
-        "outputs": ["card"],
-    }
-)
 
 _FORBIDDEN_STATE_KEY_PARTS: Final[frozenset[tuple[str, ...]]] = frozenset(
     {
@@ -192,7 +198,11 @@ _FORBIDDEN_STATE_KEY_PARTS: Final[frozenset[tuple[str, ...]]] = frozenset(
     }
 )
 _SAFE_SECRET_FREE_IDENTITY_KEYS: Final[frozenset[str]] = frozenset(
-    {"reflection_endpoint_identity_sha256", "task_endpoint_identity_sha256"}
+    {
+        "metric_judge_endpoint_identity_sha256",
+        "reflection_endpoint_identity_sha256",
+        "task_endpoint_identity_sha256",
+    }
 )
 _HIGH_CONFIDENCE_SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
@@ -470,10 +480,9 @@ class EventSemantics(_ExactModel):
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     scope: Literal["macro", "sector", "single_name"]
     magnitude: int = Field(ge=0, le=3)
-    actionable: bool
     confidence: float = Field(ge=0.0, le=1.0)
-    decision: Literal["push", "drop", "escalate"]
     audience: Literal["crypto", "us_equity", "macro", "none"] = "none"
+    relevance: TradeRelevanceV1
 
 
 class ReaderCard(_ExactModel):
@@ -485,6 +494,25 @@ class ReaderCard(_ExactModel):
         if not self.headline_zh.strip():
             raise ValueError("news_program_reader_headline_empty")
         return self
+
+
+EVENT_SEMANTICS_SIGNATURE_SHA256: Final[str] = canonical_sha(
+    {
+        "signature": "EventSemantics.v2",
+        "inputs": {"evidence_json": "delimited canonical ModelVisibleSemanticsInput"},
+        "outputs": {"semantics": EventSemantics.model_json_schema()},
+    }
+)
+READER_CARD_SIGNATURE_SHA256: Final[str] = canonical_sha(
+    {
+        "signature": "ReaderCard.v2",
+        "inputs": {
+            "evidence_json": "delimited canonical ModelVisibleCardInput",
+            "semantics_json": ReaderCardSemanticView.model_json_schema(),
+        },
+        "outputs": {"card": ReaderCard.model_json_schema()},
+    }
+)
 
 
 PredictorName = Literal["event_semantics", "reader_card"]
@@ -509,14 +537,19 @@ def _estimated_tokens(value: str) -> int:
 class QualityKernelRef(_ExactModel):
     """References to code-owned behavior; never executable Artifact data."""
 
-    factory_id: Literal["tracefold.news.semantic_program.factory_v3"] = "tracefold.news.semantic_program.factory_v3"
+    factory_id: Literal["tracefold.news.semantic_program.factory_v4"] = "tracefold.news.semantic_program.factory_v4"
     factory_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     topology_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     input_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    event_semantics_signature_id: Literal["tracefold.news.EventSemantics.v1"]
+    event_semantics_signature_id: Literal["tracefold.news.EventSemantics.v2"]
     event_semantics_signature_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     reader_card_signature_id: Literal["tracefold.news.ReaderCard.v2"]
     reader_card_signature_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    trade_relevance_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reader_card_semantic_view_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    editorial_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    semantic_judgment_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scored_judgment_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     verdict_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     renderer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_renderer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -662,7 +695,7 @@ class DemoRecord(_ExactModel):
     cluster_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     review_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evidence_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v5"] = "program_v5"
+    learning_epoch: Literal["program_v6"] = "program_v6"
     model_visible_projection_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     provenance_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -681,7 +714,7 @@ class DemoRecord(_ExactModel):
         evidence_receipt_sha256: str | None = None,
     ) -> DemoRecord:
         signature_id, signature_sha256 = (
-            ("tracefold.news.EventSemantics.v1", EVENT_SEMANTICS_SIGNATURE_SHA256)
+            ("tracefold.news.EventSemantics.v2", EVENT_SEMANTICS_SIGNATURE_SHA256)
             if predictor == "event_semantics"
             else ("tracefold.news.ReaderCard.v2", READER_CARD_SIGNATURE_SHA256)
         )
@@ -736,7 +769,7 @@ class DemoRecord(_ExactModel):
             path="demo_record",
         )
         expected_signature = (
-            ("tracefold.news.EventSemantics.v1", EVENT_SEMANTICS_SIGNATURE_SHA256)
+            ("tracefold.news.EventSemantics.v2", EVENT_SEMANTICS_SIGNATURE_SHA256)
             if self.predictor == "event_semantics"
             else ("tracefold.news.ReaderCard.v2", READER_CARD_SIGNATURE_SHA256)
         )
@@ -768,7 +801,7 @@ class DemoRecord(_ExactModel):
                 field="semantics_json",
                 index=0,
             )
-            EventSemantics.model_validate(semantics)
+            ReaderCardSemanticView.model_validate(semantics)
             ReaderCard.model_validate(self.validated_output)
         projection_sha = canonical_sha(
             {"signature_inputs": self.signature_inputs, "validated_output": self.validated_output}
@@ -980,11 +1013,19 @@ class CompileProvenance(_ExactModel):
     seed: int | None = Field(default=None, ge=0)
     max_metric_calls: int = Field(ge=0)
     max_task_model_calls: int = Field(ge=0)
+    max_reflection_model_calls: int = Field(default=0, ge=0)
+    max_metric_judge_model_calls: int = Field(default=0, ge=0)
     max_cost_microusd: int = Field(ge=0)
     max_call_cost_microusd: int = Field(ge=0)
     metric_calls: int = Field(ge=0)
     task_model_calls: int = Field(ge=0)
     reflection_model_calls: int = Field(ge=0)
+    metric_judge_attempts: int = Field(default=0, ge=0)
+    metric_judge_model_calls: int = Field(default=0, ge=0)
+    metric_judge_failures: int = Field(default=0, ge=0)
+    task_cost_microusd: int = Field(default=0, ge=0)
+    reflection_cost_microusd: int = Field(default=0, ge=0)
+    metric_judge_cost_microusd: int = Field(default=0, ge=0)
     actual_cost_microusd: int = Field(ge=0)
     trajectory_sha256: str | None = None
     checkpoint_sha256: str | None = None
@@ -1004,6 +1045,7 @@ class CompileProvenance(_ExactModel):
     target_runtime_manifest_sha256: str | None = None
     task_endpoint_identity_sha256: str | None = None
     reflection_endpoint_identity_sha256: str | None = None
+    metric_judge_endpoint_identity_sha256: str | None = None
     compiler_source_sha256: str | None = None
     compiler_lock_sha256: str | None = None
     sandbox_policy_sha256: str | None = None
@@ -1029,6 +1071,7 @@ class CompileProvenance(_ExactModel):
         "target_runtime_manifest_sha256",
         "task_endpoint_identity_sha256",
         "reflection_endpoint_identity_sha256",
+        "metric_judge_endpoint_identity_sha256",
         "compiler_source_sha256",
         "compiler_lock_sha256",
         "sandbox_policy_sha256",
@@ -1065,6 +1108,7 @@ class CompileProvenance(_ExactModel):
             self.target_runtime_manifest_sha256,
             self.task_endpoint_identity_sha256,
             self.reflection_endpoint_identity_sha256,
+            self.metric_judge_endpoint_identity_sha256,
             self.compiler_source_sha256,
             self.compiler_lock_sha256,
             self.sandbox_policy_sha256,
@@ -1080,11 +1124,19 @@ class CompileProvenance(_ExactModel):
                     for value in (
                         self.max_metric_calls,
                         self.max_task_model_calls,
+                        self.max_reflection_model_calls,
+                        self.max_metric_judge_model_calls,
                         self.max_cost_microusd,
                         self.max_call_cost_microusd,
                         self.metric_calls,
                         self.task_model_calls,
                         self.reflection_model_calls,
+                        self.metric_judge_attempts,
+                        self.metric_judge_model_calls,
+                        self.metric_judge_failures,
+                        self.task_cost_microusd,
+                        self.reflection_cost_microusd,
+                        self.metric_judge_cost_microusd,
                         self.actual_cost_microusd,
                         self.episode_count,
                     )
@@ -1100,11 +1152,18 @@ class CompileProvenance(_ExactModel):
             or self.gepa_version != "0.1.1"
             or self.max_metric_calls <= 0
             or self.max_task_model_calls <= 0
+            or self.max_reflection_model_calls <= 0
+            or self.max_metric_judge_model_calls <= 0
             or self.max_cost_microusd <= 0
             or self.max_call_cost_microusd <= 0
             or self.max_call_cost_microusd > self.max_cost_microusd
-            or self.metric_calls > self.max_metric_calls
-            or self.task_model_calls + self.reflection_model_calls > self.max_task_model_calls
+            or self.task_model_calls > self.max_task_model_calls
+            or self.reflection_model_calls > self.max_reflection_model_calls
+            or self.metric_judge_model_calls > self.max_metric_judge_model_calls
+            or self.metric_judge_model_calls > self.metric_judge_attempts
+            or self.metric_judge_failures > self.metric_judge_attempts
+            or self.actual_cost_microusd
+            != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
             or self.actual_cost_microusd > self.max_cost_microusd
         ):
             raise ValueError("news_program_candidate_compile_provenance_invalid")
@@ -1121,14 +1180,14 @@ class CompileReceipt(CompileProvenance):
         if self.mode == "code_owned_baseline":
             if (
                 self.compiler != "code_owned_baseline"
-                or self.source not in {"issue_134/d_stable", "issue_134/program_v3_rollback"}
+                or self.source != "issue_160/v6_baseline"
                 or self.accepted_by != "code_owner"
             ):
                 raise ValueError("news_program_baseline_compile_identity_invalid")
             return self
         if (
-            self.compiler != "tracefold.news.dspy_gepa_compiler_v2"
-            or self.source != "trusted_compiler_launcher_v2"
+            self.compiler != "tracefold.news.dspy_gepa_compiler_v3"
+            or self.source != "trusted_compiler_launcher_v3"
             or self.accepted_by != "unaccepted_candidate"
         ):
             raise ValueError("news_program_candidate_compile_identity_invalid")
@@ -1139,11 +1198,11 @@ class ProgramArtifact(_ExactModel):
     """Immutable v2 root with code-owned and optimizer-owned state separated."""
 
     schema_version: Literal["news_semantic_program_artifact_v2"] = "news_semantic_program_artifact_v2"
-    program_version: Literal["news_semantic_program_v3"] = "news_semantic_program_v3"
+    program_version: Literal["news_semantic_program_v4"] = "news_semantic_program_v4"
     program_sha256: str
     state_sha256: str
     parent_program_sha256: str | None = None
-    factory_id: Literal["tracefold.news.semantic_program.factory_v3"] = "tracefold.news.semantic_program.factory_v3"
+    factory_id: Literal["tracefold.news.semantic_program.factory_v4"] = "tracefold.news.semantic_program.factory_v4"
     quality_kernel: QualityKernelRef
     route_spec: ModelRouteSpec
     execution: ExecutionContract
@@ -1160,10 +1219,7 @@ class ProgramArtifact(_ExactModel):
             raise ValueError("news_program_route_spec_unknown")
         if self.quality_kernel != _build_quality_kernel_ref(self.execution):
             raise ValueError("news_program_quality_kernel_unknown")
-        profile: Literal["d_stable", "program_v3_rollback"] = (
-            "program_v3_rollback" if self.compile_receipt.source == "issue_134/program_v3_rollback" else "d_stable"
-        )
-        expected_packs = _code_owned_rule_packs(profile=profile)
+        expected_packs = _code_owned_rule_packs()
         if self.rule_packs != expected_packs:
             raise ValueError("news_program_rule_pack_root_unknown")
         if tuple(strategy.predictor for strategy in self.learned_strategies) != (
@@ -1171,12 +1227,13 @@ class ProgramArtifact(_ExactModel):
             "reader_card",
         ):
             raise ValueError("news_program_learned_strategy_order_invalid")
+        if self.demo_bank.records or self.demo_bank.refs != DemoRefOrder():
+            raise ValueError("news_program_v6_demo_bank_must_be_empty")
         if self.parent_program_sha256 is None:
             if self.compile_receipt.mode != "code_owned_baseline" or self.compile_receipt.accepted_by != "code_owner":
                 raise ValueError("news_program_baseline_parent_receipt_invalid")
             if self.compile_receipt.compiler != "code_owned_baseline" or self.compile_receipt.source not in {
-                "issue_134/d_stable",
-                "issue_134/program_v3_rollback",
+                "issue_160/v6_baseline",
             }:
                 raise ValueError("news_program_baseline_compile_identity_invalid")
             if (
@@ -1187,8 +1244,8 @@ class ProgramArtifact(_ExactModel):
         elif (
             self.compile_receipt.mode != "optimizer_candidate"
             or self.compile_receipt.accepted_by != "unaccepted_candidate"
-            or self.compile_receipt.compiler != "tracefold.news.dspy_gepa_compiler_v2"
-            or self.compile_receipt.source != "trusted_compiler_launcher_v2"
+            or self.compile_receipt.compiler != "tracefold.news.dspy_gepa_compiler_v3"
+            or self.compile_receipt.source != "trusted_compiler_launcher_v3"
         ):
             raise ValueError("news_program_candidate_parent_receipt_invalid")
         elif any(strategy.source != "optimizer_patch" for strategy in self.learned_strategies):
@@ -1249,7 +1306,7 @@ class ProgramArtifact(_ExactModel):
         records = {record.demo_id: record for record in self.demo_bank.records}
         demos = tuple(records[ref].dspy_demo() for ref in refs)
         signature_id, signature_sha256 = (
-            ("tracefold.news.EventSemantics.v1", EVENT_SEMANTICS_SIGNATURE_SHA256)
+            ("tracefold.news.EventSemantics.v2", EVENT_SEMANTICS_SIGNATURE_SHA256)
             if predictor == "event_semantics"
             else ("tracefold.news.ReaderCard.v2", READER_CARD_SIGNATURE_SHA256)
         )
@@ -1295,11 +1352,11 @@ class ProgramArtifact(_ExactModel):
 
 class _ProgramManifest(_ExactModel):
     schema_version: Literal["news_semantic_program_artifact_v2"]
-    program_version: Literal["news_semantic_program_v3"]
+    program_version: Literal["news_semantic_program_v4"]
     program_sha256: str
     state_sha256: str
     parent_program_sha256: str | None = None
-    factory_id: Literal["tracefold.news.semantic_program.factory_v3"]
+    factory_id: Literal["tracefold.news.semantic_program.factory_v4"]
     quality_kernel: QualityKernelRef
     route_spec: ModelRouteSpec
     execution: ExecutionContract
@@ -1312,36 +1369,10 @@ class _ProgramState(_ExactModel):
     demo_bank: DemoBank
 
 
-def _code_owned_rule_packs(*, profile: Literal["d_stable", "program_v3_rollback"] = "d_stable") -> tuple[RulePack, ...]:
-    from .quality_baseline import (
-        LEGACY_V3_EVENT_SEMANTICS_INSTRUCTION,
-        LEGACY_V3_READER_CARD_INSTRUCTION,
-        RULE_PACK_SPECS,
-        validate_expert_baseline_coverage,
-    )
+def _code_owned_rule_packs() -> tuple[RulePack, ...]:
+    from .quality_baseline import RULE_PACK_SPECS, validate_expert_baseline_coverage
 
     validate_expert_baseline_coverage()
-    if profile == "program_v3_rollback":
-        return (
-            RulePack.issue(
-                rule_id="legacy_v3_event_semantics",
-                revision=1,
-                target="event_semantics",
-                order=1,
-                body=LEGACY_V3_EVENT_SEMANTICS_INSTRUCTION,
-                example_refs=("program_v3_exact_instruction",),
-            ),
-            RulePack.issue(
-                rule_id="legacy_v3_reader_card",
-                revision=1,
-                target="reader_card",
-                order=2,
-                body=LEGACY_V3_READER_CARD_INSTRUCTION,
-                example_refs=("program_v3_exact_instruction",),
-            ),
-        )
-    if profile != "d_stable":
-        raise ValueError("news_program_baseline_profile_unknown")
     return tuple(
         RulePack.issue(
             rule_id=spec.rule_id,
@@ -1364,10 +1395,15 @@ def _build_quality_kernel_ref(execution: ExecutionContract) -> QualityKernelRef:
         factory_source_sha256=_runtime_factory_source_sha256(),
         topology_sha256=PROGRAM_TOPOLOGY_SHA256,
         input_contract_sha256=PROGRAM_INPUT_CONTRACT_SHA256,
-        event_semantics_signature_id="tracefold.news.EventSemantics.v1",
+        event_semantics_signature_id="tracefold.news.EventSemantics.v2",
         event_semantics_signature_sha256=EVENT_SEMANTICS_SIGNATURE_SHA256,
         reader_card_signature_id="tracefold.news.ReaderCard.v2",
         reader_card_signature_sha256=READER_CARD_SIGNATURE_SHA256,
+        trade_relevance_contract_sha256=canonical_sha(TradeRelevanceV1.model_json_schema()),
+        reader_card_semantic_view_sha256=canonical_sha(ReaderCardSemanticView.model_json_schema()),
+        editorial_contract_sha256=canonical_sha(EditorialEnvelope.model_json_schema()),
+        semantic_judgment_contract_sha256=canonical_sha(SemanticJudgment.model_json_schema()),
+        scored_judgment_contract_sha256=canonical_sha(ScoredJudgment.model_json_schema()),
         verdict_contract_sha256=canonical_sha(
             {
                 "TriageAsset": TriageAsset.model_json_schema(),
@@ -1482,7 +1518,7 @@ class ProgramPatchV2(_ExactModel):
     schema_version: Literal["news_semantic_program_patch_v2"] = "news_semantic_program_patch_v2"
     parent_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     parent_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v5"] = "program_v5"
+    learning_epoch: Literal["program_v6"] = "program_v6"
     learned_strategies: tuple[LearnedStrategy, ...] = Field(min_length=2, max_length=2)
     demo_refs: DemoRefOrder
     eligible_demo_bank_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1515,6 +1551,8 @@ class ProgramPatchV2(_ExactModel):
             "reader_card",
         ) or any(strategy.source != "optimizer_patch" for strategy in self.learned_strategies):
             raise ValueError("news_program_patch_strategy_write_set_invalid")
+        if self.demo_refs != DemoRefOrder():
+            raise ValueError("news_program_v6_demo_refs_forbidden")
         if self.patch_sha256 != self.computed_sha256():
             raise ValueError("news_program_patch_hash_mismatch")
         return self
@@ -1579,14 +1617,11 @@ def _issue_program_artifact(
     )
 
 
-def build_code_owned_program_artifact_v2(
-    *,
-    profile: Literal["d_stable", "program_v3_rollback"] = "d_stable",
-) -> ProgramArtifact:
+def build_code_owned_program_artifact_v2() -> ProgramArtifact:
     """Build one reviewed v2 root; callers decide where it may be stored."""
 
     execution = _default_execution_contract()
-    rule_packs = _code_owned_rule_packs(profile=profile)
+    rule_packs = _code_owned_rule_packs()
     strategies = (
         LearnedStrategy.issue(predictor="event_semantics", text="", source="code_owned_baseline"),
         LearnedStrategy.issue(predictor="reader_card", text="", source="code_owned_baseline"),
@@ -1599,7 +1634,7 @@ def build_code_owned_program_artifact_v2(
         rule_packs=rule_packs,
         learned_strategies=strategies,
         demo_bank=DemoBank.empty(),
-        compile_receipt=_baseline_compile_receipt(source=f"issue_134/{profile}"),
+        compile_receipt=_baseline_compile_receipt(source="issue_160/v6_baseline"),
     )
 
 
@@ -1739,7 +1774,7 @@ def _validate_predictor_demos(name: PredictorName, demos: Sequence[Mapping[str, 
                     field="semantics_json",
                     index=index,
                 )
-                validated_semantics = EventSemantics.model_validate(semantics)
+                validated_semantics = ReaderCardSemanticView.model_validate(semantics)
                 if canonical_json(validated_semantics.model_dump(mode="json")) != demo["semantics_json"]:
                     raise ValueError("semantics_json_not_typed_canonical")
                 ReaderCard.model_validate(demo["card"])
@@ -2591,21 +2626,62 @@ def _unwrap_output(output: Mapping[str, Any], field: str) -> Any:
     return dict(output)
 
 
-def _assemble(semantics: EventSemantics, card: ReaderCard, *, told_count: int) -> TriageVerdict:
+def _reader_card_semantic_view(semantics: EventSemantics) -> ReaderCardSemanticView:
+    return ReaderCardSemanticView(
+        event_type=semantics.event_type,
+        assets=semantics.assets,
+        direction=semantics.direction,
+        magnitude=semantics.magnitude,
+        novelty=semantics.novelty,
+        restates=semantics.restates,
+        scope=semantics.scope,
+        channels=semantics.relevance.channels,
+        affected_markets=semantics.relevance.affected_markets,
+    )
+
+
+def _assemble(
+    semantics: EventSemantics,
+    card: ReaderCard,
+    *,
+    told_count: int,
+) -> tuple[TriageVerdict, EditorialEnvelope]:
     if semantics.novelty == "restatement":
         if semantics.restates < 0 or semantics.restates >= told_count:
             raise ValueError("news_program_restatement_index_invalid")
     elif semantics.restates != -1:
         raise ValueError("news_program_non_restatement_index_invalid")
-    return TriageVerdict.model_validate(
+    relevance = semantics.relevance
+    actionable = (
+        relevance.tradability in {"direct", "second_order"}
+        and bool(relevance.channels)
+        and bool(relevance.affected_markets)
+    )
+    decision = {
+        "escalate": "escalate",
+        "realtime": "push",
+        "background": "drop",
+        "none": "drop",
+    }[relevance.reader_value]
+    verdict = TriageVerdict.model_validate(
         {
-            **semantics.model_dump(mode="json"),
+            "novelty": semantics.novelty,
+            "restates": semantics.restates,
+            "event_type": semantics.event_type,
             "assets": [asset.model_dump(mode="json") for asset in semantics.assets],
+            "direction": semantics.direction,
+            "scope": semantics.scope,
+            "magnitude": semantics.magnitude,
+            "actionable": actionable,
+            "confidence": semantics.confidence,
+            "decision": decision,
+            "audience": semantics.audience,
             "headline_zh": card.headline_zh.strip(),
             "title_zh": "",
             "why_zh": card.why_zh.strip(),
         }
     )
+    return verdict, EditorialEnvelope.issue(editorial_origin="model", relevance=relevance)
 
 
 def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) -> None:
@@ -2618,12 +2694,43 @@ def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) ->
 
 def _normalize_semantics(
     semantics: EventSemantics,
-) -> tuple[EventSemantics, ProgramNormalizationTrace | None]:
+) -> tuple[EventSemantics, tuple[ProgramNormalizationTrace, ...]]:
     if semantics.novelty == "restatement" or semantics.restates == -1:
-        return semantics, None
-    normalization = ProgramNormalizationTrace(input_value=semantics.restates)
+        return semantics, ()
+    normalization = ProgramNormalizationTrace(
+        field="restates",
+        reason="non_restatement_index_ignored",
+        input_value=semantics.restates,
+        output_value=-1,
+    )
     normalized = semantics.model_copy(update={"restates": normalization.output_value})
-    return normalized, normalization
+    return normalized, (normalization,)
+
+
+def _relevance_normalization_traces(
+    raw_output: Mapping[str, Any],
+    semantics: EventSemantics,
+) -> tuple[ProgramNormalizationTrace, ...]:
+    raw_relevance = raw_output.get("relevance")
+    if not isinstance(raw_relevance, Mapping):
+        return ()
+    traces: list[ProgramNormalizationTrace] = []
+    for field in ("channels", "affected_markets"):
+        raw = raw_relevance.get(field)
+        if not isinstance(raw, (list, tuple)) or not all(isinstance(item, str) for item in raw):
+            continue
+        normalized = tuple(getattr(semantics.relevance, field))
+        original = tuple(raw)
+        if original != normalized:
+            traces.append(
+                ProgramNormalizationTrace(
+                    field=field,
+                    reason="canonical_set_order",
+                    input_value=original,
+                    output_value=normalized,
+                )
+            )
+    return tuple(traces)
 
 
 class _CallFailure(Exception):
@@ -2672,13 +2779,14 @@ class DspyCompileProgram(dspy.Module):  # type: ignore[misc]
         semantics = EventSemantics.model_validate(_unwrap_output(semantics_prediction.toDict(), "semantics"))
         semantics, _ = _normalize_semantics(semantics)
         _validate_semantic_context(semantics, told_count=max(0, int(told_count)))
+        semantic_view = _reader_card_semantic_view(semantics)
         card_prediction = self.reader_card(
             evidence_json=card_evidence_json,
-            semantics_json=canonical_json(semantics.model_dump(mode="json")),
+            semantics_json=canonical_json(semantic_view.model_dump(mode="json")),
         )
         card = ReaderCard.model_validate(_unwrap_output(card_prediction.toDict(), "card"))
-        verdict = _assemble(semantics, card, told_count=max(0, int(told_count)))
-        return dspy.Prediction(semantics=semantics, card=card, verdict=verdict)
+        verdict, editorial = _assemble(semantics, card, told_count=max(0, int(told_count)))
+        return dspy.Prediction(semantics=semantics, card=card, verdict=verdict, editorial=editorial)
 
 
 def extract_optimizer_patch(
@@ -2697,11 +2805,6 @@ def extract_optimizer_patch(
     ):
         raise ValueError("news_program_optimizer_parent_identity_mismatch")
 
-    eligible_by_payload: dict[tuple[PredictorName, str], list[str]] = {}
-    for record in eligible_demo_bank.records:
-        key = (record.predictor, canonical_sha(record.dspy_demo()))
-        eligible_by_payload.setdefault(key, []).append(record.demo_id)
-
     strategies: list[LearnedStrategy] = []
     refs: dict[PredictorName, tuple[str, ...]] = {}
     for predictor_name in ("event_semantics", "reader_card"):
@@ -2718,15 +2821,9 @@ def extract_optimizer_patch(
         )
         raw_demos = tuple(cast(dict[str, Any], _safe_json_state(demo.toDict())) for demo in predictor.demos)
         _validate_predictor_demos(predictor_name, raw_demos)
-        selected: list[str] = []
-        for demo in raw_demos:
-            candidates = eligible_by_payload.get((predictor_name, canonical_sha(demo)), [])
-            if len(candidates) != 1:
-                raise ValueError("news_program_optimizer_demo_membership_ambiguous")
-            selected.append(candidates[0])
-        if len(selected) != len(set(selected)):
-            raise ValueError("news_program_optimizer_demo_ref_duplicate")
-        refs[predictor_name] = tuple(selected)
+        if raw_demos:
+            raise ValueError("news_program_optimizer_demos_forbidden")
+        refs[predictor_name] = ()
 
     return ProgramPatchV2.issue(
         parent=parent,
@@ -2832,7 +2929,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     context_sha=context_sha,
                     primary_failure=primary_failure,
                 ) from fallback_exc
-        semantics, card, verdict, route, answering_model, novelty_defaulted = result
+        semantics, card, verdict, editorial, route, answering_model, novelty_defaulted = result
         semantics_sha = canonical_sha(semantics.model_dump(mode="json"))
         card_sha = canonical_sha(card.model_dump(mode="json"))
         verdict_sha = canonical_sha(verdict.model_dump(mode="json"))
@@ -2843,6 +2940,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             event_semantics_sha256=semantics_sha,
             reader_card_sha256=card_sha,
             verdict_sha256=verdict_sha,
+            editorial_sha256=editorial.editorial_sha256,
             answering_route=route,
             fallback_from=fallback_from,
             novelty_defaulted=novelty_defaulted,
@@ -2850,6 +2948,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         usage = self._usage(calls, started=started)
         return SemanticJudgment(
             verdict=verdict,
+            editorial=editorial,
             program_version=self.artifact.program_version,
             program_sha256=self.artifact.program_sha256,
             trace=trace,
@@ -2905,7 +3004,15 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         semantics_evidence_json: str,
         card_evidence_json: str,
         calls: list[ProgramCallTrace],
-    ) -> tuple[EventSemantics, ReaderCard, TriageVerdict, Literal["primary", "fallback"], str | None, bool]:
+    ) -> tuple[
+        EventSemantics,
+        ReaderCard,
+        TriageVerdict,
+        EditorialEnvelope,
+        Literal["primary", "fallback"],
+        str | None,
+        bool,
+    ]:
         route_call_start = len(calls)
         try:
             async with asyncio.timeout(self.artifact.execution.route_deadline_seconds):
@@ -2970,7 +3077,15 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         semantics_evidence_json: str,
         card_evidence_json: str,
         calls: list[ProgramCallTrace],
-    ) -> tuple[EventSemantics, ReaderCard, TriageVerdict, Literal["primary", "fallback"], str | None, bool]:
+    ) -> tuple[
+        EventSemantics,
+        ReaderCard,
+        TriageVerdict,
+        EditorialEnvelope,
+        Literal["primary", "fallback"],
+        str | None,
+        bool,
+    ]:
         retry_available = True
         novelty_defaulted = False
         semantics: EventSemantics | None = None
@@ -2990,10 +3105,10 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     output_model=EventSemantics,
                     calls=calls,
                 )
-                semantics, normalization = _normalize_semantics(semantics)
-                if normalization is not None:
+                semantics, normalizations = _normalize_semantics(semantics)
+                if normalizations:
                     calls[-1] = calls[-1].model_copy(
-                        update={"normalizations": (*calls[-1].normalizations, normalization)}
+                        update={"normalizations": (*calls[-1].normalizations, *normalizations)}
                     )
                 try:
                     _validate_semantic_context(semantics, told_count=len(context.told.entries))
@@ -3028,16 +3143,19 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                         raise exc from None
                     novelty_defaulted = True
                     patched_state = semantics.model_dump(mode="json")
+                    normalizations = _relevance_normalization_traces(patched, semantics)
                     calls[-1] = calls[-1].model_copy(
                         update={
                             "error_code": "news_program_novelty_defaulted",
                             "output_sha256": canonical_sha(patched_state),
                             "validated_output": patched_state,
+                            "normalizations": normalizations,
                         }
                     )
                     continue
                 raise
         semantics_sha = canonical_sha(semantics.model_dump(mode="json"))
+        semantic_view = _reader_card_semantic_view(semantics)
         card_attempt = 1
         while True:
             try:
@@ -3050,7 +3168,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     context_sha=context_sha,
                     inputs={
                         "evidence_json": card_evidence_json,
-                        "semantics_json": canonical_json(semantics.model_dump(mode="json")),
+                        "semantics_json": canonical_json(semantic_view.model_dump(mode="json")),
                     },
                     upstream_sha=semantics_sha,
                     output_field="card",
@@ -3065,7 +3183,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     continue
                 raise
         try:
-            verdict = _assemble(semantics, card, told_count=len(context.told.entries))
+            verdict, editorial = _assemble(semantics, card, told_count=len(context.told.entries))
         except (ValidationError, ValueError) as exc:
             last = calls[-1]
             code = (
@@ -3084,7 +3202,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             (call.model for call in reversed(calls) if call.route == route and call.predictor == "reader_card"),
             None,
         )
-        return semantics, card, verdict, route, answering_model, novelty_defaulted
+        return semantics, card, verdict, editorial, route, answering_model, novelty_defaulted
 
     async def _call_predictor(
         self,
@@ -3375,11 +3493,17 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 raw_output=raw_output,
             ) from exc
         validated_state = validated.model_dump(mode="json")
+        normalizations = (
+            _relevance_normalization_traces(raw_output, validated)
+            if isinstance(validated, EventSemantics) and raw_output is not None
+            else ()
+        )
         calls.append(
             call.model_copy(
                 update={
                     "output_sha256": canonical_sha(validated_state),
                     "validated_output": validated_state,
+                    "normalizations": normalizations,
                 }
             )
         )
@@ -3393,6 +3517,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         event_semantics_sha256: str | None = None,
         reader_card_sha256: str | None = None,
         verdict_sha256: str | None = None,
+        editorial_sha256: str | None = None,
         answering_route: Literal["primary", "fallback"] | None = None,
         fallback_from: str | None = None,
         novelty_defaulted: bool = False,
@@ -3408,6 +3533,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             event_semantics_sha256=event_semantics_sha256,
             reader_card_sha256=reader_card_sha256,
             verdict_sha256=verdict_sha256,
+            editorial_sha256=editorial_sha256,
             answering_route=answering_route,
             fallback_from=fallback_from,
             novelty_defaulted=novelty_defaulted,
@@ -3467,6 +3593,7 @@ __all__ = [
     "DspyNewsSemanticProgram",
     "DspyPredictorAdapter",
     "DspyStrictJSONAdapter",
+    "EditorialEnvelope",
     "EligibleDemoBank",
     "EventSemantics",
     "ExactMetadataDspyLM",
@@ -3494,9 +3621,11 @@ __all__ = [
     "ProviderCallObservation",
     "QualityKernelRef",
     "ReaderCard",
+    "ReaderCardSemanticView",
     "RecordReplayPredictorAdapter",
     "RulePack",
     "RuntimeModelIdentity",
+    "ScoredJudgment",
     "ScriptedPredictorAdapter",
     "SemanticGateContext",
     "SemanticJudge",
@@ -3504,6 +3633,7 @@ __all__ = [
     "SemanticJudgment",
     "ToldLedgerEntry",
     "ToldLedgerSnapshot",
+    "TradeRelevanceV1",
     "TriageContext",
     "apply_program_patch_v2",
     "build_code_owned_program_artifact_v2",

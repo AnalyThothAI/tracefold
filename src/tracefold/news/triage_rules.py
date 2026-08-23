@@ -7,67 +7,29 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
 from .models import Decision, TriageVerdict, base_symbol
+from .semantic_contract import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from .similarity import max_similarity
 
 # One owner for the withhold key: `outcome` renders it, `repository` counts it.
 STALE_SOURCE_KEY: Final = "artifact:stale"
 
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
-_MODEL_WANTS_PUSH = frozenset({"push", "escalate"})
-
-
-_UNCLEAR_PUSH_EVENT_TYPES: Final = (
-    "product",
-    "listing",
-    "delisting",
-    "regulation",
-    "hack",
-    "exploit",
-    "partnership",
-    "filing",
-)
 
 
 @dataclass(frozen=True, slots=True)
 class DecidePolicy:
-    """Tunable thresholds of decide(); the defaults are the live policy (TRIAGE_POLICY_VERSION), operator-owned
-    through ``news.policy``."""
+    """The four v10 safety/duplicate knobs exposed through ``news.policy``.
 
-    escalate_magnitude: int = 3
-    min_push_magnitude: int = 1
-    min_watchlist_magnitude: int = 1
-    unclear_push_event_types: tuple[str, ...] = _UNCLEAR_PUSH_EVENT_TYPES
-    unclear_push_min_magnitude: int = 2
+    Trade relevance and objective guards are a code-owned ordered policy, not
+    operator-tunable thresholds.
+    """
+
     restatement_drop: bool = True
     # Duplicate protection is content-based, never a reader quota. A value of
     # zero disables the deterministic similarity check; it does not restore a
     # count cap. Escalations remain exempt because a false-positive similarity
     # match is least affordable for the most important cards.
     similarity_max: float = 0.25
-    # Policy v4 (issue #77): the Gate's `priority` is an AMQP transport hint (score >= 90, watchlist, listing
-    # frames, rate/yield macro), not a reader-facing importance judgment — it decides queue order, not the ⚡
-    # header. It used to promote every high-priority push to `escalate`, which made every exchange listing notice
-    # as loud as a missile strike. `escalate` is now magnitude-driven only; the rule still exists so the same
-    # Events keep pushing, it just no longer shouts.
-    high_priority_escalates: bool = False
-    # Policy v8 (recall-first). A `noise` label used to return before every other rule, so one
-    # mislabelled enum outranked magnitude 3, Gate priority and the watchlist. The ceiling is 1, not
-    # 0, because the Program instruction genuinely allows noise at magnitude 1: it calls magnitude 1
-    # "a routine update on one name that changes nothing" and its own worked example files a user
-    # milestone as magnitude 1 / drop. Magnitude 2 is where the instruction says "clearly tradable",
-    # so a verdict that says noise and 2 in the same breath is disagreeing with itself. Measured over
-    # 300 replayed Events (2026-08-22): 14 of v4's noise drops carried magnitude >= 2 — among them a
-    # hijacked tanker in the Gulf of Aden the Gate had flagged high priority and the previous
-    # generation had delivered. Raise this to let `noise` veto louder verdicts again; it is the one
-    # knob that trades recall for quiet.
-    noise_veto_max_magnitude: int = 1
-    # A high-priority Event is never dropped by the `noise` label alone: priority is upstream Gate
-    # evidence the model did not produce.
-    noise_veto_respects_gate_priority: bool = True
-    # The Gate flagged the Event high priority and the model itself assigned this magnitude or more
-    # while still asking to hold. Recall-first, that disagreement resolves toward the reader. Zero
-    # disables the rule, and it never fires on a normal-priority Event.
-    contested_push_min_magnitude: int = 2
     # An artifact older than this when the provider pushed it is a replay, not news (#154). The artifact ledger
     # catches a re-send of something we already delivered; this catches the case it cannot see — a stale artifact
     # arriving for the first time, such as the 16-day-old tweet that shipped as "Take-Two 股票 $TTWO 周四在
@@ -103,8 +65,6 @@ DEFAULT_POLICY = DecidePolicy()
 class GateFacts:
     grounded_assets: tuple[str, ...]
     watchlist_symbols: frozenset[str]
-    provider_score: float | None
-    priority: str  # high | normal
     admission: str
     # Seconds between the source artifact's own publication and the provider's push (#154). `None` whenever the
     # artifact does not carry its own timestamp, which is every non-x/twitter frame.
@@ -163,45 +123,33 @@ class DecisionResult:
 _base = base_symbol
 
 
-_BASELINE_MIN_SCORE: Final = 80.0
+def grounded_watchlist_hits(facts: GateFacts) -> tuple[str, ...]:
+    """Objective watchlist facts, independent of any model-selected primary."""
+
+    return tuple(sorted({_base(s) for s in facts.grounded_assets} & facts.watchlist_symbols))
 
 
-def rule_baseline(facts: GateFacts, *, fail_open_high_priority: bool = True) -> Decision:
-    """The decision a pure-rule system would take with no model at all.
+def rule_baseline(facts: GateFacts) -> Decision:
+    """The v10 degraded baseline: only objective guards fail open."""
 
-    Watchlist, or a provider score >= 80 on a grounded asset, pushes. Since #81 a high-priority Event and a
-    deterministic exchange listing notice push too: the model being unavailable is not evidence that a missile
-    strike or a delisting does not matter, and a degraded card renders the wire headline, which is a usable card.
-    Before this, a model outage silently dropped every high-priority Event without a grounded asset — and the
-    watchlist half of the old rule is inert on a deployment whose `news.watchlist` is empty, which is the live
-    one. Everything else drops, counted as degraded, never silently.
-    """
-
-    watch = any(_base(s) in facts.watchlist_symbols for s in facts.grounded_assets)
-    score = float(facts.provider_score or 0)
-    if watch or (score >= _BASELINE_MIN_SCORE and facts.grounded_assets):
+    if facts.admission in {"listing_deterministic", "telemetry_deterministic"}:
         return "push"
-    if fail_open_high_priority and (facts.priority == "high" or facts.admission == "listing_deterministic"):
-        return "push"
-    return "drop"
+    return "push" if grounded_watchlist_hits(facts) else "drop"
 
 
-def _noise_veto_applies(verdict: TriageVerdict, facts: GateFacts, policy: DecidePolicy) -> bool:
-    """True when a ``noise`` label may drop the card on the strength of that label alone.
+def realtime_eligible(verdict: TriageVerdict, relevance: TradeRelevanceV1) -> bool:
+    """The code-owned trade-attention eligibility predicate from policy v10."""
 
-    ``noise`` is defined by the Program's own instruction as magnitude 0 material. Any verdict that
-    labels an Event noise and then gives it weight — magnitude above the veto ceiling, ``actionable``,
-    or a push intent — is disagreeing with itself, and a self-contradicting enum must not outrank the
-    rules below it. The Gate's high priority is treated the same way: it is upstream evidence the
-    model did not produce, so it survives a noise label unless the operator turns that off.
-    """
-
-    if verdict.magnitude > policy.noise_veto_max_magnitude:
-        return False
-    if verdict.actionable or verdict.decision in _MODEL_WANTS_PUSH:
-        return False
-    # Gate priority is upstream evidence the model did not produce, so it survives a noise label.
-    return not (policy.noise_veto_respects_gate_priority and facts.priority == "high")
+    direct_surface = (
+        relevance.tradability in {"direct", "second_order"}
+        and bool(relevance.channels)
+        and bool(relevance.affected_markets)
+    )
+    material_change = relevance.development_delta == "state_change" or (
+        relevance.development_delta == "material_detail"
+        and (relevance.tradability == "direct" or relevance.surprise in {"unscheduled", "material_vs_expectation"})
+    )
+    return verdict.magnitude >= 2 and direct_surface and material_change
 
 
 # Exchange listing notices: one wire template carrying different instruments. "Coinbase adds ALIGN"
@@ -284,14 +232,14 @@ def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None)
 
 
 def decide(
-    verdict: TriageVerdict,
+    judgment: ScoredJudgment,
     facts: GateFacts,
     status: StorylineStatus | None,
     *,
     degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
-    """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
+    """Deterministic policy over one atomically identified editorial judgment.
 
     Runtime policy has no hourly, 2-hour, or 4-hour reader quota, and no
     operator mute: once the semantic conditions resolve to push/escalate, only
@@ -299,13 +247,13 @@ def decide(
     similarity because their wire headline is not a semantic judgment.
     """
 
+    verdict = judgment.verdict
+    editorial = judgment.editorial
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
     grounded = {_base(s) for s in facts.grounded_assets}
-    watch_hits = tuple(sorted(s for s in (primaries & grounded) if s in facts.watchlist_symbols))
+    watch_hits = grounded_watchlist_hits(facts)
 
-    if verdict.event_type == "noise" and _noise_veto_applies(verdict, facts, policy):
-        return DecisionResult("drop", "noise", None, baseline, watch_hits)
     template_fact = policy.listing_exempt_from_duplicate and _template_fact(facts)
     # The restatement bypass is narrowed the same way the similarity one is. Exempting the class
     # outright left a listing frame with no duplicate defence at all whenever the similarity check
@@ -317,56 +265,35 @@ def decide(
         return DecisionResult("drop", "restatement", None, baseline, watch_hits)
 
     final: Decision
-    rule: str | None = None
-    if verdict.magnitude >= policy.escalate_magnitude and (
-        verdict.direction in _DIRECTIONAL or verdict.scope == "macro"
-    ):
-        final, rule = "escalate", "magnitude3"
-    elif facts.priority == "high" and verdict.decision == "push":
-        # Recall-preserving on purpose: this branch pushes without requiring `actionable` or min_push_magnitude,
-        # so it must stay a branch. Only its loudness changes (#77).
-        final = "escalate" if policy.high_priority_escalates else "push"
-        rule = "high_priority_push"
-    elif (
-        facts.priority == "high"
-        and policy.contested_push_min_magnitude > 0
-        and verdict.magnitude >= policy.contested_push_min_magnitude
-        and verdict.decision not in _MODEL_WANTS_PUSH
-        and (verdict.direction in _DIRECTIONAL or verdict.scope == "macro")
-    ):
-        # The Gate called this Event high priority and the model itself weighed it at magnitude 2 or
-        # more, then asked to hold it anyway. That is a disagreement between upstream evidence and a
-        # single model field, not a considered hold, and recall-first it resolves toward the reader.
-        # Two guards keep this from being a Gate-priority push. `priority` is
-        # `score >= 90 or watchlist or listing or macro lexicon`, which #77 calls an AMQP transport
-        # hint, so without them a provider-scored price-only frame the model rejected on every field
-        # — the instruction's own "Spot Palladium Rises Nearly 3%" negative example — would reach
-        # the reader. The rule is about a *hold* intent, so a verdict that asked to push or escalate
-        # belongs to `high_priority_push`/`model_push_actionable` and keeps their attribution.
-        # Requiring a direction or macro scope (rather than `actionable`) also keeps this branch from
-        # sitting above `unclear_direction` and quietly bypassing `unclear_push_event_types`.
-        # The rule names itself in the trace so the operator sees which of the two won.
-        final, rule = "push", "contested_high_priority"
-    elif (
-        verdict.decision in _MODEL_WANTS_PUSH
-        and verdict.actionable
-        and verdict.magnitude >= policy.min_push_magnitude
-        and verdict.direction != "unclear"
-    ):
-        final, rule = "push", "model_push_actionable"
-    elif (
-        verdict.direction == "unclear"
-        and verdict.magnitude >= policy.unclear_push_min_magnitude
-        and verdict.event_type in policy.unclear_push_event_types
-        and verdict.decision != "drop"
-    ):
-        final, rule = "push", "unclear_but_clear_event"
-    elif verdict.direction == "unclear":
-        final, rule = "drop", "unclear_direction"
-    elif watch_hits and verdict.magnitude >= policy.min_watchlist_magnitude:
-        final, rule = "push", "watchlist"
+    rule: str | None
+    if degraded or editorial.editorial_origin == "degraded_unavailable":
+        if facts.admission == "listing_deterministic":
+            final, rule = "push", "degraded_listing_objective"
+        elif facts.admission == "telemetry_deterministic":
+            final, rule = "push", "degraded_telemetry_objective"
+        elif watch_hits:
+            final, rule = "push", "degraded_watchlist_objective"
+        else:
+            final, rule = "drop", "degraded_no_objective_guard"
+    elif facts.admission == "listing_deterministic":
+        final, rule = "push", "listing_deterministic"
+    elif facts.admission == "telemetry_deterministic":
+        # This intent is arithmetic output from the code-owned OI lane, never a
+        # model delivery opinion. It preserves the bounded rank rule.
+        final = verdict.decision
+        rule = "telemetry_deterministic"
+    elif watch_hits:
+        final, rule = "push", "watchlist_objective_guard"
+    elif editorial.editorial_origin != "model" or editorial.relevance is None:
+        final, rule = "drop", "trade_relevance_inconsistent"
+    elif editorial.relevance.reader_value == "escalate" and realtime_eligible(verdict, editorial.relevance):
+        final, rule = "escalate", "trade_relevance_escalate"
+    elif editorial.relevance.reader_value == "realtime" and realtime_eligible(verdict, editorial.relevance):
+        final, rule = "push", "trade_relevance_realtime"
+    elif editorial.relevance.reader_value in {"background", "none"}:
+        final, rule = "drop", f"reader_value_{editorial.relevance.reader_value}"
     else:
-        final, rule = "drop", "below_threshold"
+        final, rule = "drop", "trade_relevance_inconsistent"
 
     # #154: a replay is not a push, whatever the verdict says about it. `escalate` is exempt for the same reason
     # it is exempt from the similarity check — a false positive is least affordable on the loudest cards — and a
@@ -409,7 +336,7 @@ def decide(
     return DecisionResult(final, rule, None, baseline, watch_hits, seen_similarity, seen_against, seen_scope)
 
 
-def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> tuple[TriageVerdict, DecisionResult]:
+def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> tuple[ScoredJudgment, DecisionResult]:
     """Fail-closed degraded verdict when the model is unavailable. ``headline_zh`` carries the wire headline (the
     console and the context line show what the Event is, not that the model failed; the card renders the wire text
     itself, see delivery)."""
@@ -429,7 +356,11 @@ def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> t
         headline_zh=wire_headline,
         why_zh="",
     )
-    return verdict, DecisionResult(baseline, "fail_closed_fallback", None, baseline)
+    judgment = ScoredJudgment.issue(
+        verdict=verdict,
+        editorial=EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None),
+    )
+    return judgment, decide(judgment, facts, None, degraded=True)
 
 
 def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
@@ -485,6 +416,8 @@ __all__ = [
     "decide",
     "fallback_verdict",
     "grounded_restatement",
+    "grounded_watchlist_hits",
+    "realtime_eligible",
     "rule_baseline",
     "storyline_status",
 ]

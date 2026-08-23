@@ -10,6 +10,7 @@ from dataclasses import replace
 
 import pytest
 
+from tests.support.news_judgment import scored_judgment
 from tracefold.news.oi_signals import (
     DEFAULT_OI_POLICY,
     WINDOW_MS,
@@ -19,7 +20,8 @@ from tracefold.news.oi_signals import (
     parse_oi_signal,
 )
 from tracefold.news.similarity import similarity
-from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
+from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, storyline_status
+from tracefold.news.triage_rules import decide as production_decide
 
 DEFAULT_POLICY_SIMILARITY = DEFAULT_POLICY.similarity_max
 
@@ -142,28 +144,34 @@ def test_every_threshold_is_operator_owned() -> None:
 _FACTS = GateFacts(
     grounded_assets=(),
     watchlist_symbols=frozenset(),
-    provider_score=None,
-    priority="normal",
     admission="telemetry_deterministic",
 )
+
+
+def decide(verdict: object, facts: GateFacts, status: object) -> object:
+    origin = "telemetry_deterministic" if facts.admission == "telemetry_deterministic" else "model"
+    return production_decide(
+        scored_judgment(verdict, editorial_origin=origin),  # type: ignore[arg-type]
+        facts,
+        status,  # type: ignore[arg-type]
+    )
 
 
 def test_the_verdict_reaches_the_intended_answer_through_decide_unchanged() -> None:
     """The point of speaking `TriageVerdict` instead of a private decision type.
 
     A qualifying frame has to arrive at `push` through an ordinary rule, and a rejected one has to be
-    held by policy v8's `noise` veto — which only fires when the verdict agrees with itself. If either
-    stopped being true, this lane would need its own decision plane, which is exactly what it exists
-    not to have.
+    retain its arithmetic push/drop intent under the deterministic admission. If either stopped being true,
+    this lane would need its own decision plane, which is exactly what it exists not to have.
     """
 
     qualifying = evaluate_oi(_signal(), earlier_at_ms=[], now_ms=0).verdict
     pushed = decide(qualifying, _FACTS, None)
-    assert (pushed.final, pushed.override_rule) == ("push", "model_push_actionable")
+    assert (pushed.final, pushed.override_rule) == ("push", "telemetry_deterministic")
 
     rejected = evaluate_oi(_signal(whale_oi_ratio_bps=3_000), earlier_at_ms=[], now_ms=0).verdict
     held = decide(rejected, _FACTS, None)
-    assert (held.final, held.override_rule) == ("drop", "noise")
+    assert (held.final, held.override_rule) == ("drop", "telemetry_deterministic")
 
 
 def test_reader_text_carries_the_numbers_and_the_position_in_the_run() -> None:
@@ -245,7 +253,9 @@ def test_repeats_are_bounded_by_the_rank_ceiling_not_by_content_similarity() -> 
     third = evaluate_oi(_signal(symbol="BTC", oi_change_bps=700), earlier_at_ms=[1, 2], now_ms=3)
     held = decide(third.verdict, facts, status)
     assert third.rank_in_window == 3
-    assert held.final == "drop" and held.override_rule == "noise", "the ceiling is what stops the run"
+    assert held.final == "drop" and held.override_rule == "telemetry_deterministic", (
+        "the arithmetic rank ceiling is what stops the run"
+    )
 
 
 def test_only_the_gate_admission_earns_the_exemption() -> None:

@@ -14,7 +14,11 @@ from tracefold.app import learning_runtime, workers
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news import apply_canary_control, parse_canary_control
-from tracefold.news.canary import CANARY_ROLLING_PROFILE_SHA
+from tracefold.news.canary import (
+    CANARY_ELIGIBILITY_PROFILE_SHA,
+    CANARY_ROLLING_PROFILE_SHA,
+    CANARY_SELECTOR_VERSION,
+)
 from tracefold.platform.postgres.postgres_client import create_pool
 
 pytestmark = pytest.mark.integration
@@ -40,7 +44,7 @@ def _clone_event(conn, source_event_id: str, *, suffix: str, opened_at_ms: int) 
         INSERT INTO news_events (
           event_id, leader_item_id, family, comparison_fingerprint, comparison_title,
           leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, member_count,
-          admission, priority, provider_score_max, engine_type, asset_class,
+          admission, queue_priority, provider_score_max, engine_type, asset_class,
           grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
           published_at_ms, followup_of, ingest_mode, trace_id, created_at_ms, updated_at_ms,
           focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
@@ -48,7 +52,7 @@ def _clone_event(conn, source_event_id: str, *, suffix: str, opened_at_ms: int) 
         )
         SELECT %s, leader_item_id, family, comparison_fingerprint || %s,
                comparison_title, leader_title, %s, %s, %s, member_count,
-               admission, priority, provider_score_max, engine_type, asset_class,
+               admission, queue_priority, provider_score_max, engine_type, asset_class,
                grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
                published_at_ms, followup_of, ingest_mode, trace_id, %s, %s,
                focus_fact_id || %s, focus_fact_text, focus_fact_context, focus_fact_method,
@@ -114,7 +118,6 @@ def test_canary_control_requires_shadow_pass_and_keeps_one_event_arm(conn) -> No
             event_id=event_id,
             stable_bundle_sha=stable_bundle,
             admission="candidate",
-            priority="normal",
             ingest_mode="live",
             now_ms=NOW + 1,
         )
@@ -122,7 +125,6 @@ def test_canary_control_requires_shadow_pass_and_keeps_one_event_arm(conn) -> No
             event_id=event_id,
             stable_bundle_sha=stable_bundle,
             admission="candidate",
-            priority="normal",
             ingest_mode="live",
             now_ms=NOW + 2,
         )
@@ -144,7 +146,6 @@ def test_canary_control_requires_shadow_pass_and_keeps_one_event_arm(conn) -> No
             event_id=held_event,
             stable_bundle_sha=stable_bundle,
             admission="candidate",
-            priority="normal",
             ingest_mode="live",
             now_ms=NOW + 4,
         )
@@ -232,10 +233,10 @@ def test_canary_resume_trips_a_held_candidate_no_longer_carried_by_the_image(con
             baseline_bundle_sha=stable_bundle,
             candidate_manifest_sha=candidate_sha,
             candidate_bundle_sha=candidate_bundle,
-            selector_version="news_canary_selector_v1",
+            selector_version=CANARY_SELECTOR_VERSION,
             exposure_bps=1_000,
-            eligibility_profile_sha="1" * 64,
-            rolling_profile_sha="2" * 64,
+            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
+            rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
             now_ms=NOW,
         )
         repos.news.transition_canary(
@@ -278,10 +279,10 @@ def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(co
             baseline_bundle_sha=stable_bundle,
             candidate_manifest_sha=candidate_sha,
             candidate_bundle_sha=candidate_bundle,
-            selector_version="news_canary_selector_v1",
+            selector_version=CANARY_SELECTOR_VERSION,
             exposure_bps=1_000,
-            eligibility_profile_sha="5" * 64,
-            rolling_profile_sha="6" * 64,
+            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
+            rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
             now_ms=NOW,
         )
         repos.news.transition_canary(
@@ -348,6 +349,57 @@ def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(co
         "previous_revision": 2,
         "new_revision": 3,
     }
+
+
+def test_existing_candidate_assignment_revalidates_profile_before_retry(conn) -> None:
+    event_id = _open_event(conn)
+    activation_id = "6" * 32
+    stable_bundle = "7" * 64
+    candidate_bundle = "8" * 64
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.arm_canary(
+            activation_id=activation_id,
+            baseline_bundle_sha=stable_bundle,
+            candidate_manifest_sha="9" * 64,
+            candidate_bundle_sha=candidate_bundle,
+            selector_version=CANARY_SELECTOR_VERSION,
+            exposure_bps=1_000,
+            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
+            rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
+            now_ms=NOW,
+        )
+        conn.execute(
+            """
+            INSERT INTO news_agent_assignments(
+              event_id, activation_id, arm, bundle_sha, selector_version,
+              eligibility_reason, assigned_at_ms
+            ) VALUES (%s, %s, 'candidate', %s, %s, 'eligible_bucket', %s)
+            """,
+            (event_id, activation_id, candidate_bundle, CANARY_SELECTOR_VERSION, NOW + 1),
+        )
+        conn.execute(
+            "UPDATE news_canary_activations SET eligibility_profile_sha = %s WHERE activation_id = %s",
+            ("f" * 64, activation_id),
+        )
+
+    with repos.transaction():
+        assignment = repos.news.assign_agent_arm(
+            event_id=event_id,
+            stable_bundle_sha=stable_bundle,
+            admission="candidate",
+            ingest_mode="live",
+            now_ms=NOW + 2,
+        )
+
+    assert assignment["arm"] == "candidate"
+    assert assignment["bundle_sha"] == candidate_bundle
+    assert assignment["validation_error"] == "eligibility_profile_hash_mismatch"
+    activation = conn.execute(
+        "SELECT state, trip_reason FROM news_canary_activations WHERE activation_id = %s",
+        (activation_id,),
+    ).fetchone()
+    assert activation == {"state": "tripped", "trip_reason": "eligibility_profile_hash_mismatch"}
 
 
 def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn) -> None:
@@ -444,9 +496,9 @@ def test_rolling_canary_slo_survives_repository_restart_and_fails_closed(conn) -
             baseline_bundle_sha=stable_bundle,
             candidate_manifest_sha="4" * 64,
             candidate_bundle_sha=candidate_bundle,
-            selector_version="news_canary_selector_v1",
+            selector_version=CANARY_SELECTOR_VERSION,
             exposure_bps=1_000,
-            eligibility_profile_sha="5" * 64,
+            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
             rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
             now_ms=first_bucket - hour,
         )
@@ -462,10 +514,16 @@ def test_rolling_canary_slo_survives_repository_restart_and_fails_closed(conn) -
                 INSERT INTO news_agent_assignments(
                   event_id, activation_id, arm, bundle_sha, selector_version,
                   eligibility_reason, assigned_at_ms
-                ) VALUES (%s, %s, 'candidate', %s, 'news_canary_selector_v1',
+                ) VALUES (%s, %s, 'candidate', %s, %s,
                           'eligible_bucket', %s)
                 """,
-                (event_id, activation_id, candidate_bundle, first_bucket - 30 * 60_000 + index),
+                (
+                    event_id,
+                    activation_id,
+                    candidate_bundle,
+                    CANARY_SELECTOR_VERSION,
+                    first_bucket - 30 * 60_000 + index,
+                ),
             )
         first = repos.news.evaluate_canary_rolling_slo(activation_id=activation_id, now_ms=first_bucket)
     assert first == {
@@ -509,7 +567,6 @@ def test_rolling_canary_slo_survives_repository_restart_and_fails_closed(conn) -
             event_id=next_event,
             stable_bundle_sha=stable_bundle,
             admission="candidate",
-            priority="normal",
             ingest_mode="live",
             now_ms=first_bucket + hour + 1,
         )

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
 import pytest
 
-from tracefold.news.agents.program_judge import JUDGE_ID, CardEquivalence, CardEquivalenceJudge
+from tracefold.news.agents.program_judge import (
+    JUDGE_ID,
+    CardEquivalence,
+    CardEquivalenceAssessment,
+    CardEquivalenceJudge,
+)
 from tracefold.news.agents.program_metric import _component, bind_metric, metric_receipt
 
 _ACCEPTED = {
@@ -28,9 +35,18 @@ _UNRELATED = {"headline_zh": "美联储维持利率不变", "why_zh": "政策利
 class _ScriptedJudgeLM(dspy.BaseLM):  # type: ignore[misc]
     """Answers the equivalence signature without a provider."""
 
-    def __init__(self, verdict: CardEquivalence | None = None, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        verdict: CardEquivalence | None = None,
+        *,
+        facts_supported: bool = True,
+        fail: bool = False,
+    ) -> None:
         super().__init__(model="scripted/judge")
+        self.cache = False
+        self.num_retries = 0
         self._verdict = verdict or CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=True)
+        self._facts_supported = facts_supported
         self._fail = fail
         self.calls = 0
 
@@ -38,7 +54,35 @@ class _ScriptedJudgeLM(dspy.BaseLM):  # type: ignore[misc]
         self.calls += 1
         if self._fail:
             raise RuntimeError("provider unavailable")
+        return self._answer(prompt=prompt, messages=messages)
+
+    def _answer(self, *, prompt: Any = None, messages: Any = None) -> list[str]:
+        rendered = json.dumps(messages if messages is not None else prompt, ensure_ascii=False, default=str)
+        if "supported_by_evidence" in rendered:
+            return [json.dumps({"verdict": {"supported_by_evidence": self._facts_supported}})]
         return [json.dumps({"verdict": self._verdict.model_dump(mode="json")})]
+
+
+class _BlockingJudgeLM(_ScriptedJudgeLM):
+    """Holds admitted provider calls so concurrent judge callers overlap deterministically."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_call_entered = threading.Event()
+        self.second_call_entered = threading.Event()
+        self.release = threading.Event()
+        self._calls_lock = threading.Lock()
+
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+        with self._calls_lock:
+            self.calls += 1
+            if self.calls == 1:
+                self.first_call_entered.set()
+            elif self.calls == 2:
+                self.second_call_entered.set()
+        if not self.release.wait(timeout=2):
+            raise RuntimeError("test did not release provider call")
+        return self._answer(prompt=prompt, messages=messages)
 
 
 def _judge(**kwargs: Any) -> CardEquivalenceJudge:
@@ -64,6 +108,66 @@ def test_repeated_pairs_are_asked_once() -> None:
     assert judge.stats["cache_entries"] == 1
 
 
+@pytest.mark.parametrize("route", ["equivalence", "facts_supported"])
+def test_concurrent_same_key_misses_share_one_provider_call(route: str) -> None:
+    lm = _BlockingJudgeLM()
+    judge = CardEquivalenceJudge(lm, max_model_calls=1)
+    callers_ready = threading.Barrier(2)
+
+    def invoke() -> CardEquivalenceAssessment | bool:
+        callers_ready.wait(timeout=1)
+        if route == "equivalence":
+            return judge.equivalence(_ACCEPTED, _REWORDED)
+        return judge.facts_supported('{"leader_title":"issuer filed no update"}', _REWORDED)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke) for _ in range(2)]
+        assert lm.first_call_entered.wait(timeout=1)
+        duplicate_reached_provider = lm.second_call_entered.wait(timeout=0.2)
+        lm.release.set()
+        results = [future.result(timeout=1) for future in futures]
+
+    assert duplicate_reached_provider is False
+    assert lm.calls == 1
+    assert results[0] == results[1]
+    assert judge.stats == {
+        "attempts": 1,
+        "model_calls": 1,
+        "cache_entries": 1,
+        "failures": 0,
+        "actual_cost_microusd": 0,
+    }
+
+
+def test_concurrent_different_keys_cannot_overrun_model_call_budget() -> None:
+    lm = _BlockingJudgeLM()
+    judge = CardEquivalenceJudge(lm, max_model_calls=1)
+    callers_ready = threading.Barrier(2)
+    candidates = (_REWORDED, _UNRELATED)
+
+    def invoke(candidate: dict[str, str]) -> CardEquivalenceAssessment:
+        callers_ready.wait(timeout=1)
+        return judge.equivalence(_ACCEPTED, candidate)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke, candidate) for candidate in candidates]
+        assert lm.first_call_entered.wait(timeout=1)
+        over_budget_call_reached_provider = lm.second_call_entered.wait(timeout=0.2)
+        lm.release.set()
+        results = [future.result(timeout=1) for future in futures]
+
+    assert over_budget_call_reached_provider is False
+    assert lm.calls == 1
+    assert sorted(result.status for result in results) == ["answered", "unavailable"]
+    assert judge.stats == {
+        "attempts": 2,
+        "model_calls": 1,
+        "cache_entries": 1,
+        "failures": 1,
+        "actual_cost_microusd": 0,
+    }
+
+
 def test_a_reworded_card_keeps_the_reviewers_pass() -> None:
     """The whole point: 15% of the weight was unreachable because wording differs."""
 
@@ -75,6 +179,22 @@ def test_a_reworded_card_keeps_the_reviewers_pass() -> None:
     assert without is not None and with_judge is not None
     assert without[0] == 0.0, "byte equality gives a reworded card nothing"
     assert with_judge[0] == 1.0
+
+
+def test_factual_repair_is_verified_against_immutable_event_evidence() -> None:
+    supported_lm = _ScriptedJudgeLM(facts_supported=True)
+    contradicted_lm = _ScriptedJudgeLM(facts_supported=False)
+    evidence = (
+        '<tracefold-untrusted-event-json-v1>{"leader_title":"issuer filed no update"}'
+        "</tracefold-untrusted-event-json-v1>"
+    )
+    candidate = {**_REWORDED, "direction": "bullish", "magnitude": 2}
+
+    supported = CardEquivalenceJudge(supported_lm).facts_supported(evidence, candidate)
+    contradicted = CardEquivalenceJudge(contradicted_lm).facts_supported(evidence, candidate)
+
+    assert supported is True and contradicted is False
+    assert supported_lm.calls == contradicted_lm.calls == 1
 
 
 def test_an_unrelated_card_does_not_keep_the_pass() -> None:
@@ -98,15 +218,16 @@ def test_enum_dimensions_never_consult_the_judge() -> None:
     assert lm.calls == 0
 
 
-def test_the_judge_never_rescues_a_failed_dimension() -> None:
-    """It answers "is this still the same?" — and the reviewer already said the old value was wrong."""
+def test_failed_free_text_without_exact_gold_is_not_guessed_by_the_judge() -> None:
+    """Equivalence cannot invent the correct copy after the reviewer rejected the old value."""
 
     judge = _judge()
     dimensions = {"why_value": "fail"}
     unchanged = _component(dimensions, ("why_value",), dict(_ACCEPTED), _ACCEPTED, None, judge)
     changed = _component(dimensions, ("why_value",), _REWORDED, _ACCEPTED, None, judge)
-    assert unchanged is not None and changed is not None
-    assert unchanged[0] == 0.0 and changed[0] == 1.0
+    assert unchanged == (None, 0, 0, 1)
+    assert changed == (None, 0, 0, 1)
+    assert judge.stats["attempts"] == 0
 
 
 def test_timeliness_survives_a_rewrite_without_asking_anyone() -> None:
@@ -128,15 +249,60 @@ def test_a_judge_failure_degrades_to_the_stricter_pre_148_answer() -> None:
     assert judge.stats["cache_entries"] == 0, "a transient failure must not pin this pair for the whole run"
 
 
+def test_a_judge_failure_is_explicitly_unavailable_and_never_cached() -> None:
+    judge = _judge(fail=True)
+
+    first = judge.equivalence(_ACCEPTED, _REWORDED)
+    second = judge.equivalence(_ACCEPTED, _REWORDED)
+
+    assert isinstance(first, CardEquivalenceAssessment)
+    assert first.status == "unavailable"
+    assert first.verdict is None
+    assert second.status == "unavailable"
+    assert judge.stats == {
+        "attempts": 2,
+        "model_calls": 2,
+        "cache_entries": 0,
+        "failures": 2,
+        "actual_cost_microusd": 0,
+    }
+
+
+def test_judge_rejects_provider_cache_and_hidden_retry_configuration() -> None:
+    cached = _ScriptedJudgeLM()
+    cached.cache = True
+    with pytest.raises(ValueError, match="cache_must_be_disabled"):
+        CardEquivalenceJudge(cached)
+
+    retrying = _ScriptedJudgeLM()
+    retrying.num_retries = 1
+    with pytest.raises(ValueError, match="hidden_retries_must_be_zero"):
+        CardEquivalenceJudge(retrying)
+
+
 def test_metric_receipt_pins_the_judge_identity() -> None:
     """Two runs judged by different models are not comparable, so the ruler names itself."""
 
-    plain = metric_receipt(bind_metric(None), review_rubric_version="news_review_v3")
-    judged = metric_receipt(bind_metric(_judge()), review_rubric_version="news_review_v3")
+    plain = metric_receipt(bind_metric(None), review_rubric_version="news_review_v4")
+    judged = metric_receipt(bind_metric(_judge()), review_rubric_version="news_review_v4")
     assert plain["semantic_judge"] is None
     assert judged["semantic_judge"]["judge_id"] == JUDGE_ID
     assert judged["semantic_judge"]["model"] == "scripted/judge"
     assert judged["semantic_judge"]["instruction_sha256"]
+    assert judged["semantic_judge"]["factual_evidence_instruction_sha256"]
+    assert judged["semantic_judge"]["factual_evidence_signature_sha256"]
+    assert judged["semantic_judge"]["factual_evidence_output_schema_sha256"]
+    assert judged["semantic_judge"]["implementation_source_sha256"]
+    assert judged["semantic_judge"]["adapter"] == {
+        "implementation": "tracefold.news.agents.semantic_program.DspyStrictJSONAdapter",
+        "native_function_calling": False,
+        "format_fallback": False,
+    }
+    assert judged["semantic_judge"]["execution"]["max_output_tokens"] == 4_096
+    assert judged["semantic_judge"]["execution"]["cache"] is False
+    assert judged["semantic_judge"]["execution"]["num_retries"] == 0
+    assert judged["semantic_judge"]["success_cache"] is True
+    assert judged["semantic_judge"]["failure_cache"] is False
     # Same implementation either way: binding a judge must not fork the scoring code.
     assert plain["implementation"] == judged["implementation"]
 
@@ -145,7 +311,7 @@ def test_bound_metric_still_matches_gepas_two_argument_call() -> None:
     """`dspy.Evaluate` calls `metric(example, prediction)`; GEPA's feedback path passes five."""
 
     metric = bind_metric(_judge())
-    example = dspy.Example(accepted_review={}, production_verdict={}, policy_metric={})
+    example = dspy.Example(accepted_review={}, production_judgment=None, policy_metric={})
     outcome = metric(example, dspy.Prediction(verdict={}))
     assert outcome.score == 0.0
     with pytest.raises(TypeError):

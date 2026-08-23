@@ -78,14 +78,11 @@ def _run(grant_path: Path, secret_path: Path, socket_path: Path, output_path: Pa
     grant = CompilerModelProxyGrant.model_validate(_strict_json_loads(grant_path.read_text(encoding="utf-8")))
     secrets = CompilerProxySecretConfig.model_validate(_strict_json_loads(secret_path.read_text(encoding="utf-8")))
     if (
-        secrets.task.identity != grant.task_endpoint
-        or secrets.reflection.identity != grant.reflection_endpoint
+        secrets.task.binding("task") != grant.task
+        or secrets.reflection.binding("reflection") != grant.reflection
+        or secrets.metric_judge.binding("metric_judge") != grant.metric_judge
         or secrets.tariff != grant.tariff
         or secrets.tariff_sha256 != grant.tariff_sha256
-        or secrets.task.max_tokens != grant.task_max_output_tokens
-        or secrets.reflection.max_tokens != grant.reflection_max_output_tokens
-        or secrets.task.timeout != grant.task_timeout_seconds
-        or secrets.reflection.timeout != grant.reflection_timeout_seconds
         or secrets.secret_free_config_sha256 != grant.proxy_config_sha256
         or proxy_source_sha256() != grant.proxy_source_sha256
     ):
@@ -94,6 +91,7 @@ def _run(grant_path: Path, secret_path: Path, socket_path: Path, output_path: Pa
         grant=grant,
         task_lm=build_proxy_provider_lm(secrets.task),
         reflection_lm=build_proxy_provider_lm(secrets.reflection),
+        metric_judge_lm=build_proxy_provider_lm(secrets.metric_judge),
     )
     stop = threading.Event()
 

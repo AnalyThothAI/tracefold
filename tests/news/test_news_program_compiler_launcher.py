@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tracefold.app.cli.parser import build_parser
 from tracefold.news.agents import program_compiler_launcher as launcher_module
 from tracefold.news.agents.program_compiler_launcher import (
     PROXY_MODULE,
@@ -20,9 +23,10 @@ from tracefold.news.agents.program_compiler_proxy import (
     CompilerProviderEndpointSecret,
     CompilerProxySecretConfig,
 )
+from tracefold.news.agents.program_compiler_runner import _build_compiler_proxy_runtime
 from tracefold.news.agents.program_compiler_sandbox import CompilerSandboxPolicy
 from tracefold.news.agents.program_compiler_security import (
-    CompileBudgetV2,
+    CompileBudgetV3,
     CompilerProxyTariff,
     seal_compile_input,
 )
@@ -30,16 +34,31 @@ from tracefold.news.artifact_identity import canonical_json, canonical_sha
 
 
 def _secret_config() -> CompilerProxySecretConfig:
-    endpoint = CompilerProviderEndpointSecret(
-        model="provider/task",
-        api_base="https://task.example/v1",
-        api_key="private-key",
-        timeout=20,
-        max_tokens=512,
-    )
     return CompilerProxySecretConfig(
-        task=endpoint,
-        reflection=endpoint,
+        task=CompilerProviderEndpointSecret(
+            model="provider/task",
+            api_base="https://task.example/v1",
+            api_key="private-key",
+            timeout=20,
+            max_tokens=512,
+            temperature=0,
+        ),
+        reflection=CompilerProviderEndpointSecret(
+            model="provider/reflection",
+            api_base="https://reflection.example/v1",
+            api_key="private-key",
+            timeout=300,
+            max_tokens=32_000,
+            temperature=1,
+        ),
+        metric_judge=CompilerProviderEndpointSecret(
+            model="provider/judge",
+            api_base="https://judge.example/v1",
+            api_key="private-key",
+            timeout=120,
+            max_tokens=4_096,
+            temperature=0,
+        ),
         tariff=_tariff(),
     )
 
@@ -51,36 +70,44 @@ def _tariff() -> CompilerProxyTariff:
         task_input_microusd_per_million=1,
         task_output_microusd_per_million=20_000,
         reflection_input_microusd_per_million=1,
-        reflection_output_microusd_per_million=20_000,
+        reflection_output_microusd_per_million=300,
+        metric_judge_input_microusd_per_million=2,
+        metric_judge_output_microusd_per_million=3_200,
     )
 
 
-def _input() -> tuple[str, str, CompilerProxySecretConfig]:
+def _input(
+    *,
+    max_task_model_calls: int = 8,
+    max_reflection_model_calls: int = 4,
+    max_metric_judge_model_calls: int = 6,
+) -> tuple[str, str, CompilerProxySecretConfig]:
     secrets = _secret_config()
     payload = {
         "role": "development",
-        "learning_epoch": "program_v5",
+        "learning_epoch": "program_v6",
         "learning_epoch_started_at_ms": 1_800_000_000_000,
         "agent_cohort": {
             "bundle_sha": "a" * 64,
-            "learning_epoch": "program_v5",
-            "program_version": "news_semantic_program_v3",
+            "learning_epoch": "program_v6",
+            "program_version": "news_semantic_program_v4",
             "program_sha256": "6" * 64,
             "runtime_model_bindings_sha256": "8" * 64,
         },
         "cases": [{"case_id": "case-1", "cluster_id": "cluster-1"}],
     }
-    task = secrets.task.identity
+    task = secrets.task.binding("task")
+    reflection = secrets.reflection.binding("reflection")
+    metric_judge = secrets.metric_judge.binding("metric_judge")
     grant = CompilerModelProxyGrant.issue(
-        task_endpoint=task,
-        reflection_endpoint=task,
-        max_model_calls=8,
+        task=task,
+        reflection=reflection,
+        metric_judge=metric_judge,
+        max_task_model_calls=max_task_model_calls,
+        max_reflection_model_calls=max_reflection_model_calls,
+        max_metric_judge_model_calls=max_metric_judge_model_calls,
         max_cost_microusd=100,
         tariff=secrets.tariff,
-        task_max_output_tokens=512,
-        reflection_max_output_tokens=512,
-        task_timeout_seconds=20,
-        reflection_timeout_seconds=20,
         proxy_config_sha256=secrets.secret_free_config_sha256,
         proxy_source_sha256="4" * 64,
     )
@@ -88,30 +115,29 @@ def _input() -> tuple[str, str, CompilerProxySecretConfig]:
         dataset_sha=canonical_sha({"kind": "dataset", "payload": payload}),
         dataset_payload=payload,
         episodes=({"case_id": "case-1", "cluster_id": "cluster-1"},),
-        review_rubric_version="news_review_v2",
+        review_rubric_version="news_review_v4",
         parent_program_sha256="6" * 64,
         parent_state_sha256="7" * 64,
         stable_bundle_sha256="a" * 64,
         target_runtime_manifest_sha256="8" * 64,
         eligible_demo_bank_root_sha256="9" * 64,
-        task_endpoint=task,
-        reflection_endpoint=task,
+        task=task,
+        reflection=reflection,
+        metric_judge=metric_judge,
         proxy_grant_sha256=grant.grant_sha256,
         proxy_config_sha256=secrets.secret_free_config_sha256,
         tariff_sha256=secrets.tariff_sha256,
         proxy_tariff=secrets.tariff,
-        task_max_output_tokens=512,
-        reflection_max_output_tokens=512,
-        task_timeout_seconds=20,
-        reflection_timeout_seconds=20,
         compiler_source_sha256="1" * 64,
         proxy_source_sha256="4" * 64,
         compiler_lock_sha256="2" * 64,
         sandbox_policy_sha256=CompilerSandboxPolicy.issue(wall_timeout_seconds=60).policy_sha256,
         compiler_image_digest="sha256:" + "3" * 64,
-        budget=CompileBudgetV2(
+        budget=CompileBudgetV3(
             max_metric_calls=3,
-            max_task_model_calls=8,
+            max_task_model_calls=max_task_model_calls,
+            max_reflection_model_calls=max_reflection_model_calls,
+            max_metric_judge_model_calls=max_metric_judge_model_calls,
             max_cost_microusd=100,
             max_call_cost_microusd=grant.max_call_cost_microusd,
             seed=17,
@@ -166,17 +192,19 @@ def test_commands_use_named_socket_volume_and_keep_proxy_and_runner_mounts_disjo
 
 
 def test_launch_rejects_mismatched_secret_binding_before_docker(tmp_path: Path) -> None:
-    document, bundle_sha, _ = _input()
+    document, bundle_sha, original = _input()
     other = CompilerProviderEndpointSecret(
         model="provider/task",
         api_base="https://other.example/v1",
         api_key="private-key",
         timeout=20,
         max_tokens=512,
+        temperature=0,
     )
     secrets = CompilerProxySecretConfig(
         task=other,
-        reflection=other,
+        reflection=original.reflection,
+        metric_judge=original.metric_judge,
         tariff=_tariff(),
     )
     with pytest.raises(ValueError, match="proxy_binding_mismatch"):
@@ -185,6 +213,57 @@ def test_launch_rejects_mismatched_secret_binding_before_docker(tmp_path: Path) 
             input_bundle_sha256=bundle_sha,
             proxy_secret_config=secrets,
         )
+
+
+def test_cli_bundle_launcher_and_runner_keep_all_three_role_bindings_end_to_end(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "news",
+            "learning",
+            "compile",
+            "--development",
+            "d" * 64,
+            "--artifact-root",
+            str(tmp_path / "artifacts"),
+            "--out",
+            str(tmp_path / "compile.json"),
+            "--compiler-image",
+            "sha256:" + "3" * 64,
+            "--max-metric-calls",
+            "3",
+            "--max-task-model-calls",
+            "7",
+            "--max-reflection-model-calls",
+            "5",
+            "--max-metric-judge-model-calls",
+            "11",
+            "--max-cost-microusd",
+            "100",
+        ]
+    )
+    document, bundle_sha, _ = _input(
+        max_task_model_calls=args.max_task_model_calls,
+        max_reflection_model_calls=args.max_reflection_model_calls,
+        max_metric_judge_model_calls=args.max_metric_judge_model_calls,
+    )
+    canonical_input, bundle = launcher_module._validated_input_document(document, expected_sha256=bundle_sha)
+    assert canonical_input == document
+
+    with tempfile.TemporaryDirectory(prefix="tf-runner-", dir="/tmp") as root:
+        proxy_path = Path(root) / "p.sock"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(proxy_path))
+            grant, task_lm, reflection_lm, judge = _build_compiler_proxy_runtime(bundle, proxy_path)
+
+    assert (
+        grant.max_task_model_calls,
+        grant.max_reflection_model_calls,
+        grant.max_metric_judge_model_calls,
+    ) == (7, 5, 11)
+    assert task_lm.tracefold_compiler_role_binding == bundle.task
+    assert reflection_lm.tracefold_compiler_role_binding == bundle.reflection
+    assert judge.identity["execution"]["role_binding"] == bundle.metric_judge.model_dump(mode="json")
+    assert judge.identity["execution"]["max_model_calls"] == 11
 
 
 def test_launcher_accepts_only_content_addressed_image_references(tmp_path: Path) -> None:

@@ -111,10 +111,10 @@ Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. Historical migration-path tests are narrow and explicit: they cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
-`0292` to `0293`, `0293` to `0294`, and `0294` to `0295` append-only Program
+`0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260822_0297`; schema tests also run against that migrated head. The e2e lane
+`20260823_0301`; schema tests also run against that migrated head. The e2e lane
 (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
@@ -162,6 +162,7 @@ uv run tracefold news learning compile --development DATASET_SHA \
   --artifact-root /tmp/programs --out /tmp/program-proposal.json \
   --compiler-image sha256:FULL_LOCAL_DOCKER_IMAGE_ID \
   --max-metric-calls 100 --max-task-model-calls 150 \
+  --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
   --max-cost-microusd 500000 --seed 112
 uv run tracefold news learning propose --development DATASET_SHA \
   --file /tmp/program-proposal.json --out /tmp/candidate.json
@@ -188,11 +189,22 @@ semantic fast-retry state bug was found in production proof. `0294` preserves
 both prior rows and appends `program_v3` after the expert quality baseline and
 semantic normalization change Program identity. `0295` preserves v1-v3 and
 appends `program_v5` for the candidate-conditioned ToldContext factory and its
-ownership hard cut. Every earlier review, dataset, recording and release receipt
+ownership hard cut. `0301` preserves history and starts `program_v6` for
+factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
+protocol/receipt v3. Every earlier review, dataset, recording and release receipt
 remains immutable audit history but is not compiler, DemoBank, validation,
 holdout or promotion evidence. New datasets require post-epoch reviews and
 acceptance receipts bound to the exact stable Program bundle, so quality
 evidence begins at zero.
+
+Review v4 uses exact gold for `trade_impact_breadth`, `trade_tradability`,
+`trade_surprise`, `trade_development_delta`, `trade_channels`,
+`trade_affected_markets` and `reader_value`. Work the fixed targeted strata
+`local_macro_false_interrupt`, `systemic_macro_must_interrupt`,
+`regional_direct_exception`, `scheduled_or_in_line_macro`,
+`color_only_progression` and `macro_random_control`. Model drafts remain files;
+only an explicit append-only review submission and acceptance receipt becomes
+truth.
 
 `learning compile` is a cold, operator-invoked DSPy GEPA workflow, not a Worker
 and not a release gate. The trusted side seals the exact current development
@@ -232,6 +244,17 @@ single-slot GPU that serves production Triage. A code-owned
 reflection model as read-only context; before it, `<curr_param>` was one space
 and the model was rewriting 8.5 KB of rules it could not see.
 
+Compiler protocol/receipt v3 has three typed roles, not copied adjacent
+scalars: task, reflection and `metric_judge`. Secret-free identity, grant,
+bundle and proxy enforcement derive from each role object. The judge is
+explicitly constructed for headline/why/factual semantic equivalence and binds
+model/endpoint, instruction/schema, JSONAdapter, max tokens, timeout,
+temperature, LM kwargs, cache and retry. Its calls, cost and unavailable
+failures are separate receipt facts; unavailable enters the affected free-text
+dimension as failure-as-zero, never byte equality, hidden retry or cache.
+Use #148's measured same-output ruler delta `+0.060662`; the earlier roughly
+`+0.13` simulation is not release evidence.
+
 `learning baseline` answers one question per mode, and #150 exists because the
 first version answered two under one name. `compile_live` is the optimizer's
 object; `runtime_live` is the reader's. The same broken ReaderCard answer is
@@ -258,12 +281,10 @@ and a missing or tampered policy raises rather than scoring — a corpus that
 cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
-The recorded calibration lives in
-`tests/fixtures/news_baseline_calibration_v1.json.gz`, not in the operator's
-database. #143 published `0.896373 / n=162`; a day later the same command
-answered a different number over 243 reviews because #148 had added 81 of them.
-Nothing was wrong, but a check that moves with the data cannot prove the
-*wiring* is unchanged. The expected values now live only in
+The metric-v4 recorded calibration lives in
+`tests/fixtures/news_baseline_calibration_v2.json`, not in the operator's
+database; the v1 fixture remains frozen metric-v3 history. A check that moves
+with live data cannot prove the *wiring* is unchanged. The current expected values live only in
 `tests/news/test_news_baseline_calibration.py` — one place to read, one place to
 update when the fixture is regenerated.
 Every string in the fixture outside an explicit structural allowlist is redacted
@@ -287,28 +308,29 @@ without a trusted worst-case rate. Note also that `_BudgetMeter` reserves
 `max_call_cost_microusd` for every call, so the reachable call count is
 `max_cost / max_call_cost`: the two limits look independent and are not.
 
-The metric scores the **reader-facing action**, not the model's intermediate
-`decision` field. Each sealed episode carries a frozen policy projection — Gate
-facts plus the ordered sent ledger — so the metric assembles the predicted
-verdict, computes the final storyline key, and runs the exact production
-`decide()`, which since #137 has no operational input at all — every path it
-takes is editorial, which is exactly the property the metric needs, because a
-card silenced by an operator would not be evidence that its editorial judgment
-was wrong. The sealed projection carries no control state either. `decision` is
-only an intent: a grounded restatement drop, a similarity throttle, a contested
-high-priority rescue or a watchlist rescue all override it, so an offline gain
-measured on `decision` could not predict what the reader would see.
+The metric scores the **reader-facing action**, not the assembler's compatibility
+`decision` field. Each sealed episode carries one `ScoredJudgment` and a frozen
+policy projection — objective Gate facts plus the ordered sent ledger — so the
+shared pure/version-bound `production_decision()` returns the complete
+`DecisionResult` used by failure-cluster selection, baseline, compiler and
+CandidateEvaluator. The projection contains no queue priority, provider score,
+macro lexicon or control state. Grounded restatement, stale-source, similarity,
+listing/telemetry and watchlist guards can all differ from model intent, so an
+offline gain measured on the compatibility field could not predict what the
+reader would see.
 
-Hard gates come first and are not averaged with anything: a `must_push` miss, a
-`must_hold` send, a schema failure, an unchanged card the reviewer called
-factually wrong, or an ungrounded primary asset each score the example zero. The
-predecessor averaged every check flat, so four retention anchors agreeing could
-outweigh a dangerous miss. What survives the gates is weighted 50% final action,
-35% accepted `EventSemantics` dimensions, 15% accepted `ReaderCard` fidelity;
-a missing or `uncertain` label leaves that component's denominator rather than
-counting as a pass. Feedback is routed per Predictor, so neither is asked to
-repair a failure it cannot cause. The metric receipt binds the weights, the
-policy identity and values, and the review rubric version.
+Hard gates come first and are not averaged with anything: `must_push` miss,
+`must_hold` send, background sent realtime (objective guards separated), schema
+invalidity, ungrounded primary, factual contradiction, relevance inconsistency,
+or known duplicate leak scores the example zero. What survives is metric v4:
+45% final production action, 35% exact TradeRelevance dimensions, 10%
+semantics/novelty and 10% ReaderCard. Every failed scored dimension needs exact
+expected gold; without it the field is not scored. Reports publish per-component
+denominators, effective weight mass, gold coverage and field n. `pred_name`
+never changes the score; it only routes owned feedback. Listing/telemetry are
+excluded from relevance scoring, and watchlist-guard action feedback cannot ask
+a Predictor to repair code-owned policy. The receipt binds weights, complete
+helper source root, policy, schema, corpus and full judge execution identity.
 
 Accepted development is split into disjoint halves by connected fact cluster:
 clusters ordered by their own latest Event time then by stable cluster id, the
@@ -336,13 +358,15 @@ promote.
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,
 then stable deployment. `learning canary trip` is the fail-closed rollback
-control. The migration and tests establish this mechanism; they do not prove a
+control. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes recovery,
+listing and telemetry lanes, and validates selector/profile/runtime-manifest
+identity at startup, resume and assignment. The migration and tests establish this mechanism; they do not prove a
 candidate is better. Production proof begins only after the minimum reviewed
 boundary/retention/negative clusters and future observation windows exist.
-The initial hard cut therefore makes no quality-uplift claim. Its immediate
-tradeoff is one normal provider call becoming two serial Predictor calls; its
-future leverage is separable semantic/copy feedback, demonstrations, routing
-and fine-tuning, all behind the unchanged `SemanticJudge.judge()` Interface.
+The v6/v10 hard cut therefore makes no cross-generation quality-uplift claim;
+its evidence starts from zero. It retains two normal serial Predictor calls and
+creates separable semantic/copy feedback behind the unchanged
+`SemanticJudge.judge()` Interface.
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
 against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
 `amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every

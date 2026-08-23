@@ -139,18 +139,18 @@ the route components into the eager shell chunk.
   `未到期`; nothing missing is ever drawn as `0.00%`.
 
   Feed query state is URL-owned and mirrors the server contract exactly:
-  `q`, `family`, `admission`, `priority` (`high|normal`), `decision`
-  (`push|escalate|drop|throttled|degraded`), `symbol`, `sort`
-  (`latest|priority`), `outcome` (`pushed|held|pending`, the task tabs
-  `全部 / 已推送 / 被拦截 / 处理中`), and `hours` (`1|6|24|72|all`; absent
+  `q`, `family`, `admission`, `decision`
+  (`push|escalate|drop|throttled|degraded`), `symbol`, `outcome`
+  (`pushed|held|pending`, the task tabs `全部 / 已推送 / 被拦截 / 处理中`),
+  and `hours` (`1|6|24|72|all`; absent
   means the default 24 h window, `all` means no bound). Unknown
-  `priority`/`decision`/`outcome`/`hours` values are dropped rather than
-  forwarded. The default request is `sort=latest`, `limit=25`, `hours=24`, no
+  `decision`/`outcome`/`hours` values are dropped rather than
+  forwarded. The default request is `limit=25`, `hours=24`, no
   outcome tab, and no advanced filter. Topbar search writes `q` on `/news`;
   the browser never resolves tokens or symbols itself. The backend searches
   and filters before cursor pagination. Advanced filters (family, admission,
-  priority, decision, symbol) live in one compact disclosure and appear as
-  removable chips; the time window and sort are always-visible selects.
+  decision, symbol) live in one compact disclosure and appear as
+  removable chips; the time window is an always-visible select.
   Pagination is an explicit `加载更多事件` action, loaded pages deduplicate by
   `event_id`, and there is no automatic infinite scroll. A refreshed first
   page inserts new Events at the top when the reader is already there; when
@@ -211,15 +211,15 @@ the route components into the eager shell chunk.
   利多, green for 利空, and both at 45% on a held row. The pipeline's own state
   lives in the right column as a word, because a coloured pill on every row
   draws a vertical band the reader stops seeing. A row renders exactly one
-  `NewsOutcomeBadge`, and it is a filled capsule only when `priority` is `high`
-  — one loud thing per screenful. A held row keeps its word in quiet grey with
+  `NewsOutcomeBadge` as plain text; queue scheduling metadata never changes
+  reader loudness. A held row keeps its word in quiet grey with
   the server's `reason_zh` under it; on a phone the card drops the held badge
   entirely, since roughly three quarters of a day's Events are held and a grey
   capsule on each of those cards is the screenful of equals this rule exists to
   prevent. `reason_zh` is shown on every row that has one; sent rows also show
   the delivered time. Rows never render admission, family, asset class,
   decision, rule, throttle, or score keys; `data-outcome`,
-  `data-outcome-group`, `data-direction` and `data-priority` are styling hooks
+  `data-outcome-group` and `data-direction` are styling hooks
   only. Missing values are omitted, never rendered as placeholder copy. The
   whole row opens the Event through a stretched headline link — one accessible
   name, no click handler on the article itself. At 1366×720 the target is at
@@ -232,11 +232,10 @@ the route components into the eager shell chunk.
   list: server copy only, never a rule key, which stays behind 技术详情 on the
   Event's own page.
 
-  When `sort=latest`, consecutive rows are grouped under a sticky hour heading
+  Consecutive rows are grouped under a sticky hour heading
   (`01:00 — 02:00`, `N 条 · 推送 M`) so two screens of scrolling still say when
-  the reader is. Grouping is presentational and is off for `sort=priority`,
-  which interleaves hours by design — a heading over a non-chronological run
-  would claim an order the server did not produce.
+  the reader is. Grouping is presentational; the backend owns the
+  chronological order.
 
   Keyboard: the route binds nothing. There is no reading cursor, no `Space`
   expand, no digit tab keys and no `<kbd>` hint row — every action is a real
@@ -443,7 +442,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    pager is absent rather than broken.
 10. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
     requests latest 25-row pages for the last 24 h with no outcome tab and no
-    advanced filter; `q`, family, admission, priority, decision, symbol, sort,
+    advanced filter; `q`, family, admission, decision, symbol,
     `outcome`, and `hours` survive reload and alter server results; the header
     shows the health pill and the 24 h funnel card; the four task tabs show
     counts that match the rows each tab lists and follow a changed window or

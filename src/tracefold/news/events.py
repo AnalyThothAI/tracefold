@@ -377,7 +377,7 @@ def admit_item(
         opened_at_ms=published_at_ms,
         expires_at_ms=published_at_ms + window_ms,
         admission=gate.admission,
-        priority=gate.priority,
+        queue_priority=gate.queue_priority,
         provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
         engine_type=_engine_type(metadata),
         asset_class=gate.asset_class,
@@ -422,7 +422,7 @@ def _member_result(
 
     row = repos.conn.execute(
         """
-        SELECT e.admission, e.storyline_key, e.priority, e.published_at_ms,
+        SELECT e.admission, e.storyline_key, e.published_at_ms,
                i.reporting_origin AS leader_origin, i.provider_metadata AS leader_provider_metadata
           FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
          WHERE e.event_id = %s
@@ -449,7 +449,7 @@ def _member_result(
         repos.news.upgrade_event_admission(
             event_id=event_id,
             admission="candidate",
-            priority=gate.priority,
+            queue_priority=gate.queue_priority,
             asset_class=gate.asset_class,
             grounded_assets=gate.grounded_assets,
             watchlist_hits=gate.watchlist_hits,
@@ -474,9 +474,12 @@ def _member_result(
 
 
 def _strong_tag(gate: GateVerdict) -> bool:
-    """A member whose Gate facts are strong on their own: high priority with a grounded asset, or a watchlist hit."""
+    """A later member that adds objective grounding to a previously suppressed Event.
 
-    return (bool(gate.grounded_assets) and gate.priority == "high") or bool(gate.watchlist_hits)
+    Queue priority is deliberately absent: it schedules broker work and has no editorial authority.
+    """
+
+    return bool(gate.grounded_assets) or bool(gate.watchlist_hits)
 
 
 def _member_score(repos: Any, item_id: str) -> float:

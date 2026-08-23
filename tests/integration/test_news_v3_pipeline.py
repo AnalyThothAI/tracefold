@@ -10,6 +10,7 @@ from psycopg.errors import RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
+from tests.support.news_judgment import scored_judgment
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news.events import admit_frame, admit_item
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
@@ -138,8 +139,8 @@ def test_deduper_is_idempotent_and_merges_exact_and_near(conn) -> None:
 def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     repos = repositories_for_connection(conn)
     row = conn.execute(
-        "SELECT event_id, storyline_key, grounded_assets, provider_score_max, priority, admission, opened_at_ms"
-        " FROM news_events WHERE admission='candidate' AND priority='normal' ORDER BY opened_at_ms LIMIT 1"
+        "SELECT event_id, storyline_key, grounded_assets, admission, opened_at_ms"
+        " FROM news_events WHERE admission='candidate' AND queue_priority='normal' ORDER BY opened_at_ms LIMIT 1"
     ).fetchone()
     assert row is not None
     now_ms = int(row["opened_at_ms"]) + 60_000
@@ -156,15 +157,14 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         headline_zh="测试",
         why_zh="",
     )
+    judgment = scored_judgment(verdict)
     facts = GateFacts(
         grounded_assets=tuple(row["grounded_assets"] or []),
         watchlist_symbols=frozenset(),
-        provider_score=row["provider_score_max"],
-        priority=row["priority"],
         admission=row["admission"],
     )
     status0 = storyline_status(row["storyline_key"])
-    first = decide(verdict, facts, status0)
+    first = decide(judgment, facts, status0)
     assert first.final == "push"
     evidence = repos.news.latest_evidence_snapshot(row["event_id"])
     assert evidence is not None
@@ -179,6 +179,9 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             override_rule=first.override_rule,
             throttled_by=None,
             verdict=verdict.model_dump(),
+            editorial=judgment.editorial.model_dump(mode="json"),
+            scored_judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha="b" * 64,
             model="test",
             program_version="news_semantic_program_test",
             program_sha256="a" * 64,
@@ -201,6 +204,9 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             override_rule=first.override_rule,
             throttled_by=None,
             verdict=verdict.model_dump(),
+            editorial=judgment.editorial.model_dump(mode="json"),
+            scored_judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha="b" * 64,
             model="test",
             program_version="news_semantic_program_test",
             program_sha256="a" * 64,
@@ -214,16 +220,17 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         )
         assert again is False
     status1 = storyline_status(row["storyline_key"])
-    second = decide(verdict, facts, status1, policy=DecidePolicy(similarity_max=0.0))
+    second = decide(judgment, facts, status1, policy=DecidePolicy(similarity_max=0.0))
     assert second.final == "push" and second.throttled_by is None
     seen = storyline_status(
         row["storyline_key"],
         seen=[{"event_id": row["event_id"], "headline_zh": verdict.headline_zh}],
     )
-    repeated = decide(verdict, facts, seen)
+    repeated = decide(judgment, facts, seen)
     assert repeated.final == "throttled" and repeated.throttled_by.endswith(":seen")
-    distinct = decide(verdict.model_copy(update={"headline_zh": "另一件完全不同的事情"}), facts, seen)
-    assert distinct.final == "push" and distinct.override_rule == "model_push_actionable"
+    distinct_judgment = scored_judgment(verdict.model_copy(update={"headline_zh": "另一件完全不同的事情"}))
+    distinct = decide(distinct_judgment, facts, seen)
+    assert distinct.final == "push" and distinct.override_rule == "trade_relevance_realtime"
     # A decision is only a reservation.  With no settled first delivery there
     # is no ReaderReceipt and therefore no semantic told memory.
     assert repos.news.told_ledger(now_ms=now_ms + 1000, window_ms=4 * 3600_000, limit=12) == []
@@ -268,7 +275,8 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         row["storyline_key"],
         told=[{"i": 0, "dir": t["direction"], "headline_zh": t["headline_zh"]} for t in told],
     )
-    restated = decide(verdict.model_copy(update={"novelty": "restatement", "restates": 0}), facts, told_status)
+    restated_judgment = scored_judgment(verdict.model_copy(update={"novelty": "restatement", "restates": 0}))
+    restated = decide(restated_judgment, facts, told_status)
     assert restated.final == "drop" and restated.override_rule == "restatement"
     held_sql = (
         "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = %s AND pid = pg_backend_pid()"
@@ -298,11 +306,9 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     feed = repos.news.list_feed(
         family=None,
         admission=None,
-        priority=None,
         decision=None,
         symbol=None,
         q=None,
-        sort="latest",
         limit=100,
         cursor=None,
     )
@@ -317,11 +323,9 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
         base = dict(
             family=None,
             admission=None,
-            priority=None,
             decision=None,
             symbol=None,
             q=None,
-            sort="latest",
             limit=10_000,
             cursor=None,
         )
@@ -391,6 +395,7 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         headline_zh="模型占位文字",
         why_zh="",
     )
+    degraded_judgment = scored_judgment(verdict, editorial_origin="degraded_unavailable")
     degraded_card = {"header": {"title": {"tag": "plain_text", "content": "实际降级卡片"}}}
     with repos.transaction():
         assert repos.news.insert_verdict(
@@ -403,6 +408,9 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
             override_rule="rule_baseline",
             throttled_by=None,
             verdict=verdict.model_dump(),
+            editorial=degraded_judgment.editorial.model_dump(mode="json"),
+            scored_judgment_sha256=degraded_judgment.scored_judgment_sha256,
+            runtime_manifest_sha="b" * 64,
             model=None,
             program_version="news_semantic_program_test",
             program_sha256="a" * 64,

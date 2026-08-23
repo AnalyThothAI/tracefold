@@ -1,6 +1,6 @@
 """Untrusted, bounded GEPA logic executed only by the compiler container.
 
-The trusted host seals the ``program_v5`` corpus and launches the runner.  This
+The trusted host seals the ``program_v6`` corpus and launches the runner.  This
 module has no database, artifact-writer, proposal or promotion authority.  It
 can return only ``ProgramPatchV2`` (two LearnedStrategies plus eligible demo
 references) and content-addressable optimizer receipt payloads.
@@ -17,7 +17,12 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, model_validator
 
 from ..artifact_identity import canonical_sha
-from .program_compiler_security import CompileBudgetV2, CompilerEndpointIdentity, CompilerProxyTariff
+from .program_compiler_security import (
+    CompileBudgetV3,
+    CompilerEndpointIdentity,
+    CompilerProxyTariff,
+    gepa_metric_call_ceiling,
+)
 from .program_compiler_trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 from .program_metric import (
     METRIC_ID,
@@ -30,6 +35,7 @@ from .program_metric import (
     _retrieval_receipt,
     accepted_review_metric,
     bind_metric,
+    production_decision,
 )
 from .program_proposer import RulePackAwareProposer
 from .semantic_program import (
@@ -47,10 +53,10 @@ from .semantic_program import (
     load_stable_program_artifact,
 )
 
-LEARNING_EPOCH = "program_v5"
-COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v2"
+LEARNING_EPOCH = "program_v6"
+COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v3"
 _PROPOSAL_GUARDRAILS = (
-    "fixed_factory_v2",
+    "fixed_factory_v4",
     "development_only",
     "holdout_unseen",
     "no_dynamic_code",
@@ -58,13 +64,13 @@ _PROPOSAL_GUARDRAILS = (
 )
 
 
-class CompileBudget(CompileBudgetV2):
+class CompileBudget(CompileBudgetV3):
     """Three independent operator-owned limits for one cold compile."""
 
 
 class CompileRequest(_ExactModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v5"] = "program_v5"
+    learning_epoch: Literal["program_v6"] = "program_v6"
     # Declared by the trusted host in the sealed corpus receipt. The compiler records it; it never looks it up,
     # so the untrusted side does not import the review plane to obtain one string.
     review_rubric_version: str = Field(min_length=1, max_length=64)
@@ -108,6 +114,12 @@ class ProgramCompileResult(_ExactModel):
     metric_calls: int = Field(ge=0)
     task_model_calls: int = Field(ge=0)
     reflection_model_calls: int = Field(ge=0)
+    metric_judge_attempts: int = Field(ge=0)
+    metric_judge_model_calls: int = Field(ge=0)
+    metric_judge_failures: int = Field(ge=0)
+    task_cost_microusd: int = Field(ge=0)
+    reflection_cost_microusd: int = Field(ge=0)
+    metric_judge_cost_microusd: int = Field(ge=0)
     actual_cost_microusd: int = Field(ge=0)
 
     @model_validator(mode="after")
@@ -124,6 +136,13 @@ class ProgramCompileResult(_ExactModel):
         for name, actual in hashes.items():
             if actual != canonical_sha(payloads[name]):
                 raise ValueError(f"news_program_compile_{name}_receipt_hash_mismatch")
+        if (
+            self.metric_judge_model_calls > self.metric_judge_attempts
+            or self.metric_judge_failures > self.metric_judge_attempts
+            or self.actual_cost_microusd
+            != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
+        ):
+            raise ValueError("news_program_compile_result_accounting_mismatch")
         return self
 
 
@@ -156,6 +175,8 @@ class _BudgetMeter:
         self.tariff = tariff
         self.task_model_calls = 0
         self.reflection_model_calls = 0
+        self.task_cost_microusd = 0
+        self.reflection_cost_microusd = 0
         self.actual_cost_microusd = 0
         self.imputed_cost_calls = 0
 
@@ -164,9 +185,11 @@ class _BudgetMeter:
         return self.task_model_calls + self.reflection_model_calls
 
     def before(self, role: Literal["task", "reflection"]) -> None:
-        if self.total_model_calls >= self.budget.max_task_model_calls:
-            raise CompileBudgetExceeded("news_program_compile_task_model_call_budget_exhausted")
-        if (self.total_model_calls + 1) * self.budget.max_call_cost_microusd > self.budget.max_cost_microusd:
+        used = self.task_model_calls if role == "task" else self.reflection_model_calls
+        limit = self.budget.max_task_model_calls if role == "task" else self.budget.max_reflection_model_calls
+        if used >= limit:
+            raise CompileBudgetExceeded(f"news_program_compile_{role}_model_call_budget_exhausted")
+        if self.actual_cost_microusd + self.budget.max_call_cost_microusd > self.budget.max_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_cost_reservation_exhausted")
         self._role = role
         if role == "task":
@@ -193,6 +216,10 @@ class _BudgetMeter:
         if cost > self.budget.max_call_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_call_cost_reservation_exceeded")
         self.actual_cost_microusd += cost
+        if getattr(self, "_role", "task") == "task":
+            self.task_cost_microusd += cost
+        else:
+            self.reflection_cost_microusd += cost
         if self.actual_cost_microusd > self.budget.max_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
 
@@ -524,8 +551,8 @@ class ProgramCompiler:
         self._reflection_lm = reflection_lm
         self._optimizer_factory = optimizer_factory
         self._tariff = tariff
-        # #148: the semantic-equivalence judge. Without it the card dimensions carry 15% of the weight and are
-        # unwinnable — a reworded sentence scores zero — so GEPA optimizes against a component it cannot move.
+        # #148/#160: the evidence-grounded equivalence judge makes the 10% ReaderCard component movable and
+        # verifies factual corrections against immutable evidence.
         # The baseline harness and the optimizer must use the same ruler or the "before/after" number an
         # operator reads stops predicting what GEPA maximizes.
         self._judge = judge
@@ -533,6 +560,8 @@ class ProgramCompiler:
     def compile(self, request: CompileRequest) -> ProgramCompileResult:
         if request.learning_epoch != LEARNING_EPOCH:
             raise ValueError("news_program_compile_epoch_mismatch")
+        if self._judge is None:
+            raise ValueError("news_program_compile_metric_judge_required")
         failure_clusters, target_dimensions = _failure_scope(request.episodes)
         if not failure_clusters:
             raise ValueError("news_program_compile_no_verified_failure_clusters")
@@ -622,10 +651,10 @@ class ProgramCompiler:
         # So it is derived from the configuration rather than guessed, and generously: the spend that actually
         # needs bounding is physical provider calls and cost, and `_BudgetMeter` bounds those on every single
         # request, before it is made. This check only proves the reported figure is present and sane.
-        metric_call_ceiling = (
-            request.budget.max_metric_calls
-            + len(val_examples)
-            + cast(int, optimizer_constructor["reflection_minibatch_size"])
+        metric_call_ceiling = gepa_metric_call_ceiling(
+            max_metric_calls=request.budget.max_metric_calls,
+            optimizer_config=optimizer_config_receipt,
+            expected_example_count=len(examples),
         )
         if metric_calls < 0 or metric_calls > metric_call_ceiling:
             raise ValueError(
@@ -654,6 +683,27 @@ class ProgramCompiler:
             split=split_receipt,
             retrieval=retrieval_receipt,
         )
+        judge_stats = dict(self._judge.stats)
+        metric_judge_attempts = int(judge_stats.get("attempts", -1))
+        metric_judge_model_calls = int(judge_stats.get("model_calls", -1))
+        metric_judge_failures = int(judge_stats.get("failures", -1))
+        metric_judge_cost_microusd = int(judge_stats.get("actual_cost_microusd", -1))
+        if (
+            min(
+                metric_judge_attempts,
+                metric_judge_model_calls,
+                metric_judge_failures,
+                metric_judge_cost_microusd,
+            )
+            < 0
+            or metric_judge_model_calls > request.budget.max_metric_judge_model_calls
+            or metric_judge_model_calls > metric_judge_attempts
+            or metric_judge_failures > metric_judge_attempts
+        ):
+            raise ValueError("news_program_compile_metric_judge_accounting_invalid")
+        total_cost_microusd = meter.actual_cost_microusd + metric_judge_cost_microusd
+        if total_cost_microusd > request.budget.max_cost_microusd:
+            raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
         return ProgramCompileResult(
             patch=patch,
             receipt_payloads=receipt_payloads,
@@ -662,7 +712,13 @@ class ProgramCompiler:
             metric_calls=metric_calls,
             task_model_calls=meter.task_model_calls,
             reflection_model_calls=meter.reflection_model_calls,
-            actual_cost_microusd=meter.actual_cost_microusd,
+            metric_judge_attempts=metric_judge_attempts,
+            metric_judge_model_calls=metric_judge_model_calls,
+            metric_judge_failures=metric_judge_failures,
+            task_cost_microusd=meter.task_cost_microusd,
+            reflection_cost_microusd=meter.reflection_cost_microusd,
+            metric_judge_cost_microusd=metric_judge_cost_microusd,
+            actual_cost_microusd=total_cost_microusd,
         )
 
 
@@ -673,14 +729,18 @@ def _failure_scope(episodes: Sequence[DevelopmentEpisode]) -> tuple[tuple[str, .
         review = episode.accepted_review
         results = dict(review.get("dimensions") or {})
         failed = {str(key) for key, value in results.items() if value == "fail"}
-        production = dict(episode.production_verdict or {})
+        production_judgment = episode.production_judgment
         should_push = str(review.get("should_push") or "uncertain")
-        production_pushes = str(production.get("decision") or "") in {"push", "escalate"}
+        production_action = (
+            production_decision(production_judgment, episode.policy_metric) if production_judgment is not None else None
+        )
+        production_pushes = production_action is not None and production_action.final in {"push", "escalate"}
         decision_failed = (should_push in {"must_push", "should_push"} and not production_pushes) or (
             should_push in {"must_hold", "should_hold"} and production_pushes
         )
         novelty = str(dict(review.get("novelty") or {}).get("judgment") or "uncertain")
-        novelty_failed = novelty != "uncertain" and novelty != str(production.get("novelty") or "")
+        production_novelty = production_judgment.verdict.novelty if production_judgment is not None else ""
+        novelty_failed = novelty not in ("uncertain", production_novelty)
         correction = bool(str(review.get("expected_correction") or "").strip())
         if failed or decision_failed or novelty_failed or correction:
             clusters.add(episode.cluster_id)

@@ -11,7 +11,9 @@ from typing import Any, Literal
 
 import pytest
 
+from tests.support.news_judgment import trade_relevance
 from tracefold.news import (
+    EditorialEnvelope,
     ProgramTrace,
     ProgramUsage,
     SemanticJudgeError,
@@ -192,7 +194,7 @@ def _card(**overrides: Any) -> dict[str, Any]:
         "leader_description": "",
         "reporting_origin": "FT",
         "admission": "candidate",
-        "priority": "high",
+        "queue_priority": "high",
         "provider_score_max": 92.0,
         "asset_class": "equity_or_commodity",
         "grounded_assets": ["NVDA"],
@@ -204,6 +206,7 @@ def _card(**overrides: Any) -> dict[str, Any]:
         "evidence_version": 1,
         "evidence_sha256": "e" * 64,
         "focus_fact_id": "fact-1",
+        "evidence_schema_version": "news_event_evidence_v2",
     }
     card.update(overrides)
     return card
@@ -230,7 +233,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 admission="candidate",
                 event_id="ev-1",
                 family="macro",
-                gate=SimpleNamespace(priority="high", amqp_priority=5),
+                gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
             ),
             SimpleNamespace(event_created=False, admission="candidate", event_id="ev-1", family="macro", gate=None),
             SimpleNamespace(
@@ -238,7 +241,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 admission="suppressed_ungrounded",
                 event_id="ev-2",
                 family="general",
-                gate=SimpleNamespace(priority="normal", amqp_priority=0),
+                gate=SimpleNamespace(queue_priority="normal", amqp_priority=0),
             ),
             # `listing_deterministic` is an admitted admission, not a suppression: exchange listing/delisting
             # frames must reach Triage like any candidate (#72 — they used to die silently right here).
@@ -247,7 +250,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 admission="listing_deterministic",
                 event_id="ev-3",
                 family="listing",
-                gate=SimpleNamespace(priority="high", amqp_priority=5),
+                gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
             ),
             # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
             # provider account enabled it and the socket pushed it, so the Gate judges it like any other.
@@ -256,7 +259,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 admission="candidate",
                 event_id="ev-4",
                 family="general",
-                gate=SimpleNamespace(priority="normal", amqp_priority=0),
+                gate=SimpleNamespace(queue_priority="normal", amqp_priority=0),
             ),
         ]
     )
@@ -358,11 +361,12 @@ def _triage(news: RecordingNews, bus: FakeBus, *, judge: Any = None) -> TriageCo
         concurrency=1,
         circuit_failures=3,
         circuit_open_seconds=60.0,
+        runtime_manifest={"manifest_sha": "d" * 64},
     )
 
 
-def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degraded_verdict() -> None:
-    """A degraded card carries no model judgment, so it pushes but never wears the ⚡ header (#77)."""
+def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_editorial_identity() -> None:
+    """A degraded card is one typed judgment; only the grounded watchlist guard makes it reader-eligible."""
 
     news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
     bus = FakeBus()
@@ -379,11 +383,16 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
     assert "prompt_version" not in inserted
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
+    assert inserted["editorial"]["editorial_origin"] == "degraded_unavailable"
+    assert inserted["editorial"]["relevance"] is None
+    assert len(inserted["scored_judgment_sha256"]) == 64
+    assert inserted["runtime_manifest_sha"] == "d" * 64
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
     assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
     assert trace["program_version"] == PROGRAM_VERSION and trace["program_sha256"] == PROGRAM_SHA256
+    assert trace["verdict_sha256"] == canonical_sha(inserted["verdict"])
     assert trace["status"] == {
         "storyline_key": "asset:NVDA",
         "preliminary": True,
@@ -403,9 +412,19 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
     "card",
     [
         _card(
-            event_id="ev-weak", priority="normal", provider_score_max=75.0, grounded_assets=["AMD"], watchlist_hits=[]
+            event_id="ev-weak",
+            queue_priority="normal",
+            provider_score_max=75.0,
+            grounded_assets=["AMD"],
+            watchlist_hits=[],
         ),
-        _card(event_id="ev-quiet", priority="normal", provider_score_max=95.0, grounded_assets=[], watchlist_hits=[]),
+        _card(
+            event_id="ev-quiet",
+            queue_priority="normal",
+            provider_score_max=95.0,
+            grounded_assets=[],
+            watchlist_hits=[],
+        ),
     ],
 )
 def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any]) -> None:
@@ -421,23 +440,15 @@ def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any
     assert "mark_verdict_published" not in news.names()
 
 
-@pytest.mark.parametrize(
-    "card",
-    [
-        _card(event_id="ev-macro", priority="high", provider_score_max=85.0, grounded_assets=[], watchlist_hits=[]),
-        _card(
-            event_id="ev-listing",
-            priority="normal",
-            admission="listing_deterministic",
-            provider_score_max=10.0,
-            grounded_assets=[],
-            watchlist_hits=[],
-        ),
-    ],
-)
-def test_triage_without_model_fails_open_on_high_priority_and_listing(card: dict[str, Any]) -> None:
-    """#81: a model outage used to drop every high-priority Event that had no grounded asset — which is what a
-    missile strike, a rate decision or a delisting notice looks like. It now sends the wire headline."""
+def test_triage_without_model_fails_open_on_a_deterministic_listing() -> None:
+    card = _card(
+        event_id="ev-listing",
+        queue_priority="normal",
+        admission="listing_deterministic",
+        provider_score_max=10.0,
+        grounded_assets=[],
+        watchlist_hits=[],
+    )
 
     news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
@@ -451,11 +462,14 @@ def test_triage_without_model_fails_open_on_high_priority_and_listing(card: dict
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
-def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
-    """Degraded mode is not silent: a provider score >= 80 on a grounded asset still pushes (rule baseline)."""
+def test_triage_without_model_does_not_treat_provider_score_or_queue_priority_as_editorial_truth() -> None:
 
     card = _card(
-        event_id="ev-strong-80", priority="normal", provider_score_max=85.0, grounded_assets=["AMD"], watchlist_hits=[]
+        event_id="ev-strong-80",
+        queue_priority="high",
+        provider_score_max=85.0,
+        grounded_assets=["AMD"],
+        watchlist_hits=[],
     )
     news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
@@ -463,9 +477,9 @@ def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is True and inserted["rule_baseline_decision"] == "push"
-    assert inserted["final_decision"] == "push"
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+    assert inserted["degraded"] is True and inserted["rule_baseline_decision"] == "drop"
+    assert inserted["final_decision"] == "drop"
+    assert bus.routing_keys() == []
 
 
 def _program_call(
@@ -553,6 +567,7 @@ def _judgment(
     usage: ProgramUsage | None = None,
 ) -> SemanticJudgment:
     verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
+    editorial = EditorialEnvelope.issue(editorial_origin="model", relevance=trade_relevance())
     default_calls = (
         _program_call(
             predictor="event_semantics",
@@ -571,15 +586,20 @@ def _judgment(
             provider_cost_microusd=None,
         ),
     )
-    actual_trace = trace or _program_trace(
-        fallback_from=fallback_from,
-        verdict_sha256=canonical_sha(verdict_payload),
-        calls=default_calls,
+    actual_trace = (
+        trace.model_copy(update={"editorial_sha256": editorial.editorial_sha256})
+        if trace is not None
+        else _program_trace(
+            fallback_from=fallback_from,
+            verdict_sha256=canonical_sha(verdict_payload),
+            calls=default_calls,
+        ).model_copy(update={"editorial_sha256": editorial.editorial_sha256})
     )
     physical_calls = tuple(call for call in actual_trace.calls if call.physical_provider_call)
     complete_cost = bool(physical_calls) and all(call.provider_cost_microusd is not None for call in physical_calls)
     return SemanticJudgment(
         verdict=verdict,
+        editorial=editorial,
         program_version=PROGRAM_VERSION,
         program_sha256=PROGRAM_SHA256,
         trace=actual_trace,
@@ -841,6 +861,7 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
+    assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
     assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
     assert inserted["trace"]["model_attempts"] == 2
 
@@ -1164,7 +1185,7 @@ def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     news = RecordingNews(
         unpublished_candidates=[{"event_id": "ev-lost"}, {"event_id": "ev-gone"}],
         event_card=lambda event_id: (
-            _card(event_id="ev-lost", family="general", priority="normal") if event_id == "ev-lost" else None
+            _card(event_id="ev-lost", family="general", queue_priority="normal") if event_id == "ev-lost" else None
         ),
     )
     bus = FakeBus()
@@ -1259,13 +1280,13 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     activation_id = "c" * 32
     news = RecordingNews(
         get_verdict=None,
-        event_card=_card(priority="normal"),
+        event_card=_card(queue_priority="normal"),
         insert_verdict=True,
         assign_agent_arm={
             "activation_id": activation_id,
             "arm": "candidate",
             "bundle_sha": candidate_bundle,
-            "selector_version": "news_canary_selector_v1",
+            "selector_version": "news_canary_selector_v2",
             "eligibility_reason": "eligible_bucket",
         },
         evaluate_canary_rolling_slo={"evaluated": True, "tripped": False},
@@ -1282,6 +1303,7 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
         circuit_failures=3,
         circuit_open_seconds=60.0,
         stable_bundle_sha=stable_bundle,
+        runtime_manifest={"manifest_sha": "e" * 64},
         canary_arms={
             candidate_bundle: CanaryRuntimeArm(
                 bundle_sha=candidate_bundle,
@@ -1305,7 +1327,7 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
         "activation_id": activation_id,
         "arm": "candidate",
         "bundle_sha": candidate_bundle,
-        "selector_version": "news_canary_selector_v1",
+        "selector_version": "news_canary_selector_v2",
         "eligibility_reason": "eligible_bucket",
     }
     assert news.names().index("assign_agent_arm") < news.names().index("insert_verdict")
@@ -1324,7 +1346,7 @@ def test_triage_fails_closed_when_a_persisted_stable_assignment_names_a_retired_
             "activation_id": None,
             "arm": "stable",
             "bundle_sha": retired_bundle,
-            "selector_version": "stable_only_v1",
+            "selector_version": "stable_only_v2",
             "eligibility_reason": "no_active_canary",
         },
     )
@@ -1340,6 +1362,7 @@ def test_triage_fails_closed_when_a_persisted_stable_assignment_names_a_retired_
         circuit_failures=3,
         circuit_open_seconds=60.0,
         stable_bundle_sha=current_bundle,
+        runtime_manifest={"manifest_sha": "e" * 64},
     )
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
@@ -1625,7 +1648,9 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     assert row["final_decision"] == "drop" and row["override_rule"] == "restatement"
     trace = row["trace"]
     assert trace["reasked_after_told_change"] is True
-    assert trace["first_verdict"]["novelty"] == "new_fact" and trace["first_verdict"]["decision"] == "push"
+    assert trace["first_judgment"]["verdict"]["novelty"] == "new_fact"
+    assert trace["first_judgment"]["verdict"]["decision"] == "push"
+    assert trace["first_judgment"]["editorial"]["relevance"]["reader_value"] == "realtime"
     assert trace["first_input_sha256"] == first_trace.context_sha256
     assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
     # The verdict-owning trace is the re-ask trace; the stale trace remains a
@@ -1676,7 +1701,7 @@ def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> 
         focus_fact_id="fact-2",
         grounded_assets=[],
         provider_score_max=10.0,
-        priority="normal",
+        queue_priority="normal",
         storyline_key="macro:general",
     )
     cards = iter((initial, refreshed))
@@ -1720,7 +1745,7 @@ def test_triage_evidence_reask_failure_degrades_against_the_refreshed_evidence()
         grounded_assets=[],
         watchlist_hits=[],
         provider_score_max=10.0,
-        priority="normal",
+        queue_priority="normal",
         storyline_key="macro:general",
     )
     cards = iter((initial, refreshed))
@@ -1828,7 +1853,7 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
 
     news = RecordingNews(
         get_verdict=None,
-        event_card=_card(priority="normal", provider_score_max=70.0),
+        event_card=_card(queue_priority="normal", provider_score_max=70.0),
         insert_verdict=True,
         told_ledger=told_ledger,
     )
@@ -1908,7 +1933,7 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     assert len(model.inputs) == 2
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["degraded"] is False and inserted["error_code"] is None
-    assert inserted["final_decision"] == "escalate" and inserted["verdict"]["magnitude"] == 3
+    assert inserted["final_decision"] == "push" and inserted["verdict"]["magnitude"] == 3
     assert inserted["verdict"] == first_verdict.model_dump(mode="json")
     trace = inserted["trace"]
     assert trace["reask_failed"] == "news_program_timeout"
@@ -1961,7 +1986,7 @@ def test_triage_degraded_fallback_is_not_blocked_by_prior_reader_volume() -> Non
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["degraded"] is True and inserted["final_decision"] == "push"
-    assert inserted["throttled_by"] is None and inserted["override_rule"] == "high_priority_push"
+    assert inserted["throttled_by"] is None and inserted["override_rule"] == "degraded_watchlist_objective"
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -1970,7 +1995,7 @@ def _duplicate_news(*, ledger_headline: str) -> RecordingNews:
 
     return RecordingNews(
         get_verdict=None,
-        event_card=_card(priority="normal", provider_score_max=75.0),
+        event_card=_card(queue_priority="normal", provider_score_max=75.0),
         insert_verdict=True,
         told_ledger=[_ledger_row("ev-earlier", NOW_MS - 300_000, headline=ledger_headline)],
     )
@@ -1986,7 +2011,7 @@ def test_triage_sends_a_distinct_card_and_traces_the_duplicate_measurement() -> 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "model_push_actionable"
+    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "watchlist_objective_guard"
     assert inserted["throttled_by"] is None
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
     assert inserted["trace"]["seen_similarity"] < 0.25 and inserted["trace"]["seen_count"] == 1
@@ -2114,7 +2139,7 @@ def _oi_card(**overrides: Any) -> dict[str, Any]:
         family="market_telemetry",
         grounded_assets=[],
         watchlist_hits=[],
-        priority="normal",
+        queue_priority="normal",
         provider_score_max=None,
         storyline_key="macro:market_telemetry",
         provider_metadata={"coins": [{"symbol": "TRUMP", "market_type": "cex"}]},
@@ -2143,20 +2168,21 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     assert judge.calls == 0, "a telemetry frame must never reach the model"
     assert "assign_agent_arm" not in news.names(), "no model call means no arm to assign"
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "model_push_actionable"
+    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "telemetry_deterministic"
     assert inserted["program_version"] == "news_oi_signal_v1" and inserted["degraded"] is False
     assert inserted["verdict"]["event_type"] == "oi_spike"
     assert inserted["verdict"]["headline_zh"] == (
         "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次"
     )
     assert inserted["verdict"]["why_zh"] == ""
+    assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
     # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
-def test_telemetry_beyond_the_window_rank_is_held_by_the_noise_veto() -> None:
+def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> None:
     news = RecordingNews(
         get_verdict=None,
         event_card=_oi_card(),
@@ -2169,7 +2195,7 @@ def test_telemetry_beyond_the_window_rank_is_held_by_the_noise_veto() -> None:
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "noise"
+    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "telemetry_deterministic"
     assert news.kwargs_of("insert_oi_signal")["rank_in_window"] == 3
     assert bus.published == []
 

@@ -282,10 +282,11 @@ class NewsRepository:
 
         if not source_artifact_id:
             return None
-        # Only an Event that can still reach a reader may absorb a live frame. The 12 h family window used to
-        # bound this implicitly; a 7-day horizon does not, and joining a `recovery` Event — which is in
-        # `_REGATE_ADMISSIONS`, so it can never be upgraded and never delivers — would swallow the card
-        # silently. A suppressed Event is excluded for the same reason.
+        # Only an admitted Event carrying the active v2 evidence contract may absorb a live frame.  That exact
+        # contract boundary prevents a post-cut Item from disappearing into pre-v6 evidence without shortening
+        # #154's deliberate seven-day artifact window back to the ordinary 12 h family window. Recovery and
+        # suppressed Events are excluded by admission because neither can produce the live reader card this Item
+        # represents.
         row = self.conn.execute(
             """
             SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
@@ -295,6 +296,11 @@ class NewsRepository:
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
                AND e.family = %s AND e.comparison_fingerprint = %s
                AND e.opened_at_ms >= %s
+               AND EXISTS (
+                 SELECT 1 FROM news_event_evidence_snapshots s
+                  WHERE s.event_id = e.event_id
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v2'
+               )
                AND e.admission = ANY(%s)
              ORDER BY e.opened_at_ms ASC LIMIT 1
             """,
@@ -361,7 +367,7 @@ class NewsRepository:
         opened_at_ms: int,
         expires_at_ms: int,
         admission: str,
-        priority: str,
+        queue_priority: str,
         provider_score: float | None,
         engine_type: str,
         asset_class: str,
@@ -380,7 +386,7 @@ class NewsRepository:
             INSERT INTO news_events (
               event_id, leader_item_id, family, comparison_fingerprint, comparison_title, leader_title,
               focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
-              opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, priority,
+              opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority,
               provider_score_max, engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon,
               storyline_key, context_line, ingest_mode, trace_id, created_at_ms, updated_at_ms
             ) VALUES (
@@ -405,7 +411,7 @@ class NewsRepository:
                 int(opened_at_ms),
                 int(expires_at_ms),
                 admission,
-                priority,
+                queue_priority,
                 provider_score,
                 engine_type,
                 asset_class,
@@ -546,7 +552,7 @@ class NewsRepository:
         *,
         event_id: str,
         admission: str,
-        priority: str,
+        queue_priority: str,
         asset_class: str,
         grounded_assets: Sequence[str],
         watchlist_hits: Sequence[str],
@@ -558,14 +564,14 @@ class NewsRepository:
         row = self.conn.execute(
             """
             UPDATE news_events
-               SET admission = %s, priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
+               SET admission = %s, queue_priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
                    watchlist_hits = %s::jsonb, macro_lexicon = %s, updated_at_ms = %s
              WHERE event_id = %s
              RETURNING opened_at_ms
             """,
             (
                 admission,
-                priority,
+                queue_priority,
                 asset_class,
                 _dumps(list(grounded_assets)),
                 _dumps(list(watchlist_hits)),
@@ -699,7 +705,7 @@ class NewsRepository:
                 "expires_at_ms",
                 "member_count",
                 "admission",
-                "priority",
+                "queue_priority",
                 "provider_score_max",
                 "engine_type",
                 "asset_class",
@@ -750,7 +756,7 @@ class NewsRepository:
         if artifact_published_at_ms is not None and pushed_at_ms:
             snapshot_card["source_age_s"] = max(0, (int(pushed_at_ms) - artifact_published_at_ms) // 1000)
         snapshot = {
-            "schema_version": "news_event_evidence_v1",
+            "schema_version": "news_event_evidence_v2",
             "event_id": event_id,
             "focus_fact": focus,
             "card": snapshot_card,
@@ -813,6 +819,7 @@ class NewsRepository:
         card = dict(snapshot.get("card") or {})
         card.update(
             {
+                "evidence_schema_version": str(snapshot.get("schema_version") or ""),
                 "evidence_version": int(evidence["evidence_version"]),
                 "evidence_sha256": str(evidence["evidence_sha256"]),
                 "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -970,7 +977,14 @@ class NewsRepository:
             SELECT v.event_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
+                   epoch.epoch_id           AS learning_epoch,
                    v.program_version,
+                   v.program_sha256,
+                   v.policy_version,
+                   v.editorial ->> 'editorial_origin' AS editorial_origin,
+                   v.editorial ->> 'editorial_sha256' AS editorial_sha256,
+                   v.scored_judgment_sha256,
+                   v.runtime_manifest_sha,
                    s.metric_version,
                    s.symbol,
                    s.direction,
@@ -986,9 +1000,20 @@ class NewsRepository:
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
               JOIN news_events e ON e.event_id = v.event_id
+              JOIN news_learning_epochs epoch
+                ON epoch.epoch_id = 'program_v6'
+               AND e.opened_at_ms >= epoch.starts_at_ms
+               AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.program_version = 'news_oi_signal_v1'
+               AND v.policy_version = 'news_triage_policy_v10'
+               AND v.editorial ->> 'editorial_origin' = 'telemetry_deterministic'
+               AND jsonb_typeof(v.editorial -> 'relevance') = 'null'
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
                AND v.final_decision IN ('push', 'escalate')
                AND v.degraded = false
                AND e.ingest_mode = 'live'
@@ -1033,8 +1058,14 @@ class NewsRepository:
                    v.evidence_sha256,
                    v.focus_fact_id,
                    v.verdict,
+                   epoch.epoch_id AS learning_epoch,
                    v.program_version,
+                   v.program_sha256,
                    v.policy_version,
+                   v.editorial ->> 'editorial_origin' AS editorial_origin,
+                   v.editorial ->> 'editorial_sha256' AS editorial_sha256,
+                   v.scored_judgment_sha256,
+                   v.runtime_manifest_sha,
                    e.opened_at_ms,
                    e.comparison_fingerprint,
                    e.asset_class,
@@ -1044,9 +1075,20 @@ class NewsRepository:
                    i.canonical_url
               FROM news_verdicts v
               JOIN news_events e ON e.event_id = v.event_id
+              JOIN news_learning_epochs epoch
+                ON epoch.epoch_id = 'program_v6'
+               AND e.opened_at_ms >= epoch.starts_at_ms
+               AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
-               AND v.program_version IS DISTINCT FROM 'news_oi_signal_v1'
+               AND v.program_version = 'news_semantic_program_v4'
+               AND v.policy_version = 'news_triage_policy_v10'
+               AND v.editorial ->> 'editorial_origin' = 'model'
+               AND jsonb_typeof(v.editorial -> 'relevance') = 'object'
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
                AND v.final_decision IN ('push', 'escalate')
                AND v.degraded = false
                AND e.ingest_mode = 'live'
@@ -1113,6 +1155,9 @@ class NewsRepository:
         override_rule: str | None,
         throttled_by: str | None,
         verdict: Mapping[str, Any],
+        editorial: Mapping[str, Any],
+        scored_judgment_sha256: str,
+        runtime_manifest_sha: str,
         model: str | None,
         program_version: str,
         program_sha256: str,
@@ -1128,10 +1173,11 @@ class NewsRepository:
             """
             INSERT INTO news_verdicts (
               event_id, stage, policy_version, model_decision, rule_baseline_decision, final_decision, override_rule,
-              throttled_by, verdict, model, program_version, program_sha256, degraded, error_code, trace, created_at_ms
-              , evidence_version, evidence_sha256, focus_fact_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                      %s, %s, %s)
+              throttled_by, verdict, editorial, scored_judgment_sha256, runtime_manifest_sha,
+              model, program_version, program_sha256, degraded, error_code, trace, created_at_ms,
+              evidence_version, evidence_sha256, focus_fact_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s,
+                      %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -1144,6 +1190,9 @@ class NewsRepository:
                 override_rule,
                 throttled_by,
                 _dumps(dict(verdict)),
+                _dumps(dict(editorial)),
+                scored_judgment_sha256,
+                runtime_manifest_sha,
                 model,
                 program_version,
                 program_sha256,
@@ -1240,6 +1289,34 @@ class NewsRepository:
             "SELECT * FROM news_canary_activations WHERE state = 'active' ORDER BY activated_at_ms DESC LIMIT 1"
         ).fetchone()
         return dict(row) if row else None
+
+    def validated_active_canary(self, *, now_ms: int) -> dict[str, Any] | None:
+        """Trip a durable activation whose code-owned selector identities drifted."""
+
+        from .canary import (
+            CANARY_ELIGIBILITY_PROFILE_SHA,
+            CANARY_ROLLING_PROFILE_SHA,
+            CANARY_SELECTOR_VERSION,
+        )
+
+        activation = self.active_canary()
+        if activation is None:
+            return None
+        expected = (
+            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
+            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
+            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
+        )
+        for field_name, value, reason in expected:
+            if str(activation.get(field_name) or "") != value:
+                self.transition_canary(
+                    activation_id=str(activation["activation_id"]),
+                    target_state="tripped",
+                    reason=reason,
+                    now_ms=now_ms,
+                )
+                return None
+        return activation
 
     def canary_status(self) -> dict[str, Any]:
         row = self.conn.execute("SELECT * FROM news_canary_activations ORDER BY created_at_ms DESC LIMIT 1").fetchone()
@@ -1408,7 +1485,12 @@ class NewsRepository:
     def evaluate_canary_rolling_slo(self, *, activation_id: str, now_ms: int) -> dict[str, Any]:
         """Evaluate one durable, pre-registered rolling candidate SLO bucket."""
 
-        from .canary import CANARY_ROLLING_PROFILE, CANARY_ROLLING_PROFILE_SHA
+        from .canary import (
+            CANARY_ELIGIBILITY_PROFILE_SHA,
+            CANARY_ROLLING_PROFILE,
+            CANARY_ROLLING_PROFILE_SHA,
+            CANARY_SELECTOR_VERSION,
+        )
 
         row = self.conn.execute(
             "SELECT * FROM news_canary_activations WHERE activation_id = %s FOR UPDATE",
@@ -1416,14 +1498,20 @@ class NewsRepository:
         ).fetchone()
         if row is None or str(row["state"]) != "active":
             return {"evaluated": False, "reason": "activation_not_active"}
-        if str(row["rolling_profile_sha"]) != CANARY_ROLLING_PROFILE_SHA:
-            self.transition_canary(
-                activation_id=activation_id,
-                target_state="tripped",
-                reason="rolling_profile_hash_mismatch",
-                now_ms=now_ms,
-            )
-            return {"evaluated": True, "tripped": True, "reason": "rolling_profile_hash_mismatch"}
+        identity_checks = (
+            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
+            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
+            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
+        )
+        for field_name, value, reason in identity_checks:
+            if str(row[field_name]) != value:
+                self.transition_canary(
+                    activation_id=activation_id,
+                    target_state="tripped",
+                    reason=reason,
+                    now_ms=now_ms,
+                )
+                return {"evaluated": True, "tripped": True, "reason": reason}
         bucket_ms = int(CANARY_ROLLING_PROFILE["evaluation_bucket_ms"])
         bucket = int(now_ms) // bucket_ms * bucket_ms
         if row["rolling_last_bucket_ms"] is not None and int(row["rolling_last_bucket_ms"]) >= bucket:
@@ -1485,20 +1573,23 @@ class NewsRepository:
         event_id: str,
         stable_bundle_sha: str,
         admission: str,
-        priority: str,
         ingest_mode: str,
         now_ms: int,
     ) -> dict[str, Any]:
         existing = self.conn.execute("SELECT * FROM news_agent_assignments WHERE event_id = %s", (event_id,)).fetchone()
         if existing:
-            return dict(existing)
-        activation = self.active_canary()
+            return self._validated_existing_agent_assignment(
+                existing,
+                stable_bundle_sha=stable_bundle_sha,
+                now_ms=now_ms,
+            )
+        activation = self.validated_active_canary(now_ms=now_ms)
         if activation is None:
             selection = {
                 "activation_id": None,
                 "arm": "stable",
                 "bundle_sha": stable_bundle_sha,
-                "selector_version": "stable_only_v1",
+                "selector_version": "stable_only_v2",
                 "eligibility_reason": "no_active_canary",
             }
         elif str(activation["baseline_bundle_sha"]) != stable_bundle_sha:
@@ -1525,7 +1616,6 @@ class NewsRepository:
                 candidate_bundle_sha=str(activation["candidate_bundle_sha"]),
                 exposure_bps=int(activation["exposure_bps"]),
                 admission=admission,
-                priority=priority,
                 ingest_mode=ingest_mode,
             )
             selection = {
@@ -1557,6 +1647,79 @@ class NewsRepository:
         if row is None:
             raise RuntimeError("news_agent_assignment_insert_failed")
         return dict(row)
+
+    def _validated_existing_agent_assignment(
+        self,
+        existing: Mapping[str, Any],
+        *,
+        stable_bundle_sha: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Revalidate the immutable assignment before a retry executes it.
+
+        The assignment row remains the audit fact.  If its selector generation
+        or activation identities no longer match this binary, the returned
+        projection carries a validation error so Triage degrades without ever
+        executing the stale candidate Program.
+        """
+
+        from .canary import (
+            CANARY_ELIGIBILITY_PROFILE_SHA,
+            CANARY_ROLLING_PROFILE_SHA,
+            CANARY_SELECTOR_VERSION,
+        )
+
+        assignment = dict(existing)
+        activation_id = assignment.get("activation_id")
+        if activation_id is None:
+            if (
+                str(assignment.get("arm") or "") != "stable"
+                or str(assignment.get("bundle_sha") or "") != stable_bundle_sha
+                or str(assignment.get("selector_version") or "") != "stable_only_v2"
+            ):
+                assignment["validation_error"] = "stable_assignment_identity_mismatch"
+            return assignment
+
+        activation = self.conn.execute(
+            "SELECT * FROM news_canary_activations WHERE activation_id = %s",
+            (str(activation_id),),
+        ).fetchone()
+        if activation is None:
+            assignment["validation_error"] = "candidate_activation_missing"
+            return assignment
+
+        reason: str | None = None
+        for field_name, expected, mismatch in (
+            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
+            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
+            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
+        ):
+            if str(activation[field_name]) != expected:
+                reason = mismatch
+                break
+        if reason is None and str(assignment.get("selector_version") or "") != CANARY_SELECTOR_VERSION:
+            reason = "assignment_selector_version_mismatch"
+        if reason is None and str(activation["baseline_bundle_sha"]) != stable_bundle_sha:
+            reason = "baseline_bundle_mismatch"
+        arm = str(assignment.get("arm") or "")
+        bundle_sha = str(assignment.get("bundle_sha") or "")
+        if reason is None and arm == "candidate" and bundle_sha != str(activation["candidate_bundle_sha"]):
+            reason = "candidate_bundle_mismatch"
+        if reason is None and arm == "stable" and bundle_sha != stable_bundle_sha:
+            reason = "stable_bundle_mismatch"
+        if reason is None and arm not in {"stable", "candidate"}:
+            reason = "assignment_arm_invalid"
+        if reason is None:
+            return assignment
+
+        self.transition_canary(
+            activation_id=str(activation_id),
+            target_state="tripped",
+            reason=reason,
+            now_ms=now_ms,
+        )
+        assignment["validation_error"] = reason
+        return assignment
 
     def register_agent_runtime_manifest(
         self,
@@ -1720,11 +1883,9 @@ class NewsRepository:
         *,
         family: str | None,
         admission: str | None,
-        priority: str | None,
         decision: str | None,
         symbol: str | None,
         q: str | None,
-        sort: str,
         limit: int,
         cursor: str | None,
         outcome: str | None = None,
@@ -1749,9 +1910,6 @@ class NewsRepository:
         if admission:
             where.append("e.admission = %s")
             params.append(admission)
-        if priority:
-            where.append("e.priority = %s")
-            params.append(priority)
         if symbol:
             where.append("EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = %s)")
             params.append(symbol.upper())
@@ -1769,15 +1927,10 @@ class NewsRepository:
         if cursor_opened is not None:
             where.append("(e.opened_at_ms, e.event_id) < (%s, %s)")
             params.extend([cursor_opened, cursor_id])
-        order = (
-            "e.priority = 'high' DESC, e.opened_at_ms DESC, e.event_id DESC"
-            if sort == "priority"
-            else "e.opened_at_ms DESC, e.event_id DESC"
-        )
         rows = self.conn.execute(
             f"""
             SELECT e.event_id, e.family, e.leader_title, e.opened_at_ms, e.last_member_at_ms, e.member_count,
-                   e.admission, e.priority, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
+                   e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
                    e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
                    i.canonical_url AS leader_url, i.reporting_origin, i.provenance,
                    t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
@@ -1795,7 +1948,7 @@ class NewsRepository:
               ) t ON true
               LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
              WHERE {" AND ".join(where)}
-             ORDER BY {order}
+             ORDER BY e.opened_at_ms DESC, e.event_id DESC
              LIMIT %s
             """,
             (*params, int(limit) + 1),
@@ -1812,11 +1965,9 @@ class NewsRepository:
             "filters": {
                 "family": family,
                 "admission": admission,
-                "priority": priority,
                 "decision": decision,
                 "symbol": symbol,
                 "q": q,
-                "sort": sort,
                 "limit": int(limit),
                 "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
@@ -2267,7 +2418,6 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
         "last_member_at_ms": int(card["last_member_at_ms"]),
         "member_count": int(card["member_count"]),
         "admission": card["admission"],
-        "priority": card["priority"],
         "provider_score_max": card.get("provider_score_max"),
         "engine_type": card["engine_type"],
         "asset_class": card["asset_class"],

@@ -222,7 +222,8 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
 
     event_properties = components["NewsEventData"]["properties"]
     assert {"story_id", "title_translation", "notification", "push_delivery_state"}.isdisjoint(event_properties)
-    assert {"event_id", "family", "leader_title", "admission", "priority", "storyline_key"} <= set(event_properties)
+    assert {"event_id", "family", "leader_title", "admission", "storyline_key"} <= set(event_properties)
+    assert "priority" not in event_properties
 
 
 @pytest.mark.contract
@@ -237,11 +238,9 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     assert set(parameters) == {
         "family",
         "admission",
-        "priority",
         "decision",
         "symbol",
         "q",
-        "sort",
         "limit",
         "cursor",
         "outcome",
@@ -250,8 +249,6 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     assert parameters["q"]["schema"]["maxLength"] == 200
     assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
     assert parameters["hours"]["schema"]["maximum"] == 168
-    assert parameters["priority"]["schema"]["pattern"] == "^(high|normal)?$"
-    assert parameters["sort"]["schema"]["pattern"] == "^(latest|priority)$"
     limit = parameters["limit"]["schema"]
     assert limit == {"default": 50, "maximum": 100, "minimum": 1, "title": "Limit", "type": "integer"}
     assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
@@ -259,16 +256,14 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     assert set(filters["properties"]) == {
         "family",
         "admission",
-        "priority",
         "decision",
         "symbol",
         "q",
-        "sort",
         "limit",
         "outcome",
         "hours",
     }
-    assert set(filters["required"]) == {"sort", "limit"}
+    assert set(filters["required"]) == {"limit"}
 
 
 @pytest.mark.contract

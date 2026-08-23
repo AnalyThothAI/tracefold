@@ -20,6 +20,15 @@ Before deploying #129, remove the retired
 `news.triage.deadline_seconds` key from the operator config. The typed schema
 rejects it; the content-addressed Program artifact now owns each route deadline.
 
+Before deploying #160, remove every retired policy-v9 action/priority key from
+`news.policy`: `escalate_magnitude`, `min_push_magnitude`,
+`min_watchlist_magnitude`, `unclear_push_min_magnitude`,
+`unclear_push_event_types`, `high_priority_escalates`,
+`noise_veto_max_magnitude`, `noise_veto_respects_gate_priority`, and
+`contested_push_min_magnitude`. Run `uv run tracefold config` against
+`~/.tracefold/config.yaml` and report only its redacted result. There is no
+compatibility alias.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -54,36 +63,38 @@ Compose command whose exit status ignores an unhealthy Worker.
 
 ### Exact-image rollback with the current database schema
 
-An image rollback is a runtime replacement, not an Alembic downgrade. Use the
-repo-owned target only when the previous image carries the exact same Alembic
-head as the current source. After the #134 D-generation hard cut that means
-`20260822_0297`;
-after any future migration it means that newer current head, so an older-schema
-image is deliberately unavailable as a rollback target.
+An image rollback is a runtime replacement, not an Alembic downgrade. The #160
+physical `priority -> queue_priority` rename means the pre-0301 image cannot run
+against the current schema. Before the first v6/v10 deployment, build, retain
+and drill the reviewed new-schema/v5-behaviour rollback image from the clean
+primary checkout:
 
-The #134 deployment has one deliberate exception to “previous image”: the
-pre-0295 Program-v3 image cannot run against the new schema, so the merged
-source carries `deploy/news-program-v3-rollback`, a reviewed Program-v3-equivalent
-semantic state encoded by the same factory-v2/artifact-v2 executable as the D
-stable root. Before the first D deployment, build and retain its immutable image
-from the clean primary checkout:
+The same release hard-cuts the News-to-Trading input contract. New projections
+expose only post-epoch v10 judgments and new cases freeze
+`trading_manifest_v2`. Any undecided v1 case is blocked as
+`news_generation_retired` before model or order work; existing prepared orders
+remain owned by reconciliation and are never rewritten by the News migration.
 
 ```bash
 cd ~/Documents/Code/tracefold
 make build-news-rollback-image
 ```
 
-The target verifies the content-addressed rollback bundle, builds with the
-explicit `program_v3_rollback` profile, then executes the image loader and
-checks the exact Program SHA, source revision, and image profile label. It does
-not deploy or mutate PostgreSQL. Record the full `sha256:` image ID it prints;
-that ID, not its local tag, is the only accepted rollback input. The normal
-`make up` build contains only the D stable registry, while this separately built
-image contains only the v2 rollback registry. There is no runtime flag, dual
-loader, or artifact-v1 executable in either image.
+The target verifies a rollback binary that understands schema 0301 while
+reproducing v5 behaviour, then checks its source revision, exact behavior-
+profile identity and image label. It does not deploy or mutate PostgreSQL.
+Record the full `sha256:` image ID it prints; that ID, not its local tag, is the
+only accepted rollback input. The artifact is deployment safety only: it is not
+in the v6 factory registry, artifact loader or normal runtime image and cannot
+be used for canary or daily execution. The production image contains exactly
+factory/executable v4; there is no runtime flag or dual loader. A failed build
+or drill fails the release gate.
 
-From the primary checkout on `main`, read the most recent recorded previous
-runtime image ID and verify that Docker still has it locally:
+For the #160 drill and rollback, use the full image ID printed by
+`build-news-rollback-image` directly. After both sides of a later deployment
+already use schema 0301, the most recent recorded previous runtime image may
+also be used. From the primary checkout on `main`, verify the chosen ID locally;
+the SQL below is only the later same-schema lookup:
 
 ```bash
 cd ~/Documents/Code/tracefold
@@ -306,11 +317,12 @@ News:
 OpenNews account Strategy WSS (whatever the account has enabled; no local allowlist)
   -> Receiver publishes each accepted frame to RabbitMQ (confirms)
   -> q:news.raw [SAC] Deduper: Item upsert -> title/identity -> Event new|member
-     -> Gate -> storyline key -> publish event.<family>.<priority> for candidates
+     -> Gate -> storyline key -> publish event.<family>.<queue_priority> for admitted Events
   -> q:news.triage Triage (prefetch news.triage.concurrency):
-     SemanticJudge.judge(TriageContext) -> EventSemantics -> SemanticNormalizer
+     SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1 -> SemanticNormalizer
      -> ReaderCard.v2
-     -> deterministic assembler -> decide() -> news_verdicts
+     -> deterministic assembler -> atomic SemanticJudgment/ScoredJudgment
+     -> policy-v10 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first)
   -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
@@ -353,13 +365,16 @@ Strategy off in the OpenNews account (#126).
 Model failure: Triage's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
 Adapter runs the code-owned DSPy Program
-`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
+`EventSemantics.v2 -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
 deterministic assembler`. The normalizer changes a stray non-negative
 `restates` value on `new_fact`/`progression` to `-1`, records both values on the
-EventSemantics trace, and spends no provider call or fast retry. ReaderCard.v2
+EventSemantics trace, canonicalizes the nested `TradeRelevanceV1` sets, and
+spends no provider call or fast retry. ReaderCard.v2
 produces only `headline_zh` and `why_zh`; the assembler retains public
 `title_zh=""` as a
-compatibility sentinel. A successful primary route normally makes two serial
+compatibility sentinel. Both Predictor payloads exclude queue priority,
+provider score, Gate macro lexicon, queue lag and watchlist; ReaderCard receives
+only its reduced semantic view and never ToldContext or delivery intent. A successful primary route normally makes two serial
 provider calls. One fast retry is
 shared across both Predictors, so one route makes at most three calls; the
 artifact's current 20-second deadline covers the whole route. If primary
@@ -400,9 +415,9 @@ carries `model_fallback_from`, and the worker logs one warning per Event; only
 a chain where both routes fail degrades, with `primary_error` retaining the
 first route's code.
 
-The degraded path is never silent: the rule baseline still pushes watchlist
-primaries, score >= 80 with a grounded asset, high-priority Events, and
-deterministic exchange notices; everything else drops with `degraded=true` and
+The degraded path is never silent: only deterministic listing/telemetry and a
+grounded watchlist hit fail open. Score, macro words and queue priority cannot
+rescue failure; everything else drops as `degraded_no_objective_guard` with `degraded=true` and
 is counted in `triage_degraded_24h`. Each Program call records Predictor,
 route/attempt, resolved provider/model identity, request/input/instruction/demo/
 output hashes, validated output and deterministic normalizations, finish reason,
@@ -411,7 +426,10 @@ provider cost in microusd when the provider reports it. `program_executions`
 preserves initial and stale-ledger re-ask executions, including
 failed/superseded work, while
 `program_trace` always names the execution whose verdict was persisted;
-top-level usage aggregates all of them. A rising Program output-error count
+the told-only failure restores the complete `first_judgment`, never a detached
+verdict, and an evidence-changing failure cannot reuse it. Each persisted row
+binds verdict/editorial hashes and the exact runtime manifest. Top-level usage
+aggregates all executions. A rising Program output-error count
 means inspect the failing Predictor and its artifact token cap, not edit an
 operator deadline—the route deadline and token budgets are artifact state.
 
@@ -478,6 +496,11 @@ Diagnose News in this order:
    every requested case and does not move when the model does. `hard_gates`
    says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
    is a defect in the corpus or the ruler, not a provider outage. Compare
+   metric-v4 components as well: 45% final action, 35% exact TradeRelevance,
+   10% semantics/novelty and 10% ReaderCard, each with its effective denominator,
+   weight mass and gold coverage. A failed dimension without exact gold is not
+   scored. `metric_judge` unavailability is a receipted failure-as-zero for its
+   free-text field, not byte-equality fallback.
    receipts by `report_sha256`, which excludes wall-clock latency so two runs
    with the same predictions have the same address. The command is read-only —
    one `serve` connection that closes before the first model call, and no write, delivery,
@@ -491,11 +514,14 @@ Diagnose News in this order:
    serves News correctly but cannot close a promotion.
 7. A change is a sealed candidate, not an edited production artifact. Freeze a
    post-epoch development dataset; for a Program candidate optionally run the
-   manual `learning compile` with explicit metric-call, total model-call,
+   manual `learning compile` with explicit metric, task, reflection and
+   metric-judge call limits,
    provider-cost limits, an exact local `--compiler-image sha256:<64 hex>`, and
    a seed. The operator YAML must also carry one complete positive
    `llm.news_compiler_tariff`; then `learning propose` exactly one
-   `program` or `policy` variable and run `learning evaluate`. The trusted
+   `program` or `policy` variable and run `learning evaluate`. Compiler
+   protocol/receipt v3 seals the three role identities and accounts calls/cost/
+   failures separately before summing them. The trusted
    exporter seals accepted development only; the isolated compiler runner has
    no DB/holdout/application credentials and can emit only a bounded
    `ProgramPatchV2`; the trusted applier verifies all receipts before creating
@@ -503,7 +529,9 @@ Diagnose News in this order:
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
    observation, and then `learning canary arm`; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
-   breach. One Event belongs to one arm and runs one assigned Program (normally
+   breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
+   telemetry, and trips on selector, eligibility-profile, rolling-profile or
+   runtime-manifest drift. One Event belongs to one arm and runs one assigned Program (normally
    two serial Predictor calls, plus only the traced retry/fallback budget). A
    canary is not an excuse to skip the earlier evidence stages: the evaluator rejects a
    holdout/shadow/canary request before any Program call unless the preceding
@@ -522,8 +550,9 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-Issue #134 starts current evidence eligibility from zero at the deployment
-timestamp stored in `news_learning_epochs(program_v5)`. Every earlier
+Issue #160 starts current evidence eligibility from zero at the deployment
+timestamp stored in `news_learning_epochs(program_v6)`. Only accepted
+`news_review_v4` rows from this epoch enter metric v4, GEPA or release evidence. Every earlier
 Prompt/Program baseline remains readable audit history but cannot enter a
 dataset, DemoBank or release stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
@@ -675,7 +704,9 @@ the expert quality baseline and semantic normalization, making `program_v2`
 evidence audit-only for its release decisions. `0295` preserves v1-v3 and
 appends `program_v5` for the candidate-conditioned ToldContext factory and
 ownership hard cut, making every earlier cohort audit-only for current release
-decisions. None of these migrations
+decisions. `0301` hard-renames persisted `priority` to `queue_priority`, adds
+atomic editorial/scored/runtime-manifest judgment identity, trips old canaries,
+and starts `program_v6` for factory/executable v4 and policy v10. None of these migrations
 deletes history or claims a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
@@ -717,7 +748,7 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v5` reset changes eligibility, not retention: all earlier evidence
+  `program_v6` reset changes eligibility, not retention: all earlier evidence
   remains auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;

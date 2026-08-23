@@ -8,7 +8,6 @@ type NewsSchemas = components["schemas"];
 export type NewsFeed = NewsSchemas["NewsFeedData"];
 export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
 export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
-export type NewsFeedSort = NewsSchemas["NewsFeedFiltersData"]["sort"];
 export type NewsEvent = NewsSchemas["NewsEventData"];
 export type NewsAssetRef = NewsSchemas["NewsAssetRefData"];
 export type NewsSymbolNormalization = NewsSchemas["NewsSymbolNormalizationData"];
@@ -50,7 +49,6 @@ export type NewsReviewEventType = NewsSchemas["NewsReviewEventTypeData"];
 export type NewsReviewMiss = NewsSchemas["NewsReviewMissData"];
 export type NewsPriceStatus = NewsSchemas["NewsPriceStatusData"];
 
-export type NewsFeedPriority = "high" | "normal";
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
 export type NewsFeedOutcome = NewsOutcomeGroup;
 export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held", "pending"];
@@ -58,7 +56,6 @@ export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held",
 export const NEWS_FEED_HOURS: readonly number[] = [1, 6, 24, 72];
 export const NEWS_FEED_DEFAULT_HOURS = 24;
 
-export const NEWS_FEED_PRIORITIES: readonly NewsFeedPriority[] = ["high", "normal"];
 export const NEWS_FEED_DECISIONS: readonly NewsFeedDecision[] = [
   "push",
   "escalate",
@@ -90,9 +87,7 @@ export type NewsFeedFilters = {
   family: string | null;
   hours: number | null;
   outcome: NewsFeedOutcome | null;
-  priority: NewsFeedPriority | null;
   q: string;
-  sort: NewsFeedSort;
   symbol: string | null;
 };
 
@@ -103,10 +98,8 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
         filters.q,
         filters.family,
         filters.admission,
-        filters.priority,
         filters.decision,
         filters.symbol,
-        filters.sort,
         filters.outcome,
         filters.hours,
         cursor ?? "first",
@@ -119,9 +112,7 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
         hours: filters.hours ?? undefined,
         limit: NEWS_FEED_PAGE_SIZE,
         outcome: filters.outcome,
-        priority: filters.priority,
         q: filters.q,
-        sort: filters.sort,
         symbol: filters.symbol,
       },
       token,

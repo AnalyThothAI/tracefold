@@ -129,29 +129,25 @@ class ProgramCompilerLauncher:
         bundle_sha = _require_sha(input_bundle_sha256, code="input_bundle")
         canonical_input, bundle = _validated_input_document(input_document, expected_sha256=bundle_sha)
         grant = CompilerModelProxyGrant.issue(
-            task_endpoint=bundle.task_endpoint,
-            reflection_endpoint=bundle.reflection_endpoint,
-            max_model_calls=bundle.budget.max_task_model_calls,
+            task=bundle.task,
+            reflection=bundle.reflection,
+            metric_judge=bundle.metric_judge,
+            max_task_model_calls=bundle.budget.max_task_model_calls,
+            max_reflection_model_calls=bundle.budget.max_reflection_model_calls,
+            max_metric_judge_model_calls=bundle.budget.max_metric_judge_model_calls,
             max_cost_microusd=bundle.budget.max_cost_microusd,
             tariff=bundle.proxy_tariff,
-            task_max_output_tokens=bundle.task_max_output_tokens,
-            reflection_max_output_tokens=bundle.reflection_max_output_tokens,
-            task_timeout_seconds=bundle.task_timeout_seconds,
-            reflection_timeout_seconds=bundle.reflection_timeout_seconds,
             proxy_config_sha256=bundle.proxy_config_sha256,
             proxy_source_sha256=bundle.proxy_source_sha256,
         )
         if (
             grant.grant_sha256 != bundle.proxy_grant_sha256
-            or proxy_secret_config.task.identity != bundle.task_endpoint
-            or proxy_secret_config.reflection.identity != bundle.reflection_endpoint
+            or proxy_secret_config.task.binding("task") != bundle.task
+            or proxy_secret_config.reflection.binding("reflection") != bundle.reflection
+            or proxy_secret_config.metric_judge.binding("metric_judge") != bundle.metric_judge
             or proxy_secret_config.secret_free_config_sha256 != bundle.proxy_config_sha256
             or proxy_secret_config.tariff_sha256 != bundle.tariff_sha256
             or proxy_secret_config.tariff != bundle.proxy_tariff
-            or proxy_secret_config.task.max_tokens != bundle.task_max_output_tokens
-            or proxy_secret_config.reflection.max_tokens != bundle.reflection_max_output_tokens
-            or proxy_secret_config.task.timeout != bundle.task_timeout_seconds
-            or proxy_secret_config.reflection.timeout != bundle.reflection_timeout_seconds
             or grant.max_call_cost_microusd != bundle.budget.max_call_cost_microusd
             or bundle.compiler_source_sha256 != self._compiler_source_sha256
             or bundle.proxy_source_sha256 != self._proxy_source_sha256

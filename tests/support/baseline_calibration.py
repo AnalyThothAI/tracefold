@@ -1,16 +1,21 @@
-"""The frozen recorded-baseline calibration corpus, and the redaction that makes it publishable.
+"""The frozen recorded-baseline calibration corpora, and the redaction that makes them publishable.
 
 The recorded calibration was reproducible only against the operator's live database, so it stopped being a
 calibration the moment the corpus grew — #143 published `0.896373 / n=162` and by 2026-08-23 the same command
 answered `0.888426 / n=243` because #148 added 81 reviews. A number that moves when the data moves cannot
 prove that metric *wiring* is unchanged, which is the only thing this check exists to prove.
 
-So the corpus is frozen into `tests/fixtures/news_baseline_calibration_v1.json.gz` with every string redacted
-except an explicit structural allowlist. `_redact()` maps each remaining value to `redacted:<sha256[:16]>`,
-which preserves every comparison the recorded metric performs — all of them are equality — while publishing
-no provider headline, body, source handle, card or reviewer prose. Equal strings stay equal, different
-strings stay different, and the score is bit-identical to the same run against the live database (asserted in
-`tests/news/test_news_baseline_calibration.py`).
+The pre-#160 corpus remains frozen at `tests/fixtures/news_baseline_calibration_v1.json.gz`. It is historical
+audit evidence only: its `production_verdict`, `recorded_action`, policy-v8 and Gate `priority` fields are
+deliberately rejected by the current hard-cut contracts. Rewriting it would erase the evidence of what the
+old ruler measured. The active typed corpus is the separate
+`tests/fixtures/news_baseline_calibration_v2.json`, with `production_judgment`, the complete persisted
+`recorded_decision_result`, policy v10 and `queue_priority`.
+
+Every string is redacted except an explicit structural allowlist. `_redact()` maps each remaining value to
+`redacted:<sha256[:16]>`, which preserves every equality comparison the recorded metric performs while
+publishing no provider headline, body, source handle, card or reviewer prose. Equal strings stay equal and
+different strings stay different.
 
 **The allowlist is the whole design.** The first version enumerated the *text* keys instead and failed open
 in the obvious way: `title_zh` was not on the list, so 60 reader-facing Chinese cards shipped into a public
@@ -22,9 +27,9 @@ The redaction is deliberately *not* similarity-preserving: `decide()`'s characte
 would read different neighbours out of redacted headlines. This fixture is therefore valid for
 `--mode recorded` only, and the calibration test pins that.
 
-Regenerate (requires the operator's database and `~/.tracefold/config.yaml`):
+Regenerate v2 (requires the operator's database and `~/.tracefold/config.yaml`):
 
-    uv run python -m tests.support.baseline_calibration tests/fixtures/news_baseline_calibration_v1.json.gz
+    uv run python -m tests.support.baseline_calibration tests/fixtures/news_baseline_calibration_v2.json
 """
 
 from __future__ import annotations
@@ -36,8 +41,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-CALIBRATION_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_baseline_calibration_v1.json.gz"
-CALIBRATION_SCHEMA = "tracefold.news.baseline_calibration_corpus.v1"
+_FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
+HISTORICAL_CALIBRATION_FIXTURE = _FIXTURE_DIR / "news_baseline_calibration_v1.json.gz"
+HISTORICAL_CALIBRATION_SCHEMA = "tracefold.news.baseline_calibration_corpus.v1"
+CALIBRATION_FIXTURE = _FIXTURE_DIR / "news_baseline_calibration_v2.json"
+CALIBRATION_SCHEMA = "tracefold.news.baseline_calibration_corpus.v2"
 
 # Keys whose values the recorded metric, the cluster grouping or the retrieval receipt compare or count, and
 # which carry no prose: rubric labels, enums, symbols, content hashes, opaque identifiers and stable keys.
@@ -53,6 +61,13 @@ _STRUCTURAL_KEYS = frozenset(
         "timeliness",
         "why_support",
         "why_value",
+        "trade_impact_breadth",
+        "trade_tradability",
+        "trade_surprise",
+        "trade_development_delta",
+        "trade_channels",
+        "trade_affected_markets",
+        "reader_value",
         "should_push",
         "judgment",
         "first_bad_owner",
@@ -82,17 +97,35 @@ _STRUCTURAL_KEYS = frozenset(
         "evidence_sha256",
         "storyline_key",
         "stratum",
-        "recorded_action",
+        "editorial_contract_version",
+        "editorial_origin",
+        "editorial_sha256",
+        "verdict_sha256",
+        "scored_judgment_sha256",
+        # complete persisted DecisionResult projection
+        "final",
+        "override_rule",
+        "throttled_by",
+        "rule_baseline",
+        "watchlist_hits",
+        "seen_scope",
         # gate facts and the frozen policy
         "admission",
         "asset_class",
         "engine_type",
         "family",
-        "priority",
+        "queue_priority",
         "strategies",
         "policy_version",
         "policy_sha256",
         "unclear_push_event_types",
+        # typed editorial relevance enums and bounded code sets
+        "impact_breadth",
+        "tradability",
+        "surprise",
+        "development_delta",
+        "channels",
+        "affected_markets",
     }
 )
 
@@ -116,6 +149,29 @@ def _redact(value: Any, *, key: str = "") -> Any:
     return value
 
 
+def redact_calibration_episode(episode: dict[str, Any]) -> dict[str, Any]:
+    """Redact one current episode and reissue identities over the redacted bytes.
+
+    `ScoredJudgment` hashes its verdict. Redacting reader copy after issuing the
+    judgment would therefore make the public fixture correctly private but
+    contract-invalid. The public projection is a new, internally consistent
+    judgment over equality-preserving redacted text; the historical v1 fixture
+    is never passed through this function.
+    """
+
+    from tracefold.news.models import TriageVerdict
+    from tracefold.news.semantic_contract import EditorialEnvelope, ScoredJudgment
+
+    redacted = _redact(episode)
+    raw = redacted.get("production_judgment")
+    if isinstance(raw, dict):
+        redacted["production_judgment"] = ScoredJudgment.issue(
+            verdict=TriageVerdict.model_validate(raw["verdict"]),
+            editorial=EditorialEnvelope.model_validate(raw["editorial"]),
+        ).model_dump(mode="json")
+    return redacted
+
+
 def prose_offenders(payload: Any, *, path: str = "") -> list[tuple[str, str]]:
     """Every string in `payload` that reads like human language. Empty is the only acceptable answer."""
 
@@ -135,12 +191,28 @@ def prose_offenders(payload: Any, *, path: str = "") -> list[tuple[str, str]]:
     return found
 
 
-def load_calibration_corpus() -> dict[str, Any]:
-    with gzip.open(CALIBRATION_FIXTURE, "rb") as handle:
-        payload: dict[str, Any] = json.loads(handle.read())
-    if payload.get("schema") != CALIBRATION_SCHEMA:
+def _load_fixture(path: Path, schema: str) -> dict[str, Any]:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rb") as handle:
+            raw = handle.read()
+    else:
+        raw = path.read_bytes()
+    payload: dict[str, Any] = json.loads(raw)
+    if payload.get("schema") != schema:
         raise ValueError(f"news_baseline_calibration_schema_unknown:{payload.get('schema')}")
     return payload
+
+
+def load_calibration_corpus() -> dict[str, Any]:
+    """Load the current typed, policy-v10 calibration corpus."""
+
+    return _load_fixture(CALIBRATION_FIXTURE, CALIBRATION_SCHEMA)
+
+
+def load_historical_calibration_corpus() -> dict[str, Any]:
+    """Load the immutable pre-#160 audit corpus without projecting it into current models."""
+
+    return _load_fixture(HISTORICAL_CALIBRATION_FIXTURE, HISTORICAL_CALIBRATION_SCHEMA)
 
 
 def write_calibration_corpus(path: Path, payload: dict[str, Any]) -> int:
@@ -149,8 +221,11 @@ def write_calibration_corpus(path: Path, payload: dict[str, Any]) -> int:
     identity is the decompressed document and never its compressed size."""
 
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as handle:
-        handle.write(blob)
+    if path.suffix == ".gz":
+        with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0) as handle:
+            handle.write(blob)
+    else:
+        path.write_bytes(blob)
     return len(blob)
 
 
@@ -179,7 +254,7 @@ def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs 
             "rule": "allowlist: every string outside structural_keys is redacted",
             "property": "equality-preserving, not similarity-preserving; valid for --mode recorded only",
         },
-        "episodes": [_redact(dict(episode)) for episode in episodes],
+        "episodes": [redact_calibration_episode(dict(episode)) for episode in episodes],
     }
     offenders = prose_offenders(payload["episodes"])
     if offenders:  # never write a fixture the guard test would reject

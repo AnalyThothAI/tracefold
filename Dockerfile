@@ -26,8 +26,6 @@ RUN npm run build
 
 FROM python:3.13-slim-bookworm AS python-deps
 
-ARG TRACEFOLD_NEWS_PROGRAM_PROFILE=d_stable
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
@@ -51,24 +49,7 @@ RUN python -m pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY src ./src
-COPY deploy/news-program-v3-rollback /tmp/tracefold-news-program-v3-rollback
 COPY --from=web-builder /app/web/dist ./src/tracefold/web/dist
-
-RUN set -eu; \
-    case "${TRACEFOLD_NEWS_PROGRAM_PROFILE}" in \
-        d_stable) \
-            ;; \
-        program_v3_rollback) \
-            rollback_sha="$(python -c 'import json; print(json.load(open("/tmp/tracefold-news-program-v3-rollback/registry.json", encoding="utf-8"))["stable"])')"; \
-            find src/tracefold/news/agents/programs -mindepth 1 -maxdepth 1 -type d -exec rm -rf '{}' +; \
-            cp /tmp/tracefold-news-program-v3-rollback/registry.json src/tracefold/news/agents/programs/registry.json; \
-            cp -R "/tmp/tracefold-news-program-v3-rollback/${rollback_sha}" src/tracefold/news/agents/programs/; \
-            ;; \
-        *) \
-            echo "Unknown TRACEFOLD_NEWS_PROGRAM_PROFILE=${TRACEFOLD_NEWS_PROGRAM_PROFILE}" >&2; \
-            exit 2; \
-            ;; \
-    esac
 
 RUN --mount=type=secret,id=github_token \
     --mount=type=cache,target=/root/.cache/uv \
@@ -90,27 +71,17 @@ RUN --mount=type=secret,id=github_token \
     done; \
     exit 1
 
-RUN set -eu; \
-    loaded_sha="$(/app/.venv/bin/python -c 'from tracefold.news.agents.semantic_program import load_stable_program_artifact; print(load_stable_program_artifact().program_sha256)')"; \
-    if [ "${TRACEFOLD_NEWS_PROGRAM_PROFILE}" = "program_v3_rollback" ]; then \
-        expected_sha="$(python -c 'import json; print(json.load(open("/tmp/tracefold-news-program-v3-rollback/registry.json", encoding="utf-8"))["stable"])')"; \
-        [ "${loaded_sha}" = "${expected_sha}" ] || { \
-            echo "Rollback Program identity mismatch: loaded=${loaded_sha} expected=${expected_sha}" >&2; \
-            exit 2; \
-        }; \
-    fi
-
+RUN /app/.venv/bin/python -c \
+    'from tracefold.news.agents.semantic_program import load_stable_program_artifact; load_stable_program_artifact()'
 
 FROM python:3.13-slim-bookworm
 
 ARG TRACEFOLD_BUILD_REVISION
-ARG TRACEFOLD_NEWS_PROGRAM_PROFILE=d_stable
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TRACEFOLD_RUNTIME_REVISION=${TRACEFOLD_BUILD_REVISION}
 
-LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION} \
-    io.tracefold.news.program.profile=${TRACEFOLD_NEWS_PROGRAM_PROFILE}
+LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION}
 
 WORKDIR /app
 

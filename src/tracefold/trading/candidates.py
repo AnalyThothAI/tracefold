@@ -143,7 +143,14 @@ def oi_candidate(
         whale_oi_ratio_bps=_int(row.get("whale_oi_ratio_bps"), 0) or 0,
         rank_in_window=rank,
         metric_version=str(row.get("metric_version") or ""),
+        learning_epoch=str(row.get("learning_epoch") or ""),
         program_version=str(row.get("program_version") or ""),
+        program_sha256=str(row.get("program_sha256") or ""),
+        policy_version=str(row.get("policy_version") or ""),
+        editorial_origin=str(row.get("editorial_origin") or ""),
+        editorial_sha256=str(row.get("editorial_sha256") or ""),
+        scored_judgment_sha256=str(row.get("scored_judgment_sha256") or ""),
+        runtime_manifest_sha=str(row.get("runtime_manifest_sha") or ""),
     )
 
 
@@ -234,8 +241,14 @@ def news_candidate(
         novelty=novelty,
         headline_zh=str(verdict.get("headline_zh") or ""),
         why_zh=str(verdict.get("why_zh") or ""),
-        program_version=(str(row["program_version"]) if row.get("program_version") else None),
-        policy_version=(str(row["policy_version"]) if row.get("policy_version") else None),
+        learning_epoch=str(row.get("learning_epoch") or ""),
+        program_version=str(row.get("program_version") or ""),
+        program_sha256=str(row.get("program_sha256") or ""),
+        policy_version=str(row.get("policy_version") or ""),
+        editorial_origin=str(row.get("editorial_origin") or ""),
+        editorial_sha256=str(row.get("editorial_sha256") or ""),
+        scored_judgment_sha256=str(row.get("scored_judgment_sha256") or ""),
+        runtime_manifest_sha=str(row.get("runtime_manifest_sha") or ""),
     )
 
 

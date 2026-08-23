@@ -23,16 +23,20 @@ from tracefold.news import (
     ClosedWindow,
     DatasetSpec,
     DeskQuery,
+    EditorialEnvelope,
     EvaluationRequest,
     ExternalMissSubmission,
     ProgramTrace,
     ProgramUsage,
     ProposalReceipt,
     ReplayArmSpec,
+    ScoredJudgment,
     SemanticJudgeError,
     SemanticJudgment,
     TaskRef,
+    TradeRelevanceV1,
     TriageContext,
+    TriageVerdict,
     load_recording_replay_capability,
 )
 from tracefold.news import (
@@ -52,7 +56,10 @@ from tracefold.news.agents.program_compiler_security import (
     CompileReceiptChain,
     CompilerEndpointIdentity,
     CompilerProxyTariff,
+    CompilerRoleBindingV3,
     ContentAddressedCompileReceipt,
+    OptimizerCompileProvenanceV3,
+    validate_compile_receipt_chain_v3,
 )
 from tracefold.news.agents.semantic_program import (
     CompileReceipt,
@@ -64,6 +71,11 @@ from tracefold.news.agents.semantic_program import (
     apply_program_patch_v2,
     extract_optimizer_patch,
     load_stable_program_artifact,
+)
+from tracefold.news.canary import (
+    CANARY_ELIGIBILITY_PROFILE_SHA,
+    CANARY_ROLLING_PROFILE_SHA,
+    CANARY_SELECTOR_VERSION,
 )
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
@@ -92,7 +104,7 @@ class ReviewDesk(_ReviewDesk):
 def test_arm_manifest_identity_is_program_native() -> None:
     policy = DEFAULT_POLICY.as_dict()
     arm = ArmManifest(
-        program_version="news_semantic_program_v3",
+        program_version="news_semantic_program_v4",
         program_sha256="a" * 64,
         runtime_model_bindings_sha256="c" * 64,
         retrieval_sha256="b" * 64,
@@ -174,12 +186,13 @@ def test_observed_program_execution_identity_fails_closed(executions: list[dict[
         executions[0]["trace"]["context_sha256"] = context_sha  # type: ignore[index]
     row: dict[str, object] = {"trace": {"program_executions": executions}}
     if error_code != "news_program_execution_index_mismatch":
-        verdict = {"decision": "push"}
+        verdict = _verdict()
+        observed_fields = _observed_judgment_fields(verdict)
         selected_trace = dict(executions[0]["trace"])  # type: ignore[arg-type]
         selected_trace["verdict_sha256"] = _sha(verdict)
         executions[0]["trace"] = selected_trace
         row = {
-            "verdict": verdict,
+            **observed_fields,
             "trace": {
                 "program_execution_index": 0,
                 "program_trace": selected_trace,
@@ -392,7 +405,7 @@ def test_observed_degraded_program_keeps_unselected_failed_execution_audit() -> 
         "recording_call_indices": [0],
     }
     row = {
-        "verdict": _verdict(),
+        **_observed_judgment_fields(_verdict(), origin="degraded_unavailable"),
         "degraded": True,
         "verdict_error_code": "provider_unavailable",
         "trace": {
@@ -454,21 +467,19 @@ def _epoch_started_at_ms(conn: object) -> int:
     return int(row["starts_at_ms"])
 
 
-def test_candidate_evaluator_pins_the_program_v5_epoch_contract(conn) -> None:
+def test_candidate_evaluator_pins_the_program_v6_epoch_contract(conn) -> None:
     row = conn.execute(
         "SELECT program_factory_id, artifact_schema_version, baseline_program_version, "
         "prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
         (LEARNING_EPOCH,),
     ).fetchone()
 
-    assert LEARNING_EPOCH == "program_v5"
-    assert candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == (
-        "candidate_conditioned_told_context_and_predictor_input_partition"
-    )
+    assert LEARNING_EPOCH == "program_v6"
+    assert candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == "trade_relevance_editorial_authority_hard_cut"
     assert dict(row) == {
-        "program_factory_id": "tracefold.news.semantic_program.factory_v3",
+        "program_factory_id": "tracefold.news.semantic_program.factory_v4",
         "artifact_schema_version": "news_semantic_program_artifact_v2",
-        "baseline_program_version": "news_semantic_program_v3",
+        "baseline_program_version": "news_semantic_program_v4",
         "prior_evidence_disposition": "audit_only",
         "reset_reason": candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
     }
@@ -478,14 +489,16 @@ def test_candidate_evaluator_pins_the_program_v5_epoch_contract(conn) -> None:
 def _arm(
     *,
     policy: dict[str, object] | None = None,
-    program_version: str = "news_semantic_program_v3",
+    program_version: str = "news_semantic_program_v4",
     program_sha256: str | None = None,
+    runtime_model_bindings_sha256: str | None = None,
 ) -> ArmManifest:
     selected_policy = policy or DEFAULT_POLICY.as_dict()
     return ArmManifest(
         program_version=program_version,
         program_sha256=program_sha256 or _sha({"program": program_version, "fixture": "stable"}),
-        runtime_model_bindings_sha256=_sha({"model_bindings": "fixture-primary+fallback"}),
+        runtime_model_bindings_sha256=runtime_model_bindings_sha256
+        or _sha({"model_bindings": "fixture-primary+fallback"}),
         retrieval_sha256=_sha({"told": "v1", "evidence": "v1"}),
         policy=selected_policy,
         policy_sha256=_sha(selected_policy),
@@ -527,10 +540,47 @@ def _verdict() -> dict[str, object]:
     }
 
 
+def _relevance() -> TradeRelevanceV1:
+    return TradeRelevanceV1(
+        impact_breadth="sector",
+        tradability="direct",
+        surprise="material_vs_expectation",
+        development_delta="state_change",
+        channels=("commodity_demand",),
+        affected_markets=("us_equity_broad",),
+        reader_value="realtime",
+    )
+
+
+def _editorial(*, origin: str = "model") -> EditorialEnvelope:
+    if origin == "model":
+        return EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance())
+    return EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None)
+
+
+def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "model") -> dict[str, object]:
+    editorial = _editorial(origin=origin)
+    scored = ScoredJudgment.issue(
+        verdict=TriageVerdict.model_validate(verdict),
+        editorial=editorial,
+    )
+    return {
+        "verdict": verdict,
+        "editorial": editorial.model_dump(mode="json"),
+        "scored_judgment_sha256": scored.scored_judgment_sha256,
+    }
+
+
 def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object]) -> ProgramTrace:
     context_sha = _sha(context.model_dump(mode="json"))
-    semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "title_zh", "why_zh"}}
+    semantics = {
+        key: value
+        for key, value in verdict.items()
+        if key not in {"actionable", "decision", "headline_zh", "title_zh", "why_zh"}
+    }
+    semantics["relevance"] = _relevance().model_dump(mode="json")
     card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
+    editorial = _editorial()
     runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
     runtime_binding_sha = _sha(
         {
@@ -582,13 +632,14 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         program_version=arm.program_version,
         program_sha256=arm.program_sha256,
         context_sha256=context_sha,
-        factory_id="tracefold.news.semantic_program.factory_v3",
+        factory_id="tracefold.news.semantic_program.factory_v4",
         topology_sha256=_sha("topology"),
         adapter_sha256=_sha("adapter"),
         assembler_sha256=_sha("assembler"),
         event_semantics_sha256=_sha(semantics),
         reader_card_sha256=_sha(card),
         verdict_sha256=_sha(verdict),
+        editorial_sha256=editorial.editorial_sha256,
         answering_route="primary",
         calls=calls,
     )
@@ -611,6 +662,7 @@ class _StaticJudge:
         trace = _trace(self.arm, context, verdict)
         return SemanticJudgment(
             verdict=verdict,
+            editorial=_editorial(),
             program_version=self.arm.program_version,
             program_sha256=self.arm.program_sha256,
             trace=trace,
@@ -636,6 +688,7 @@ class _NondeterministicJudge(_StaticJudge):
             verdict["headline_zh"] = "同一请求返回了不同标题"
         return SemanticJudgment(
             verdict=verdict,
+            editorial=_editorial(),
             program_version=self.arm.program_version,
             program_sha256=self.arm.program_sha256,
             trace=_trace(self.arm, context, verdict),
@@ -769,8 +822,8 @@ def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
     )
     receipt = CompileReceipt(
         **provenance,
-        compiler="tracefold.news.dspy_gepa_compiler_v2",
-        source="trusted_compiler_launcher_v2",
+        compiler="tracefold.news.dspy_gepa_compiler_v3",
+        source="trusted_compiler_launcher_v3",
         accepted_by="unaccepted_candidate",
     )
     artifact = apply_program_patch_v2(base, patch, eligible, receipt)
@@ -787,6 +840,7 @@ def _optimizer_provenance(
     rule_pack_root_sha256: str = "e" * 64,
     eligible_demo_bank_root_sha256: str = "4" * 64,
     patch_payload: dict[str, object] | None = None,
+    metric_calls: int = 12,
 ) -> tuple[dict[str, object], dict[str, object]]:
     epoch = conn.execute(
         "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
@@ -812,6 +866,8 @@ def _optimizer_provenance(
         task_output_microusd_per_million=1_000_000,
         reflection_input_microusd_per_million=1_000_000,
         reflection_output_microusd_per_million=1_000_000,
+        metric_judge_input_microusd_per_million=1_000_000,
+        metric_judge_output_microusd_per_million=1_000_000,
     )
     task_endpoint = CompilerEndpointIdentity.issue(
         model="fixture/task",
@@ -821,26 +877,57 @@ def _optimizer_provenance(
         model="fixture/reflection",
         api_base="https://reflection.fixture.invalid/v1",
     )
+    metric_judge_endpoint = CompilerEndpointIdentity.issue(
+        model="fixture/metric-judge",
+        api_base="https://metric-judge.fixture.invalid/v1",
+    )
+    task = CompilerRoleBindingV3.issue(
+        role="task",
+        endpoint=task_endpoint,
+        max_output_tokens=1_200,
+        timeout_seconds=20,
+        temperature=0,
+        model_kwargs={},
+    )
+    reflection = CompilerRoleBindingV3.issue(
+        role="reflection",
+        endpoint=reflection_endpoint,
+        max_output_tokens=32_000,
+        timeout_seconds=300,
+        temperature=1,
+        model_kwargs={},
+    )
+    metric_judge = CompilerRoleBindingV3.issue(
+        role="metric_judge",
+        endpoint=metric_judge_endpoint,
+        max_output_tokens=4_096,
+        timeout_seconds=120,
+        temperature=0,
+        model_kwargs={},
+    )
     grant = CompilerModelProxyGrant.issue(
-        task_endpoint=task_endpoint,
-        reflection_endpoint=reflection_endpoint,
-        max_model_calls=40,
+        task=task,
+        reflection=reflection,
+        metric_judge=metric_judge,
+        max_task_model_calls=40,
+        max_reflection_model_calls=40,
+        max_metric_judge_model_calls=40,
         max_cost_microusd=1_000_000,
         tariff=tariff,
-        task_max_output_tokens=1_200,
-        reflection_max_output_tokens=600,
-        task_timeout_seconds=20,
-        reflection_timeout_seconds=20,
         proxy_config_sha256="6" * 64,
         proxy_source_sha256="5" * 64,
         max_request_bytes=32_768,
         max_response_bytes=32_768,
     )
     proxy_calls: list[CompilerProxyCallLeaf] = []
-    for role, count, cost_microusd in (("task", 20, 1_000), ("reflection", 10, 500)):
+    for role, count, cost_microusd in (
+        ("task", 20, 1_000),
+        ("reflection", 10, 500),
+        ("metric_judge", 2, 250),
+    ):
         for sequence in range(1, count + 1):
             request_bytes = 256
-            max_output_tokens = grant.task_max_output_tokens if role == "task" else grant.reflection_max_output_tokens
+            max_output_tokens = grant.binding(role).max_output_tokens
             call_payload: dict[str, object] = {
                 "role": role,
                 "sequence": sequence,
@@ -872,6 +959,13 @@ def _optimizer_provenance(
         grant_sha256=grant.grant_sha256,
         task_model_calls=20,
         reflection_model_calls=10,
+        metric_judge_model_calls=2,
+        task_cost_microusd=20_000,
+        reflection_cost_microusd=5_000,
+        metric_judge_cost_microusd=500,
+        task_failures=0,
+        reflection_failures=0,
+        metric_judge_failures=0,
         actual_cost_microusd=sum(call.provider_cost_microusd for call in proxy_calls),
         reserved_cost_microusd=sum(call.reserved_cost_microusd for call in proxy_calls),
         tariff_sha256=tariff.tariff_sha256,
@@ -880,8 +974,22 @@ def _optimizer_provenance(
         error_codes=(),
         calls=proxy_calls,
     )
+    train_count = max(1, len(episodes) - 1)
+    val_count = len(episodes) - train_count
     optimizer_config = {
-        "runner_optimizer_config": {"optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1", "seed": 129},
+        "runner_optimizer_config": {
+            "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
+            "seed": 129,
+            "constructor_scalar_arguments": {
+                "max_metric_calls": 20,
+                "reflection_minibatch_size": min(2, train_count),
+            },
+            "compile_call": {
+                "example_count": len(episodes),
+                "trainset_count": train_count,
+                "valset_count": val_count,
+            },
+        },
         "proxy_grant": grant.model_dump(mode="json"),
         "proxy_execution": proxy_execution.model_dump(mode="json"),
         "input_bundle_sha256": "1" * 64,
@@ -936,11 +1044,19 @@ def _optimizer_provenance(
         "seed": 129,
         "max_metric_calls": 20,
         "max_task_model_calls": 40,
+        "max_reflection_model_calls": 40,
+        "max_metric_judge_model_calls": 40,
         "max_cost_microusd": 1_000_000,
         "max_call_cost_microusd": grant.max_call_cost_microusd,
-        "metric_calls": 12,
+        "metric_calls": metric_calls,
         "task_model_calls": 20,
         "reflection_model_calls": 10,
+        "metric_judge_attempts": 2,
+        "metric_judge_model_calls": 2,
+        "metric_judge_failures": 0,
+        "task_cost_microusd": 20_000,
+        "reflection_cost_microusd": 5_000,
+        "metric_judge_cost_microusd": 500,
         "actual_cost_microusd": proxy_execution.actual_cost_microusd,
         "trajectory_sha256": _sha(trajectory),
         "checkpoint_sha256": _sha(checkpoint),
@@ -960,6 +1076,7 @@ def _optimizer_provenance(
         "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
         "task_endpoint_identity_sha256": task_endpoint.binding_sha256,
         "reflection_endpoint_identity_sha256": reflection_endpoint.binding_sha256,
+        "metric_judge_endpoint_identity_sha256": metric_judge_endpoint.binding_sha256,
         "compiler_source_sha256": launch.compiler_source_sha256,
         "compiler_lock_sha256": launch.compiler_lock_sha256,
         "sandbox_policy_sha256": sandbox_policy.policy_sha256,
@@ -1016,7 +1133,7 @@ def _program_candidate(
 ) -> CandidateManifest:
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
-        program_version=program_version or "news_semantic_program_v3",
+        program_version=program_version or "news_semantic_program_v4",
         program_sha256=program_sha256 or _sha({"program": "candidate", "cluster_id": cluster_id}),
     )
     candidate_arm = ArmManifest.model_validate(arm_payload)
@@ -1032,13 +1149,13 @@ def _program_candidate(
         compile_receipt_chain = compile_receipt_chain_override
     candidate_state_sha = program_state_sha256 or _sha({"state": candidate_arm.program_sha256})
     diff_payload = {
-        "schema_version": "tracefold.news.program_machine_diff.v2",
+        "schema_version": "tracefold.news.program_machine_diff.v3",
         "parent_program_sha256": stable.program_sha256,
         "parent_state_sha256": str(compile_provenance.get("parent_state_sha256") or "c" * 64),
         "candidate_program_sha256": candidate_arm.program_sha256,
         "candidate_state_sha256": candidate_state_sha,
         "immutable": {
-            "factory_id": "tracefold.news.semantic_program.factory_v3",
+            "factory_id": "tracefold.news.semantic_program.factory_v4",
             "quality_kernel_sha256": str(compile_provenance.get("quality_kernel_sha256") or "d" * 64),
             "rule_pack_root_sha256": str(compile_provenance.get("rule_pack_root_sha256") or "e" * 64),
             "route_spec_sha256": "1" * 64,
@@ -1217,8 +1334,35 @@ def _open_event(
         evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert evidence is not None
         verdict = _verdict()
-        semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "title_zh", "why_zh"}}
+        semantics = {
+            key: value
+            for key, value in verdict.items()
+            if key not in {"actionable", "decision", "headline_zh", "title_zh", "why_zh"}
+        }
+        semantics["relevance"] = _relevance().model_dump(mode="json")
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
+        editorial = _editorial()
+        scored = ScoredJudgment.issue(
+            verdict=TriageVerdict.model_validate(verdict),
+            editorial=editorial,
+        )
+        runtime_manifest_row = conn.execute(
+            "SELECT manifest_sha FROM news_agent_runtime_manifests "
+            "WHERE stable_bundle_sha = %s ORDER BY registered_at_ms DESC, manifest_sha DESC LIMIT 1",
+            (effective_bundle,),
+        ).fetchone()
+        if runtime_manifest_row is None:
+            runtime_manifest_sha = _sha({"stable": stable.bundle_sha, "candidate": effective_bundle, "runtime": "test"})
+            repos.news.register_agent_runtime_manifest(
+                manifest_sha=runtime_manifest_sha,
+                stable_bundle_sha=stable.bundle_sha,
+                candidate_shas=(effective_bundle,),
+                image_digest="sha256:test-image",
+                runtime_revision="test-revision-with-candidate",
+                now_ms=published_at_ms,
+            )
+            runtime_manifest_row = {"manifest_sha": runtime_manifest_sha}
+        assert runtime_manifest_row is not None
         runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
         runtime_binding_sha = _sha(
             {
@@ -1273,13 +1417,14 @@ def _open_event(
                 "program_version": effective_program_version,
                 "program_sha256": effective_program_sha,
                 "context_sha256": _sha(context),
-                "factory_id": "tracefold.news.semantic_program.factory_v3",
+                "factory_id": "tracefold.news.semantic_program.factory_v4",
                 "topology_sha256": _sha("topology"),
                 "adapter_sha256": _sha("adapter"),
                 "assembler_sha256": _sha("assembler"),
                 "event_semantics_sha256": _sha(semantics),
                 "reader_card_sha256": _sha(card),
                 "verdict_sha256": _sha(verdict),
+                "editorial_sha256": editorial.editorial_sha256,
                 "answering_route": "primary",
                 "calls": calls,
             }
@@ -1345,9 +1490,12 @@ def _open_event(
             model_decision="push",
             rule_baseline_decision="push",
             final_decision="push",
-            override_rule="model_push_actionable",
+            override_rule="trade_relevance_realtime",
             throttled_by=None,
             verdict=verdict,
+            editorial=editorial.model_dump(mode="json"),
+            scored_judgment_sha256=scored.scored_judgment_sha256,
+            runtime_manifest_sha=str(runtime_manifest_row["manifest_sha"]),
             model="fixture-model",
             program_version=effective_program_version,
             program_sha256=effective_program_sha,
@@ -1401,6 +1549,8 @@ def _accepted_event(
     why: str = "fail",
     stale_reask: bool = False,
     stable: ArmManifest | None = None,
+    hit_id: int = 112001,
+    title: str = "Micron says DRAM contract prices rose again in August",
 ) -> str:
     selected_stable = stable or _arm()
     event_id = _open_event(
@@ -1409,6 +1559,8 @@ def _accepted_event(
         program_version=selected_stable.program_version,
         program_sha256=selected_stable.program_sha256,
         stale_reask=stale_reask,
+        hit_id=hit_id,
+        title=title,
     )
     conn.execute(
         "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
@@ -1428,6 +1580,83 @@ def _accepted_event(
             idempotency_key=str(uuid.uuid4()),
         )
     return event_id
+
+
+def _accepted_compilable_event(
+    conn,
+    *,
+    why: str = "fail",
+    stale_reask: bool = False,
+    stable: ArmManifest | None = None,
+) -> str:
+    """Create the focal Event plus an independent accepted GEPA validation case."""
+
+    selected_stable = stable or _arm()
+    event_id = _accepted_event(
+        conn,
+        why=why,
+        stale_reask=stale_reask,
+        stable=selected_stable,
+    )
+    companion_id = _accepted_event(
+        conn,
+        why=why,
+        stable=selected_stable,
+        hit_id=912001,
+        title="European Central Bank unexpectedly cuts its deposit rate by 50 basis points",
+    )
+    assert companion_id != event_id
+    return event_id
+
+
+def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None:
+    stable = _arm()
+    prior_runtime = _arm(runtime_model_bindings_sha256=_sha({"model_bindings": "retired-four-slot-runtime"}))
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": prior_runtime.bundle_sha, "runtime": "retired-four-slot-runtime"}),
+            stable_bundle_sha=prior_runtime.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:retired-test-image",
+            runtime_revision="retired-four-slot-runtime",
+            now_ms=NOW - 4 * 3_600_000,
+        )
+    prior_event_id = _accepted_event(
+        conn,
+        stable=prior_runtime,
+        hit_id=112011,
+        title="SK Hynix expands advanced packaging capacity in South Korea",
+    )
+    with repos.transaction():
+        repos.news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "current-four-slot-runtime"}),
+            stable_bundle_sha=stable.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:current-test-image",
+            runtime_revision="current-four-slot-runtime",
+            now_ms=NOW - 3 * 3_600_000,
+        )
+    exact_event_id = _accepted_event(
+        conn,
+        stable=stable,
+        hit_id=112010,
+        title="Micron raises its current-quarter DRAM contract price outlook",
+    )
+
+    development = asyncio.run(
+        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+
+    assert [case.event_id for case in development.cases] == [exact_event_id]
+    assert prior_event_id not in {case.event_id for case in development.cases}
+    assert development.counts["eligible_event_n"] == 1
+    assert development.counts["eligibility"]["bundle_sha"] == stable.bundle_sha
 
 
 def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(conn) -> None:
@@ -1589,7 +1818,8 @@ def test_development_compile_episodes_is_current_epoch_read_only_interface(conn)
     assert episodes[0]["context"]["told"]["entries"] == []
     assert episodes[0]["accepted_review"]["should_push"] == "must_push"
     assert episodes[0]["accepted_review"]["dimensions"]["why_support"] == "fail"
-    assert episodes[0]["production_verdict"]["headline_zh"] == "DRAM 合约价续涨"
+    assert episodes[0]["production_judgment"]["verdict"]["headline_zh"] == "DRAM 合约价续涨"
+    assert episodes[0]["production_judgment"]["editorial"]["relevance"] == _relevance().model_dump(mode="json")
     assert conn.execute("SELECT count(*) AS n FROM news_model_recordings").fetchone()["n"] == 0
 
 
@@ -1616,7 +1846,8 @@ def test_development_compile_export_seals_exact_dataset_and_ordered_episodes(con
     assert episode["case_id"] == development.cases[0].case_id
     assert episode["cluster_id"] == development.cases[0].cluster_id
     assert episode["accepted_review"]["review_id"] == development.cases[0].review_id
-    assert episode["production_verdict"] == _verdict()
+    assert episode["production_judgment"]["verdict"] == _verdict()
+    assert episode["production_judgment"]["editorial"] == _editorial().model_dump(mode="json")
     assert conn.execute("SELECT count(*) AS n FROM news_model_recordings").fetchone()["n"] == 0
 
 
@@ -1764,6 +1995,58 @@ def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
     assert _judge_call_count(judges) == 0
 
 
+def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receipt(conn) -> None:
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    development = asyncio.run(
+        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    episode_count = len(development.cases)
+    train_count = max(1, episode_count - 1)
+    val_count = episode_count - train_count
+    metric_call_ceiling = 20 + val_count + min(2, train_count)
+
+    allowed, chain = _optimizer_provenance(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        metric_calls=metric_call_ceiling,
+    )
+    proof = OptimizerCompileProvenanceV3.model_validate(allowed)
+    validate_compile_receipt_chain_v3(
+        chain,
+        provenance=proof,
+        patch_sha256=proof.patch_sha256,
+        parent_program_sha256=proof.parent_program_sha256,
+        parent_state_sha256=proof.parent_state_sha256,
+        eligible_demo_bank_root_sha256=proof.eligible_demo_bank_root_sha256,
+        target_runtime_manifest_sha256=proof.target_runtime_manifest_sha256,
+    )
+
+    excessive, excessive_chain = _optimizer_provenance(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        metric_calls=metric_call_ceiling + 1,
+    )
+    excessive_proof = OptimizerCompileProvenanceV3.model_validate(excessive)
+    with pytest.raises(ValueError, match="metric_budget"):
+        validate_compile_receipt_chain_v3(
+            excessive_chain,
+            provenance=excessive_proof,
+            patch_sha256=excessive_proof.patch_sha256,
+            parent_program_sha256=excessive_proof.parent_program_sha256,
+            parent_state_sha256=excessive_proof.parent_state_sha256,
+            eligible_demo_bank_root_sha256=excessive_proof.eligible_demo_bank_root_sha256,
+            target_runtime_manifest_sha256=excessive_proof.target_runtime_manifest_sha256,
+        )
+
+
 @pytest.mark.parametrize(
     ("persist_forged", "error_code"),
     [
@@ -1829,7 +2112,7 @@ def test_program_candidate_requires_the_exact_persisted_compile_receipt_chain(
 
 
 def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> None:
-    _accepted_event(conn, why="pass")
+    _accepted_compilable_event(conn, why="pass")
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -1866,7 +2149,7 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
 
 
 def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -1901,12 +2184,12 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     )
 
     candidate_stability = report.evidence["stability"]["candidate"]
-    assert len(candidate_stability) == 1
-    assert candidate_stability[0]["trials"] == 3
-    assert candidate_stability[0]["pass_n"] == 2
-    assert candidate_stability[0]["pass_k"] is False
-    assert len(candidate_stability[0]["trial_results"]) == 3
-    assert _judge_call_count(judges) == 6
+    assert len(candidate_stability) == len(development.cases) == 2
+    assert {item["trials"] for item in candidate_stability} == {3}
+    assert sorted(item["pass_n"] for item in candidate_stability) == [0, 2]
+    assert all(item["pass_k"] is False for item in candidate_stability)
+    assert {len(item["trial_results"]) for item in candidate_stability} == {3}
+    assert _judge_call_count(judges) == 6 * len(development.cases)
     assert report.evidence["stable_mean_total_tokens"] == 590
     assert report.evidence["candidate_mean_total_tokens"] == 590
     assert report.evidence["stable_mean_call_count"] == 2
@@ -1923,7 +2206,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "FROM news_model_recordings WHERE run_sha = %s ORDER BY arm, trial, call_index",
         (report.run_sha,),
     ).fetchall()
-    assert len(recordings) == 12
+    assert len(recordings) == 12 * len(development.cases)
     assert {row["predictor_name"] for row in recordings} == {"event_semantics", "reader_card"}
     assert {row["call_index"] for row in recordings} == {0, 1}
     assert {row["attempt"] for row in recordings} == {1}
@@ -1969,7 +2252,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
             runtime_revision="record-replay-test",
             now_ms=NOW - 23 * 3_600_000,
         )
-    _accepted_event(conn, stable=stable)
+    _accepted_compilable_event(conn, stable=stable)
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -1993,7 +2276,12 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
         program_sha256=candidate_artifact.program_sha256,
         program_state_sha256=candidate_artifact.state_sha256,
     )
-    semantics = {key: value for key, value in _verdict().items() if key not in {"headline_zh", "title_zh", "why_zh"}}
+    semantics = {
+        key: value
+        for key, value in _verdict().items()
+        if key not in {"actionable", "decision", "headline_zh", "title_zh", "why_zh"}
+    }
+    semantics["relevance"] = _relevance().model_dump(mode="json")
     card = {key: _verdict()[key] for key in ("headline_zh", "why_zh")}
     stable_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
     candidate_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
@@ -2066,7 +2354,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     }
     assert verification["mode"] == "strict_record_replay_v1"
     assert verification["run_sha"] == first.run_sha
-    assert verification["case_n"] == 1
+    assert verification["case_n"] == len(development.cases) == 2
     assert len(verification["observation_root"]) == 64
     assert verification["recording_n"] == before["recordings"]
     assert len(verification["recording_corpus_root"]) == 64
@@ -2098,7 +2386,7 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
             runtime_revision="missing-replay-test",
             now_ms=NOW - 23 * 3_600_000,
         )
-    _accepted_event(conn, stable=stable)
+    _accepted_compilable_event(conn, stable=stable)
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -2246,7 +2534,7 @@ def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> Non
             "opened_at_ms": NOW - 3_600_000,
             "member_count": 1,
             "family": "earnings",
-            "priority": "normal",
+            "queue_priority": "normal",
             "asset_class": "equity",
             "storyline_key": "asset:MU",
         },
@@ -2300,7 +2588,7 @@ def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> N
             "opened_at_ms": NOW - 3_600_000,
             "member_count": 1,
             "family": "earnings",
-            "priority": "normal",
+            "queue_priority": "normal",
             "asset_class": "equity",
             "storyline_key": "asset:MU",
         },
@@ -2378,7 +2666,7 @@ def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:
 
 
 def test_record_replay_miss_is_explicit_unknown_without_live_fallback(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     first = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2424,7 +2712,7 @@ def test_record_replay_miss_is_explicit_unknown_without_live_fallback(conn) -> N
 
 
 def test_common_provider_outage_is_unknown_not_a_vacuous_candidate_pass(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2461,17 +2749,17 @@ def test_common_provider_outage_is_unknown_not_a_vacuous_candidate_pass(conn) ->
         )
     )
 
-    assert _judge_call_count(judges) == 2
+    assert _judge_call_count(judges) == 2 * len(development.cases)
     assert report.gate_outcome == "unknown"
     assert report.run_state == "incomplete"
-    assert report.evidence["common_error_n"] == 1
+    assert report.evidence["common_error_n"] == len(development.cases)
     assert report.evidence["candidate_only_error_n"] == 0
     assert "stable_or_common_execution_unavailable" in report.evidence["blockers"]
     assert "candidate_schema_or_provider_regression" not in report.evidence["failures"]
 
 
 def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2519,7 +2807,7 @@ def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
 
 
 def test_blind_candidate_critical_error_is_a_release_failure(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2653,7 +2941,7 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
 
 
 def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
@@ -2692,7 +2980,7 @@ def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> 
 
 
 def test_validation_window_must_begin_after_candidate_registration(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
@@ -2730,7 +3018,7 @@ def test_validation_window_must_begin_after_candidate_registration(conn) -> None
 
 
 def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2770,7 +3058,7 @@ def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
 
 
 def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -> None:
-    event_id = _accepted_event(conn, stale_reask=True)
+    event_id = _accepted_compilable_event(conn, stale_reask=True)
     stable = _arm()
     _open_event(
         conn,
@@ -2827,15 +3115,15 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     ).fetchone()
 
     assert after == before
-    assert len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls) == 1
+    assert len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls) == len(development.cases) == 2
     assert report.gate_outcome == "unknown"  # fixture is only six hours, not the required 24
-    assert report.evidence["observation_n"] == 1
+    assert report.evidence["observation_n"] == len(development.cases) == 2
     assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"
     assert report.evidence["observation_manifest_sha"]
     stored = conn.execute(
         "SELECT event_id, evaluation_stage, stable_observation, candidate_observation "
-        "FROM news_learning_cases WHERE run_sha = %s",
-        (report.run_sha,),
+        "FROM news_learning_cases WHERE run_sha = %s AND event_id = %s",
+        (report.run_sha, event_id),
     ).fetchone()
     assert stored["event_id"] == event_id
     assert stored["evaluation_stage"] == "shadow"
@@ -2877,19 +3165,21 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     ).fetchall()
     assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
         ("candidate", "event_semantics"),
+        ("candidate", "event_semantics"),
+        ("candidate", "reader_card"),
         ("candidate", "reader_card"),
     ]
     manifest = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
         (report.evidence["observation_manifest_sha"],),
     ).fetchone()["payload"]
-    assert manifest["case_n"] == 1
+    assert manifest["case_n"] == len(development.cases) == 2
     assert "observations" not in manifest
 
 
 @pytest.mark.parametrize("program_matches_assignment", [True, False])
 def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, program_matches_assignment: bool) -> None:
-    event_id = _accepted_event(conn)
+    event_id = _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2915,17 +3205,16 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
             baseline_bundle_sha=stable.bundle_sha,
             candidate_manifest_sha=candidate.candidate_sha,
             candidate_bundle_sha=candidate.candidate_arm.bundle_sha,
-            selector_version="news_canary_selector_v1",
+            selector_version=CANARY_SELECTOR_VERSION,
             exposure_bps=10_000,
-            eligibility_profile_sha="b" * 64,
-            rolling_profile_sha="c" * 64,
+            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
+            rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
             now_ms=NOW - 6 * 3_600_000,
         )
         assignment = repos.news.assign_agent_arm(
             event_id=event_id,
             stable_bundle_sha=stable.bundle_sha,
             admission="candidate",
-            priority="normal",
             ingest_mode="live",
             now_ms=NOW - 3_500_000,
         )

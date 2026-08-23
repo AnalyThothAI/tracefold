@@ -11,11 +11,9 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
-# v9 (#154): `stale_source_artifact` can turn a `push` into `throttled`, so a verdict decided before and
-# after this deploy are not the same decision. Verdicts are keyed `(event_id, stage, policy_version)` and
-# ReviewDesk cohorts on it, so leaving it at v8 would make the two indistinguishable and let the
-# `get_verdict(..., policy_version=...)` short-circuit reuse a pre-#154 verdict on a replay.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v9"
+# v10 (#160) removes queue/provider hints from editorial authority and chooses
+# reader actions from the typed trade-relevance contract plus objective guards.
+TRIAGE_POLICY_VERSION = "news_triage_policy_v10"
 DELIVERY_CARD_VERSION = "news_delivery_card_v10"
 
 Admission = Literal[

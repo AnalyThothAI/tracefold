@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news import bus
 from tracefold.news.delivery import _CHANGE_BASIS_LABEL, _quote_line, card_assets, render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
@@ -35,10 +36,12 @@ from tracefold.news.triage_rules import (
     DecidePolicy,
     GateFacts,
     StorylineStatus,
-    decide,
     fallback_verdict,
     rule_baseline,
     storyline_status,
+)
+from tracefold.news.triage_rules import (
+    decide as production_decide,
 )
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
@@ -328,7 +331,7 @@ def test_gate_admission_rules() -> None:
     macro = evaluate_gate(
         GateInput(title="U.S. 30-Year Treasury Yield Climbs to 5.32%, Highest Since 2007", engine_type="news", **base)
     )
-    assert macro.admission == "candidate" and macro.asset_class == "macro" and macro.priority == "high"
+    assert macro.admission == "candidate" and macro.asset_class == "macro" and macro.queue_priority == "high"
     housing = evaluate_gate(GateInput(title="TABLE-U.S. July housing starts fall 12.4%", engine_type="news", **base))
     assert housing.asset_class == "macro"
     # Law-firm templates are vetoed even when the provider grounded the ticker; real class-action news is not.
@@ -349,7 +352,7 @@ def test_gate_admission_rules() -> None:
     )
     assert lawsuit.admission == "candidate"
     listing = evaluate_gate(GateInput(title="Bybit will list LYTE", engine_type="listing", **base))
-    assert listing.admission == "listing_deterministic" and listing.priority == "high"
+    assert listing.admission == "listing_deterministic" and listing.queue_priority == "high"
     recovery = evaluate_gate(
         GateInput(
             title="Bitcoin ETF inflows hit record",
@@ -365,7 +368,7 @@ def test_gate_admission_rules() -> None:
             **{**base, "coins": ({"symbol": "BTC", "grade": "A"},)},
         )
     )
-    assert watch.admission == "candidate" and watch.watchlist_hits == ("BTC",) and watch.priority == "high"
+    assert watch.admission == "candidate" and watch.watchlist_hits == ("BTC",) and watch.queue_priority == "high"
 
 
 # ---------------------------------------------------------------- storyline
@@ -469,10 +472,23 @@ def _verdict(**kw) -> TriageVerdict:
 _FACTS = GateFacts(
     grounded_assets=("NVDA", "XYZ-NVDA"),
     watchlist_symbols=frozenset({"NVDA"}),
-    provider_score=80.0,
-    priority="normal",
     admission="candidate",
 )
+
+
+def decide(
+    verdict: TriageVerdict,
+    facts: GateFacts,
+    status: StorylineStatus | None,
+    *,
+    degraded: bool = False,
+    policy: DecidePolicy = DEFAULT_POLICY,
+    relevance: dict[str, Any] | None = None,
+) -> Any:
+    """Exercise the typed v10 seam without repeating envelope construction in every pure assertion."""
+
+    judgment = scored_judgment(verdict, relevance=trade_relevance(**(relevance or {})))
+    return production_decide(judgment, facts, status, degraded=degraded, policy=policy)
 
 
 def test_source_artifact_identity_survives_the_provider_url_spellings() -> None:
@@ -521,7 +537,15 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     assert throttled_by_zh(STALE_SOURCE_KEY) == "旧闻：这条推文在 provider 推送时就已过时"
     assert OVERRIDE_RULE_ZH["stale_source_artifact"] == "来源推文本身已过时，按旧闻扣下"
 
-    assert decide(_verdict(magnitude=3), stale, status).final == "escalate"
+    assert (
+        decide(
+            _verdict(magnitude=3),
+            replace(stale, watchlist_symbols=frozenset()),
+            status,
+            relevance={"reader_value": "escalate"},
+        ).final
+        == "escalate"
+    )
     # No artifact timestamp (every non-x/twitter frame) is not evidence of staleness.
     assert decide(_verdict(magnitude=2), replace(_FACTS, source_age_s=None), status).final == "push"
     # The knob turns it off without touching anything else.
@@ -529,116 +553,54 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     assert decide(_verdict(magnitude=2), stale, status, policy=off).final == "push"
 
 
-def test_high_priority_pushes_without_shouting() -> None:
-    """#77: the Gate's `priority` is an AMQP transport hint, not a reader-facing importance judgment.
-
-    The branch must stay a branch — it pushes without requiring `actionable` or min_push_magnitude, so deleting
-    it would turn those Events into `below_threshold` drops rather than quieter pushes. Only loudness changes.
-    """
-
-    high = replace(_FACTS, priority="high")
-    quiet = decide(_verdict(), high, None)
-    assert quiet.final == "push" and quiet.override_rule == "high_priority_push"
-
-    loud = decide(_verdict(), high, None, policy=replace(DEFAULT_POLICY, high_priority_escalates=True))
-    assert loud.final == "escalate" and loud.override_rule == "high_priority_push"
-
-    # Recall is preserved for the Events this branch exists to carry: not actionable, magnitude below the push
-    # floor. Without the branch these fall through to `below_threshold`.
-    weak = _verdict(actionable=False, magnitude=0)
-    assert decide(weak, high, None).final == "push"
-    assert decide(weak, _FACTS, None).final == "drop"
-
-    # magnitude 3 still escalates on its own merit, independent of priority.
-    assert decide(_verdict(magnitude=3), high, None).override_rule == "magnitude3"
-    assert decide(_verdict(magnitude=3), _FACTS, None).final == "escalate"
+def test_policy_v10_has_only_four_safety_and_duplicate_knobs() -> None:
+    assert {item.name for item in fields(DecidePolicy)} == {
+        "restatement_drop",
+        "similarity_max",
+        "stale_source_max_age_s",
+        "listing_exempt_from_duplicate",
+    }
 
 
-def replace_magnitude(verdict: TriageVerdict, magnitude: int) -> TriageVerdict:
-    return verdict.model_copy(update={"magnitude": magnitude})
-
-
-def test_noise_only_vetoes_when_the_verdict_agrees_with_itself() -> None:
-    """Policy v8: `noise` returned before every other rule, so one mislabelled enum outranked
-    magnitude 3, Gate priority and the watchlist. The instruction defines noise as magnitude 0
-    material, so a verdict that calls an Event noise and then gives it weight is contradicting
-    itself and must fall through to the rules below instead of dropping on that label alone."""
-
-    quiet_noise = _verdict(event_type="noise", magnitude=0, actionable=False, decision="drop")
-    dropped = decide(quiet_noise, _FACTS, None)
-    assert dropped.final == "drop" and dropped.override_rule == "noise"
-
-    # Magnitude 1 is instruction-compliant for noise ("a routine update on one name that changes
-    # nothing"), so it must still be vetoed. The ceiling is where the instruction says "clearly
-    # tradable" instead.
-    routine = _verdict(event_type="noise", magnitude=1, actionable=False, decision="drop")
-    assert decide(routine, _FACTS, None).override_rule == "noise"
-
-    # Weight the model gave the Event itself: magnitude above the ceiling, actionability, push intent.
-    # Assert the outcome, not only the rule name: these fall through to real rules and the test has to
-    # record which one, or a drop -> push change could pass unnoticed.
-    for contradiction, expected in (
-        ({"magnitude": 2}, ("push", "watchlist")),
-        ({"magnitude": 2, "decision": "push", "actionable": True}, ("push", "model_push_actionable")),
-        ({"actionable": True}, ("drop", "below_threshold")),
-        ({"decision": "push"}, ("drop", "below_threshold")),
-    ):
-        fields = {"event_type": "noise", "magnitude": 0, "actionable": False, "decision": "drop", **contradiction}
-        result = decide(_verdict(**fields), _FACTS, None)
-        assert (result.final, result.override_rule) == expected, contradiction
-
-    # Gate priority is upstream evidence the model did not produce; it survives a noise label.
-    assert decide(quiet_noise, replace(_FACTS, priority="high"), None).override_rule != "noise"
-
-    # Both halves stay operator-owned: raising the ceiling restores the pre-v8 veto.
-    loud_noise = _verdict(event_type="noise", magnitude=2, actionable=False, decision="drop")
-    assert decide(loud_noise, _FACTS, None).override_rule != "noise"
-    restored = decide(loud_noise, _FACTS, None, policy=replace(DEFAULT_POLICY, noise_veto_max_magnitude=3))
-    assert restored.final == "drop" and restored.override_rule == "noise"
-    ignored = decide(
-        quiet_noise,
-        replace(_FACTS, priority="high"),
-        None,
-        policy=replace(DEFAULT_POLICY, noise_veto_respects_gate_priority=False),
-    )
-    assert ignored.override_rule == "noise"
-
-
-def test_contested_high_priority_resolves_toward_the_reader() -> None:
-    """Gate high priority plus the model's own magnitude >= 2, against the model's hold intent."""
-
-    high = replace(_FACTS, priority="high")
-    # No watchlist hit, so nothing else in decide() can carry this Event.
+def test_trade_relevance_is_the_only_model_owned_action_input() -> None:
     off_watchlist = GateFacts(
         grounded_assets=("SPY",),
         watchlist_symbols=frozenset(),
-        provider_score=40.0,
-        priority="high",
         admission="candidate",
     )
-    contested = _verdict(
+    verdict = _verdict(
         magnitude=2,
         decision="drop",
         actionable=False,
         event_type="macro",
         assets=[TriageAsset(symbol="SPY", role="primary")],
     )
-    result = decide(contested, off_watchlist, None)
-    assert result.final == "push" and result.override_rule == "contested_high_priority"
+    realtime = decide(verdict, off_watchlist, None)
+    assert realtime.final == "push" and realtime.override_rule == "trade_relevance_realtime"
 
-    # Never fires on a normal-priority Event, and never below the declared magnitude.
-    assert decide(contested, replace(off_watchlist, priority="normal"), None).final == "drop"
-    assert decide(replace_magnitude(contested, 1), off_watchlist, None).final == "drop"
+    escalated = decide(verdict, off_watchlist, None, relevance={"reader_value": "escalate"})
+    assert escalated.final == "escalate" and escalated.override_rule == "trade_relevance_escalate"
 
-    # Zero disables the rule without touching the older high_priority_push branch.
-    off = decide(contested, off_watchlist, None, policy=replace(DEFAULT_POLICY, contested_push_min_magnitude=0))
-    assert off.final == "drop"
-    assert (
-        decide(
-            _verdict(decision="push"), high, None, policy=replace(DEFAULT_POLICY, contested_push_min_magnitude=0)
-        ).override_rule
-        == "high_priority_push"
+    background = decide(
+        verdict,
+        off_watchlist,
+        None,
+        relevance={
+            "reader_value": "background",
+            "tradability": "contextual",
+            "channels": [],
+            "affected_markets": [],
+        },
     )
+    assert background.final == "drop" and background.override_rule == "reader_value_background"
+
+    ineligible = decide(verdict.model_copy(update={"magnitude": 1}), off_watchlist, None)
+    assert ineligible.final == "drop" and ineligible.override_rule == "trade_relevance_inconsistent"
+
+
+def test_queue_priority_never_enters_policy_facts() -> None:
+    assert "queue_priority" not in {item.name for item in fields(GateFacts)}
+    assert "priority" not in {item.name for item in fields(GateFacts)}
 
 
 def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instruments() -> None:
@@ -690,77 +652,37 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
     assert kept.final == "drop" and kept.override_rule == "restatement"
 
 
-def test_contested_high_priority_never_steals_a_model_push() -> None:
-    """The rule is about a *hold* intent, so a model that asked to push or escalate keeps its own
-    rule name — `pushed_by_rule` is the number this policy will be judged by."""
-
-    high = replace(_FACTS, priority="high")
-    assert decide(_verdict(decision="push"), high, None).override_rule == "high_priority_push"
-    assert decide(_verdict(decision="escalate"), high, None).override_rule == "model_push_actionable"
-
-    # And it does not sit above `unclear_direction`: an unclear event type outside
-    # `unclear_push_event_types` still drops rather than riding Gate priority into the feed.
-    unclear_rumor = _verdict(
-        event_type="rumor",
-        direction="unclear",
-        magnitude=2,
-        decision="drop",
-        actionable=True,
-        assets=[TriageAsset(symbol="SPY", role="primary")],
-    )
-    off_watchlist = replace(high, grounded_assets=("SPY",), watchlist_symbols=frozenset())
-    result = decide(unclear_rumor, off_watchlist, None)
-    assert result.final == "drop" and result.override_rule == "unclear_direction"
-
-
 def test_decide_rules_and_throttle() -> None:
-    assert decide(_verdict(), _FACTS, None).final == "push"
-    # Policy v8: the default verdict is magnitude 2 / actionable / push, so a `noise` label on it is
-    # self-contradicting and no longer vetoes. A noise verdict that agrees with itself still drops.
-    assert decide(_verdict(event_type="noise"), _FACTS, None).final == "push"
-    quiet_noise = decide(_verdict(event_type="noise", magnitude=0, actionable=False, decision="drop"), _FACTS, None)
-    assert quiet_noise.final == "drop" and quiet_noise.override_rule == "noise"
-    assert decide(_verdict(magnitude=3), _FACTS, None).final == "escalate"
-    # Policy v2: the model's push intent on an actionable m1 single-name event is honoured.
-    m1 = decide(_verdict(magnitude=1, assets=[TriageAsset(symbol="AMD", role="primary")]), _FACTS, None)
-    assert m1.final == "push" and m1.override_rule == "model_push_actionable"
-    assert decide(_verdict(magnitude=1, actionable=False), _FACTS, None).final == "push"  # watchlist primary m1
-    assert (
-        decide(
-            _verdict(magnitude=1, actionable=False, assets=[TriageAsset(symbol="AMD", role="primary")]), _FACTS, None
-        ).override_rule
-        == "below_threshold"
+    # The grounded watchlist is an objective guard and wins before model relevance.
+    guarded = decide(
+        _verdict(magnitude=0, actionable=False, decision="drop"),
+        _FACTS,
+        None,
+        relevance={
+            "reader_value": "background",
+            "tradability": "contextual",
+            "channels": [],
+            "affected_markets": [],
+        },
     )
-    assert decide(_verdict(magnitude=0), _FACTS, None).final == "drop"  # m0 never pushes, watchlist or not
-    # Unclear direction: a clear event type at m>=2 pushes; otherwise it drops.
-    unclear_product = decide(_verdict(direction="unclear", event_type="product"), _FACTS, None)
-    assert unclear_product.final == "push" and unclear_product.override_rule == "unclear_but_clear_event"
-    assert decide(_verdict(direction="unclear", event_type="rumor"), _FACTS, None).override_rule == "unclear_direction"
-    assert decide(_verdict(direction="unclear", event_type="product", magnitude=1), _FACTS, None).final == "drop"
-    high = GateFacts(
-        grounded_assets=("NVDA",),
+    assert guarded.final == "push" and guarded.override_rule == "watchlist_objective_guard"
+
+    # No objective guard: the exact realtime eligibility predicate applies.
+    off_watchlist = GateFacts(
+        grounded_assets=("AMD",),
         watchlist_symbols=frozenset(),
-        provider_score=92.0,
-        priority="high",
         admission="candidate",
     )
-    # #77: a high-priority push still pushes, it just no longer earns the ⚡ header.
-    assert decide(_verdict(), high, None).final == "push"
+    assert decide(_verdict(assets=[TriageAsset(symbol="AMD", role="primary")]), off_watchlist, None).final == "push"
+    assert decide(_verdict(magnitude=1), off_watchlist, None).override_rule == "trade_relevance_inconsistent"
+    assert (
+        decide(_verdict(), off_watchlist, None, relevance={"development_delta": "color_only"}).override_rule
+        == "trade_relevance_inconsistent"
+    )
+
     busy = StorylineStatus(key="theme:mideast_energy")
     unbounded = decide(_verdict(magnitude=2, scope="sector"), _FACTS, busy)
     assert unbounded.final == "push" and unbounded.throttled_by is None
-    assert (
-        decide(_verdict(magnitude=1), _FACTS, None, policy=DecidePolicy(min_push_magnitude=2)).final == "push"
-    )  # watchlist
-    assert (
-        decide(
-            _verdict(magnitude=1, assets=[TriageAsset(symbol="AMD", role="primary")]),
-            _FACTS,
-            None,
-            policy=DecidePolicy(min_push_magnitude=2),
-        ).final
-        == "drop"
-    )
 
 
 def test_decide_restatement_drop_is_grounded() -> None:
@@ -807,13 +729,13 @@ def test_decide_uses_content_duplicate_evidence_without_a_count_quota() -> None:
 
     # Nothing in the window to compare against: the reader received nothing, so nothing can be a repeat.
     empty = decide(_verdict(), _FACTS, _busy())
-    assert empty.final == "push" and empty.override_rule == "model_push_actionable" and empty.throttled_by is None
+    assert empty.final == "push" and empty.override_rule == "watchlist_objective_guard" and empty.throttled_by is None
     assert empty.seen_similarity == 0.0 and empty.seen_against == -1
 
     seen = _busy(seen_headlines=("英伟达发布 Blackwell Ultra，单卡算力翻倍",), seen_event_ids=("evt-a",))
     # A card about something else goes out regardless of prior volume.
     released = decide(_verdict(headline_zh="美联储会议纪要显示多数官员倾向 9 月降息"), _FACTS, seen)
-    assert released.final == "push" and released.override_rule == "model_push_actionable"
+    assert released.final == "push" and released.override_rule == "watchlist_objective_guard"
     assert released.seen_similarity is not None and released.seen_similarity < 0.25
 
     # A near-repeat of that card does not, whatever the model called its novelty.
@@ -1094,62 +1016,31 @@ def test_fallback_is_not_silent() -> None:
     weak = GateFacts(
         grounded_assets=("AMD",),
         watchlist_symbols=frozenset(),
-        provider_score=75.0,
-        priority="normal",
         admission="candidate",
     )
     assert rule_baseline(weak) == "drop"
-    verdict, decision = fallback_verdict(weak, error_code="news_triage_timeout")
-    assert decision.final == "drop" and verdict.headline_zh
-    grounded_80 = GateFacts(
-        grounded_assets=("AMD",),
-        watchlist_symbols=frozenset(),
-        provider_score=85.0,
-        priority="normal",
-        admission="candidate",
-    )
-    assert rule_baseline(grounded_80) == "push"
-    # #81: a high-priority Event without a grounded asset used to drop silently whenever the model was down —
-    # a missile strike or a rate decision has no ticker. It now fails open onto the wire headline, and so does a
-    # deterministic exchange notice.
-    ungrounded_high = GateFacts(
-        grounded_assets=(),
-        watchlist_symbols=frozenset(),
-        provider_score=95.0,
-        priority="high",
-        admission="candidate",
-    )
-    assert rule_baseline(ungrounded_high) == "push"
-    assert rule_baseline(ungrounded_high, fail_open_high_priority=False) == "drop"
+    judgment, decision = fallback_verdict(weak, error_code="news_triage_timeout")
+    assert decision.final == "drop" and judgment.verdict.headline_zh
+
+    # v10 degraded handling fails open only for objective facts. Queue priority and provider score are not
+    # editorial evidence and cannot enter GateFacts at all.
     listing = GateFacts(
         grounded_assets=(),
         watchlist_symbols=frozenset(),
-        provider_score=10.0,
-        priority="normal",
         admission="listing_deterministic",
     )
     assert rule_baseline(listing) == "push"
-    ungrounded_normal = GateFacts(
-        grounded_assets=(),
-        watchlist_symbols=frozenset(),
-        provider_score=95.0,
-        priority="normal",
-        admission="candidate",
-    )
-    assert rule_baseline(ungrounded_normal) == "drop"
     strong = GateFacts(
         grounded_assets=("BTC",),
-        watchlist_symbols=frozenset(),
-        provider_score=90.0,
-        priority="high",
+        watchlist_symbols=frozenset({"BTC"}),
         admission="candidate",
     )
     assert fallback_verdict(strong, error_code="x")[1].final == "push"
     assert (
-        fallback_verdict(strong, error_code="x", title="  Fed  holds rates\nsteady ")[0].headline_zh
+        fallback_verdict(strong, error_code="x", title="  Fed  holds rates\nsteady ")[0].verdict.headline_zh
         == "Fed holds rates steady"
     )
-    assert fallback_verdict(strong, error_code="x")[0].headline_zh == "模型不可用（规则兜底）"  # no wire title at all
+    assert fallback_verdict(strong, error_code="x")[0].verdict.headline_zh == "模型不可用（规则兜底）"
 
 
 # ---------------------------------------------------------------- delivery / bus
@@ -1561,7 +1452,13 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
 
     told = ("特朗普称其政府已结束对加密的战争",)
     big = _verdict(magnitude=3, headline_zh="特朗普称美国正考虑购买大量比特币及其他加密资产")
-    on_fresh = decide(big, _FACTS, _fresh(seen_headlines=told, seen_event_ids=("a",)))
+    facts = replace(_FACTS, watchlist_symbols=frozenset())
+    on_fresh = decide(
+        big,
+        facts,
+        _fresh(seen_headlines=told, seen_event_ids=("a",)),
+        relevance={"reader_value": "escalate"},
+    )
     assert on_fresh.final == "escalate" and on_fresh.throttled_by is None and on_fresh.seen_scope == ""
 
     # Even identical text cannot make the content heuristic veto an escalation.
@@ -1570,7 +1467,7 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
         seen_headlines=("特朗普称美国正考虑购买大量比特币及其他加密资产",),
         seen_event_ids=("a",),
     )
-    repeat = decide(big, _FACTS, hot)
+    repeat = decide(big, facts, hot, relevance={"reader_value": "escalate"})
     assert repeat.final == "escalate" and repeat.seen_scope == ""
     assert repeat.throttled_by is None
 

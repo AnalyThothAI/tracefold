@@ -141,7 +141,7 @@ _up-locked:
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
-build-news-rollback-image: preflight ## build the reviewed program-v3-equivalent factory-v2 rollback image
+build-news-rollback-image: preflight ## build the independent Program-v5/schema-0301 rollback image
 	@set -eu; \
 		git_dir=$$(git rev-parse --absolute-git-dir); \
 		git_common_dir=$$(git rev-parse --path-format=absolute --git-common-dir); \
@@ -157,7 +157,7 @@ build-news-rollback-image: preflight ## build the reviewed program-v3-equivalent
 		fi; \
 		relevant_untracked=$$(git ls-files --others --exclude-standard -- ':(exclude)docs/**'); \
 		ignored_deployment_inputs=$$(git ls-files --others -- \
-			Dockerfile .dockerignore deploy/news-program-v3-rollback); \
+			Dockerfile .dockerignore deploy/news-program-v5-schema0301); \
 		if [ -n "$$relevant_untracked" ] || [ -n "$$ignored_deployment_inputs" ]; then \
 			echo "build-news-rollback-image refuses untracked build inputs outside docs/." >&2; \
 			exit 2; \
@@ -171,35 +171,77 @@ build-news-rollback-image: preflight ## build the reviewed program-v3-equivalent
 			echo "build-news-rollback-image requires primary main HEAD to equal origin/main." >&2; \
 			exit 2; \
 		fi; \
-		bundle="$$(pwd -P)/deploy/news-program-v3-rollback"; \
-		rollback_sha=$$(uv run python -m tracefold.news.agents.program_artifact_tool \
-			--verify-profile program_v3_rollback --input "$$bundle"); \
+		bundle="$$(pwd -P)/deploy/news-program-v5-schema0301"; \
+		profile="$${bundle}/profile.json"; \
+		source_revision=$$(uv run python -c \
+			'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["source_revision"])' "$$profile"); \
+		schema_head=$$(uv run python -c \
+			'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["migration_head"])' "$$profile"); \
+		rollback_sha=$$(uv run python -c \
+			'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["program_sha256"])' "$$profile"); \
+		current_schema_head=$$(uv run python -c \
+			'from tracefold.platform.postgres.postgres_migrations import latest_migration_version; print(latest_migration_version())'); \
+		if [ "$$current_schema_head" != "$$schema_head" ]; then \
+			echo "Rollback profile schema '$$schema_head' does not match current source head '$$current_schema_head'." >&2; \
+			exit 2; \
+		fi; \
+		rollback_context=$$(mktemp -d); \
+		if [ -z "$$rollback_context" ] || [ ! -d "$$rollback_context" ]; then \
+			echo "Could not allocate the isolated rollback build context." >&2; \
+			exit 2; \
+		fi; \
+		cleanup_rollback_context() { \
+			if [ -n "$$rollback_context" ] && [ -d "$$rollback_context" ]; then \
+				rm -rf -- "$$rollback_context"; \
+			fi; \
+		}; \
+		trap cleanup_rollback_context EXIT HUP INT TERM; \
+		uv run python "$$bundle/prepare_context.py" \
+			--repo "$$(pwd -P)" --output "$$rollback_context" >/dev/null; \
 		token="$${GITHUB_TOKEN:-}"; \
 		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
 			token=$$(gh auth token 2>/dev/null || true); \
 		fi; \
 		GITHUB_TOKEN="$$token"; \
 		export GITHUB_TOKEN; \
-		tag="tracefold-app:program-v3-rollback-$$(printf '%s' "$$head" | cut -c1-12)"; \
+		tag="tracefold-app:program-v5-schema0301-rollback-$$(printf '%s' "$$head" | cut -c1-12)"; \
 		DOCKER_BUILDKIT=1 docker build \
 			--secret id=github_token,env=GITHUB_TOKEN \
+			--file "$$bundle/Dockerfile" \
 			--build-arg TRACEFOLD_BUILD_REVISION="$$head" \
-			--build-arg TRACEFOLD_NEWS_PROGRAM_PROFILE=program_v3_rollback \
-			--tag "$$tag" .; \
+			--build-arg TRACEFOLD_ROLLBACK_SOURCE_REVISION="$$source_revision" \
+			--build-arg TRACEFOLD_ROLLBACK_SCHEMA_HEAD="$$schema_head" \
+			--tag "$$tag" "$$rollback_context"; \
 		image_id=$$(docker image inspect --format '{{.Id}}' "$$tag"); \
-		profile=$$(docker image inspect --format '{{index .Config.Labels "io.tracefold.news.program.profile"}}' "$$image_id"); \
+		image_profile=$$(docker image inspect --format '{{index .Config.Labels "io.tracefold.news.rollback.profile"}}' "$$image_id"); \
 		revision=$$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$$image_id"); \
-		loaded_sha=$$(docker run --rm --entrypoint python "$$image_id" -c \
-			'from tracefold.news.agents.semantic_program import load_stable_program_artifact; print(load_stable_program_artifact().program_sha256)'); \
-		if [ "$$profile" != "program_v3_rollback" ] || [ "$$revision" != "$$head" ] || \
-			[ "$$loaded_sha" != "$$rollback_sha" ]; then \
+		image_source=$$(docker image inspect --format '{{index .Config.Labels "io.tracefold.news.rollback.source-revision"}}' "$$image_id"); \
+		image_schema=$$(docker image inspect --format '{{index .Config.Labels "io.tracefold.news.rollback.schema-head"}}' "$$image_id"); \
+		runtime_identity=$$(docker run --rm --entrypoint python "$$image_id" -c \
+			'from tracefold.news.agents.semantic_program import PROGRAM_FACTORY_ID,load_stable_program_artifact; from tracefold.news.models import TRIAGE_POLICY_VERSION; from tracefold.platform.postgres.postgres_migrations import latest_migration_version; print("|".join((latest_migration_version(), PROGRAM_FACTORY_ID, TRIAGE_POLICY_VERSION, load_stable_program_artifact().program_sha256)))'); \
+		loaded_schema=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 1); \
+		loaded_factory=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 2); \
+		loaded_policy=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 3); \
+		loaded_sha=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 4); \
+		if [ "$$image_profile" != "program_v5_schema0301_rollback" ] || [ "$$revision" != "$$head" ] || \
+			[ "$$image_source" != "$$source_revision" ] || [ "$$image_schema" != "$$schema_head" ] || \
+			[ "$$loaded_schema" != "$$schema_head" ] || \
+			[ "$$loaded_factory" != "tracefold.news.semantic_program.factory_v3" ] || \
+			[ "$$loaded_policy" != "news_triage_policy_v9" ] || [ "$$loaded_sha" != "$$rollback_sha" ]; then \
 			echo "Rollback image identity verification failed." >&2; \
 			exit 2; \
 		fi; \
+		docker run --rm --entrypoint python "$$image_id" scripts/verify_news_rollback.py >/dev/null; \
+		uv run python "$$bundle/drill_image.py" --image-id "$$image_id" >/dev/null; \
 		echo "Tracefold rollback image built and verified."; \
 		echo "  image_id=$$image_id"; \
+		echo "  source_revision=$$source_revision"; \
+		echo "  schema_head=$$loaded_schema"; \
+		echo "  factory_id=$$loaded_factory"; \
+		echo "  policy_version=$$loaded_policy"; \
 		echo "  program_sha256=$$loaded_sha"; \
-		echo "  source_revision=$$revision"; \
+		echo "  build_revision=$$revision"; \
+		echo "  disposable_schema_drill=passed"; \
 		echo "Deploy only with: make deploy-image IMAGE_ID=$$image_id"
 
 deploy-image: preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout

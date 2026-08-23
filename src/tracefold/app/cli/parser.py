@@ -129,6 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_compile.add_argument("--max-metric-calls", type=_positive_int, required=True)
     learning_compile.add_argument("--max-task-model-calls", type=_positive_int, required=True)
+    learning_compile.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
+    learning_compile.add_argument("--max-metric-judge-model-calls", type=_positive_int, required=True)
     learning_compile.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_compile.add_argument("--seed", type=_nonnegative_int, default=129)
     learning_baseline = learning_subcommands.add_parser(
@@ -187,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
-        help="propose news_review_v3 rubrics with gold for a human to accept (writes a file, never the DB)",
+        help="propose news_review_v4 rubrics with exact gold for a human to accept (writes a file, never the DB)",
     )
     # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
     # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an

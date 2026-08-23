@@ -28,7 +28,6 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
         "last_member_at_ms": 1_800_000_000_000,
         "member_count": 1,
         "admission": "candidate",
-        "priority": "normal",
         "provider_score_max": 75.0,
         "engine_type": "news",
         "asset_class": "macro",
@@ -63,11 +62,9 @@ class _FakeNewsRepository:
             "filters": {
                 "family": kwargs["family"],
                 "admission": kwargs["admission"],
-                "priority": kwargs["priority"],
                 "decision": kwargs["decision"],
                 "symbol": kwargs["symbol"],
                 "q": kwargs["q"],
-                "sort": kwargs["sort"],
                 "limit": kwargs["limit"],
                 "outcome": kwargs.get("outcome"),
                 "hours": kwargs.get("hours"),
@@ -355,11 +352,9 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     assert set(schemas_news.NewsFeedFiltersData.model_fields) == {
         "family",
         "admission",
-        "priority",
         "decision",
         "symbol",
         "q",
-        "sort",
         "limit",
         "outcome",
         "hours",
@@ -447,7 +442,7 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
 
     response = http.get(
         "/api/news/feed",
-        params={"token": TOKEN, "family": "general", "priority": "high", "sort": "priority", "limit": 5},
+        params={"token": TOKEN, "family": "general", "limit": 5},
     )
 
     assert response.status_code == 200
@@ -456,16 +451,15 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
     assert body["data"]["filters"] == {
         "family": "general",
         "admission": None,
-        "priority": "high",
         "decision": None,
         "symbol": None,
         "q": None,
-        "sort": "priority",
         "limit": 5,
         "outcome": None,
         "hours": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
+    assert "priority" not in body["data"]["events"][0]
     assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
     assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
     # #87: the raw provider tags stay, and beside them the same tags resolved against the instrument
@@ -490,7 +484,7 @@ def test_feed_forwards_outcome_group_and_hours_window(client) -> None:
     forwarded = news.calls[0][1]
     assert forwarded["outcome"] == "held"
     assert forwarded["hours"] == 6
-    # Pattern/bound violations are rejected by the FastAPI query validators (422), like the existing `priority` filter.
+    # Pattern/bound violations are rejected by the FastAPI query validators (422).
     assert http.get("/api/news/feed", params={"token": TOKEN, "outcome": "bogus"}).status_code == 422
     assert http.get("/api/news/feed", params={"token": TOKEN, "hours": 999}).status_code == 422
 
@@ -511,6 +505,8 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
         ({"admission": "bogus"}, "news_feed_admission_invalid", "admission"),
         ({"decision": "maybe"}, "news_feed_decision_invalid", "decision"),
         ({"cursor": "broken"}, "news_feed_cursor_invalid", "cursor"),
+        ({"priority": "high"}, "unsupported_query_param", "priority"),
+        ({"sort": "priority"}, "unsupported_query_param", "sort"),
         ({"story_id": "x"}, "unsupported_query_param", "story_id"),
     ],
 )
@@ -523,7 +519,7 @@ def test_feed_rejects_invalid_filters_with_bounded_400(client, params, error, fi
     assert response.json() == {"ok": False, "error": error, "field": field}
 
 
-@pytest.mark.parametrize("params", [{"priority": "urgent"}, {"sort": "hot"}, {"limit": 0}, {"limit": 101}])
+@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 101}])
 def test_feed_query_shape_violations_are_422(client, params) -> None:
     http, _ = client
 
@@ -563,6 +559,7 @@ def test_event_detail_returns_envelope_or_bounded_404(client) -> None:
     found = http.get("/api/news/events/ev-1", params={"token": TOKEN})
     assert found.status_code == 200
     assert found.json()["data"]["event"]["event_id"] == "ev-1"
+    assert "priority" not in found.json()["data"]["event"]
     assert found.json()["data"]["members"] == []
 
     missing = http.get("/api/news/events/ev-404", params={"token": TOKEN})

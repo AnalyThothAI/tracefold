@@ -63,7 +63,7 @@
     color: var(--text-secondary);
   }
 
-  /* ------------------------------------------------------------------ window, sort, advanced filters */
+  /* ------------------------------------------------------------------ window and advanced filters */
   .news-filter-bar {
     display: flex;
     flex-wrap: wrap;

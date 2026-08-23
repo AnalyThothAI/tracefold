@@ -434,7 +434,6 @@ function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
           <KeyValueRow k="storyline_key" v={event.storyline_key} />
           <KeyValueRow k="family" v={event.family} />
           <KeyValueRow k="admission" v={event.admission} />
-          <KeyValueRow k="priority" v={event.priority} />
           <KeyValueRow k="engine_type" v={event.engine_type} />
           <KeyValueRow k="ingest_mode" v={event.ingest_mode} />
           <KeyValueRow k="asset_class" v={event.asset_class} />

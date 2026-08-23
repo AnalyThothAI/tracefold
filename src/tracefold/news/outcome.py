@@ -71,6 +71,18 @@ ADMISSION_ZH: Final[dict[str, str]] = {
 }
 
 OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
+    "degraded_listing_objective": "模型不可用，上币/下币客观规则兜底推送",
+    "degraded_telemetry_objective": "模型不可用，持仓异动客观规则兜底推送",
+    "degraded_watchlist_objective": "模型不可用，关注列表客观规则兜底推送",
+    "degraded_no_objective_guard": "模型不可用且未命中客观推送条件",
+    "listing_deterministic": "上币/下币公告按客观规则推送",
+    "telemetry_deterministic": "持仓异动按客观规则判断",
+    "watchlist_objective_guard": "命中关注列表客观条件",
+    "trade_relevance_escalate": "交易相关性达到重点推送标准",
+    "trade_relevance_realtime": "交易相关性达到实时推送标准",
+    "trade_relevance_inconsistent": "交易相关性字段不一致，未达推送标准",
+    "reader_value_background": "仅有背景价值，不实时推送",
+    "reader_value_none": "无读者价值，不推送",
     "noise": "模型判定为噪音",
     "unclear_direction": "方向不明，未达推送标准",
     "below_threshold": "影响不够，未达推送标准",
@@ -99,6 +111,7 @@ ERROR_CODE_ZH: Final[dict[str, str]] = {
     "news_semantic_program_unconfigured": "未配置语义程序",
     "news_semantic_program_identity_mismatch": "语义程序身份校验失败",
     "news_canary_artifact_missing": "候选语义程序制品缺失",
+    "news_canary_assignment_identity_invalid": "候选分配身份校验失败",
     "news_program_route_deadline": "语义程序超时",
     "news_program_output_truncated": "语义程序输出被截断",
 }

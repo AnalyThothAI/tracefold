@@ -404,7 +404,7 @@ export interface components {
         };
         /**
          * ExpectedCorrection
-         * @description The reviewer's stated correct values — `news_review_v3` gold.
+         * @description The reviewer's stated correct values — `news_review_v4` exact gold.
          *
          *     Without this the metric can only ask "did the candidate change the field the reviewer failed?", which
          *     scores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one
@@ -418,6 +418,20 @@ export interface components {
             direction?: ("bullish" | "bearish" | "neutral" | "unclear") | null;
             /** Magnitude */
             magnitude?: number | null;
+            /** Reader Value */
+            reader_value?: ("escalate" | "realtime" | "background" | "none") | null;
+            /** Trade Affected Markets */
+            trade_affected_markets?: ("crypto_broad" | "us_equity_broad" | "rates" | "fx" | "energy" | "metals" | "single_asset")[] | null;
+            /** Trade Channels */
+            trade_channels?: ("rates" | "liquidity" | "risk_premium" | "energy_supply" | "commodity_supply" | "commodity_demand" | "regulation" | "exchange_access" | "earnings_cashflow" | "positioning_flow" | "security_incident")[] | null;
+            /** Trade Development Delta */
+            trade_development_delta?: ("state_change" | "material_detail" | "color_only" | "scheduled") | null;
+            /** Trade Impact Breadth */
+            trade_impact_breadth?: ("none" | "single_instrument" | "sector" | "regional" | "cross_asset" | "global_systemic") | null;
+            /** Trade Surprise */
+            trade_surprise?: ("unscheduled" | "material_vs_expectation" | "in_line" | "unknown") | null;
+            /** Trade Tradability */
+            trade_tradability?: ("direct" | "second_order" | "contextual" | "none") | null;
         };
         /** ExternalMissSubmission */
         ExternalMissSubmission: {
@@ -667,8 +681,6 @@ export interface components {
             member_count: number;
             /** Opened At Ms */
             opened_at_ms: number;
-            /** Priority */
-            priority: string;
             /** Provenance */
             provenance?: string[];
             /** Provider Score Max */
@@ -943,8 +955,6 @@ export interface components {
             /** Opened At Ms */
             opened_at_ms: number;
             outcome: components["schemas"]["NewsOutcomeData"];
-            /** Priority */
-            priority: string;
             /** Provenance */
             provenance?: string[];
             /** Provider Score Max */
@@ -982,15 +992,8 @@ export interface components {
             limit: number;
             /** Outcome */
             outcome?: ("pushed" | "held" | "pending") | null;
-            /** Priority */
-            priority?: string | null;
             /** Q */
             q?: string | null;
-            /**
-             * Sort
-             * @enum {string}
-             */
-            sort: "latest" | "priority";
             /** Symbol */
             symbol?: string | null;
         };
@@ -2474,11 +2477,9 @@ export interface operations {
             query?: {
                 family?: string;
                 admission?: string;
-                priority?: string;
                 decision?: string;
                 symbol?: string;
                 q?: string;
-                sort?: string;
                 limit?: number;
                 cursor?: string;
                 outcome?: string;

@@ -20,16 +20,17 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tracefold.news import SemanticJudge, SemanticJudgeError, TriageContext
+from tracefold.news import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 
 from .agents.program_compiler_security import (
     COMPILE_EPISODE_PROJECTION_SCHEMA,
-    OptimizerCompileProvenanceV2,
-    ProgramMachineDiffV2,
-    validate_compile_receipt_chain_v2,
+    OptimizerCompileProvenanceV3,
+    ProgramMachineDiffV3,
+    validate_compile_receipt_chain_v3,
 )
+from .agents.program_metric import production_decision
 from .artifact_identity import canonical_json, canonical_sha
-from .models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
+from .models import TRIAGE_POLICY_VERSION, TriageVerdict
 from .recording_replay import RecordingReplayCapability, RecordingReplayMiss
 from .review import (
     READER_CONTRACT_SHA256,
@@ -38,16 +39,16 @@ from .review import (
     REVIEW_RUBRIC_VERSIONS,
 )
 from .storyline import final_storyline_key
-from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
+from .triage_rules import DecidePolicy
 
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
-LEARNING_EPOCH_RESET_REASON = "candidate_conditioned_told_context_and_predictor_input_partition"
-LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.semantic_program.factory_v3"
+LEARNING_EPOCH: Literal["program_v6"] = "program_v6"
+LEARNING_EPOCH_RESET_REASON = "trade_relevance_editorial_authority_hard_cut"
+LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.semantic_program.factory_v4"
 LEARNING_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
-LEARNING_PROGRAM_VERSION = "news_semantic_program_v3"
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v4"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
@@ -117,7 +118,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v5"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v6"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -145,7 +146,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v5"]
+    learning_epoch: Literal["program_v6"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
@@ -487,14 +488,15 @@ class CandidateEvaluator:
     ) -> tuple[dict[str, Any], ...]:
         """Project accepted reviews in a window for the offline baseline. Freezes nothing, writes nothing.
 
-        ``cohort=True`` applies the release-plane eligibility (this Program and this policy) — the population a
-        candidate would later be judged on. ``cohort=False`` drops it and takes every accepted event review in
-        the window, which is what a metric-wiring proof needs: the only labelled corpus this project has was
-        produced by an arm that has since been retired, and refusing to read it would mean the baseline could
-        never be checked against a known number.
+        ``cohort=True`` applies the release-plane eligibility for the exact active Program bundle — the
+        population a candidate would later be judged on. ``cohort=False`` drops it and takes every accepted
+        event review in the window, which is what a metric-wiring proof needs: the only labelled corpus this
+        project has was produced by an arm that has since been retired, and refusing to read it would mean the
+        baseline could never be checked against a known number.
 
-        Each episode carries ``recorded_action`` — the action that actually reached the reader — so a caller
-        can score history as it happened instead of as today's ``decide()`` would replay it.
+        Each episode carries the persisted ``DecisionResult`` projection so a caller can score history as it
+        happened instead of as today's ``decide()`` would replay it.  A final-action string is insufficient:
+        the same shared ruler also reports the rule and duplicate outcome that produced that action.
         """
 
         if limit <= 0:
@@ -509,9 +511,12 @@ class CandidateEvaluator:
         if not cases:
             return ()
         seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms, cohort=cohort)
-        actions = self._recorded_actions([case.event_id for case in cases if case.event_id])
+        decisions = self._recorded_decisions([case.event_id for case in cases if case.event_id])
         return tuple(
-            {**episode, "recorded_action": actions.get(str(episode.get("event_id") or ""), "")}
+            {
+                **episode,
+                "recorded_decision_result": decisions.get(str(episode.get("event_id") or "")),
+            }
             if episode.get("event_id")
             else episode
             for episode in self._with_event_ids(cases, self._project_episodes(cases, seed))
@@ -526,16 +531,39 @@ class CandidateEvaluator:
             {**dict(episode), "event_id": by_case[str(episode["case_id"])].event_id or ""} for episode in episodes
         )
 
-    def _recorded_actions(self, event_ids: Sequence[str]) -> dict[str, str]:
-        """What each Event's persisted verdict actually resolved to, whatever policy was live at the time."""
+    def _recorded_decisions(self, event_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """The persisted production decision, projected into the one shared ``DecisionResult`` contract."""
 
         if not event_ids:
             return {}
         rows = self._conn.execute(
-            "SELECT event_id, final_decision FROM news_verdicts WHERE stage = 'triage' AND event_id = ANY(%s)",
+            """
+            SELECT DISTINCT ON (v.event_id)
+                   v.event_id, v.final_decision, v.override_rule, v.throttled_by,
+                   v.rule_baseline_decision, v.trace, e.watchlist_hits
+              FROM news_verdicts v
+             JOIN news_events e ON e.event_id = v.event_id
+             WHERE v.stage = 'triage' AND v.event_id = ANY(%s)
+             ORDER BY v.event_id, v.created_at_ms DESC
+            """,
             (list(event_ids),),
         ).fetchall()
-        return {str(row["event_id"]): str(row["final_decision"] or "") for row in rows}
+        decisions: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            trace = dict(row.get("trace") or {})
+            decisions[str(row["event_id"])] = {
+                "final": str(row["final_decision"] or ""),
+                "override_rule": str(row["override_rule"] or "") or None,
+                "throttled_by": str(row["throttled_by"] or "") or None,
+                "rule_baseline": str(row["rule_baseline_decision"] or ""),
+                "watchlist_hits": [str(value) for value in row.get("watchlist_hits") or ()],
+                "seen_similarity": trace.get("seen_similarity"),
+                # Production persists the matched Event rather than an unstable list offset.  The offset is
+                # not needed to score a recorded action, so the typed projection uses its declared sentinel.
+                "seen_against": -1,
+                "seen_scope": str(trace.get("seen_scope") or ""),
+            }
+        return decisions
 
     def _baseline_cases(self, window: ClosedWindow) -> tuple[DatasetCaseRef, ...]:
         """Every accepted event review in the window, with no cohort filter. Baseline-only."""
@@ -633,7 +661,7 @@ class CandidateEvaluator:
                     "cluster_id": case_ref.cluster_id,
                     "stratum": case_ref.stratum,
                     "context": context.model_dump(mode="json"),
-                    "policy_metric": self._policy_metric_projection(case, state),
+                    "policy_metric": self._policy_metric_projection(case, state, context=context),
                     "accepted_review": {
                         "review_id": case_ref.review_id,
                         "should_push": review.get("should_push"),
@@ -645,13 +673,13 @@ class CandidateEvaluator:
                         "expected_correction": str(review.get("expected_correction") or ""),
                         "note": str(review.get("note") or ""),
                     },
-                    "production_verdict": case.get("production_verdict"),
+                    "production_judgment": case.get("production_judgment"),
                 }
             )
-            verdict_payload = case.get("production_verdict")
+            judgment_payload = case.get("production_judgment")
             receipt_at_ms = case.get("receipt_at_ms")
-            if case_ref.delivery_truth == "observed_sent" and verdict_payload and receipt_at_ms is not None:
-                verdict = TriageVerdict.model_validate(verdict_payload)
+            if case_ref.delivery_truth == "observed_sent" and judgment_payload and receipt_at_ms is not None:
+                verdict = ScoredJudgment.model_validate(judgment_payload).verdict
                 card = dict((case.get("snapshot") or {}).get("card") or {})
                 pending.append(
                     _Receipt(
@@ -669,7 +697,14 @@ class CandidateEvaluator:
                 )
         return tuple(episodes)
 
-    def _policy_metric_projection(self, case: Mapping[str, Any], state: _ArmState) -> dict[str, Any]:
+    def _policy_metric_projection(
+        self,
+        case: Mapping[str, Any],
+        state: _ArmState,
+        *,
+        context: TriageContext,
+        arm: ArmManifest | None = None,
+    ) -> dict[str, Any]:
         """Everything the cold metric needs to run the exact production ``decide()``, and nothing else.
 
         The optimizer scores the action the reader would have seen, not the model's intermediate ``decision``
@@ -680,12 +715,11 @@ class CandidateEvaluator:
         """
 
         event = dict((case.get("snapshot") or {}).get("card") or {})
+        policy_arm = self._stable if arm is None else arm
         return {
             "gate": {
                 "grounded_assets": [str(value) for value in event.get("grounded_assets") or ()],
                 "watchlist_symbols": sorted(str(value) for value in case.get("watchlist") or ()),
-                "provider_score": event.get("provider_score_max"),
-                "priority": str(event.get("priority") or "normal"),
                 "admission": str(event.get("admission") or "candidate"),
                 # #154: the optimizer metric has to see what production `decide()` saw, or it is rewarded for
                 # an action production would not have taken.
@@ -696,6 +730,20 @@ class CandidateEvaluator:
                 "family": str(event.get("family") or "general"),
             },
             "seen": [receipt.as_told_row() for receipt in reversed(state.receipts)],
+            "told": [
+                {
+                    "event_id": entry.event_id,
+                    "at_ms": entry.at_ms,
+                    "storyline_key": entry.storyline_key,
+                    "event_type": entry.event_type,
+                    "magnitude": entry.magnitude,
+                    "direction": entry.direction,
+                    "dir": entry.direction,
+                    "headline_zh": entry.headline_zh,
+                    "assets": list(entry.symbols),
+                }
+                for entry in context.told.entries
+            ],
             # The policy frozen into the example. Production builds `DecidePolicy(**arm.policy)`; the metric
             # used to import `DEFAULT_POLICY` and call itself a production-action metric regardless, so an
             # operator changing `similarity_max` would have made every offline score describe a policy
@@ -707,10 +755,10 @@ class CandidateEvaluator:
             # yesterday's corpus. That is a legitimate question and a different one, and the receipt has to
             # say which was asked rather than let a verified hash imply the arm's own policy.
             "policy_version": TRIAGE_POLICY_VERSION,
-            "policy_values": dict(self._stable.policy),
+            "policy_values": dict(policy_arm.policy),
             "policy_source": "active_arm_manifest",
             # The manifest already validated this against its own `policy`; reusing it keeps one convention.
-            "policy_sha256": self._stable.policy_sha256,
+            "policy_sha256": policy_arm.policy_sha256,
         }
 
     def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:
@@ -944,14 +992,14 @@ class CandidateEvaluator:
                 raise ValueError("news_learning_program_machine_diff_required")
             machine_diff = dict(receipt.program_machine_diff)
             try:
-                parsed_diff = ProgramMachineDiffV2.model_validate(machine_diff)
+                parsed_diff = ProgramMachineDiffV3.model_validate(machine_diff)
             except (TypeError, ValueError) as exc:
                 raise ValueError("news_learning_program_machine_diff_invalid") from exc
             if parsed_diff.model_dump(mode="json") != machine_diff:
                 raise ValueError("news_learning_program_machine_diff_invalid")
             provenance = dict(receipt.compile_provenance or {})
             try:
-                parsed_provenance = OptimizerCompileProvenanceV2.model_validate(provenance)
+                parsed_provenance = OptimizerCompileProvenanceV3.model_validate(provenance)
             except (TypeError, ValueError) as exc:
                 raise ValueError("news_learning_program_compile_provenance_invalid") from exc
             canonical_provenance = parsed_provenance.model_dump(mode="json")
@@ -1064,6 +1112,7 @@ class CandidateEvaluator:
                AND source.ingest_mode = 'live' AND source.evidence_release_eligible
                AND source.program_version = %s AND source.program_sha256 = %s
                AND source.policy_version = %s
+               AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
                AND NOT (
                  source.final_decision IN ('push', 'escalate')
                  AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
@@ -1084,6 +1133,7 @@ class CandidateEvaluator:
                 self._stable.program_version,
                 self._stable.program_sha256,
                 TRIAGE_POLICY_VERSION,
+                self._stable.bundle_sha,
             ),
         ).fetchall()
         external = self._conn.execute(
@@ -1197,38 +1247,22 @@ class CandidateEvaluator:
                 safety.add(case.cluster_id)
             strata.add(case.stratum)
             days.add(case.opened_at_ms // 86_400_000)
-        # Eligibility is the semantic arm — Program plus the policy `decide()` actually ran — and no longer the
-        # whole runtime bundle. `bundle_sha` also hashes the runtime model bindings and the retrieval identity,
-        # so a `similarity_max` edit or a model rebind used to void every accepted review in the window: four
-        # days of production produced seven bundles and never once reached the 200-event development floor.
-        # Retrieval quality is measured on its own (`retrieval_receipt`), and the bundles a window actually
-        # spans are reported below rather than silently excluded.
+        # A release cohort is the whole runtime bundle. Mixing model bindings or retrieval identity into a
+        # Program/policy cohort would score a candidate against evidence produced by a different executable arm.
         eligible = self._conn.execute(
             "SELECT count(*) AS n FROM news_review_task_source_v1 "
             "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s",
+            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
+            "AND trace #>> '{agent_assignment,bundle_sha}' = %s",
             (
                 spec.window.from_ms,
                 spec.window.to_ms,
                 self._stable.program_version,
                 self._stable.program_sha256,
                 TRIAGE_POLICY_VERSION,
+                self._stable.bundle_sha,
             ),
         ).fetchone()
-        bundles = self._conn.execute(
-            "SELECT COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') AS bundle_sha, count(*) AS n "
-            "FROM news_review_task_source_v1 "
-            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
-            "GROUP BY 1 ORDER BY 2 DESC, 1",
-            (
-                spec.window.from_ms,
-                spec.window.to_ms,
-                self._stable.program_version,
-                self._stable.program_sha256,
-                TRIAGE_POLICY_VERSION,
-            ),
-        ).fetchall()
         return {
             "case_n": len(cases),
             "independent_cluster_n": len({case.cluster_id for case in cases}),
@@ -1241,15 +1275,11 @@ class CandidateEvaluator:
             "strata": sorted(strata),
             "eligible_event_n": int(eligible["n"] or 0),
             "eligibility": {
-                "unit": "program_sha256+policy_version",
+                "unit": "agent_bundle_sha",
+                "bundle_sha": self._stable.bundle_sha,
                 "program_sha256": self._stable.program_sha256,
                 "policy_version": TRIAGE_POLICY_VERSION,
                 "rubric_versions": list(REVIEW_RUBRIC_VERSIONS),
-                # What the window actually spans. Runtime rebinds no longer void a review, so the receipt has
-                # to say which runtimes are mixed into the number above.
-                "runtime_bundles": [
-                    {"bundle_sha": str(row["bundle_sha"]), "event_n": int(row["n"])} for row in bundles
-                ],
             },
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
@@ -1335,15 +1365,22 @@ class CandidateEvaluator:
                 # A hidden holdout must call the same SemanticJudge separately
                 # for each arm because their simulated reader ledgers can
                 # diverge and therefore change the next model input.
-                frozen_policy_screen = candidate.target == "policy" and dataset.role == "development"
+                frozen_policy_screen = (
+                    candidate.target == "policy"
+                    and dataset.role == "development"
+                    and case.get("production_judgment") is not None
+                )
                 # Both branches need it: the policy screen skips the model, not the told context, because
                 # `decide()` reads the same selected ledger the model would have been shown.
                 context = self._build_context(case, state)
                 if frozen_policy_screen:
-                    verdict = case.get("production_verdict")
+                    scored_judgment = case.get("production_judgment")
                     program_observations: list[dict[str, Any]] = []
-                    if verdict is None:
-                        case_outputs[arm_name] = {"error_code": "frozen_verdict_missing", "delivered": False}
+                    if scored_judgment is None:
+                        case_outputs[arm_name] = {
+                            "error_code": "frozen_scored_judgment_missing",
+                            "delivered": False,
+                        }
                         continue
                 else:
                     first = await self._invoke_and_record(
@@ -1357,21 +1394,21 @@ class CandidateEvaluator:
                         recording_replay=recording_replay,
                     )
                     program_observations = [first]
-                    verdict = first.get("verdict")
-                    if verdict is None:
+                    scored_judgment = first.get("scored_judgment")
+                    if scored_judgment is None:
                         case_outputs[arm_name] = {
                             "error_code": first.get("error_code") or "program_output_missing",
                             "delivered": False,
                             "program": [first],
                         }
                         continue
-                result = self._apply_policy(case, verdict, state, arm, context)
+                result = self._apply_policy(case, scored_judgment, state, arm, context)
                 result["program"] = list(program_observations)
                 case_outputs[arm_name] = result
             # A pre-registered stability subset plus every first-trial disagreement gets k=3.
             if candidate.target != "policy" and self._needs_stability_trials(case_ref.case_id, case_outputs):
                 for arm_name in order:
-                    if not case_outputs.get(arm_name, {}).get("verdict"):
+                    if not case_outputs.get(arm_name, {}).get("scored_judgment"):
                         continue
                     state = states[arm_name]
                     context = self._build_context(case, state)
@@ -1388,7 +1425,7 @@ class CandidateEvaluator:
                         )
                         for trial in (2, 3)
                     ]
-                    first_verdict = case_outputs[arm_name]["verdict"]
+                    first_judgment = case_outputs[arm_name]["scored_judgment"]
                     serialized_observations: list[dict[str, Any]] = list(case_outputs[arm_name].get("program") or [])
                     serialized_observations.extend(trials)
                     case_outputs[arm_name]["program"] = serialized_observations
@@ -1397,7 +1434,7 @@ class CandidateEvaluator:
                             "trial": 1,
                             "error_code": case_outputs[arm_name].get("error_code"),
                             "delivered": bool(case_outputs[arm_name].get("delivered")),
-                            "verdict_sha256": _sha(first_verdict),
+                            "scored_judgment_sha256": _sha(first_judgment),
                         }
                     ]
                     for trial_number, trial_observation in zip((2, 3), trials, strict=True):
@@ -1405,19 +1442,19 @@ class CandidateEvaluator:
                             "trial": trial_number,
                             "error_code": trial_observation.get("error_code"),
                             "delivered": False,
-                            "verdict_sha256": None,
+                            "scored_judgment_sha256": None,
                         }
-                        if trial_observation.get("verdict") is not None:
+                        if trial_observation.get("scored_judgment") is not None:
                             replayed = self._apply_policy(
                                 case,
-                                trial_observation["verdict"],
+                                trial_observation["scored_judgment"],
                                 state,
                                 arms[arm_name],
                                 self._build_context(case, state),
                             )
                             trial_result.update(
                                 delivered=bool(replayed.get("delivered")),
-                                verdict_sha256=_sha(trial_observation["verdict"]),
+                                scored_judgment_sha256=_sha(trial_observation["scored_judgment"]),
                             )
                         trial_results.append(trial_result)
                     expected_delivery = _expected_delivery(case_ref.should_push)
@@ -1430,7 +1467,9 @@ class CandidateEvaluator:
                         "trials": 3,
                         "agreement_n": 1
                         + sum(
-                            item.get("verdict") == first_verdict for item in trials if item.get("verdict") is not None
+                            item.get("scored_judgment") == first_judgment
+                            for item in trials
+                            if item.get("scored_judgment") is not None
                         ),
                         "pass_n": pass_n,
                         "pass_k": None if pass_n is None else pass_n == 3,
@@ -1632,7 +1671,7 @@ class CandidateEvaluator:
                 context=context,
                 trial=1,
             )
-            if program_observation.get("verdict") is None:
+            if program_observation.get("scored_judgment") is None:
                 candidate_output: dict[str, Any] = {
                     "error_code": program_observation.get("error_code") or "program_output_missing",
                     "delivered": False,
@@ -1643,7 +1682,7 @@ class CandidateEvaluator:
             else:
                 candidate_output = self._apply_policy(
                     case,
-                    program_observation["verdict"],
+                    program_observation["scored_judgment"],
                     state,
                     candidate.candidate_arm,
                     context,
@@ -1722,7 +1761,8 @@ class CandidateEvaluator:
             SELECT a.arm, a.bundle_sha, a.selector_version, a.eligibility_reason,
                    a.assigned_at_ms, e.event_id, e.opened_at_ms,
                    s.evidence_version, s.evidence_sha256, s.snapshot AS evidence_snapshot,
-                   v.verdict, v.final_decision, v.degraded, v.error_code AS verdict_error_code,
+                   v.verdict, v.editorial, v.scored_judgment_sha256, v.runtime_manifest_sha,
+                   v.final_decision, v.degraded, v.error_code AS verdict_error_code,
                    v.trace, v.program_version, v.program_sha256,
                    d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
               FROM news_agent_assignments a
@@ -1857,15 +1897,16 @@ class CandidateEvaluator:
     def _apply_policy(
         self,
         case: Mapping[str, Any],
-        raw_verdict: Mapping[str, Any],
+        raw_judgment: Mapping[str, Any],
         state: _ArmState,
         arm: ArmManifest,
         context: TriageContext,
     ) -> dict[str, Any]:
         try:
-            verdict = TriageVerdict.model_validate(raw_verdict)
+            judgment = ScoredJudgment.model_validate(raw_judgment)
         except Exception as exc:
             return {"error_code": f"schema_invalid:{type(exc).__name__}", "delivered": False}
+        verdict = judgment.verdict
         snapshot = case["snapshot"]
         event = dict(snapshot.get("card") or {})
         grounded = tuple(str(value) for value in event.get("grounded_assets") or [])
@@ -1878,26 +1919,15 @@ class CandidateEvaluator:
             grounded_assets=grounded,
             family=str(event.get("family") or "general"),
         )
-        status = self._status(state, storyline, context)
-        facts = GateFacts(
-            grounded_assets=grounded,
-            watchlist_symbols=frozenset(str(value) for value in case.get("watchlist") or ()),
-            provider_score=event.get("provider_score_max"),
-            priority=str(event.get("priority") or "normal"),
-            admission=str(event.get("admission") or "candidate"),
-            # #154: without this the simulator can never reach `stale_source_artifact`, so a shadow, blind
-            # pairwise or canary arm would report `delivered` on exactly the Events production withheld.
-            source_age_s=event.get("source_age_s"),
-        )
-        decision = decide(
-            verdict,
-            facts,
-            status,
-            policy=DecidePolicy(**arm.policy),
+        decision = production_decision(
+            judgment,
+            self._policy_metric_projection(case, state, context=context, arm=arm),
         )
         delivered = decision.final in {"push", "escalate"}
         return {
+            "scored_judgment": judgment.model_dump(mode="json"),
             "verdict": verdict.model_dump(mode="json"),
+            "editorial": judgment.editorial.model_dump(mode="json"),
             "final_decision": decision.final,
             "override_rule": decision.override_rule,
             "throttled_by": decision.throttled_by,
@@ -1908,27 +1938,6 @@ class CandidateEvaluator:
             "execution": "simulated",
             "delivery": "simulated",
         }
-
-    @staticmethod
-    def _status(state: _ArmState, storyline_key: str, context: TriageContext) -> StorylineStatus:
-        """The same two ledgers production uses, built from the same facts.
-
-        ``told_*`` follows the *selected* context in the exact order the model saw it, because that is what
-        ``verdict.restates`` indexes; taking "the newest twelve receipts" instead would resolve a different
-        card offline than online. ``seen_*`` stays the whole arm-local window, which is what governs duplicates.
-        """
-
-        seen = list(reversed(state.receipts))
-        told = context.told.entries
-        return StorylineStatus(
-            key=storyline_key,
-            told_directions=tuple(entry.direction for entry in told),
-            told_assets=tuple(frozenset(entry.symbols) for entry in told),
-            seen_headlines=tuple(r.headline_zh for r in seen),
-            seen_event_ids=tuple(r.event_id for r in seen),
-            seen_directions=tuple(r.direction for r in seen),
-            seen_assets=tuple(frozenset(base_symbol(x) for x in (*r.grounded_assets, *r.assets) if x) for r in seen),
-        )
 
     async def _invoke_and_record(
         self,
@@ -1946,6 +1955,7 @@ class CandidateEvaluator:
         if judge is None and recording_replay is None:
             return {
                 "verdict": None,
+                "scored_judgment": None,
                 "program_version": arm.program_version,
                 "program_sha256": arm.program_sha256,
                 "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
@@ -1974,6 +1984,7 @@ class CandidateEvaluator:
             partial_trace = exc.partial_trace.model_dump(mode="json") if exc.partial_trace is not None else {}
             observation = {
                 "verdict": None,
+                "scored_judgment": None,
                 "program_version": arm.program_version,
                 "program_sha256": arm.program_sha256,
                 "trace": partial_trace,
@@ -1995,6 +2006,7 @@ class CandidateEvaluator:
                 raise ValueError("news_program_judgment_identity_mismatch")
             observation = judgment.model_dump(mode="json")
             observation["verdict"] = judgment.verdict.model_dump(mode="json")
+            observation["scored_judgment"] = judgment.scored().model_dump(mode="json")
             observation["calls"] = list(observation.get("trace", {}).get("calls") or [])
             observation["error_code"] = None
         observation["runtime_model_bindings_sha256"] = arm.runtime_model_bindings_sha256
@@ -2699,11 +2711,20 @@ class CandidateEvaluator:
             ).fetchone()
             if row is None or row["evidence_sha256"] != case.evidence_sha256:
                 raise ValueError("news_learning_evidence_changed")
+            production_judgment: dict[str, Any] | None = None
+            if row.get("verdict") is not None and row.get("editorial") is not None:
+                scored = ScoredJudgment.issue(
+                    verdict=TriageVerdict.model_validate(row["verdict"]),
+                    editorial=EditorialEnvelope.model_validate(row["editorial"]),
+                )
+                if str(row.get("scored_judgment_sha256") or "") != scored.scored_judgment_sha256:
+                    raise ValueError("news_learning_scored_judgment_identity_mismatch")
+                production_judgment = scored.model_dump(mode="json")
             return {
                 "snapshot": dict(row["evidence_snapshot"] or {}),
                 "opened_at_ms": int(row["opened_at_ms"]),
                 "receipt_at_ms": int(row["settled_at_ms"]) if row.get("settled_at_ms") is not None else None,
-                "production_verdict": dict(row["verdict"] or {}) if row.get("verdict") else None,
+                "production_judgment": production_judgment,
                 "review": dict(review),
                 "watchlist": list((row.get("trace") or {}).get("watchlist") or []),
             }
@@ -2714,7 +2735,7 @@ class CandidateEvaluator:
             raise ValueError("news_learning_external_evidence_changed")
         snapshot = dict(row["snapshot"] or {})
         synthetic = {
-            "schema_version": "news_event_evidence_v1",
+            "schema_version": "news_event_evidence_v2",
             "focus_fact": {"fact_id": case.case_id, "text": snapshot["title"], "context": snapshot.get("body", "")},
             "card": {
                 "event_id": case.case_id,
@@ -2727,7 +2748,7 @@ class CandidateEvaluator:
                 "reporting_origin": snapshot.get("provenance", "operator"),
                 "family": "general",
                 "admission": "external_miss",
-                "priority": "normal",
+                "queue_priority": "normal",
                 "asset_class": "none",
                 "grounded_assets": [],
                 "storyline_key": "macro:general",
@@ -2739,7 +2760,7 @@ class CandidateEvaluator:
             "snapshot": synthetic,
             "opened_at_ms": case.opened_at_ms,
             "receipt_at_ms": None,
-            "production_verdict": None,
+            "production_judgment": None,
             "review": dict(review),
             "watchlist": [],
         }
@@ -2850,7 +2871,7 @@ class CandidateEvaluator:
         self,
         *,
         candidate: CandidateManifest,
-        provenance: OptimizerCompileProvenanceV2,
+        provenance: OptimizerCompileProvenanceV3,
     ) -> None:
         rows = self._conn.execute(
             "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
@@ -2871,7 +2892,7 @@ class CandidateEvaluator:
             raise ValueError("news_learning_program_compile_receipt_parent_mismatch")
         receipt = candidate.proposal_receipt
         try:
-            chain = validate_compile_receipt_chain_v2(
+            chain = validate_compile_receipt_chain_v3(
                 payload,
                 provenance=provenance,
                 patch_sha256=receipt.candidate_patch_sha,
@@ -3154,7 +3175,7 @@ class CandidateEvaluator:
     def _needs_stability_trials(case_id: str, outputs: Mapping[str, Mapping[str, Any]]) -> bool:
         stable = outputs.get("stable") or {}
         candidate = outputs.get("candidate") or {}
-        return int(case_id[:4], 16) % 10 == 0 or stable.get("verdict") != candidate.get("verdict")
+        return int(case_id[:4], 16) % 10 == 0 or stable.get("scored_judgment") != candidate.get("scored_judgment")
 
 
 def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
@@ -3358,6 +3379,7 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
 
     trace = dict(row.get("trace") or {})
     verdict = dict(row.get("verdict") or {}) if row.get("verdict") else None
+    editorial = dict(row.get("editorial") or {}) if row.get("editorial") else None
     error_code = str(row.get("verdict_error_code") or "") or None
     if verdict is None:
         error_code = error_code or "assigned_without_verdict"
@@ -3447,6 +3469,17 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("news_program_execution_call_index_mismatch")
     if not executions:
         calls = [dict(item) for item in program_trace.get("calls") or []]
+    scored_judgment: dict[str, Any] | None = None
+    if verdict is not None:
+        if editorial is None:
+            raise ValueError("news_learning_observed_editorial_missing")
+        scored = ScoredJudgment.issue(
+            verdict=TriageVerdict.model_validate(verdict),
+            editorial=EditorialEnvelope.model_validate(editorial),
+        )
+        if str(row.get("scored_judgment_sha256") or "") != scored.scored_judgment_sha256:
+            raise ValueError("news_learning_observed_scored_judgment_identity_mismatch")
+        scored_judgment = scored.model_dump(mode="json")
     provider_cost_microusd = trace.get("provider_cost_microusd")
     if provider_cost_microusd is None and trace.get("provider_cost_usd") is not None:
         # Historical prompt-era trace compatibility is read-only audit input.
@@ -3471,7 +3504,10 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         "error_code": error_code,
     }
     return {
+        "scored_judgment": scored_judgment,
         "verdict": verdict,
+        "editorial": editorial,
+        "runtime_manifest_sha": row.get("runtime_manifest_sha"),
         "final_decision": row.get("final_decision"),
         "delivered": delivery_state == "sent",
         "execution": "live",

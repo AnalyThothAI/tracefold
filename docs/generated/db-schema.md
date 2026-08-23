@@ -154,7 +154,7 @@
 | `expires_at_ms` | `BIGINT` | False | `None` |
 | `member_count` | `INTEGER` | False | `1` |
 | `admission` | `TEXT` | False | `None` |
-| `priority` | `TEXT` | False | `'normal'::text` |
+| `queue_priority` | `TEXT` | False | `'normal'::text` |
 | `provider_score_max` | `DOUBLE PRECISION` | True | `None` |
 | `engine_type` | `TEXT` | False | `'unknown'::text` |
 | `asset_class` | `TEXT` | False | `'none'::text` |
@@ -449,6 +449,9 @@
 | `focus_fact_id` | `TEXT` | True | `None` |
 | `program_version` | `TEXT` | True | `None` |
 | `program_sha256` | `TEXT` | True | `None` |
+| `editorial` | `JSONB` | True | `None` |
+| `scored_judgment_sha256` | `TEXT` | True | `None` |
+| `runtime_manifest_sha` | `TEXT` | True | `None` |
 
 ## `trading_cases`
 

@@ -32,6 +32,10 @@ def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
             "30",
             "--max-task-model-calls",
             "90",
+            "--max-reflection-model-calls",
+            "12",
+            "--max-metric-judge-model-calls",
+            "45",
             "--max-cost-microusd",
             "500000",
             "--seed",
@@ -41,9 +45,18 @@ def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
 
     assert args.learning_command == "compile"
     assert args.compiler_image == "sha256:" + "1" * 64
-    assert (args.max_metric_calls, args.max_task_model_calls, args.max_cost_microusd, args.seed) == (
+    assert (
+        args.max_metric_calls,
+        args.max_task_model_calls,
+        args.max_reflection_model_calls,
+        args.max_metric_judge_model_calls,
+        args.max_cost_microusd,
+        args.seed,
+    ) == (
         30,
         90,
+        12,
+        45,
         500000,
         17,
     )
@@ -289,7 +302,7 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
 @pytest.mark.parametrize(
     ("mode", "action_source", "error"),
     [
-        ("recorded", "policy", "news_program_baseline_recorded_mode_requires_recorded_action"),
+        ("recorded", "policy", "news_program_baseline_recorded_mode_requires_recorded_decision"),
         ("compile_live", "recorded", "news_program_baseline_live_mode_requires_policy_action"),
         ("runtime_live", "recorded", "news_program_baseline_live_mode_requires_policy_action"),
     ],
@@ -413,4 +426,4 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
 
     # The genuinely forbidden pairing stays blocked.
     code, payload = _handle_learning(_baseline_args(mode="recorded", action_source="policy", all_cohorts=True))
-    assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_action"
+    assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_decision"

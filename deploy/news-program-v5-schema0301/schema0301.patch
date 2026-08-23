@@ -1,0 +1,131 @@
+diff --git a/src/tracefold/news/candidate_evaluator.py b/src/tracefold/news/candidate_evaluator.py
+--- a/src/tracefold/news/candidate_evaluator.py
++++ b/src/tracefold/news/candidate_evaluator.py
+@@ -687,3 +687,3 @@ class CandidateEvaluator:
+                 "provider_score": event.get("provider_score_max"),
+-                "priority": str(event.get("priority") or "normal"),
++                "priority": str(event.get("priority") or event.get("queue_priority") or "normal"),
+                 "admission": str(event.get("admission") or "candidate"),
+@@ -1842,3 +1842,5 @@ class CandidateEvaluator:
+         snapshot = case["snapshot"]
+         event = dict(snapshot.get("card") or {})
++        if "priority" not in event and event.get("queue_priority"):
++            event["priority"] = event["queue_priority"]
+         focus = dict(snapshot.get("focus_fact") or {})
+@@ -1885,3 +1885,3 @@ class CandidateEvaluator:
+             provider_score=event.get("provider_score_max"),
+-            priority=str(event.get("priority") or "normal"),
++            priority=str(event.get("priority") or event.get("queue_priority") or "normal"),
+             admission=str(event.get("admission") or "candidate"),
+diff --git a/src/tracefold/news/events.py b/src/tracefold/news/events.py
+--- a/src/tracefold/news/events.py
++++ b/src/tracefold/news/events.py
+@@ -424,3 +424,3 @@ def _member_result(
+         """
+-        SELECT e.admission, e.storyline_key, e.priority, e.published_at_ms,
++        SELECT e.admission, e.storyline_key, e.queue_priority AS priority, e.published_at_ms,
+                i.reporting_origin AS leader_origin, i.provider_metadata AS leader_provider_metadata
+diff --git a/src/tracefold/news/query_specs.py b/src/tracefold/news/query_specs.py
+--- a/src/tracefold/news/query_specs.py
++++ b/src/tracefold/news/query_specs.py
+@@ -17,3 +17,4 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
+             sql="""
+-                SELECT e.event_id, e.leader_title, e.opened_at_ms, e.admission, e.priority, t.final_decision
++                SELECT e.event_id, e.leader_title, e.opened_at_ms, e.admission,
++                       e.queue_priority AS priority, t.final_decision
+                   FROM news_events e
+diff --git a/src/tracefold/news/repository.py b/src/tracefold/news/repository.py
+--- a/src/tracefold/news/repository.py
++++ b/src/tracefold/news/repository.py
+@@ -382,3 +382,3 @@ class NewsRepository:
+               focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
+-              opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, priority,
++              opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority,
+               provider_score_max, engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon,
+@@ -560,3 +560,3 @@ class NewsRepository:
+             UPDATE news_events
+-               SET admission = %s, priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
++               SET admission = %s, queue_priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
+                    watchlist_hits = %s::jsonb, macro_lexicon = %s, updated_at_ms = %s
+@@ -604,3 +604,4 @@ class NewsRepository:
+             """
+-            SELECT e.*, i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
++            SELECT e.*, e.queue_priority AS priority,
++                   i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
+                    i.provider_metadata, i.provenance, i.published_at_ms AS leader_published_at_ms,
+@@ -812,3 +813,5 @@ class NewsRepository:
+         snapshot = dict(evidence.get("snapshot") or {})
+         card = dict(snapshot.get("card") or {})
++        if "priority" not in card and card.get("queue_priority"):
++            card["priority"] = card["queue_priority"]
+         card.update(
+@@ -991,6 +994,7 @@ class NewsRepository:
+               JOIN news_events e ON e.event_id = v.event_id
+               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+              WHERE v.stage = 'triage'
++               AND false -- News v5 rollback disables new Trading exposure.
+                AND v.program_version = 'news_oi_signal_v1'
+                AND v.final_decision IN ('push', 'escalate')
+                AND v.degraded = false
+@@ -1049,6 +1053,7 @@ class NewsRepository:
+               JOIN news_events e ON e.event_id = v.event_id
+               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+              WHERE v.stage = 'triage'
++               AND false -- News v5 rollback disables new Trading exposure.
+                AND v.program_version IS DISTINCT FROM 'news_oi_signal_v1'
+                AND v.final_decision IN ('push', 'escalate')
+                AND v.degraded = false
+@@ -1594,3 +1599,3 @@ class NewsRepository:
+         if priority:
+-            where.append("e.priority = %s")
++            where.append("e.queue_priority = %s")
+             params.append(priority)
+@@ -1614,3 +1619,3 @@ class NewsRepository:
+         order = (
+-            "e.priority = 'high' DESC, e.opened_at_ms DESC, e.event_id DESC"
++            "e.queue_priority = 'high' DESC, e.opened_at_ms DESC, e.event_id DESC"
+             if sort == "priority"
+@@ -1621,3 +1626,4 @@ class NewsRepository:
+             SELECT e.event_id, e.family, e.leader_title, e.opened_at_ms, e.last_member_at_ms, e.member_count,
+-                   e.admission, e.priority, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
++                   e.admission, e.queue_priority AS priority, e.provider_score_max, e.engine_type,
++                   e.asset_class, e.grounded_assets,
+                    e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
+diff --git a/src/tracefold/trading/pipeline.py b/src/tracefold/trading/pipeline.py
+--- a/src/tracefold/trading/pipeline.py
++++ b/src/tracefold/trading/pipeline.py
+@@ -104,5 +104,10 @@ BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
+ BarFetcherFactory = Callable[[str], BarFetcher | None]
+-
+-
++
++
++def _news_runtime_allows_new_trading_exposure() -> bool:
++    """The rollback keeps reconciliation live but admits no new capital intent."""
++    return False
++
++
+ def _now_ms() -> int:
+     return int(datetime.now(tz=UTC).timestamp() * 1000)
+@@ -514,3 +519,13 @@ class CandidateRunner:
+         case_id = str(claimed["case_id"])
++        if not _news_runtime_allows_new_trading_exposure():
++            funnel.count("advance_reject:news_runtime_rollback")
++            await self._settle(
++                case_id,
++                CaseState.BLOCKED,
++                "no_trade",
++                "news_runtime_rollback",
++                now=now,
++            )
++            return "news_runtime_rollback"
+         manifest = TradingCaseManifest.model_validate(claimed["manifest"])
+         kind: CaseKind = str(claimed["case_kind"])  # type: ignore[assignment]
+diff --git a/src/tracefold/news/review.py b/src/tracefold/news/review.py
+--- a/src/tracefold/news/review.py
++++ b/src/tracefold/news/review.py
+@@ -1869,3 +1869,3 @@ def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
+         stratum, reason, probability = "delivery_failed", "delivery_terminal_failure", 1.0
+-    elif row.get("priority") == "high" or row.get("final_decision") == "escalate":
++    elif (row.get("priority") or row.get("queue_priority")) == "high" or row.get("final_decision") == "escalate":
+         stratum, reason, probability = "critical", "high_priority_or_escalate", 1.0

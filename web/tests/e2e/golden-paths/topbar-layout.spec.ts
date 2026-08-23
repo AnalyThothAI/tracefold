@@ -54,7 +54,7 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   const rows = page.locator(".news-event-row");
   await expect(rows).toHaveCount(6);
   await expect(page.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
-  // Every row states its outcome as a word; the filled capsule is reserved for the high-priority push.
+  // Every row states its outcome as a word; queue scheduling metadata never changes reader loudness.
   await expect(page.locator(".news-event-row .news-outcome")).toHaveCount(6);
   await expect(page.locator(".news-event-row .news-outcome").first()).toContainText("已推送");
   const fullyVisible = await rows.evaluateAll(

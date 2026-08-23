@@ -7,6 +7,7 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tests.support.news_judgment import recorded_decision, scored_judgment
 from tracefold.news.agents import program_compiler, program_metric
 from tracefold.news.agents.program_baseline import (
     BaselineCase,
@@ -15,6 +16,7 @@ from tracefold.news.agents.program_baseline import (
 )
 from tracefold.news.agents.program_metric import DevelopmentEpisode, accepted_review_metric
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.review import EventRubricSubmission
 
 
@@ -31,7 +33,7 @@ def _frozen_policy_projection() -> dict[str, object]:
 
     values = DEFAULT_POLICY.as_dict()
     return {
-        "policy_version": "news_triage_policy_v8",
+        "policy_version": TRIAGE_POLICY_VERSION,
         "policy_values": values,
         "policy_sha256": canonical_sha(values),
     }
@@ -68,7 +70,7 @@ _CONTEXT: dict[str, Any] = {
         "reporting_origin": "wire",
         "family": "general",
         "admission": "candidate",
-        "priority": "normal",
+        "queue_priority": "normal",
         "asset_class": "equity_or_commodity",
         "engine_type": "news",
         "ingest_mode": "live",
@@ -112,7 +114,7 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
             "expected": expected or {},
             "expected_correction": "",
         },
-        production_verdict=dict(_VERDICT),
+        production_judgment=scored_judgment(_VERDICT),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"]},
             "storyline": {"title": "Tesla"},
@@ -123,12 +125,19 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
 
 
 def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> dspy.Prediction:
-    case = BaselineCase(episode=episode, recorded_action="push")
     example = program_metric.build_compile_example(episode)
     projection = dict(example.get("policy_metric") or {})
-    projection["recorded_action"] = case.recorded_action
+    projection["recorded_decision_result"] = recorded_decision("push")
+    judgment = scored_judgment(verdict)
     return accepted_review_metric(
-        example.copy(policy_metric=projection), dspy.Prediction(verdict=verdict), None, None, None
+        example.copy(policy_metric=projection),
+        dspy.Prediction(
+            verdict=judgment.verdict.model_dump(mode="json"),
+            editorial=judgment.editorial.model_dump(mode="json"),
+        ),
+        None,
+        None,
+        None,
     )
 
 
@@ -139,15 +148,15 @@ def test_optimizer_and_baseline_share_one_metric_object() -> None:
     assert accepted_review_metric.__module__ == "tracefold.news.agents.program_metric"
 
 
-def test_failed_dimension_without_gold_still_scores_for_any_change() -> None:
-    """The weak fallback, kept only where a rubric cannot hold a correct value."""
+def test_failed_dimension_without_gold_is_visible_but_not_scored() -> None:
+    """v4 never rewards a blind change when the reviewer supplied no correct value."""
 
-    episode = _episode(dimensions={"magnitude": "fail", "factual_fidelity": "pass"})
+    episode = _episode(dimensions={"magnitude": "fail"})
     changed = _score(episode, {**_VERDICT, "magnitude": 3})
     unchanged = _score(episode, dict(_VERDICT))
-    assert changed.score > unchanged.score
-    assert changed.gold_scored_n == 1  # novelty only
-    assert changed.labelled_n == 3
+    assert changed.score == unchanged.score
+    assert ("magnitude", "not_scored_no_gold") in changed.dimension_outcomes
+    assert changed.gold_scored_n == 1  # the separately accepted novelty judgment
 
 
 def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
@@ -161,8 +170,7 @@ def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
     wrong = _score(golded, {**_VERDICT, "magnitude": 3})
     assert right.score > wrong.score
 
-    # The same wrong answer, scored with and without gold. Without it, "not the old value" was the whole test
-    # and a coin flip banked the point; with it, only the stated value does.
+    # Without gold neither candidate gets a point for merely changing the rejected value.
     assert wrong.score < _score(ungolded, {**_VERDICT, "magnitude": 3}).score
     assert right.score == _score(ungolded, {**_VERDICT, "magnitude": 2}).score
 
@@ -172,7 +180,7 @@ def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
 
 def test_gold_asset_grounding_compares_symbol_sets() -> None:
     episode = _episode(
-        dimensions={"asset_grounding": "fail", "factual_fidelity": "pass"},
+        dimensions={"asset_grounding": "fail"},
         expected={"assets": [{"symbol": "TSLA", "role": "primary"}, {"symbol": "XYZ-NVDA", "role": "mentioned"}]},
     )
     right = _score(
@@ -188,12 +196,12 @@ def test_recorded_mode_scores_the_shipped_action_not_todays_policy() -> None:
 
     episode = _episode(dimensions={"factual_fidelity": "pass", "magnitude": "pass"})
     held = run_baseline(
-        [BaselineCase(episode=episode, recorded_action="drop")],
+        [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("drop"))],
         mode="recorded",
         artifact=load_stable_program_artifact(),
     )
     pushed = run_baseline(
-        [BaselineCase(episode=episode, recorded_action="push")],
+        [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))],
         mode="recorded",
         artifact=load_stable_program_artifact(),
     )
@@ -205,9 +213,21 @@ def test_recorded_mode_scores_the_shipped_action_not_todays_policy() -> None:
     assert pushed.scores["case_macro_answered"] == pushed.scores["case_macro_failure_as_zero"]
 
 
+def test_recorded_decision_preserves_zero_seen_against_index() -> None:
+    """Ledger index zero is the first real match, not the missing-value sentinel."""
+
+    persisted = {**recorded_decision("throttled"), "seen_against": 0, "seen_similarity": 0.91}
+    replayed = program_metric.production_decision(
+        scored_judgment(_VERDICT),
+        {"recorded_decision_result": persisted},
+    )
+
+    assert replayed.seen_against == 0
+
+
 def test_baseline_report_is_content_addressable_and_names_its_subject() -> None:
     episode = _episode(dimensions={"factual_fidelity": "pass"})
-    cases = [BaselineCase(episode=episode, recorded_action="push")]
+    cases = [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))]
     artifact = load_stable_program_artifact()
     first = run_baseline(cases, mode="recorded", artifact=artifact)
     second = run_baseline(cases, mode="recorded", artifact=artifact)
@@ -217,15 +237,65 @@ def test_baseline_report_is_content_addressable_and_names_its_subject() -> None:
     assert first.identity["metric"]["implementation"]["qualname"] == "accepted_review_metric"
 
 
+def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> None:
+    dimensions = {
+        "trade_impact_breadth": "pass",
+        "trade_tradability": "pass",
+        "trade_surprise": "pass",
+        "trade_development_delta": "pass",
+        "trade_channels": "pass",
+        "trade_affected_markets": "pass",
+        "reader_value": "pass",
+        "asset_grounding": "pass",
+        "direction": "pass",
+        "magnitude": "pass",
+        "factual_fidelity": "pass",
+        "headline_fidelity": "pass",
+        "why_support": "pass",
+        "why_value": "pass",
+    }
+    episode = _episode(dimensions=dimensions)
+    episode = episode.model_copy(update={"accepted_review": {**episode.accepted_review, "should_push": "must_hold"}})
+
+    report = run_baseline(
+        [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))],
+        mode="recorded",
+        artifact=load_stable_program_artifact(),
+    )
+
+    case = report.cases[0]
+    assert case.hard_gate == "must_hold_send"
+    assert case.component_scores == {
+        "final_action": 0.0,
+        "trade_relevance": 0.0,
+        "semantics_novelty": 0.0,
+        "reader_card": 0.0,
+    }
+    assert case.component_denominators == {
+        "final_action": 1,
+        "trade_relevance": 7,
+        "semantics_novelty": 4,
+        "reader_card": 4,
+    }
+    assert case.effective_weight_mass == 1.0
+    assert case.gold_scored_n == 1 and case.labelled_n == 15
+    assert report.scores["component_denominators"] == case.component_denominators
+    assert report.scores["effective_weight_mass_mean"] == 1.0
+
+
 def test_build_baseline_cases_drops_loader_only_keys() -> None:
     episode = _episode(dimensions={"factual_fidelity": "pass"})
-    raw = {**episode.model_dump(mode="json"), "event_id": "e" * 64, "recorded_action": "drop"}
+    raw = {
+        **episode.model_dump(mode="json"),
+        "event_id": "e" * 64,
+        "recorded_decision_result": recorded_decision("drop"),
+    }
     cases = build_baseline_cases([raw], action_source="recorded")
-    assert cases[0].recorded_action == "drop"
-    assert build_baseline_cases([raw], action_source="policy")[0].recorded_action == ""
+    assert cases[0].recorded_decision_result == recorded_decision("drop")
+    assert build_baseline_cases([raw], action_source="policy")[0].recorded_decision_result is None
 
 
-def test_rubric_v3_gold_requires_a_failed_dimension() -> None:
+def test_rubric_v4_gold_requires_a_failed_dimension() -> None:
     base = {
         "kind": "event_rubric",
         "should_push": "should_push",
@@ -246,8 +316,7 @@ def test_rubric_v3_gold_requires_a_failed_dimension() -> None:
         )
 
 
-def test_rubric_v2_submission_still_validates() -> None:
-    """v3 only adds gold. A corpus that had to restart on every rubric revision would never reach the floor."""
+def test_rubric_v4_submission_without_optional_gold_validates() -> None:
 
     submission = EventRubricSubmission(
         kind="event_rubric",

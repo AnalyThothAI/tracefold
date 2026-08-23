@@ -308,8 +308,8 @@ positional arguments:
                         development evidence
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
-    draft-reviews       propose news_review_v3 rubrics with gold for a human
-                        to accept (writes a file, never the DB)
+    draft-reviews       propose news_review_v4 rubrics with exact gold for a
+                        human to accept (writes a file, never the DB)
     propose             seal a Program or policy candidate manifest
     freeze              freeze accepted reviews into a dataset
     evaluate            run the evaluate release-evidence gate
@@ -330,6 +330,8 @@ usage: tracefold news learning compile [-h] --development DEVELOPMENT
                                        --compiler-image COMPILER_IMAGE
                                        --max-metric-calls MAX_METRIC_CALLS
                                        --max-task-model-calls MAX_TASK_MODEL_CALLS
+                                       --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+                                       --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
                                        --max-cost-microusd MAX_COST_MICROUSD
                                        [--seed SEED]
 
@@ -344,6 +346,8 @@ options:
                         exact local compiler image ID (sha256:<64 hex>)
   --max-metric-calls MAX_METRIC_CALLS
   --max-task-model-calls MAX_TASK_MODEL_CALLS
+  --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
   --max-cost-microusd MAX_COST_MICROUSD
   --seed SEED
 

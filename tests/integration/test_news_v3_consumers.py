@@ -124,6 +124,7 @@ def _triage(conn: Any, bus: FakeBus) -> TriageConsumer:
         concurrency=1,
         circuit_failures=3,
         circuit_open_seconds=60.0,
+        runtime_manifest={"manifest_sha": "e" * 64},
     )
 
 
@@ -161,15 +162,15 @@ def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> 
     assert all(m.priority == 0 for m in bus.published if m.routing_key.endswith(".normal"))
 
     rows = conn.execute(
-        "SELECT event_id, admission, published_at_ms, family, priority FROM news_events WHERE event_id = ANY(%s)",
+        "SELECT event_id, admission, published_at_ms, family, queue_priority FROM news_events WHERE event_id = ANY(%s)",
         (published_ids,),
     ).fetchall()
     assert len(rows) == len(published_ids)
     # Both admitted admissions route to Triage: `candidate` and `listing_deterministic` (#72 — listing frames used
-    # to be stored, marked high priority, and then silently dropped instead of published).
+    # to be stored, placed on the high scheduling lane, and then silently dropped instead of published).
     assert all(row["admission"] in ADMITTED_ADMISSIONS and row["published_at_ms"] is not None for row in rows)
     for row in rows:
-        assert f"event.{row['family']}.{row['priority']}" in bus.routing_keys()
+        assert f"event.{row['family']}.{row['queue_priority']}" in bus.routing_keys()
     unpublished_admitted = conn.execute(
         "SELECT count(*) AS n FROM news_events WHERE admission = ANY(%s) AND published_at_ms IS NULL",
         (sorted(ADMITTED_ADMISSIONS),),
@@ -244,39 +245,29 @@ def test_deduper_admits_an_unknown_strategy_and_rejects_missing_params(conn) -> 
     assert [row["id"] for row in strategies] == ["9999"]
 
 
-def _candidate_event(conn: Any, *, priority: str, grounded: bool) -> dict[str, Any] | None:
-    grounded_clause = (
-        "jsonb_array_length(grounded_assets) > 0" if grounded else "jsonb_array_length(grounded_assets) = 0"
-    )
-    return conn.execute(
-        f"""
-        SELECT event_id, storyline_key, priority, provider_score_max, grounded_assets, watchlist_hits
-          FROM news_events
-         WHERE admission = 'candidate' AND priority = %s AND {grounded_clause}
-           AND event_id NOT IN (SELECT event_id FROM news_verdicts)
-         ORDER BY opened_at_ms DESC, event_id
-         LIMIT 1
-        """,
-        (priority,),
-    ).fetchone()
-
-
-def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn) -> None:
+def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn) -> None:
     bus = FakeBus()
     triage = _triage(conn, bus)
     strong = conn.execute(
         """
-        SELECT event_id, priority, leader_title FROM news_events
-         WHERE admission = 'candidate' AND priority = 'high'
+        SELECT event_id, queue_priority, leader_title FROM news_events
+         WHERE admission = 'candidate'
            AND jsonb_array_length(grounded_assets) > 0
-           AND (jsonb_array_length(watchlist_hits) > 0 OR provider_score_max >= 90)
+           AND jsonb_array_length(watchlist_hits) > 0
            AND event_id NOT IN (SELECT event_id FROM news_verdicts)
          ORDER BY opened_at_ms DESC, event_id LIMIT 1
         """
     ).fetchone()
-    weak = _candidate_event(conn, priority="normal", grounded=False) or _candidate_event(
-        conn, priority="normal", grounded=True
-    )
+    weak = conn.execute(
+        """
+        SELECT event_id, queue_priority, provider_score_max FROM news_events
+         WHERE admission = 'candidate'
+           AND jsonb_array_length(watchlist_hits) = 0
+           AND event_id NOT IN (SELECT event_id FROM news_verdicts)
+         ORDER BY (queue_priority = 'high') DESC, provider_score_max DESC NULLS LAST, opened_at_ms DESC, event_id
+         LIMIT 1
+        """
+    ).fetchone()
     assert strong is not None and weak is not None
     stamp = now_ms()
 
@@ -292,11 +283,13 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
         )
 
     async def scenario() -> None:
-        await triage.handle(_message(str(strong["event_id"]), priority=5))
-        await triage.handle(_message(str(weak["event_id"]), priority=0))
+        strong_priority = 5 if strong["queue_priority"] == "high" else 0
+        weak_priority = 5 if weak["queue_priority"] == "high" else 0
+        await triage.handle(_message(str(strong["event_id"]), priority=strong_priority))
+        await triage.handle(_message(str(weak["event_id"]), priority=weak_priority))
         # replay both: existing verdicts are honoured, nothing is re-published
-        await triage.handle(_message(str(strong["event_id"]), priority=5))
-        await triage.handle(_message(str(weak["event_id"]), priority=0))
+        await triage.handle(_message(str(strong["event_id"]), priority=strong_priority))
+        await triage.handle(_message(str(weak["event_id"]), priority=weak_priority))
         with pytest.raises(PermanentError, match="news_event_id_missing"):
             await triage.handle(_message("", priority=0))
         with pytest.raises(PermanentError, match="news_event_missing"):
@@ -336,7 +329,7 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
         "SELECT context_line, storyline_key FROM news_events WHERE event_id = %s", (strong["event_id"],)
     ).fetchone()
     assert " ".join(strong["leader_title"].split())[:60] in context["context_line"]  # the wire headline, not an apology
-    assert "→ push·high_priority_push" in context["context_line"]  # the feed shows the reason, not just the verdict
+    assert "→ push·degraded_watchlist_objective" in context["context_line"]
     # Triage wrote the final storyline key back and recorded it in the replayable trace.
     assert context["storyline_key"] == strong_row["trace"]["storyline_key"]
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 2

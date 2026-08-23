@@ -2,7 +2,7 @@
 
 """Reviewed, code-owned quality rules for the News semantic Program.
 
-The eight coarse packs below are the sole editable expert-rule truth. The
+The nine coarse packs below are the sole editable expert-rule truth. The
 runtime renderer turns them into Predictor instructions in a fixed order; an
 Artifact can reference their literal identities but neither an Artifact nor an
 optimizer may create or modify a pack.
@@ -152,17 +152,15 @@ Include only tradable symbols the headline or body clearly concerns. Use role=pr
     ),
     RulePackSpec(
         rule_id="magnitude_actionability",
-        revision=1,
+        revision=2,
         target="event_semantics",
         order=2,
-        body="""## Magnitude and actionability
+        body="""## Magnitude
 Magnitude measures information value for the trader, not price impact alone.
 - 0: irrelevant, marketing, or template material.
 - 1: a routine update on one name that changes nothing about what it sells, builds, or earns: a user/volume/TVL milestone, partnership recap or milestones post, pilot or integration that ships nothing new to customers, testnet, developer tool, re-announcement of something already live, on-track reaffirmation, or scheduled data.
 - 2: clearly tradable: single-stock earnings or guidance; a listed company's or token issuer's own product update such as a new product/model, launch date, production line, plant/capacity commitment, new business line, or pricing change; a leader's or exchange's product/listing/delisting/notice; institutional custody, settlement, or ETF adoption; regulation landing; security incident; notable ETF flow; whale/liquidation anomaly; sector move; or macro data well off consensus. A product update can be magnitude 2 even when its amount looks small beside the company.
 - 3: macro turning point, systemic risk, a leader's landmark event, or geopolitical escalation.
-
-actionable is true when a trader can act now on a named listed stock or token on any exchange, a listed company's own product update even when Gate tagged no ticker, an exchange product/notice that changes what users can trade, or a clear risk-asset direction. It is false when nothing named is tradable, such as a private-company deal or a startup funding round with no token. Model intent must not push non-actionable material.
 
 Examples:
 - "Tesla is finally launching the Cybercab" -> product / TSLA primary / bullish / single_name / magnitude 2 / push / us_equity.
@@ -209,12 +207,10 @@ Negative examples:
     ),
     RulePackSpec(
         rule_id="exclusions_decision_intent",
-        revision=1,
+        revision=2,
         target="event_semantics",
         order=5,
-        body="""## Exclusions and decision intent
-decision is model intent only; deterministic code owns the final call. push means clear, timely, actionable value; escalate means push-worthy and possibly large; drop means noise, marketing, template PR, sentiment, rehash, no-asset commentary, or off-market material.
-
+        body="""## Exclusions
 Never push:
 - Law-firm template notices such as Securities Investigation Notice or Investor Alert.
 - Meme sentiment posts, no-asset commentary, trading competitions, or airdrop marketing.
@@ -230,14 +226,14 @@ Examples:
     ),
     RulePackSpec(
         rule_id="novelty_told_ledger",
-        revision=1,
+        revision=2,
         target="event_semantics",
         order=6,
         body="""## Novelty against event_status.told
 told contains up to 16 cards sent to the reader in the last 4 h, chosen for relevance to *this* event and ordered most-related first, not newest first: same storyline, then shared instrument, then same-fact title match, then recency. Each entry has visible index i, age (ago_min), storyline key (key), event type (type), instruments (sym), magnitude, direction, and Chinese headline. It is a selection, not the whole window: absence from told is weak evidence, so judge novelty on what the entries say.
 - new_fact: nothing in told is about this event; restates=-1.
 - progression: told covers the story but this event adds a material development: a new number, a new actor's action, the outcome of something announced earlier, a reversal, or official confirmation of a rumor; restates=-1 even when it follows an earlier card.
-- restatement: the same fact as one told entry: another outlet, paraphrase, analysis/market-reaction piece that only repeats it, another detail of the same announcement, or color that changes nothing for a trader. Set restates to that visible i and decision=drop.
+- restatement: the same fact as one told entry: another outlet, paraphrase, analysis/market-reaction piece that only repeats it, another detail of the same announcement, or color that changes nothing for a trader. Set restates to that visible i.
 A direction flip versus the told entry is never a restatement. When told is empty, novelty is new_fact. Do not cite a told index absent from the bounded evidence.
 
 Examples:
@@ -283,6 +279,40 @@ Examples:
 - "Japan's Nikkei Average Futures Down 2.0% in Early Trade" -> headline_zh: 日经平均指数期货早盘下跌 2.0%; why_zh: 亚洲第一个开盘的主要股指期货低开 2%，美股隔夜的抛压正在传导到亚太风险资产.""",
         example_refs=("dtcc_mechanism", "citi_custody", "japan_life", "nikkei_transmission"),
     ),
+    RulePackSpec(
+        rule_id="trade_relevance_attention",
+        revision=1,
+        target="event_semantics",
+        order=9,
+        body="""## Typed trade relevance and reader attention
+Return exactly one nested TradeRelevanceV1. Code owns the enum values, validation, canonical set order and final policy. reader_value is the only model delivery intent; do not output decision or actionable.
+
+impact_breadth: none / single_instrument / sector / regional / cross_asset / global_systemic.
+tradability: direct when the fact changes a named instrument or directly priced market; second_order for a concrete causal transmission; contextual for useful background without a current trade surface; none otherwise.
+surprise: unscheduled / material_vs_expectation / in_line / unknown. Do not call a scheduled release unscheduled merely because its value surprised.
+development_delta: state_change for a new event state or reversal; material_detail for a decision-relevant new term, number, actor or consequence; color_only for repetition, commentary or detail that changes no trade; scheduled for a calendar item not yet realized.
+channels: choose at most four unique codes from rates / liquidity / risk_premium / energy_supply / commodity_supply / commodity_demand / regulation / exchange_access / earnings_cashflow / positioning_flow / security_incident.
+affected_markets: choose at most four unique codes from crypto_broad / us_equity_broad / rates / fx / energy / metals / single_asset.
+reader_value: escalate only for an immediate systemic or exceptional interruption; realtime for a material current trade surface; background for useful non-interrupting context; none for noise, templates, schedules or no market value.
+
+Use empty channels and affected_markets only when tradability is contextual/none and reader_value is background/none. A high provider score, queue order, broad macro label or watchlist membership is never relevance evidence and is not supplied to you.
+
+Calibrations:
+- An unexpected Federal Reserve rate cut that changes USD liquidity -> global_systemic / direct / unscheduled / state_change / rates+liquidity / rates+fx+us_equity_broad+crypto_broad / escalate.
+- An official closure of the Strait of Hormuz -> global_systemic / direct / unscheduled / state_change / energy_supply+risk_premium / energy+us_equity_broad+crypto_broad / escalate.
+- A regional port outage that interrupts a commodity's supply -> regional / second_order / unscheduled / state_change / commodity_supply+risk_premium / energy or metals when exact, otherwise single_asset, plus any evidenced broad market / realtime.
+- A local regulation that directly changes a US-listed company's business, with a material new detail and unknown surprise -> single_instrument / direct / unknown / material_detail / regulation+earnings_cashflow / single_asset / realtime.
+- A scheduled calendar item -> contextual or none / scheduled / empty channels and markets / none.
+- A repeated local official statement, in-line local data, or color-only progression without a current priced transmission -> contextual / in_line or unknown / color_only / background or none.""",
+        example_refs=(
+            "systemic_rate_surprise",
+            "systemic_energy_state_change",
+            "regional_supply_state_change",
+            "regional_direct_exception",
+            "scheduled_none",
+            "local_color_background",
+        ),
+    ),
 )
 
 
@@ -308,9 +338,6 @@ EXPERT_BASELINE_COVERAGE: Final[dict[str, CoverageAnchor]] = {
         "event_semantics", "magnitude_actionability", "a listed company's or token issuer's own product update"
     ),
     "milestone": CoverageAnchor("event_semantics", "magnitude_actionability", "a milestone, not a new product"),
-    "actionable": CoverageAnchor(
-        "event_semantics", "magnitude_actionability", "actionable is true when a trader can act now"
-    ),
     "direction": CoverageAnchor(
         "event_semantics", "direction_audience_scope", "A clear event may have unclear direction."
     ),
@@ -340,9 +367,6 @@ EXPERT_BASELINE_COVERAGE: Final[dict[str, CoverageAnchor]] = {
     ),
     "price_negative": CoverageAnchor(
         "event_semantics", "price_only_calibration", "Spot Palladium Rises Nearly 3% to $1,328.68/Oz"
-    ),
-    "decision_owner": CoverageAnchor(
-        "event_semantics", "exclusions_decision_intent", "deterministic code owns the final call"
     ),
     "law_firm": CoverageAnchor(
         "event_semantics", "exclusions_decision_intent", "Securities Investigation Notice or Investor Alert"
@@ -402,6 +426,16 @@ EXPERT_BASELINE_COVERAGE: Final[dict[str, CoverageAnchor]] = {
     "no_self_description": CoverageAnchor(
         "reader_card", "reader_mechanism_language", "Never describe yourself as AI, model, or judgment."
     ),
+    "one_model_intent": CoverageAnchor(
+        "event_semantics", "trade_relevance_attention", "reader_value is the only model delivery intent"
+    ),
+    "trade_relevance_channels": CoverageAnchor("event_semantics", "trade_relevance_attention", "commodity_supply"),
+    "trade_relevance_regional_direct": CoverageAnchor(
+        "event_semantics", "trade_relevance_attention", "local regulation that directly changes a US-listed company"
+    ),
+    "trade_relevance_scheduled": CoverageAnchor(
+        "event_semantics", "trade_relevance_attention", "A scheduled calendar item"
+    ),
 }
 
 
@@ -418,10 +452,11 @@ def validate_expert_baseline_coverage() -> None:
         "novelty_told_ledger",
         "chinese_headline_fidelity",
         "reader_mechanism_language",
+        "trade_relevance_attention",
     )
     if tuple(pack.rule_id for pack in RULE_PACK_SPECS) != expected_ids:
         raise ValueError("news_program_expert_rule_pack_order_invalid")
-    if tuple(pack.order for pack in RULE_PACK_SPECS) != tuple(range(1, 9)):
+    if tuple(pack.order for pack in RULE_PACK_SPECS) != tuple(range(1, 10)):
         raise ValueError("news_program_expert_rule_pack_order_invalid")
     if len(packs) != len(RULE_PACK_SPECS):
         raise ValueError("news_program_expert_rule_pack_duplicate")

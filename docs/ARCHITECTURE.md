@@ -126,11 +126,13 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v5` epoch hard-cuts to the candidate-conditioned factory: structured
-code-owned quality contracts are separate from optimizer-owned strategy/demo
-state, and every earlier Prompt/Program row remains append-only audit history.
-No current dataset, compiler, replay or release gate may treat pre-v4 evidence
-as training or promotion truth.
+current `program_v6` epoch hard-cuts to
+`tracefold.news.semantic_program.factory_v4` / `news_semantic_program_v4` on
+the artifact-v2 envelope: structured code-owned quality contracts are separate
+from optimizer-owned strategy/demo state, and every earlier Prompt/Program row
+remains append-only audit history. Only accepted `news_review_v4` evidence
+created in the v6 epoch is eligible for metric v4, compiler, replay or release
+gates.
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
 and previous distinct stable release chains. The exact `news_*` base-table set
@@ -147,13 +149,13 @@ tracefold.news
   titles.py           content-block title extraction + pinned prefix/suffix tables
   exact_atom_identity.py comparison normalization, event family, windows
   tokens.py / minhash.py  comparison tokens, MinHash 32x4 band keys
-  gate.py / storyline.py  deterministic admission, priority, grounded assets, storyline keys
+  gate.py / storyline.py  deterministic admission, queue scheduling priority, grounded assets, storyline keys
   pricing.py          Price Review domain: source order, quote/candle normalization, reaction_v1 metric
   price_loops.py      the two cold loops (QuoteSnapshotLoop, EventReactionLoop) and their one-slot DB lane
   price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
   facts.py            atomic fact units and immutable Event evidence snapshots
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  candidate_evaluator.py content-addressed program_v5 datasets and stable/candidate evaluation workflow
+  candidate_evaluator.py content-addressed program_v6 datasets and stable/candidate evaluation workflow
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
@@ -314,17 +316,21 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        -> Event new|member (family window) -> Gate (provider-graded grounded_assets,
           macro/energy lexicon, PR-template veto, low-signal switch) -> preliminary
           storyline key; a stronger later member re-gates a suppressed Event
-       -> publish event.<family>.<priority> only for admission=candidate
+       -> publish event.<family>.<queue_priority> for every admitted candidate,
+          listing or telemetry Event; the suffix affects broker scheduling only
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
-       SemanticJudge.judge(TriageContext) -> DSPy EventSemantics
+       SemanticJudge.judge(TriageContext) -> DSPy EventSemantics.v2 with nested
+          TradeRelevanceV1
        -> deterministic SemanticNormalizer -> ReaderCard.v2
-       -> deterministic VerdictAssembler -> one SemanticJudgment; normally two
+       -> deterministic VerdictAssembler -> one atomic SemanticJudgment
+          (verdict + editorial envelope + trace/runtime identities); normally two
        serial provider calls through Predictor-local Adapters/token caps
        (ReaderCard.v2 optionally has a dedicated primary endpoint), one shared
        fast retry per route (at most three calls), and a full fallback restart
        only after primary failure (at most six calls across both routes) -> final storyline key
        from the verdict (written back) -> decide() policy -> verdict row
-       (title_zh="" compatibility sentinel, audience,
+       (title_zh="" compatibility sentinel, audience, editorial and scored-
+       judgment hashes, exact runtime manifest,
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
        named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
   -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
@@ -538,8 +544,10 @@ non-macro social post under 70. A `listing` frame takes the
 candidate (#72). A member that
 joins a suppressed Event with stronger evidence (score >= 80, an A/A+ grounded
 tag, or a different source) re-gates it in place and it publishes once.
-Priority is `high` (AMQP priority 5) for score >= 90, watchlist hits, listing
-frames, or rate/yield macro. The preliminary storyline key (status bar only)
+`queue_priority` is `high` (AMQP priority 5) for score >= 90, watchlist hits,
+listing frames, or rate/yield macro. It is a broker scheduling hint only: it may
+be persisted and measured, but cannot enter a Predictor, `decide()`, ReaderCard
+or reader-facing importance UI. The preliminary storyline key (status bar only)
 is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
 `china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
@@ -564,26 +572,38 @@ generation. Its **Depth** is the amount of behavior hidden behind the single
 hot-path `judge()` method, not the number of internal DSPy nodes.
 
 Inside the Module, the fixed Program graph is
-`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
+`EventSemantics.v2 -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
 deterministic VerdictAssembler`.
-`EventSemantics` judges novelty, grounded entities, direction, scope,
-magnitude, actionability, intent and audience without writing reader copy.
+`EventSemantics.v2` judges novelty, grounded entities, direction, scope,
+magnitude and audience without writing reader copy, and emits one nested typed
+`TradeRelevanceV1`: impact breadth, tradability, surprise, development delta,
+at most four canonical channels/affected markets, and the sole model delivery
+intent `reader_value` (`escalate|realtime|background|none`). It has no separate
+model-authored `decision` or `actionable` field.
 For `new_fact` and `progression`, the normalizer discards any stray non-negative
 `restates` index and records the raw and normalized values on the originating
-call trace; a real `restatement` still requires a valid told-ledger index. The
-normalizer makes no provider call.
-`ReaderCard.v2` receives the same bounded evidence plus the validated and
-normalized semantic JSON and produces only `headline_zh` and `why_zh`. The assembler makes no model
-call: it emits the one `TriageVerdict` and keeps public `title_zh` as the empty
-legacy sentinel. Splitting semantic judgment from copy creates internal
+call trace; a real `restatement` still requires a valid told-ledger index. It
+also preserves raw relevance arrays in trace, then de-duplicates and sorts them
+by code-owned enum order. The normalizer makes no provider call.
+`ReaderCard.v2` receives the original evidence plus an explicit
+`ReaderCardSemanticView` containing only event type, assets, direction,
+magnitude, novelty/restates, scope, channels and affected markets. It produces
+only `headline_zh` and `why_zh`; it cannot read reader intent, tradability,
+surprise, development delta or ToldContext. The assembler makes no model call:
+it explicitly projects the compatibility `TriageVerdict`, derives `actionable`
+from normalized trade surfaces, maps `reader_value` to its legacy decision
+sentinel, and keeps public `title_zh` empty. Splitting semantic judgment from copy creates internal
 per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
-The Program is a code-owned `ProgramArtifact`: canonical `manifest.json` plus
+The only executable generation is `news_semantic_program_v4` from
+`tracefold.news.semantic_program.factory_v4` in learning epoch `program_v6`.
+It is a code-owned `ProgramArtifact v2`: canonical `manifest.json` plus
 `state.json`, content-addressed by the whole reviewed identity. The manifest
 binds the fixed factory/topology, DSPy/dependency lock, and the input, Adapter,
 normalizer and assembler contracts, execution budgets, Predictor state hashes
-and compile provenance;
+and compile provenance. The code-owned pack set is capped at nine and adds only
+`trade_relevance_attention` revision 1 for this generation;
 state is limited to the two validated Predictor records: signature identity,
 instructions, demonstrations, model-binding slots, token caps and their
 hashes. The dependency-lock digest is package-owned and drift-tested against
@@ -632,18 +652,20 @@ entry carries index `i`, age, final storyline key, event type, instrument
 symbols, magnitude, direction and `headline_zh`; the Event id, sent time,
 selection tier and similarity stay audit-only. `TOLD_SELECTOR_SHA256` binds the
 ledger truth and its projection, the window, the 128-row source cap, the tier
-order, the comparison primitives, the 12-entry cap and the model-visible schema,
+order, the comparison primitives, the 16-entry cap and the model-visible schema,
 and *is* the arm's `retrieval_sha256` — a selector edit cannot ship as the same
 bundle.
 
-The two Predictors do not read the same input. `EventSemantics` receives the
-Event evidence, Gate facts, watchlist and the selected told context;
-`ReaderCard` receives the Event evidence and Gate facts only. The boundary is
-the schema rather than a prompt reminder: `ModelVisibleCardInput` has no
-`event_status` field and forbids extras, so a card payload or recorded demo
-carrying told history is rejected at the renderer. Novelty is
-`EventSemantics`' job; a copy step that can re-read old cards can re-interpret
-them. Both Predictor instructions are English. `ReaderCard.v2` has exactly two Chinese text outputs:
+The two Predictors do not read the same input. `EventSemantics.v2` receives the
+model-safe Event evidence, grounded Gate facts and selected told context;
+`ReaderCard` receives the evidence plus only `ReaderCardSemanticView`.
+`queue_priority`, provider score, Gate macro lexicon, queue lag and the
+watchlist are excluded from both model-visible schemas; the watchlist remains a
+code-owned objective policy guard. The boundary is the schema rather than a
+prompt reminder: the card input forbids ToldContext and extras, so a card
+payload or recorded demo carrying history or delivery intent is rejected at the
+renderer. Novelty is `EventSemantics`' job; a copy step that can re-read old
+cards can re-interpret them. Both Predictor instructions are English. `ReaderCard.v2` has exactly two Chinese text outputs:
 `headline_zh` (the card header — a complete headline that keeps the decisive
 fact, not a stub) and `why_zh` (the one card sentence adding what the headline
 does not say). It has no `title_zh` output. The public `TriageVerdict` retains
@@ -654,43 +676,31 @@ us_equity / macro / none) is an EventSemantics field. The verdict also carries
 and `restates` (the ledger index a restatement points at; -1 otherwise) —
 the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
 novelty is the semantic last line against the same fact told again from
-another outlet or under another storyline key. Magnitude and `actionable`
-are Program outputs whose calibration belongs to the versioned EventSemantics
-instruction/demonstrations, never to `decide()`. This matters because the
-`model_push_actionable` branch of `decide()` consumes both values (the other
-push paths do not require `actionable`). `decide()` owns the final
-decision under a `DecidePolicy` whose defaults are the live policy and whose
-values come from `news.policy`: noise -> drop; a *grounded*
-restatement (the model cites a ledger entry it was shown and the direction did
-not flip against it; switch `restatement_drop`) -> drop (`restatement`);
-magnitude >= 3 with a direction or macro scope -> escalate; high priority +
-push -> escalate; Gate high priority against a model hold intent (no push or
-escalate) at magnitude >= `contested_push_min_magnitude` (2) with a direction or
-macro scope -> push (`contested_high_priority`);
-model push/escalate intent, actionable, magnitude >=
-`min_push_magnitude` (1) and a direction -> push (`model_push_actionable`);
-unclear direction with a clear event type (product, listing, delisting,
-regulation, hack, exploit, partnership, filing) at magnitude >= 2 -> push
-(`unclear_but_clear_event`); other unclear -> drop; watchlist primary at
-magnitude >= 1 -> push; else drop (`below_threshold`).
+another outlet or under another storyline key. Magnitude remains a Program
+output; `actionable` is now a deterministic assembler projection from
+tradability, channels and affected markets. Policy v10 owns the final action
+from one atomic `ScoredJudgment`. A *grounded* restatement is handled first, and
+the existing stale-source and content-similarity protections remain after
+action selection. The action section is exactly:
 
-Policy v8 is recall-first: a miss costs more than a noise leak. `noise` is no
-longer a veto that returns before every other rule. It drops the card only when
-the verdict agrees with itself — magnitude at or below
-`noise_veto_max_magnitude` (1), not `actionable`, no push intent — and, while
-`noise_veto_respects_gate_priority` holds, only on an Event the Gate did not
-flag high priority. A verdict that calls an Event noise and then gives it
-magnitude 2 is contradicting itself — the instruction calls magnitude 2
-"clearly tradable" while still allowing noise at magnitude 1 — and that
-contradiction used to outrank magnitude 3, Gate priority and the watchlist:
-measured over 300 replayed Events, 14 noise drops carried magnitude >= 2,
-including a hijacked tanker in the Gulf of Aden that the Gate had flagged high
-priority. A Gate-admitted `listing_deterministic` frame
-(`listing_exempt_from_duplicate`) skips the restatement drop and the similarity
-throttle **only when the matched card names none of its instruments**, compared
-as symbol sets rather than as headline text: "Coinbase adds ALIGN" and "Upbit
-adds BICO" are different instruments inside one wire template, while a re-issued
-notice for the same instrument is still withheld.
+1. deterministic listing/telemetry;
+2. grounded-watchlist objective guard;
+3. `reader_value=escalate` and `realtime_eligible` -> `escalate`;
+4. `reader_value=realtime` and `realtime_eligible` -> `push`;
+5. `background|none` -> `drop`;
+6. every other combination -> `trade_relevance_inconsistent`.
+
+`realtime_eligible` requires magnitude >= 2; tradability `direct` or
+`second_order`; non-empty channels and affected markets; and either a
+`state_change`, or `material_detail` that is direct/unscheduled/material versus
+expectation. Queue priority, provider score, macro lexicon and `scope=macro`
+cannot select or rescue an action. A Gate-admitted `listing_deterministic` frame
+(`listing_exempt_from_duplicate`) skips the restatement drop and similarity
+throttle only when the matched card names none of its instruments, compared as
+symbol sets rather than headline text; a re-issued notice for the same
+instrument is still withheld. `news.policy` exposes only four v10 knobs:
+`restatement_drop`, `similarity_max`, `stale_source_max_age_s`, and
+`listing_exempt_from_duplicate`.
 
 Policy v7 deliberately
 has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
@@ -727,12 +737,10 @@ complete chain therefore makes at most six visible provider attempts. DSPy
 cache and hidden provider retries are disabled so the trace count equals real
 attempts. A verdict complete except for `novelty` can still be accepted as
 `new_fact` (`novelty_defaulted`) after the retry. A Program failure is
-degraded, not silent:
-`rule_baseline` (watchlist primary, score >= 80 with a grounded asset, or —
-since #81 — a high-priority Event or a deterministic exchange notice, which is
-what a missile strike, a rate decision or a delisting looks like without a
-ticker) still pushes on the wire headline, everything else drops with
-`degraded=true`, and three
+degraded, not silent: deterministic listing/telemetry and a grounded watchlist
+hit fail open on the wire headline; every other failure drops as
+`degraded_no_objective_guard`, even when the provider score or queue priority is
+high or the text contains macro words. Three
 consecutive retryable whole-chain failures open the default 60-second consumer
 circuit that also opens a
 `triage_circuit_open` incident (closed by the next success); an output failure
@@ -765,8 +773,9 @@ were actually ledger-driven — the other 8 were Event evidence changing, which
 still re-asks. The trace distinguishes a stale sent ledger
 (`reask_reason=told`, `reasked_after_told_change`) from changed Event evidence
 (`reask_reason=evidence`, `reasked_after_evidence_change`). If a ledger-only
-re-ask fails, the first judgment is still bound to the same evidence and is
-persisted with `reask_failed`. If the evidence changed, the first judgment
+re-ask fails, the complete first `SemanticJudgment` (verdict and editorial
+envelope together) is still bound to the same evidence and is persisted with
+`reask_failed`. If the evidence changed, the first judgment
 cannot truthfully be rebound to the refreshed snapshot: a failed re-ask uses
 the deterministic degraded fallback over the refreshed Gate facts, with no
 selected Program execution; a second evidence change before persistence raises
@@ -775,9 +784,10 @@ The re-ask is a separate Program execution: the ordinary rare case is four
 provider calls total, while each execution independently retains the six-call,
 two-route ceiling. All work from both executions remains in audit and cost
 telemetry even when the first result is superseded or the second fails.
-`news_verdicts` stores `model_decision`, `rule_baseline_decision`,
-`final_decision`, `override_rule`, `throttled_by`, `degraded`, and a
-replayable trace (Program version/SHA, runtime provider/model identity,
+`news_verdicts` atomically stores the verdict JSON, editorial envelope,
+`scored_judgment_sha256`, exact `runtime_manifest_sha`, `model_decision`,
+`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
+`degraded`, and a replayable trace (Program version/SHA, runtime provider/model identity,
 per-Predictor request/input/instruction/demo/output hashes, finish reason,
 latency, tokens and provider-reported cost (or explicit unknown), the
 preliminary storyline key, the preliminary and final status-bar snapshots,
@@ -785,8 +795,11 @@ the told context as shown with event ids, selection tier and similarity,
 `told_count`, `selected_context_sha256`, `restates_event_id`,
 every initial/re-ask Program execution and which one was selected (when the
 persisted verdict came from the Program), `reask_reason`,
-`first_verdict`/`first_input_sha256`/`reask_failed` when re-asked,
-`novelty_defaulted`, and the final storyline key). Exact record/replay binds
+`first_judgment`/`first_input_sha256`/`reask_failed` when re-asked,
+`verdict_sha256`, `editorial_sha256`, `novelty_defaulted`, and the final
+storyline key). Exact record/replay and every scoring path validate one typed
+`ScoredJudgment`; they never reconstruct editorial state from an independent
+verdict dict. Exact replay binds
 the request to the resolved runtime model identity; a recording mismatch or
 miss fails rather than falling through to live I/O.
 
@@ -878,7 +891,9 @@ high-reaction and random strata. The operator sees the exact historical
 evidence, verdict, policy trace and real sent receipt, then records a
 multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
 entity grounding, novelty, direction, magnitude, copy value, timeliness and
-first bad owner). A judgment becomes training/eval truth only after a separate
+first bad owner). `news_review_v4` adds exact gold for the seven
+TradeRelevance fields, including `reader_value`; a failed scored dimension without
+expected gold is not scored. A judgment becomes training/eval truth only after a separate
 acceptance receipt. An important fact missing before Event creation enters as
 an immutable external-miss snapshot, rather than a fake Event id.
 
@@ -886,17 +901,18 @@ Issue #129 first starts the immutable `program_v1` learning epoch at migration
 deployment time. Corrective migration `0293` preserves that history and appends
 `program_v2` after fixing the semantic retry state machine. Issue #132 migration
 `0294` preserves both prior rows and appends `program_v3` for the expert quality
-baseline and semantic normalization. Issue #134 migration `0295` preserves all
-four rows and appends `program_v5` for the candidate-conditioned ToldContext factory and
-optimizer-ownership hard cut. All earlier reviews, datasets, recordings,
+baseline and semantic normalization. Issue #134 migration `0295` appends
+`program_v5`. Issue #160 migration `0301` hard-renames persisted `priority` to
+`queue_priority`, adds atomic editorial/runtime-manifest judgment identity, and
+appends `program_v6` for factory v4/executable v4/policy v10. All earlier reviews, datasets, recordings,
 reports and release receipts remain readable audit evidence, but they are
-promotion-ineligible and cannot seed a v4 Program or DemoBank. Evidence
+promotion-ineligible and cannot seed the v6 Program or DemoBank. Evidence
 accumulation starts from zero: Event reviews and acceptance receipts must be
 created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v5` evidence, compares stable with exactly one declared `program` or
+`program_v6` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -917,22 +933,37 @@ The optional DSPy GEPA compiler is a cold, manual development tool, never a
 Workers loop. A trusted exporter seals current-epoch accepted development into
 an ordered corpus root; an untrusted, resource-bounded runner receives no DB,
 holdout or application credentials and can emit only `ProgramPatchV2`. That
-patch may change the two LearnedStrategy values and select/reorder eligible
-DemoBank references, never the QualityKernel, RulePacks, topology, Signatures,
+patch may change the two LearnedStrategy instructions; DSPy GEPA writes no
+demos, so DemoBank records/references remain empty. It can never change the QualityKernel, RulePacks, topology, Signatures,
 execution contract, model slots or policy. The trusted side revalidates every
 receipt payload and applies the patch to the exact active stable root. GEPA
 cannot accept a review, register/deploy its output, move a stable pointer, or
 promote a candidate.
 Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
-or production assignment.
+or production assignment. Compiler protocol/receipt v3 derives sealed,
+secret-free identity and enforcement from three typed role configurations:
+task, reflection (32k tokens) and `metric_judge`. The judge is wired explicitly
+for headline/why/factual semantic equivalence; its calls, cost and failures are
+separate receipt facts, and unavailable means failure-as-zero rather than byte
+equality, hidden retry or cache.
+
+Metric v4 (`tracefold.news.production_action_trade_relevance_v4`) uses the one
+version-bound production-action projection shared by baseline, failure-cluster
+selection and CandidateEvaluator. Its candidate scalar is 45% final production
+action, 35% exact TradeRelevance dimensions, 10% semantics/novelty and 10%
+ReaderCard, with component denominators/effective weight mass/gold coverage
+published. Listing/telemetry are outside the relevance denominator; watchlist
+guard cases are policy evidence and do not send action feedback to GEPA.
 
 Promotion is monotonic: development screen -> future temporal validation ->
 blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.
 Every stage requires the prior sealed PASS. One Event is assigned to exactly
 one production arm before Program execution and runs exactly one assigned
-Program; recovery,
-deterministic listing and high-priority fail-open traffic stay on stable. A
+Program. Canary selector `news_canary_selector_v2` excludes recovery, deterministic listing and
+telemetry, but includes queue-high Events. Startup, resume and assignment bind
+and validate selector version, eligibility-profile SHA, rolling-profile SHA and
+the exact runtime manifest; any drift trips the activation. A
 candidate artifact/schema fault trips the canary to stable, and activation,
 assignment, deployment and rollback receipts remain auditable. The market view
 is secondary discovery evidence only: it defaults to one exact
@@ -991,8 +1022,14 @@ appends the corrected `program_v2` epoch, making `program_v1` evidence
 audit-only for current release decisions. `0294` preserves both earlier Program
 epochs and appends the expert-quality `program_v3` epoch, making `program_v2`
 evidence audit-only for current release decisions. `0295` preserves v1-v3 and
-appends the `program_v5` epoch with factory v3 on the artifact-v2 envelope, making all
-earlier evidence audit-only for the current compiler and release chain. No
+appends the `program_v5` epoch with factory v3 on the artifact-v2 envelope.
+`0301` performs the #160 hard cut: `news_events.priority` becomes
+`queue_priority` with no alias; verdicts gain atomic editorial/scored/runtime-
+manifest identity; `program_v6` binds factory v4, executable v4, policy v10,
+review v4 and metric/compiler protocol v3; and older evidence becomes audit-only.
+Because the physical rename makes the old exact image incompatible, release
+requires a separately built and drilled new-schema/v5-behaviour rollback image;
+it is never part of the production registry or a second runtime loader. No
 chained revision has a downgrade. Earlier hard cuts live only in git history;
 a fresh database and a database upgraded through the chain reach
 byte-identical schemas.
@@ -1023,6 +1060,15 @@ persisted Triage verdict (model, or deterministic OI)
 **The trigger is the persisted verdict, not delivery.** Feishu `sent` is
 notification transport success; capital must not depend on a notification
 channel being reachable.
+
+**The News input is one hard-cut generation.** The public projections emit
+only post-epoch `program_v6` / policy-v10 judgments with the complete Program,
+editorial, scored-judgment and runtime-manifest identity. Model judgments must
+come from executable v4; deterministic OI keeps its arithmetic Program v1.
+`trading_manifest_v2` freezes those identities with the case. A pre-cut v1
+manifest that is still `PENDING`, or whose `RUNNING` lease expires, is blocked
+as `news_generation_retired` before a model call or order; prepared orders keep
+their immutable payload and continue through reconciliation.
 
 **Three case kinds, three authorities.** `oi_only` is arithmetic and is the
 execution-kernel trial lane — it never reaches a live mode, and it never calls
@@ -1137,14 +1183,18 @@ admits it as `telemetry_deterministic`.
 Those four numbers are the whole message, so Triage judges the frame by
 arithmetic instead of spending two structured model calls re-reading them.
 `tracefold.news.oi_signals` parses it, ranks it against the symbol's other
-frames in a rolling `window_ms` (4 h), and returns an ordinary `TriageVerdict`:
+frames in a rolling `window_ms` (4 h), and returns an ordinary
+`ScoredJudgment` with `editorial_origin=telemetry_deterministic` and null
+relevance:
 a qualifying frame — inside `max_rank_in_window` (2) with `whale_oi_ratio_bps`
 above `whale_oi_ratio_above_bps` (8000, which the frame must exceed) — is an
 actionable, directional
 magnitude-2 `oi_spike` with a push intent, and a rejected one is a
-self-consistent magnitude-0 `noise` that policy v8's veto still holds.
+self-consistent magnitude-0 `noise` that the deterministic telemetry action
+preserves.
 
-Returning a verdict rather than its own decision is the design, not a detail.
+Returning the same typed scored judgment rather than a separate delivery lane
+is the design, not a detail.
 The rule counts, and `decide()` deliberately cannot: policy v7 removed every
 reader quota and `StorylineStatus` is tested to carry no capacity field.
 Counting inside the evaluator and handing `decide()` a verdict it already knows

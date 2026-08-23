@@ -14,6 +14,11 @@ from tracefold.news.agents.semantic_program import (
     TriageContext,
     load_stable_program_artifact,
 )
+from tracefold.news.canary import (
+    CANARY_ELIGIBILITY_PROFILE_SHA,
+    CANARY_ROLLING_PROFILE_SHA,
+    CANARY_SELECTOR_VERSION,
+)
 from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.platform.config.settings import Settings
 
@@ -256,10 +261,17 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 1,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
         "audience": "crypto",
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": ["exchange_access"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
     }
     card = {"headline_zh": "比特币将在新交易所上线", "why_zh": "新增交易渠道可扩大现货流动性。"}
 
@@ -364,6 +376,9 @@ class _StartupNewsRepository:
             "activation_id": "1" * 32,
             "candidate_manifest_sha": candidate_manifest_sha,
             "candidate_bundle_sha": candidate_bundle_sha,
+            "selector_version": CANARY_SELECTOR_VERSION,
+            "eligibility_profile_sha": CANARY_ELIGIBILITY_PROFILE_SHA,
+            "rolling_profile_sha": CANARY_ROLLING_PROFILE_SHA,
             "state": "active",
         }
 

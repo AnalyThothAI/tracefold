@@ -90,7 +90,6 @@ export function NewsEventRow({
       data-fresh={fresh || undefined}
       data-outcome={event.outcome.kind}
       data-outcome-group={event.outcome.group}
-      data-priority={event.priority}
       data-selectable={selectable || undefined}
       data-selected={selected || undefined}
     >
@@ -165,15 +164,7 @@ export function NewsEventRow({
       {/* Badge and reason are siblings rather than one column, so the grid can put the conclusion beside the
           clock on a phone card and above the reason on a desktop row without the DOM changing shape. */}
       <span className="news-event-badge">
-        <NewsOutcomeBadge
-          outcome={event.outcome}
-          /*
-           * One filled thing per screenful, and it marks the loudest Events: a high-priority *push*. Not
-           * merely "not held" — that would give the capsule to an Event still sitting in the delivery queue,
-           * before anything has reached a reader.
-           */
-          variant={event.priority === "high" && event.outcome.group === "pushed" ? "chip" : "text"}
-        />
+        <NewsOutcomeBadge outcome={event.outcome} variant="text" />
       </span>
       {/* One line under the badge, never two: a sent row wants the time it went out, everything else wants
           the server's reason. */}

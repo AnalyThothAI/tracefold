@@ -13,7 +13,7 @@ from typing import Any
 from tracefold.news.candidate_evaluator import CandidateManifest
 
 # Maintainers add sealed manifests here through normal code review. Keeping
-# the initial registry empty is intentional: the current program_v5 epoch starts with
+# the initial registry empty is intentional: the current program_v6 epoch starts with
 # the code-owned stable artifact and no optimizer candidate.
 COMPILED_CANDIDATE_DOCUMENTS: tuple[dict[str, Any], ...] = ()
 

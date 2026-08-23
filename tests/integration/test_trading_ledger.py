@@ -28,6 +28,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.trading import (
     ACTIVE_ORDER_STATES,
+    TRADING_MANIFEST_VERSION,
     Bar,
     CandidateRunner,
     EligibilityPolicy,
@@ -44,7 +45,8 @@ from tracefold.trading import (
 
 pytestmark = pytest.mark.integration
 
-NOW = 1_787_000_000_000
+# Deliberately after the dynamically-created program_v6 epoch in migration 0301.
+NOW = 1_900_000_000_000
 MINUTE = 60_000
 
 
@@ -146,6 +148,68 @@ def _case(conn: Any, *, case_id: str, source_key: str, underlying: str = "crypto
     )
     conn.commit()
     return created
+
+
+def _legacy_manifest(case_kind: str) -> dict[str, Any]:
+    """The exact source-identity shape frozen by #161 before #160's hard cut."""
+
+    oi = {
+        "event_id": "legacy-oi",
+        "observed_at_ms": NOW,
+        "base_symbol": "DOGE",
+        "venue": "hyperliquid",
+        "oi_direction": "rise",
+        "oi_change_bps": 320,
+        "oi_value_usd": 73_010_000,
+        "whale_long_profit_bps": 9_900,
+        "whale_oi_ratio_bps": 21_097,
+        "rank_in_window": 1,
+        "metric_version": "oi_signal_v1",
+        "program_version": "news_oi_signal_v1",
+    }
+    news = {
+        "event_id": "legacy-news",
+        "verdict_created_at_ms": NOW,
+        "opened_at_ms": NOW,
+        "base_symbol": "DOGE",
+        "evidence_version": 1,
+        "evidence_sha256": "sha",
+        "focus_fact_id": "f",
+        "comparison_fingerprint": "fp",
+        "source_artifact_id": "x:1",
+        "source_published_at_ms": NOW,
+        "final_decision": "push",
+        "event_type": "listing",
+        "risk_direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "novelty": "new_fact",
+        "headline_zh": "标题",
+        "why_zh": "机制",
+        "program_version": "program_v5",
+        "policy_version": "news_triage_policy_v9",
+    }
+    return {
+        "manifest_version": "trading_manifest_v1",
+        "case_kind": case_kind,
+        "underlying_key": "crypto:DOGE",
+        "base_symbol": "DOGE",
+        "cutoff_ms": NOW,
+        "oi": oi if case_kind == "oi_only" else None,
+        "news": news if case_kind == "news_only" else None,
+        "regime": {"regime": "buildup_up", "reason": "quadrant", "pre_move_bps": 200, "oi_direction": "rise"},
+        "instrument": {
+            "exchange_id": "paper",
+            "venue": "paper",
+            "provider_symbol": "DOGEUSDT",
+            "base_symbol": "DOGE",
+            "instrument_class": "crypto",
+            "quote_asset": "USDT",
+            "observed_at_ms": NOW,
+        },
+        "mark_price": "102",
+        "pre_move_bps": 200,
+    }
 
 
 def _order(conn: Any, *, order_id: str, case_id: str, underlying: str, exchange_id: str, state: str) -> None:
@@ -322,7 +386,7 @@ def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int
     )
     conn.execute(
         "INSERT INTO news_events (event_id, leader_item_id, family, comparison_fingerprint, comparison_title, "
-        "leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, priority, "
+        "leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority, "
         "engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon, storyline_key, ingest_mode, "
         "focus_fact_id, created_at_ms, updated_at_ms) VALUES (%s, %s, 'market', %s, %s, %s, %s, %s, %s, 1, "
         "'telemetry_deterministic', 'normal', 'market', 'crypto', %s::jsonb, '[]'::jsonb, false, %s, 'live', "
@@ -346,9 +410,12 @@ def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int
     conn.execute(
         "INSERT INTO news_verdicts (event_id, stage, policy_version, model_decision, rule_baseline_decision, "
         "final_decision, verdict, trace, degraded, published_at_ms, created_at_ms, evidence_version, "
-        "evidence_sha256, focus_fact_id, program_version, program_sha256) "
-        "VALUES (%s, 'triage', 'news_triage_policy_v9', 'push', 'push', 'push', '{}'::jsonb, '{}'::jsonb, false, "
-        "%s, %s, 1, 'sha', %s, 'news_oi_signal_v1', repeat('a', 64))",
+        "evidence_sha256, focus_fact_id, program_version, program_sha256, editorial, "
+        "scored_judgment_sha256, runtime_manifest_sha) "
+        "VALUES (%s, 'triage', 'news_triage_policy_v10', 'push', 'push', 'push', '{}'::jsonb, '{}'::jsonb, false, "
+        "%s, %s, 1, 'sha', %s, 'news_oi_signal_v1', repeat('a', 64), "
+        "jsonb_build_object('editorial_origin', 'telemetry_deterministic', 'editorial_sha256', repeat('b', 64), "
+        "'relevance', NULL), repeat('c', 64), repeat('d', 64))",
         (event_id, observed_at_ms, observed_at_ms, f"f-{event_id}"),
     )
     conn.execute(
@@ -409,6 +476,73 @@ def _runner(conn: Any, *, adapter: PaperAdapter, now: int, config: TradingConfig
     )
 
 
+def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
+    epoch_start = int(
+        conn.execute("SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v6'").fetchone()[
+            "starts_at_ms"
+        ]
+    )
+    _seed_oi_event(conn, event_id="pre-epoch", symbol="SOL", observed_at_ms=epoch_start - 1)
+    _seed_oi_event(conn, event_id="old-policy", symbol="XRP", observed_at_ms=NOW - 2 * MINUTE)
+    conn.execute("UPDATE news_verdicts SET policy_version = 'news_triage_policy_v9' WHERE event_id = 'old-policy'")
+    _seed_oi_event(conn, event_id="current", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    conn.commit()
+
+    rows = _repos(conn).news.trade_candidate_oi_rows(
+        metric_version="oi_signal_v1",
+        after_created_at_ms=epoch_start - MINUTE,
+        until_created_at_ms=NOW,
+        max_rank_in_window=5,
+        min_oi_value_usd=1,
+    )
+
+    assert [row["event_id"] for row in rows] == ["current"]
+    assert rows[0]["learning_epoch"] == "program_v6"
+    assert rows[0]["policy_version"] == "news_triage_policy_v10"
+    assert rows[0]["editorial_origin"] == "telemetry_deterministic"
+    assert len(rows[0]["scored_judgment_sha256"]) == 64
+
+
+def test_model_projection_requires_v4_model_editorial_in_the_v6_epoch(conn) -> None:
+    for event_id, symbol, program_version, origin in (
+        ("current-model", "DOGE", "news_semantic_program_v4", "model"),
+        ("old-model", "SOL", "program_v5", "model"),
+        ("wrong-origin", "XRP", "news_semantic_program_v4", "telemetry_deterministic"),
+    ):
+        _seed_oi_event(conn, event_id=event_id, symbol=symbol, observed_at_ms=NOW - MINUTE)
+        relevance = "{}" if origin == "model" else "null"
+        conn.execute(
+            "UPDATE news_events SET admission = 'candidate' WHERE event_id = %s",
+            (event_id,),
+        )
+        conn.execute(
+            "UPDATE news_verdicts SET program_version = %s, verdict = %s::jsonb, "
+            "editorial = jsonb_build_object('editorial_origin', %s::text, 'editorial_sha256', repeat('e', 64), "
+            "'relevance', %s::jsonb) WHERE event_id = %s",
+            (
+                program_version,
+                '{"assets":[{"symbol":"' + symbol + '","role":"primary"}],"novelty":"new_fact",'
+                '"magnitude":2,"direction":"bullish","scope":"single_name","event_type":"listing",'
+                '"headline_zh":"标题","why_zh":"机制"}',
+                origin,
+                relevance,
+                event_id,
+            ),
+        )
+    conn.commit()
+
+    rows = _repos(conn).news.trade_candidate_news_rows(
+        after_created_at_ms=NOW - 2 * MINUTE,
+        until_created_at_ms=NOW,
+    )
+
+    assert [row["event_id"] for row in rows] == ["current-model"]
+    assert rows[0]["learning_epoch"] == "program_v6"
+    assert rows[0]["program_version"] == "news_semantic_program_v4"
+    assert rows[0]["editorial_origin"] == "model"
+    assert len(rows[0]["runtime_manifest_sha"]) == 64
+
+
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
     now = NOW
     _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE)
@@ -420,6 +554,9 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert report["created"] == 1
     trading = _repos(conn).trading
     case = trading.cases()[0]
+    assert case["manifest"]["manifest_version"] == TRADING_MANIFEST_VERSION
+    assert case["manifest"]["oi"]["learning_epoch"] == "program_v6"
+    assert case["manifest"]["oi"]["policy_version"] == "news_triage_policy_v10"
     assert case["case_kind"] == "oi_only"
     assert case["state"] == "ORDER_PREPARED"
     assert case["policy_reason"] == "oi_only_paper_regime"
@@ -428,6 +565,48 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert order["state"] == "ACKNOWLEDGED"
     assert int(order["provider_attempt_count"]) == 1
     assert adapter.attempts == 1
+
+
+@pytest.mark.parametrize("case_kind", ["oi_only", "news_only"])
+@pytest.mark.parametrize("starting_state", ["PENDING", "RUNNING"])
+def test_a_legacy_news_generation_case_is_blocked_before_model_or_order(
+    conn, case_kind: str, starting_state: str
+) -> None:
+    manifest = _legacy_manifest(case_kind)
+    trading = _repos(conn).trading
+    assert trading.insert_case(
+        case_id=f"legacy-{case_kind}-{starting_state}",
+        underlying_key="crypto:DOGE",
+        case_kind=case_kind,
+        mode="paper",
+        primary_source_key=f"legacy:{case_kind}:{starting_state}",
+        supplemental_source_keys=(),
+        manifest=manifest,
+        manifest_sha256=canonical_sha256(manifest),
+        regime="buildup_up",
+        observed_at_ms=NOW,
+        now_ms=NOW,
+    )
+    if starting_state == "RUNNING":
+        conn.execute(
+            "UPDATE trading_cases SET state = 'RUNNING', run_id = 'old-run', lease_expires_at_ms = %s",
+            (NOW - 1,),
+        )
+    conn.commit()
+
+    adapter = PaperAdapter()
+    funnel = Funnel()
+    result = asyncio.run(_runner(conn, adapter=adapter, now=NOW)._advance(funnel=funnel))
+
+    case = trading.cases()[0]
+    assert result == "news_generation_retired"
+    assert case["state"] == "BLOCKED"
+    assert case["policy_decision"] == "no_trade"
+    assert case["policy_reason"] == "news_generation_retired"
+    assert int(case["attempt_count"]) == 1
+    assert funnel.as_dict() == {"advance_reject:news_generation_retired": 1}
+    assert adapter.attempts == 0
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 0
 
 
 def test_two_frames_for_one_symbol_produce_at_most_one_active_order(conn) -> None:

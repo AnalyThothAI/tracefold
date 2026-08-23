@@ -126,7 +126,7 @@ There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
 The DSPy GEPA compiler is a cold manual development workflow, not a runtime
-Worker. A trusted read-only exporter recomputes the current `program_v5`
+Worker. A trusted read-only exporter recomputes the current `program_v6`
 development artifact and ordered case/cluster/episode roots. An untrusted
 resource-bounded runner receives a read-only input bundle, no DB/holdout/
 application credentials, no ambient HOME or arbitrary egress, and provider
@@ -136,28 +136,35 @@ and the short-lived provider secret. Before that secret is mounted, the trusted
 host verifies the exact local Docker image ID and independently hashes the
 image's News source tree and dependency lock without executing image code.
 Tags and registry manifest references are rejected. The sidecar reserves each
-call from the complete positive `llm.news_compiler_tariff`, forces the
-role-owned output/cache/timeout parameters, and records canonical per-call
-usage/cost/finish/error leaves. Missing actual provider cost or any mismatch
-fails before candidate construction. The optimizer can emit only a typed
-`ProgramPatchV2`: the two LearnedStrategy values and eligible Demo references.
-It cannot modify Kernel, RulePacks, topology, Signatures, execution, routes,
-policy or stable identity. The trusted side rehashes every receipt payload,
-applies the patch to the exact active stable root, and emits an unaccepted
-candidate. Timeout, denied access, missing cost, quota breach, invalid patch or
-extra output produces no Artifact. Bounded stdout/stderr capture and exact-name
+call from the complete positive `llm.news_compiler_tariff`. Task, reflection
+and `metric_judge` each have a typed sealed role configuration from which the
+secret-free identity, grant, bundle and proxy enforcement are derived.
+Reflection alone owns its 32k-token ceiling; the judge has its own endpoint,
+instruction/schema/adapter identity, budget, tariff, calls, cost and failure
+receipt. The proxy forces each role's output/cache/retry/timeout/temperature/LM
+parameters and records canonical per-call usage/cost/finish/error leaves.
+Judge failure is explicit unavailable and scores the affected free-text
+dimension as failure-as-zero; it never falls back to byte equality, hidden
+retry, or a cached failure. Missing actual provider cost or any mismatch fails
+before candidate construction. The optimizer can emit only a typed
+`ProgramPatchV2` containing the two LearnedStrategy instructions. DSPy GEPA
+writes no demos, so DemoBank records and references remain empty. It cannot
+modify Kernel, RulePacks, topology, Signatures, execution, routes, policy or
+stable identity. The trusted side rehashes every receipt payload, applies the
+patch to the exact active stable root, and emits an unaccepted candidate.
+Timeout, denied access, missing cost, quota breach, invalid patch or extra
+output produces no Artifact. Bounded stdout/stderr capture and exact-name
 container/network/volume cleanup are part of the signed launch receipt; a
 Docker transport failure is never interpreted as proof of cleanup.
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
-epoch; `0293` preserves it and appends `program_v2` for the corrected semantic
-retry state machine and hardened restatement sentinel. `0294` preserves both
-rows and appends `program_v3` for the expert quality baseline and semantic
-normalization. `0296` preserves v1-v4 and appends `program_v5` for factory/
-artifact v2 and the optimizer-ownership hard cut. Every earlier review,
-dataset, recording and release receipt is retained as audit history but is
-never training, DemoBank, validation, holdout or promotion evidence for the
-current Program factory.
+epoch; `0293`, `0294` and `0295` append the corrected semantic, expert-quality
+and D-generation epochs. `0298` appends `program_v5` for factory/artifact v2
+and the optimizer-ownership hard cut. `0301` preserves all history and appends
+`program_v6` for factory/executable v4, policy v10, review v4 and metric/compiler
+protocol v3. Every earlier review, dataset, recording and release receipt is
+retained as audit history but is never training, metric-v4, DemoBank,
+validation, holdout or promotion evidence for the current Program factory.
 The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
 

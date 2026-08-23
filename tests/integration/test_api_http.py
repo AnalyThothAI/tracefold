@@ -136,7 +136,9 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
         feed = client.get("/api/news/feed?limit=10", headers=headers)
-        candidate_feed = client.get("/api/news/feed?admission=candidate&sort=priority&limit=100", headers=headers)
+        candidate_feed = client.get("/api/news/feed?admission=candidate&limit=100", headers=headers)
+        retired_priority = client.get("/api/news/feed?priority=high", headers=headers)
+        retired_priority_sort = client.get("/api/news/feed?sort=priority", headers=headers)
         detail = client.get(f"/api/news/events/{event_ids[0]}", headers=headers)
         missing = client.get("/api/news/events/does-not-exist", headers=headers)
         bad_admission = client.get("/api/news/feed?admission=bogus", headers=headers)
@@ -154,11 +156,9 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert feed_data["filters"] == {
         "family": None,
         "admission": None,
-        "priority": None,
         "decision": None,
         "symbol": None,
         "q": None,
-        "sort": "latest",
         "limit": 10,
         "outcome": None,
         "hours": None,
@@ -191,6 +191,10 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
 
     assert candidate_feed.status_code == 200
     assert all(event["admission"] == "candidate" for event in candidate_feed.json()["data"]["events"])
+    assert retired_priority.status_code == 400
+    assert retired_priority.json() == {"ok": False, "error": "unsupported_query_param", "field": "priority"}
+    assert retired_priority_sort.status_code == 400
+    assert retired_priority_sort.json() == {"ok": False, "error": "unsupported_query_param", "field": "sort"}
 
     assert detail.status_code == 200
     detail_data = detail.json()["data"]

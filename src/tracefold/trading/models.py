@@ -24,9 +24,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v1"
+TRADING_MANIFEST_VERSION = "trading_manifest_v2"
 TRADING_POLICY_VERSION = "trading_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
+
+# Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
+# a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
+NewsLearningEpoch = Literal["program_v6"]
 
 TradingMode = Literal["paper", "live_reviewed", "live_bounded"]
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
@@ -175,7 +179,14 @@ class OiTradeCandidate(_Frozen):
     rank_in_window: int
 
     metric_version: str
-    program_version: str
+    learning_epoch: NewsLearningEpoch
+    program_version: Literal["news_oi_signal_v1"]
+    program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_version: Literal["news_triage_policy_v10"]
+    editorial_origin: Literal["telemetry_deterministic"]
+    editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @property
     def source_key(self) -> str:
@@ -213,8 +224,14 @@ class NewsTradeCandidate(_Frozen):
     headline_zh: str
     why_zh: str
 
-    program_version: str | None
-    policy_version: str | None
+    learning_epoch: NewsLearningEpoch
+    program_version: Literal["news_semantic_program_v4"]
+    program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_version: Literal["news_triage_policy_v10"]
+    editorial_origin: Literal["model"]
+    editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @property
     def source_key(self) -> str:

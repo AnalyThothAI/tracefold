@@ -13,6 +13,7 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.agents.program_compiler import (
     REFLECTION_MAX_TOKENS,
     CompileBudget,
@@ -22,9 +23,11 @@ from tracefold.news.agents.program_compiler import (
     build_compile_lm,
 )
 from tracefold.news.agents.program_compiler_security import CompilerProxyTariff
+from tracefold.news.agents.program_judge import CardEquivalenceJudge
 from tracefold.news.agents.program_metric import DevelopmentEpisode
 from tracefold.news.agents.program_proposer import RulePackAwareProposer
 from tracefold.news.agents.semantic_program import EligibleDemoBank, load_stable_program_artifact
+from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 
 
@@ -41,7 +44,7 @@ def _frozen_policy_projection() -> dict[str, object]:
 
     values = DEFAULT_POLICY.as_dict()
     return {
-        "policy_version": "news_triage_policy_v8",
+        "policy_version": TRIAGE_POLICY_VERSION,
         "policy_values": values,
         "policy_sha256": canonical_sha(values),
     }
@@ -54,6 +57,8 @@ _TARIFF = CompilerProxyTariff(
     task_output_microusd_per_million=1,
     reflection_input_microusd_per_million=1,
     reflection_output_microusd_per_million=1,
+    metric_judge_input_microusd_per_million=1,
+    metric_judge_output_microusd_per_million=1,
 )
 
 _SEMANTICS = {
@@ -63,11 +68,10 @@ _SEMANTICS = {
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "magnitude": 2,
     "direction": "bullish",
-    "actionable": True,
     "audience": "us_equity",
     "scope": "single_name",
-    "decision": "push",
     "confidence": 0.9,
+    "relevance": trade_relevance().model_dump(mode="json"),
 }
 _ADVISORY = "Prefer the stated accepted magnitude when the evidence names a concrete product."
 _CARD = {"headline_zh": "特斯拉发布 Cybercab", "why_zh": "新车型进入量产排程，改变该名字的交付预期"}
@@ -125,6 +129,23 @@ class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
         return [json.dumps({"semantics": {**_SEMANTICS, "magnitude": magnitude}})]
 
 
+class _ScriptedJudgeLM(_ScriptedLM):
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+        del prompt, messages, kwargs
+        self.calls.append("metric_judge")
+        return [
+            json.dumps(
+                {
+                    "verdict": {
+                        "headline_equivalent": False,
+                        "why_equivalent": False,
+                        "facts_preserved": False,
+                    }
+                }
+            )
+        ]
+
+
 def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool) -> DevelopmentEpisode:
     card = {
         "event_id": f"{index:064d}",
@@ -137,7 +158,7 @@ def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool
         "reporting_origin": "wire",
         "family": "general",
         "admission": "candidate",
-        "priority": "normal",
+        "queue_priority": "normal",
         "asset_class": "equity_or_commodity",
         "engine_type": "news",
         "ingest_mode": "live",
@@ -172,9 +193,19 @@ def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool
             "expected": {"magnitude": 2} if magnitude_fail else {},
             "expected_correction": "",
         },
-        production_verdict={**_SEMANTICS, **_CARD, "magnitude": 0, "title_zh": ""},
+        production_judgment=scored_judgment(
+            {
+                **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
+                **_CARD,
+                "magnitude": 0,
+                "actionable": True,
+                "decision": "push",
+                "title_zh": "",
+            },
+            relevance=trade_relevance(),
+        ),
         policy_metric={
-            "gate": {"grounded_assets": ["TSLA"], "priority": "normal", "admission": "candidate"},
+            "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
             "storyline": {"title": f"Tesla ships product {index}", "family": "general"},
             "seen": [],
             **_frozen_policy_projection(),
@@ -204,18 +235,21 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
         eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=task,  # type: ignore[arg-type]
         reflection_lm=reflection,  # type: ignore[arg-type]
+        judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
         tariff=_TARIFF,
     )
     result = compiler.compile(
         CompileRequest(
             development_dataset_sha="0" * 64,
-            review_rubric_version="news_review_v3",
+            review_rubric_version="news_review_v4",
             episodes=_corpus(),
             # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
             # `max_cost / max_call_cost`. Sizing those two independently is how a run silently starves.
             budget=CompileBudget(
                 max_metric_calls=40,
                 max_task_model_calls=400,
+                max_reflection_model_calls=40,
+                max_metric_judge_model_calls=400,
                 max_cost_microusd=400_000,
                 max_call_cost_microusd=1_000,
                 seed=143,
@@ -306,6 +340,8 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
     budget = CompileBudget(
         max_metric_calls=10,
         max_task_model_calls=10,
+        max_reflection_model_calls=10,
+        max_metric_judge_model_calls=10,
         max_cost_microusd=10_000_000,
         max_call_cost_microusd=1_000_000,
         seed=1,
@@ -377,17 +413,20 @@ def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
         task_lm=_ScriptedLM("scripted/task"),  # type: ignore[arg-type]
         reflection_lm=_ScriptedLM("scripted/reflection", reflection=True),  # type: ignore[arg-type]
         optimizer_factory=_SeedOnlyGEPA,
+        judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
         tariff=_TARIFF,
     )
     with pytest.raises(ValueError, match="news_program_compile_no_program_change"):
         compiler.compile(
             CompileRequest(
                 development_dataset_sha="0" * 64,
-                review_rubric_version="news_review_v3",
+                review_rubric_version="news_review_v4",
                 episodes=_corpus(),
                 budget=CompileBudget(
                     max_metric_calls=40,
                     max_task_model_calls=400,
+                    max_reflection_model_calls=40,
+                    max_metric_judge_model_calls=400,
                     max_cost_microusd=400_000,
                     max_call_cost_microusd=1_000,
                     seed=143,

@@ -21,8 +21,10 @@ from typing import Any
 from tracefold.news import (
     TOLD_SOURCE_MAX,
     TOLD_WINDOW_MS,
+    EditorialEnvelope,
     ProgramTrace,
     ProgramUsage,
+    ScoredJudgment,
     SemanticJudge,
     SemanticJudgeError,
     TriageContext,
@@ -442,7 +444,7 @@ def _raw_params_from_history(payload: Mapping[str, Any], provider_record_id: str
 
 
 # ---------------------------------------------------------------------------- Deduper
-async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, priority: str, trace_id: str) -> None:
+async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, queue_priority: str, trace_id: str) -> None:
     """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
 
     stamp = now_ms()
@@ -450,11 +452,11 @@ async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, priori
         BusMessage(
             kind="event",
             message_id=f"event:{event_id}",
-            routing_key=RK_EVENT.format(family=family, priority=priority),
+            routing_key=RK_EVENT.format(family=family, queue_priority=queue_priority),
             payload={"event_id": event_id},
             trace_id=trace_id,
             occurred_at_ms=stamp,
-            priority=5 if priority == "high" else 0,
+            priority=5 if queue_priority == "high" else 0,
         )
     )
     with contextlib.suppress(TransientError, DeferError):
@@ -529,7 +531,7 @@ class DeduperConsumer:
                     self.db,
                     event_id=result.event_id,
                     family=result.family,
-                    priority=result.gate.priority if result.gate else "normal",
+                    queue_priority=result.gate.queue_priority if result.gate else "normal",
                     trace_id=message.trace_id,
                 )
 
@@ -565,7 +567,7 @@ class _TriageSettle:
     evidence_version: int
     evidence_sha256: str
     focus_fact_id: str
-    verdict: TriageVerdict
+    judgment: ScoredJudgment
     facts: GateFacts
     final_key: str
     told: Sequence[Mapping[str, Any]]
@@ -580,9 +582,14 @@ class _TriageSettle:
     program_version: str
     program_sha256: str
     policy: DecidePolicy
+    runtime_manifest_sha: str
     trace: dict[str, Any]
     stamp: int
     allow_stale: bool
+
+    @property
+    def verdict(self) -> TriageVerdict:
+        return self.judgment.verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -844,6 +851,9 @@ class TriageConsumer:
         )
         self.canary_arms = dict(canary_arms or {})
         self.runtime_manifest = dict(runtime_manifest or {})
+        self.runtime_manifest_sha = str(self.runtime_manifest.get("manifest_sha") or "")
+        if len(self.runtime_manifest_sha) != 64 or any(c not in "0123456789abcdef" for c in self.runtime_manifest_sha):
+            raise ValueError("news_runtime_manifest_sha_required")
         # #75: symbol aliases collapse one issuer's several contracts into one storyline bucket. Loaded lazily
         # from the universe snapshot and refreshed on the same TTL as the Gate's copy; `None` uses the seeds.
         self._aliases: dict[str, str] | None = None
@@ -857,11 +867,10 @@ class TriageConsumer:
         self._aliases = table or None
 
     async def register_runtime_manifest(self) -> None:
-        if self.runtime_manifest:
-            await self.db.tx(
-                "news_agent_runtime_manifest",
-                lambda repos: repos.news.register_agent_runtime_manifest(**self.runtime_manifest),
-            )
+        await self.db.tx(
+            "news_agent_runtime_manifest",
+            lambda repos: repos.news.register_agent_runtime_manifest(**self.runtime_manifest),
+        )
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         # A fresh process starts with a closed circuit: an incident left open by a previous process is over.
@@ -893,11 +902,11 @@ class TriageConsumer:
         if bundle is None:
             raise PermanentError("news_event_missing")
         card, ledger_rows = bundle
+        if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
+            raise PermanentError("news_event_evidence_v2_required")
         facts = GateFacts(
             grounded_assets=tuple(card.get("grounded_assets") or []),
             watchlist_symbols=self.watchlist_symbols,
-            provider_score=card.get("provider_score_max"),
-            priority=str(card.get("priority") or "normal"),
             admission=str(card.get("admission") or ""),
             source_age_s=card.get("source_age_s"),
         )
@@ -922,7 +931,6 @@ class TriageConsumer:
                     event_id=event_id,
                     stable_bundle_sha=self.stable_bundle_sha,
                     admission=str(card.get("admission") or ""),
-                    priority=str(card.get("priority") or "normal"),
                     ingest_mode=str(card.get("ingest_mode") or "live"),
                     now_ms=stamp,
                 ),
@@ -932,19 +940,25 @@ class TriageConsumer:
                 "activation_id": None,
                 "arm": "stable",
                 "bundle_sha": self.stable_bundle_sha,
-                "selector_version": "test_stable_only_v1",
+                "selector_version": "test_stable_only_v2",
                 "eligibility_reason": "canary_not_composed",
             }
         )
         selected_bundle_sha = str(assignment["bundle_sha"])
         selected_arm = str(assignment["arm"])
+        assignment_validation_error = str(assignment.get("validation_error") or "")
         runtime_arm = self.canary_arms.get(selected_bundle_sha) if selected_arm == "candidate" else None
         candidate_artifact_missing = selected_arm == "candidate" and runtime_arm is None
         stable_assignment_mismatch = selected_arm == "stable" and selected_bundle_sha != self.stable_bundle_sha
         assignment_shape_mismatch = selected_arm not in {"stable", "candidate"}
         if candidate_artifact_missing and assignment.get("activation_id"):
             await self._trip_canary(str(assignment["activation_id"]), "candidate_artifact_missing", stamp)
-        assigned_runtime_missing = candidate_artifact_missing or stable_assignment_mismatch or assignment_shape_mismatch
+        assigned_runtime_missing = (
+            bool(assignment_validation_error)
+            or candidate_artifact_missing
+            or stable_assignment_mismatch
+            or assignment_shape_mismatch
+        )
         active_judge = (
             runtime_arm.program if runtime_arm is not None else (None if assigned_runtime_missing else self.judge)
         )
@@ -974,11 +988,21 @@ class TriageConsumer:
         selected_context_sha = context.selected_context_sha256()
         novelty_context_sha = context.novelty_context_sha256()
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
+        assignment_trace = {
+            "activation_id": assignment.get("activation_id"),
+            "arm": selected_arm,
+            "bundle_sha": selected_bundle_sha,
+            "selector_version": assignment.get("selector_version"),
+            "eligibility_reason": assignment.get("eligibility_reason"),
+        }
+        if assignment_validation_error:
+            assignment_trace["validation_error"] = assignment_validation_error
         trace: dict[str, Any] = {
             "queue_lag_ms": queue_lag_ms,
             "attempt": message.attempt,
             "program_version": active_program_version,
             "program_sha256": active_program_sha,
+            "runtime_manifest_sha": self.runtime_manifest_sha,
             # The policy numbers and the Gate version that produced this decision, not just the rule name: a
             # verdict has to be replayable against the thresholds it actually ran under (#81).
             "policy": active_policy.as_dict(),
@@ -994,19 +1018,13 @@ class TriageConsumer:
             },
             "told": _told_trace(told),
             "told_count": len(told),
-            "agent_assignment": {
-                "activation_id": assignment.get("activation_id"),
-                "arm": selected_arm,
-                "bundle_sha": selected_bundle_sha,
-                "selector_version": assignment.get("selector_version"),
-                "eligibility_reason": assignment.get("eligibility_reason"),
-            },
+            "agent_assignment": assignment_trace,
         }
         model_name: str | None = None
         wire_title = str(card.get("leader_title") or "")
         reasked = False
         reask_reason: str | None = None
-        first_verdict: TriageVerdict | None = None
+        first_judgment: ScoredJudgment | None = None
         program_executions: list[dict[str, Any]] = []
         selected_execution_index: int | None = None
         while True:
@@ -1014,33 +1032,35 @@ class TriageConsumer:
             error_code = None
             if active_judge is None:
                 code = (
-                    "news_canary_artifact_missing"
+                    "news_canary_assignment_identity_invalid"
+                    if assignment_validation_error
+                    else "news_canary_artifact_missing"
                     if candidate_artifact_missing
                     else "news_semantic_program_identity_mismatch"
                     if stable_assignment_mismatch or assignment_shape_mismatch
                     else "news_semantic_program_unconfigured"
                 )
-                verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
                 degraded, error_code = True, code
-            elif active_circuit.is_open(stamp) and first_verdict is None:
+            elif active_circuit.is_open(stamp) and first_judgment is None:
                 code = "news_canary_circuit_open" if selected_arm == "candidate" else "news_triage_circuit_open"
-                verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
                 degraded, error_code = True, code
-            elif active_circuit.is_open(stamp) and first_verdict is not None:
+            elif active_circuit.is_open(stamp) and first_judgment is not None:
                 code = "news_canary_circuit_open" if selected_arm == "candidate" else "news_triage_circuit_open"
                 trace["reask_failed"] = code
                 if reask_reason == "evidence":
-                    verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                    judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
                     degraded, error_code = True, code
                     model_name = None
                     selected_execution_index = None
                 else:
-                    verdict = first_verdict  # a told-only re-ask may safely keep the first semantic judgment
+                    judgment = first_judgment  # told-only staleness does not change the evidence judgment
                     if selected_execution_index is not None:
                         program_executions[selected_execution_index]["status"] = "accepted_after_reask_failure"
             else:
                 trace["watchlist"] = list(self.watchlist)
-                execution_phase = "stale_reask" if first_verdict is not None else "initial"
+                execution_phase = "stale_reask" if first_judgment is not None else "initial"
                 try:
                     call = await active_judge.judge(context)
                 except SemanticJudgeError as exc:
@@ -1092,21 +1112,21 @@ class TriageConsumer:
                                     "news_triage_circuit",
                                     functools.partial(_open_circuit_incident, now_ms=stamp),
                                 )
-                    if first_verdict is not None:
+                    if first_judgment is not None:
                         trace["reask_failed"] = exc.code
                         if reask_reason == "evidence":
-                            verdict, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
+                            judgment, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
                             degraded, error_code = True, exc.code
                             model_name = None
                             selected_execution_index = None
                         else:
                             # A told-only re-ask failure may keep the first valid judgment. Its evidence is unchanged;
                             # only its novelty view predates the newest delivered card.
-                            verdict = first_verdict
+                            judgment = first_judgment
                             if selected_execution_index is not None:
                                 program_executions[selected_execution_index]["status"] = "accepted_after_reask_failure"
                     else:
-                        verdict, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
+                        judgment, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
                         degraded, error_code = True, exc.code
                 else:
                     execution_index = len(program_executions)
@@ -1128,21 +1148,21 @@ class TriageConsumer:
                         program_executions[execution_index]["error"] = {"code": code}
                         if selected_arm == "candidate" and assignment.get("activation_id"):
                             await self._trip_canary(str(assignment["activation_id"]), code, stamp)
-                        if first_verdict is not None:
+                        if first_judgment is not None:
                             trace["reask_failed"] = code
                             if reask_reason == "evidence":
-                                verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                                judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
                                 degraded, error_code = True, code
                                 model_name = None
                                 selected_execution_index = None
                             else:
-                                verdict = first_verdict
+                                judgment = first_judgment
                                 if selected_execution_index is not None:
                                     program_executions[selected_execution_index]["status"] = (
                                         "accepted_after_reask_failure"
                                     )
                         else:
-                            verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                            judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
                             degraded, error_code = True, code
                     else:
                         active_circuit.record_success()
@@ -1153,7 +1173,7 @@ class TriageConsumer:
                                     "news_triage_circuit_close",
                                     functools.partial(_close_circuit_incidents, now_ms=stamp),
                                 )
-                        verdict = call.verdict
+                        judgment = call.scored()
                         model_name = call.answering_model
                         selected_execution_index = execution_index
                         program_executions[execution_index]["status"] = "accepted"
@@ -1169,6 +1189,7 @@ class TriageConsumer:
                 executions=program_executions,
                 selected_execution_index=selected_execution_index,
             )
+            verdict = judgment.verdict
             # The final storyline key comes from the verdict (primaries/scope); duplicate evidence is traced on it.
             final_key = final_storyline_key(
                 title=str(card.get("leader_title") or ""),
@@ -1185,7 +1206,7 @@ class TriageConsumer:
                 evidence_version=int(card.get("evidence_version") or 0),
                 evidence_sha256=str(card.get("evidence_sha256") or ""),
                 focus_fact_id=str(card.get("focus_fact_id") or ""),
-                verdict=verdict,
+                judgment=judgment,
                 facts=facts,
                 final_key=final_key,
                 told=told,
@@ -1200,6 +1221,7 @@ class TriageConsumer:
                 program_version=active_program_version,
                 program_sha256=active_program_sha,
                 policy=active_policy,
+                runtime_manifest_sha=self.runtime_manifest_sha,
                 trace=trace,
                 stamp=stamp,
                 allow_stale=not reasked and not degraded,
@@ -1211,7 +1233,7 @@ class TriageConsumer:
                 # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
                 reasked = True
                 reask_reason = outcome.stale_reason
-                first_verdict = verdict
+                first_judgment = judgment
                 if selected_execution_index is None:
                     raise ValueError("news_stale_program_execution_missing")
                 program_executions[selected_execution_index]["status"] = (
@@ -1222,14 +1244,7 @@ class TriageConsumer:
                     "reasked_after_evidence_change" if reask_reason == "evidence" else "reasked_after_told_change"
                 ] = True
                 trace["first_input_sha256"] = trace.get("input_sha256")
-                trace["first_verdict"] = {
-                    "novelty": verdict.novelty,
-                    "restates": verdict.restates,
-                    "decision": verdict.decision,
-                    "magnitude": verdict.magnitude,
-                    "direction": verdict.direction,
-                    "headline_zh": verdict.headline_zh,
-                }
+                trace["first_judgment"] = judgment.model_dump(mode="json")
                 stamp = now_ms()
                 bundle = await self.db.read(
                     "news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp)
@@ -1241,8 +1256,6 @@ class TriageConsumer:
                 facts = GateFacts(
                     grounded_assets=tuple(card.get("grounded_assets") or []),
                     watchlist_symbols=self.watchlist_symbols,
-                    provider_score=card.get("provider_score_max"),
-                    priority=str(card.get("priority") or "normal"),
                     admission=str(card.get("admission") or ""),
                     source_age_s=card.get("source_age_s"),
                 )
@@ -1318,6 +1331,7 @@ class TriageConsumer:
             "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
             "attempt": message.attempt,
             "program_version": OI_PROGRAM_VERSION,
+            "runtime_manifest_sha": self.runtime_manifest_sha,
             "policy": self.policy.as_dict(),
             "gate_policy_version": GATE_POLICY_VERSION,
             "evidence_version": int(card.get("evidence_version") or 0),
@@ -1430,7 +1444,10 @@ class TriageConsumer:
             evidence_version=int(card.get("evidence_version") or 0),
             evidence_sha256=str(card.get("evidence_sha256") or ""),
             focus_fact_id=str(card.get("focus_fact_id") or ""),
-            verdict=verdict,
+            judgment=ScoredJudgment.issue(
+                verdict=verdict,
+                editorial=EditorialEnvelope.issue(editorial_origin="telemetry_deterministic", relevance=None),
+            ),
             facts=facts,
             final_key=final_storyline_key(
                 title=str(card.get("leader_title") or ""),
@@ -1456,6 +1473,7 @@ class TriageConsumer:
             program_version=OI_PROGRAM_VERSION,
             program_sha256=program_sha256(self.oi_policy),
             policy=self.policy,
+            runtime_manifest_sha=self.runtime_manifest_sha,
             trace=trace,
             # No model was thinking, so no card can have landed while it was: nothing to re-ask.
             allow_stale=False,
@@ -1494,18 +1512,18 @@ class TriageConsumer:
         status = storyline_status(s.final_key, told=s.told, seen=seen)
         trace = s.trace
         decision = decide(
-            s.verdict,
+            s.judgment,
             s.facts,
             status,
             degraded=s.degraded,
             policy=s.policy,
         )
-        if s.degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
-            decision = DecisionResult(
-                "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
-            )
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
+        trace["verdict_sha256"] = s.judgment.verdict_sha256
+        trace["editorial_sha256"] = s.judgment.editorial.editorial_sha256
+        trace["scored_judgment_sha256"] = s.judgment.scored_judgment_sha256
+        trace["runtime_manifest_sha"] = s.runtime_manifest_sha
         trace["seen_count"] = len(status.seen_headlines)
         trace["selected_context_sha256"] = s.selected_context_sha
         trace["novelty_context_sha256"] = s.novelty_context_sha
@@ -1535,14 +1553,15 @@ class TriageConsumer:
             event_id=s.event_id,
             stage="triage",
             policy_version=TRIAGE_POLICY_VERSION,
-            model_decision=None
-            if s.degraded and s.error_code == "news_semantic_program_unconfigured"
-            else s.verdict.decision,
+            model_decision=(s.verdict.decision if s.judgment.editorial.editorial_origin == "model" else None),
             rule_baseline_decision=decision.rule_baseline,
             final_decision=final,
             override_rule=decision.override_rule,
             throttled_by=decision.throttled_by,
             verdict=json_ready(s.verdict),
+            editorial=s.judgment.editorial.model_dump(mode="json"),
+            scored_judgment_sha256=s.judgment.scored_judgment_sha256,
+            runtime_manifest_sha=s.runtime_manifest_sha,
             model=s.model_name,
             program_version=s.program_version,
             program_sha256=s.program_sha256,
@@ -1967,7 +1986,7 @@ class JanitorLoop:
                 self.db,
                 event_id=str(card["event_id"]),
                 family=str(card["family"]),
-                priority=str(card["priority"]),
+                queue_priority=str(card["queue_priority"]),
                 trace_id=str(card.get("trace_id") or new_trace_id()),
             )
             republished += 1

@@ -1,4 +1,4 @@
-"""#150: the metric follows the policy the arm ran, never the policy this process happened to import."""
+"""#160: the learning metric and runtime share policy-v10 action truth."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tests.support.news_judgment import recorded_decision, scored_judgment, trade_relevance
 from tracefold.news.agents.program_baseline import BaselineCase, run_baseline
 from tracefold.news.agents.program_metric import DevelopmentEpisode, accepted_review_metric, build_compile_example
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
@@ -19,65 +21,68 @@ _CARD: dict[str, Any] = {
     "evidence_version": 1,
     "evidence_sha256": "a" * 64,
     "focus_fact_id": "f" * 64,
-    "leader_title": "Issuer publishes a routine update",
+    "leader_title": "Issuer publishes a material update",
     "leader_description": "",
-    "leader_url": "https://example.invalid/1",
     "reporting_origin": "wire",
     "family": "general",
     "admission": "candidate",
-    "priority": "normal",
+    "queue_priority": "normal",
     "asset_class": "equity_or_commodity",
     "engine_type": "news",
-    "ingest_mode": "live",
     "storyline_key": "asset:TSLA",
-    "comparison_title": "issuer publishes a routine update",
-    "raw_first_line": "Issuer publishes a routine update",
+    "comparison_title": "issuer publishes a material update",
+    "raw_first_line": "Issuer publishes a material update",
     "grounded_assets": ["TSLA"],
     "watchlist_hits": [],
     "member_count": 1,
     "opened_at_ms": 1787000000000,
-    "expires_at_ms": 1787043200000,
-    "last_member_at_ms": 1787000000000,
-    "macro_lexicon": False,
     "provenance": ["1018"],
-    "trace_id": "t" * 32,
-    "leader_item_id": "e" * 64,
     "provider_metadata": {},
 }
 
-# magnitude 1 sits exactly on the default `min_push_magnitude`, so raising that knob flips the action.
 _VERDICT: dict[str, Any] = {
     "novelty": "new_fact",
     "restates": -1,
-    "event_type": "product",
+    "event_type": "filing",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
-    "magnitude": 1,
+    "magnitude": 2,
     "direction": "bullish",
     "actionable": True,
     "audience": "us_equity",
     "scope": "single_name",
-    "decision": "push",
+    # Compatibility intent is deliberately contrary to the relevance result.
+    "decision": "drop",
     "confidence": 0.9,
-    "headline_zh": "发行人发布例行更新",
-    "why_zh": "例行更新不改变该名字的交付或盈利",
+    "headline_zh": "发行人发布重大更新",
+    "why_zh": "该更新改变盈利和现金流预期",
     "title_zh": "",
 }
 
 
-def _episode(policy_values: dict[str, Any] | None) -> DevelopmentEpisode:
+def _episode(
+    policy_values: dict[str, Any] | None,
+    *,
+    relevance: dict[str, Any] | None = None,
+    watchlist: bool = False,
+) -> DevelopmentEpisode:
     projection: dict[str, Any] = {
-        "gate": {"grounded_assets": ["TSLA"], "priority": "normal", "admission": "candidate"},
+        "gate": {
+            "grounded_assets": ["TSLA"],
+            "watchlist_symbols": ["TSLA"] if watchlist else [],
+            "admission": "candidate",
+        },
         "storyline": {"title": "Issuer", "family": "general"},
         "seen": [],
     }
     if policy_values is not None:
         projection.update(
             {
-                "policy_version": "news_triage_policy_v8",
+                "policy_version": TRIAGE_POLICY_VERSION,
                 "policy_values": policy_values,
                 "policy_sha256": canonical_sha(policy_values),
             }
         )
+    production_relevance = trade_relevance(**(relevance or {}))
     return DevelopmentEpisode(
         case_id="c" * 64,
         cluster_id="k" * 64,
@@ -88,57 +93,104 @@ def _episode(policy_values: dict[str, Any] | None) -> DevelopmentEpisode:
             "dimensions": {"factual_fidelity": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
         },
-        production_verdict=dict(_VERDICT),
+        production_judgment=scored_judgment(_VERDICT, relevance=production_relevance),
         policy_metric=projection,
     )
 
 
-def _action(policy_values: dict[str, Any] | None) -> str:
-    example = build_compile_example(_episode(policy_values))
-    outcome = accepted_review_metric(example, dspy.Prediction(verdict=dict(_VERDICT)), None, None, None)
+def _action(
+    *,
+    relevance: dict[str, Any] | None = None,
+    policy_values: dict[str, Any] | None = None,
+    watchlist: bool = False,
+) -> str:
+    values = DEFAULT_POLICY.as_dict() if policy_values is None else policy_values
+    episode = _episode(values, relevance=relevance, watchlist=watchlist)
+    judgment = scored_judgment(_VERDICT, relevance=trade_relevance(**(relevance or {})))
+    outcome = accepted_review_metric(
+        build_compile_example(episode),
+        dspy.Prediction(
+            verdict=judgment.verdict.model_dump(mode="json"),
+            editorial=judgment.editorial.model_dump(mode="json"),
+        ),
+        None,
+        None,
+        None,
+    )
     return str(outcome.production_action)
 
 
-def test_the_metric_follows_the_frozen_policy_not_the_imported_default() -> None:
-    """`news.policy` is operator-owned. Before #150 the metric imported `DEFAULT_POLICY` and still called
-    itself a production-action metric, so raising `min_push_magnitude` would have left every offline score
-    describing an arm production never ran."""
+@pytest.mark.parametrize(
+    ("relevance", "expected"),
+    [
+        ({"reader_value": "realtime"}, "push"),
+        ({"reader_value": "escalate"}, "escalate"),
+        (
+            {
+                "reader_value": "background",
+                "tradability": "contextual",
+                "channels": [],
+                "affected_markets": [],
+            },
+            "drop",
+        ),
+    ],
+)
+def test_trade_relevance_owns_action_not_compatibility_intent(relevance: dict[str, Any], expected: str) -> None:
+    assert _VERDICT["decision"] == "drop"
+    assert _action(relevance=relevance) == expected
 
-    defaults = DEFAULT_POLICY.as_dict()
-    assert defaults["min_push_magnitude"] == 1
-    assert _action(defaults) == "push"
 
-    stricter = {**defaults, "min_push_magnitude": 2}
-    # Same verdict, same evidence — only the frozen policy differs, and the action follows it.
-    assert _action(stricter) == "drop"
+def test_realtime_requires_the_exact_material_direct_surface() -> None:
+    assert _action(relevance={"development_delta": "color_only"}) == "drop"
+    assert _action(relevance={"reader_value": "realtime"}) == "push"
+
+
+def test_objective_watchlist_guard_overrides_background_editorial_value() -> None:
+    background = {
+        "reader_value": "background",
+        "tradability": "contextual",
+        "channels": [],
+        "affected_markets": [],
+    }
+    assert _action(relevance=background, watchlist=False) == "drop"
+    assert _action(relevance=background, watchlist=True) == "push"
 
 
 def test_a_policy_scored_example_without_a_policy_fails_closed() -> None:
+    episode = _episode(None)
+    judgment = scored_judgment(_VERDICT)
     with pytest.raises(ValueError, match="news_program_metric_policy_values_missing"):
-        _action(None)
+        accepted_review_metric(
+            build_compile_example(episode),
+            dspy.Prediction(
+                verdict=judgment.verdict.model_dump(mode="json"),
+                editorial=judgment.editorial.model_dump(mode="json"),
+            ),
+        )
 
 
 def test_a_tampered_policy_hash_fails_closed() -> None:
-    """A corpus that cannot verify its own policy is a construction bug, not a bad candidate.
-
-    Scoring it 0 would be the wrong kind of fail-closed: the run would finish, publish a number, and blame
-    the Program for a corpus defect. It raises instead, so the run stops with the two hashes named.
-    """
-
     values = DEFAULT_POLICY.as_dict()
     episode = _episode(values)
     tampered = dict(episode.policy_metric)
     tampered["policy_values"] = {**values, "similarity_max": 0.9}
-    example = build_compile_example(episode.model_copy(update={"policy_metric": tampered}))
+    judgment = scored_judgment(_VERDICT)
     with pytest.raises(ValueError, match=r"news_program_metric_policy_sha256_mismatch:[0-9a-f]{16}!=[0-9a-f]{16}"):
-        accepted_review_metric(example, dspy.Prediction(verdict=dict(_VERDICT)), None, None, None)
+        accepted_review_metric(
+            build_compile_example(episode.model_copy(update={"policy_metric": tampered})),
+            dspy.Prediction(
+                verdict=judgment.verdict.model_dump(mode="json"),
+                editorial=judgment.editorial.model_dump(mode="json"),
+            ),
+        )
 
 
-def test_recorded_scoring_still_bypasses_todays_policy() -> None:
-    """A retired arm's shipped action must stay reproducible after the policy it ran under was replaced."""
-
-    case = BaselineCase(episode=_episode(None), recorded_action="push")
+def test_recorded_scoring_uses_the_complete_shipped_decision() -> None:
+    case = BaselineCase(
+        episode=_episode(None),
+        recorded_decision_result=recorded_decision("push"),
+    )
     report = run_baseline([case], mode="recorded", artifact=load_stable_program_artifact())
     assert report.cases[0].action == "push"
-    # No policy was needed, so the report says so instead of naming one it did not use.
     assert report.identity["policy_sha256"] is None

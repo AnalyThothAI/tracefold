@@ -15,6 +15,7 @@ from typing import Any
 import dspy
 import pytest
 
+from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.agents.program_baseline import BaselineCase, compile_program_factory, run_baseline
 from tracefold.news.agents.program_metric import DevelopmentEpisode
 from tracefold.news.agents.semantic_program import (
@@ -26,6 +27,7 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
@@ -36,13 +38,20 @@ _SEMANTICS: dict[str, Any] = {
     "assets": [{"symbol": "TSLA", "market_type": "spot", "role": "primary"}],
     "magnitude": 2,
     "direction": "bullish",
-    "actionable": True,
     "audience": "us_equity",
     "scope": "single_name",
-    "decision": "push",
     "confidence": 0.9,
+    "relevance": trade_relevance().model_dump(mode="json"),
 }
 _CARD: dict[str, Any] = {"headline_zh": "特斯拉承诺新增产线", "why_zh": "新增产能改变该名字的交付预期"}
+
+_VERDICT: dict[str, Any] = {
+    **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
+    **_CARD,
+    "actionable": True,
+    "decision": "push",
+    "title_zh": "",
+}
 
 
 def _context(index: int, *, title: str | None = None) -> TriageContext:
@@ -59,7 +68,7 @@ def _context(index: int, *, title: str | None = None) -> TriageContext:
             "reporting_origin": "wire",
             "family": "general",
             "admission": "candidate",
-            "priority": "normal",
+            "queue_priority": "normal",
             "asset_class": "equity_or_commodity",
             "engine_type": "news",
             "ingest_mode": "live",
@@ -97,18 +106,21 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
             "dimensions": {"factual_fidelity": "pass", "headline_fidelity": "pass", "magnitude": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
         },
-        production_verdict={**_SEMANTICS, **_CARD, "title_zh": ""},
+        production_judgment=scored_judgment(
+            _VERDICT,
+            relevance=trade_relevance(),
+        ),
         policy_metric={
-            "gate": {"grounded_assets": ["TSLA"], "priority": "normal", "admission": "candidate"},
+            "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
             "storyline": {"title": "Tesla", "family": "general"},
             "seen": [],
-            "policy_version": "news_triage_policy_v8",
+            "policy_version": TRIAGE_POLICY_VERSION,
             "policy_values": values,
             "policy_source": "active_arm_manifest",
             "policy_sha256": canonical_sha(values),
         },
     )
-    return BaselineCase(episode=episode, recorded_action="")
+    return BaselineCase(episode=episode)
 
 
 def _artifact_with_execution(**updates: Any) -> ProgramArtifact:
@@ -433,9 +445,7 @@ def test_a_live_report_names_the_policy_it_replayed_and_moves_with_it() -> None:
     values = {**DEFAULT_POLICY.as_dict(), "similarity_max": 0.9}
     drifted = _case(1)
     projection = {**drifted.episode.policy_metric, "policy_values": values, "policy_sha256": canonical_sha(values)}
-    other = run(
-        BaselineCase(episode=drifted.episode.model_copy(update={"policy_metric": projection}), recorded_action="")
-    )
+    other = run(BaselineCase(episode=drifted.episode.model_copy(update={"policy_metric": projection})))
 
     assert other.identity["policy_sha256"] == canonical_sha(values)
     assert other.report_sha256 != base.report_sha256
@@ -514,7 +524,7 @@ def test_an_unusable_policy_is_refused_before_the_first_provider_call(damage: st
         projection.pop("policy_sha256")
     else:
         projection["policy_values"] = {**projection["policy_values"], "similarity_max": 0.9}
-    broken = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}), recorded_action="")
+    broken = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}))
 
     primary = ScriptedPredictorAdapter([_SEMANTICS, _CARD])
     program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
@@ -534,7 +544,7 @@ def test_the_report_address_covers_the_corpus_content_not_only_its_ids() -> None
     edited = _case(1)
     context = edited.episode.context.model_copy(update={"queue_lag_ms": edited.episode.context.queue_lag_ms + 9_000})
     other = _runtime(
-        [BaselineCase(episode=edited.episode.model_copy(update={"context": context}), recorded_action="")],
+        [BaselineCase(episode=edited.episode.model_copy(update={"context": context}))],
         DspyNewsSemanticProgram(
             load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
         ),
@@ -550,7 +560,7 @@ def test_a_policy_without_a_version_is_refused_like_any_other_unusable_policy() 
 
     projection = dict(_case(1).episode.policy_metric)
     projection.pop("policy_version")
-    case = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}), recorded_action="")
+    case = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}))
     program = DspyNewsSemanticProgram(
         load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
     )

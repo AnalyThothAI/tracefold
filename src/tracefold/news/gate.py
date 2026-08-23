@@ -1,8 +1,8 @@
-"""Gate v4: deterministic evidence, priority, and orthogonal vetoes (pure).
+"""Gate v4: deterministic evidence, queue scheduling, and orthogonal vetoes (pure).
 
 The Gate no longer decides relevance and keeps no name table of its own: the provider already resolved entities into
 ``coins[]`` with a grade, so a B+/A/A+ tag (or a literal ``$TICKER`` cashtag) *is* the grounded asset; Triage — the
-model — verifies which of them are primary. The lexicons only set priority, the energy context for ``CL``, and the
+model — verifies which of them are primary. The lexicons only set queue order, the energy context for ``CL``, and the
 preliminary storyline theme. The only admissions that skip the model are recovery replays, deterministic listing
 notices, law-firm PR templates without a grounded asset, and — behind an operator switch that defaults off —
 low-score ungrounded social posts.
@@ -81,7 +81,7 @@ class GateInput:
 @dataclass(frozen=True, slots=True)
 class GateVerdict:
     admission: Admission
-    priority: str  # high | normal
+    queue_priority: str  # high | normal; broker scheduling only
     asset_class: AssetClass
     grounded_assets: tuple[str, ...]
     macro_lexicon: bool
@@ -93,7 +93,7 @@ class GateVerdict:
 
     @property
     def amqp_priority(self) -> int:
-        return 5 if self.priority == "high" else 0
+        return 5 if self.queue_priority == "high" else 0
 
 
 def _base_symbol(symbol: str) -> str:
@@ -223,7 +223,7 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     high = score >= 90 or bool(watch_hits) or listing or (macro and bool(_HIGH_PRIORITY_MACRO.search(text)))
     return GateVerdict(
         admission=admission,
-        priority="high" if high else "normal",
+        queue_priority="high" if high else "normal",
         asset_class=asset_class_of(grounded, macro, instrument_classes=inp.instrument_classes),
         grounded_assets=grounded,
         macro_lexicon=macro,

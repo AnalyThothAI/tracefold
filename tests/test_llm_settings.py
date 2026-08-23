@@ -68,6 +68,8 @@ def test_compiler_tariff_is_complete_positive_and_secret_free() -> None:
             task_output_microusd_per_million=1,
             reflection_input_microusd_per_million=1,
             reflection_output_microusd_per_million=1,
+            metric_judge_input_microusd_per_million=1,
+            metric_judge_output_microusd_per_million=1,
         )
 
     tariff = LlmCompilerTariffConfig(
@@ -77,10 +79,13 @@ def test_compiler_tariff_is_complete_positive_and_secret_free() -> None:
         task_output_microusd_per_million=1_200_000,
         reflection_input_microusd_per_million=300_000,
         reflection_output_microusd_per_million=1_200_000,
+        metric_judge_input_microusd_per_million=400_000,
+        metric_judge_output_microusd_per_million=1_600_000,
     )
 
     assert tariff.configured is True
     assert tariff.tariff_id == "provider-contract-2026-08"
+    assert tariff.metric_judge_output_microusd_per_million == 1_600_000
 
 
 def test_reader_fallback_requires_the_event_fallback_route() -> None:
