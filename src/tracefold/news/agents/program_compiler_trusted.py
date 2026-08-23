@@ -17,8 +17,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..semantic_contract import TriageContext
-from .program_compiler_security import OptimizerCompileProvenanceV2
+from ..semantic_contract import ScoredJudgment, TriageContext
+from .program_compiler_security import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
+    REFLECTION_MAX_TOKENS,
+    REFLECTION_TIMEOUT_SECONDS,
+    OptimizerCompileProvenanceV3,
+)
+from .program_metric import production_decision
 from .semantic_program import (
     CompileReceipt,
     DemoRecord,
@@ -28,6 +35,7 @@ from .semantic_program import (
     ProgramArtifactCodec,
     ProgramPatchV2,
     ReaderCard,
+    _reader_card_semantic_view,
     load_stable_program_artifact,
     render_model_evidence_json,
 )
@@ -35,13 +43,11 @@ from .semantic_program import (
     apply_program_patch_v2 as _apply_program_patch_v2,
 )
 
-LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
+LEARNING_EPOCH: Literal["program_v6"] = "program_v6"
 # The reflection endpoint's budget, declared on the trusted seam because the CLI may not import the optimizer
 # module. GEPA's reflection call reads a minibatch of failures and emits a whole replacement instruction, so it
 # is nothing like a Program route: DSPy documents 32k output tokens for it, while the task route's ceiling here
 # is 1,200 — below even what `LearnedStrategy` itself accepts.
-REFLECTION_MAX_TOKENS = 32_000
-REFLECTION_TIMEOUT_SECONDS = 300.0
 
 
 class _ExactModel(BaseModel):
@@ -54,7 +60,7 @@ class _DevelopmentEpisode(_ExactModel):
     stratum: str = Field(min_length=1)
     context: TriageContext
     accepted_review: dict[str, Any]
-    production_verdict: dict[str, Any] | None = None
+    production_judgment: ScoredJudgment | None = None
     # Sealed policy-metric projection. The demo builder ignores it; it exists so this validator does not
     # reject the same sealed episode the compiler reads.
     policy_metric: dict[str, Any] = Field(default_factory=dict)
@@ -101,13 +107,25 @@ def build_eligible_demo_bank(
         case = cases[episode.case_id]
         if str(case.get("cluster_id") or "") != episode.cluster_id:
             raise ValueError("news_program_compile_dataset_episode_membership_mismatch")
-        verdict_payload = episode.production_verdict
-        if verdict_payload is None or not _accepted_review_is_demo_truth(
+        production_judgment = episode.production_judgment
+        if production_judgment is None:
+            continue
+        verdict_payload = production_judgment.verdict.model_dump(mode="json")
+        decision = production_decision(production_judgment, episode.policy_metric)
+        if not _accepted_review_is_demo_truth(
             episode.accepted_review,
             verdict_payload,
+            decision.final,
         ):
             continue
-        semantics = EventSemantics.model_validate({name: verdict_payload[name] for name in EventSemantics.model_fields})
+        relevance = production_judgment.editorial.relevance
+        if relevance is None:
+            continue
+        semantics_payload = {
+            **{name: verdict_payload[name] for name in EventSemantics.model_fields if name != "relevance"},
+            "relevance": relevance.model_dump(mode="json"),
+        }
+        semantics = EventSemantics.model_validate(semantics_payload)
         card = ReaderCard.model_validate({name: verdict_payload[name] for name in ReaderCard.model_fields})
         semantics_evidence_json = render_model_evidence_json(
             episode.context.event_semantics_payload(), predictor="event_semantics"
@@ -143,7 +161,7 @@ def build_eligible_demo_bank(
                 predictor="reader_card",
                 signature_inputs={
                     "evidence_json": card_evidence_json,
-                    "semantics_json": canonical_json(semantics_payload),
+                    "semantics_json": canonical_json(_reader_card_semantic_view(semantics).model_dump(mode="json")),
                 },
                 validated_output=card.model_dump(mode="json"),
                 source_kind="accepted_development",
@@ -161,14 +179,14 @@ def apply_trusted_program_patch(
     parent: ProgramArtifact,
     patch: ProgramPatchV2,
     eligible_demo_bank: EligibleDemoBank,
-    provenance: OptimizerCompileProvenanceV2,
+    provenance: OptimizerCompileProvenanceV3,
 ) -> ProgramArtifact:
     """Apply the sole optimizer write-set under the exact candidate receipt."""
 
     receipt = CompileReceipt(
         **provenance.model_dump(mode="json"),
-        compiler="tracefold.news.dspy_gepa_compiler_v2",
-        source="trusted_compiler_launcher_v2",
+        compiler="tracefold.news.dspy_gepa_compiler_v3",
+        source="trusted_compiler_launcher_v3",
         accepted_by="unaccepted_candidate",
     )
     return _apply_program_patch_v2(parent, patch, eligible_demo_bank, receipt)
@@ -198,7 +216,7 @@ def load_exact_stable_program() -> ProgramArtifact:
     if (
         parent.parent_program_sha256 is not None
         or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.semantic_program.factory_v3"
+        or parent.factory_id != "tracefold.news.semantic_program.factory_v4"
         or parent.compile_receipt.accepted_by != "code_owner"
     ):
         raise ValueError("news_program_compile_parent_must_be_exact_stable_root")
@@ -209,10 +227,10 @@ def load_program_artifact(path: str | None = None) -> ProgramArtifact:
     return ProgramArtifactCodec.load(path)
 
 
-def optimizer_provenance_from_artifact(artifact: ProgramArtifact) -> OptimizerCompileProvenanceV2:
+def optimizer_provenance_from_artifact(artifact: ProgramArtifact) -> OptimizerCompileProvenanceV3:
     receipt = artifact.compile_receipt
-    return OptimizerCompileProvenanceV2.model_validate(
-        {name: getattr(receipt, name) for name in OptimizerCompileProvenanceV2.model_fields}
+    return OptimizerCompileProvenanceV3.model_validate(
+        {name: getattr(receipt, name) for name in OptimizerCompileProvenanceV3.model_fields}
     )
 
 
@@ -258,7 +276,7 @@ def program_machine_diff(parent: ProgramArtifact, candidate: ProgramArtifact) ->
     ):
         raise ValueError("news_program_compile_machine_diff_empty")
     payload = {
-        "schema_version": "tracefold.news.program_machine_diff.v2",
+        "schema_version": "tracefold.news.program_machine_diff.v3",
         "parent_program_sha256": parent.program_sha256,
         "parent_state_sha256": parent.state_sha256,
         "candidate_program_sha256": candidate.program_sha256,
@@ -317,6 +335,7 @@ def write_program_candidate_artifact(artifact: ProgramArtifact, *, artifact_root
 def _accepted_review_is_demo_truth(
     review: Mapping[str, Any],
     verdict_payload: Mapping[str, Any],
+    final_decision: str,
 ) -> bool:
     dimensions = dict(review.get("dimensions") or {})
     required = {"factual_fidelity", "headline_fidelity", "why_support", "why_value"}
@@ -334,11 +353,10 @@ def _accepted_review_is_demo_truth(
     if novelty.get("judgment") != verdict_payload.get("novelty"):
         return False
     should_push = str(review.get("should_push") or "uncertain")
-    decision = str(verdict_payload.get("decision") or "")
     if should_push in {"must_push", "should_push"}:
-        return decision in {"push", "escalate"}
+        return final_decision in {"push", "escalate"}
     if should_push in {"must_hold", "should_hold"}:
-        return decision == "drop"
+        return final_decision in {"drop", "throttled"}
     return False
 
 
@@ -373,6 +391,10 @@ def _is_sha256(value: str) -> bool:
 
 
 __all__ = [
+    "METRIC_JUDGE_MAX_TOKENS",
+    "METRIC_JUDGE_TIMEOUT_SECONDS",
+    "REFLECTION_MAX_TOKENS",
+    "REFLECTION_TIMEOUT_SECONDS",
     "ProgramPatchV2",
     "apply_trusted_program_patch",
     "build_eligible_demo_bank",

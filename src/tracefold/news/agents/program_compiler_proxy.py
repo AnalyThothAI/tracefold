@@ -25,7 +25,12 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
-from .program_compiler_security import CompilerEndpointIdentity, CompilerProxyTariff
+from .program_compiler_security import (
+    CompilerEndpointIdentity,
+    CompilerProxyTariff,
+    CompilerRole,
+    CompilerRoleBindingV3,
+)
 from .semantic_program import (
     ExactMetadataDspyLM,
     ExactProviderCallCapture,
@@ -33,15 +38,15 @@ from .semantic_program import (
     PredictorAdapterError,
 )
 
-PROXY_GRANT_SCHEMA: Literal["tracefold.news.compiler_proxy_grant.v2"] = "tracefold.news.compiler_proxy_grant.v2"
-PROXY_REQUEST_SCHEMA: Literal["tracefold.news.compiler_proxy_request.v2"] = "tracefold.news.compiler_proxy_request.v2"
-PROXY_RESPONSE_SCHEMA: Literal["tracefold.news.compiler_proxy_response.v2"] = (
-    "tracefold.news.compiler_proxy_response.v2"
+PROXY_GRANT_SCHEMA: Literal["tracefold.news.compiler_proxy_grant.v3"] = "tracefold.news.compiler_proxy_grant.v3"
+PROXY_REQUEST_SCHEMA: Literal["tracefold.news.compiler_proxy_request.v3"] = "tracefold.news.compiler_proxy_request.v3"
+PROXY_RESPONSE_SCHEMA: Literal["tracefold.news.compiler_proxy_response.v3"] = (
+    "tracefold.news.compiler_proxy_response.v3"
 )
-PROXY_EXECUTION_SCHEMA: Literal["tracefold.news.compiler_proxy_execution.v2"] = (
-    "tracefold.news.compiler_proxy_execution.v2"
+PROXY_EXECUTION_SCHEMA: Literal["tracefold.news.compiler_proxy_execution.v3"] = (
+    "tracefold.news.compiler_proxy_execution.v3"
 )
-PROXY_READY_SCHEMA: Literal["tracefold.news.compiler_proxy_ready.v2"] = "tracefold.news.compiler_proxy_ready.v2"
+PROXY_READY_SCHEMA: Literal["tracefold.news.compiler_proxy_ready.v3"] = "tracefold.news.compiler_proxy_ready.v3"
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _FRAME_PREFIX_BYTES = 4
@@ -82,12 +87,23 @@ class CompilerProviderEndpointSecret(_ExactModel):
     api_base: str = Field(min_length=1, repr=False)
     api_key: str = Field(min_length=1, repr=False)
     timeout: float = Field(gt=0, le=3_600)
-    max_tokens: int = Field(ge=64, le=16_384)
+    max_tokens: int = Field(ge=64, le=32_000)
+    temperature: float = Field(ge=0, le=2)
     model_kwargs: dict[str, Any] = Field(default_factory=dict, repr=False)
 
     @property
     def identity(self) -> CompilerEndpointIdentity:
         return CompilerEndpointIdentity.issue(model=self.model, api_base=self.api_base)
+
+    def binding(self, role: CompilerRole) -> CompilerRoleBindingV3:
+        return CompilerRoleBindingV3.issue(
+            role=role,
+            endpoint=self.identity,
+            max_output_tokens=self.max_tokens,
+            timeout_seconds=self.timeout,
+            temperature=self.temperature,
+            model_kwargs=self.model_kwargs,
+        )
 
 
 class CompilerProxySecretConfig(_ExactModel):
@@ -95,7 +111,15 @@ class CompilerProxySecretConfig(_ExactModel):
 
     task: CompilerProviderEndpointSecret
     reflection: CompilerProviderEndpointSecret
+    metric_judge: CompilerProviderEndpointSecret
     tariff: CompilerProxyTariff
+
+    @model_validator(mode="after")
+    def _role_contracts_are_exact(self) -> CompilerProxySecretConfig:
+        self.task.binding("task")
+        self.reflection.binding("reflection")
+        self.metric_judge.binding("metric_judge")
+        return self
 
     @property
     def tariff_sha256(self) -> str:
@@ -105,14 +129,9 @@ class CompilerProxySecretConfig(_ExactModel):
     def secret_free_config_sha256(self) -> str:
         return canonical_sha(
             {
-                "task_endpoint_identity_sha256": self.task.identity.binding_sha256,
-                "reflection_endpoint_identity_sha256": self.reflection.identity.binding_sha256,
-                "task_timeout": self.task.timeout,
-                "reflection_timeout": self.reflection.timeout,
-                "task_max_tokens": self.task.max_tokens,
-                "reflection_max_tokens": self.reflection.max_tokens,
-                "task_model_kwargs_sha256": canonical_sha(self.task.model_kwargs),
-                "reflection_model_kwargs_sha256": canonical_sha(self.reflection.model_kwargs),
+                "task": self.task.binding("task").model_dump(mode="json"),
+                "reflection": self.reflection.binding("reflection").model_dump(mode="json"),
+                "metric_judge": self.metric_judge.binding("metric_judge").model_dump(mode="json"),
                 "tariff_sha256": self.tariff_sha256,
             }
         )
@@ -121,18 +140,17 @@ class CompilerProxySecretConfig(_ExactModel):
 class CompilerModelProxyGrant(_ExactModel):
     """Secret-free authority and budget visible to both sides of the socket."""
 
-    schema_version: Literal["tracefold.news.compiler_proxy_grant.v2"] = PROXY_GRANT_SCHEMA
-    task_endpoint: CompilerEndpointIdentity
-    reflection_endpoint: CompilerEndpointIdentity
-    max_model_calls: int = Field(gt=0, le=100_000)
+    schema_version: Literal["tracefold.news.compiler_proxy_grant.v3"] = PROXY_GRANT_SCHEMA
+    task: CompilerRoleBindingV3
+    reflection: CompilerRoleBindingV3
+    metric_judge: CompilerRoleBindingV3
+    max_task_model_calls: int = Field(gt=0, le=100_000)
+    max_reflection_model_calls: int = Field(gt=0, le=100_000)
+    max_metric_judge_model_calls: int = Field(gt=0, le=100_000)
     max_cost_microusd: int = Field(gt=0)
     max_call_cost_microusd: int = Field(gt=0)
     tariff: CompilerProxyTariff
     tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
-    task_max_output_tokens: int = Field(ge=64, le=16_384)
-    reflection_max_output_tokens: int = Field(ge=64, le=16_384)
-    task_timeout_seconds: float = Field(gt=0, le=3_600)
-    reflection_timeout_seconds: float = Field(gt=0, le=3_600)
     proxy_config_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
     max_request_bytes: int = Field(default=2_000_000, ge=1_024, le=8_000_000)
@@ -143,45 +161,40 @@ class CompilerModelProxyGrant(_ExactModel):
     def issue(
         cls,
         *,
-        task_endpoint: CompilerEndpointIdentity,
-        reflection_endpoint: CompilerEndpointIdentity,
-        max_model_calls: int,
+        task: CompilerRoleBindingV3,
+        reflection: CompilerRoleBindingV3,
+        metric_judge: CompilerRoleBindingV3,
+        max_task_model_calls: int,
+        max_reflection_model_calls: int,
+        max_metric_judge_model_calls: int,
         max_cost_microusd: int,
         tariff: CompilerProxyTariff,
-        task_max_output_tokens: int,
-        reflection_max_output_tokens: int,
-        task_timeout_seconds: float,
-        reflection_timeout_seconds: float,
         proxy_config_sha256: str,
         proxy_source_sha256: str,
         max_request_bytes: int = 2_000_000,
         max_response_bytes: int = 2_000_000,
     ) -> CompilerModelProxyGrant:
+        bindings = (task, reflection, metric_judge)
         max_call_cost_microusd = max(
             tariff.worst_case_cost_microusd(
-                role="task",
+                role=binding.role,
                 request_bytes=max_request_bytes,
-                max_output_tokens=task_max_output_tokens,
-            ),
-            tariff.worst_case_cost_microusd(
-                role="reflection",
-                request_bytes=max_request_bytes,
-                max_output_tokens=reflection_max_output_tokens,
-            ),
+                max_output_tokens=binding.max_output_tokens,
+            )
+            for binding in bindings
         )
         values = {
             "schema_version": PROXY_GRANT_SCHEMA,
-            "task_endpoint": task_endpoint.model_dump(mode="json"),
-            "reflection_endpoint": reflection_endpoint.model_dump(mode="json"),
-            "max_model_calls": max_model_calls,
+            "task": task.model_dump(mode="json"),
+            "reflection": reflection.model_dump(mode="json"),
+            "metric_judge": metric_judge.model_dump(mode="json"),
+            "max_task_model_calls": max_task_model_calls,
+            "max_reflection_model_calls": max_reflection_model_calls,
+            "max_metric_judge_model_calls": max_metric_judge_model_calls,
             "max_cost_microusd": max_cost_microusd,
             "max_call_cost_microusd": max_call_cost_microusd,
             "tariff": tariff.model_dump(mode="json"),
             "tariff_sha256": tariff.tariff_sha256,
-            "task_max_output_tokens": task_max_output_tokens,
-            "reflection_max_output_tokens": reflection_max_output_tokens,
-            "task_timeout_seconds": float(task_timeout_seconds),
-            "reflection_timeout_seconds": float(reflection_timeout_seconds),
             "proxy_config_sha256": proxy_config_sha256,
             "proxy_source_sha256": proxy_source_sha256,
             "max_request_bytes": max_request_bytes,
@@ -194,9 +207,15 @@ class CompilerModelProxyGrant(_ExactModel):
         values = self.model_dump(mode="json", exclude={"grant_sha256"})
         if self.grant_sha256 != canonical_sha(values):
             raise ValueError("news_program_compile_proxy_grant_hash_mismatch")
+        if (self.task.role, self.reflection.role, self.metric_judge.role) != (
+            "task",
+            "reflection",
+            "metric_judge",
+        ):
+            raise ValueError("news_program_compile_proxy_role_binding_order_invalid")
+        roles: tuple[CompilerRole, ...] = ("task", "reflection", "metric_judge")
         expected_max_call = max(
-            self.reservation_microusd(role="task", request_bytes=self.max_request_bytes),
-            self.reservation_microusd(role="reflection", request_bytes=self.max_request_bytes),
+            self.reservation_microusd(role=role, request_bytes=self.max_request_bytes) for role in roles
         )
         if (
             self.tariff_sha256 != self.tariff.tariff_sha256
@@ -206,24 +225,35 @@ class CompilerModelProxyGrant(_ExactModel):
             raise ValueError("news_program_compile_proxy_call_cost_reservation_invalid")
         return self
 
-    def endpoint(self, role: Literal["task", "reflection"]) -> CompilerEndpointIdentity:
-        return self.task_endpoint if role == "task" else self.reflection_endpoint
+    def binding(self, role: CompilerRole) -> CompilerRoleBindingV3:
+        return {"task": self.task, "reflection": self.reflection, "metric_judge": self.metric_judge}[role]
 
-    def reservation_microusd(self, *, role: Literal["task", "reflection"], request_bytes: int) -> int:
+    def endpoint(self, role: CompilerRole) -> CompilerEndpointIdentity:
+        return self.binding(role).endpoint
+
+    def max_model_calls(self, role: CompilerRole) -> int:
+        return {
+            "task": self.max_task_model_calls,
+            "reflection": self.max_reflection_model_calls,
+            "metric_judge": self.max_metric_judge_model_calls,
+        }[role]
+
+    def reservation_microusd(self, *, role: CompilerRole, request_bytes: int) -> int:
+        binding = self.binding(role)
         return self.tariff.worst_case_cost_microusd(
             role=role,
             request_bytes=request_bytes,
-            max_output_tokens=(self.task_max_output_tokens if role == "task" else self.reflection_max_output_tokens),
+            max_output_tokens=binding.max_output_tokens,
         )
 
-    def timeout_seconds(self, role: Literal["task", "reflection"]) -> float:
-        return self.task_timeout_seconds if role == "task" else self.reflection_timeout_seconds
+    def timeout_seconds(self, role: CompilerRole) -> float:
+        return self.binding(role).timeout_seconds
 
 
 class CompilerProxyRequest(_ExactModel):
-    schema_version: Literal["tracefold.news.compiler_proxy_request.v2"] = PROXY_REQUEST_SCHEMA
+    schema_version: Literal["tracefold.news.compiler_proxy_request.v3"] = PROXY_REQUEST_SCHEMA
     grant_sha256: str = Field(pattern=_SHA256_PATTERN)
-    role: Literal["task", "reflection"]
+    role: CompilerRole
     sequence: int = Field(gt=0)
     args: tuple[Any, ...] = Field(default=(), repr=False)
     kwargs: dict[str, Any] = Field(default_factory=dict, repr=False)
@@ -234,7 +264,7 @@ class CompilerProxyRequest(_ExactModel):
         cls,
         *,
         grant_sha256: str,
-        role: Literal["task", "reflection"],
+        role: CompilerRole,
         sequence: int,
         args: Sequence[Any],
         kwargs: Mapping[str, Any],
@@ -266,8 +296,9 @@ class CompilerProxyRequest(_ExactModel):
 
 
 class CompilerProxyResponse(_ExactModel):
-    schema_version: Literal["tracefold.news.compiler_proxy_response.v2"] = PROXY_RESPONSE_SCHEMA
+    schema_version: Literal["tracefold.news.compiler_proxy_response.v3"] = PROXY_RESPONSE_SCHEMA
     request_sha256: str = Field(pattern=_SHA256_PATTERN)
+    provider_invoked: bool
     ok: bool
     output: Any | None = Field(default=None, repr=False)
     metadata: ExactProviderMetadata | None = None
@@ -279,6 +310,7 @@ class CompilerProxyResponse(_ExactModel):
         cls,
         *,
         request_sha256: str,
+        provider_invoked: bool,
         output: Any | None = None,
         metadata: ExactProviderMetadata | None = None,
         error_code: str | None = None,
@@ -288,6 +320,7 @@ class CompilerProxyResponse(_ExactModel):
         values = {
             "schema_version": PROXY_RESPONSE_SCHEMA,
             "request_sha256": request_sha256,
+            "provider_invoked": provider_invoked,
             "ok": ok,
             "output": safe_output,
             "metadata": metadata.model_dump(mode="json") if metadata is not None else None,
@@ -302,6 +335,10 @@ class CompilerProxyResponse(_ExactModel):
             raise ValueError("news_program_compile_proxy_response_hash_mismatch")
         if self.ok != (self.error_code is None):
             raise ValueError("news_program_compile_proxy_response_status_invalid")
+        if self.ok and not self.provider_invoked:
+            raise ValueError("news_program_compile_proxy_success_without_provider")
+        if not self.provider_invoked and self.metadata is not None:
+            raise ValueError("news_program_compile_proxy_nonprovider_metadata_forbidden")
         if self.ok and (self.metadata is None or self.output is None):
             raise ValueError("news_program_compile_proxy_success_incomplete")
         if not self.ok and self.output is not None:
@@ -312,14 +349,14 @@ class CompilerProxyResponse(_ExactModel):
 class CompilerProxyCallLeaf(_ExactModel):
     """Canonical trusted observation for one socket request."""
 
-    role: Literal["task", "reflection"]
+    role: CompilerRole
     sequence: int = Field(gt=0)
     request_sha256: str = Field(pattern=_SHA256_PATTERN)
     response_sha256: str = Field(pattern=_SHA256_PATTERN)
     runtime_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
     provider_invoked: bool
     request_bytes: int = Field(gt=0)
-    max_output_tokens: int = Field(ge=64, le=16_384)
+    max_output_tokens: int = Field(ge=64, le=32_000)
     reserved_cost_microusd: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
@@ -342,6 +379,8 @@ class CompilerProxyCallLeaf(_ExactModel):
         max_output_tokens: int,
         reserved_cost_microusd: int,
     ) -> CompilerProxyCallLeaf:
+        if provider_invoked is not response.provider_invoked:
+            raise ValueError("news_program_compile_proxy_provider_invocation_mismatch")
         metadata = response.metadata
         values = {
             "role": request.role,
@@ -390,10 +429,17 @@ class CompilerProxyCallLeaf(_ExactModel):
 class CompilerProxyExecutionReceipt(_ExactModel):
     """Trusted server observations used to cross-check runner counters."""
 
-    schema_version: Literal["tracefold.news.compiler_proxy_execution.v2"] = PROXY_EXECUTION_SCHEMA
+    schema_version: Literal["tracefold.news.compiler_proxy_execution.v3"] = PROXY_EXECUTION_SCHEMA
     grant_sha256: str = Field(pattern=_SHA256_PATTERN)
     task_model_calls: int = Field(ge=0)
     reflection_model_calls: int = Field(ge=0)
+    metric_judge_model_calls: int = Field(ge=0)
+    task_cost_microusd: int = Field(ge=0)
+    reflection_cost_microusd: int = Field(ge=0)
+    metric_judge_cost_microusd: int = Field(ge=0)
+    task_failures: int = Field(ge=0)
+    reflection_failures: int = Field(ge=0)
+    metric_judge_failures: int = Field(ge=0)
     actual_cost_microusd: int = Field(ge=0)
     reserved_cost_microusd: int = Field(ge=0)
     tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -411,6 +457,13 @@ class CompilerProxyExecutionReceipt(_ExactModel):
         grant_sha256: str,
         task_model_calls: int,
         reflection_model_calls: int,
+        metric_judge_model_calls: int,
+        task_cost_microusd: int,
+        reflection_cost_microusd: int,
+        metric_judge_cost_microusd: int,
+        task_failures: int,
+        reflection_failures: int,
+        metric_judge_failures: int,
         actual_cost_microusd: int,
         reserved_cost_microusd: int,
         tariff_sha256: str,
@@ -424,6 +477,13 @@ class CompilerProxyExecutionReceipt(_ExactModel):
             "grant_sha256": grant_sha256,
             "task_model_calls": task_model_calls,
             "reflection_model_calls": reflection_model_calls,
+            "metric_judge_model_calls": metric_judge_model_calls,
+            "task_cost_microusd": task_cost_microusd,
+            "reflection_cost_microusd": reflection_cost_microusd,
+            "metric_judge_cost_microusd": metric_judge_cost_microusd,
+            "task_failures": task_failures,
+            "reflection_failures": reflection_failures,
+            "metric_judge_failures": metric_judge_failures,
             "actual_cost_microusd": actual_cost_microusd,
             "reserved_cost_microusd": reserved_cost_microusd,
             "tariff_sha256": tariff_sha256,
@@ -448,6 +508,20 @@ class CompilerProxyExecutionReceipt(_ExactModel):
             or self.task_model_calls != sum(call.provider_invoked and call.role == "task" for call in self.calls)
             or self.reflection_model_calls
             != sum(call.provider_invoked and call.role == "reflection" for call in self.calls)
+            or self.metric_judge_model_calls
+            != sum(call.provider_invoked and call.role == "metric_judge" for call in self.calls)
+            or self.task_cost_microusd != sum(call.provider_cost_microusd for call in self.calls if call.role == "task")
+            or self.reflection_cost_microusd
+            != sum(call.provider_cost_microusd for call in self.calls if call.role == "reflection")
+            or self.metric_judge_cost_microusd
+            != sum(call.provider_cost_microusd for call in self.calls if call.role == "metric_judge")
+            or self.task_failures != sum(call.error_code is not None and call.role == "task" for call in self.calls)
+            or self.reflection_failures
+            != sum(call.error_code is not None and call.role == "reflection" for call in self.calls)
+            or self.metric_judge_failures
+            != sum(call.error_code is not None and call.role == "metric_judge" for call in self.calls)
+            or self.actual_cost_microusd
+            != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
             or self.actual_cost_microusd != sum(call.provider_cost_microusd for call in self.calls)
             or self.reserved_cost_microusd != sum(call.reserved_cost_microusd for call in self.calls)
             or self.error_codes != tuple(call.error_code for call in self.calls if call.error_code is not None)
@@ -457,7 +531,7 @@ class CompilerProxyExecutionReceipt(_ExactModel):
 
 
 class CompilerProxyReadyReceipt(_ExactModel):
-    schema_version: Literal["tracefold.news.compiler_proxy_ready.v2"] = PROXY_READY_SCHEMA
+    schema_version: Literal["tracefold.news.compiler_proxy_ready.v3"] = PROXY_READY_SCHEMA
     grant_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_config_sha256: str = Field(pattern=_SHA256_PATTERN)
     tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -519,7 +593,7 @@ def build_proxy_provider_lm(config: CompilerProviderEndpointSecret) -> Any:
         api_base=config.api_base,
         timeout=config.timeout,
         max_tokens=config.max_tokens,
-        temperature=0,
+        temperature=config.temperature,
         cache=False,
         num_retries=0,
         **extras,
@@ -539,27 +613,27 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
         *,
         socket_path: Path,
         grant: CompilerModelProxyGrant,
-        role: Literal["task", "reflection"],
-        timeout_seconds: float,
+        role: CompilerRole,
     ) -> None:
         self._socket_path = _exact_socket_path(socket_path, require_existing=True)
         self._grant = grant
         self._role = role
-        self._timeout_seconds = max(0.1, float(timeout_seconds))
+        self._timeout_seconds = grant.timeout_seconds(role)
         self._sequence = 0
         self._capture: ExactProviderCallCapture | None = None
-        identity = grant.endpoint(role)
-        max_tokens = grant.task_max_output_tokens if role == "task" else grant.reflection_max_output_tokens
+        binding = grant.binding(role)
+        identity = binding.endpoint
         super().__init__(
             model=identity.model,
             model_type="chat",
-            temperature=0,
-            max_tokens=max_tokens,
+            temperature=binding.temperature,
+            max_tokens=binding.max_output_tokens,
             cache=False,
             num_retries=0,
             timeout=grant.timeout_seconds(role),
         )
         self.tracefold_compiler_endpoint_identity = identity
+        self.tracefold_compiler_role_binding = binding
 
     @contextmanager
     def observe_exact_call(self) -> Iterator[ExactProviderCallCapture]:
@@ -591,17 +665,27 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
         )
         if response.metadata is not None and self._capture is not None:
             self._capture.record_metadata(response.metadata)
+        elif response.provider_invoked and self._capture is not None:
+            # The trusted proxy knows a physical call happened even when the provider failed before returning
+            # usage metadata. Preserve that fact for the runner's per-role call accounting; zero usage/cost is
+            # explicit unavailability, not an assertion that the provider call was free.
+            self._capture.record_metadata(
+                ExactProviderMetadata(
+                    response_model=self._grant.endpoint(self._role).model,
+                    total_tokens=0,
+                    provider_cost_microusd=0,
+                )
+            )
         if not response.ok:
             raise CompilerProxyError(str(response.error_code))
         return response.output
 
     def _strip_trusted_owned_options(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         safe = dict(kwargs)
+        binding = self._grant.binding(self._role)
         expected: dict[str, Any] = {
-            "max_tokens": (
-                self._grant.task_max_output_tokens if self._role == "task" else self._grant.reflection_max_output_tokens
-            ),
-            "temperature": 0,
+            "max_tokens": binding.max_output_tokens,
+            "temperature": binding.temperature,
             "cache": False,
             "timeout": self._grant.timeout_seconds(self._role),
             "num_retries": 0,
@@ -611,7 +695,12 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
                 continue
             supplied = safe.pop(name)
             if name == "max_tokens":
-                matches = isinstance(supplied, int) and not isinstance(supplied, bool) and 64 <= supplied <= trusted
+                matches = (
+                    isinstance(supplied, int)
+                    and not isinstance(supplied, bool)
+                    and 64 <= supplied <= trusted
+                    and (self._role != "metric_judge" or supplied == trusted)
+                )
             elif name in {"temperature", "timeout"}:
                 matches = isinstance(supplied, int | float) and float(supplied) == trusted
             else:
@@ -629,11 +718,19 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
 class TrustedCompilerModelProxy:
     """Sequential host server enforcing the grant against exact provider calls."""
 
-    def __init__(self, *, grant: CompilerModelProxyGrant, task_lm: Any, reflection_lm: Any) -> None:
+    def __init__(
+        self,
+        *,
+        grant: CompilerModelProxyGrant,
+        task_lm: Any,
+        reflection_lm: Any,
+        metric_judge_lm: Any,
+    ) -> None:
         self._grant = grant
-        self._lms: dict[Literal["task", "reflection"], Any] = {
+        self._lms: dict[CompilerRole, Any] = {
             "task": task_lm,
             "reflection": reflection_lm,
+            "metric_judge": metric_judge_lm,
         }
         for role, lm in self._lms.items():
             if getattr(lm, "cache", True) is not False or int(getattr(lm, "num_retries", -1)) != 0:
@@ -651,8 +748,9 @@ class TrustedCompilerModelProxy:
         self._response_sha256s: list[str] = []
         self._error_codes: list[str] = []
         self._calls: list[CompilerProxyCallLeaf] = []
-        self._task_calls = 0
-        self._reflection_calls = 0
+        self._role_calls: dict[CompilerRole, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
+        self._role_costs: dict[CompilerRole, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
+        self._role_failures: dict[CompilerRole, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
         self._actual_cost_microusd = 0
         self._imputed_cost_calls = 0
         self._reserved_cost_microusd = 0
@@ -693,17 +791,27 @@ class TrustedCompilerModelProxy:
     def execution_receipt(self) -> CompilerProxyExecutionReceipt:
         if self._thread is not None and self._thread.is_alive():
             raise ValueError("news_program_compile_proxy_receipt_before_shutdown")
+        calls = tuple(self._calls)
         return CompilerProxyExecutionReceipt.issue(
             grant_sha256=self._grant.grant_sha256,
-            task_model_calls=self._task_calls,
-            reflection_model_calls=self._reflection_calls,
-            actual_cost_microusd=self._actual_cost_microusd,
-            reserved_cost_microusd=self._reserved_cost_microusd,
+            task_model_calls=sum(call.provider_invoked and call.role == "task" for call in calls),
+            reflection_model_calls=sum(call.provider_invoked and call.role == "reflection" for call in calls),
+            metric_judge_model_calls=sum(call.provider_invoked and call.role == "metric_judge" for call in calls),
+            task_cost_microusd=sum(call.provider_cost_microusd for call in calls if call.role == "task"),
+            reflection_cost_microusd=sum(call.provider_cost_microusd for call in calls if call.role == "reflection"),
+            metric_judge_cost_microusd=sum(
+                call.provider_cost_microusd for call in calls if call.role == "metric_judge"
+            ),
+            task_failures=sum(call.error_code is not None and call.role == "task" for call in calls),
+            reflection_failures=sum(call.error_code is not None and call.role == "reflection" for call in calls),
+            metric_judge_failures=sum(call.error_code is not None and call.role == "metric_judge" for call in calls),
+            actual_cost_microusd=sum(call.provider_cost_microusd for call in calls),
+            reserved_cost_microusd=sum(call.reserved_cost_microusd for call in calls),
             tariff_sha256=self._grant.tariff_sha256,
-            request_sha256s=self._request_sha256s,
-            response_sha256s=self._response_sha256s,
-            error_codes=self._error_codes,
-            calls=self._calls,
+            request_sha256s=[call.request_sha256 for call in calls],
+            response_sha256s=[call.response_sha256 for call in calls],
+            error_codes=[call.error_code for call in calls if call.error_code is not None],
+            calls=calls,
         )
 
     def _serve(self) -> None:
@@ -738,13 +846,17 @@ class TrustedCompilerModelProxy:
         provider_invoked = False
         reserved = 0
         if request.grant_sha256 != self._grant.grant_sha256:
-            response = self._failure(request, "news_program_compile_proxy_grant_mismatch")
+            response = self._failure(request, "news_program_compile_proxy_grant_mismatch", provider_invoked=False)
         elif (request.role, request.sequence) in self._seen_sequences:
-            response = self._failure(request, "news_program_compile_proxy_sequence_reused")
-        elif self._task_calls + self._reflection_calls >= self._grant.max_model_calls:
-            response = self._failure(request, "news_program_compile_proxy_call_budget_exhausted")
+            response = self._failure(request, "news_program_compile_proxy_sequence_reused", provider_invoked=False)
+        elif self._role_calls[request.role] >= self._grant.max_model_calls(request.role):
+            response = self._failure(
+                request, "news_program_compile_proxy_call_budget_exhausted", provider_invoked=False
+            )
         elif self._reserved_cost_microusd + reservation > self._grant.max_cost_microusd:
-            response = self._failure(request, "news_program_compile_proxy_cost_reservation_exhausted")
+            response = self._failure(
+                request, "news_program_compile_proxy_cost_reservation_exhausted", provider_invoked=False
+            )
         else:
             self._seen_sequences.add((request.role, request.sequence))
             self._reserved_cost_microusd += reservation
@@ -756,6 +868,7 @@ class TrustedCompilerModelProxy:
             response = self._failure(
                 request,
                 "news_program_compile_proxy_response_too_large",
+                provider_invoked=provider_invoked,
                 metadata=response.metadata,
             )
             encoded = canonical_json(response.model_dump(mode="json")).encode("utf-8")
@@ -767,11 +880,7 @@ class TrustedCompilerModelProxy:
                 endpoint=self._grant.endpoint(request.role),
                 provider_invoked=provider_invoked,
                 request_bytes=len(request_payload),
-                max_output_tokens=(
-                    self._grant.task_max_output_tokens
-                    if request.role == "task"
-                    else self._grant.reflection_max_output_tokens
-                ),
+                max_output_tokens=self._grant.binding(request.role).max_output_tokens,
                 reserved_cost_microusd=reserved,
             )
         )
@@ -784,27 +893,29 @@ class TrustedCompilerModelProxy:
         reservation_microusd: int,
     ) -> CompilerProxyResponse:
         lm = self._lms[request.role]
-        if request.role == "task":
-            self._task_calls += 1
-        else:
-            self._reflection_calls += 1
+        self._role_calls[request.role] += 1
         metadata: ExactProviderMetadata | None = None
         try:
             with lm.observe_exact_call() as capture:
                 output = lm(*request.args, **request.kwargs)
             metadata = capture.require_exactly_one()
         except PredictorAdapterError:
-            return self._failure(request, "news_program_compile_proxy_provider_metadata_unavailable")
+            return self._failure(
+                request,
+                "news_program_compile_proxy_provider_metadata_unavailable",
+                provider_invoked=True,
+            )
         except Exception:
             try:
                 metadata = capture.require_exactly_one()
             except (PredictorAdapterError, UnboundLocalError):
                 metadata = None
             if metadata is not None:
-                self._charge(metadata)
+                self._charge(request.role, metadata)
             return self._failure(
                 request,
                 "news_program_compile_proxy_model_call_failed",
+                provider_invoked=True,
                 metadata=metadata,
             )
         # A provider that reports no price is the normal case here, not an anomaly: neither the local
@@ -817,11 +928,12 @@ class TrustedCompilerModelProxy:
         if imputed:
             metadata = metadata.model_copy(update={"provider_cost_microusd": reservation_microusd})
             self._imputed_cost_calls += 1
-        self._charge(metadata)
+        self._charge(request.role, metadata)
         if metadata.total_tokens <= 0:
             return self._failure(
                 request,
                 "news_program_compile_proxy_provider_usage_unavailable",
+                provider_invoked=True,
                 metadata=metadata,
             )
         provider_cost_microusd = cast(int, metadata.provider_cost_microusd)
@@ -829,11 +941,13 @@ class TrustedCompilerModelProxy:
             return self._failure(
                 request,
                 "news_program_compile_proxy_call_cost_reservation_exceeded",
+                provider_invoked=True,
                 metadata=metadata,
             )
         try:
             return CompilerProxyResponse.issue(
                 request_sha256=request.request_sha256,
+                provider_invoked=True,
                 output=output,
                 metadata=metadata,
             )
@@ -841,23 +955,28 @@ class TrustedCompilerModelProxy:
             return self._failure(
                 request,
                 "news_program_compile_proxy_output_invalid",
+                provider_invoked=True,
                 metadata=metadata,
             )
 
-    def _charge(self, metadata: ExactProviderMetadata) -> None:
+    def _charge(self, role: CompilerRole, metadata: ExactProviderMetadata) -> None:
         if metadata.provider_cost_microusd is not None:
             self._actual_cost_microusd += metadata.provider_cost_microusd
+            self._role_costs[role] += metadata.provider_cost_microusd
 
     def _failure(
         self,
         request: CompilerProxyRequest,
         code: str,
         *,
+        provider_invoked: bool,
         metadata: ExactProviderMetadata | None = None,
     ) -> CompilerProxyResponse:
         self._error_codes.append(code)
+        self._role_failures[request.role] += 1
         return CompilerProxyResponse.issue(
             request_sha256=request.request_sha256,
+            provider_invoked=provider_invoked,
             metadata=metadata,
             error_code=code,
         )

@@ -52,10 +52,6 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         CompileRequest,
         ProgramCompiler,
     )
-    from tracefold.news.agents.program_compiler_proxy import (
-        CompilerModelProxyGrant,
-        CompilerProxyLM,
-    )
     from tracefold.news.agents.program_compiler_sandbox import (
         CompilerSandboxPolicy,
         apply_compiler_resource_limits,
@@ -64,7 +60,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     )
     from tracefold.news.agents.program_compiler_security import (
         CompileInputBundle,
-        CompilerRunnerReceiptsV2,
+        CompilerRunnerReceiptsV3,
     )
     from tracefold.news.agents.program_compiler_source import (
         compiler_source_sha256,
@@ -98,7 +94,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         or parent.state_sha256 != bundle.parent_state_sha256
         or parent.parent_program_sha256 is not None
         or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.semantic_program.factory_v3"
+        or parent.factory_id != "tracefold.news.semantic_program.factory_v4"
         or parent.quality_kernel.dependency_lock_sha256 != bundle.compiler_lock_sha256
         or policy.policy_sha256 != bundle.sandbox_policy_sha256
         or compiler_source_sha256() != bundle.compiler_source_sha256
@@ -113,23 +109,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     )
     if eligible_demo_bank.eligible_demo_bank_root_sha256 != bundle.eligible_demo_bank_root_sha256:
         raise ValueError("news_program_compile_runner_demo_bank_root_mismatch")
-    grant = CompilerModelProxyGrant.issue(
-        task_endpoint=bundle.task_endpoint,
-        reflection_endpoint=bundle.reflection_endpoint,
-        max_model_calls=bundle.budget.max_task_model_calls,
-        max_cost_microusd=bundle.budget.max_cost_microusd,
-        tariff=bundle.proxy_tariff,
-        task_max_output_tokens=bundle.task_max_output_tokens,
-        reflection_max_output_tokens=bundle.reflection_max_output_tokens,
-        task_timeout_seconds=bundle.task_timeout_seconds,
-        reflection_timeout_seconds=bundle.reflection_timeout_seconds,
-        proxy_config_sha256=bundle.proxy_config_sha256,
-        proxy_source_sha256=bundle.proxy_source_sha256,
-    )
-    if grant.grant_sha256 != bundle.proxy_grant_sha256:
-        raise ValueError("news_program_compile_runner_proxy_grant_mismatch")
-    if grant.max_call_cost_microusd != bundle.budget.max_call_cost_microusd:
-        raise ValueError("news_program_compile_runner_proxy_reservation_mismatch")
+    grant, task_lm, reflection_lm, judge = _build_compiler_proxy_runtime(bundle, proxy_path)
 
     package_root = Path(__file__).resolve().parents[3]
     readonly_roots = tuple(
@@ -161,27 +141,19 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         # Same trusted rates the proxy reserves against. Without it `_BudgetMeter` still fails closed on the
         # `None` cost every endpoint this project uses actually returns.
         tariff=grant.tariff,
-        task_lm=CompilerProxyLM(
-            socket_path=proxy_path,
-            grant=grant,
-            role="task",
-            timeout_seconds=policy.wall_timeout_seconds,
-        ),
-        reflection_lm=CompilerProxyLM(
-            socket_path=proxy_path,
-            grant=grant,
-            role="reflection",
-            timeout_seconds=policy.wall_timeout_seconds,
-        ),
+        task_lm=task_lm,
+        reflection_lm=reflection_lm,
+        judge=judge,
     )
     result = compiler.compile(request)
-    receipts = CompilerRunnerReceiptsV2.issue(
+    receipts = CompilerRunnerReceiptsV3.issue(
         input_bundle_sha256=bundle.bundle_sha256,
         parent_program_sha256=parent.program_sha256,
         parent_state_sha256=parent.state_sha256,
         proxy_grant_sha256=grant.grant_sha256,
-        task_endpoint_identity_sha256=bundle.task_endpoint.binding_sha256,
-        reflection_endpoint_identity_sha256=bundle.reflection_endpoint.binding_sha256,
+        task_endpoint_identity_sha256=bundle.task.endpoint.binding_sha256,
+        reflection_endpoint_identity_sha256=bundle.reflection.endpoint.binding_sha256,
+        metric_judge_endpoint_identity_sha256=bundle.metric_judge.endpoint.binding_sha256,
         compiler_source_sha256=compiler_source_sha256(),
         proxy_source_sha256=proxy_source_sha256(),
         compiler_lock_sha256=bundle.compiler_lock_sha256,
@@ -195,6 +167,12 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         metric_calls=result.metric_calls,
         task_model_calls=result.task_model_calls,
         reflection_model_calls=result.reflection_model_calls,
+        metric_judge_attempts=result.metric_judge_attempts,
+        metric_judge_model_calls=result.metric_judge_model_calls,
+        metric_judge_failures=result.metric_judge_failures,
+        task_cost_microusd=result.task_cost_microusd,
+        reflection_cost_microusd=result.reflection_cost_microusd,
+        metric_judge_cost_microusd=result.metric_judge_cost_microusd,
         actual_cost_microusd=result.actual_cost_microusd,
     )
     (output_path / "patch.json").write_text(
@@ -205,6 +183,42 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         canonical_json(receipts.model_dump(mode="json")),
         encoding="utf-8",
     )
+
+
+def _build_compiler_proxy_runtime(bundle: Any, proxy_path: Path) -> tuple[Any, Any, Any, Any]:
+    """Rebuild the sealed three-role grant and clients used by the container runner."""
+
+    from tracefold.news.agents.program_compiler_proxy import CompilerModelProxyGrant, CompilerProxyLM
+    from tracefold.news.agents.program_compiler_security import CompileInputBundle
+    from tracefold.news.agents.program_judge import CardEquivalenceJudge
+
+    parsed = bundle if isinstance(bundle, CompileInputBundle) else CompileInputBundle.model_validate(bundle)
+    grant = CompilerModelProxyGrant.issue(
+        task=parsed.task,
+        reflection=parsed.reflection,
+        metric_judge=parsed.metric_judge,
+        max_task_model_calls=parsed.budget.max_task_model_calls,
+        max_reflection_model_calls=parsed.budget.max_reflection_model_calls,
+        max_metric_judge_model_calls=parsed.budget.max_metric_judge_model_calls,
+        max_cost_microusd=parsed.budget.max_cost_microusd,
+        tariff=parsed.proxy_tariff,
+        proxy_config_sha256=parsed.proxy_config_sha256,
+        proxy_source_sha256=parsed.proxy_source_sha256,
+    )
+    if grant.grant_sha256 != parsed.proxy_grant_sha256:
+        raise ValueError("news_program_compile_runner_proxy_grant_mismatch")
+    if grant.max_call_cost_microusd != parsed.budget.max_call_cost_microusd:
+        raise ValueError("news_program_compile_runner_proxy_reservation_mismatch")
+    task_lm = CompilerProxyLM(socket_path=proxy_path, grant=grant, role="task")
+    reflection_lm = CompilerProxyLM(socket_path=proxy_path, grant=grant, role="reflection")
+    metric_judge_lm = CompilerProxyLM(socket_path=proxy_path, grant=grant, role="metric_judge")
+    judge = CardEquivalenceJudge(
+        metric_judge_lm,
+        max_tokens=parsed.metric_judge.max_output_tokens,
+        max_model_calls=parsed.budget.max_metric_judge_model_calls,
+        require_exact_accounting=True,
+    )
+    return grant, task_lm, reflection_lm, judge
 
 
 def _parse_exact_args(argv: tuple[str, ...]) -> tuple[Path, Path, Path, Path]:

@@ -10,7 +10,6 @@ import pytest
 
 from tracefold.news.agents.program_compiler import (
     CompileBudget,
-    CompileBudgetExceeded,
     CompileRequest,
     DevelopmentEpisode,
     ProgramCompiler,
@@ -32,7 +31,13 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.semantic_contract import ToldLedgerEntry
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.semantic_contract import (
+    EditorialEnvelope,
+    ScoredJudgment,
+    ToldLedgerEntry,
+    TradeRelevanceV1,
+)
 
 
 def _frozen_policy_projection() -> dict[str, object]:
@@ -48,10 +53,81 @@ def _frozen_policy_projection() -> dict[str, object]:
 
     values = DEFAULT_POLICY.as_dict()
     return {
-        "policy_version": "news_triage_policy_v8",
+        "policy_version": TRIAGE_POLICY_VERSION,
         "policy_values": values,
         "policy_sha256": canonical_sha(values),
     }
+
+
+def _relevance(**overrides: Any) -> TradeRelevanceV1:
+    values: dict[str, Any] = {
+        "impact_breadth": "single_instrument",
+        "tradability": "direct",
+        "surprise": "material_vs_expectation",
+        "development_delta": "state_change",
+        "channels": ["earnings_cashflow"],
+        "affected_markets": ["single_asset"],
+        "reader_value": "realtime",
+    }
+    values.update(overrides)
+    return TradeRelevanceV1.model_validate(values)
+
+
+def _metric_verdict(**overrides: Any) -> dict[str, Any]:
+    verdict: dict[str, Any] = {
+        "decision": "push",
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "filing",
+        "assets": [{"symbol": "ABC", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "actionable": True,
+        "confidence": 0.8,
+        "audience": "us_equity",
+        "headline_zh": "发行人提交重大更新",
+        "title_zh": "",
+        "why_zh": "时间表发生变化。",
+    }
+    verdict.update(overrides)
+    return verdict
+
+
+def _judgment(*, relevance: TradeRelevanceV1 | None = None, **verdict: Any) -> ScoredJudgment:
+    return ScoredJudgment.issue(
+        verdict=TriageVerdict.model_validate(_metric_verdict(**verdict)),
+        editorial=EditorialEnvelope.issue(
+            editorial_origin="model",
+            relevance=relevance or _relevance(),
+        ),
+    )
+
+
+class _NoopJudge:
+    def __init__(self) -> None:
+        self.identity = {"judge_id": "test/noop", "failure_cache": False}
+        self.stats = {
+            "attempts": 0,
+            "model_calls": 0,
+            "cache_entries": 0,
+            "failures": 0,
+            "actual_cost_microusd": 0,
+        }
+
+    def retains(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+
+class _EvidenceJudge(_NoopJudge):
+    def __init__(self, *, supported: bool) -> None:
+        super().__init__()
+        self.supported = supported
+        self.evidence: list[str] = []
+
+    def facts_supported(self, evidence_json: str, _candidate: dict[str, Any]) -> bool:
+        self.evidence.append(evidence_json)
+        return self.supported
 
 
 class _MeteredFakeLM:
@@ -151,7 +227,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
     )
     return CompileRequest(
         development_dataset_sha="d" * 64,
-        review_rubric_version="news_review_v2",
+        review_rubric_version="news_review_v4",
         episodes=tuple(
             {
                 "case_id": f"case-{cluster}-{name}",
@@ -162,12 +238,21 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
                     "gate": {
                         "grounded_assets": ["ABC"],
                         "watchlist_symbols": [],
-                        "provider_score": 90,
-                        "priority": "normal",
                         "admission": "candidate",
                     },
                     "storyline": {"title": "Issuer files a material update", "family": "filing"},
                     "seen": [],
+                    "told": [],
+                    "recorded_decision_result": {
+                        "final": "push",
+                        "rule_baseline": "push",
+                        "override_rule": None,
+                        "throttled_by": None,
+                        "watchlist_hits": [],
+                        "seen_similarity": None,
+                        "seen_against": -1,
+                        "seen_scope": "",
+                    },
                     **_frozen_policy_projection(),
                 },
                 "accepted_review": {
@@ -176,11 +261,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
                     "novelty": {"judgment": "new_fact", "duplicate_of": ""},
                     "expected_correction": "The direction must follow the filing's actual mechanism.",
                 },
-                "production_verdict": {
-                    "decision": "push",
-                    "novelty": "new_fact",
-                    "direction": "neutral",
-                },
+                "production_judgment": _judgment(direction="neutral").model_dump(mode="json"),
             }
             # Two clusters so the split is possible, and both halves carry every required stratum:
             # a safety/positive case and a safety/negative one. Anything less fails closed.
@@ -190,6 +271,8 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
         budget=CompileBudget(
             max_metric_calls=3,
             max_task_model_calls=max_calls,
+            max_reflection_model_calls=4,
+            max_metric_judge_model_calls=16,
             max_cost_microusd=20,
             max_call_cost_microusd=5,
             seed=17,
@@ -204,6 +287,7 @@ def _compiler(base: Any | None = None) -> ProgramCompiler:
         task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
+        judge=_NoopJudge(),
     )
 
 
@@ -213,6 +297,8 @@ def test_compiler_budget_uses_exact_call_metadata_not_shared_history() -> None:
         CompileBudget(
             max_metric_calls=1,
             max_task_model_calls=1,
+            max_reflection_model_calls=1,
+            max_metric_judge_model_calls=1,
             max_cost_microusd=10,
             max_call_cost_microusd=10,
             seed=17,
@@ -235,6 +321,8 @@ def test_compiler_charges_a_provider_response_even_when_the_lm_raises_afterward(
         CompileBudget(
             max_metric_calls=1,
             max_task_model_calls=1,
+            max_reflection_model_calls=1,
+            max_metric_judge_model_calls=1,
             max_cost_microusd=10,
             max_call_cost_microusd=10,
             seed=17,
@@ -258,7 +346,7 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.patch.learning_epoch == "program_v5"
+    assert result.patch.learning_epoch == "program_v6"
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     assert result.patch.patch_sha256 == result.patch.computed_sha256()
     assert [strategy.predictor for strategy in result.patch.learned_strategies] == [
@@ -268,6 +356,7 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert result.metric_calls == 2
     assert result.task_model_calls == 1
     assert result.reflection_model_calls == 1
+    assert result.metric_judge_model_calls == 0
     assert result.actual_cost_microusd == 5
     assert result.failure_cluster_ids == ("cluster-1", "cluster-2")
     assert result.target_dimensions == ("direction", "should_push")
@@ -292,21 +381,13 @@ def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_ex
         "novelty": {"judgment": "new_fact", "duplicate_of": ""},
         "expected_correction": "",
     }
-    episode["production_verdict"] = {
-        "novelty": "new_fact",
-        "restates": -1,
-        "event_type": "filing",
-        "assets": [],
-        "direction": "neutral",
-        "scope": "single_name",
-        "magnitude": 1,
-        "actionable": True,
-        "confidence": 0.8,
-        "decision": "push",
-        "audience": "us_equity",
-        "headline_zh": "发行人提交重大更新",
-        "why_zh": "时间表发生变化。",
-    }
+    episode["production_judgment"] = _judgment(
+        assets=[],
+        direction="neutral",
+        magnitude=1,
+        headline_zh="发行人提交重大更新",
+        why_zh="时间表发生变化。",
+    ).model_dump(mode="json")
     case = {
         "case_id": episode["case_id"],
         "cluster_id": episode["cluster_id"],
@@ -314,7 +395,7 @@ def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_ex
     }
     payload = {
         "role": "development",
-        "learning_epoch": "program_v5",
+        "learning_epoch": "program_v6",
         "cases": [case],
     }
     dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})
@@ -338,9 +419,11 @@ def test_non_root_program_cannot_be_a_compiler_parent() -> None:
         _compiler(non_root)
 
 
-def test_task_and_reflection_calls_share_one_explicit_call_budget() -> None:
-    with pytest.raises(CompileBudgetExceeded, match="task_model_call_budget_exhausted"):
-        _compiler().compile(_request(max_calls=1))
+def test_task_and_reflection_calls_have_independent_explicit_budgets() -> None:
+    result = _compiler().compile(_request(max_calls=1))
+
+    assert result.task_model_calls == 1
+    assert result.reflection_model_calls == 1
 
 
 def test_non_json_trajectory_value_fails_closed() -> None:
@@ -356,6 +439,7 @@ def test_non_json_trajectory_value_fails_closed() -> None:
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
         optimizer_factory=_UnsafeGEPA,
+        judge=_NoopJudge(),
     )
 
     with pytest.raises(TypeError, match="non_json_receipt_value"):
@@ -375,6 +459,7 @@ def test_nonfinite_trajectory_value_fails_closed() -> None:
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
         optimizer_factory=_NonfiniteGEPA,
+        judge=_NoopJudge(),
     )
 
     with pytest.raises(TypeError, match="nonfinite_receipt_value"):
@@ -386,8 +471,8 @@ def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
         del args, kwargs
         return dspy.Prediction(score=0.5, feedback="changed")
 
-    original = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v2")
-    changed = _metric_receipt(changed_metric, review_rubric_version="news_review_v2")
+    original = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v4")
+    changed = _metric_receipt(changed_metric, review_rubric_version="news_review_v4")
 
     assert original["metric_id"] == changed["metric_id"]
     assert canonical_sha(original) != canonical_sha(changed)
@@ -456,13 +541,11 @@ def _metric_gold(**overrides: Any) -> Any:
             "dimensions": {},
             "novelty": {"judgment": "uncertain", "duplicate_of": ""},
         },
-        "production_verdict": {},
+        "production_judgment": None,
         "policy_metric": {
             "gate": {
                 "grounded_assets": ["ABC"],
                 "watchlist_symbols": [],
-                "provider_score": 90,
-                "priority": "normal",
                 "admission": "candidate",
             },
             "storyline": {"title": "Issuer files a material update", "family": "filing"},
@@ -479,29 +562,18 @@ def _metric_gold(**overrides: Any) -> Any:
     return dspy.Example(**gold)
 
 
-def _metric_verdict(**overrides: Any) -> dict[str, Any]:
-    verdict: dict[str, Any] = {
-        "decision": "push",
-        "novelty": "new_fact",
-        "restates": -1,
-        "event_type": "filing",
-        "assets": [{"symbol": "ABC", "role": "primary"}],
-        "direction": "bullish",
-        "scope": "single_name",
-        "magnitude": 2,
-        "actionable": True,
-        "confidence": 0.8,
-        "audience": "us_equity",
-        "headline_zh": "发行人提交重大更新",
-        "title_zh": "",
-        "why_zh": "时间表发生变化。",
-    }
-    verdict.update(overrides)
-    return verdict
-
-
 def _score(gold: Any, verdict: dict[str, Any], pred_name: str | None = None) -> Any:
-    return accepted_review_metric(gold, dspy.Prediction(verdict=verdict), None, pred_name, None, None)
+    return accepted_review_metric(
+        gold,
+        dspy.Prediction(
+            verdict=verdict,
+            editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
+        ),
+        None,
+        pred_name,
+        None,
+        None,
+    )
 
 
 def test_metric_scores_the_production_action_not_the_models_intent() -> None:
@@ -551,7 +623,7 @@ def test_metric_hard_gates_cannot_be_averaged_away_by_retention_anchors() -> Non
             "should_push": "must_push",
             "dimensions": {"headline_fidelity": "pass", "why_support": "pass", "direction": "pass"},
         },
-        production_verdict=_metric_verdict(),
+        production_judgment=_judgment(),
     )
     # Four accepted dimensions agree, but the reader never gets a fact the reviewer marked `must_push`.
     missed = _metric_verdict(event_type="noise", magnitude=0, actionable=False, decision="drop")
@@ -567,17 +639,60 @@ def test_metric_rejects_an_ungrounded_primary_asset_outright() -> None:
     assert result.score == 0.0 and "XYZ" in result.feedback
 
 
-def test_metric_excludes_unlabelled_dimensions_from_their_component_denominator() -> None:
-    """An `uncertain` label is not a pass. Counting it as one would dilute the failures beside it."""
+def test_factual_failure_must_be_repaired_against_evidence_not_merely_reworded() -> None:
+    gold = _metric_gold(
+        accepted_review={
+            "should_push": "should_push",
+            "dimensions": {"factual_fidelity": "fail"},
+            "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+        },
+        production_judgment=_judgment(),
+    ).copy(card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>")
+    changed = _metric_verdict(headline_zh="发行人已提交重大更新")
+    prediction = dspy.Prediction(
+        verdict=changed,
+        editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
+    )
+    rejecting = _EvidenceJudge(supported=False)
+    accepting = _EvidenceJudge(supported=True)
 
-    production = _metric_verdict(direction="neutral")
+    rejected = accepted_review_metric(gold, prediction, judge=rejecting)
+    verified = accepted_review_metric(gold, prediction, judge=accepting)
+
+    assert rejected.hard_gate == "factual_contradiction" and rejected.score == 0.0
+    assert rejecting.evidence == [gold.card_evidence_json]
+    assert verified.hard_gate == "" and verified.score == 1.0
+    assert accepting.evidence == [gold.card_evidence_json]
+
+
+def test_factual_failure_fails_closed_without_an_evidence_judge() -> None:
+    gold = _metric_gold(
+        accepted_review={
+            "should_push": "should_push",
+            "dimensions": {"factual_fidelity": "fail"},
+            "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+        },
+        production_judgment=_judgment(),
+    ).copy(card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>")
+    changed = _metric_verdict(headline_zh="任意改写不能证明事实已经修复")
+
+    outcome = _score(gold, changed)
+
+    assert outcome.hard_gate == "factual_contradiction"
+    assert "could not be verified" in outcome.feedback
+
+
+def test_metric_does_not_guess_a_failed_dimension_without_exact_gold() -> None:
+    """A rejected value and no replacement value do not reveal the correct answer."""
+
     labelled = _metric_gold(
         accepted_review={"should_push": "uncertain", "dimensions": {"direction": "fail", "magnitude": "uncertain"}},
-        production_verdict=production,
+        production_judgment=_judgment(direction="neutral"),
     )
-    # `direction` changed away from the value the reviewer rejected: the only labelled dimension passes.
-    assert _score(labelled, _metric_verdict(direction="bullish")).score == 1.0
-    assert _score(labelled, _metric_verdict(direction="neutral")).score == 0.0
+    changed = _score(labelled, _metric_verdict(direction="bullish"))
+    unchanged = _score(labelled, _metric_verdict(direction="neutral"))
+    assert changed.score == unchanged.score == 0.0
+    assert changed.dimension_outcomes == (("direction", "not_scored_no_gold"),)
 
 
 def test_metric_feedback_never_asks_a_predictor_to_repair_what_it_cannot_cause() -> None:
@@ -585,27 +700,72 @@ def test_metric_feedback_never_asks_a_predictor_to_repair_what_it_cannot_cause()
         accepted_review={
             "should_push": "should_push",
             "dimensions": {"asset_grounding": "fail", "why_support": "fail"},
-            "novelty": {"judgment": "restatement", "duplicate_of": "prior"},
+            "novelty": {"judgment": "new_fact", "duplicate_of": ""},
         },
-        production_verdict=_metric_verdict(),
+        production_judgment=_judgment(),
     )
     semantics = _score(gold, _metric_verdict(), "event_semantics").feedback
     card = _score(gold, _metric_verdict(), "reader_card").feedback
     assert "asset_grounding" in semantics and "why_support" not in semantics
     assert "why_support" in card and "asset_grounding" not in card
-    # Novelty is EventSemantics' job; ReaderCard is never told about it.
-    assert "novelty" in semantics.lower() and "novelty" not in card.lower()
+
+
+def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback() -> None:
+    gold = _metric_gold(
+        accepted_review={
+            "should_push": "must_hold",
+            "dimensions": {},
+            "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+        }
+    )
+    projection = dict(gold.policy_metric)
+    projection["gate"] = {**dict(projection["gate"]), "watchlist_symbols": ["ABC"]}
+    gold = gold.copy(policy_metric=projection)
+    editorial = EditorialEnvelope.issue(
+        editorial_origin="model",
+        relevance=_relevance(
+            reader_value="background",
+            tradability="contextual",
+            channels=[],
+            affected_markets=[],
+        ),
+    )
+    prediction = dspy.Prediction(verdict=_metric_verdict(), editorial=editorial)
+
+    outcome = accepted_review_metric(gold, prediction, None, "event_semantics", None, None)
+
+    assert outcome.hard_gate == "must_hold_send"
+    assert outcome.objective_guard == "watchlist"
+    assert "must not receive" not in outcome.feedback
+    assert "policy resolved" not in outcome.feedback
+    assert "code-owned objective guard" in outcome.feedback
 
 
 def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
-    receipt = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v2")
-    assert receipt["weights"] == {"final_action": 0.50, "event_semantics": 0.35, "reader_card": 0.15}
+    receipt = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v4")
+    assert receipt["weights"] == {
+        "final_action": 0.45,
+        "trade_relevance": 0.35,
+        "semantics_novelty": 0.10,
+        "reader_card": 0.10,
+    }
     assert receipt["action_source"]["policy"] == "tracefold.news.triage_rules.decide"
     assert receipt["action_source"]["operational_controls"].startswith("none_")
     # The receipt no longer carries a policy *value*: the policy that scores an example travels with that
     # example and is verified against its own SHA, so a receipt value could only ever disagree with it.
     assert "per_example" in receipt["action_source"]["policy_values"]
     assert receipt["review_rubric_version"]
+    source_units = receipt["implementation"]["source_unit_sha256"]
+    assert set(source_units) == {
+        "tracefold.news.agents.program_metric",
+        "tracefold.news.models.base_symbol",
+        "tracefold.news.storyline",
+        "tracefold.news.triage_rules",
+    }
+    assert receipt["implementation"]["helper_source_root_sha256"] == canonical_sha(source_units)
+    assert all(len(value) == 64 for value in source_units.values())
+    assert "factual_contradiction" in receipt["hard_gates"]
+    assert "factual_contradiction_unchanged" not in receipt["hard_gates"]
     # Reweighting, repointing at another policy, or moving rubric all move the receipt hash.
     assert canonical_sha({**receipt, "weights": {"final_action": 1.0}}) != canonical_sha(receipt)
 
@@ -638,7 +798,7 @@ def _split_episode(cluster: str, case: str, should_push: str, order: int) -> Any
                 "dimensions": {"factual_fidelity": "pass"},
                 "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             },
-            "production_verdict": {"decision": "push"},
+            "production_judgment": _judgment().model_dump(mode="json"),
             "policy_metric": {"seen": [], "told": [], **_frozen_policy_projection()},
         }
     )

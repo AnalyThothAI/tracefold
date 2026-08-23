@@ -146,6 +146,8 @@ class LlmCompilerTariffConfig(BaseModel):
     task_output_microusd_per_million: int | None = Field(default=None, gt=0)
     reflection_input_microusd_per_million: int | None = Field(default=None, gt=0)
     reflection_output_microusd_per_million: int | None = Field(default=None, gt=0)
+    metric_judge_input_microusd_per_million: int | None = Field(default=None, gt=0)
+    metric_judge_output_microusd_per_million: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def require_complete_tariff(self) -> LlmCompilerTariffConfig:
@@ -156,6 +158,8 @@ class LlmCompilerTariffConfig(BaseModel):
             self.task_output_microusd_per_million,
             self.reflection_input_microusd_per_million,
             self.reflection_output_microusd_per_million,
+            self.metric_judge_input_microusd_per_million,
+            self.metric_judge_output_microusd_per_million,
         )
         if any(value is not None for value in values) and not all(value is not None for value in values):
             raise ValueError("llm_news_compiler_tariff_incomplete")
@@ -283,39 +287,14 @@ class NewsOiSettings(BaseModel):
 
 
 class NewsPolicySettings(BaseModel):
-    """Operator-owned decide() thresholds and switches (see tracefold.news.DecidePolicy)."""
+    """The four operator-owned v10 duplicate/safety knobs used by ``decide()``."""
 
     model_config = ConfigDict(extra="forbid")
 
-    escalate_magnitude: int = 3
-    min_push_magnitude: int = 1
-    min_watchlist_magnitude: int = 1
-    unclear_push_min_magnitude: int = 2
-    unclear_push_event_types: tuple[str, ...] = (
-        "product",
-        "listing",
-        "delisting",
-        "regulation",
-        "hack",
-        "exploit",
-        "partnership",
-        "filing",
-    )
     restatement_drop: bool = True
     # This is duplicate evidence, not a reader quota. Zero disables the
     # deterministic similarity check.
     similarity_max: float = 0.25
-    # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
-    high_priority_escalates: bool = False
-    # Policy v8 (recall-first): `noise` only vetoes at or below this magnitude. The instruction
-    # allows noise at magnitude 1 ("a routine update on one name that changes nothing"), so the
-    # ceiling is 1; magnitude 2 is where it says "clearly tradable" and the label contradicts itself.
-    noise_veto_max_magnitude: int = 1
-    # A Gate high-priority Event is never dropped by the `noise` label alone.
-    noise_veto_respects_gate_priority: bool = True
-    # Gate high priority plus the model's own magnitude >= this, against the model's hold intent,
-    # pushes. Zero disables the rule.
-    contested_push_min_magnitude: int = 2
     # Exchange listing/delisting frames share one wire template but name different instruments, so
     # they are exempt from the restatement drop and the similarity throttle.
     listing_exempt_from_duplicate: bool = True
@@ -323,23 +302,12 @@ class NewsPolicySettings(BaseModel):
     # x/twitter frames carry their own publication time; everything else is unaffected. Zero disables.
     stale_source_max_age_s: int = 12 * 60 * 60
 
-    @field_validator("unclear_push_event_types", mode="before")
-    @classmethod
-    def parse_event_types(cls, value: Any) -> tuple[str, ...]:
-        if value is None:
-            return ()
-        if not isinstance(value, list | tuple):
-            raise ValueError("news_policy_event_types_invalid")
-        return tuple(str(v).strip() for v in value if str(v).strip())
-
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsPolicySettings:
-        bounded = ("escalate_magnitude", "min_push_magnitude", "min_watchlist_magnitude", "unclear_push_min_magnitude")
-        for name in bounded:
-            if not 0 <= int(getattr(self, name)) <= 3:
-                raise ValueError(f"news_policy_{name}_invalid")
         if not 0.0 <= float(self.similarity_max) <= 1.0:
             raise ValueError("news_policy_similarity_max_invalid")
+        if int(self.stale_source_max_age_s) < 0:
+            raise ValueError("news_policy_stale_source_max_age_s_invalid")
         return self
 
 
@@ -862,7 +830,7 @@ llm:
     base_url:
     model:
   # Optional, secret-free provider contract used only by `news learning compile`.
-  # All six values are required together; rates are micro-USD per million tokens.
+  # Every value is required together; rates are micro-USD per million tokens.
   news_compiler_tariff:
     tariff_id:
     input_token_overhead:
@@ -870,6 +838,8 @@ llm:
     task_output_microusd_per_million:
     reflection_input_microusd_per_million:
     reflection_output_microusd_per_million:
+    metric_judge_input_microusd_per_million:
+    metric_judge_output_microusd_per_million:
 
 news:
   enabled: true
@@ -885,17 +855,8 @@ news:
     feishu_signing_secret:
     min_interval_seconds: 0.6
   policy:
-    escalate_magnitude: 3
-    min_push_magnitude: 1
-    min_watchlist_magnitude: 1
-    unclear_push_min_magnitude: 2
-    unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
     restatement_drop: true
     similarity_max: 0.25
-    high_priority_escalates: false
-    noise_veto_max_magnitude: 1
-    noise_veto_respects_gate_priority: true
-    contested_push_min_magnitude: 2
     listing_exempt_from_duplicate: true
     stale_source_max_age_s: 43200  # #154: an x/twitter artifact older than this on arrival is a replay
   oi:                             # #137 open-interest telemetry, judged by rule instead of by model

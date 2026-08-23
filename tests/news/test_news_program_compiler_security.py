@@ -6,11 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from tracefold.news.agents.program_compiler_security import (
-    CompileBudgetV2,
+    CompileBudgetV3,
     CompileInputBundle,
     CompileReceiptChain,
     CompilerEndpointIdentity,
     CompilerProxyTariff,
+    CompilerRoleBindingV3,
     ContentAddressedCompileReceipt,
     seal_compile_input,
 )
@@ -21,12 +22,12 @@ def _dataset_payload() -> dict[str, Any]:
     return {
         "dataset_version": "news_learning_dataset_v1",
         "role": "development",
-        "learning_epoch": "program_v5",
+        "learning_epoch": "program_v6",
         "learning_epoch_started_at_ms": 1_800_000_000_000,
         "agent_cohort": {
             "bundle_sha": "e" * 64,
-            "learning_epoch": "program_v5",
-            "program_version": "news_semantic_program_v3",
+            "learning_epoch": "program_v6",
+            "program_version": "news_semantic_program_v4",
             "program_sha256": "a" * 64,
             "runtime_model_bindings_sha256": "c" * 64,
         },
@@ -52,45 +53,73 @@ def _tariff() -> CompilerProxyTariff:
         task_output_microusd_per_million=20,
         reflection_input_microusd_per_million=10,
         reflection_output_microusd_per_million=20,
+        metric_judge_input_microusd_per_million=10,
+        metric_judge_output_microusd_per_million=20,
+    )
+
+
+def _role_bindings() -> tuple[CompilerRoleBindingV3, CompilerRoleBindingV3, CompilerRoleBindingV3]:
+    return (
+        CompilerRoleBindingV3.issue(
+            role="task",
+            endpoint=CompilerEndpointIdentity.issue(model="provider/task", api_base="https://task.example/v1"),
+            max_output_tokens=512,
+            timeout_seconds=20,
+            temperature=0,
+            model_kwargs={},
+        ),
+        CompilerRoleBindingV3.issue(
+            role="reflection",
+            endpoint=CompilerEndpointIdentity.issue(
+                model="provider/reflection", api_base="https://reflection.example/v1"
+            ),
+            max_output_tokens=32_000,
+            timeout_seconds=300,
+            temperature=1,
+            model_kwargs={},
+        ),
+        CompilerRoleBindingV3.issue(
+            role="metric_judge",
+            endpoint=CompilerEndpointIdentity.issue(model="provider/judge", api_base="https://judge.example/v1"),
+            max_output_tokens=4_096,
+            timeout_seconds=120,
+            temperature=0,
+            model_kwargs={},
+        ),
     )
 
 
 def _sealed_bundle() -> CompileInputBundle:
     payload = _dataset_payload()
-    task = CompilerEndpointIdentity.issue(model="provider/task", api_base="https://task.example/v1")
-    reflection = CompilerEndpointIdentity.issue(
-        model="provider/reflection",
-        api_base="https://reflection.example/v1",
-    )
+    task, reflection, metric_judge = _role_bindings()
     tariff = _tariff()
     return seal_compile_input(
         dataset_sha=canonical_sha({"kind": "dataset", "payload": payload}),
         dataset_payload=payload,
         episodes=_episodes(),
-        review_rubric_version="news_review_v2",
+        review_rubric_version="news_review_v4",
         parent_program_sha256="a" * 64,
         parent_state_sha256="b" * 64,
         stable_bundle_sha256="e" * 64,
         target_runtime_manifest_sha256="c" * 64,
         eligible_demo_bank_root_sha256="d" * 64,
-        task_endpoint=task,
-        reflection_endpoint=reflection,
+        task=task,
+        reflection=reflection,
+        metric_judge=metric_judge,
         proxy_grant_sha256="f" * 64,
         proxy_config_sha256="1" * 64,
         tariff_sha256=tariff.tariff_sha256,
         proxy_tariff=tariff,
-        task_max_output_tokens=512,
-        reflection_max_output_tokens=512,
-        task_timeout_seconds=20,
-        reflection_timeout_seconds=20,
         compiler_source_sha256="3" * 64,
         proxy_source_sha256="4" * 64,
         compiler_lock_sha256="5" * 64,
         sandbox_policy_sha256="6" * 64,
         compiler_image_digest="sha256:" + "7" * 64,
-        budget=CompileBudgetV2(
+        budget=CompileBudgetV3(
             max_metric_calls=3,
             max_task_model_calls=8,
+            max_reflection_model_calls=4,
+            max_metric_judge_model_calls=6,
             max_cost_microusd=100,
             max_call_cost_microusd=10,
             seed=17,
@@ -139,6 +168,7 @@ def test_sealed_compile_input_recomputes_dataset_and_ordered_projection_roots() 
 def test_sealed_compile_input_rejects_forged_dataset_and_episode_membership() -> None:
     payload = _dataset_payload()
     tariff = _tariff()
+    task, reflection, metric_judge = _role_bindings()
     kwargs = {
         "dataset_payload": payload,
         "episodes": _episodes(),
@@ -147,31 +177,24 @@ def test_sealed_compile_input_rejects_forged_dataset_and_episode_membership() ->
         "stable_bundle_sha256": "e" * 64,
         "target_runtime_manifest_sha256": "c" * 64,
         "eligible_demo_bank_root_sha256": "d" * 64,
-        "task_endpoint": CompilerEndpointIdentity.issue(
-            model="provider/task",
-            api_base="https://task.example/v1",
-        ),
-        "reflection_endpoint": CompilerEndpointIdentity.issue(
-            model="provider/reflection",
-            api_base="https://reflection.example/v1",
-        ),
+        "task": task,
+        "reflection": reflection,
+        "metric_judge": metric_judge,
         "proxy_grant_sha256": "f" * 64,
         "proxy_config_sha256": "1" * 64,
         "tariff_sha256": tariff.tariff_sha256,
         "proxy_tariff": tariff,
-        "task_max_output_tokens": 512,
-        "reflection_max_output_tokens": 512,
-        "task_timeout_seconds": 20,
-        "reflection_timeout_seconds": 20,
         "compiler_source_sha256": "3" * 64,
         "proxy_source_sha256": "4" * 64,
         "compiler_lock_sha256": "5" * 64,
-        "review_rubric_version": "news_review_v2",
+        "review_rubric_version": "news_review_v4",
         "sandbox_policy_sha256": "6" * 64,
         "compiler_image_digest": "sha256:" + "7" * 64,
-        "budget": CompileBudgetV2(
+        "budget": CompileBudgetV3(
             max_metric_calls=3,
             max_task_model_calls=8,
+            max_reflection_model_calls=4,
+            max_metric_judge_model_calls=6,
             max_cost_microusd=100,
             max_call_cost_microusd=10,
             seed=17,
