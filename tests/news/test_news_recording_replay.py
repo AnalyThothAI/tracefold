@@ -36,10 +36,17 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 1,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
         "audience": "crypto",
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": ["exchange_access"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
     }
     value.update(updates)
     return value
@@ -69,7 +76,7 @@ def _context() -> TriageContext:
             "family": "listing",
             "provider_score_max": 90,
             "provider_metadata": {"coins": [{"symbol": "BTC", "grade": "A"}]},
-            "priority": "normal",
+            "queue_priority": "normal",
             "asset_class": "crypto",
             "grounded_assets": ["BTC"],
             "storyline_key": "asset:BTC",

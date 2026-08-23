@@ -13,6 +13,7 @@ from tests.postgres_test_utils import (
 from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
+from tracefold.app.repositories import repositories_for_connection
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 
@@ -355,7 +356,7 @@ def test_0293_to_0294_appends_program_v3_epoch_without_rewriting_prior_epochs() 
             restore.close()
 
 
-def test_0297_to_head_appends_program_v5_epoch_without_rewriting_prior_epochs() -> None:
+def test_0297_to_0298_appends_program_v5_epoch_without_rewriting_prior_epochs() -> None:
     conn: Any | None = None
     try:
         _fresh_schema_at("20260822_0297")
@@ -388,11 +389,11 @@ def test_0297_to_head_appends_program_v5_epoch_without_rewriting_prior_epochs() 
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260822_0298")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0300"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0298"
         epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         assert len(epochs) == 5
         for epoch_id, prior in prior_epochs.items():
@@ -407,7 +408,9 @@ def test_0297_to_head_appends_program_v5_epoch_without_rewriting_prior_epochs() 
         assert program_v5["program_factory_id"] == "tracefold.news.semantic_program.factory_v3"
         assert program_v5["artifact_schema_version"] == "news_semantic_program_artifact_v2"
         assert program_v5["baseline_program_version"] == "news_semantic_program_v3"
-        assert program_v5["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
+        assert program_v5["baseline_program_sha256"] == (
+            "c62e0d69bf6c1901b3e8a1a716ca153acaf92793421d5af2701030c0477cac3b"
+        )
         canary = conn.execute(
             "SELECT state, revision, trip_reason, tripped_at_ms FROM news_canary_activations WHERE activation_id = %s",
             ("a" * 32,),
@@ -416,6 +419,216 @@ def test_0297_to_head_appends_program_v5_epoch_without_rewriting_prior_epochs() 
         assert canary["revision"] == 2
         assert canary["trip_reason"] == "program_v5_hard_cut"
         assert canary["tripped_at_ms"] == program_v5["starts_at_ms"]
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+def test_0299_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260823_0299")
+        conn = connect_postgres_test(read_only=False)
+        prior_epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        assert "priority" in {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_events'"
+            ).fetchall()
+        }
+        conn.execute(
+            """
+            INSERT INTO news_canary_activations (
+              activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+              selector_version, exposure_bps, eligibility_profile_sha, rolling_profile_sha,
+              state, revision, created_at_ms
+            ) VALUES (%s, %s, %s, %s, 'news_canary_selector_v1', 1000, %s, %s, 'armed', 1, %s)
+            """,
+            ("1" * 32, "2" * 64, "3" * 64, "4" * 64, "5" * 64, "6" * 64, int(time.time() * 1000)),
+        )
+        old_opened_at_ms = int(time.time() * 1000) - 1_000
+        old_expires_at_ms = old_opened_at_ms + 7 * 24 * 3_600_000
+        conn.execute(
+            """
+            INSERT INTO news_items(
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              canonical_url, reporting_origin, published_at_ms, observed_at_ms,
+              provider_metadata, provenance, first_ingest_mode, trace_id,
+              created_at_ms, updated_at_ms, source_artifact_id
+            ) VALUES (
+              'old-item', 'opennews', 'old-source-key', 'Same post-cut fact', '', '',
+              'https://x.com/source/status/12345', 'opennews', %s, %s,
+              '{}'::jsonb, '[]'::jsonb, 'live', 'old-trace', %s, %s, 'x:12345'
+            )
+            """,
+            (old_opened_at_ms, old_opened_at_ms, old_opened_at_ms, old_opened_at_ms),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_events(
+              event_id, leader_item_id, family, comparison_fingerprint, comparison_title,
+              leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, member_count,
+              admission, priority, provider_score_max, engine_type, asset_class,
+              grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
+              published_at_ms, ingest_mode, trace_id, created_at_ms, updated_at_ms,
+              focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
+              focus_span_start, focus_span_end
+            ) VALUES (
+              'old-event', 'old-item', 'general', 'same-fingerprint', 'same post cut fact',
+              'Same post-cut fact', %s, %s, %s, 1,
+              'candidate', 'normal', 80, 'news', 'none',
+              '[]'::jsonb, '[]'::jsonb, false, 'theme:test', '',
+              %s, 'live', 'old-trace', %s, %s,
+              'old-fact', 'Same post-cut fact', '', 'whole_title', 0, 18
+            )
+            """,
+            (
+                old_opened_at_ms,
+                old_opened_at_ms,
+                old_expires_at_ms,
+                old_opened_at_ms,
+                old_opened_at_ms,
+                old_opened_at_ms,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_event_members(
+              event_id, item_id, joined_at_ms, match_kind, jaccard_estimate, fact_id, fact_text
+            ) VALUES ('old-event', 'old-item', %s, 'leader', NULL, 'old-fact', 'Same post-cut fact')
+            """,
+            (old_opened_at_ms,),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_event_evidence_snapshots(
+              event_id, evidence_version, focus_fact_id, evidence_sha256,
+              provenance, release_eligible, snapshot, created_at_ms
+            ) VALUES (
+              'old-event', 1, 'old-fact', %s, 'observed', true,
+              '{"schema_version":"news_event_evidence_v1"}'::jsonb, %s
+            )
+            """,
+            ("a" * 64, old_opened_at_ms),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_event_bands(band_index, band_key, event_id, family, expires_at_ms)
+            VALUES (0, 'same-band', 'old-event', 'general', %s)
+            """,
+            (old_expires_at_ms,),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        deployed_after_ms = int(time.time() * 1000) - 5_000
+        _upgrade("head")
+        deployed_before_ms = int(time.time() * 1000) + 5_000
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0300"
+        event_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_events'"
+            ).fetchall()
+        }
+        assert "queue_priority" in event_columns
+        assert "priority" not in event_columns
+        verdict_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_verdicts'"
+            ).fetchall()
+        }
+        assert {"editorial", "scored_judgment_sha256", "runtime_manifest_sha"} <= verdict_columns
+        view_columns = [
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_review_task_source_v1' "
+                "ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+        assert "queue_priority" in view_columns
+        assert "priority" not in view_columns
+        assert view_columns[-3:] == ["editorial", "scored_judgment_sha256", "runtime_manifest_sha"]
+
+        epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        assert len(epochs) == 6
+        for epoch_id, prior in prior_epochs.items():
+            assert dict(next(row for row in epochs if row["epoch_id"] == epoch_id)) == prior
+        program_v6 = next(row for row in epochs if row["epoch_id"] == "program_v6")
+        assert deployed_after_ms <= program_v6["starts_at_ms"] <= deployed_before_ms
+        assert program_v6["starts_at_ms"] > prior_epochs["program_v5"]["starts_at_ms"]
+        assert program_v6["source_issue"] == "https://github.com/AnalyThothAI/tracefold/issues/160"
+        assert program_v6["program_factory_id"] == "tracefold.news.semantic_program.factory_v4"
+        assert program_v6["artifact_schema_version"] == "news_semantic_program_artifact_v2"
+        assert program_v6["baseline_program_version"] == "news_semantic_program_v4"
+        assert program_v6["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
+        assert program_v6["prior_evidence_disposition"] == "audit_only"
+        assert program_v6["reset_reason"] == "trade_relevance_editorial_authority_hard_cut"
+        assert (
+            conn.execute("SELECT expires_at_ms FROM news_events WHERE event_id = 'old-event'").fetchone()[
+                "expires_at_ms"
+            ]
+            == program_v6["starts_at_ms"]
+        )
+        assert (
+            conn.execute("SELECT expires_at_ms FROM news_event_bands WHERE event_id = 'old-event'").fetchone()[
+                "expires_at_ms"
+            ]
+            == program_v6["starts_at_ms"]
+        )
+        news = repositories_for_connection(conn).news
+        assert (
+            news.find_exact_event(
+                family="general",
+                fingerprint="same-fingerprint",
+                now_ms=program_v6["starts_at_ms"],
+            )
+            is None
+        )
+        assert (
+            news.find_artifact_event(
+                source_artifact_id="x:12345",
+                family="general",
+                fingerprint="same-fingerprint",
+                item_id="new-item",
+                opened_after_ms=program_v6["starts_at_ms"] - 7 * 24 * 3_600_000,
+            )
+            is None
+        )
+        assert (
+            news.find_band_candidates(
+                family="general",
+                band_keys=("same-band",),
+                now_ms=program_v6["starts_at_ms"],
+            )
+            == []
+        )
+        canary = conn.execute(
+            "SELECT state, revision, trip_reason, tripped_at_ms FROM news_canary_activations WHERE activation_id = %s",
+            ("1" * 32,),
+        ).fetchone()
+        assert canary == {
+            "state": "tripped",
+            "revision": 2,
+            "trip_reason": "program_v6_hard_cut",
+            "tripped_at_ms": program_v6["starts_at_ms"],
+        }
     finally:
         if conn is not None:
             conn.close()

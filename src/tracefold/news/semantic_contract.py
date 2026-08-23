@@ -10,10 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .artifact_identity import canonical_sha
-from .models import TriageVerdict, base_symbol
+from .models import TriageAsset, TriageVerdict, base_symbol
 from .similarity import similarity
 
 TOLD_WINDOW_MS: Final[int] = 4 * 3_600_000
@@ -40,6 +40,66 @@ TOLD_FACT_SIMILARITY_MIN: Final[float] = 0.25
 WATCHLIST_MAX: Final[int] = 64
 GROUNDED_ASSETS_MAX: Final[int] = 16
 STRATEGIES_MAX: Final[int] = 16
+TRADE_CODE_SET_MAX: Final[int] = 4
+
+TradeImpactBreadth = Literal[
+    "none",
+    "single_instrument",
+    "sector",
+    "regional",
+    "cross_asset",
+    "global_systemic",
+]
+TradeTradability = Literal["direct", "second_order", "contextual", "none"]
+TradeSurprise = Literal["unscheduled", "material_vs_expectation", "in_line", "unknown"]
+TradeDevelopmentDelta = Literal["state_change", "material_detail", "color_only", "scheduled"]
+TradeChannel = Literal[
+    "rates",
+    "liquidity",
+    "risk_premium",
+    "energy_supply",
+    "commodity_supply",
+    "commodity_demand",
+    "regulation",
+    "exchange_access",
+    "earnings_cashflow",
+    "positioning_flow",
+    "security_incident",
+]
+TradeAffectedMarket = Literal[
+    "crypto_broad",
+    "us_equity_broad",
+    "rates",
+    "fx",
+    "energy",
+    "metals",
+    "single_asset",
+]
+ReaderValue = Literal["escalate", "realtime", "background", "none"]
+
+TRADE_CHANNEL_ORDER: Final[tuple[TradeChannel, ...]] = (
+    "rates",
+    "liquidity",
+    "risk_premium",
+    "energy_supply",
+    "commodity_supply",
+    "commodity_demand",
+    "regulation",
+    "exchange_access",
+    "earnings_cashflow",
+    "positioning_flow",
+    "security_incident",
+)
+TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
+    "crypto_broad",
+    "us_equity_broad",
+    "rates",
+    "fx",
+    "energy",
+    "metals",
+    "single_asset",
+)
+EDITORIAL_CONTRACT_VERSION: Final[str] = "news_editorial_v1"
 
 ToldTier = Literal["storyline", "asset_overlap", "fact_similarity", "recency"]
 # Deterministic ordered union.  There is no learned score and no undocumented numeric weight.
@@ -89,6 +149,106 @@ class _ExactContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _canonical_code_set(value: Any, *, order: Sequence[str]) -> Any:
+    """Canonicalize a bounded model-emitted set before Pydantic applies its max-length constraint."""
+
+    if not isinstance(value, (list, tuple)):
+        return value
+    if not all(isinstance(item, str) and item in order for item in value):
+        # Preserve an invalid value for the typed Literal validator.  Silently
+        # dropping an unknown code would turn schema-invalid model output into
+        # a different, apparently valid editorial judgment.
+        return value
+    present = set(value)
+    return tuple(item for item in order if item in present)
+
+
+class TradeRelevanceV1(_ExactContractModel):
+    """Typed editorial relevance owned by ``EventSemantics.v2``.
+
+    ``channels`` and ``affected_markets`` are sets on the wire but tuples in the
+    contract.  Canonical code-owned ordering makes exact gold, hashing and replay
+    independent of the order in which a model emitted them.
+    """
+
+    impact_breadth: TradeImpactBreadth
+    tradability: TradeTradability
+    surprise: TradeSurprise
+    development_delta: TradeDevelopmentDelta
+    channels: tuple[TradeChannel, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
+    affected_markets: tuple[TradeAffectedMarket, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
+    reader_value: ReaderValue
+
+    @field_validator("channels", mode="before")
+    @classmethod
+    def _canonical_channels(cls, value: Any) -> Any:
+        return _canonical_code_set(value, order=TRADE_CHANNEL_ORDER)
+
+    @field_validator("affected_markets", mode="before")
+    @classmethod
+    def _canonical_markets(cls, value: Any) -> Any:
+        return _canonical_code_set(value, order=TRADE_AFFECTED_MARKET_ORDER)
+
+    @model_validator(mode="after")
+    def _empty_surfaces_are_background_only(self) -> TradeRelevanceV1:
+        if (not self.channels or not self.affected_markets) and not (
+            self.tradability in {"contextual", "none"} and self.reader_value in {"background", "none"}
+        ):
+            raise ValueError("news_trade_relevance_empty_surface_invalid")
+        return self
+
+
+class ReaderCardSemanticView(_ExactContractModel):
+    """The complete semantic Interface visible to ``ReaderCard``.
+
+    It intentionally excludes model delivery intent, surprise, tradability and
+    development state.  ReaderCard writes factual copy; it does not get a second
+    opportunity to infer urgency or final action.
+    """
+
+    event_type: str
+    assets: tuple[TriageAsset, ...] = Field(default=(), max_length=8)
+    direction: Literal["bullish", "bearish", "neutral", "unclear"]
+    magnitude: int = Field(ge=0, le=3)
+    novelty: Literal["new_fact", "progression", "restatement"]
+    restates: int = Field(default=-1, ge=-1)
+    scope: Literal["macro", "sector", "single_name"]
+    channels: tuple[TradeChannel, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
+    affected_markets: tuple[TradeAffectedMarket, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
+
+
+class EditorialEnvelope(_ExactContractModel):
+    """Versioned editorial sibling persisted atomically with one verdict."""
+
+    editorial_contract_version: Literal["news_editorial_v1"] = "news_editorial_v1"
+    editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"]
+    relevance: TradeRelevanceV1 | None
+    editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"],
+        relevance: TradeRelevanceV1 | None,
+    ) -> EditorialEnvelope:
+        payload = {
+            "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
+            "editorial_origin": editorial_origin,
+            "relevance": None if relevance is None else relevance.model_dump(mode="json"),
+        }
+        return cls(**payload, editorial_sha256=canonical_sha(payload))
+
+    @model_validator(mode="after")
+    def _origin_and_identity_are_exact(self) -> EditorialEnvelope:
+        if (self.editorial_origin == "model") != (self.relevance is not None):
+            raise ValueError("news_editorial_origin_relevance_mismatch")
+        payload = self.model_dump(mode="json", exclude={"editorial_sha256"})
+        if self.editorial_sha256 != canonical_sha(payload):
+            raise ValueError("news_editorial_hash_mismatch")
+        return self
+
+
 class FrozenEventEvidence(_ExactContractModel):
     """Immutable evidence identity plus the bounded evidence visible to the Program."""
 
@@ -107,7 +267,7 @@ class FrozenEventEvidence(_ExactContractModel):
     family: str = "general"
     provider_score: int | None = None
     provider_coins: tuple[str, ...] = Field(default=(), max_length=10)
-    priority: str = "normal"
+    queue_priority: Literal["high", "normal"] = "normal"
     # Selector input only, never rendered: the Deduper's normalized title, which is what a same-fact
     # comparison against a prior Event is actually made of.  The model reads `title`.
     comparison_title: str = Field(default="", max_length=600)
@@ -286,17 +446,13 @@ class _ModelVisibleEvent(_ExactContractModel):
     published_at_ms: int = Field(ge=0)
     member_count: int = Field(ge=1)
     family: str
-    provider_score: int | None
     provider_coins: tuple[str, ...] = Field(max_length=10)
-    priority: str
 
 
 class _ModelVisibleGate(_ExactContractModel):
     asset_class: str
     grounded_assets: tuple[str, ...] = Field(max_length=GROUNDED_ASSETS_MAX)
-    macro_lexicon: bool
     pr_template: bool
-    watchlist: tuple[str, ...] = Field(max_length=WATCHLIST_MAX)
 
 
 class _ModelVisibleToldEntry(_ExactContractModel):
@@ -313,7 +469,6 @@ class _ModelVisibleToldEntry(_ExactContractModel):
 class _ModelVisibleEventStatus(_ExactContractModel):
     storyline_key: str
     preliminary: bool
-    queue_lag_s: int = Field(ge=0)
     told: tuple[_ModelVisibleToldEntry, ...] = Field(max_length=TOLD_MAX)
 
 
@@ -380,7 +535,7 @@ class TriageContext(_ExactContractModel):
                 family=str(card.get("family") or "general"),
                 provider_score=card.get("provider_score_max"),
                 provider_coins=coins,
-                priority=str(card.get("priority") or "normal"),
+                queue_priority=str(card.get("queue_priority") or "normal"),
                 comparison_title=str(card.get("comparison_title") or "")[:600],
             ),
             gate=SemanticGateContext(
@@ -415,18 +570,14 @@ class TriageContext(_ExactContractModel):
             published_at_ms=event.published_at_ms,
             member_count=event.member_count,
             family=event.family,
-            provider_score=event.provider_score,
             provider_coins=event.provider_coins,
-            priority=event.priority,
         )
 
     def _visible_gate(self) -> _ModelVisibleGate:
         return _ModelVisibleGate(
             asset_class=self.gate.asset_class,
             grounded_assets=self.gate.grounded_assets,
-            macro_lexicon=self.gate.macro_lexicon,
             pr_template=self.gate.pr_template,
-            watchlist=self.watchlist,
         )
 
     def event_semantics_payload(self) -> dict[str, Any]:
@@ -438,7 +589,6 @@ class TriageContext(_ExactContractModel):
             event_status=_ModelVisibleEventStatus(
                 storyline_key=self.told.storyline_key,
                 preliminary=self.told.preliminary,
-                queue_lag_s=self.queue_lag_ms // 1000,
                 told=tuple(
                     _ModelVisibleToldEntry(
                         i=entry.i,
@@ -493,11 +643,30 @@ class TriageContext(_ExactContractModel):
 
 
 class ProgramNormalizationTrace(_ExactContractModel):
-    normalizer_id: Literal["semantic_normalizer_v1"] = "semantic_normalizer_v1"
-    field: Literal["restates"] = "restates"
-    reason: Literal["non_restatement_index_ignored"] = "non_restatement_index_ignored"
-    input_value: int = Field(ge=0)
-    output_value: Literal[-1] = -1
+    normalizer_id: Literal["semantic_normalizer_v2"] = "semantic_normalizer_v2"
+    field: Literal["restates", "channels", "affected_markets"]
+    reason: Literal["non_restatement_index_ignored", "canonical_set_order"]
+    input_value: int | tuple[str, ...]
+    output_value: int | tuple[str, ...]
+
+    @model_validator(mode="after")
+    def _field_and_values_match_reason(self) -> ProgramNormalizationTrace:
+        if self.field == "restates":
+            if (
+                self.reason != "non_restatement_index_ignored"
+                or not isinstance(self.input_value, int)
+                or self.input_value < 0
+                or self.output_value != -1
+            ):
+                raise ValueError("news_program_restatement_normalization_invalid")
+            return self
+        if (
+            self.reason != "canonical_set_order"
+            or not isinstance(self.input_value, tuple)
+            or not isinstance(self.output_value, tuple)
+        ):
+            raise ValueError("news_program_relevance_normalization_invalid")
+        return self
 
 
 class ProgramCallTrace(_ExactContractModel):
@@ -518,7 +687,7 @@ class ProgramCallTrace(_ExactContractModel):
     upstream_sha256: str | None = None
     output_sha256: str | None = None
     validated_output: dict[str, Any] | None = None
-    normalizations: tuple[ProgramNormalizationTrace, ...] = Field(default=(), max_length=1)
+    normalizations: tuple[ProgramNormalizationTrace, ...] = Field(default=(), max_length=3)
     provider: str | None = None
     model: str | None = None
     model_sha256: str | None = None
@@ -567,6 +736,7 @@ class ProgramTrace(_ExactContractModel):
     event_semantics_sha256: str | None = None
     reader_card_sha256: str | None = None
     verdict_sha256: str | None = None
+    editorial_sha256: str | None = None
     answering_route: Literal["primary", "fallback"] | None = None
     fallback_from: str | None = None
     novelty_defaulted: bool = False
@@ -604,14 +774,50 @@ def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]
     }
 
 
+class ScoredJudgment(_ExactContractModel):
+    """Canonical verdict/editorial projection shared by every learning surface."""
+
+    verdict: TriageVerdict
+    editorial: EditorialEnvelope
+    verdict_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def issue(cls, *, verdict: TriageVerdict, editorial: EditorialEnvelope) -> ScoredJudgment:
+        verdict_sha256 = canonical_sha(verdict.model_dump(mode="json"))
+        payload = {
+            "verdict": verdict.model_dump(mode="json"),
+            "editorial": editorial.model_dump(mode="json"),
+            "verdict_sha256": verdict_sha256,
+        }
+        return cls(
+            verdict=verdict,
+            editorial=editorial,
+            verdict_sha256=verdict_sha256,
+            scored_judgment_sha256=canonical_sha(payload),
+        )
+
+    @model_validator(mode="after")
+    def _projection_identity_is_exact(self) -> ScoredJudgment:
+        expected_verdict = canonical_sha(self.verdict.model_dump(mode="json"))
+        payload = self.model_dump(mode="json", exclude={"scored_judgment_sha256"})
+        if self.verdict_sha256 != expected_verdict or self.scored_judgment_sha256 != canonical_sha(payload):
+            raise ValueError("news_scored_judgment_identity_mismatch")
+        return self
+
+
 class SemanticJudgment(_ExactContractModel):
     verdict: TriageVerdict
+    editorial: EditorialEnvelope
     program_version: str
     program_sha256: str
     trace: ProgramTrace
     usage: ProgramUsage
     answering_model: str | None = None
     fallback_from: str | None = None
+
+    def scored(self) -> ScoredJudgment:
+        return ScoredJudgment.issue(verdict=self.verdict, editorial=self.editorial)
 
     @model_validator(mode="after")
     def _trace_and_usage_match_judgment(self) -> SemanticJudgment:
@@ -620,6 +826,7 @@ class SemanticJudgment(_ExactContractModel):
             or self.program_sha256 != self.trace.program_sha256
             or self.fallback_from != self.trace.fallback_from
             or self.trace.verdict_sha256 != canonical_sha(self.verdict.model_dump(mode="json"))
+            or self.trace.editorial_sha256 != self.editorial.editorial_sha256
         ):
             raise ValueError("news_program_judgment_trace_identity_mismatch")
         expected_usage = aggregate_program_usage(self.trace.calls)
@@ -661,6 +868,7 @@ class SemanticJudge(Protocol):
 
 
 __all__ = [
+    "EDITORIAL_CONTRACT_VERSION",
     "GROUNDED_ASSETS_MAX",
     "STRATEGIES_MAX",
     "TOLD_MAX",
@@ -669,7 +877,10 @@ __all__ = [
     "TOLD_SOURCE_MAX",
     "TOLD_STORYLINE_TIER_MAX",
     "TOLD_WINDOW_MS",
+    "TRADE_AFFECTED_MARKET_ORDER",
+    "TRADE_CHANNEL_ORDER",
     "WATCHLIST_MAX",
+    "EditorialEnvelope",
     "FrozenEventEvidence",
     "ModelVisibleCardInput",
     "ModelVisibleSemanticsInput",
@@ -677,12 +888,15 @@ __all__ = [
     "ProgramNormalizationTrace",
     "ProgramTrace",
     "ProgramUsage",
+    "ReaderCardSemanticView",
+    "ScoredJudgment",
     "SemanticGateContext",
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
     "ToldLedgerEntry",
     "ToldLedgerSnapshot",
+    "TradeRelevanceV1",
     "TriageContext",
     "aggregate_program_usage",
 ]

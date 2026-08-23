@@ -907,10 +907,30 @@ def _trip_unavailable_active_canary(
     """Fail closed a nonterminal candidate that this image cannot execute."""
 
     with db.worker_session("news_canary_startup_validation", 3.0) as repos, repos.transaction():
+        from tracefold.news.canary import (
+            CANARY_ELIGIBILITY_PROFILE_SHA,
+            CANARY_ROLLING_PROFILE_SHA,
+            CANARY_SELECTOR_VERSION,
+        )
+
         status = repos.news.canary_status()
         activation = status.get("activation")
         if activation is None or str(activation["state"]) not in {"armed", "active"}:
             return False
+        for field, expected, reason in (
+            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
+            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
+            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
+        ):
+            if str(activation.get(field) or "") != expected:
+                return bool(
+                    repos.news.transition_canary(
+                        activation_id=str(activation["activation_id"]),
+                        target_state="tripped",
+                        reason=reason,
+                        now_ms=_now_ms(),
+                    )
+                )
         candidate_manifest_sha = str(activation["candidate_manifest_sha"])
         candidate_bundle_sha = str(activation["candidate_bundle_sha"])
         expected_bundle_sha = compiled_candidate_bundles.get(candidate_manifest_sha)

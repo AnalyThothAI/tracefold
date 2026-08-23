@@ -107,7 +107,7 @@ def replay_hits(
                 "facts": _strong_facts(title, gate.grounded_assets),
                 "members": 1,
                 "admission": gate.admission,
-                "priority": gate.priority,
+                "queue_priority": gate.queue_priority,
                 "asset_class": gate.asset_class,
                 "grounded_assets": gate.grounded_assets,
                 "storyline_key": preliminary_storyline_key(
@@ -130,13 +130,13 @@ def replay_hits(
         "counts": dict(counts),
         "candidate_share_of_items": round(len(candidates) / counts["items"], 4) if counts["items"] else None,
         "candidate_asset_class": dict(collections.Counter(e["asset_class"] for e in candidates)),
-        "candidate_priority": dict(collections.Counter(e["priority"] for e in candidates)),
+        "candidate_queue_priority": dict(collections.Counter(e["queue_priority"] for e in candidates)),
         "storylines": len({e["storyline_key"] for e in candidates}),
         "events": [
             {
                 "title": e["title"][:160],
                 "admission": e["admission"],
-                "priority": e["priority"],
+                "queue_priority": e["queue_priority"],
                 "asset_class": e["asset_class"],
                 "grounded_assets": list(e["grounded_assets"]),
                 "storyline_key": e["storyline_key"],

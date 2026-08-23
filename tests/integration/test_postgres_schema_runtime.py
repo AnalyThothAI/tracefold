@@ -199,7 +199,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "comparison_fingerprint",
         "storyline_key",
         "admission",
-        "priority",
+        "queue_priority",
         "opened_at_ms",
         "published_at_ms",
         "ingest_mode",

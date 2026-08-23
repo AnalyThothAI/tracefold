@@ -159,12 +159,18 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
         )
     )
     assert emitted >= {
-        "noise",
-        "magnitude3",
-        "model_push_actionable",
-        "below_threshold",
-        "fail_closed_fallback",
+        "degraded_listing_objective",
+        "degraded_no_objective_guard",
+        "degraded_telemetry_objective",
+        "degraded_watchlist_objective",
+        "listing_deterministic",
         "restatement",
+        "stale_source_artifact",
+        "telemetry_deterministic",
+        "trade_relevance_escalate",
+        "trade_relevance_inconsistent",
+        "trade_relevance_realtime",
+        "watchlist_objective_guard",
     }
     missing = sorted(rule for rule in emitted if rule not in OVERRIDE_RULE_ZH)
     assert missing == []
@@ -206,7 +212,6 @@ def _event(**over: object) -> dict[str, object]:
         "opened_at_ms": NOW,
         "member_count": 3,
         "admission": "candidate",
-        "priority": "high",
         "asset_class": "crypto",
         "grounded_assets": ["XYZ"],
         "watchlist_hits": [],
@@ -229,7 +234,7 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
         "scope": "single_name",
     }
     triage = {
-        **_triage("push", override_rule="high_priority_push", verdict=verdict),
+        **_triage("push", override_rule="trade_relevance_realtime", verdict=verdict),
         "model_decision": "push",
         "trace": {"storyline_key": "asset:XYZ", "queue_lag_ms": 800},
     }
@@ -253,13 +258,13 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
     assert outcome.kind == "delivered"
     assert [s["stage"] for s in steps] == ["received", "gate", "triage", "decide", "delivery"]
     assert steps[0]["summary_zh"] == "来源 binance · 归并 3 条同类报道（2 个来源）"
-    assert steps[1]["summary_zh"] == "已送审 · 高优先级 · 关联 XYZ"
+    assert steps[1]["summary_zh"] == "已送审 · 关联 XYZ"
     _, cl_steps = event_timeline(
-        event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"], priority="normal"), members=[], verdicts=[], deliveries=[]
+        event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"]), members=[], verdicts=[], deliveries=[]
     )
     assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
     assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 影响明显 / 上币 · 模型建议：推送"
-    assert steps[3]["summary_zh"] == "推送 · 高优先级来源，模型建议推送"
+    assert steps[3]["summary_zh"] == "推送 · 交易相关性达到实时推送标准"
     assert steps[4]["summary_zh"] == "已推送到飞书" and steps[4]["at_ms"] == NOW + 9_500
     assert steps[3]["facts"]["storyline_zh"] == "XYZ"
 
@@ -465,7 +470,6 @@ def test_console_read_sites_fill_the_empty_title_sentinel() -> None:
         "leader_title": "Binance will list XYZ",
         "reporting_origin": "binance",
         "admission": "candidate",
-        "priority": "normal",
         "asset_class": "crypto",
         "grounded_assets": ["XYZ"],
         "watchlist_hits": [],

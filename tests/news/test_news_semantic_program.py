@@ -16,12 +16,8 @@ import dspy
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news import SemanticJudgeError
+from tracefold.news import EditorialEnvelope, ScoredJudgment, SemanticJudgeError, SemanticJudgment, TradeRelevanceV1
 from tracefold.news.agents import semantic_program as semantic_program_module
-from tracefold.news.agents.program_artifact_tool import (
-    generate_rollback_program_bundle,
-    verify_rollback_program_bundle,
-)
 from tracefold.news.agents.semantic_program import (
     PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_TOPOLOGY_SHA256,
@@ -46,6 +42,7 @@ from tracefold.news.agents.semantic_program import (
     ProgramPatchV2,
     ProviderCallObservation,
     ReaderCard,
+    ReaderCardSemanticView,
     RecordReplayPredictorAdapter,
     ScriptedPredictorAdapter,
     TriageContext,
@@ -69,10 +66,17 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 1,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
         "audience": "crypto",
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unknown",
+            "development_delta": "state_change",
+            "channels": ["exchange_access"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
     }
     value.update(updates)
     return value
@@ -82,6 +86,23 @@ def _card(**updates: Any) -> dict[str, Any]:
     value = {"headline_zh": "比特币出现新进展", "why_zh": "值得关注。"}
     value.update(updates)
     return value
+
+
+def _reader_semantics(semantics: dict[str, Any]) -> dict[str, Any]:
+    relevance = semantics["relevance"]
+    return ReaderCardSemanticView.model_validate(
+        {
+            "event_type": semantics["event_type"],
+            "assets": semantics["assets"],
+            "direction": semantics["direction"],
+            "magnitude": semantics["magnitude"],
+            "novelty": semantics["novelty"],
+            "restates": semantics["restates"],
+            "scope": semantics["scope"],
+            "channels": relevance["channels"],
+            "affected_markets": relevance["affected_markets"],
+        }
+    ).model_dump(mode="json")
 
 
 def _context(*, told_rows: list[dict[str, Any]] | None = None) -> TriageContext:
@@ -101,7 +122,7 @@ def _context(*, told_rows: list[dict[str, Any]] | None = None) -> TriageContext:
             "family": "listing",
             "provider_score_max": 90,
             "provider_metadata": {"coins": [{"symbol": "BTC", "grade": "A"}]},
-            "priority": "normal",
+            "queue_priority": "normal",
             "asset_class": "crypto",
             "grounded_assets": ["BTC"],
             "storyline_key": "asset:BTC",
@@ -142,52 +163,15 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert artifact.state_sha256 == artifact.computed_state_sha256()
 
 
-def test_rollback_bundle_is_external_v2_only_and_read_only_verifiable(tmp_path: Path) -> None:
-    output = tmp_path / "program-v3-rollback-v2"
-    identity = generate_rollback_program_bundle(output_dir=output)
-    stable = load_stable_program_artifact()
-
-    assert verify_rollback_program_bundle(input_dir=output) == identity
-    assert identity != stable.program_sha256
-    with pytest.raises(ValueError, match="artifact_not_registered"):
-        load_program_artifact(identity)
-    assert {path.name for path in output.iterdir()} == {"registry.json", "profile.json", identity}
-    manifest = json.loads((output / identity / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == "news_semantic_program_artifact_v2"
-    assert "artifact_v1" not in canonical_json(manifest)
-
-    alias = tmp_path / "rollback-alias"
-    alias.symlink_to(output, target_is_directory=True)
-    with pytest.raises(ValueError, match="rollback_input_invalid"):
-        verify_rollback_program_bundle(input_dir=alias)
-
-    registry_path = output / "registry.json"
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
-    registry_path.write_text(
-        canonical_json({"images": ["../outside"], "stable": "../outside"}) + "\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="artifact_identity_invalid"):
-        verify_rollback_program_bundle(input_dir=output)
-    registry_path.write_text(canonical_json(registry) + "\n", encoding="utf-8")
-
-    profile_path = output / "profile.json"
-    profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    profile["rollback_program_sha256"] = "0" * 64
-    profile_path.write_text(canonical_json(profile) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="profile_mismatch"):
-        verify_rollback_program_bundle(input_dir=output)
-
-
-def test_stable_root_is_the_d_generation_v2_ownership_contract() -> None:
+def test_stable_root_is_the_v6_generation_v2_ownership_contract() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_semantic_program_artifact_v2"
-    assert artifact.factory_id == "tracefold.news.semantic_program.factory_v3"
-    assert artifact.program_version == "news_semantic_program_v3"
+    assert artifact.factory_id == "tracefold.news.semantic_program.factory_v4"
+    assert artifact.program_version == "news_semantic_program_v4"
     assert artifact.parent_program_sha256 is None
     assert artifact.quality_kernel.factory_id == artifact.factory_id
-    assert [pack.order for pack in artifact.rule_packs] == list(range(1, 9))
+    assert [pack.order for pack in artifact.rule_packs] == list(range(1, 10))
     assert {strategy.predictor for strategy in artifact.learned_strategies} == {
         "event_semantics",
         "reader_card",
@@ -224,6 +208,17 @@ def test_quality_kernel_hashes_every_package_owned_behavior_source_and_verdict_s
             "TriageVerdict": TriageVerdict.model_json_schema(),
         }
     )
+    assert artifact.quality_kernel.trade_relevance_contract_sha256 == canonical_sha(
+        TradeRelevanceV1.model_json_schema()
+    )
+    assert artifact.quality_kernel.reader_card_semantic_view_sha256 == canonical_sha(
+        ReaderCardSemanticView.model_json_schema()
+    )
+    assert artifact.quality_kernel.editorial_contract_sha256 == canonical_sha(EditorialEnvelope.model_json_schema())
+    assert artifact.quality_kernel.semantic_judgment_contract_sha256 == canonical_sha(
+        SemanticJudgment.model_json_schema()
+    )
+    assert artifact.quality_kernel.scored_judgment_contract_sha256 == canonical_sha(ScoredJudgment.model_json_schema())
 
 
 def test_program_topology_identity_includes_the_deterministic_normalizer() -> None:
@@ -244,7 +239,7 @@ def test_stable_artifact_encodes_the_restatement_index_contract() -> None:
     instruction = load_stable_program_artifact().event_semantics.instruction
     assert "progression: told covers the story but this event adds a material development" in instruction
     assert "restates=-1 even when it follows an earlier card" in instruction
-    assert "Set restates to that visible i and decision=drop" in instruction
+    assert "Set restates to that visible i." in instruction
 
 
 def test_packaged_dependency_lock_identity_matches_the_source_lock() -> None:
@@ -390,7 +385,7 @@ def test_context_caps_every_variable_length_model_input() -> None:
     payload = context.event_semantics_payload()
     assert len(payload["event"]["strategies"]) == 16
     assert len(payload["gate"]["grounded_assets"]) == 16
-    assert len(payload["gate"]["watchlist"]) == 64
+    assert "watchlist" not in payload["gate"]
 
 
 def test_told_selection_is_candidate_conditioned_not_a_recency_quota() -> None:
@@ -486,6 +481,19 @@ def test_neither_predictor_ever_receives_an_audit_identity() -> None:
     assert context.told.entries[0].event_id == "told-secret"
 
 
+def test_neither_predictor_receives_queue_provider_macro_watchlist_or_lag_hints() -> None:
+    context = _context()
+    semantics = context.event_semantics_payload()
+    card = context.reader_card_payload()
+
+    for payload in (semantics, card):
+        assert "provider_score" not in payload["event"]
+        assert "queue_priority" not in payload["event"]
+        assert "macro_lexicon" not in payload["gate"]
+        assert "watchlist" not in payload["gate"]
+    assert "queue_lag_s" not in semantics["event_status"]
+
+
 def test_selected_context_sha_moves_only_when_the_model_visible_selection_moves() -> None:
     rows = [
         {
@@ -535,18 +543,106 @@ def test_two_predictors_assemble_one_verdict_and_trace_usage() -> None:
     assert [call.predictor for call in judgment.trace.calls] == ["event_semantics", "reader_card"]
     assert judgment.trace.calls[0].validated_output == _semantics()
     assert judgment.trace.calls[1].upstream_sha256 == judgment.trace.event_semantics_sha256
+    assert judgment.trace.editorial_sha256 == judgment.editorial.editorial_sha256
+    assert judgment.scored().verdict == judgment.verdict
+    assert judgment.scored().editorial == judgment.editorial
 
 
-def test_v2_rollback_root_executes_the_same_two_call_graph_and_public_contract() -> None:
-    rollback = build_code_owned_program_artifact_v2(profile="program_v3_rollback")
-    judgment = asyncio.run(
-        _program(ScriptedPredictorAdapter([_semantics(), _card()]), artifact=rollback).judge(_context())
+def test_trade_relevance_is_canonicalized_and_reader_card_gets_only_its_view() -> None:
+    raw = _semantics(
+        relevance={
+            "impact_breadth": "regional",
+            "tradability": "direct",
+            "surprise": "unknown",
+            "development_delta": "material_detail",
+            "channels": ["regulation", "rates", "regulation"],
+            "affected_markets": ["single_asset", "rates", "single_asset"],
+            "reader_value": "realtime",
+        }
+    )
+    adapter = ScriptedPredictorAdapter([raw, _card()])
+
+    judgment = asyncio.run(_program(adapter).judge(_context()))
+
+    relevance = judgment.editorial.relevance
+    assert relevance is not None
+    assert relevance.channels == ("rates", "regulation")
+    assert relevance.affected_markets == ("rates", "single_asset")
+    assert judgment.verdict.decision == "push"
+    assert judgment.verdict.actionable is True
+    assert [item.model_dump(mode="json") for item in judgment.trace.calls[0].normalizations] == [
+        {
+            "normalizer_id": "semantic_normalizer_v2",
+            "field": "channels",
+            "reason": "canonical_set_order",
+            "input_value": ["regulation", "rates", "regulation"],
+            "output_value": ["rates", "regulation"],
+        },
+        {
+            "normalizer_id": "semantic_normalizer_v2",
+            "field": "affected_markets",
+            "reason": "canonical_set_order",
+            "input_value": ["single_asset", "rates", "single_asset"],
+            "output_value": ["rates", "single_asset"],
+        },
+    ]
+    reader_view = json.loads(adapter.requests[1].inputs["semantics_json"])
+    assert set(reader_view) == {
+        "event_type",
+        "assets",
+        "direction",
+        "magnitude",
+        "novelty",
+        "restates",
+        "scope",
+        "channels",
+        "affected_markets",
+    }
+    assert not {"reader_value", "tradability", "surprise", "development_delta", "confidence", "audience"} & set(
+        reader_view
     )
 
-    assert judgment.program_sha256 == rollback.program_sha256
-    assert judgment.usage.physical_call_count == 2
-    assert [call.predictor for call in judgment.trace.calls] == ["event_semantics", "reader_card"]
-    assert judgment.verdict.title_zh == ""
+
+def test_trade_relevance_rejects_unknown_or_more_than_four_unique_codes() -> None:
+    base = _semantics()["relevance"]
+
+    with pytest.raises(ValidationError):
+        TradeRelevanceV1.model_validate({**base, "channels": ["rates", "unknown_channel"]})
+    with pytest.raises(ValidationError):
+        TradeRelevanceV1.model_validate(
+            {
+                **base,
+                "channels": [
+                    "rates",
+                    "liquidity",
+                    "risk_premium",
+                    "energy_supply",
+                    "commodity_supply",
+                ],
+            }
+        )
+
+
+def test_assembler_derives_legacy_intent_and_actionability_from_relevance() -> None:
+    background = _semantics(
+        relevance={
+            "impact_breadth": "regional",
+            "tradability": "contextual",
+            "surprise": "in_line",
+            "development_delta": "color_only",
+            "channels": [],
+            "affected_markets": [],
+            "reader_value": "background",
+        }
+    )
+    judgment = asyncio.run(_program(ScriptedPredictorAdapter([background, _card()])).judge(_context()))
+
+    assert judgment.verdict.decision == "drop"
+    assert judgment.verdict.actionable is False
+    with pytest.raises(ValidationError):
+        EventSemantics.model_validate({**background, "decision": "push"})
+    with pytest.raises(ValidationError):
+        EventSemantics.model_validate({**background, "actionable": True})
 
 
 def test_reader_card_schema_omits_title_but_public_verdict_keeps_empty_sentinel() -> None:
@@ -668,7 +764,7 @@ def test_non_restatement_index_is_normalized_before_reader_without_retry(novelty
     assert semantic_call.validated_output == _semantics(novelty=novelty, restates=0)
     assert [normalization.model_dump(mode="json") for normalization in semantic_call.normalizations] == [
         {
-            "normalizer_id": "semantic_normalizer_v1",
+            "normalizer_id": "semantic_normalizer_v2",
             "field": "restates",
             "reason": "non_restatement_index_ignored",
             "input_value": 0,
@@ -677,7 +773,8 @@ def test_non_restatement_index_is_normalized_before_reader_without_retry(novelty
     ]
     assert semantic_call.output_sha256 == canonical_sha(_semantics(novelty=novelty, restates=0))
     assert judgment.trace.event_semantics_sha256 == canonical_sha(_semantics(novelty=novelty, restates=-1))
-    assert adapter.requests[1].inputs["semantics_json"] == canonical_json(_semantics(novelty=novelty, restates=-1))
+    normalized = _semantics(novelty=novelty, restates=-1)
+    assert adapter.requests[1].inputs["semantics_json"] == canonical_json(_reader_semantics(normalized))
 
 
 def test_valid_restatement_preserves_visible_index_without_normalization() -> None:
@@ -1666,7 +1763,7 @@ def test_codec_hard_cuts_artifact_v1_before_schema_loading() -> None:
         ProgramArtifactCodec.decode(canonical_json(manifest), canonical_json({}))
 
 
-def test_optimizer_extractor_sees_only_strategy_and_exact_eligible_demo_refs() -> None:
+def test_optimizer_extractor_changes_only_strategies_and_rejects_demos() -> None:
     parent = load_stable_program_artifact()
     record = _accepted_event_demo()
     eligible = EligibleDemoBank.issue((record,))
@@ -1675,23 +1772,22 @@ def test_optimizer_extractor_sees_only_strategy_and_exact_eligible_demo_refs() -
     assert cold.reader_card.signature.instructions == ""
     assert "SEALED TRACEFOLD QUALITYKERNEL" not in cold.event_semantics.signature.instructions
     cold.event_semantics.signature = cold.event_semantics.signature.with_instructions("Prefer explicit causal facts.")
-    cold.event_semantics.demos = [dspy.Example(**record.dspy_demo()).with_inputs("evidence_json")]
 
     patch = extract_optimizer_patch(cold, parent, eligible)
 
     assert patch.learned_strategies[0].text == "Prefer explicit causal facts."
-    assert patch.demo_refs.event_semantics == (record.demo_id,)
+    assert patch.demo_refs == DemoRefOrder()
     cold.event_semantics.demos = [
         dspy.Example(
             evidence_json=render_model_evidence_json(_context().event_semantics_payload(), predictor="event_semantics"),
             semantics={**_semantics(), "magnitude": 2},
         ).with_inputs("evidence_json")
     ]
-    with pytest.raises(ValueError, match="demo_membership_ambiguous"):
+    with pytest.raises(ValueError, match="optimizer_demos_forbidden"):
         extract_optimizer_patch(cold, parent, eligible)
 
 
-def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() -> None:
+def test_trusted_patch_applier_changes_only_strategies_and_keeps_demo_bank_empty() -> None:
     parent = load_stable_program_artifact()
     record = _accepted_event_demo()
     eligible = EligibleDemoBank.issue((record,))
@@ -1709,7 +1805,7 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
                 source="optimizer_patch",
             ),
         ),
-        demo_refs=DemoRefOrder(event_semantics=(record.demo_id,)),
+        demo_refs=DemoRefOrder(),
         eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
     )
 
@@ -1719,7 +1815,7 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
     receipt = CompileReceipt(
         mode="optimizer_candidate",
         development_dataset_sha=sha("dataset"),
-        learning_epoch="program_v5",
+        learning_epoch="program_v6",
         learning_epoch_started_at_ms=1,
         projection_schema_id="news_program_v4_projection_v1",
         optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
@@ -1729,11 +1825,19 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
         seed=7,
         max_metric_calls=20,
         max_task_model_calls=30,
+        max_reflection_model_calls=10,
+        max_metric_judge_model_calls=10,
         max_cost_microusd=10_000,
         max_call_cost_microusd=1_000,
         metric_calls=12,
         task_model_calls=15,
         reflection_model_calls=3,
+        metric_judge_attempts=2,
+        metric_judge_model_calls=2,
+        metric_judge_failures=0,
+        task_cost_microusd=6_000,
+        reflection_cost_microusd=2_000,
+        metric_judge_cost_microusd=1_000,
         actual_cost_microusd=9_000,
         trajectory_sha256=sha("trajectory"),
         checkpoint_sha256=sha("checkpoint"),
@@ -1753,11 +1857,12 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
         target_runtime_manifest_sha256=sha("runtime"),
         task_endpoint_identity_sha256=sha("task-endpoint"),
         reflection_endpoint_identity_sha256=sha("reflection-endpoint"),
+        metric_judge_endpoint_identity_sha256=sha("metric-judge-endpoint"),
         compiler_source_sha256=sha("compiler-source"),
         compiler_lock_sha256=sha("compiler-lock"),
         sandbox_policy_sha256=sha("sandbox-policy"),
-        compiler="tracefold.news.dspy_gepa_compiler_v2",
-        source="trusted_compiler_launcher_v2",
+        compiler="tracefold.news.dspy_gepa_compiler_v3",
+        source="trusted_compiler_launcher_v3",
         accepted_by="unaccepted_candidate",
     )
 
@@ -1768,7 +1873,8 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
     assert candidate.rule_packs == parent.rule_packs
     assert candidate.route_spec == parent.route_spec
     assert candidate.execution == parent.execution
-    assert candidate.demo_bank.records == (record,)
+    assert candidate.demo_bank.records == ()
+    assert candidate.demo_bank.refs == DemoRefOrder()
     assert candidate.compile_receipt.accepted_by == "unaccepted_candidate"
     manifest, state = ProgramArtifactCodec.encode(candidate)
     assert ProgramArtifactCodec.decode(manifest, state) == candidate
@@ -1785,6 +1891,14 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
     )
     with pytest.raises(ValueError, match="artifact_schema_invalid"):
         ProgramArtifactCodec.decode(canonical_json(tampered_manifest), canonical_json(tampered_state))
+
+    with pytest.raises(ValidationError, match="v6_demo_refs_forbidden"):
+        ProgramPatchV2.issue(
+            parent=parent,
+            learned_strategies=patch.learned_strategies,
+            demo_refs=DemoRefOrder(event_semantics=(record.demo_id,)),
+            eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
+        )
 
 
 def test_production_registry_and_image_directories_reject_symlinks(

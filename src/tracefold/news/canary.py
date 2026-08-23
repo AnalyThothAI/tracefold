@@ -16,12 +16,11 @@ from typing import Any, Literal, cast
 
 from tracefold.news import SemanticJudge
 
-CANARY_SELECTOR_VERSION = "news_canary_selector_v1"
+CANARY_SELECTOR_VERSION = "news_canary_selector_v2"
 CANARY_EXPOSURE_BPS = 1_000
 CANARY_ELIGIBILITY_PROFILE: dict[str, Any] = {
     "live_only": True,
-    "excluded_admissions": ["recovery", "listing_deterministic"],
-    "excluded_priorities": ["high"],
+    "excluded_admissions": ["recovery", "listing_deterministic", "telemetry_deterministic"],
 }
 CANARY_ROLLING_PROFILE: dict[str, Any] = {
     "evaluation_bucket_ms": 3_600_000,
@@ -72,7 +71,6 @@ def select_canary_arm(
     candidate_bundle_sha: str,
     exposure_bps: int,
     admission: str,
-    priority: str,
     ingest_mode: str,
 ) -> CanarySelection:
     """Assign one arm from pre-call facts; the caller persists the result."""
@@ -81,8 +79,6 @@ def select_canary_arm(
         return CanarySelection("stable", baseline_bundle_sha, "excluded_non_live")
     if admission in CANARY_ELIGIBILITY_PROFILE["excluded_admissions"]:
         return CanarySelection("stable", baseline_bundle_sha, f"excluded_admission:{admission}")
-    if priority in CANARY_ELIGIBILITY_PROFILE["excluded_priorities"]:
-        return CanarySelection("stable", baseline_bundle_sha, f"excluded_priority:{priority}")
     digest = hashlib.sha256(f"{activation_id}:{event_id}".encode()).digest()
     bucket = int.from_bytes(digest[:8], "big") % 10_000
     if bucket < int(exposure_bps):
@@ -146,11 +142,25 @@ def apply_canary_control(
             baseline_matches = str(activation["baseline_bundle_sha"]) == stable_bundle_sha
             candidate_sha = str(activation["candidate_manifest_sha"])
             candidate_matches = shipped_candidates.get(candidate_sha) == str(activation["candidate_bundle_sha"])
-            if not baseline_matches or not candidate_matches:
+            selector_matches = str(activation["selector_version"]) == CANARY_SELECTOR_VERSION
+            eligibility_matches = str(activation["eligibility_profile_sha"]) == CANARY_ELIGIBILITY_PROFILE_SHA
+            rolling_matches = str(activation["rolling_profile_sha"]) == CANARY_ROLLING_PROFILE_SHA
+            if not all((baseline_matches, candidate_matches, selector_matches, eligibility_matches, rolling_matches)):
+                reason = (
+                    "baseline_bundle_mismatch"
+                    if not baseline_matches
+                    else "candidate_artifact_missing"
+                    if not candidate_matches
+                    else "selector_version_mismatch"
+                    if not selector_matches
+                    else "eligibility_profile_hash_mismatch"
+                    if not eligibility_matches
+                    else "rolling_profile_hash_mismatch"
+                )
                 repos.news.transition_canary(
                     activation_id=str(command.activation_id),
                     target_state="tripped",
-                    reason=("baseline_bundle_mismatch" if not baseline_matches else "candidate_artifact_missing"),
+                    reason=reason,
                     now_ms=now_ms,
                 )
                 return dict(repos.news.canary_status())
