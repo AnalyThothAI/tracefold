@@ -390,17 +390,19 @@ recovery seam.
 
 `docs/generated/` contains only reproducible outputs: `README.md`,
 `cli-help.md` (`scripts/regen_cli_help.py`), `db-schema.md`
-(`scripts/regen_db_schema.py`, needs PostgreSQL), and `openapi.json`
-(`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`).
+(`scripts/regen_db_schema.py`, needs PostgreSQL), `openapi.json`
+(`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`), and the
+Issue #162 refactor baseline (`python -m tests.support.refactor_baseline`).
 
 ```bash
 make docs-generated   # db-schema.md + cli-help.md
 make regen-contract   # openapi.json + web/src/lib/types/openapi.ts
 ```
 
-`make check` runs only the database-free `regen_cli_help.py --check` drift
-check. Generated OpenAPI and frontend types change in the same commit as their
-source.
+`make check` runs the database-free CLI-help and Issue #162 refactor-baseline
+drift checks. Generated OpenAPI and frontend types change in the same commit as
+their source. Regenerate the refactor baseline only as an explicit contract
+change and inspect its JSON diff before committing.
 
 ## Completion
 

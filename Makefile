@@ -49,6 +49,7 @@ check: ## run static, frontend, architecture, and public-contract checks
 	@uv run mypy src
 	@cd web && npm run typecheck && npm run lint && npm run format:check
 	@uv run python scripts/regen_cli_help.py --check
+	@uv run python -m tests.support.refactor_baseline --check
 	@uv run python -m pytest tests/architecture tests/contract -m "architecture or contract"
 	@uv run python -m compileall src tests
 

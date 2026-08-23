@@ -1,0 +1,2147 @@
+{
+  "baseline_revision": "9441ce995bea872805b9611b8b7a860f5d1d1385",
+  "behavior_and_runtime_contracts": {
+    "generated_artifacts_sha256": {
+      "docs/generated/cli-help.md": "aa79b49f83ef76ad49c09044cace601d5eb87ecdbd03402e8ccd8cc27ee054a3",
+      "docs/generated/db-schema.md": "63e1c9f90a8aa84610321a9d7c19a45a6275fe0741b8cd337beededd479a0ce3",
+      "docs/generated/openapi.json": "9e86fe3615f13b1f491886399f9892d89a47c41341400595fe89aeae55e14d05",
+      "web/src/lib/types/openapi.ts": "da0ca90e30d54f7d08c0881ff936fb658148e5fb2997bc591b2ed919ad2d5655"
+    },
+    "infrastructure_and_dependency_sha256": {
+      "Dockerfile": "e8851070ef941dcaf436e5d77437d88d4e57ef421125a4b74b6de4c5d7152820",
+      "compose.yaml": "a6b8f71e3b21042e306357e1147fd38dbf1eb013a3cca5bfce131e5306b34890",
+      "uv.lock": "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37",
+      "web/package-lock.json": "ff1fab43cee4ec8e90fc3ae6f40721bb681b23e16c5ec8d4932a2f332a0e14cc"
+    },
+    "migration_head": "20260823_0301",
+    "news_to_trading": {
+      "integration_evidence": [
+        "tests/integration/test_trading_ledger.py::test_oi_projection_exposes_only_post_epoch_v10_judgments",
+        "tests/integration/test_trading_ledger.py::test_model_projection_requires_v4_model_editorial_in_the_v6_epoch",
+        "tests/integration/test_trading_ledger.py::test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_identity",
+        "tests/integration/test_trading_ledger.py::test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call"
+      ],
+      "manifest_version": "trading_manifest_v2",
+      "point_in_time_reads": {
+        "instrument": {
+          "instrument_class": "crypto",
+          "order": [
+            "venue",
+            "quote_preference",
+            "symbol_length",
+            "venue_symbol"
+          ],
+          "status": "trading",
+          "venues": [
+            "binance.perp",
+            "hl.perp"
+          ]
+        },
+        "news": {
+          "after_created_at_ms": "exclusive",
+          "fields": [
+            "asset_class",
+            "comparison_fingerprint",
+            "editorial_origin",
+            "editorial_sha256",
+            "event_id",
+            "evidence_sha256",
+            "evidence_version",
+            "final_decision",
+            "focus_fact_id",
+            "grounded_assets",
+            "ingest_mode",
+            "learning_epoch",
+            "opened_at_ms",
+            "policy_version",
+            "program_sha256",
+            "program_version",
+            "runtime_manifest_sha",
+            "scored_judgment_sha256",
+            "source_artifact_id",
+            "source_published_at_ms",
+            "verdict",
+            "verdict_created_at_ms"
+          ],
+          "generation": {
+            "editorial_origin": "model",
+            "learning_epoch": "program_v6",
+            "policy_version": "news_triage_policy_v10",
+            "program_version": "news_semantic_program_v4"
+          },
+          "order": [
+            "verdict_created_at_ms",
+            "event_id"
+          ],
+          "until_created_at_ms": "inclusive"
+        },
+        "oi": {
+          "after_created_at_ms": "exclusive",
+          "fields": [
+            "direction",
+            "editorial_origin",
+            "editorial_sha256",
+            "event_id",
+            "final_decision",
+            "ingest_mode",
+            "learning_epoch",
+            "metric_version",
+            "observed_at_ms",
+            "oi_change_bps",
+            "oi_value_usd",
+            "policy_version",
+            "program_sha256",
+            "program_version",
+            "rank_in_window",
+            "runtime_manifest_sha",
+            "scored_judgment_sha256",
+            "symbol",
+            "venue",
+            "verdict_created_at_ms",
+            "whale_long_profit_bps",
+            "whale_oi_ratio_bps"
+          ],
+          "generation": {
+            "editorial_origin": "telemetry_deterministic",
+            "learning_epoch": "program_v6",
+            "policy_version": "news_triage_policy_v10",
+            "program_version": "news_oi_signal_v1"
+          },
+          "order": [
+            "verdict_created_at_ms",
+            "event_id"
+          ],
+          "until_created_at_ms": "inclusive"
+        }
+      },
+      "policy_version": "trading_policy_v1",
+      "program_version": "trading_news_oi_decision_v1",
+      "schema_sha256": {
+        "manifest": "533f0cb7fef94fd8c96c6361b534aae70fde66af953c42d44c8d96413864d84e",
+        "news": "c7316b44825c41e3252326649bbf0e95ee99aec7d38430c0972cb4d2317b249a",
+        "oi": "dd5aeff50bb81eb3f1500a5a5ae1f481590271303d7eb6923bd93f8e297bf564"
+      }
+    },
+    "program_learning": {
+      "adapter_sha256": "c084e30c3f69de7deb0a2b68aa36a50e64d6f4192c07b4d3736e574d57faf305",
+      "assembler_sha256": "c7ece1311dc67246fdd2a8641abea64617858653583963e1a85a1db49efceeff",
+      "compiler_id": "tracefold.news.dspy_gepa_compiler_v3",
+      "compiler_schemas": [
+        "tracefold.news.compile_corpus_receipt.v3",
+        "tracefold.news.compile_input_bundle.v3",
+        "tracefold.news.compile_receipt_chain.v3",
+        "tracefold.news.compile_receipt_payload.v3",
+        "tracefold.news.compiler_endpoint_identity.v3",
+        "tracefold.news.compiler_role_binding.v3",
+        "tracefold.news.compiler_runner_receipts.v3"
+      ],
+      "dependency_lock_sha256": "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37",
+      "factory_id": "tracefold.news.semantic_program.factory_v4",
+      "input_contract_sha256": "d372cd72bbf163fb341155dfa8422c28d5db003b4314b33c977cf2425b5e17d2",
+      "learning_epoch": "program_v6",
+      "metric_id": "tracefold.news.production_action_trade_relevance_v4",
+      "normalizer_sha256": "eda2e8a517050d27606b528770030e4674168b8c2a875adf0400d4fb6e62ef0a",
+      "policy_version": "news_triage_policy_v10",
+      "program_sha256": "648e696df5a8f251085a0749795a8d9e9227d05fb7e976fd1b5b538a7b8e87e7",
+      "program_version": "news_semantic_program_v4",
+      "renderer_sha256": "b409b6ba063a5e5178dc67e23e6c81f50e28c46018b878b3708d44416702773b",
+      "review_rubric_version": "news_review_v4",
+      "schema_version": "news_semantic_program_artifact_v2",
+      "topology_sha256": "886f96a3ce2f726e78f57d3f531869fe79484aa7bf30d6785c62c810f849ff83"
+    },
+    "rabbitmq": {
+      "exchange_declarations": [
+        {
+          "durable": true,
+          "name": "news",
+          "type": "topic"
+        },
+        {
+          "durable": true,
+          "name": "news.dlx",
+          "type": "fanout"
+        },
+        {
+          "durable": true,
+          "name": "news.retry",
+          "type": "fanout"
+        }
+      ],
+      "integration_evidence": [
+        "tests/integration/test_news_bus_rabbitmq.py::test_declarations_confirms_and_publisher_properties_match_the_runtime_contract",
+        "tests/integration/test_news_bus_rabbitmq.py::test_topology_is_three_queues_one_dlq_one_retry_lane",
+        "tests/integration/test_news_bus_rabbitmq.py::test_consume_handles_up_to_prefetch_messages_concurrently",
+        "tests/integration/test_news_bus_rabbitmq.py::test_transient_is_counted_defer_is_not_and_permanent_dead_letters"
+      ],
+      "max_transient_attempts": 3,
+      "publisher": {
+        "confirms": true,
+        "content_type": "application/json",
+        "delivery_mode": "PERSISTENT",
+        "priority_preserved": true,
+        "publish_timeout_seconds": 10
+      },
+      "queue_declarations": [
+        {
+          "arguments": {
+            "x-delivery-limit": 1000000,
+            "x-queue-type": "quorum"
+          },
+          "bindings": [
+            {
+              "exchange": "news.dlx",
+              "routing_key": "#"
+            }
+          ],
+          "durable": true,
+          "name": "news.dead"
+        },
+        {
+          "arguments": {
+            "x-dead-letter-exchange": "news.dlx",
+            "x-delivery-limit": 1,
+            "x-queue-type": "quorum",
+            "x-single-active-consumer": true
+          },
+          "bindings": [
+            {
+              "exchange": "news",
+              "routing_key": "verdict.push"
+            }
+          ],
+          "durable": true,
+          "name": "news.deliver"
+        },
+        {
+          "arguments": {
+            "x-dead-letter-exchange": "news.dlx",
+            "x-delivery-limit": 3,
+            "x-max-length": 100000,
+            "x-overflow": "reject-publish",
+            "x-queue-type": "quorum",
+            "x-single-active-consumer": true
+          },
+          "bindings": [
+            {
+              "exchange": "news",
+              "routing_key": "raw.#"
+            }
+          ],
+          "durable": true,
+          "name": "news.raw"
+        },
+        {
+          "arguments": {
+            "x-dead-letter-exchange": "news",
+            "x-message-ttl": 30000,
+            "x-queue-type": "quorum"
+          },
+          "bindings": [
+            {
+              "exchange": "news.retry",
+              "routing_key": "#"
+            }
+          ],
+          "durable": true,
+          "name": "news.retry"
+        },
+        {
+          "arguments": {
+            "x-dead-letter-exchange": "news.dlx",
+            "x-delivery-limit": 3,
+            "x-queue-type": "quorum"
+          },
+          "bindings": [
+            {
+              "exchange": "news",
+              "routing_key": "event.#"
+            }
+          ],
+          "durable": true,
+          "name": "news.triage"
+        }
+      ],
+      "retry_ttl_ms": 30000,
+      "settlement_contract": {
+        "defer_after_republish": "ack_unincremented",
+        "permanent": "reject_no_requeue_to_dlx",
+        "success": "ack",
+        "transient_after_republish": "ack_incremented",
+        "transient_exhausted": "reject_no_requeue_to_dlx"
+      }
+    },
+    "representative_news_flow": {
+      "flow": {
+        "card": {
+          "config": {
+            "wide_screen_mode": true
+          },
+          "elements": [
+            {
+              "content": "新集成扩大可用渠道，可能带来新增交易与支付需求。\n利多 · 影响明显 · DOGE · Reuters（2 条报道） · 04:53",
+              "tag": "markdown"
+            },
+            {
+              "actions": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "content": "打开来源",
+                    "tag": "plain_text"
+                  },
+                  "type": "default",
+                  "url": "https://example.invalid/doge"
+                }
+              ],
+              "tag": "action"
+            },
+            {
+              "elements": [
+                {
+                  "content": "Tracefold · event-ba",
+                  "tag": "plain_text"
+                }
+              ],
+              "tag": "note"
+            }
+          ],
+          "header": {
+            "template": "green",
+            "title": {
+              "content": "狗狗币新增直接支付入口",
+              "tag": "plain_text"
+            }
+          }
+        },
+        "decision": {
+          "final": "push",
+          "override_rule": "trade_relevance_realtime",
+          "rule_baseline": "drop",
+          "seen_against": -1,
+          "seen_scope": "",
+          "seen_similarity": null,
+          "throttled_by": null,
+          "watchlist_hits": []
+        },
+        "delivery_receipt": {
+          "delivery_state": "sent",
+          "error_code": null,
+          "received_at_ms": 1787000005000,
+          "rendered_card": {
+            "config": {
+              "wide_screen_mode": true
+            },
+            "elements": [
+              {
+                "content": "新集成扩大可用渠道，可能带来新增交易与支付需求。\n利多 · 影响明显 · DOGE · Reuters（2 条报道） · 04:53",
+                "tag": "markdown"
+              },
+              {
+                "actions": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "content": "打开来源",
+                      "tag": "plain_text"
+                    },
+                    "type": "default",
+                    "url": "https://example.invalid/doge"
+                  }
+                ],
+                "tag": "action"
+              },
+              {
+                "elements": [
+                  {
+                    "content": "Tracefold · event-ba",
+                    "tag": "plain_text"
+                  }
+                ],
+                "tag": "note"
+              }
+            ],
+            "header": {
+              "template": "green",
+              "title": {
+                "content": "狗狗币新增直接支付入口",
+                "tag": "plain_text"
+              }
+            }
+          },
+          "state": "received"
+        },
+        "editorial_envelope": {
+          "editorial_contract_version": "news_editorial_v1",
+          "editorial_origin": "model",
+          "editorial_sha256": "d9db9c82ca2782d0263da0bf106b4eecc86595218f723bc8aae7b6e00635c8a5",
+          "relevance": {
+            "affected_markets": [
+              "single_asset"
+            ],
+            "channels": [
+              "earnings_cashflow"
+            ],
+            "development_delta": "state_change",
+            "impact_breadth": "single_instrument",
+            "reader_value": "realtime",
+            "surprise": "material_vs_expectation",
+            "tradability": "direct"
+          }
+        },
+        "model_visible_event_semantics": {
+          "event": {
+            "content": "The integration makes DOGE available to a new payment network.",
+            "engine_type": "news",
+            "family": "general",
+            "member_count": 2,
+            "provider_coins": [
+              "DOGE:A"
+            ],
+            "published_at_ms": 1787000000000,
+            "raw_first_line": "Dogecoin gains direct payment access",
+            "source": "Reuters",
+            "strategies": [
+              "strategy:baseline"
+            ],
+            "title": "Dogecoin gains direct payment access after a new integration"
+          },
+          "event_status": {
+            "preliminary": true,
+            "storyline_key": "asset:DOGE",
+            "told": []
+          },
+          "gate": {
+            "asset_class": "crypto",
+            "grounded_assets": [
+              "DOGE"
+            ],
+            "pr_template": false
+          }
+        },
+        "scored_judgment": {
+          "editorial": {
+            "editorial_contract_version": "news_editorial_v1",
+            "editorial_origin": "model",
+            "editorial_sha256": "d9db9c82ca2782d0263da0bf106b4eecc86595218f723bc8aae7b6e00635c8a5",
+            "relevance": {
+              "affected_markets": [
+                "single_asset"
+              ],
+              "channels": [
+                "earnings_cashflow"
+              ],
+              "development_delta": "state_change",
+              "impact_breadth": "single_instrument",
+              "reader_value": "realtime",
+              "surprise": "material_vs_expectation",
+              "tradability": "direct"
+            }
+          },
+          "scored_judgment_sha256": "637c5f485e565f035eca9c9a8fb88eb7cc5ff706fd39161106df0c22273ecd39",
+          "verdict": {
+            "actionable": true,
+            "assets": [
+              {
+                "market_type": "spot",
+                "role": "primary",
+                "symbol": "DOGE"
+              }
+            ],
+            "audience": "crypto",
+            "confidence": 0.83,
+            "decision": "push",
+            "direction": "bullish",
+            "event_type": "partnership",
+            "headline_zh": "狗狗币新增直接支付入口",
+            "magnitude": 2,
+            "novelty": "new_fact",
+            "restates": -1,
+            "scope": "single_name",
+            "title_zh": "",
+            "why_zh": "新集成扩大可用渠道，可能带来新增交易与支付需求。"
+          },
+          "verdict_sha256": "dff7efd06b03dbe39ea7b361888b9549f3a5ffe15e4c9af0957253cc0a7b02a0"
+        },
+        "triage_context": {
+          "evidence": {
+            "comparison_title": "dogecoin gains direct payment access after a new integration",
+            "content": "The integration makes DOGE available to a new payment network.",
+            "engine_type": "news",
+            "event_id": "event-baseline-doge",
+            "evidence_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "evidence_version": 3,
+            "family": "general",
+            "focus_fact_id": "fact-doge-1",
+            "member_count": 2,
+            "provider_coins": [
+              "DOGE:A"
+            ],
+            "provider_score": 88,
+            "published_at_ms": 1787000000000,
+            "queue_priority": "high",
+            "raw_first_line": "Dogecoin gains direct payment access",
+            "source": "Reuters",
+            "strategies": [
+              "strategy:baseline"
+            ],
+            "title": "Dogecoin gains direct payment access after a new integration"
+          },
+          "gate": {
+            "asset_class": "crypto",
+            "grounded_assets": [
+              "DOGE"
+            ],
+            "macro_lexicon": false,
+            "pr_template": false
+          },
+          "now_ms": 1787000004000,
+          "queue_lag_ms": 4000,
+          "told": {
+            "entries": [],
+            "preliminary": true,
+            "source_count": 0,
+            "storyline_key": "asset:DOGE"
+          },
+          "watchlist": [
+            "BTC"
+          ]
+        },
+        "verdict": {
+          "actionable": true,
+          "assets": [
+            {
+              "market_type": "spot",
+              "role": "primary",
+              "symbol": "DOGE"
+            }
+          ],
+          "audience": "crypto",
+          "confidence": 0.83,
+          "decision": "push",
+          "direction": "bullish",
+          "event_type": "partnership",
+          "headline_zh": "狗狗币新增直接支付入口",
+          "magnitude": 2,
+          "novelty": "new_fact",
+          "restates": -1,
+          "scope": "single_name",
+          "title_zh": "",
+          "why_zh": "新集成扩大可用渠道，可能带来新增交易与支付需求。"
+        }
+      },
+      "snapshot_sha256": "dcf05eb43e85a54706981eb4b4ad82286e456bd869bf0a9c9b0ea891e05210f6"
+    },
+    "representative_news_replay": {
+      "candidate_share_of_items": 0.7227,
+      "counts": {
+        "admission:candidate": 86,
+        "admission:listing_deterministic": 3,
+        "admission:suppressed_pr_template": 8,
+        "events": 97,
+        "exact_members": 20,
+        "items": 119,
+        "near_members": 2
+      },
+      "report_sha256": "7c6627ce09b814167408e9685b5ada0ea0a989fbc78842c51f6956082e1e863c",
+      "storylines": 33
+    },
+    "representative_trading_flow": {
+      "flow": {
+        "active_states": [
+          "ACKNOWLEDGED",
+          "AMBIGUOUS",
+          "APPROVED",
+          "AWAITING_APPROVAL",
+          "MANUAL_REVIEW_REQUIRED",
+          "OPEN",
+          "PARTIAL",
+          "PREPARED",
+          "RECONCILING",
+          "SAFETY_CLOSING",
+          "SUBMITTING",
+          "UNPROTECTED"
+        ],
+        "all_states": [
+          "ACKNOWLEDGED",
+          "AMBIGUOUS",
+          "APPROVED",
+          "AWAITING_APPROVAL",
+          "CLOSED",
+          "MANUAL_REVIEW_REQUIRED",
+          "OPEN",
+          "PARTIAL",
+          "PREPARED",
+          "RECONCILING",
+          "REJECTED",
+          "REJECTED_BY_OPERATOR",
+          "SAFETY_CLOSING",
+          "SUBMITTING",
+          "UNPROTECTED"
+        ],
+        "faults_and_reconciliation": {
+          "ack": {
+            "attempts": 1,
+            "ledger_state": "ACKNOWLEDGED",
+            "receipt": {
+              "average_price": "103",
+              "filled_quantity": "0.4854",
+              "raw": {},
+              "reason": "paper_ack",
+              "remote_order_id": "paper-order-ack",
+              "state": "ACKNOWLEDGED"
+            },
+            "remote_present": true
+          },
+          "ambiguous": {
+            "attempts": 1,
+            "ledger_state": "AMBIGUOUS",
+            "receipt": {
+              "average_price": null,
+              "filled_quantity": null,
+              "raw": {},
+              "reason": "paper_timeout",
+              "remote_order_id": null,
+              "state": "AMBIGUOUS"
+            },
+            "reconciliation_result": {
+              "reason": "resolved_by_read",
+              "state": "OPEN"
+            },
+            "remote_present": true
+          },
+          "ambiguous_lost": {
+            "attempts": 1,
+            "ledger_state": "AMBIGUOUS",
+            "receipt": {
+              "average_price": null,
+              "filled_quantity": null,
+              "raw": {},
+              "reason": "paper_timeout",
+              "remote_order_id": null,
+              "state": "AMBIGUOUS"
+            },
+            "reconciliation_result": {
+              "reason": "proven_absent",
+              "state": "REJECTED"
+            },
+            "remote_present": false
+          },
+          "reject": {
+            "attempts": 1,
+            "ledger_state": "REJECTED",
+            "receipt": {
+              "average_price": null,
+              "filled_quantity": null,
+              "raw": {},
+              "reason": "paper_rejected",
+              "remote_order_id": null,
+              "state": "REJECTED"
+            },
+            "remote_present": false
+          }
+        },
+        "integration_evidence": [
+          "tests/integration/test_trading_ledger.py::test_an_ambiguous_attempt_is_resolved_by_reading_and_never_by_resending",
+          "tests/integration/test_trading_ledger.py::test_an_attempt_that_never_landed_is_proven_absent_and_frees_the_underlying"
+        ],
+        "manifest": {
+          "base_symbol": "DOGE",
+          "case_kind": "news_oi",
+          "cutoff_ms": 1787000000000,
+          "instrument": {
+            "base_symbol": "DOGE",
+            "exchange_id": "binance",
+            "instrument_class": "crypto",
+            "observed_at_ms": 1787000000000,
+            "provider_symbol": "DOGEUSDT",
+            "quote_asset": "USDT",
+            "venue": "binance.perp"
+          },
+          "manifest_version": "trading_manifest_v2",
+          "mark_price": "103",
+          "news": {
+            "base_symbol": "DOGE",
+            "comparison_fingerprint": "fp-doge",
+            "editorial_origin": "model",
+            "editorial_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "event_id": "event-news-doge",
+            "event_type": "partnership",
+            "evidence_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "evidence_version": 3,
+            "final_decision": "push",
+            "focus_fact_id": "fact-doge-1",
+            "headline_zh": "狗狗币新增直接支付入口",
+            "learning_epoch": "program_v6",
+            "magnitude": 2,
+            "novelty": "new_fact",
+            "opened_at_ms": 1786999939000,
+            "policy_version": "news_triage_policy_v10",
+            "program_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "program_version": "news_semantic_program_v4",
+            "risk_direction": "bullish",
+            "runtime_manifest_sha": "4444444444444444444444444444444444444444444444444444444444444444",
+            "scope": "single_name",
+            "scored_judgment_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source_artifact_id": "x:123",
+            "source_published_at_ms": 1786999938000,
+            "verdict_created_at_ms": 1786999940000,
+            "why_zh": "新集成扩大可用渠道。"
+          },
+          "oi": {
+            "base_symbol": "DOGE",
+            "editorial_origin": "telemetry_deterministic",
+            "editorial_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "event_id": "event-oi-doge",
+            "learning_epoch": "program_v6",
+            "metric_version": "oi_signal_v1",
+            "observed_at_ms": 1787000000000,
+            "oi_change_bps": 320,
+            "oi_direction": "rise",
+            "oi_value_usd": 73010000,
+            "policy_version": "news_triage_policy_v10",
+            "program_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "program_version": "news_oi_signal_v1",
+            "rank_in_window": 1,
+            "runtime_manifest_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "scored_judgment_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "venue": "hyperliquid",
+            "whale_long_profit_bps": 9900,
+            "whale_oi_ratio_bps": 21097
+          },
+          "pre_move_bps": 300,
+          "regime": {
+            "oi_direction": "rise",
+            "pre_move_bps": 300,
+            "reason": "quadrant",
+            "regime": "buildup_up"
+          },
+          "underlying_key": "crypto:DOGE"
+        },
+        "manifest_sha256": "41f702accff18771e4dbff370ff561f8db09082bf483b6a64651a1bad8858c1e",
+        "news_projection": {
+          "base_symbol": "DOGE",
+          "comparison_fingerprint": "fp-doge",
+          "editorial_origin": "model",
+          "editorial_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "event_id": "event-news-doge",
+          "event_type": "partnership",
+          "evidence_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "evidence_version": 3,
+          "final_decision": "push",
+          "focus_fact_id": "fact-doge-1",
+          "headline_zh": "狗狗币新增直接支付入口",
+          "learning_epoch": "program_v6",
+          "magnitude": 2,
+          "novelty": "new_fact",
+          "opened_at_ms": 1786999939000,
+          "policy_version": "news_triage_policy_v10",
+          "program_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "program_version": "news_semantic_program_v4",
+          "risk_direction": "bullish",
+          "runtime_manifest_sha": "4444444444444444444444444444444444444444444444444444444444444444",
+          "scope": "single_name",
+          "scored_judgment_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "source_artifact_id": "x:123",
+          "source_published_at_ms": 1786999938000,
+          "verdict_created_at_ms": 1786999940000,
+          "why_zh": "新集成扩大可用渠道。"
+        },
+        "oi_projection": {
+          "base_symbol": "DOGE",
+          "editorial_origin": "telemetry_deterministic",
+          "editorial_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "event_id": "event-oi-doge",
+          "learning_epoch": "program_v6",
+          "metric_version": "oi_signal_v1",
+          "observed_at_ms": 1787000000000,
+          "oi_change_bps": 320,
+          "oi_direction": "rise",
+          "oi_value_usd": 73010000,
+          "policy_version": "news_triage_policy_v10",
+          "program_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "program_version": "news_oi_signal_v1",
+          "rank_in_window": 1,
+          "runtime_manifest_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "scored_judgment_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "venue": "hyperliquid",
+          "whale_long_profit_bps": 9900,
+          "whale_oi_ratio_bps": 21097
+        },
+        "policy_outcome": {
+          "decision": "long",
+          "policy_version": "trading_policy_v1",
+          "rule": "news_oi_paper_aligned"
+        },
+        "prepared_order": {
+          "case_id": "case-baseline",
+          "entry_reference": "103",
+          "instrument": {
+            "base_symbol": "DOGE",
+            "exchange_id": "binance",
+            "instrument_class": "crypto",
+            "observed_at_ms": 1787000000000,
+            "provider_symbol": "DOGEUSDT",
+            "quote_asset": "USDT",
+            "venue": "binance.perp"
+          },
+          "mode": "paper",
+          "must_close_after_ms": 1800000,
+          "notional_usd": "49.9962",
+          "order_id": "order-baseline",
+          "payload": {
+            "exchangeId": "binance",
+            "hedged": false,
+            "quantity": "0.4854",
+            "side": "buy",
+            "stopLossPrice": "100.94",
+            "symbol": "DOGEUSDT",
+            "type": "market"
+          },
+          "quantity": "0.4854",
+          "side": "buy",
+          "stop_price": "100.94",
+          "take_profit_price": null,
+          "underlying_key": "crypto:DOGE"
+        },
+        "regime": {
+          "oi_direction": "rise",
+          "pre_move_bps": 300,
+          "reason": "quadrant",
+          "regime": "buildup_up"
+        },
+        "terminal_states": [
+          "CLOSED",
+          "REJECTED",
+          "REJECTED_BY_OPERATOR"
+        ],
+        "trade_decision": {
+          "alignment": "aligned",
+          "decision": "long",
+          "directness": "direct",
+          "horizon": "hours",
+          "invalidation_zh": "新增使用未出现。",
+          "price_in": 0,
+          "reason_code": "new_distribution_channel",
+          "surprise": 3,
+          "thesis_zh": "支付入口可能带来新增需求。"
+        }
+      },
+      "snapshot_sha256": "658703c0f32107e8ebeb19af7da3e972aa9dc78275b672917ccbe4569d78f9a3"
+    },
+    "workers": {
+      "integration_evidence": [
+        "tests/architecture/test_worker_task_contract.py::test_enabled_worker_task_names_are_the_runtime_declarations",
+        "tests/integration/test_workers_runtime_v2.py"
+      ],
+      "ordered_task_names": [
+        "workers-probe",
+        "news-receiver",
+        "news-recovery",
+        "news-deduper",
+        "news-triage",
+        "news-deliverer",
+        "news-janitor",
+        "news-instruments",
+        "news-quotes",
+        "news-reactions",
+        "trading-candidate",
+        "trading-reconcile",
+        "workers-control"
+      ],
+      "prefetch_resolved_defaults": {
+        "news.deliver": 1,
+        "news.raw": 1,
+        "news.triage": 4
+      }
+    }
+  },
+  "historical_structure": {
+    "module_count": 161,
+    "modules": {
+      "src/tracefold/__init__.py": {
+        "lines": 1,
+        "tracefold_imports": []
+      },
+      "src/tracefold/__main__.py": {
+        "lines": 4,
+        "tracefold_imports": [
+          ".cli"
+        ]
+      },
+      "src/tracefold/app/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/cli/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/cli/commands/__init__.py": {
+        "lines": 8,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/cli/commands/config.py": {
+        "lines": 138,
+        "tracefold_imports": [
+          "tracefold.platform.config.settings",
+          "tracefold.platform.paths"
+        ]
+      },
+      "src/tracefold/app/cli/commands/db.py": {
+        "lines": 44,
+        "tracefold_imports": [
+          "tracefold.app.query_audit",
+          "tracefold.app.repositories",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.postgres.postgres_audit",
+          "tracefold.platform.postgres.postgres_client",
+          "tracefold.platform.postgres.postgres_migrations"
+        ]
+      },
+      "src/tracefold/app/cli/commands/news.py": {
+        "lines": 1581,
+        "tracefold_imports": [
+          "tracefold.app.learning_runtime",
+          "tracefold.app.llm",
+          "tracefold.app.repositories",
+          "tracefold.integrations.rabbitmq",
+          "tracefold.integrations.venues",
+          "tracefold.news",
+          "tracefold.news.agents.program_baseline",
+          "tracefold.news.agents.program_compiler_launcher",
+          "tracefold.news.agents.program_compiler_proxy",
+          "tracefold.news.agents.program_compiler_sandbox",
+          "tracefold.news.agents.program_compiler_security",
+          "tracefold.news.agents.program_compiler_source",
+          "tracefold.news.agents.program_compiler_trusted",
+          "tracefold.news.agents.program_review_drafter",
+          "tracefold.news.agents.programs.candidates",
+          "tracefold.news.agents.semantic_program",
+          "tracefold.news.eval.replay",
+          "tracefold.news.eval.why",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.postgres.postgres_client"
+        ]
+      },
+      "src/tracefold/app/cli/commands/ops.py": {
+        "lines": 16,
+        "tracefold_imports": [
+          "tracefold.app.repositories",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.postgres.postgres_audit"
+        ]
+      },
+      "src/tracefold/app/cli/commands/serve.py": {
+        "lines": 19,
+        "tracefold_imports": [
+          "tracefold.app.http.app",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.observability"
+        ]
+      },
+      "src/tracefold/app/cli/commands/trading.py": {
+        "lines": 163,
+        "tracefold_imports": [
+          "tracefold.app.repositories",
+          "tracefold.platform.config.settings",
+          "tracefold.trading"
+        ]
+      },
+      "src/tracefold/app/cli/commands/workers.py": {
+        "lines": 14,
+        "tracefold_imports": [
+          "tracefold.app.workers",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.observability"
+        ]
+      },
+      "src/tracefold/app/cli/main.py": {
+        "lines": 72,
+        "tracefold_imports": [
+          ".",
+          ".commands"
+        ]
+      },
+      "src/tracefold/app/cli/parser.py": {
+        "lines": 333,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/database.py": {
+        "lines": 821,
+        "tracefold_imports": [
+          "tracefold.app.repositories",
+          "tracefold.platform.observability",
+          "tracefold.platform.postgres.postgres_client",
+          "tracefold.platform.resource",
+          "tracefold.platform.validation"
+        ]
+      },
+      "src/tracefold/app/http/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/http/app.py": {
+        "lines": 184,
+        "tracefold_imports": [
+          "tracefold.app.http.exceptions",
+          "tracefold.app.http.http",
+          "tracefold.app.http.responses",
+          "tracefold.app.http.schemas",
+          "tracefold.app.serve_runtime",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.observability"
+        ]
+      },
+      "src/tracefold/app/http/dependencies.py": {
+        "lines": 35,
+        "tracefold_imports": [
+          "tracefold.app.http.exceptions"
+        ]
+      },
+      "src/tracefold/app/http/exceptions.py": {
+        "lines": 48,
+        "tracefold_imports": [
+          "tracefold.app.http.responses"
+        ]
+      },
+      "src/tracefold/app/http/http.py": {
+        "lines": 15,
+        "tracefold_imports": [
+          "tracefold.app.http"
+        ]
+      },
+      "src/tracefold/app/http/responses.py": {
+        "lines": 98,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/http/routes_news.py": {
+        "lines": 524,
+        "tracefold_imports": [
+          "tracefold.app.http",
+          "tracefold.app.http.dependencies",
+          "tracefold.app.http.exceptions",
+          "tracefold.app.http.responses",
+          "tracefold.app.workers.runtime",
+          "tracefold.news",
+          "tracefold.platform.config.settings"
+        ]
+      },
+      "src/tracefold/app/http/routes_status.py": {
+        "lines": 41,
+        "tracefold_imports": [
+          "tracefold.app.http",
+          "tracefold.app.http.dependencies",
+          "tracefold.app.http.responses"
+        ]
+      },
+      "src/tracefold/app/http/schemas.py": {
+        "lines": 108,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/http/schemas_news.py": {
+        "lines": 853,
+        "tracefold_imports": [
+          "tracefold.app.http.schemas"
+        ]
+      },
+      "src/tracefold/app/learning_runtime.py": {
+        "lines": 363,
+        "tracefold_imports": [
+          "tracefold.app.llm",
+          "tracefold.news",
+          "tracefold.news.agents.semantic_program",
+          "tracefold.platform.config.settings"
+        ]
+      },
+      "src/tracefold/app/llm.py": {
+        "lines": 79,
+        "tracefold_imports": []
+      },
+      "src/tracefold/app/query_audit.py": {
+        "lines": 126,
+        "tracefold_imports": [
+          ".workers.runtime",
+          "tracefold.news.query_specs",
+          "tracefold.platform.postgres.postgres_audit"
+        ]
+      },
+      "src/tracefold/app/repositories.py": {
+        "lines": 89,
+        "tracefold_imports": [
+          "tracefold.news.instruments_repository",
+          "tracefold.news.price_repository",
+          "tracefold.news.repository",
+          "tracefold.platform.postgres.postgres_client",
+          "tracefold.trading.repository"
+        ]
+      },
+      "src/tracefold/app/serve_runtime.py": {
+        "lines": 147,
+        "tracefold_imports": [
+          "tracefold.app.database",
+          "tracefold.app.http.exceptions",
+          "tracefold.app.repositories",
+          "tracefold.app.workers.runtime",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.observability",
+          "tracefold.platform.postgres.postgres_client",
+          "tracefold.platform.postgres.postgres_migrations"
+        ]
+      },
+      "src/tracefold/app/workers/__init__.py": {
+        "lines": 1242,
+        "tracefold_imports": [
+          "tracefold.app.database",
+          "tracefold.app.learning_runtime",
+          "tracefold.app.llm",
+          "tracefold.app.workers.capabilities",
+          "tracefold.app.workers.probe",
+          "tracefold.app.workers.runtime",
+          "tracefold.integrations.feishu",
+          "tracefold.integrations.opennews",
+          "tracefold.integrations.rabbitmq",
+          "tracefold.integrations.venues",
+          "tracefold.news",
+          "tracefold.news.agents.programs.candidates",
+          "tracefold.news.agents.semantic_program",
+          "tracefold.news.canary",
+          "tracefold.news.consumers",
+          "tracefold.platform.config.settings",
+          "tracefold.platform.observability",
+          "tracefold.platform.postgres.postgres_client",
+          "tracefold.platform.postgres.postgres_migrations",
+          "tracefold.platform.resource",
+          "tracefold.trading"
+        ]
+      },
+      "src/tracefold/app/workers/capabilities.py": {
+        "lines": 230,
+        "tracefold_imports": [
+          "tracefold.platform.resource"
+        ]
+      },
+      "src/tracefold/app/workers/probe.py": {
+        "lines": 43,
+        "tracefold_imports": [
+          "tracefold.platform.observability"
+        ]
+      },
+      "src/tracefold/app/workers/runtime.py": {
+        "lines": 220,
+        "tracefold_imports": [
+          "tracefold.platform.postgres.postgres_audit"
+        ]
+      },
+      "src/tracefold/cli.py": {
+        "lines": 13,
+        "tracefold_imports": [
+          ".app.cli.main"
+        ]
+      },
+      "src/tracefold/integrations/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/integrations/feishu.py": {
+        "lines": 196,
+        "tracefold_imports": []
+      },
+      "src/tracefold/integrations/opennews/__init__.py": {
+        "lines": 13,
+        "tracefold_imports": [
+          ".client"
+        ]
+      },
+      "src/tracefold/integrations/opennews/client.py": {
+        "lines": 198,
+        "tracefold_imports": [
+          "tracefold.news",
+          "tracefold.news.opennews"
+        ]
+      },
+      "src/tracefold/integrations/rabbitmq.py": {
+        "lines": 500,
+        "tracefold_imports": [
+          "tracefold.news.bus",
+          "tracefold.platform.docker_host"
+        ]
+      },
+      "src/tracefold/integrations/venues/__init__.py": {
+        "lines": 45,
+        "tracefold_imports": [
+          ".binance",
+          ".candles",
+          ".errors",
+          ".hyperliquid",
+          ".quotes",
+          ".us_reference"
+        ]
+      },
+      "src/tracefold/integrations/venues/binance.py": {
+        "lines": 147,
+        "tracefold_imports": [
+          ".errors",
+          "tracefold.news.instruments"
+        ]
+      },
+      "src/tracefold/integrations/venues/candles.py": {
+        "lines": 121,
+        "tracefold_imports": [
+          ".errors",
+          ".http",
+          "tracefold.news.pricing"
+        ]
+      },
+      "src/tracefold/integrations/venues/errors.py": {
+        "lines": 20,
+        "tracefold_imports": []
+      },
+      "src/tracefold/integrations/venues/http.py": {
+        "lines": 68,
+        "tracefold_imports": [
+          ".errors"
+        ]
+      },
+      "src/tracefold/integrations/venues/hyperliquid.py": {
+        "lines": 171,
+        "tracefold_imports": [
+          ".errors",
+          "tracefold.news.instruments"
+        ]
+      },
+      "src/tracefold/integrations/venues/quotes.py": {
+        "lines": 301,
+        "tracefold_imports": [
+          ".errors",
+          ".http",
+          "tracefold.news.pricing"
+        ]
+      },
+      "src/tracefold/integrations/venues/us_reference.py": {
+        "lines": 126,
+        "tracefold_imports": [
+          ".errors",
+          "tracefold.news.instruments"
+        ]
+      },
+      "src/tracefold/news/__init__.py": {
+        "lines": 160,
+        "tracefold_imports": [
+          ".artifact_identity",
+          ".canary",
+          ".candidate_evaluator",
+          ".facts",
+          ".health",
+          ".instruments",
+          ".models",
+          ".oi_signals",
+          ".opennews",
+          ".outcome",
+          ".pricing",
+          ".recording_replay",
+          ".review",
+          ".semantic_contract",
+          ".triage_rules"
+        ]
+      },
+      "src/tracefold/news/agents/__init__.py": {
+        "lines": 3,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/agents/program_artifact_tool.py": {
+        "lines": 149,
+        "tracefold_imports": [
+          "..artifact_identity",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_baseline.py": {
+        "lines": 1059,
+        "tracefold_imports": [
+          "..artifact_identity",
+          "..models",
+          "..semantic_contract",
+          ".program_judge",
+          ".program_metric",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler.py": {
+        "lines": 804,
+        "tracefold_imports": [
+          "..artifact_identity",
+          ".program_compiler_security",
+          ".program_compiler_trusted",
+          ".program_metric",
+          ".program_proposer",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_launcher.py": {
+        "lines": 1334,
+        "tracefold_imports": [
+          "..artifact_identity",
+          ".program_compiler_proxy",
+          ".program_compiler_sandbox",
+          ".program_compiler_security",
+          ".program_compiler_source"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_proxy.py": {
+        "lines": 1139,
+        "tracefold_imports": [
+          "..artifact_identity",
+          ".program_compiler_security",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_proxy_sidecar.py": {
+        "lines": 151,
+        "tracefold_imports": [
+          "tracefold.news.agents.program_compiler_proxy",
+          "tracefold.news.agents.program_compiler_source",
+          "tracefold.news.artifact_identity"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_runner.py": {
+        "lines": 255,
+        "tracefold_imports": [
+          "tracefold.news.agents.program_compiler",
+          "tracefold.news.agents.program_compiler_proxy",
+          "tracefold.news.agents.program_compiler_sandbox",
+          "tracefold.news.agents.program_compiler_security",
+          "tracefold.news.agents.program_compiler_source",
+          "tracefold.news.agents.program_compiler_trusted",
+          "tracefold.news.agents.program_judge",
+          "tracefold.news.agents.semantic_program",
+          "tracefold.news.artifact_identity"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_sandbox.py": {
+        "lines": 825,
+        "tracefold_imports": [
+          "..artifact_identity"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_security.py": {
+        "lines": 1307,
+        "tracefold_imports": [
+          "..artifact_identity",
+          ".program_compiler_sandbox"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_source.py": {
+        "lines": 47,
+        "tracefold_imports": [
+          "..artifact_identity"
+        ]
+      },
+      "src/tracefold/news/agents/program_compiler_trusted.py": {
+        "lines": 408,
+        "tracefold_imports": [
+          "..artifact_identity",
+          "..semantic_contract",
+          ".program_compiler_security",
+          ".program_metric",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_judge.py": {
+        "lines": 453,
+        "tracefold_imports": [
+          "..artifact_identity",
+          ".program_compiler_security",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_metric.py": {
+        "lines": 1120,
+        "tracefold_imports": [
+          "..artifact_identity",
+          "..models",
+          "..semantic_contract",
+          "..storyline",
+          "..triage_rules",
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_proposer.py": {
+        "lines": 178,
+        "tracefold_imports": [
+          ".semantic_program"
+        ]
+      },
+      "src/tracefold/news/agents/program_review_drafter.py": {
+        "lines": 323,
+        "tracefold_imports": [
+          "..artifact_identity",
+          "..semantic_contract"
+        ]
+      },
+      "src/tracefold/news/agents/programs/__init__.py": {
+        "lines": 1,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/agents/programs/candidates.py": {
+        "lines": 34,
+        "tracefold_imports": [
+          "tracefold.news.candidate_evaluator"
+        ]
+      },
+      "src/tracefold/news/agents/quality_baseline.py": {
+        "lines": 477,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/agents/semantic_program.py": {
+        "lines": 3645,
+        "tracefold_imports": [
+          "..artifact_identity",
+          "..models",
+          "..semantic_contract",
+          ".quality_baseline"
+        ]
+      },
+      "src/tracefold/news/artifact_identity.py": {
+        "lines": 22,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/bus.py": {
+        "lines": 152,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/news/canary.py": {
+        "lines": 198,
+        "tracefold_imports": [
+          "tracefold.news"
+        ]
+      },
+      "src/tracefold/news/candidate_evaluator.py": {
+        "lines": 3785,
+        "tracefold_imports": [
+          ".agents.program_compiler_security",
+          ".agents.program_metric",
+          ".artifact_identity",
+          ".models",
+          ".recording_replay",
+          ".review",
+          ".storyline",
+          ".triage_rules",
+          "tracefold.news"
+        ]
+      },
+      "src/tracefold/news/consumers.py": {
+        "lines": 2075,
+        "tracefold_imports": [
+          ".bus",
+          ".canary",
+          ".delivery",
+          ".events",
+          ".models",
+          ".oi_signals",
+          ".opennews",
+          ".price_loops",
+          ".storyline",
+          ".triage_rules",
+          "tracefold.news",
+          "tracefold.platform.resource"
+        ]
+      },
+      "src/tracefold/news/delivery.py": {
+        "lines": 334,
+        "tracefold_imports": [
+          ".oi_signals",
+          ".outcome",
+          ".pricing"
+        ]
+      },
+      "src/tracefold/news/eval/__init__.py": {
+        "lines": 1,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/eval/replay.py": {
+        "lines": 159,
+        "tracefold_imports": [
+          "tracefold.news.events",
+          "tracefold.news.exact_atom_identity",
+          "tracefold.news.gate",
+          "tracefold.news.minhash",
+          "tracefold.news.models",
+          "tracefold.news.opennews",
+          "tracefold.news.storyline",
+          "tracefold.news.titles",
+          "tracefold.news.tokens"
+        ]
+      },
+      "src/tracefold/news/eval/why.py": {
+        "lines": 57,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/events.py": {
+        "lines": 512,
+        "tracefold_imports": [
+          ".exact_atom_identity",
+          ".facts",
+          ".gate",
+          ".minhash",
+          ".models",
+          ".oi_signals",
+          ".opennews",
+          ".storyline",
+          ".titles",
+          ".tokens"
+        ]
+      },
+      "src/tracefold/news/exact_atom_identity.py": {
+        "lines": 181,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/facts.py": {
+        "lines": 169,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/gate.py": {
+        "lines": 249,
+        "tracefold_imports": [
+          ".instruments",
+          ".models"
+        ]
+      },
+      "src/tracefold/news/health.py": {
+        "lines": 251,
+        "tracefold_imports": [
+          ".outcome"
+        ]
+      },
+      "src/tracefold/news/identity.py": {
+        "lines": 135,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/instruments.py": {
+        "lines": 329,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/instruments_repository.py": {
+        "lines": 447,
+        "tracefold_imports": [
+          ".instruments"
+        ]
+      },
+      "src/tracefold/news/minhash.py": {
+        "lines": 65,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/models.py": {
+        "lines": 227,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/oi_signals.py": {
+        "lines": 337,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/news/opennews.py": {
+        "lines": 457,
+        "tracefold_imports": [
+          ".identity",
+          ".models"
+        ]
+      },
+      "src/tracefold/news/outcome.py": {
+        "lines": 432,
+        "tracefold_imports": [
+          ".models",
+          ".triage_rules"
+        ]
+      },
+      "src/tracefold/news/price_loops.py": {
+        "lines": 666,
+        "tracefold_imports": [
+          ".bus",
+          ".pricing",
+          "tracefold.platform.resource"
+        ]
+      },
+      "src/tracefold/news/price_repository.py": {
+        "lines": 1048,
+        "tracefold_imports": [
+          ".instruments",
+          ".oi_signals",
+          ".outcome",
+          ".pricing",
+          ".similarity"
+        ]
+      },
+      "src/tracefold/news/pricing.py": {
+        "lines": 412,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/query_specs.py": {
+        "lines": 158,
+        "tracefold_imports": [
+          ".review",
+          "tracefold.news.pricing",
+          "tracefold.platform.postgres.postgres_audit"
+        ]
+      },
+      "src/tracefold/news/recording_replay.py": {
+        "lines": 507,
+        "tracefold_imports": [
+          ".agents.semantic_program",
+          ".artifact_identity",
+          "tracefold.news"
+        ]
+      },
+      "src/tracefold/news/repository.py": {
+        "lines": 2588,
+        "tracefold_imports": [
+          ".canary",
+          ".models",
+          ".opennews",
+          ".outcome",
+          ".timeline"
+        ]
+      },
+      "src/tracefold/news/review.py": {
+        "lines": 2456,
+        "tracefold_imports": [
+          ".artifact_identity",
+          ".candidate_evaluator",
+          ".outcome",
+          ".price_repository",
+          ".semantic_contract"
+        ]
+      },
+      "src/tracefold/news/semantic_contract.py": {
+        "lines": 902,
+        "tracefold_imports": [
+          ".artifact_identity",
+          ".models",
+          ".similarity"
+        ]
+      },
+      "src/tracefold/news/similarity.py": {
+        "lines": 62,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/storyline.py": {
+        "lines": 206,
+        "tracefold_imports": [
+          ".instruments"
+        ]
+      },
+      "src/tracefold/news/timeline.py": {
+        "lines": 259,
+        "tracefold_imports": [
+          ".models",
+          ".outcome"
+        ]
+      },
+      "src/tracefold/news/titles.py": {
+        "lines": 121,
+        "tracefold_imports": [
+          ".exact_atom_identity"
+        ]
+      },
+      "src/tracefold/news/tokens.py": {
+        "lines": 115,
+        "tracefold_imports": []
+      },
+      "src/tracefold/news/triage_rules.py": {
+        "lines": 423,
+        "tracefold_imports": [
+          ".models",
+          ".semantic_contract",
+          ".similarity"
+        ]
+      },
+      "src/tracefold/platform/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/config/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/config/settings.py": {
+        "lines": 889,
+        "tracefold_imports": [
+          "tracefold.platform.paths"
+        ]
+      },
+      "src/tracefold/platform/docker_host.py": {
+        "lines": 60,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/observability/__init__.py": {
+        "lines": 4,
+        "tracefold_imports": [
+          ".logging",
+          ".telemetry"
+        ]
+      },
+      "src/tracefold/platform/observability/logging.py": {
+        "lines": 34,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/observability/telemetry.py": {
+        "lines": 201,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/paths.py": {
+        "lines": 19,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/__init__.py": {
+        "lines": 0,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/env.py": {
+        "lines": 84,
+        "tracefold_imports": [
+          "tracefold.platform.config.settings",
+          "tracefold.platform.postgres.postgres_client"
+        ]
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260818_0275_baseline.py": {
+        "lines": 33,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260818_0276_review_49_hard_cut.py": {
+        "lines": 73,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260818_0277_gmgn_lane_removal.py": {
+        "lines": 77,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260819_0278_macro_lane_removal.py": {
+        "lines": 68,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260820_0279_listing_admission_publishes.py": {
+        "lines": 40,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260820_0280_market_instruments.py": {
+        "lines": 73,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260820_0281_label_plane.py": {
+        "lines": 84,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260820_0282_instruments_consolidation.py": {
+        "lines": 62,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260820_0283_price_review_plane.py": {
+        "lines": 130,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0284_learning_evidence_foundation.py": {
+        "lines": 238,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0285_review_v2.py": {
+        "lines": 273,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0286_learning_artifacts.py": {
+        "lines": 190,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0287_canary_control.py": {
+        "lines": 121,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0288_learning_retention.py": {
+        "lines": 518,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0289_learning_runtime_grants.py": {
+        "lines": 29,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0290_evidence_append_lock_contract.py": {
+        "lines": 29,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260821_0291_strategy_allowlist_cut.py": {
+        "lines": 41,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0292_dspy_program_epoch.py": {
+        "lines": 197,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0293_program_v2_epoch.py": {
+        "lines": 67,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0294_program_v3_epoch.py": {
+        "lines": 67,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0295_program_v4_epoch.py": {
+        "lines": 74,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0296_drop_news_control_state.py": {
+        "lines": 34,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0297_news_oi_signals.py": {
+        "lines": 135,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260822_0298_program_v5_epoch.py": {
+        "lines": 77,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260823_0299_news_source_artifact_id.py": {
+        "lines": 63,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260823_0300_trading_core.py": {
+        "lines": 262,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/alembic/versions/20260823_0301_trade_relevance_program_v6.py": {
+        "lines": 200,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/json_safety.py": {
+        "lines": 23,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/postgres_audit.py": {
+        "lines": 432,
+        "tracefold_imports": [
+          "tracefold.platform.postgres.postgres_migrations",
+          "tracefold.platform.postgres.runtime_roles",
+          "tracefold.platform.validation"
+        ]
+      },
+      "src/tracefold/platform/postgres/postgres_client.py": {
+        "lines": 243,
+        "tracefold_imports": [
+          "tracefold.platform.docker_host",
+          "tracefold.platform.validation"
+        ]
+      },
+      "src/tracefold/platform/postgres/postgres_migrations.py": {
+        "lines": 23,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/runtime_roles.py": {
+        "lines": 212,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/postgres/write_contract.py": {
+        "lines": 31,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/resource.py": {
+        "lines": 104,
+        "tracefold_imports": []
+      },
+      "src/tracefold/platform/validation.py": {
+        "lines": 38,
+        "tracefold_imports": []
+      },
+      "src/tracefold/trading/__init__.py": {
+        "lines": 171,
+        "tracefold_imports": [
+          ".blacklist",
+          ".candidates",
+          ".decision_program",
+          ".models",
+          ".order",
+          ".paper",
+          ".pipeline",
+          ".policy",
+          ".regime",
+          ".repository"
+        ]
+      },
+      "src/tracefold/trading/blacklist.py": {
+        "lines": 70,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/trading/candidates.py": {
+        "lines": 348,
+        "tracefold_imports": [
+          ".blacklist",
+          ".models"
+        ]
+      },
+      "src/tracefold/trading/decision_program.py": {
+        "lines": 277,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/trading/models.py": {
+        "lines": 393,
+        "tracefold_imports": []
+      },
+      "src/tracefold/trading/order.py": {
+        "lines": 255,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/trading/paper.py": {
+        "lines": 153,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/trading/pipeline.py": {
+        "lines": 1396,
+        "tracefold_imports": [
+          ".blacklist",
+          ".candidates",
+          ".decision_program",
+          ".models",
+          ".order",
+          ".paper",
+          ".policy",
+          ".regime",
+          ".repository"
+        ]
+      },
+      "src/tracefold/trading/policy.py": {
+        "lines": 212,
+        "tracefold_imports": [
+          ".models",
+          ".regime"
+        ]
+      },
+      "src/tracefold/trading/regime.py": {
+        "lines": 167,
+        "tracefold_imports": [
+          ".models"
+        ]
+      },
+      "src/tracefold/trading/repository.py": {
+        "lines": 715,
+        "tracefold_imports": [
+          ".models"
+        ]
+      }
+    },
+    "package_export_counts": {
+      "tracefold.app.cli.commands": 2,
+      "tracefold.app.workers": 1,
+      "tracefold.integrations.opennews": 4,
+      "tracefold.integrations.venues": 16,
+      "tracefold.news": 74,
+      "tracefold.news.agents": 0,
+      "tracefold.platform.observability": 3,
+      "tracefold.trading": 79
+    },
+    "package_exports": {
+      "tracefold.app.cli.commands": [
+        "CommandPayload",
+        "CommandResult"
+      ],
+      "tracefold.app.workers": [
+        "run_workers"
+      ],
+      "tracefold.integrations.opennews": [
+        "OPENNEWS_HTTP_BASE_URL",
+        "OPENNEWS_WSS_URL",
+        "OpenNewsStrategyHistoryClient",
+        "OpenNewsWebSocketClient"
+      ],
+      "tracefold.integrations.venues": [
+        "BINANCE_FUTURES_BASE_URL",
+        "BINANCE_SPOT_BASE_URL",
+        "HYPERLIQUID_BASE_URL",
+        "US_REFERENCE_BASE_URL",
+        "US_REFERENCE_VENUE",
+        "VenueExpectedError",
+        "fetch_binance_candles",
+        "fetch_binance_futures_day_quotes",
+        "fetch_binance_futures_quotes",
+        "fetch_binance_instruments",
+        "fetch_binance_spot_day_quotes",
+        "fetch_binance_spot_quotes",
+        "fetch_hyperliquid_candles",
+        "fetch_hyperliquid_instruments",
+        "fetch_hyperliquid_quotes",
+        "fetch_us_reference_instruments"
+      ],
+      "tracefold.news": [
+        "ArmManifest",
+        "BlindPairwiseSubmission",
+        "CandidateEvaluator",
+        "CandidateManifest",
+        "ClosedWindow",
+        "DEFAULT_OI_POLICY",
+        "DEFAULT_POLICY",
+        "DatasetManifest",
+        "DatasetSpec",
+        "DecidePolicy",
+        "DeskQuery",
+        "EditorialEnvelope",
+        "EvaluationReport",
+        "EvaluationRequest",
+        "EventRubricSubmission",
+        "ExternalMissSubmission",
+        "FACT_UNIT_VERSION",
+        "FactUnit",
+        "GATE_POLICY_VERSION",
+        "LEARNING_EPOCH",
+        "NewsFeedEntry",
+        "OI_METRIC_VERSION",
+        "OI_PROGRAM_VERSION",
+        "OPENNEWS_SOURCE_ID",
+        "OiPolicy",
+        "OpenNewsEvent",
+        "OpenNewsExpectedError",
+        "OpenNewsHistoryError",
+        "OpenNewsStrategyHistory",
+        "Outcome",
+        "Principal",
+        "ProgramTrace",
+        "ProgramUsage",
+        "ProposalReceipt",
+        "QUOTE_REQUEST_SYMBOL_MAX",
+        "REACTION_METRIC_VERSION",
+        "READER_CONTRACT_VERSION",
+        "REVIEW_DEFAULT_HOURS",
+        "REVIEW_MAX_HOURS",
+        "REVIEW_RUBRIC_VERSION",
+        "ReaderCardSemanticView",
+        "ReaderReceipt",
+        "RecordingReplayCapability",
+        "RecordingReplayError",
+        "ReplayArmSpec",
+        "ReviewDesk",
+        "ReviewSubmission",
+        "ScoredJudgment",
+        "SemanticJudge",
+        "SemanticJudgeError",
+        "SemanticJudgment",
+        "TOLD_MAX",
+        "TOLD_SELECTOR_ID",
+        "TOLD_SELECTOR_SHA256",
+        "TOLD_SOURCE_MAX",
+        "TOLD_STORYLINE_TIER_MAX",
+        "TOLD_WINDOW_MS",
+        "TRIAGE_POLICY_VERSION",
+        "TRUSTED_ROOT_SHA",
+        "TaskRef",
+        "TradeRelevanceV1",
+        "TriageContext",
+        "TriageVerdict",
+        "apply_canary_control",
+        "canonical_json",
+        "canonical_sha",
+        "evaluation_run_sha",
+        "event_outcome",
+        "extract_fact_units",
+        "grounding_rollup",
+        "load_recording_replay_capability",
+        "parse_canary_control",
+        "parse_opennews_message",
+        "status_health"
+      ],
+      "tracefold.news.agents": [],
+      "tracefold.platform.observability": [
+        "PROMETHEUS_CONTENT_TYPE",
+        "TelemetryRegistry",
+        "setup_logging"
+      ],
+      "tracefold.trading": [
+        "ACTIVE_ORDER_STATES",
+        "Bar",
+        "BarFetcher",
+        "BarFetcherFactory",
+        "Blacklist",
+        "BlacklistEntry",
+        "CandidateRunner",
+        "CaseKind",
+        "CaseState",
+        "ControlState",
+        "DEFAULT_DEADLINE_SECONDS",
+        "DEFAULT_ELIGIBILITY",
+        "DEFAULT_MAX_TOKENS",
+        "DEFAULT_ORDER_POLICY",
+        "DEFAULT_REGIME_POLICY",
+        "DEFAULT_TRADE_POLICY",
+        "EligibilityPolicy",
+        "ExchangeId",
+        "ExecutionReceipt",
+        "Funnel",
+        "InstrumentRef",
+        "MarketContext",
+        "NewsOiTradeDecision",
+        "NewsTradeCandidate",
+        "OiRegime",
+        "OiTradeCandidate",
+        "OrderPolicy",
+        "OrderSide",
+        "OrderState",
+        "PaperAdapter",
+        "PaperFaults",
+        "PolicyDecision",
+        "PolicyOutcome",
+        "PreparedOrder",
+        "ProgramIdentity",
+        "ReconcileRunner",
+        "RegimeAssessment",
+        "RegimePolicy",
+        "Rejected",
+        "RiskRejection",
+        "SizedOrder",
+        "TERMINAL_ORDER_STATES",
+        "TRADING_MANIFEST_VERSION",
+        "TRADING_POLICY_VERSION",
+        "TRADING_PROGRAM_VERSION",
+        "TradeDecision",
+        "TradePolicy",
+        "TradingCaseManifest",
+        "TradingConfig",
+        "TradingDecisionProgram",
+        "TradingMode",
+        "TradingPipeline",
+        "TradingRepository",
+        "assert_model_input_safe",
+        "assess",
+        "attach_news",
+        "attach_oi",
+        "blacklist_rule",
+        "build_inputs",
+        "build_payload",
+        "build_pipeline",
+        "canonical_base_symbol",
+        "canonical_sha256",
+        "commit_order",
+        "decide",
+        "deterministic_side",
+        "evaluate_paper_exit",
+        "must_close_at",
+        "news_candidate",
+        "oi_candidate",
+        "permits_entry",
+        "pre_model_reject",
+        "pre_move_bps",
+        "realized_bps",
+        "regime_side",
+        "resolve_instrument",
+        "side_to_order_side",
+        "size_order",
+        "underlying_key"
+      ]
+    }
+  },
+  "schema_version": "tracefold_refactor_baseline_v1"
+}

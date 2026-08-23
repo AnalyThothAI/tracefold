@@ -59,6 +59,8 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.canary",
         "tracefold.news.consumers",
     },
+    # #162: the Workers root's typed task declaration is composition, not a News product caller.
+    "src/tracefold/app/workers/task_contract.py": {"tracefold.news.consumers"},
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
     # The venue adapters are the #75 analogue of the OpenNews adapter: they parse a provider catalogue into the
     # pure `Instrument` shape the News package owns.
