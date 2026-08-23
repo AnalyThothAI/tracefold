@@ -1520,6 +1520,7 @@ class TriageConsumer:
         )
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
+        trace["verdict_sha256"] = s.judgment.verdict_sha256
         trace["editorial_sha256"] = s.judgment.editorial.editorial_sha256
         trace["scored_judgment_sha256"] = s.judgment.scored_judgment_sha256
         trace["runtime_manifest_sha"] = s.runtime_manifest_sha

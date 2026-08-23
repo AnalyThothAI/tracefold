@@ -392,6 +392,7 @@ def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_ed
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
     assert trace["program_version"] == PROGRAM_VERSION and trace["program_sha256"] == PROGRAM_SHA256
+    assert trace["verdict_sha256"] == canonical_sha(inserted["verdict"])
     assert trace["status"] == {
         "storyline_key": "asset:NVDA",
         "preliminary": True,
@@ -860,6 +861,7 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
+    assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
     assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
     assert inserted["trace"]["model_attempts"] == 2
 
@@ -2173,6 +2175,7 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
         "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次"
     )
     assert inserted["verdict"]["why_zh"] == ""
+    assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
     # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
