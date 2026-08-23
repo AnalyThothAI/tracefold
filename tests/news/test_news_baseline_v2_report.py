@@ -254,7 +254,7 @@ def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
             )
         ]
     )
-    assert report.review_label_distribution["not_scored"]["timeliness"] == {
+    assert report.review_label_distribution["delivery"]["timeliness"] == {
         "pass": 0,
         "fail": 1,
         "n": 1,
@@ -335,3 +335,44 @@ def test_every_identity_component_moves_the_report_sha() -> None:
     ).report_sha256
 
     assert len(set(variants.values())) == len(variants), variants
+
+
+def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
+    """v3 (#150): `timeliness` left the scored set, the policy stopped being process-global, and the metric
+    started returning typed outcomes. A label that stays put while the definition moves is a label that lies.
+    """
+
+    from tracefold.news.agents.program_metric import METRIC_ID
+
+    assert METRIC_ID.endswith("_v3")
+    assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
+
+
+def test_a_dimension_reports_how_often_nobody_labelled_it() -> None:
+    """`n` alone cannot separate "scored on 40 of 242" from "scored on 240 of 242"."""
+
+    unlabelled = _case(2)
+    review = {**unlabelled.episode.accepted_review, "dimensions": {"factual_fidelity": "pass"}}
+    report = _report(
+        [
+            _case(1),
+            BaselineCase(
+                episode=unlabelled.episode.model_copy(update={"accepted_review": review}), recorded_action="push"
+            ),
+        ]
+    )
+    assert report.prediction_dimensions["factual_fidelity"]["not_labelled"] == 0
+    assert report.prediction_dimensions["magnitude"]["not_labelled"] == 1
+
+
+def test_the_published_policy_hash_is_recomputed_not_forwarded() -> None:
+    """A backstop behind the pre-flight check, and reachable only from here: the pre-flight refuses a tampered
+    corpus before `_build_report` runs, so this pins the second line of defence directly."""
+
+    from tracefold.news.agents.program_baseline import _policy_identity
+
+    drifted = dict(_case(1).episode.policy_metric)
+    drifted["policy_values"] = {**drifted["policy_values"], "similarity_max": 0.9}
+    tampered = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": drifted}), recorded_action="")
+    with pytest.raises(ValueError, match="news_program_baseline_policy_identity_mismatch"):
+        _policy_identity([tampered])

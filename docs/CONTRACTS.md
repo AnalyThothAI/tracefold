@@ -613,6 +613,16 @@ names what it still excludes (the consumer transaction, the advisory lock,
 stale-evidence re-ask, the degraded wire-card fallback, the broker and
 delivery).
 
+A live mode also refuses `--all-cohorts`: it replays `decide()`, the only policy
+it can replay is the active arm's, and applying today's rules to a retired
+cohort answers a question with no release meaning. The `policy_not_uniform`
+guard cannot catch that combination, because every episode is stamped with the
+same active policy and so looks perfectly uniform. Both live modes verify every
+example's frozen policy *before the first provider call*, and refuse the whole
+run with `news_program_baseline_policy_unusable:<case>:<reason>` — a corpus that
+cannot verify its own policy is a pure function of the input, and discovering it
+after two Predictor calls per case turns it into "the route did not answer".
+
 `--action-source` has exactly one valid value per mode and the handler rejects
 the other: `recorded` outside `--mode recorded` short-circuits the policy replay,
 so a live mode would generate a fresh verdict and score it against the action a
@@ -642,23 +652,29 @@ A run where nothing answered publishes a null `case_macro_answered` and the full
 failure breakdown rather than refusing — "the route answered nothing" is a
 result, and it used to be the only one that produced no receipt at all. `review_label_distribution` is
 corpus metadata (what reviewers labelled) over every requested case, grouped by
-which Predictor's score the label feeds — `event_semantics`, `reader_card`, and
-`not_scored` for anything the verdict has no field for, which is where
-`timeliness` lives. That grouping is deliberately not called "owner":
+the stage each label describes — `event_semantics`, `reader_card`, `delivery`
+(where `timeliness` lives, scored by nobody because the verdict has no such
+field) and `not_scored` for a rubric dimension nobody has placed yet. That grouping is deliberately not called "owner":
 `review._OWNER_BY_DIMENSION` owns that word for a different question (who is to
 blame), under which `asset_grounding` is a Gate defect. `prediction_dimensions`
 is what this candidate did — gold hit/miss, accepted-retention hit/miss including #148
 semantic-equivalence decisions, the ungolded-change proxy and not-labelled — and
 moves when predictions move. `runtime_live` adds `route` (primary/fallback,
-`unanswered_n`, call and physical-call counts, input/output tokens, known
-provider cost and `cost_unknown_n` rather than a fabricated zero) and
-`latency_ms` p50/p95/max. A case that failed still reports what it spent, read
+`unanswered_n`, `retry_count`, call and physical-call counts, input/output
+tokens, known provider cost and `cost_unknown_n` rather than a fabricated zero)
+and `latency_ms` p50/p95/max over answered cases, with `p95_with_failures` /
+`max_with_failures` beside them — a route that exhausts the chain is the slowest
+case there is, and hiding it would understate the tail an operator bounds the
+run against. A case that failed still reports what it spent, read
 from the `SemanticJudgeError` partial trace: a route that exhausts the chain
 costs six calls, and counting zero made the receipt least accurate exactly where
 the route was worst.
 `report_sha256` covers the measurement with wall-clock latency excluded, so two
 runs with identical predictions publish the same address; `latency_sha256`
-addresses the timings separately.
+addresses the timings separately. `identity.case_root_sha256` answers "the same
+cases?" and `identity.corpus_sha256` answers "the same inputs?" — hashing ids
+alone let one address describe two corpora, because any evidence edit that kept
+the ids left the receipt untouched.
 `compile_live` reports wall clock only, because in that mode `dspy.Evaluate`
 owns the program call and per-case provider timing is not observable. Neither
 receipt contains a credential or an endpoint URL.
@@ -693,7 +709,11 @@ excluded, the same rule `_load_case` already enforced.
 
 The recorded calibration is pinned to a checked-in corpus
 (`tests/fixtures/news_baseline_calibration_v1.json.gz`), not to the live
-database, so it proves metric wiring rather than tracking corpus growth. Every
+database, so it proves metric wiring rather than tracking corpus growth. The
+expected values are held only by `tests/news/test_news_baseline_calibration.py`;
+no document restates them, because four copies of one number is how a receipt
+starts disagreeing with itself. A live run over the same window will differ, by
+design — the database keeps accepting reviews and superseding evidence. Every
 string outside an explicit structural allowlist is redacted by an
 equality-preserving map, which keeps every comparison the recorded metric makes
 and is why the fixture is valid for `--mode recorded` only. The allowlist is the

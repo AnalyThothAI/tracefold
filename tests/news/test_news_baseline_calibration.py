@@ -107,7 +107,7 @@ def test_timeliness_is_labelled_by_reviewers_but_never_scored(report: Any) -> No
         if (episode["accepted_review"].get("dimensions") or {}).get("timeliness") in {"pass", "fail"}
     )
     assert labelled > 0, "the corpus must still contain the labels, or this test proves nothing"
-    assert report.review_label_distribution["not_scored"]["timeliness"]["n"] == labelled
+    assert report.review_label_distribution["delivery"]["timeliness"]["n"] == labelled
     assert "timeliness" not in report.review_label_distribution["event_semantics"]
     assert "timeliness" not in report.review_label_distribution["reader_card"]
     assert "timeliness" not in report.prediction_dimensions

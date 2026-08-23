@@ -189,9 +189,11 @@ than leaving it, and `timeliness` is delivery-owned: it leaves the EventSemantic
 score and stays visible under the label distribution's `not_scored` group. Policy is frozen into
 each scored example (`policy_values` + `policy_sha256`, verified) instead of
 imported from `DEFAULT_POLICY`, and a missing or tampered policy raises rather
-than scoring. The recorded calibration is pinned to a checked-in redacted corpus
-(`0.888426 / n=243`) rather than to the live database, because a number that
-moves when the corpus grows cannot prove that metric wiring is unchanged.
+than scoring. The recorded calibration is pinned to a checked-in redacted corpus rather than
+to the live database, because a number that moves when the corpus grows cannot
+prove that metric wiring is unchanged; the expected values live only in
+`tests/news/test_news_baseline_calibration.py`, so there is one place to read
+and one place to update.
 `dspy.GEPA` only rewrites instructions and never writes demos, so
 DemoBank stays empty under this optimizer by construction; the reflection
 endpoint is configured separately from the task endpoint with its own 32k-token,

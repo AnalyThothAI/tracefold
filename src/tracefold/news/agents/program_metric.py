@@ -29,7 +29,11 @@ from ..storyline import final_storyline_key
 from ..triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 from .semantic_program import TriageContext, render_model_evidence_json
 
-METRIC_ID = "tracefold.news.production_action_feedback_v2"
+# v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global
+# `DEFAULT_POLICY` to the exact frozen values carried by each example, and the metric now returns typed
+# per-dimension outcomes. The receipt embeds the function source, so two rulers already produce two report
+# addresses — but a version label that stays put while the definition moves is a label that lies.
+METRIC_ID = "tracefold.news.production_action_feedback_v3"
 
 
 class _ExactModel(BaseModel):
@@ -70,19 +74,21 @@ _CARD_WEIGHT = 0.15
 _SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 _DELIVERY_DIMENSIONS = ("timeliness",)
-# Which Predictor's score a rubric label feeds. Deliberately *not* named "owner": `review._OWNER_BY_DIMENSION`
-# already owns that word and answers a different question — who is to blame (`gate`, `triage_prompt`,
-# `delivery`, `retrieval`) — so `asset_grounding` is a Gate defect there and an EventSemantics-scored field
-# here. Publishing this under "owner" would invite a join with the stored `first_bad_owner` that is wrong for
-# every Gate-owned dimension.
-SCORED_BY_PREDICTOR: dict[str, str] = {
+# Which stage of the pipeline a rubric label describes. Deliberately *not* named "owner":
+# `review._OWNER_BY_DIMENSION` already owns that word for a different question — who is to blame (`gate`,
+# `triage_prompt`, `delivery`, `retrieval`) — under which `asset_grounding` is a Gate defect while here it is
+# an EventSemantics-scored field. Publishing this as "owner" would invite a join with the stored
+# `first_bad_owner` that is wrong for every Gate-owned dimension.
+LABEL_GROUP: dict[str, str] = {
     **{name: "event_semantics" for name in _SEMANTICS_DIMENSIONS},
     **{name: "reader_card" for name in _CARD_DIMENSIONS},
+    # Scored by nobody — `TriageVerdict` has no timeliness field — but the label is still corpus truth, and
+    # #150 asks for it under the stage that owns it rather than in the catch-all.
+    **{name: "delivery" for name in _DELIVERY_DIMENSIONS},
 }
-# The bucket for everything else, including a rubric dimension that does not exist yet. `timeliness` is here
-# because `TriageVerdict` has no field it could be scored against; the label is still corpus truth and still
-# has to be visible, and a hand-written list of "the others" would have dropped the next new one silently.
-NOT_SCORED = "not_scored"
+# The catch-all for a rubric dimension nobody has placed yet. A hand-written list of "the others" would have
+# dropped the next new one silently.
+UNGROUPED_LABEL = "not_scored"
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
 _NO_GOLD: Final = object()
 # `news_review_v3` gold keys, per dimension. `why_support`/`why_value`/`headline_fidelity`/`factual_fidelity`/
@@ -117,6 +123,9 @@ def _frozen_policy(projection: Mapping[str, Any]) -> DecidePolicy:
     expected = str(projection.get("policy_sha256") or "")
     if not expected:
         raise ValueError("news_program_metric_policy_sha256_missing")
+    if not str(projection.get("policy_version") or ""):
+        # The receipt names a version; scoring without one publishes provenance the example never carried.
+        raise ValueError("news_program_metric_policy_version_missing")
     actual = canonical_sha(dict(values))
     if actual != expected:
         raise ValueError(f"news_program_metric_policy_sha256_mismatch:{actual[:16]}!={expected[:16]}")
@@ -791,9 +800,9 @@ retrieval_receipt = _retrieval_receipt
 
 
 __all__ = [
+    "LABEL_GROUP",
     "METRIC_ID",
-    "NOT_SCORED",
-    "SCORED_BY_PREDICTOR",
+    "UNGROUPED_LABEL",
     "DevelopmentEpisode",
     "accepted_review_metric",
     "bind_metric",

@@ -261,8 +261,11 @@ the Program for it.
 The recorded calibration lives in
 `tests/fixtures/news_baseline_calibration_v1.json.gz`, not in the operator's
 database. #143 published `0.896373 / n=162`; a day later the same command
-answered `0.888426 / n=243` because #148 added 81 reviews. Nothing was wrong,
-but a check that moves with the data cannot prove the *wiring* is unchanged.
+answered a different number over 243 reviews because #148 had added 81 of them.
+Nothing was wrong, but a check that moves with the data cannot prove the
+*wiring* is unchanged. The expected values now live only in
+`tests/news/test_news_baseline_calibration.py` — one place to read, one place to
+update when the fixture is regenerated.
 Every string in the fixture outside an explicit structural allowlist is redacted
 through an equality-preserving map (`tests/support/baseline_calibration.py`),
 which keeps every comparison the recorded metric makes — all equality — while
