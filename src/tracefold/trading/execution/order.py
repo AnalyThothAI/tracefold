@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 from typing import Protocol
 
-from .models import (
+from ..contracts import (
     ExecutionReceipt,
     MarketContext,
     OrderSide,

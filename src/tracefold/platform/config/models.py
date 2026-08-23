@@ -435,7 +435,7 @@ class TradingCandidateSettings(BaseModel):
 
 
 class TradingRegimeSettings(BaseModel):
-    """The OI/price quadrant band. See `tracefold.trading.regime` for the measurement behind the defaults."""
+    """The OI/price quadrant band. See `tracefold.trading.decision.regime` for the measured defaults."""
 
     model_config = ConfigDict(extra="forbid")
 

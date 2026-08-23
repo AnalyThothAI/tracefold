@@ -57,37 +57,33 @@ from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
 from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
-from tracefold.trading import (
+from tracefold.trading.candidate.blacklist import Blacklist
+from tracefold.trading.candidate.eligibility import news_candidate, oi_candidate
+from tracefold.trading.candidate.routing import resolve_instrument
+from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     TERMINAL_ORDER_STATES,
     TRADING_MANIFEST_VERSION,
     TRADING_POLICY_VERSION,
     TRADING_PROGRAM_VERSION,
     Bar,
-    Blacklist,
     InstrumentRef,
     MarketContext,
     NewsTradeCandidate,
     OiTradeCandidate,
-    PaperAdapter,
-    PaperFaults,
+    OrderState,
     PreparedOrder,
+    RiskRejection,
     TradeDecision,
     TradingCaseManifest,
-    TradingConfig,
-    assess,
-    build_payload,
-    build_pipeline,
-    news_candidate,
-    oi_candidate,
-    pre_move_bps,
-    resolve_instrument,
-    side_to_order_side,
-    size_order,
 )
-from tracefold.trading import decide as trading_decide
-from tracefold.trading.models import OrderState, RiskRejection
-from tracefold.trading.order import SizedOrder
+from tracefold.trading.decision.policy import decide as trading_decide
+from tracefold.trading.decision.policy import side_to_order_side
+from tracefold.trading.decision.regime import assess, pre_move_bps
+from tracefold.trading.execution.order import SizedOrder, build_payload, size_order
+from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
+from tracefold.trading.pipeline.root import build_pipeline
+from tracefold.trading.pipeline.runtime import TradingConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "docs" / "generated" / "refactor-baseline-9441ce99.json"

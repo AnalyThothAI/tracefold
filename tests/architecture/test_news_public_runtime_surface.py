@@ -281,7 +281,7 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         # #104: the Trading lane's single `dspy.Predict`. It is the one online decision outside News
         # that calls a model, and it lives in its own capability rather than being smuggled into a
         # News module. DeepAgents/LangGraph/ReAct stay absent tree-wide, which the next assertion keeps.
-        SRC / "trading" / "decision_program.py",
+        SRC / "trading" / "decision" / "program.py",
         # #104: the App wiring builds the Trading LM the same way it builds the News ones. The Workers
         # lifecycle root is intentionally excluded; PR 2 moves construction under `workers/wiring/`.
     } | workers_dspy_wiring

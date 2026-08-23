@@ -179,16 +179,12 @@ tracefold.news
   eval/               provider-hits Deduper+Gate replay only
 
 tracefold.trading
-  models.py           Case/Order/Manifest/regime vocabulary; Decimal money, bps thresholds
-  blacklist.py        the canonical deny-list; one row blocks every provider spelling
-  candidates.py       News/OI projections -> eligible candidates, fusion, venue routing, the funnel
-  regime.py           the deterministic OI/price quadrant and its measured pre-move band
-  decision_program.py one `dspy.Predict` call; no tools, no agent loop, failure is always no-trade
-  policy.py           the pure no_trade/long/short mapping; every path names its rule
-  order.py            fixed-notional sizing, the frozen payload, the one-attempt commit contract
-  paper.py            the fault-scriptable paper adapter and the deterministic paper exit
-  repository.py       trading_* persistence
-  pipeline.py         exactly two runners: trading-candidate and trading-reconcile
+  contracts.py        App-facing values/ports plus Case/Order/Manifest vocabulary
+  candidate/          deny-list, eligibility/funnel, News/OI fusion, venue routing
+  decision/           measured OI/price regime, one-call DSPy Program, pure trade policy
+  execution/          fixed-notional order contract, paper adapter, durable one-attempt submission
+  storage/            lifecycle-owned trading_* persistence behind one concrete repository
+  pipeline/           candidate and reconcile runners plus their two-runner composition root
 
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu

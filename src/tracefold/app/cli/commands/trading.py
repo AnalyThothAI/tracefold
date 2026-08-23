@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
-from tracefold.trading import canonical_base_symbol
+from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000

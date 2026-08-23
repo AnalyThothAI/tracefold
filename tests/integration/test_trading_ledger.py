@@ -27,30 +27,25 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.trading import _news_trade_candidates, _news_trade_instruments
-from tracefold.trading import (
+from tracefold.trading.candidate.blacklist import Blacklist
+from tracefold.trading.candidate.eligibility import EligibilityPolicy, Funnel, news_candidate, oi_candidate
+from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     TRADING_MANIFEST_VERSION,
     Bar,
-    Blacklist,
-    CandidateRunner,
-    EligibilityPolicy,
-    Funnel,
     InstrumentRef,
     NewsTradeCandidate,
     OiTradeCandidate,
-    OrderPolicy,
-    PaperAdapter,
-    PaperFaults,
-    ReconcileRunner,
-    RegimePolicy,
-    TradePolicy,
     TradingCaseManifest,
-    TradingConfig,
-    assess,
     canonical_sha256,
-    news_candidate,
-    oi_candidate,
 )
+from tracefold.trading.decision.policy import TradePolicy
+from tracefold.trading.decision.regime import RegimePolicy, assess
+from tracefold.trading.execution.order import OrderPolicy
+from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
+from tracefold.trading.pipeline.candidate import CandidateRunner
+from tracefold.trading.pipeline.reconcile import ReconcileRunner
+from tracefold.trading.pipeline.runtime import TradingConfig
 
 pytestmark = pytest.mark.integration
 
@@ -1172,7 +1167,7 @@ def test_an_observation_that_is_not_a_live_order_is_not_adopted_as_open(conn) ->
 
     class _RejectingAdapter(PaperAdapter):
         async def observe(self, _order: Any) -> Any:
-            from tracefold.trading import ExecutionReceipt
+            from tracefold.trading.contracts import ExecutionReceipt
 
             return ExecutionReceipt(state="REJECTED", reason="venue_rejected")
 

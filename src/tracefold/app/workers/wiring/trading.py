@@ -11,18 +11,16 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news import OI_METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
-from tracefold.trading import DEFAULT_DEADLINE_SECONDS as TRADING_DECISION_DEADLINE_SECONDS
-from tracefold.trading import DEFAULT_MAX_TOKENS as TRADING_DECISION_MAX_TOKENS
-from tracefold.trading import Bar as TradingBar
-from tracefold.trading import (
-    EligibilityPolicy,
-    OrderPolicy,
-    RegimePolicy,
-    TradePolicy,
-    TradingConfig,
-    TradingDecisionProgram,
-)
-from tracefold.trading import build_pipeline as build_trading_pipeline
+from tracefold.trading.candidate.eligibility import EligibilityPolicy
+from tracefold.trading.contracts import Bar as TradingBar
+from tracefold.trading.decision.policy import TradePolicy
+from tracefold.trading.decision.program import DEFAULT_DEADLINE_SECONDS as TRADING_DECISION_DEADLINE_SECONDS
+from tracefold.trading.decision.program import DEFAULT_MAX_TOKENS as TRADING_DECISION_MAX_TOKENS
+from tracefold.trading.decision.program import TradingDecisionProgram
+from tracefold.trading.decision.regime import RegimePolicy
+from tracefold.trading.execution.order import OrderPolicy
+from tracefold.trading.pipeline.root import build_pipeline as build_trading_pipeline
+from tracefold.trading.pipeline.runtime import TradingConfig
 
 
 class _TradingColdDb:

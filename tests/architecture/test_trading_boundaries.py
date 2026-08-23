@@ -70,6 +70,20 @@ def test_trading_reaches_no_shell_filesystem_or_arbitrary_http_client() -> None:
     assert offenders == []
 
 
+def test_execution_depends_only_on_contracts_and_execution_siblings() -> None:
+    """Capital-write code must not reach back into candidate, pipeline, decision, or storage owners."""
+
+    forbidden: list[str] = []
+    for path in sorted((TRADING / "execution").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        forbidden.extend(
+            f"{path.name}:{node.module}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level == 2 and node.module != "contracts"
+        )
+    assert forbidden == []
+
+
 def test_trading_writes_only_trading_tables() -> None:
     offenders: list[str] = []
     for path in _trading_sources():
@@ -161,11 +175,13 @@ def test_news_never_imports_trading() -> None:
     assert offenders == []
 
 
-def test_the_public_interface_is_the_package_root() -> None:
+def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 
-    assert "TradingRepository" in trading.__all__
-    assert "decide" in trading.__all__
+    assert trading.__all__ == ["Bar", "ExecutionReceipt", "InstrumentRef", "PreparedOrder", "TradingMode"]
+    assert "TradingRepository" not in trading.__dict__
+    assert "CandidateRunner" not in trading.__dict__
+    assert "decide" not in trading.__dict__
     assert "__getattr__" not in trading.__dict__
 
 
@@ -188,7 +204,8 @@ def test_a_live_mode_without_a_provider_contract_fails_at_startup() -> None:
 
 
 def test_a_live_mode_without_an_execution_adapter_refuses_to_compose() -> None:
-    from tracefold.trading import TradingConfig, build_pipeline
+    from tracefold.trading.pipeline.root import build_pipeline
+    from tracefold.trading.pipeline.runtime import TradingConfig
 
     with pytest.raises(ValueError, match="trading_live_mode_requires_execution_adapter"):
         build_pipeline(
@@ -212,7 +229,8 @@ def test_the_regime_band_must_have_a_ceiling() -> None:
 
 
 def test_the_pipeline_exposes_exactly_two_runners() -> None:
-    from tracefold.trading import TradingConfig, build_pipeline
+    from tracefold.trading.pipeline.root import build_pipeline
+    from tracefold.trading.pipeline.runtime import TradingConfig
 
     pipeline = build_pipeline(
         db=object(),

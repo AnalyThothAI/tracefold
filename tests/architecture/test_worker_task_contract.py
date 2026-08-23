@@ -6,7 +6,8 @@ from typing import Any, cast
 
 from tracefold.app.workers.task_contract import worker_task_names
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.trading import TradingConfig, build_pipeline
+from tracefold.trading.pipeline.root import build_pipeline
+from tracefold.trading.pipeline.runtime import TradingConfig
 
 
 def _port() -> Any:

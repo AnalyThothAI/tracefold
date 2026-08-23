@@ -39,14 +39,24 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.market_review.storage",
         "tracefold.news.query_specs",
         "tracefold.news.storage.root",
-        "tracefold.trading.repository",
+        "tracefold.trading.storage.root",
     ),
+    "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
         "tracefold.news.canary",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
+        "tracefold.trading.candidate.eligibility",
+        "tracefold.trading.contracts",
+        "tracefold.trading.decision.policy",
+        "tracefold.trading.decision.program",
+        "tracefold.trading.decision.regime",
+        "tracefold.trading.execution.order",
+        "tracefold.trading.pipeline.candidate",
+        "tracefold.trading.pipeline.root",
+        "tracefold.trading.pipeline.runtime",
     ),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": ("tracefold.news.bus",),
@@ -200,6 +210,8 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
     family: str | None = None
     if parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("news"):
         family = "app.news_cli"
+    elif parts == ["tracefold", "app", "cli", "commands", "trading"]:
+        family = "app.trading_cli"
     elif parts[:3] == ["tracefold", "app", "workers"]:
         family = "app.workers"
     elif parts[:2] == ["tracefold", "app"] and len(parts) == 3:

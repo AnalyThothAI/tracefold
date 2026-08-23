@@ -16,7 +16,7 @@ from tracefold.platform.postgres.postgres_client import (
     transaction,
     with_password_from_file,
 )
-from tracefold.trading.repository import TradingRepository
+from tracefold.trading.storage.root import TradingRepository
 
 
 @dataclass(frozen=True, slots=True)
