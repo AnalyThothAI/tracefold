@@ -9,6 +9,9 @@ from typing import Any, Final
 from .models import Decision, TriageVerdict, base_symbol
 from .similarity import max_similarity
 
+# One owner for the withhold key: `outcome` renders it, `repository` counts it.
+STALE_SOURCE_KEY: Final = "artifact:stale"
+
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
 _MODEL_WANTS_PUSH = frozenset({"push", "escalate"})
 
@@ -375,9 +378,10 @@ def decide(
         and facts.source_age_s is not None
         and facts.source_age_s > policy.stale_source_max_age_s
     ):
-        return DecisionResult(
-            "throttled", "stale_source_artifact", f"artifact:{facts.source_age_s}s", baseline, watch_hits
-        )
+        # A constant key on purpose: `throttled_by` is folded into a top-10 count map, so embedding the age
+        # would give every withhold its own count-1 bucket and hide the rule from `status.pipeline`. The age
+        # itself is in the trace.
+        return DecisionResult("throttled", "stale_source_artifact", STALE_SOURCE_KEY, baseline, watch_hits)
 
     seen_similarity: float | None = None
     seen_against = -1

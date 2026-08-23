@@ -28,9 +28,13 @@ down_revision = "20260822_0298"
 branch_labels = None
 depends_on = None
 
-# Kept identical to `_STATUS_URL_RE` in `tracefold.news.opennews`, POSIX-flavoured.
-_STATUS_RE = r"^https?://(www\.)?(x|twitter)\.com/[^/]+/status(es)?/[0-9]{5,25}([/?#]|$)"
-_STATUS_CAPTURE = r"/status(?:es)?/([0-9]{5,25})"
+# Kept identical to `_STATUS_URL_RE` in `tracefold.news.opennews`, POSIX-flavoured. Both carry `(?i)`: the
+# match below uses `~*` but `substring(string from pattern)` is case-*sensitive*, so a path spelling
+# `/Status/` would pass the WHERE, return NULL from substring, and abort the whole upgrade on
+# `'x:' || NULL` against a NOT NULL column. The provider already varies case in the handle segment
+# (`coindesk` / `CoinDesk`), so this is not hypothetical.
+_STATUS_RE = r"(?i)^https?://(www\.)?(x|twitter)\.com/[^/]+/status(es)?/[0-9]{5,25}([/?#]|$)"
+_STATUS_CAPTURE = r"(?i)/status(?:es)?/([0-9]{5,25})"
 
 
 def upgrade() -> None:

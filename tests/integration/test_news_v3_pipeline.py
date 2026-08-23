@@ -729,8 +729,8 @@ def test_source_artifact_backfill_matches_the_parser(conn) -> None:
     rows = conn.execute(
         """
         SELECT canonical_url,
-               CASE WHEN canonical_url ~* '^https?://(www\\.)?(x|twitter)\\.com/[^/]+/status(es)?/[0-9]{5,25}([/?#]|$)'
-                    THEN 'x:' || substring(canonical_url from '/status(?:es)?/([0-9]{5,25})')
+               CASE WHEN canonical_url ~* '(?i)^https?://(www\\.)?(x|twitter)\\.com/[^/]+/status(es)?/[0-9]{5,25}([/?#]|$)'
+                    THEN 'x:' || substring(canonical_url from '(?i)/status(?:es)?/([0-9]{5,25})')
                     ELSE '' END AS sql_id
           FROM (VALUES
             ('https://x.com/soon_svm/status/2089994673804939740'),
@@ -738,7 +738,10 @@ def test_source_artifact_backfill_matches_the_parser(conn) -> None:
             ('https://www.twitter.com/soon_svm/statuses/2089994673804939740'),
             ('https://x.com/soon_svm/status/2089994673804939740?s=20'),
             ('https://www.zerohedge.com/markets/story'),
-            ('https://x.com/soon_svm')
+            ('https://x.com/soon_svm'),
+            -- Case in both the handle and the path segment: `~*` matches but `substring` would not.
+            ('https://X.com/SOON_SVM/Status/2089994673804939740'),
+            ('https://twitter.com/CoinDesk/STATUSES/2089761853727490268')
           ) AS t(canonical_url)
         """
     ).fetchall()

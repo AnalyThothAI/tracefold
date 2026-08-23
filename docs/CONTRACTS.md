@@ -377,7 +377,7 @@ stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
 `news_semantic_program_v3` (or `news_oi_signal_v1` for a deterministic
-telemetry judgment, #137), `news_triage_policy_v8`, and
+telemetry judgment, #137), `news_triage_policy_v9`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
 

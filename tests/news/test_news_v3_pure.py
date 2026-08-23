@@ -18,6 +18,7 @@ from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.models import ReaderReceipt, TriageAsset, TriageVerdict
 from tracefold.news.opennews import source_artifact_identity
+from tracefold.news.outcome import OVERRIDE_RULE_ZH, throttled_by_zh
 from tracefold.news.pricing import CHANGE_BASIS_ZH
 from tracefold.news.similarity import similarity
 from tracefold.news.storyline import (
@@ -30,6 +31,7 @@ from tracefold.news.titles import extract_title
 from tracefold.news.tokens import comparison_tokens, jaccard
 from tracefold.news.triage_rules import (
     DEFAULT_POLICY,
+    STALE_SOURCE_KEY,
     DecidePolicy,
     GateFacts,
     StorylineStatus,
@@ -513,7 +515,11 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     withheld = decide(_verdict(magnitude=2), stale, status)
     assert withheld.final == "throttled"
     assert withheld.override_rule == "stale_source_artifact"
-    assert withheld.throttled_by == f"artifact:{int(385.6 * 3600)}s"
+    # A constant key, not the age: `throttled_by` is counted into a top-10 map and a per-second key would
+    # give every withhold its own bucket.
+    assert withheld.throttled_by == STALE_SOURCE_KEY
+    assert throttled_by_zh(STALE_SOURCE_KEY) == "旧闻：这条推文在 provider 推送时就已过时"
+    assert OVERRIDE_RULE_ZH["stale_source_artifact"] == "来源推文本身已过时，按旧闻扣下"
 
     assert decide(_verdict(magnitude=3), stale, status).final == "escalate"
     # No artifact timestamp (every non-x/twitter frame) is not evidence of staleness.

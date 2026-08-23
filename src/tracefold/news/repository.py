@@ -282,6 +282,10 @@ class NewsRepository:
 
         if not source_artifact_id:
             return None
+        # Only an Event that can still reach a reader may absorb a live frame. The 12 h family window used to
+        # bound this implicitly; a 7-day horizon does not, and joining a `recovery` Event — which is in
+        # `_REGATE_ADMISSIONS`, so it can never be upgraded and never delivers — would swallow the card
+        # silently. A suppressed Event is excluded for the same reason.
         row = self.conn.execute(
             """
             SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
@@ -291,9 +295,17 @@ class NewsRepository:
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
                AND e.family = %s AND e.comparison_fingerprint = %s
                AND e.opened_at_ms >= %s
+               AND e.admission = ANY(%s)
              ORDER BY e.opened_at_ms ASC LIMIT 1
             """,
-            (source_artifact_id, item_id, family, fingerprint, int(opened_after_ms)),
+            (
+                source_artifact_id,
+                item_id,
+                family,
+                fingerprint,
+                int(opened_after_ms),
+                sorted(ADMITTED_ADMISSIONS),
+            ),
         ).fetchone()
         return dict(row) if row else None
 
