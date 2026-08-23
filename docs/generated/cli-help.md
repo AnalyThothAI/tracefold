@@ -178,13 +178,16 @@ options:
 ## `news review`
 
 ```
-usage: tracefold news review [-h] {queue,evidence,submit,external-miss} ...
+usage: tracefold news review [-h]
+                             {queue,evidence,submit,accept-drafts,external-miss} ...
 
 positional arguments:
-  {queue,evidence,submit,external-miss}
+  {queue,evidence,submit,accept-drafts,external-miss}
     queue               open the deterministic operator review queue
     evidence            show the task-scoped evidence view
     submit              append and accept one rubric or pairwise judgment
+    accept-drafts       submit reviewed model drafts through the normal submit
+                        path (operator remains the author)
     external-miss       append an external miss and its rubric
 
 options:
@@ -249,6 +252,33 @@ options:
   --version VERSION
   --file FILE
   --idempotency-key IDEMPOTENCY_KEY
+
+```
+
+## `news review accept-drafts`
+
+```
+usage: tracefold news review accept-drafts [-h] --file FILE
+                                           [--min-confidence MIN_CONFIDENCE]
+                                           [--only ONLY] [--exclude EXCLUDE]
+                                           [--reviewer REVIEWER] [--dry-run]
+
+options:
+  -h, --help            show this help message and exit
+  --file FILE           draft batch produced by `learning draft-reviews`
+  --min-confidence MIN_CONFIDENCE
+                        skip drafts the model was less sure of than this
+                        (0.0-1.0)
+  --only ONLY           comma-separated event_id or task_id prefixes to
+                        accept; default is every draft that passes the filters
+  --exclude EXCLUDE     comma-separated event_id or task_id prefixes to skip
+                        after you have read them
+  --reviewer REVIEWER   reviewer recorded on each row. The default marks these
+                        as operator-accepted model drafts so they stay
+                        identifiable — and excludable — if their label noise
+                        later proves to matter
+  --dry-run             report exactly what would be submitted, and write
+                        nothing
 
 ```
 

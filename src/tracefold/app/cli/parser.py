@@ -73,6 +73,40 @@ def build_parser() -> argparse.ArgumentParser:
     review_submit.add_argument("--version", required=True)
     review_submit.add_argument("--file", required=True)
     review_submit.add_argument("--idempotency-key", default="")
+    review_accept = review_subcommands.add_parser(
+        "accept-drafts",
+        help="submit reviewed model drafts through the normal submit path (operator remains the author)",
+    )
+    review_accept.add_argument("--file", required=True, help="draft batch produced by `learning draft-reviews`")
+    review_accept.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.0,
+        help="skip drafts the model was less sure of than this (0.0-1.0)",
+    )
+    review_accept.add_argument(
+        "--only",
+        default="",
+        help="comma-separated event_id or task_id prefixes to accept; default is every draft that passes the filters",
+    )
+    review_accept.add_argument(
+        "--exclude",
+        default="",
+        help="comma-separated event_id or task_id prefixes to skip after you have read them",
+    )
+    review_accept.add_argument(
+        "--reviewer",
+        default="model_drafted_operator",
+        help=(
+            "reviewer recorded on each row. The default marks these as operator-accepted model drafts so they "
+            "stay identifiable — and excludable — if their label noise later proves to matter"
+        ),
+    )
+    review_accept.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report exactly what would be submitted, and write nothing",
+    )
     review_external = review_subcommands.add_parser("external-miss", help="append an external miss and its rubric")
     review_external.add_argument("--file", required=True)
     review_external.add_argument("--idempotency-key", default="")
