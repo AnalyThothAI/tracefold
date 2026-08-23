@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tracefold.news.agents.program_baseline import (
@@ -12,6 +13,7 @@ from tracefold.news.agents.program_baseline import (
     _failed_case,
     run_baseline,
 )
+from tracefold.news.agents.program_judge import CardEquivalenceJudge
 from tracefold.news.agents.program_metric import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.artifact_identity import canonical_sha
@@ -106,6 +108,16 @@ def _case(index: int, *, cluster: str | None = None, should_push: str = "should_
 
 def _report(cases: list[BaselineCase]) -> Any:
     return run_baseline(cases, mode="recorded", artifact=load_stable_program_artifact())
+
+
+class _SilentJudgeLM(dspy.BaseLM):  # type: ignore[misc]
+    """Never answers, because `recorded` must never ask it. Any call is the bug this pins."""
+
+    def __init__(self) -> None:
+        super().__init__(model="scripted/judge")
+
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+        raise AssertionError("recorded mode consulted the semantic judge")
 
 
 def test_failures_are_published_as_a_second_score_not_dropped_from_the_first() -> None:
@@ -260,3 +272,48 @@ def test_a_report_cannot_cover_two_policies() -> None:
     )
     with pytest.raises(ValueError, match="news_program_baseline_policy_not_uniform"):
         _report([_case(1), mixed])
+
+
+def test_every_identity_component_moves_the_report_sha() -> None:
+    """A report is only evidence if two of them can be compared. Each thing the report claims to pin —
+    Program, policy, runtime binding, metric/judge and corpus — must be able to change the SHA on its own,
+    or a receipt could be reused for a run it does not describe.
+    """
+
+    artifact = load_stable_program_artifact()
+    base = run_baseline([_case(1)], mode="recorded", artifact=artifact)
+    variants: dict[str, str] = {"baseline": base.report_sha256}
+
+    # Program: a different state root is a different subject even at the same score.
+    other_program = artifact.model_copy(update={"program_sha256": "b" * 64})
+    variants["program"] = run_baseline([_case(1)], mode="recorded", artifact=other_program).report_sha256
+
+    # Policy: same verdict, same evidence, a knob production did not run.
+    drifted = _case(1)
+    values = {**DEFAULT_POLICY.as_dict(), "similarity_max": 0.9}
+    projection = {**drifted.episode.policy_metric, "policy_values": values, "policy_sha256": canonical_sha(values)}
+    variants["policy"] = run_baseline(
+        [
+            BaselineCase(
+                episode=drifted.episode.model_copy(update={"policy_metric": projection}), recorded_action="push"
+            )
+        ],
+        mode="recorded",
+        artifact=artifact,
+    ).report_sha256
+
+    # Runtime binding: which models answered is part of what the number means.
+    variants["runtime_binding"] = run_baseline(
+        [_case(1)], mode="recorded", artifact=artifact, runtime_identity={"slots": {"event_semantics.primary": "x"}}
+    ).report_sha256
+
+    # Corpus: one more case is a different question, even a case that scores the same.
+    variants["corpus"] = run_baseline([_case(1), _case(2)], mode="recorded", artifact=artifact).report_sha256
+
+    # Metric/judge: the ruler is part of the measurement. `recorded` never calls the judge — the candidate is
+    # the production verdict, so the texts already match — but its identity is still what the number means.
+    variants["judge"] = run_baseline(
+        [_case(1)], mode="recorded", artifact=artifact, judge=CardEquivalenceJudge(_SilentJudgeLM())
+    ).report_sha256
+
+    assert len(set(variants.values())) == len(variants), variants
