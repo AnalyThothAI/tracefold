@@ -11,27 +11,29 @@ from decimal import Decimal
 
 import pytest
 
-from tracefold.trading import (
+from tracefold.trading.candidate.blacklist import Blacklist
+from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     Bar,
-    Blacklist,
     InstrumentRef,
     MarketContext,
     OiRegime,
-    OrderPolicy,
     RiskRejection,
     TradeDecision,
-    TradePolicy,
     canonical_base_symbol,
-    decide,
-    evaluate_paper_exit,
-    pre_move_bps,
-    realized_bps,
-    size_order,
     underlying_key,
 )
-from tracefold.trading.order import build_payload, must_close_at, stop_price_for
-from tracefold.trading.regime import RegimePolicy, assess
+from tracefold.trading.decision.policy import TradePolicy, decide
+from tracefold.trading.decision.regime import RegimePolicy, assess, pre_move_bps
+from tracefold.trading.execution.order import (
+    OrderPolicy,
+    build_payload,
+    must_close_at,
+    realized_bps,
+    size_order,
+    stop_price_for,
+)
+from tracefold.trading.execution.paper import evaluate_paper_exit
 
 NOW = 1_787_000_000_000
 

@@ -11,19 +11,16 @@ from decimal import Decimal
 
 import pytest
 
-from tracefold.trading import (
+from tracefold.trading.candidate.eligibility import EligibilityPolicy, blacklist_rule
+from tracefold.trading.candidate.fusion import _fuse
+from tracefold.trading.contracts import (
     Bar,
-    EligibilityPolicy,
     NewsTradeCandidate,
     OiRegime,
     OiTradeCandidate,
-    TradePolicy,
-    blacklist_rule,
-    decide,
-    evaluate_paper_exit,
-    pre_model_reject,
 )
-from tracefold.trading.pipeline import _fuse
+from tracefold.trading.decision.policy import TradePolicy, decide, pre_model_reject
+from tracefold.trading.execution.paper import evaluate_paper_exit
 
 NOW = 1_787_000_000_000
 
@@ -112,7 +109,7 @@ def test_a_counterpart_outside_its_lookback_is_not_attached() -> None:
 def test_a_news_only_case_takes_its_side_from_the_model_not_a_quadrant() -> None:
     """There is no OI frame, so there is no quadrant. Deriving the side from one made the kind dead."""
 
-    from tracefold.trading import TradeDecision
+    from tracefold.trading.contracts import TradeDecision
 
     outcome = decide(
         case_kind="news_only",
@@ -239,15 +236,15 @@ def test_the_exit_ceiling_is_declared_once_in_python_and_matches_the_schema() ->
 
     from pathlib import Path
 
-    from tracefold.trading.repository import _MAX_EXIT_ATTEMPTS
+    from tracefold.trading.storage.orders import _MAX_EXIT_ATTEMPTS
 
     migration = (
         Path(__file__).resolve().parents[2]
         / "src/tracefold/platform/postgres/alembic/versions/20260823_0300_trading_core.py"
     ).read_text(encoding="utf-8")
     assert f"exit_attempt_total <= {_MAX_EXIT_ATTEMPTS}" in migration
-    pipeline = (Path(__file__).resolve().parents[2] / "src/tracefold/trading/pipeline.py").read_text(encoding="utf-8")
-    assert "_MAX_EXIT_ATTEMPTS" not in pipeline
+    pipeline = Path(__file__).resolve().parents[2] / "src/tracefold/trading/pipeline"
+    assert all("_MAX_EXIT_ATTEMPTS" not in path.read_text(encoding="utf-8") for path in pipeline.glob("*.py"))
 
 
 def test_every_order_state_the_code_can_write_is_accepted_by_the_schema() -> None:
@@ -259,8 +256,7 @@ def test_every_order_state_the_code_can_write_is_accepted_by_the_schema() -> Non
 
     from pathlib import Path
 
-    from tracefold.trading import ACTIVE_ORDER_STATES, TERMINAL_ORDER_STATES
-    from tracefold.trading.models import OrderState
+    from tracefold.trading.contracts import ACTIVE_ORDER_STATES, TERMINAL_ORDER_STATES, OrderState
 
     migration = (
         Path(__file__).resolve().parents[2]

@@ -33,8 +33,6 @@ GRANDFATHERED_MODULE_LINES = {
     "news/pipeline/triage.py": 966,
     "news/review.py": 2456,
     "news/semantic_contract.py": 902,
-    "trading/pipeline.py": 1393,
-    "trading/repository.py": 715,
 }
 
 # Function debt is identified by exact source path and qualified name. A structural PR that purely
@@ -85,10 +83,10 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/timeline.py", "event_timeline"): 194,
     ("news/triage_rules.py", "decide"): 103,
     ("platform/postgres/runtime_roles.py", "runtime_role_contract"): 154,
-    ("trading/pipeline.py", "CandidateRunner._freeze"): 103,
-    ("trading/pipeline.py", "CandidateRunner._advance"): 144,
-    ("trading/pipeline.py", "CandidateRunner._place"): 128,
-    ("trading/pipeline.py", "ReconcileRunner._manage_open"): 122,
+    ("trading/pipeline/candidate.py", "CandidateRunner._freeze"): 103,
+    ("trading/pipeline/candidate.py", "CandidateRunner._advance"): 144,
+    ("trading/pipeline/candidate.py", "CandidateRunner._place"): 128,
+    ("trading/pipeline/reconcile.py", "ReconcileRunner._manage_open"): 122,
 }
 
 # These two aliases predate the declarative-root guard. They contain type expressions only and may
@@ -320,6 +318,28 @@ def test_news_event_storage_and_market_review_splits_have_no_compatibility_alias
     }
 
 
+def test_trading_ownership_split_has_no_compatibility_aliases() -> None:
+    retired = {
+        "blacklist.py",
+        "candidates.py",
+        "decision_program.py",
+        "models.py",
+        "order.py",
+        "paper.py",
+        "pipeline.py",
+        "policy.py",
+        "regime.py",
+        "repository.py",
+    }
+    assert sorted(path.name for path in (SRC / "trading").iterdir() if path.name in retired) == []
+    assert {"candidate.py", "reconcile.py", "root.py", "runtime.py"} == {
+        path.name for path in (SRC / "trading" / "pipeline").glob("*.py") if path.name != "__init__.py"
+    }
+    assert {"cases.py", "control.py", "orders.py", "queries.py", "root.py"} <= {
+        path.name for path in (SRC / "trading" / "storage").glob("*.py")
+    }
+
+
 def test_news_domain_modules_do_not_reach_through_repository_connections() -> None:
     violations = [
         path.relative_to(ROOT).as_posix()
@@ -367,9 +387,10 @@ def test_business_modules_do_not_add_package_root_back_imports() -> None:
     assert actual == LEGACY_INTERNAL_ABSOLUTE_IMPORTS
 
 
-def test_package_exports_remain_at_the_frozen_public_seam() -> None:
+def test_package_exports_remain_at_the_intentional_public_seam() -> None:
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     expected = baseline["historical_structure"]["package_exports"]
+    expected["tracefold.trading"] = ["Bar", "ExecutionReceipt", "InstrumentRef", "PreparedOrder", "TradingMode"]
     actual = {module: _declared_exports(_package_path(module)) for module in expected}
     assert actual == expected
     for module in ("tracefold.news", "tracefold.trading"):

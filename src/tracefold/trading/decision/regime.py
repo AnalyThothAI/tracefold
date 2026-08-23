@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 
-from .models import Bar, OiRegime, RegimeAssessment
+from ..contracts import Bar, OiRegime, RegimeAssessment
 
 # One interval plus provider timestamp jitter, matching the News reaction plane's tolerance. Wide enough
 # that a boundary rounding difference is not a hole; narrow enough that an illiquid gap never forward-fills.

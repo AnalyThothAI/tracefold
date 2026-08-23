@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 import dspy  # type: ignore[import-untyped]
 
-from .models import NO_TRADE_DECISION, TRADING_PROGRAM_VERSION, TradeDecision, TradingCaseManifest
+from ..contracts import NO_TRADE_DECISION, TRADING_PROGRAM_VERSION, TradeDecision, TradingCaseManifest
 
 log = logging.getLogger("tracefold.trading.program")
 

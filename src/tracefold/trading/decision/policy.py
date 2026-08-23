@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .models import (
+from ..contracts import (
     CaseKind,
     OiRegime,
     OrderSide,

@@ -11,20 +11,18 @@ rejection, never a default.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .blacklist import Blacklist
-from .models import (
-    InstrumentRef,
+from ..contracts import (
+    TRADING_MANIFEST_VERSION,
     NewsTradeCandidate,
     OiTradeCandidate,
     canonical_base_symbol,
-    underlying_key,
 )
+from .blacklist import Blacklist
 
-_NATIVE_PERP_VENUE: Mapping[str, str] = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
 _LIVE_DECISIONS = frozenset({"push", "escalate"})
 _KNOWN_VENUES = frozenset({"binance", "hyperliquid"})
 # The reasons the code itself writes. An operator's `--reason` is free text and every distinct string
@@ -252,86 +250,26 @@ def news_candidate(
     )
 
 
-# ---------------------------------------------------------------------------- fusion
-def attach_news(
-    candidate: OiTradeCandidate,
-    news: Sequence[NewsTradeCandidate],
-    *,
-    policy: EligibilityPolicy = DEFAULT_ELIGIBILITY,
-) -> NewsTradeCandidate | None:
-    """The newest eligible News for the same underlying, strictly at or before the OI trigger.
+def _uses_current_news_generation(raw: object) -> bool:
+    """Whether an untrusted persisted manifest names the one executable News generation."""
 
-    Point-in-time only: a News verdict written after the frame is the future, and attaching it would
-    make every replay of that case unreproducible.
-    """
-
-    key = underlying_key(candidate.base_symbol)
-    window_start = candidate.observed_at_ms - policy.news_lookback_ms
-    matches = [
-        item
-        for item in news
-        if underlying_key(item.base_symbol) == key
-        and window_start <= item.verdict_created_at_ms <= candidate.observed_at_ms
-    ]
-    return max(matches, key=lambda item: item.verdict_created_at_ms) if matches else None
-
-
-def attach_oi(
-    candidate: NewsTradeCandidate,
-    signals: Sequence[OiTradeCandidate],
-    *,
-    policy: EligibilityPolicy = DEFAULT_ELIGIBILITY,
-) -> OiTradeCandidate | None:
-    """The newest qualifying OI frame for the same underlying, strictly at or before the verdict."""
-
-    key = underlying_key(candidate.base_symbol)
-    window_start = candidate.verdict_created_at_ms - policy.oi_lookback_ms
-    matches = [
-        item
-        for item in signals
-        if underlying_key(item.base_symbol) == key
-        and window_start <= item.observed_at_ms <= candidate.verdict_created_at_ms
-    ]
-    return max(matches, key=lambda item: item.observed_at_ms) if matches else None
-
-
-# ---------------------------------------------------------------------------- instrument routing
-def resolve_instrument(
-    rows: Iterable[Mapping[str, Any]],
-    *,
-    priority: Sequence[str],
-    observed_at_ms: int,
-) -> InstrumentRef | None:
-    """Pick exactly one venue, in the operator's static priority order.
-
-    One venue, frozen before any write. No split order, no simultaneous dual-venue order, and — the
-    rule that matters after a timeout — no automatic fallback to the other venue. The exact provider
-    symbol comes from the catalogue row; a display symbol has never been safe to submit.
-    """
-
-    by_venue: dict[str, Mapping[str, Any]] = {}
-    for row in rows:
-        venue = str(row.get("venue") or "")
-        for exchange_id, native in _NATIVE_PERP_VENUE.items():
-            if venue == native:
-                by_venue.setdefault(exchange_id, row)
-    for exchange_id in priority:
-        chosen = by_venue.get(exchange_id)
-        if chosen is None:
+    if not isinstance(raw, Mapping) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
+        return False
+    sources = (("oi", "news_oi_signal_v1"), ("news", "news_semantic_program_v4"))
+    found = False
+    for source_field, expected_program in sources:
+        source = raw.get(source_field)
+        if source is None:
             continue
-        provider_symbol = str(chosen.get("venue_symbol") or "").strip()
-        if not provider_symbol:
-            continue
-        return InstrumentRef(
-            exchange_id=exchange_id,
-            venue=str(chosen.get("venue") or ""),
-            provider_symbol=provider_symbol,
-            base_symbol=canonical_base_symbol(chosen.get("base_symbol")),
-            instrument_class=str(chosen.get("instrument_class") or "unknown"),
-            quote_asset=(str(chosen["quote_asset"]) if chosen.get("quote_asset") else None),
-            observed_at_ms=int(observed_at_ms),
-        )
-    return None
+        found = True
+        if (
+            not isinstance(source, Mapping)
+            or source.get("learning_epoch") != "program_v6"
+            or source.get("policy_version") != "news_triage_policy_v10"
+            or source.get("program_version") != expected_program
+        ):
+            return False
+    return found
 
 
 __all__ = [
@@ -339,10 +277,7 @@ __all__ = [
     "EligibilityPolicy",
     "Funnel",
     "Rejected",
-    "attach_news",
-    "attach_oi",
     "blacklist_rule",
     "news_candidate",
     "oi_candidate",
-    "resolve_instrument",
 ]

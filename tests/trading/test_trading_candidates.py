@@ -11,19 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.trading import (
-    Blacklist,
-    EligibilityPolicy,
-    Funnel,
-    NewsTradeCandidate,
-    OiTradeCandidate,
-    Rejected,
-    attach_news,
-    attach_oi,
-    news_candidate,
-    oi_candidate,
-    resolve_instrument,
-)
+from tracefold.trading.candidate.blacklist import Blacklist
+from tracefold.trading.candidate.eligibility import EligibilityPolicy, Funnel, Rejected, news_candidate, oi_candidate
+from tracefold.trading.candidate.fusion import attach_news, attach_oi
+from tracefold.trading.candidate.routing import resolve_instrument
+from tracefold.trading.contracts import NewsTradeCandidate, OiTradeCandidate
 
 NOW = 1_787_000_000_000
 OPEN_DENY = Blacklist.from_rows([{"base_symbol": "BTC", "reason": "benchmark_large_cap"}])

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
@@ -27,6 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field
 TRADING_MANIFEST_VERSION = "trading_manifest_v2"
 TRADING_POLICY_VERSION = "trading_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
+# Code-owned execution timing shared by the pipeline and the one-attempt protocol.
+TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
+TRADING_RECONCILE_BACKOFF_MS = 30_000
 
 # Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
 # a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
@@ -38,6 +42,12 @@ CaseKind = Literal["oi_only", "news_only", "news_oi"]
 ExchangeId = Literal["binance", "hyperliquid", "paper"]
 OrderSide = Literal["buy", "sell"]
 PolicyDecision = Literal["no_trade", "long", "short"]
+
+
+def utc_day_key(now_ms: int) -> str:
+    """Stable UTC budget key derived from an injected timestamp."""
+
+    return datetime.fromtimestamp(now_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 class CaseState(StrEnum):
@@ -363,9 +373,11 @@ __all__ = [
     "ACTIVE_ORDER_STATES",
     "NO_TRADE_DECISION",
     "TERMINAL_ORDER_STATES",
+    "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
     "TRADING_POLICY_VERSION",
     "TRADING_PROGRAM_VERSION",
+    "TRADING_RECONCILE_BACKOFF_MS",
     "Bar",
     "CaseKind",
     "CaseState",
@@ -390,4 +402,5 @@ __all__ = [
     "canonical_base_symbol",
     "canonical_sha256",
     "underlying_key",
+    "utc_day_key",
 ]

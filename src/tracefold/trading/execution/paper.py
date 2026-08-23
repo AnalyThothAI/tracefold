@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from .models import Bar, ExecutionReceipt, OrderSide, PreparedOrder
+from ..contracts import Bar, ExecutionReceipt, OrderSide, PreparedOrder
 
 
 @dataclass(slots=True)

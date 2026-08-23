@@ -14,18 +14,20 @@ from typing import Any
 import pytest
 from dspy.utils.dummies import DummyLM
 
-from tracefold.trading import (
+from tracefold.trading.contracts import (
     InstrumentRef,
     NewsTradeCandidate,
     OiRegime,
     OiTradeCandidate,
     RegimeAssessment,
     TradingCaseManifest,
+)
+from tracefold.trading.decision.program import (
     TradingDecisionProgram,
     assert_model_input_safe,
     build_inputs,
+    program_sha256,
 )
-from tracefold.trading.decision_program import program_sha256
 
 NOW = 1_787_000_000_000
 
@@ -234,7 +236,7 @@ def test_the_package_never_builds_its_own_language_model() -> None:
     degraded to a no-trade — after the daily budget had been charged.
     """
 
-    import tracefold.trading.decision_program as module
+    import tracefold.trading.decision.program as module
 
     assert not hasattr(TradingDecisionProgram, "build")
     text = Path(module.__file__ or "").read_text(encoding="utf-8")
@@ -242,7 +244,7 @@ def test_the_package_never_builds_its_own_language_model() -> None:
 
 
 def test_the_program_holds_no_tools_and_no_agent_framework() -> None:
-    import tracefold.trading.decision_program as module
+    import tracefold.trading.decision.program as module
 
     source = module.__file__
     assert source is not None

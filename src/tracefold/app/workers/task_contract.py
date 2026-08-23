@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.trading import TradingPipeline
+from tracefold.trading.pipeline.root import TradingPipeline
 
 WORKERS_PROBE_TASK_NAME = "workers-probe"
 WORKERS_CONTROL_TASK_NAME = "workers-control"
