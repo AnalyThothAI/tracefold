@@ -68,7 +68,7 @@ from .order import (
 )
 from .paper import PaperAdapter, evaluate_paper_exit
 from .policy import DEFAULT_TRADE_POLICY, TradePolicy, decide, side_to_order_side
-from .regime import DEFAULT_REGIME_POLICY, RegimePolicy, assess, pre_move_bps
+from .regime import DEFAULT_REGIME_POLICY, RegimePolicy, assess, pre_move_bps, select_bar
 from .repository import TradingRepository
 
 log = logging.getLogger("tracefold.trading")
@@ -237,7 +237,6 @@ class CandidateRunner:
                     after_created_at_ms=now - window,
                     until_created_at_ms=now,
                 ),
-                "cooldowns": {},
             }
 
         try:
@@ -358,7 +357,16 @@ class CandidateRunner:
             funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
 
-        mark = bars[-1].close
+        # The mark is the bar closed at or before the cutoff, not the newest bar fetched. The manifest
+        # is a point-in-time document stamped `cutoff_ms`; taking the freshest close would put a price
+        # from after the cutoff into the frozen evidence the model reads and the entry references.
+        anchor_bar = select_bar(
+            bars, target_ms=plan.observed_at_ms, gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms
+        )
+        if anchor_bar is None:
+            funnel.count("freeze_reject:no_mark_at_cutoff")
+            return False
+        mark = anchor_bar.close
         manifest = TradingCaseManifest(
             case_kind=plan.kind,
             underlying_key=underlying_key(plan.base_symbol),

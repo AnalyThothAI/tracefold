@@ -674,3 +674,36 @@ def test_the_day_roll_clears_every_per_day_counter_whichever_one_runs_first(conn
     assert int(state["dspy_calls_today"]) == 0
     assert state["funnel"] == {}
     assert trading.dspy_calls_today(day_key="2026-08-23") == 0
+
+
+def test_the_frozen_mark_is_the_price_at_the_cutoff_not_the_freshest_bar(conn) -> None:
+    """A manifest stamped `cutoff_ms` must not carry a price from after the cutoff.
+
+    The bar feed is fetched a little past the trigger so the anchor itself resolves; taking the last
+    close would put post-cutoff evidence into the document the model reads and the entry references.
+    """
+
+    now = NOW
+    trigger = now - 10 * MINUTE
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=trigger)
+
+    at_cutoff = Decimal("102")
+    after_cutoff = Decimal("140")
+    bars = [*_regime_bars(trigger)]
+    bars.append(Bar(open_at_ms=trigger, close_at_ms=trigger + 300_000, close=after_cutoff))
+
+    async def feed_result(_symbol: str, _start: int, _end: int) -> Any:
+        return tuple(bars)
+
+    runner = CandidateRunner(
+        db=_DirectDb(conn),
+        config=_config(),
+        bars=lambda _venue: feed_result,
+        adapter=PaperAdapter(),
+        program=None,
+        clock=lambda: now,
+    )
+    asyncio.run(runner.turn())
+    order = conn.execute("SELECT * FROM trading_orders").fetchone()
+    assert order is not None
+    assert Decimal(str(order["entry_reference"])) == at_cutoff
