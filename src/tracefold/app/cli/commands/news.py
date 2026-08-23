@@ -259,6 +259,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         stable = active_arm_manifest(settings)
         if action == "baseline":
             return _handle_learning_baseline(args, settings, stable)
+        if action == "draft-reviews":
+            return _handle_learning_draft_reviews(args, settings, stable)
         if action == "compile":
             from tracefold.app.learning_runtime import compose_news_program_runtime
             from tracefold.news.agents.program_compiler_launcher import ProgramCompilerLauncher
@@ -868,10 +870,12 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     """
 
     from tracefold.app.learning_runtime import compose_news_program_runtime
+    from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
     from tracefold.news.agents.program_baseline import (
         build_baseline_cases,
+        build_judge,
         build_runtime_lm,
         compile_program_factory,
         run_baseline,
@@ -903,12 +907,31 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
             model_kwargs=endpoint.model_kwargs,
         )
+    judge_model = str(args.semantic_judge).strip()
+    judge = None
+    if judge_model:
+        # The judge belongs to the metric, not the Program, so it gets its own endpoint rather than the task
+        # route: the compiler reflection endpoint when configured, otherwise the Triage fallback.
+        reflection = getattr(settings.llm, "news_compiler_reflection", None)
+        source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+        if not source.configured:
+            raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+        endpoint = configured_lm_endpoint(
+            settings, model_name=judge_model, api_key=source.api_key, base_url=source.base_url
+        )
+        judge = build_judge(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            model_kwargs=endpoint.model_kwargs,
+        )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
         mode=mode,
         artifact=artifact,
         program_factory=compile_program_factory if mode != "recorded" else None,
         lm=lm,
+        judge=judge,
         runtime_identity={"model": getattr(lm, "model", None)} if lm else {},
     )
     payload = report.model_dump(mode="json")
@@ -918,6 +941,144 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     summary = {key: value for key, value in payload.items() if key != "cases"}
     summary["cases_written_to"] = str(args.out) or None
     return 0, {"ok": True, "data": summary}
+
+
+def _drafter_context(view: Mapping[str, Any]) -> Any:
+    """Rebuild the bounded TriageContext from a ReviewDesk evidence view.
+
+    Mirrors `CandidateEvaluator._build_context`: the focus fact is what the Program treats as the headline,
+    and the card carries the Gate facts.
+    """
+
+    from tracefold.news import TriageContext
+
+    evidence = dict(view.get("evidence") or {})
+    card = dict(evidence.get("card") or {})
+    focus = dict(evidence.get("focus_fact") or {})
+    card["focus_fact_id"] = focus.get("fact_id")
+    card["leader_title"] = focus.get("text") or card.get("leader_title")
+    card["leader_description"] = focus.get("context") or card.get("leader_description")
+    return TriageContext.from_card(
+        card,
+        watchlist=(),
+        told_rows=[],
+        now_ms=int(card.get("opened_at_ms") or 0),
+        queue_lag_ms=0,
+    )
+
+
+def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Propose `news_review_v3` rubrics with gold. Read-only: the output is a file, never a review.
+
+    `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
+    be accepted release evidence the instant it landed. The human stays the acceptance authority; this only
+    turns "compose a judgment from scratch" into "confirm or reject one".
+
+    Tasks come from the ReviewDesk queue rather than from `baseline_episodes`, which starts at
+    `news_reviews` and therefore only ever returns Events that already have one — 170 against 6,186
+    unreviewed. Drafting is for the ones nobody has judged yet, and the queue is also what gives the drafter
+    the same task identity and the same evidence view a human reviewer opens.
+    """
+
+    del stable
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.app.repositories import postgres_connection
+    from tracefold.news import DeskQuery, Principal, ReviewDesk, TaskRef, canonical_json
+    from tracefold.news.agents.program_baseline import build_metric_lm
+    from tracefold.news.agents.program_review_drafter import ReviewDrafter, build_draft_batch
+    from tracefold.news.agents.semantic_program import render_model_evidence_json
+
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+    if not source.configured:
+        raise ValueError("news_review_drafter_endpoint_not_configured")
+
+    principal = Principal(subject="operator")
+    hours = int(args.hours)
+    tasks: list[dict[str, Any]] = []
+    with postgres_connection(settings, role="serve") as conn:
+        desk = ReviewDesk(conn)
+        queue = desk.open(
+            DeskQuery(
+                view="queue",
+                mode="event",
+                status="all" if bool(args.include_reviewed) else "pending",
+                hours=hours,
+                limit=min(100, int(args.limit)),
+            ),
+            principal=principal,
+        )
+        for row in queue.get("tasks") or ():
+            view = desk.evidence(
+                TaskRef(task_id=str(row["task_id"]), task_version=str(row["task_version"])), principal=principal
+            )
+            agent = dict(view.get("agent") or {})
+            verdict = dict(agent.get("verdict") or {})
+            if not verdict:
+                continue  # degraded or unjudged: there is no card to review
+            tasks.append(
+                {
+                    "task_id": str(row["task_id"]),
+                    "task_version": str(row["task_version"]),
+                    "event_id": str(row["event_id"]),
+                    "headline_zh": str(verdict.get("headline_zh") or ""),
+                    # The Program's own bounded projection, not the whole reviewer view. The full view
+                    # carries every de-duplicated member and all provenance; handing that to a reasoning
+                    # model made it think until it hit the output ceiling and returned nothing at all
+                    # (6/6 empty on the first attempt). This is also the fairer question: judge the card
+                    # against what the Program was actually shown.
+                    "evidence_json": render_model_evidence_json(
+                        _drafter_context(view).event_semantics_payload(), predictor="event_semantics"
+                    ),
+                    "card_json": canonical_json(
+                        {
+                            "verdict": verdict,
+                            "final_decision": agent.get("final_decision"),
+                            "override_rule": agent.get("override_rule"),
+                        }
+                    ),
+                    # The ledger the model was shown when it judged, so the drafter can check novelty against
+                    # the same history rather than against hindsight.
+                    "told_json": canonical_json(list((agent.get("trace") or {}).get("told") or ())),
+                }
+            )
+    if not tasks:
+        return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
+
+    # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
+    endpoint = configured_lm_endpoint(
+        settings, model_name=str(args.model), api_key=source.api_key, base_url=source.base_url
+    )
+    batch = build_draft_batch(
+        ReviewDrafter(
+            build_metric_lm(
+                model_name=endpoint.model_name,
+                api_key=endpoint.api_key,
+                api_base=endpoint.api_base,
+                model_kwargs=endpoint.model_kwargs,
+                max_tokens=4_096,
+            )
+        ),
+        tasks,
+    )
+    payload = batch.model_dump(mode="json")
+    payload["batch_sha256"] = batch.batch_sha256
+    _write_json(str(args.out), payload)
+    drafted = [entry for entry in batch.drafts if entry.error is None]
+    with_gold = [entry for entry in drafted if entry.draft.expected is not None]
+    return 0, {
+        "ok": True,
+        "data": {
+            "drafts_written_to": str(args.out),
+            "batch_sha256": batch.batch_sha256,
+            "drafter": batch.drafter,
+            "tasks": len(tasks),
+            "drafted": len(drafted),
+            "with_gold": len(with_gold),
+            "failed": len(batch.drafts) - len(drafted),
+            "note": "proposals only - a human must accept each one through `tracefold news review submit`",
+        },
+    }
 
 
 def _load_candidate_bundle(path: str) -> tuple[Any | None, dict[str, str]]:

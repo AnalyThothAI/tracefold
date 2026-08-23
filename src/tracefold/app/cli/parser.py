@@ -122,8 +122,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="drop release-plane eligibility and score every accepted review in the window",
     )
+    learning_baseline.add_argument(
+        "--semantic-judge",
+        default="",
+        metavar="MODEL",
+        help=(
+            "score free-text retention anchors by meaning instead of byte equality, using this model "
+            "(e.g. deepseek-v4-pro). Enum dimensions stay exact. Costs nothing under --mode recorded, "
+            "where the candidate is the production verdict and the texts already match"
+        ),
+    )
     learning_baseline.add_argument("--limit", type=_positive_int, default=500)
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
+    learning_draft = learning_subcommands.add_parser(
+        "draft-reviews",
+        help="propose news_review_v3 rubrics with gold for a human to accept (writes a file, never the DB)",
+    )
+    # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
+    # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an
+    # absolute range and silently drafted today's Events whatever was passed.
+    learning_draft.add_argument(
+        "--hours", type=_positive_int, default=24, help="look back this many hours from now (max 720)"
+    )
+    learning_draft.add_argument("--model", required=True, help="drafting model, e.g. deepseek-v4-pro")
+    learning_draft.add_argument("--limit", type=_positive_int, default=50)
+    learning_draft.add_argument(
+        "--include-reviewed",
+        action="store_true",
+        help="also draft Events that already carry an accepted review (default: only unjudged ones)",
+    )
+    learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
     learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")
     learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_propose.add_argument("--file", required=True, help="candidate proposal JSON/YAML")

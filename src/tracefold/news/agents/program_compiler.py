@@ -29,6 +29,7 @@ from .program_metric import (
     _metric_receipt,
     _retrieval_receipt,
     accepted_review_metric,
+    bind_metric,
 )
 from .program_proposer import RulePackAwareProposer
 from .semantic_program import (
@@ -507,6 +508,7 @@ class ProgramCompiler:
         reflection_lm: dspy.LM,
         optimizer_factory: OptimizerFactory = dspy.GEPA,
         tariff: CompilerProxyTariff | None = None,
+        judge: Any = None,
     ) -> None:
         active = load_stable_program_artifact()
         if (
@@ -522,6 +524,11 @@ class ProgramCompiler:
         self._reflection_lm = reflection_lm
         self._optimizer_factory = optimizer_factory
         self._tariff = tariff
+        # #148: the semantic-equivalence judge. Without it the card dimensions carry 15% of the weight and are
+        # unwinnable — a reworded sentence scores zero — so GEPA optimizes against a component it cannot move.
+        # The baseline harness and the optimizer must use the same ruler or the "before/after" number an
+        # operator reads stops predicting what GEPA maximizes.
+        self._judge = judge
 
     def compile(self, request: CompileRequest) -> ProgramCompileResult:
         if request.learning_epoch != LEARNING_EPOCH:
@@ -542,7 +549,8 @@ class ProgramCompiler:
             raise ValueError("news_program_compile_factory_topology_mismatch")
 
         proposer = RulePackAwareProposer(self._base)
-        metric_receipt = _metric_receipt(accepted_review_metric, review_rubric_version=request.review_rubric_version)
+        metric = bind_metric(self._judge)
+        metric_receipt = _metric_receipt(metric, review_rubric_version=request.review_rubric_version)
         metric_sha = canonical_sha(metric_receipt)
         optimizer_constructor = {
             "auto": None,
@@ -590,7 +598,7 @@ class ProgramCompiler:
             val_count=len(val_examples),
         )
         optimizer = self._optimizer_factory(
-            accepted_review_metric,
+            metric,
             reflection_lm=reflection_lm,
             **optimizer_constructor,
         )

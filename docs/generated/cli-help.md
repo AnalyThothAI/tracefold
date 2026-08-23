@@ -269,14 +269,16 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {compile,baseline,propose,freeze,evaluate,shadow,canary} ...
+                               {compile,baseline,draft-reviews,propose,freeze,evaluate,shadow,canary} ...
 
 positional arguments:
-  {compile,baseline,propose,freeze,evaluate,shadow,canary}
+  {compile,baseline,draft-reviews,propose,freeze,evaluate,shadow,canary}
     compile             compile a bounded DSPy Program candidate from accepted
                         development evidence
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
+    draft-reviews       propose news_review_v3 rubrics with gold for a human
+                        to accept (writes a file, never the DB)
     propose             seal a Program or policy candidate manifest
     freeze              freeze accepted reviews into a dataset
     evaluate            run the evaluate release-evidence gate
@@ -322,8 +324,9 @@ options:
 usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
                                         [--mode {recorded,live}]
                                         [--action-source {recorded,policy}]
-                                        [--all-cohorts] [--limit LIMIT]
-                                        [--out OUT]
+                                        [--all-cohorts]
+                                        [--semantic-judge MODEL]
+                                        [--limit LIMIT] [--out OUT]
 
 options:
   -h, --help            show this help message and exit
@@ -337,8 +340,32 @@ options:
                         decide(). Defaults to recorded for --mode recorded
   --all-cohorts         drop release-plane eligibility and score every
                         accepted review in the window
+  --semantic-judge MODEL
+                        score free-text retention anchors by meaning instead
+                        of byte equality, using this model (e.g.
+                        deepseek-v4-pro). Enum dimensions stay exact. Costs
+                        nothing under --mode recorded, where the candidate is
+                        the production verdict and the texts already match
   --limit LIMIT
   --out OUT             write the baseline report JSON
+
+```
+
+## `news learning draft-reviews`
+
+```
+usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
+                                             --model MODEL [--limit LIMIT]
+                                             [--include-reviewed] --out OUT
+
+options:
+  -h, --help          show this help message and exit
+  --hours HOURS       look back this many hours from now (max 720)
+  --model MODEL       drafting model, e.g. deepseek-v4-pro
+  --limit LIMIT
+  --include-reviewed  also draft Events that already carry an accepted review
+                      (default: only unjudged ones)
+  --out OUT           write the draft batch JSON for human review
 
 ```
 

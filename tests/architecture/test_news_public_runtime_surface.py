@@ -262,6 +262,12 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         # The code-owned GEPA instruction proposer. It travels with the compiler image and is the reason the
         # reflection model can see the RulePacks it is amending.
         NEWS_ROOT / "agents" / "program_proposer.py",
+        # #148. The semantic-equivalence judge is part of the *metric*, not the Program: it never renders into
+        # a prompt, never enters the QualityKernel, and cannot change `program_sha256`.
+        NEWS_ROOT / "agents" / "program_judge.py",
+        # The review drafter. Also metric-side: it proposes rubrics for a human to accept and has no write
+        # authority anywhere — see `test_the_drafter_writes_nothing_to_the_review_plane`.
+        NEWS_ROOT / "agents" / "program_review_drafter.py",
     }
     dspy_offenders = sorted(
         str(path.relative_to(ROOT))
