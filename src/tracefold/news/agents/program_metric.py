@@ -70,13 +70,19 @@ _CARD_WEIGHT = 0.15
 _SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 _DELIVERY_DIMENSIONS = ("timeliness",)
-# Who owns each rubric dimension. The label distribution is grouped by this, so a reader can see that
-# `timeliness` was labelled without it looking like something a Predictor was scored on.
-DIMENSION_OWNERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("event_semantics", _SEMANTICS_DIMENSIONS),
-    ("reader_card", _CARD_DIMENSIONS),
-    ("delivery", _DELIVERY_DIMENSIONS),
-)
+# Which Predictor's score a rubric label feeds. Deliberately *not* named "owner": `review._OWNER_BY_DIMENSION`
+# already owns that word and answers a different question — who is to blame (`gate`, `triage_prompt`,
+# `delivery`, `retrieval`) — so `asset_grounding` is a Gate defect there and an EventSemantics-scored field
+# here. Publishing this under "owner" would invite a join with the stored `first_bad_owner` that is wrong for
+# every Gate-owned dimension.
+SCORED_BY_PREDICTOR: dict[str, str] = {
+    **{name: "event_semantics" for name in _SEMANTICS_DIMENSIONS},
+    **{name: "reader_card" for name in _CARD_DIMENSIONS},
+}
+# The bucket for everything else, including a rubric dimension that does not exist yet. `timeliness` is here
+# because `TriageVerdict` has no field it could be scored against; the label is still corpus truth and still
+# has to be visible, and a hand-written list of "the others" would have dropped the next new one silently.
+NOT_SCORED = "not_scored"
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
 _NO_GOLD: Final = object()
 # `news_review_v3` gold keys, per dimension. `why_support`/`why_value`/`headline_fidelity`/`factual_fidelity`/
@@ -342,17 +348,53 @@ def accepted_review_metric(
     review = dict(gold.get("accepted_review") or {})
     production = dict(gold.get("production_verdict") or {})
     projection = dict(gold.get("policy_metric") or {})
+    dimensions = dict(review.get("dimensions") or {})
+    should_push = str(review.get("should_push") or "uncertain")
+    # `news_review_v3` gold. Absent on every `news_review_v2` row, which is the point: gold coverage grows
+    # from zero without a migration and without re-labelling history.
+    expected = dict(review.get("expected") or {})
+    scored_names = tuple(
+        name for name in (*_SEMANTICS_DIMENSIONS, *_CARD_DIMENSIONS) if dimensions.get(name) in {"pass", "fail"}
+    )
+
+    def _zero(
+        feedback: str,
+        *,
+        gate: str,
+        action: str = "",
+        outcomes: Sequence[tuple[str, str]] | None = None,
+        gold_scored: int = 0,
+    ) -> dspy.Prediction:
+        """A hard-gated case still says what it did.
+
+        The first version returned a bare `score`/`feedback` here, so a `must_hold` violation reached the
+        report with `production_action=""` — which `_action_confusion` reads as withheld, and therefore filed
+        the single most dangerous error class as *agreement 1.0*. The same omission dropped these cases out
+        of `prediction_dimensions` entirely, so a candidate with more hard failures could publish a higher
+        per-dimension hit rate: the zeros left the denominator instead of entering it.
+        """
+
+        return dspy.Prediction(
+            score=0.0,
+            feedback=feedback,
+            hard_gate=gate,
+            production_action=action,
+            gold_scored_n=gold_scored,
+            labelled_n=len(scored_names),
+            dimension_outcomes=tuple(outcomes)
+            if outcomes is not None
+            else tuple((name, "unscored") for name in scored_names),
+        )
+
     rejected = str(pred.get("advisory_rejected") or "")
     if rejected:
         # Name the wall. Without this the candidate scored zero and the reflection model was told nothing, so
         # it proposed text that tripped the same bound again on the next round.
-        return dspy.Prediction(
-            score=0.0,
-            feedback=(
-                f"The proposed advisory was rejected by the code-owned safety bounds ({rejected}). "
-                "Rewrite it without URLs, template braces, credential-shaped text, or any claim of authority "
-                "over the QualityKernel, the RulePacks or the schema, and keep it under 8192 bytes."
-            ),
+        return _zero(
+            f"The proposed advisory was rejected by the code-owned safety bounds ({rejected}). "
+            "Rewrite it without URLs, template braces, credential-shaped text, or any claim of authority "
+            "over the QualityKernel, the RulePacks or the schema, and keep it under 8192 bytes.",
+            gate="advisory_rejected",
         )
     try:
         verdict_value = pred.get("verdict")
@@ -363,31 +405,45 @@ def accepted_review_metric(
             raise ValueError("verdict_missing")
         typed = TriageVerdict.model_validate(verdict)
     except Exception:
-        return dspy.Prediction(score=0.0, feedback="Return one complete, schema-valid semantic verdict and card.")
+        return _zero("Return one complete, schema-valid semantic verdict and card.", gate="schema_invalid")
 
-    dimensions = dict(review.get("dimensions") or {})
-    should_push = str(review.get("should_push") or "uncertain")
-    # `news_review_v3` gold. Absent on every `news_review_v2` row, which is the point: gold coverage grows
-    # from zero without a migration and without re-labelling history.
-    expected = dict(review.get("expected") or {})
     feedback: list[str] = []
-
     action = _production_action(typed, projection) if projection else str(verdict.get("decision") or "")
     reaches_reader = action in {"push", "escalate"}
 
+    # What the candidate did, dimension by dimension. Computed before the gates, because a gated case still
+    # produced a verdict and its dimensions are still comparable — the gate decides the score, not whether
+    # the candidate is observable.
+    outcomes: list[tuple[str, str]] = []
+    semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production, expected, judge, outcomes)
+    card = _component(dimensions, _CARD_DIMENSIONS, verdict, production, expected, judge, outcomes)
+    gold_scored = (semantics[1] if semantics else 0) + (card[1] if card else 0)
+    labelled_n = (semantics[2] if semantics else 0) + (card[2] if card else 0)
+
     # ---- hard gates: a dangerous miss cannot be averaged away ----
     if should_push == "must_push" and not reaches_reader:
-        return dspy.Prediction(
-            score=0.0,
-            feedback=f"The reader must receive this fact; the production policy resolved it to {action}.",
+        return _zero(
+            f"The reader must receive this fact; the production policy resolved it to {action}.",
+            gate="must_push_miss",
+            action=action,
+            outcomes=outcomes,
+            gold_scored=gold_scored,
         )
     if should_push == "must_hold" and reaches_reader:
-        return dspy.Prediction(
-            score=0.0, feedback=f"The reader must not receive this fact; the production policy resolved it to {action}."
+        return _zero(
+            f"The reader must not receive this fact; the production policy resolved it to {action}.",
+            gate="must_hold_send",
+            action=action,
+            outcomes=outcomes,
+            gold_scored=gold_scored,
         )
     if dimensions.get("factual_fidelity") == "fail" and production and verdict == production:
-        return dspy.Prediction(
-            score=0.0, feedback="The accepted review calls this card factually wrong; it is unchanged."
+        return _zero(
+            "The accepted review calls this card factually wrong; it is unchanged.",
+            gate="factual_contradiction_unchanged",
+            action=action,
+            outcomes=outcomes,
+            gold_scored=gold_scored,
         )
     # Symbol sets, canonicalized on both sides. Gate grounding carries the provider's raw tag (`XYZ-CL`), and
     # a raw `.upper()` comparison would zero a candidate that correctly named `CL`.
@@ -398,8 +454,12 @@ def accepted_review_metric(
         if asset.role == "primary" and grounded and base_symbol(asset.symbol) not in grounded
     )
     if ungrounded:
-        return dspy.Prediction(
-            score=0.0, feedback=f"Primary assets must be grounded in the evidence; {', '.join(ungrounded)} are not."
+        return _zero(
+            f"Primary assets must be grounded in the evidence; {', '.join(ungrounded)} are not.",
+            gate="ungrounded_primary_asset",
+            action=action,
+            outcomes=outcomes,
+            gold_scored=gold_scored,
         )
 
     # ---- weighted score over what the reviewer actually labelled ----
@@ -420,11 +480,6 @@ def accepted_review_metric(
     novelty = dict(review.get("novelty") or {})
     expected_novelty = str(novelty.get("judgment") or "uncertain")
     novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
-    outcomes: list[tuple[str, str]] = []
-    semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production, expected, judge, outcomes)
-    card = _component(dimensions, _CARD_DIMENSIONS, verdict, production, expected, judge, outcomes)
-    gold_scored = (semantics[1] if semantics else 0) + (card[1] if card else 0)
-    labelled_n = (semantics[2] if semantics else 0) + (card[2] if card else 0)
     semantics_score = semantics[0] if semantics else None
     card_score = card[0] if card else None
     if novelty_score is not None:
@@ -470,6 +525,9 @@ def accepted_review_metric(
     return dspy.Prediction(
         score=round(score, 6),
         feedback=" ".join(feedback) or "Retain the accepted behavior while making the output more precise.",
+        # Which gate zeroed the case, or "" when none did. The predecessor recovered this by matching the
+        # feedback prose in the baseline harness, which broke silently the moment a sentence was reworded.
+        hard_gate="",
         # GEPA reads only `score` and `feedback`; the baseline harness reads these to report how much of the
         # score rests on stated correct values rather than on the weak "any change scores" fallback.
         gold_scored_n=gold_scored,
@@ -721,8 +779,9 @@ retrieval_receipt = _retrieval_receipt
 
 
 __all__ = [
-    "DIMENSION_OWNERS",
     "METRIC_ID",
+    "NOT_SCORED",
+    "SCORED_BY_PREDICTOR",
     "DevelopmentEpisode",
     "accepted_review_metric",
     "bind_metric",

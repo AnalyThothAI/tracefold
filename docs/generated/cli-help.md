@@ -354,6 +354,7 @@ options:
 usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
                                         [--mode {recorded,compile_live,runtime_live}]
                                         [--action-source {recorded,policy}]
+                                        [--max-model-cases MAX_MODEL_CASES]
                                         [--all-cohorts]
                                         [--semantic-judge MODEL]
                                         [--limit LIMIT] [--out OUT]
@@ -375,6 +376,11 @@ options:
                         --mode recorded; policy: re-run decide(), required by
                         the live modes. Defaults to the only valid value for
                         the chosen mode
+  --max-model-cases MAX_MODEL_CASES
+                        required by --mode compile_live and runtime_live: the
+                        most cases allowed to reach a provider. runtime_live
+                        spends 2-6 real calls per case, sequentially, on the
+                        endpoints that also serve production Triage
   --all-cohorts         drop release-plane eligibility and score every
                         accepted review in the window
   --semantic-judge MODEL

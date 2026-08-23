@@ -156,21 +156,38 @@ def test_failures_are_published_as_a_second_score_not_dropped_from_the_first() -
     assert spliced.failures["by_code"] == {"provider_timeout": 1}
 
 
-def test_a_report_with_no_answered_case_is_refused_rather_than_scored_zero() -> None:
+def test_a_run_that_answered_nothing_still_publishes_its_receipt() -> None:
+    """ "The route answered nothing" is the most important `runtime_live` result, and it used to be the one
+    result that produced no report and no `--out` file — after every provider call had been paid for.
+
+    A null score says "not measured" without reading as a measured zero, which is what the raise was for.
+    Everything that makes the run diagnosable survives: per-case error codes, the failure breakdown, the
+    requested population and the lower bound.
+    """
+
     from tracefold.news.agents.program_baseline import _build_report
 
-    with pytest.raises(ValueError, match="news_program_baseline_all_cases_failed"):
-        _build_report(
-            [_failed_case(_case(1), "provider_timeout")],
-            cases=[_case(1)],
-            mode="recorded",
-            artifact=load_stable_program_artifact(),
-            judge=None,
-            strict_scores={},
-            latency={},
-            route={},
-            runtime_identity={},
-        )
+    report = _build_report(
+        [_failed_case(_case(1), "provider_timeout")],
+        cases=[_case(1)],
+        mode="recorded",
+        artifact=load_stable_program_artifact(),
+        judge=None,
+        strict_scores={},
+        latency={},
+        route={},
+        runtime_identity={},
+    )
+    assert report.scores["case_macro_answered"] is None
+    assert report.scores["case_macro_failure_as_zero"] == 0.0
+    assert report.population == {
+        "requested_n": 1,
+        "answered_n": 0,
+        "failure_n": 1,
+        "failure_rate": 1.0,
+    }
+    assert report.failures["by_code"] == {"provider_timeout": 1}
+    assert report.cases[0].error_code == "provider_timeout"
 
 
 def test_one_fact_cluster_gets_one_vote() -> None:
@@ -237,7 +254,7 @@ def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
             )
         ]
     )
-    assert report.review_label_distribution["delivery"]["timeliness"] == {
+    assert report.review_label_distribution["not_scored"]["timeliness"] == {
         "pass": 0,
         "fail": 1,
         "n": 1,
@@ -249,29 +266,42 @@ def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
     assert "timeliness" not in report.prediction_dimensions
 
 
-def test_report_identity_pins_program_policy_and_corpus() -> None:
+def test_report_identity_pins_program_and_corpus_and_names_no_unused_policy() -> None:
     report = _report([_case(1)])
     identity = report.identity
     assert identity["program_sha256"] == load_stable_program_artifact().program_sha256
-    assert identity["policy_sha256"] == canonical_sha(DEFAULT_POLICY.as_dict())
-    assert identity["policy_values"]["similarity_max"] is not None
+    # `recorded` returns before policy replay. Naming today's configured arm here claimed a dependency the
+    # number does not have — the same ambient-state confusion #150 removed from the metric itself.
+    assert identity["policy_sha256"] is None
+    assert identity["policy_values"] is None
+    assert identity["policy_source"] is None
     assert report.schema_id == BASELINE_SCHEMA
     assert report.execution_scope, "every mode names what it does and does not execute"
 
 
 def test_a_report_cannot_cover_two_policies() -> None:
-    """A run spanning two arms cannot honestly name one policy, so it refuses instead of picking."""
+    """A run spanning two arms cannot honestly name one policy, so it refuses instead of picking.
+
+    Checked on the identity function directly: the uniformity guard only applies to a run that replays
+    `decide()`, and `recorded` never does.
+    """
+
+    from tracefold.news.agents.program_baseline import _policy_identity
 
     other = _case(2)
     drifted = dict(other.episode.policy_metric)
     values = {**DEFAULT_POLICY.as_dict(), "similarity_max": 0.9}
     drifted.update({"policy_values": values, "policy_sha256": canonical_sha(values)})
-    mixed = BaselineCase(
-        episode=other.episode.model_copy(update={"policy_metric": drifted}),
-        recorded_action="push",
-    )
+    replayed = [
+        BaselineCase(episode=_case(1).episode, recorded_action=""),
+        BaselineCase(episode=other.episode.model_copy(update={"policy_metric": drifted}), recorded_action=""),
+    ]
     with pytest.raises(ValueError, match="news_program_baseline_policy_not_uniform"):
-        _report([_case(1), mixed])
+        _policy_identity(replayed)
+
+    # And a recorded run over the same two cases names no policy at all rather than picking one.
+    recorded = [BaselineCase(episode=case.episode, recorded_action="push") for case in replayed]
+    assert _policy_identity(recorded)["policy_sha256"] is None
 
 
 def test_every_identity_component_moves_the_report_sha() -> None:
@@ -283,24 +313,12 @@ def test_every_identity_component_moves_the_report_sha() -> None:
     artifact = load_stable_program_artifact()
     base = run_baseline([_case(1)], mode="recorded", artifact=artifact)
     variants: dict[str, str] = {"baseline": base.report_sha256}
+    # Policy is covered in `test_news_baseline_modes.py`: `recorded` returns before policy replay, so its
+    # identity correctly names no policy and a policy change cannot move this address.
 
     # Program: a different state root is a different subject even at the same score.
     other_program = artifact.model_copy(update={"program_sha256": "b" * 64})
     variants["program"] = run_baseline([_case(1)], mode="recorded", artifact=other_program).report_sha256
-
-    # Policy: same verdict, same evidence, a knob production did not run.
-    drifted = _case(1)
-    values = {**DEFAULT_POLICY.as_dict(), "similarity_max": 0.9}
-    projection = {**drifted.episode.policy_metric, "policy_values": values, "policy_sha256": canonical_sha(values)}
-    variants["policy"] = run_baseline(
-        [
-            BaselineCase(
-                episode=drifted.episode.model_copy(update={"policy_metric": projection}), recorded_action="push"
-            )
-        ],
-        mode="recorded",
-        artifact=artifact,
-    ).report_sha256
 
     # Runtime binding: which models answered is part of what the number means.
     variants["runtime_binding"] = run_baseline(

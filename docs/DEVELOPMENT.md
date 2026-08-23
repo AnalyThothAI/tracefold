@@ -154,7 +154,7 @@ uv run tracefold news review submit TASK --version TASK_VERSION \
 uv run tracefold news learning baseline --from-ms START --to-ms END \
   --mode recorded --out /tmp/baseline.json
 uv run tracefold news learning baseline --from-ms START --to-ms END \
-  --mode runtime_live --limit 30 --out /tmp/baseline-runtime.json
+  --mode runtime_live --max-model-cases 30 --out /tmp/baseline-runtime.json
 
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out /tmp/development.json
@@ -245,10 +245,12 @@ the first, so 29 provider failures turned a 0.482 lower bound into a published
 0.587 by disappearing from the mean. `review_label_distribution` is what
 reviewers labelled and is byte-identical however predictions change;
 `prediction_dimensions` is what the candidate did. Read the second when
-comparing two runs. The label distribution is grouped by dimension owner, so
-`timeliness` is visible under `delivery` — operators keep labelling it, and it
-is no longer scored against EventSemantics, which has no field that could
-repair it.
+comparing two runs. The label distribution is grouped by which Predictor's
+score each label feeds, so `timeliness` is visible under `not_scored` —
+operators keep labelling it, and it is no longer scored against EventSemantics,
+which has no field that could repair it. A hard-gated case keeps its action and
+its per-dimension outcomes, so its zero enters every denominator: leaving them
+out let a candidate with more hard failures publish a higher hit rate.
 
 Policy travels with the example. `policy_metric.policy_values` plus
 `policy_sha256` is the exact arm policy, verified before `decide()` replays it,
@@ -261,10 +263,14 @@ The recorded calibration lives in
 database. #143 published `0.896373 / n=162`; a day later the same command
 answered `0.888426 / n=243` because #148 added 81 reviews. Nothing was wrong,
 but a check that moves with the data cannot prove the *wiring* is unchanged.
-The fixture's free text is redacted through an equality-preserving map
-(`tests/support/baseline_calibration.py`), which keeps every comparison the
-recorded metric makes — all equality — while publishing no provider or reviewer
-prose; it is therefore valid for `--mode recorded` only, because `decide()`'s
+Every string in the fixture outside an explicit structural allowlist is redacted
+through an equality-preserving map (`tests/support/baseline_calibration.py`),
+which keeps every comparison the recorded metric makes — all equality — while
+publishing no provider or reviewer prose. The allowlist direction matters: the
+first version listed the *text* keys instead and shipped 60 reader-facing
+Chinese cards under `title_zh`, guarded by a test that re-ran the redactor and
+compared, which is a tautology for a key-based redactor. The guard now scans the
+shipped bytes for the shape of human language. The fixture is it is therefore valid for `--mode recorded` only, because `decide()`'s
 character-bigram duplicate check would read different neighbours out of redacted
 headlines. Regenerate it with
 `uv run python -m tests.support.baseline_calibration <path>` and update the

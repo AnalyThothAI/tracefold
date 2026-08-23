@@ -993,7 +993,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     architecture boundary that keeps DSPy out of the CLI still holds.
     """
 
-    from tracefold.app.learning_runtime import compose_news_program_runtime
+    from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
     from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
@@ -1017,10 +1017,17 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         # action a *different* verdict shipped — silently zeroing the meaning of the metric's heaviest
         # component (0.50) while every `action` in the report reads as a real result.
         raise ValueError("news_program_baseline_live_mode_requires_policy_action")
+    # Every other model-spending command in this plane makes its budget `required=True`; before #150 this one
+    # defaulted to 500 cases, which in `runtime_live` is 1,000-3,000 sequential provider calls against the
+    # single-slot box that is simultaneously serving live Triage. A sentence in OPERATIONS.md is not a bound.
+    max_model_cases = int(getattr(args, "max_model_cases", 0) or 0)
+    if mode != "recorded" and max_model_cases <= 0:
+        raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
     window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
     with postgres_connection(settings, role="serve") as conn:
         evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=int(args.limit))
+        limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
+        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
     if not episodes:
         return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
     artifact = load_program_artifact(stable.program_sha256)
@@ -1031,6 +1038,13 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if mode == "compile_live":
         # One task endpoint driving the graph GEPA optimizes. Deliberately *not* the production route: this
         # measures what the optimizer maximizes, and the report says so in `execution_scope`.
+        #
+        # Fail closed the way `runtime_live` does. `compose_news_program_runtime` falls back to the literal
+        # model name "unconfigured" with an empty key and base, `configured_lm_endpoint` never raises, and the
+        # resulting object is not None — so on an unconfigured host every case ran, swallowed the same
+        # connection error, and the run ended reporting a total Program failure instead of a missing config.
+        if not composition.program_configured:
+            raise ValueError("news_program_baseline_compile_route_not_configured")
         endpoint = composition.event_semantics_primary
         lm = build_runtime_lm(
             model_name=endpoint.model_name,
@@ -1040,7 +1054,13 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
             model_kwargs=endpoint.model_kwargs,
         )
-        runtime_identity = {"compile_task_model": endpoint.model_name}
+        # The model name alone cannot tell two endpoints apart: the local box and a hosted gateway can serve
+        # the same name and produce different baselines. `runtime_live` records a per-slot fingerprint; this
+        # mode records the same kind of thing for its one slot.
+        runtime_identity = {
+            "compile_task_model": endpoint.model_name,
+            "compile_task_endpoint_sha256": _endpoint_model_sha256(endpoint),
+        }
     elif mode == "runtime_live":
         # The configured four-slot Program with its own retry, fallback, deadline and circuit — built by the
         # same seam the Workers use, so a dedicated ReaderCard binding is honoured rather than silently

@@ -465,15 +465,20 @@ Diagnose News in this order:
    graph GEPA optimizes and has no fallback, retry, deadline or breaker.
    `--mode runtime_live` is the configured production Program route and is the
    only mode whose failure rate resembles the reader's — it spends real provider
-   calls on the same single-slot GPU that serves Triage, so bound it with
-   `--limit` and expect roughly two physical calls per case. Read both
+   calls on the same single-slot GPU that serves Triage, so both live modes
+   require an explicit `--max-model-cases N`; expect roughly two physical calls
+   per case, and up to six for one that fails. Read both
    `scores.case_macro_answered` and `scores.case_macro_failure_as_zero`: the
    first is quality given an answer, the second counts every unanswered case as
    zero, and the gap between them is the availability of the route rather than
    the quality of the cards. When comparing two runs, compare
-   `prediction_dimensions`; `review_label_distribution` is corpus metadata and
-   does not move when the model does. The command is read-only — one `serve`
-   connection that closes before the first model call, and no write, delivery,
+   `prediction_dimensions`; `review_label_distribution` is corpus metadata over
+   every requested case and does not move when the model does. `hard_gates`
+   says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
+   is a defect in the corpus or the ruler, not a provider outage. Compare
+   receipts by `report_sha256`, which excludes wall-clock latency so two runs
+   with the same predictions have the same address. The command is read-only —
+   one `serve` connection that closes before the first model call, and no write, delivery,
    proposal, acceptance or promotion authority of any kind.
 6. A release receipt may only claim an identity the deployment can prove. The
    image cannot hash itself at build time, so `make up` reads the digest of the

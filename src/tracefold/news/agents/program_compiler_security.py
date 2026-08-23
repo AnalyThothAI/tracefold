@@ -34,8 +34,13 @@ COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipt
     "tracefold.news.compiler_runner_receipts.v2"
 )
 LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v2"] = (
-    "tracefold.news.development_compile_episode.v2"
+# v3 (#150): the projection now carries `policy_values`/`policy_sha256`/`policy_source`, and the metric
+# fails closed without them. A dataset sealed under v2 is content-addressed by its `dataset_sha` and so
+# cannot be regenerated without changing identity — left at v2 it would still validate here and then
+# raise inside every single metric call, which a compile run reports as 100% provider failure with zero
+# provider calls actually made. This is the one field whose job is to detect exactly that change.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v3"] = (
+    "tracefold.news.development_compile_episode.v3"
 )
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -160,7 +165,7 @@ class CompileCorpusReceipt(_ExactModel):
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_payload_sha256: str = Field(pattern=_SHA256_PATTERN)
     learning_epoch_started_at_ms: int = Field(ge=0)
-    projection_schema_id: Literal["tracefold.news.development_compile_episode.v2"] = COMPILE_EPISODE_PROJECTION_SCHEMA
+    projection_schema_id: Literal["tracefold.news.development_compile_episode.v3"] = COMPILE_EPISODE_PROJECTION_SCHEMA
     case_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     cluster_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)

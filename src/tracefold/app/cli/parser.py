@@ -159,6 +159,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     learning_baseline.add_argument(
+        "--max-model-cases",
+        type=int,
+        default=0,
+        help=(
+            "required by --mode compile_live and runtime_live: the most cases allowed to reach a provider. "
+            "runtime_live spends 2-6 real calls per case, sequentially, on the endpoints that also serve "
+            "production Triage"
+        ),
+    )
+    learning_baseline.add_argument(
         "--all-cohorts",
         action="store_true",
         help="drop release-plane eligibility and score every accepted review in the window",

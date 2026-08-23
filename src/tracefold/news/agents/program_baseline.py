@@ -34,7 +34,7 @@ import random
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,8 +44,9 @@ from ..models import TriageVerdict
 from ..semantic_contract import TriageContext
 from .program_judge import CardEquivalenceJudge
 from .program_metric import (
-    DIMENSION_OWNERS,
     METRIC_ID,
+    NOT_SCORED,
+    SCORED_BY_PREDICTOR,
     DevelopmentEpisode,
     bind_metric,
     build_compile_example,
@@ -112,6 +113,8 @@ class CaseResult(BaseModel):
     # Per-dimension outcome of *this* candidate: gold_hit/gold_miss, retention_hit/retention_miss,
     # ungolded_change/ungolded_unchanged, field_absent.
     dimension_outcomes: tuple[tuple[str, str], ...] = ()
+    # Which hard gate zeroed this case, or "" when none did.
+    hard_gate: str = ""
     route: str | None = None
     physical_calls: int = 0
     input_tokens: int = 0
@@ -140,6 +143,7 @@ class BaselineReport(BaseModel):
     population: dict[str, Any]
     scores: dict[str, Any]
     action_confusion: dict[str, Any]
+    hard_gates: dict[str, Any]
     failures: dict[str, Any]
     # Corpus metadata: what reviewers labelled. Byte-identical however the predictions change — which is why
     # it is named for what it is and is no longer the only per-dimension table in the report.
@@ -155,17 +159,39 @@ class BaselineReport(BaseModel):
 
     @property
     def report_sha256(self) -> str:
-        return canonical_sha(self.model_dump(mode="json"))
+        """The address of the *measurement*, with wall-clock latency excluded.
+
+        Latency belongs in the report — an operator has to see it — but it cannot be part of the identity:
+        hashing it made two live runs with byte-identical predictions produce two different addresses purely
+        from millisecond jitter, so the one thing a content address is for ("same measurement?") was exactly
+        what it could not answer. `latency_ms` is still covered by `latency_sha256` for anyone who wants to
+        compare timings as well.
+        """
+
+        payload = self.model_dump(mode="json")
+        payload["latency_ms"] = {}
+        payload["cases"] = [{**case, "latency_ms": 0} for case in payload["cases"]]
+        return canonical_sha(payload)
+
+    @property
+    def latency_sha256(self) -> str:
+        return canonical_sha({"latency_ms": self.latency_ms, "cases": [case.latency_ms for case in self.cases]})
 
 
 def _gold_example(case: BaselineCase) -> dspy.Example:
     """The metric's gold side. `recorded` mode pins the shipped action; the others let `decide()` run."""
 
     example = build_compile_example(case.episode)
-    if case.recorded_action:
-        projection = dict(example.get("policy_metric") or {})
-        projection["recorded_action"] = case.recorded_action
-        example = example.copy(policy_metric=projection)
+    if not case.recorded_action:
+        # `baseline_episodes` yields "" when `news_verdicts.final_decision` is NULL or the episode carries no
+        # `event_id`. Falling through would leave `_production_action` to replay today's `decide()` inside the
+        # one mode whose `execution_scope` promises it does not — and, on the frozen fixture, to run the
+        # character-bigram duplicate check over redacted headlines. Refuse the case instead of measuring
+        # something else under its name.
+        raise ValueError(f"news_program_baseline_recorded_action_missing:{case.episode.case_id[:16]}")
+    projection = dict(example.get("policy_metric") or {})
+    projection["recorded_action"] = case.recorded_action
+    example = example.copy(policy_metric=projection)
     return example
 
 
@@ -175,24 +201,26 @@ def _stored_prediction(case: BaselineCase) -> dspy.Prediction:
 
 
 def _dimension_tally(cases: Sequence[BaselineCase]) -> dict[str, Any]:
-    """What reviewers labelled, grouped by who owns the dimension.
+    """What reviewers labelled, grouped by which Predictor's score the label feeds.
 
-    Grouped rather than flat because #150's Stage D is an *ownership* repair: `timeliness` is delivery-owned
-    and no longer scored against EventSemantics, but dropping it from the report would hide that operators
-    keep labelling it. Under `delivery` it stays visible as corpus metadata and can never be mistaken for
+    Grouped rather than flat because #150's Stage D is an ownership repair: `timeliness` is delivery-owned and
+    no longer scored against EventSemantics, but dropping it from the report would hide that operators keep
+    labelling it. Under `not_scored` it stays visible as corpus metadata and can never be mistaken for
     something a Predictor was graded on.
     """
 
     tally: dict[str, dict[str, dict[str, int]]] = {}
     for case in cases:
         dimensions = dict(case.episode.accepted_review.get("dimensions") or {})
-        for owner, names in DIMENSION_OWNERS:
-            for name in names:
-                label = str(dimensions.get(name) or "")
-                if label not in {"pass", "fail"}:
-                    continue
-                row = tally.setdefault(owner, {}).setdefault(name, {"pass": 0, "fail": 0})
-                row[label] += 1
+        # Driven by the labels the reviewer actually wrote, not by a list of names kept here. A rubric that
+        # grows a dimension shows up under `not_scored` on the next run instead of disappearing.
+        for name, value in dimensions.items():
+            label = str(value or "")
+            if label not in {"pass", "fail"}:
+                continue
+            group = SCORED_BY_PREDICTOR.get(str(name), NOT_SCORED)
+            row = tally.setdefault(group, {}).setdefault(str(name), {"pass": 0, "fail": 0})
+            row[label] += 1
     return {
         owner: {
             name: {
@@ -206,23 +234,18 @@ def _dimension_tally(cases: Sequence[BaselineCase]) -> dict[str, Any]:
     }
 
 
-def _hard_gate(feedback: str, score: float) -> str | None:
-    """Which gate zeroed a case. The metric's feedback is the only place it says so, and an operator reading a
-    baseline needs the reason far more than the zero."""
+def _hard_gates(results: Sequence[CaseResult]) -> dict[str, Any]:
+    """Which gate zeroed each case. A scalar that can only go to zero must say why it did.
 
-    if score > 0.0:
-        return None
-    if "must receive this fact" in feedback:
-        return "must_push_missed"
-    if "must not receive this fact" in feedback:
-        return "must_hold_pushed"
-    if "factually wrong" in feedback:
-        return "factual_fail_unchanged"
-    if "must be grounded" in feedback:
-        return "ungrounded_primary"
-    if "schema-valid" in feedback:
-        return "schema_invalid"
-    return "scored_zero"
+    Read off the metric's own typed `hard_gate` field. The predecessor recovered this by matching the
+    feedback sentence, which is prose the reflection model reads and a maintainer may reword at any time.
+    """
+
+    tally: dict[str, int] = {}
+    for result in results:
+        if result.hard_gate:
+            tally[result.hard_gate] = tally.get(result.hard_gate, 0) + 1
+    return {"by_gate": dict(sorted(tally.items())), "n": sum(tally.values())}
 
 
 def build_runtime_lm(
@@ -315,13 +338,21 @@ def _percentile(values: Sequence[int], fraction: float) -> int:
 
 
 def _cluster_bootstrap(values: Sequence[float]) -> dict[str, float] | None:
-    """Deterministic interval over cluster means, using the release evaluator's own seed and replicates."""
+    """Deterministic interval over cluster means, using the release evaluator's own seed and replicates.
+
+    Sorted first, and that is not cosmetic. A fixed seed draws a fixed *index* sequence, so resampling an
+    insertion-ordered list makes the published interval — and therefore `report_sha256` — a function of the
+    order cases happened to arrive in. `recorded` keeps input order while `runtime_live` re-sorts by
+    `(opened_at_ms, case_id)`, so the same corpus scored two ways produced two different intervals in a
+    receipt whose entire purpose is comparability.
+    """
 
     if len(values) < 2:
         return None
+    ordered = sorted(values)
     rng = random.Random(int(_BOOTSTRAP["seed"]))  # noqa: S311 - deterministic, not cryptographic
-    n = len(values)
-    means = sorted(sum(values[rng.randrange(n)] for _ in range(n)) / n for _ in range(int(_BOOTSTRAP["replicates"])))
+    n = len(ordered)
+    means = sorted(sum(ordered[rng.randrange(n)] for _ in range(n)) / n for _ in range(int(_BOOTSTRAP["replicates"])))
     alpha = (1 - float(_BOOTSTRAP["confidence"])) / 2
     return {
         "lower": round(means[max(0, math.floor(alpha * len(means)))], 6),
@@ -383,25 +414,58 @@ def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
     return summary
 
 
+class RouteOutcome(NamedTuple):
+    case: BaselineCase
+    judgment: Any
+    error: str | None
+    elapsed_ms: int
+    spent: dict[str, int | None]
+
+
+def _spend_from_partial_trace(program_trace: Any, attempts: int) -> dict[str, int | None]:
+    """What a failed execution actually cost, from the trace it managed to record.
+
+    Mirrors the production consumer's `_usage_from_partial_trace`: synthetic entries stay in `call_count`
+    for audit, and only entries marked as physical provider calls contribute tokens or cost.
+    """
+
+    calls = tuple(getattr(program_trace, "calls", ()) or ())
+    physical = tuple(call for call in calls if getattr(call, "physical_provider_call", False))
+    costs = [call.provider_cost_microusd for call in physical]
+    return {
+        "call_count": len(calls) if calls else max(0, int(attempts)),
+        "physical_call_count": len(physical),
+        "input_tokens": sum(call.input_tokens for call in physical),
+        "output_tokens": sum(call.output_tokens for call in physical),
+        "provider_cost_microusd": sum(costs) if costs and all(cost is not None for cost in costs) else None,
+    }
+
+
 async def _run_runtime_route(
     cases: Sequence[BaselineCase],
     judge_program: Any,
-) -> list[tuple[BaselineCase, Any, str | None, int]]:
+) -> list[RouteOutcome]:
     """Execute the production Program route case by case, in deterministic order.
 
     Sequential on purpose: the primary circuit breaker is per-Program state, so concurrent cases would make
     "was the breaker open?" depend on scheduling rather than on the run.
     """
 
-    outcomes: list[tuple[BaselineCase, Any, str | None, int]] = []
+    outcomes: list[RouteOutcome] = []
     for case in sorted(cases, key=lambda item: (item.episode.context.now_ms, item.episode.case_id)):
         started = time.monotonic()
+        spent: dict[str, int | None] = {}
         try:
             judgment = await judge_program.judge(case.episode.context)
             error: str | None = None
         except Exception as exc:
             judgment, error = None, getattr(exc, "code", None) or type(exc).__name__
-        outcomes.append((case, judgment, error, int((time.monotonic() - started) * 1000)))
+            # A failed route is the most expensive kind: up to the whole six-call chain budget. Dropping its
+            # spend understated `route` and `latency_ms` precisely where the operator most needs them, and
+            # left `route.answered_by` not summing to the requested population with nothing saying why.
+            # `SemanticJudgeError` carries the partial trace for exactly this reason.
+            spent = _spend_from_partial_trace(getattr(exc, "partial_trace", None), getattr(exc, "attempts", 0))
+        outcomes.append(RouteOutcome(case, judgment, error, int((time.monotonic() - started) * 1000), spent))
     return outcomes
 
 
@@ -423,7 +487,7 @@ def run_baseline(
         raise ValueError("news_program_baseline_requires_cases")
     metric = bind_metric(judge)
     strict = bind_metric(None) if judge is not None else None
-    examples = [_gold_example(case) for case in cases]
+    examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
     by_case = {case.episode.case_id: case for case in cases}
 
     results: list[CaseResult] = []
@@ -449,10 +513,18 @@ def run_baseline(
             raise ValueError("news_program_baseline_requires_lm")
         program = program_factory(artifact)
         captured: dict[str, dspy.Prediction] = {}
+        # Separate from `captured` so a raise inside the metric — a stale `policy_sha256`, a schema drift —
+        # is not filed as `provider_or_program_failure` and read as route unavailability. Both are failures;
+        # they have nothing else in common and different people fix them.
+        metric_errors: dict[str, str] = {}
 
         def scored_metric(gold: dspy.Example, pred: dspy.Prediction, *args: Any, **kwargs: Any) -> float:
             case_id = str(gold.get("case_id"))
-            captured[case_id] = metric(gold, pred, None, None, None)
+            try:
+                captured[case_id] = metric(gold, pred, None, None, None)
+            except Exception as exc:  # a defect in the ruler, not an outcome of the route
+                metric_errors[case_id] = getattr(exc, "code", None) or f"metric_error:{type(exc).__name__}"
+                return 0.0
             if strict is not None:
                 # The same predictions scored the old way — the judge's verdicts are already cached, so this
                 # measures the ruler rather than model noise.
@@ -486,7 +558,9 @@ def run_baseline(
             case = by_case[str(entry[0].get("case_id"))]
             outcome = captured.get(case.episode.case_id)
             if outcome is None:
-                results.append(_failed_case(case, "provider_or_program_failure"))
+                results.append(
+                    _failed_case(case, metric_errors.get(case.episode.case_id, "provider_or_program_failure"))
+                )
                 continue
             results.append(_case_result(case, outcome, latency_ms=0))
 
@@ -502,11 +576,29 @@ def run_baseline(
         known_cost = 0
         cost_unknown_n = 0
         routes: dict[str, int] = {}
-        for case, judgment, error, elapsed_ms in executed:
-            if judgment is None:
-                results.append(_failed_case(case, error or "program_route_failure"))
-                continue
+        for case, judgment, error, elapsed_ms, spent in executed:
             per_case_latency.append(elapsed_ms)
+            if judgment is None:
+                calls += int(spent.get("call_count") or 0)
+                physical += int(spent.get("physical_call_count") or 0)
+                input_tokens += int(spent.get("input_tokens") or 0)
+                output_tokens += int(spent.get("output_tokens") or 0)
+                spent_cost = spent.get("provider_cost_microusd")
+                if spent_cost is None:
+                    cost_unknown_n += 1
+                else:
+                    known_cost += int(spent_cost)
+                results.append(
+                    _failed_case(
+                        case,
+                        error or "program_route_failure",
+                        latency_ms=elapsed_ms,
+                        physical_calls=int(spent.get("physical_call_count") or 0),
+                        input_tokens=int(spent.get("input_tokens") or 0),
+                        output_tokens=int(spent.get("output_tokens") or 0),
+                    )
+                )
+                continue
             usage = judgment.usage
             calls += usage.call_count
             physical += usage.physical_call_count
@@ -522,9 +614,26 @@ def run_baseline(
             routes[answering_route] = routes.get(answering_route, 0) + 1
             example = by_id[case.episode.case_id]
             prediction = dspy.Prediction(verdict=judgment.verdict.model_dump(mode="json"))
-            outcome = metric(example, prediction, None, None, None)
-            if strict is not None:
-                strict_scores[case.episode.case_id] = float(strict(example, prediction, None, None, None).score)
+            try:
+                outcome = metric(example, prediction, None, None, None)
+                if strict is not None:
+                    strict_scores[case.episode.case_id] = float(strict(example, prediction, None, None, None).score)
+            except Exception as exc:
+                # Unguarded, one bad episode raised *after* `asyncio.run` had already executed every case —
+                # destroying a run that had spent up to six real calls per case on the endpoint that also
+                # serves production Triage, with no `--out` file written.
+                code = getattr(exc, "code", None) or f"metric_error:{type(exc).__name__}"
+                results.append(
+                    _failed_case(
+                        case,
+                        code,
+                        latency_ms=elapsed_ms,
+                        physical_calls=usage.physical_call_count,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                    )
+                )
+                continue
             results.append(
                 _case_result(
                     case,
@@ -546,6 +655,7 @@ def run_baseline(
         }
         route = {
             "answered_by": dict(sorted(routes.items())),
+            "unanswered_n": sum(1 for outcome in executed if outcome.judgment is None),
             "call_count": calls,
             "physical_call_count": physical,
             "input_tokens": input_tokens,
@@ -584,11 +694,13 @@ def _build_report(
 ) -> BaselineReport:
     answered = [result for result in results if result.answered]
     failed = [result for result in results if not result.answered]
-    if not answered:
-        raise ValueError(f"news_program_baseline_all_cases_failed:{len(failed)}/{len(results)}")
 
-    by_case = {case.episode.case_id: case for case in cases}
-    case_answered = round(statistics.fmean(result.score for result in answered), 6)
+    # `None`, not `0.0`. "The route answered nothing" is the single most important `runtime_live` result and
+    # the predecessor was the only outcome that produced no receipt at all — after up to six real provider
+    # calls per case had been paid for. It raised so a reader could not mistake an empty run for a measured
+    # zero; a null score says that better, and keeps the per-case error codes, the failure breakdown and the
+    # route aggregates that make the run diagnosable.
+    case_answered = round(statistics.fmean(result.score for result in answered), 6) if answered else None
     case_zero = round(statistics.fmean(result.score if result.answered else 0.0 for result in results), 6)
     cluster_answered, cluster_n, cluster_values = _cluster_macro(results, failure_as_zero=False)
     cluster_zero, _cluster_zero_n, cluster_zero_values = _cluster_macro(results, failure_as_zero=True)
@@ -629,6 +741,7 @@ def _build_report(
             "policy_version": policy["policy_version"],
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
+            "policy_source": policy["policy_source"],
             "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v2+v3"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
@@ -644,8 +757,12 @@ def _build_report(
         },
         scores=scores,
         action_confusion=_action_confusion(answered),
+        hard_gates=_hard_gates(answered),
         failures={"by_code": dict(sorted(failures_by_code.items()))},
-        review_label_distribution=_dimension_tally([by_case[result.case_id] for result in answered]),
+        # Every requested case, never only the answered ones. Three documents promise this table does not
+        # move when the model does; built over `answered` it moved whenever a provider timed out, and an
+        # operator reading a changed label distribution concludes the corpus changed under them.
+        review_label_distribution=_dimension_tally(cases),
         prediction_dimensions=_prediction_dimensions(answered),
         gold_coverage={
             "gold_scored_n": gold_n,
@@ -661,12 +778,27 @@ def _build_report(
     )
 
 
+_ABSENT_POLICY: dict[str, Any] = {
+    "policy_version": None,
+    "policy_sha256": None,
+    "policy_values": None,
+    "policy_source": None,
+}
+
+
 def _policy_identity(cases: Sequence[BaselineCase]) -> dict[str, Any]:
-    """The exact policy every scored example carried, or an explicit absence for `recorded`.
+    """The policy the run actually replayed, or an explicit absence.
+
+    An episode always *carries* a policy — the projection freezes one so `decide()` can be replayed — but
+    `recorded` returns before replay, so naming that policy in the identity would claim a dependency the
+    number does not have. `CONTRACTS.md` says `recorded` publishes a null policy; before this it published
+    today's configured arm, which is exactly the ambient-state confusion #150 exists to remove.
 
     Fails closed on disagreement: a report covering two policies cannot honestly name one.
     """
 
+    if all(case.recorded_action for case in cases):
+        return dict(_ABSENT_POLICY)
     seen: dict[str, dict[str, Any]] = {}
     for case in cases:
         projection = dict(case.episode.policy_metric or {})
@@ -675,16 +807,28 @@ def _policy_identity(cases: Sequence[BaselineCase]) -> dict[str, Any]:
             seen[sha] = {
                 "policy_version": str(projection.get("policy_version") or ""),
                 "policy_values": dict(projection.get("policy_values") or {}),
+                # Where the values came from. `active_arm_manifest` over an `--all-cohorts` window means
+                # today's rules replayed on a retired corpus — a real question, but not "the policy that arm
+                # ran", and the receipt must not let a verified hash imply otherwise.
+                "policy_source": str(projection.get("policy_source") or "unknown"),
             }
     if not seen:
-        return {"policy_version": None, "policy_sha256": None, "policy_values": None}
+        return dict(_ABSENT_POLICY)
     if len(seen) > 1:
         raise ValueError(f"news_program_baseline_policy_not_uniform:{len(seen)}")
     sha, payload = next(iter(seen.items()))
     return {"policy_sha256": sha, **payload}
 
 
-def _failed_case(case: BaselineCase, error_code: str) -> CaseResult:
+def _failed_case(
+    case: BaselineCase,
+    error_code: str,
+    *,
+    latency_ms: int = 0,
+    physical_calls: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> CaseResult:
     return CaseResult(
         case_id=case.episode.case_id,
         cluster_id=case.episode.cluster_id,
@@ -694,6 +838,10 @@ def _failed_case(case: BaselineCase, error_code: str) -> CaseResult:
         should_push=str(case.episode.accepted_review.get("should_push") or "uncertain"),
         feedback="",
         error_code=error_code,
+        latency_ms=latency_ms,
+        physical_calls=physical_calls,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -716,6 +864,7 @@ def _case_result(
         action=str(getattr(outcome, "production_action", "") or ""),
         should_push=str(case.episode.accepted_review.get("should_push") or "uncertain"),
         feedback=str(outcome.feedback or ""),
+        hard_gate=str(getattr(outcome, "hard_gate", "") or ""),
         gold_scored_n=int(getattr(outcome, "gold_scored_n", 0) or 0),
         labelled_n=int(getattr(outcome, "labelled_n", 0) or 0),
         dimension_outcomes=tuple(getattr(outcome, "dimension_outcomes", ()) or ()),

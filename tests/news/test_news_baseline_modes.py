@@ -94,7 +94,7 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
         context=_context(index, title=title),
         accepted_review={
             "should_push": "should_push",
-            "dimensions": {"factual_fidelity": "pass"},
+            "dimensions": {"factual_fidelity": "pass", "headline_fidelity": "pass", "magnitude": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
         },
         production_verdict={**_SEMANTICS, **_CARD, "title_zh": ""},
@@ -104,6 +104,7 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
             "seen": [],
             "policy_version": "news_triage_policy_v8",
             "policy_values": values,
+            "policy_source": "active_arm_manifest",
             "policy_sha256": canonical_sha(values),
         },
     )
@@ -151,14 +152,15 @@ def test_compile_live_fails_where_runtime_live_answers_through_fallback() -> Non
 
     case = _case(1)
 
-    with pytest.raises(ValueError, match="news_program_baseline_all_cases_failed:1/1"):
-        run_baseline(
-            [case],
-            mode="compile_live",
-            artifact=load_stable_program_artifact(),
-            program_factory=compile_program_factory,
-            lm=_ScriptedLM(break_card=True),
-        )
+    compiled = run_baseline(
+        [case],
+        mode="compile_live",
+        artifact=load_stable_program_artifact(),
+        program_factory=compile_program_factory,
+        lm=_ScriptedLM(break_card=True),
+    )
+    assert compiled.population == {"requested_n": 1, "answered_n": 0, "failure_n": 1, "failure_rate": 1.0}
+    assert compiled.scores["case_macro_answered"] is None
 
     program = DspyNewsSemanticProgram(
         load_stable_program_artifact(),
@@ -270,10 +272,15 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
         load_stable_program_artifact(), primary_adapter=primary, fallback_adapter=fallback
     )
 
-    with pytest.raises(ValueError, match="news_program_baseline_all_cases_failed:1/1"):
-        _runtime([_case(1)], program)
+    report = _runtime([_case(1)], program)
 
+    assert report.population["failure_n"] == 1
+    assert report.scores["case_macro_answered"] is None, "nothing answered, so there is nothing to average"
+    assert report.scores["case_macro_failure_as_zero"] == 0.0
     assert len(primary.requests) + len(fallback.requests) == 6 == execution.max_calls_per_chain
+    # Every one of those six calls is published, not silently dropped with the case.
+    assert report.route["physical_call_count"] == 6
+    assert report.cases[0].physical_calls == 6
 
 
 def test_runtime_failures_keep_their_own_error_code_beside_a_real_score() -> None:
@@ -401,3 +408,85 @@ def test_report_sha_is_stable_across_runs_and_moves_with_the_answer() -> None:
     second = run(_CARD)
     assert stable(first) == stable(second)
     assert stable(run({**_CARD, "headline_zh": "另一种说法"})) != stable(first)
+
+
+def test_a_live_report_names_the_policy_it_replayed_and_moves_with_it() -> None:
+    """`recorded` names no policy because it replays none. A live mode does replay one, so it must name that
+    exact policy — and a knob change must move the address, or two receipts are indistinguishable."""
+
+    def run(case: BaselineCase) -> Any:
+        return _runtime(
+            [case],
+            DspyNewsSemanticProgram(
+                load_stable_program_artifact(),
+                primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD]),
+            ),
+        )
+
+    base = run(_case(1))
+    assert base.identity["policy_sha256"] == canonical_sha(DEFAULT_POLICY.as_dict())
+    # `active_arm_manifest`, not the arm each retired episode ran — the receipt says which question was asked
+    # instead of letting a verified hash imply the other one.
+    assert base.identity["policy_source"] == "active_arm_manifest"
+
+    values = {**DEFAULT_POLICY.as_dict(), "similarity_max": 0.9}
+    drifted = _case(1)
+    projection = {**drifted.episode.policy_metric, "policy_values": values, "policy_sha256": canonical_sha(values)}
+    other = run(
+        BaselineCase(episode=drifted.episode.model_copy(update={"policy_metric": projection}), recorded_action="")
+    )
+
+    assert other.identity["policy_sha256"] == canonical_sha(values)
+    assert other.report_sha256 != base.report_sha256
+
+
+def test_the_published_address_is_the_measurement_and_not_the_stopwatch() -> None:
+    """Two live runs with byte-identical predictions must publish the same `report_sha256`.
+
+    Hashing `latency_ms` made the address a per-run nonce in exactly the two modes that have real latency, so
+    the one question a content address exists to answer — "is this the same measurement?" — was the one it
+    could not. Timings are still published, and still addressable, under `latency_sha256`.
+    """
+
+    def run() -> Any:
+        return _runtime(
+            [_case(1)],
+            DspyNewsSemanticProgram(
+                load_stable_program_artifact(),
+                primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD]),
+            ),
+        )
+
+    first, second = run(), run()
+    assert first.latency_ms["wall_ms"] >= 0 and second.latency_ms["wall_ms"] >= 0
+    assert first.report_sha256 == second.report_sha256
+    # ...and the timings themselves are still content-addressed, just separately.
+    assert first.latency_sha256 and second.latency_sha256
+
+
+def test_prediction_dimensions_follow_the_candidate_while_labels_do_not() -> None:
+    """The central claim of the v2 report, checked where the candidate can actually differ.
+
+    In `recorded` mode the prediction *is* the stored verdict, so a recorded-only test can only assert that
+    the two tables agree — which is what the first version of this check did, pinning byte-identity under a
+    docstring describing the opposite. Here two scripted candidates answer the same case differently.
+    """
+
+    def run(card: dict[str, Any]) -> Any:
+        return _runtime(
+            [_case(1)],
+            DspyNewsSemanticProgram(
+                load_stable_program_artifact(),
+                primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, card]),
+            ),
+        )
+
+    kept = run(_CARD)
+    changed = run({"headline_zh": "完全不同的另一条新闻", "why_zh": "与原卡片毫无关系的理由"})
+
+    assert kept.review_label_distribution == changed.review_label_distribution, (
+        "the corpus did not change, so what reviewers labelled cannot change"
+    )
+    assert kept.prediction_dimensions != changed.prediction_dimensions
+    assert kept.prediction_dimensions["headline_fidelity"]["retention_hit"] == 1
+    assert changed.prediction_dimensions["headline_fidelity"].get("retention_hit", 0) == 0

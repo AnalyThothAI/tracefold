@@ -183,9 +183,10 @@ report has no single ambiguous scalar: a provider failure is an outcome, so
 quality-given-an-answer and the failure-as-zero lower bound are published side
 by side (29 unanswered cases had turned a 0.482 lower bound into a printed
 0.587), `review_label_distribution` is corpus metadata while
-`prediction_dimensions` is what the candidate did, and `timeliness` is
-delivery-owned: it leaves the EventSemantics score and stays visible under the
-label distribution's `delivery` group. Policy is frozen into
+`prediction_dimensions` is what the candidate did, a hard-gated case keeps its
+action and its per-dimension outcomes so a zero enters every denominator rather
+than leaving it, and `timeliness` is delivery-owned: it leaves the EventSemantics
+score and stays visible under the label distribution's `not_scored` group. Policy is frozen into
 each scored example (`policy_values` + `policy_sha256`, verified) instead of
 imported from `DEFAULT_POLICY`, and a missing or tampered policy raises rather
 than scoring. The recorded calibration is pinned to a checked-in redacted corpus

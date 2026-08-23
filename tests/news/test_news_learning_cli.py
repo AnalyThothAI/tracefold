@@ -277,6 +277,7 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
         "mode": "recorded",
         "action_source": "",
         "all_cohorts": False,
+        "max_model_cases": 0,
         "semantic_judge": "",
         "limit": 10,
         "out": "",
@@ -322,3 +323,52 @@ def test_baseline_defaults_each_mode_to_its_only_valid_action_source() -> None:
         assert args.action_source == "", "the handler resolves the default, so the parser must not guess"
     with pytest.raises(SystemExit):
         parser.parse_args(["news", "learning", "baseline", "--from-ms", "1", "--to-ms", "2", "--mode", "live"])
+
+
+def test_a_live_baseline_refuses_to_run_without_an_explicit_provider_bound(monkeypatch: Any) -> None:
+    """`runtime_live` spends 2-6 real calls per case, sequentially, on the endpoints that also serve
+    production Triage. Every other model-spending command in this plane makes its budget required; this one
+    defaulted `--limit` to 500, so the unbounded form was the *shortest* form to type."""
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the bound must be checked before the corpus is read")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", refuse)
+
+    for mode in ("compile_live", "runtime_live"):
+        code, payload = _handle_learning(_baseline_args(mode=mode, action_source="policy"))
+        assert code == 2
+        assert payload["error"] == "news_program_baseline_live_mode_requires_max_model_cases"
+
+    # `recorded` reaches no provider, so it needs no such bound: it gets past the guard and on to the corpus
+    # read, which is what the stub above refuses.
+    with pytest.raises(AssertionError, match="before the corpus is read"):
+        _handle_learning(_baseline_args(mode="recorded"))
+
+
+def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monkeypatch: Any) -> None:
+    seen: dict[str, int] = {}
+
+    class _Evaluator:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def baseline_episodes(self, _window: Any, *, cohort: bool, limit: int) -> list[Any]:
+            del cohort
+            seen["limit"] = limit
+            return []
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.CandidateEvaluator", _Evaluator)
+
+    _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", limit=500, max_model_cases=12))
+    assert seen["limit"] == 12, "the smaller of the two bounds wins, so --limit cannot widen it"
