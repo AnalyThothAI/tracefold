@@ -13,6 +13,7 @@ from tracefold.news.agents.program_compiler_security import (
     CompilerProxyTariff,
     CompilerRoleBindingV3,
     ContentAddressedCompileReceipt,
+    gepa_metric_call_ceiling,
     seal_compile_input,
 )
 from tracefold.news.artifact_identity import canonical_sha
@@ -125,6 +126,36 @@ def _sealed_bundle() -> CompileInputBundle:
             seed=17,
         ),
     )
+
+
+def test_gepa_metric_ceiling_rejects_an_inflated_untrusted_split() -> None:
+    optimizer_config = {
+        "constructor_scalar_arguments": {
+            "max_metric_calls": 20,
+            "reflection_minibatch_size": 3,
+        },
+        "compile_call": {
+            "example_count": 6,
+            "trainset_count": 4,
+            "valset_count": 2,
+        },
+    }
+
+    assert (
+        gepa_metric_call_ceiling(
+            max_metric_calls=20,
+            optimizer_config=optimizer_config,
+            expected_example_count=6,
+        )
+        == 25
+    )
+    optimizer_config["compile_call"]["valset_count"] = 5
+    with pytest.raises(ValueError, match="optimizer_metric_budget_invalid"):
+        gepa_metric_call_ceiling(
+            max_metric_calls=20,
+            optimizer_config=optimizer_config,
+            expected_example_count=6,
+        )
 
 
 def test_compiler_endpoint_identity_is_endpoint_bound_but_contains_no_endpoint_or_key() -> None:

@@ -343,6 +343,7 @@ def gepa_metric_call_ceiling(
         or train_count > example_count
         or val_count <= 0
         or val_count > example_count
+        or train_count + val_count != example_count
         or minibatch <= 0
         or minibatch > train_count
     ):

@@ -975,7 +975,7 @@ def _optimizer_provenance(
         calls=proxy_calls,
     )
     train_count = max(1, len(episodes) - 1)
-    val_count = max(1, len(episodes) - train_count)
+    val_count = len(episodes) - train_count
     optimizer_config = {
         "runner_optimizer_config": {
             "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
@@ -1582,6 +1582,33 @@ def _accepted_event(
     return event_id
 
 
+def _accepted_compilable_event(
+    conn,
+    *,
+    why: str = "fail",
+    stale_reask: bool = False,
+    stable: ArmManifest | None = None,
+) -> str:
+    """Create the focal Event plus an independent accepted GEPA validation case."""
+
+    selected_stable = stable or _arm()
+    event_id = _accepted_event(
+        conn,
+        why=why,
+        stale_reask=stale_reask,
+        stable=selected_stable,
+    )
+    companion_id = _accepted_event(
+        conn,
+        why=why,
+        stable=selected_stable,
+        hit_id=912001,
+        title="European Central Bank unexpectedly cuts its deposit rate by 50 basis points",
+    )
+    assert companion_id != event_id
+    return event_id
+
+
 def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None:
     stable = _arm()
     prior_runtime = _arm(runtime_model_bindings_sha256=_sha({"model_bindings": "retired-four-slot-runtime"}))
@@ -1969,7 +1996,7 @@ def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
 
 
 def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receipt(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     development = asyncio.run(
         CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
@@ -1981,7 +2008,7 @@ def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receip
     )
     episode_count = len(development.cases)
     train_count = max(1, episode_count - 1)
-    val_count = max(1, episode_count - train_count)
+    val_count = episode_count - train_count
     metric_call_ceiling = 20 + val_count + min(2, train_count)
 
     allowed, chain = _optimizer_provenance(
@@ -2085,7 +2112,7 @@ def test_program_candidate_requires_the_exact_persisted_compile_receipt_chain(
 
 
 def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> None:
-    _accepted_event(conn, why="pass")
+    _accepted_compilable_event(conn, why="pass")
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2122,7 +2149,7 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
 
 
 def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2157,12 +2184,12 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     )
 
     candidate_stability = report.evidence["stability"]["candidate"]
-    assert len(candidate_stability) == 1
-    assert candidate_stability[0]["trials"] == 3
-    assert candidate_stability[0]["pass_n"] == 2
-    assert candidate_stability[0]["pass_k"] is False
-    assert len(candidate_stability[0]["trial_results"]) == 3
-    assert _judge_call_count(judges) == 6
+    assert len(candidate_stability) == len(development.cases) == 2
+    assert {item["trials"] for item in candidate_stability} == {3}
+    assert sorted(item["pass_n"] for item in candidate_stability) == [0, 2]
+    assert all(item["pass_k"] is False for item in candidate_stability)
+    assert {len(item["trial_results"]) for item in candidate_stability} == {3}
+    assert _judge_call_count(judges) == 6 * len(development.cases)
     assert report.evidence["stable_mean_total_tokens"] == 590
     assert report.evidence["candidate_mean_total_tokens"] == 590
     assert report.evidence["stable_mean_call_count"] == 2
@@ -2179,7 +2206,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "FROM news_model_recordings WHERE run_sha = %s ORDER BY arm, trial, call_index",
         (report.run_sha,),
     ).fetchall()
-    assert len(recordings) == 12
+    assert len(recordings) == 12 * len(development.cases)
     assert {row["predictor_name"] for row in recordings} == {"event_semantics", "reader_card"}
     assert {row["call_index"] for row in recordings} == {0, 1}
     assert {row["attempt"] for row in recordings} == {1}
@@ -2225,7 +2252,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
             runtime_revision="record-replay-test",
             now_ms=NOW - 23 * 3_600_000,
         )
-    _accepted_event(conn, stable=stable)
+    _accepted_compilable_event(conn, stable=stable)
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -2327,7 +2354,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     }
     assert verification["mode"] == "strict_record_replay_v1"
     assert verification["run_sha"] == first.run_sha
-    assert verification["case_n"] == 1
+    assert verification["case_n"] == len(development.cases) == 2
     assert len(verification["observation_root"]) == 64
     assert verification["recording_n"] == before["recordings"]
     assert len(verification["recording_corpus_root"]) == 64
@@ -2359,7 +2386,7 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
             runtime_revision="missing-replay-test",
             now_ms=NOW - 23 * 3_600_000,
         )
-    _accepted_event(conn, stable=stable)
+    _accepted_compilable_event(conn, stable=stable)
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -2639,7 +2666,7 @@ def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:
 
 
 def test_record_replay_miss_is_explicit_unknown_without_live_fallback(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     first = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2685,7 +2712,7 @@ def test_record_replay_miss_is_explicit_unknown_without_live_fallback(conn) -> N
 
 
 def test_common_provider_outage_is_unknown_not_a_vacuous_candidate_pass(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2722,17 +2749,17 @@ def test_common_provider_outage_is_unknown_not_a_vacuous_candidate_pass(conn) ->
         )
     )
 
-    assert _judge_call_count(judges) == 2
+    assert _judge_call_count(judges) == 2 * len(development.cases)
     assert report.gate_outcome == "unknown"
     assert report.run_state == "incomplete"
-    assert report.evidence["common_error_n"] == 1
+    assert report.evidence["common_error_n"] == len(development.cases)
     assert report.evidence["candidate_only_error_n"] == 0
     assert "stable_or_common_execution_unavailable" in report.evidence["blockers"]
     assert "candidate_schema_or_provider_regression" not in report.evidence["failures"]
 
 
 def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2780,7 +2807,7 @@ def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
 
 
 def test_blind_candidate_critical_error_is_a_release_failure(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2914,7 +2941,7 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
 
 
 def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
@@ -2953,7 +2980,7 @@ def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> 
 
 
 def test_validation_window_must_begin_after_candidate_registration(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
@@ -2991,7 +3018,7 @@ def test_validation_window_must_begin_after_candidate_registration(conn) -> None
 
 
 def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
-    _accepted_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -3031,7 +3058,7 @@ def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
 
 
 def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -> None:
-    event_id = _accepted_event(conn, stale_reask=True)
+    event_id = _accepted_compilable_event(conn, stale_reask=True)
     stable = _arm()
     _open_event(
         conn,
@@ -3088,15 +3115,15 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     ).fetchone()
 
     assert after == before
-    assert len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls) == 1
+    assert len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls) == len(development.cases) == 2
     assert report.gate_outcome == "unknown"  # fixture is only six hours, not the required 24
-    assert report.evidence["observation_n"] == 1
+    assert report.evidence["observation_n"] == len(development.cases) == 2
     assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"
     assert report.evidence["observation_manifest_sha"]
     stored = conn.execute(
         "SELECT event_id, evaluation_stage, stable_observation, candidate_observation "
-        "FROM news_learning_cases WHERE run_sha = %s",
-        (report.run_sha,),
+        "FROM news_learning_cases WHERE run_sha = %s AND event_id = %s",
+        (report.run_sha, event_id),
     ).fetchone()
     assert stored["event_id"] == event_id
     assert stored["evaluation_stage"] == "shadow"
@@ -3138,19 +3165,21 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     ).fetchall()
     assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
         ("candidate", "event_semantics"),
+        ("candidate", "event_semantics"),
+        ("candidate", "reader_card"),
         ("candidate", "reader_card"),
     ]
     manifest = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
         (report.evidence["observation_manifest_sha"],),
     ).fetchone()["payload"]
-    assert manifest["case_n"] == 1
+    assert manifest["case_n"] == len(development.cases) == 2
     assert "observations" not in manifest
 
 
 @pytest.mark.parametrize("program_matches_assignment", [True, False])
 def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, program_matches_assignment: bool) -> None:
-    event_id = _accepted_event(conn)
+    event_id = _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
