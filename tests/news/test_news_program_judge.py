@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
@@ -52,10 +54,35 @@ class _ScriptedJudgeLM(dspy.BaseLM):  # type: ignore[misc]
         self.calls += 1
         if self._fail:
             raise RuntimeError("provider unavailable")
+        return self._answer(prompt=prompt, messages=messages)
+
+    def _answer(self, *, prompt: Any = None, messages: Any = None) -> list[str]:
         rendered = json.dumps(messages if messages is not None else prompt, ensure_ascii=False, default=str)
         if "supported_by_evidence" in rendered:
             return [json.dumps({"verdict": {"supported_by_evidence": self._facts_supported}})]
         return [json.dumps({"verdict": self._verdict.model_dump(mode="json")})]
+
+
+class _BlockingJudgeLM(_ScriptedJudgeLM):
+    """Holds admitted provider calls so concurrent judge callers overlap deterministically."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_call_entered = threading.Event()
+        self.second_call_entered = threading.Event()
+        self.release = threading.Event()
+        self._calls_lock = threading.Lock()
+
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+        with self._calls_lock:
+            self.calls += 1
+            if self.calls == 1:
+                self.first_call_entered.set()
+            elif self.calls == 2:
+                self.second_call_entered.set()
+        if not self.release.wait(timeout=2):
+            raise RuntimeError("test did not release provider call")
+        return self._answer(prompt=prompt, messages=messages)
 
 
 def _judge(**kwargs: Any) -> CardEquivalenceJudge:
@@ -79,6 +106,66 @@ def test_repeated_pairs_are_asked_once() -> None:
         judge.equivalence(_ACCEPTED, _REWORDED)
     assert lm.calls == 1
     assert judge.stats["cache_entries"] == 1
+
+
+@pytest.mark.parametrize("route", ["equivalence", "facts_supported"])
+def test_concurrent_same_key_misses_share_one_provider_call(route: str) -> None:
+    lm = _BlockingJudgeLM()
+    judge = CardEquivalenceJudge(lm, max_model_calls=1)
+    callers_ready = threading.Barrier(2)
+
+    def invoke() -> CardEquivalenceAssessment | bool:
+        callers_ready.wait(timeout=1)
+        if route == "equivalence":
+            return judge.equivalence(_ACCEPTED, _REWORDED)
+        return judge.facts_supported('{"leader_title":"issuer filed no update"}', _REWORDED)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke) for _ in range(2)]
+        assert lm.first_call_entered.wait(timeout=1)
+        duplicate_reached_provider = lm.second_call_entered.wait(timeout=0.2)
+        lm.release.set()
+        results = [future.result(timeout=1) for future in futures]
+
+    assert duplicate_reached_provider is False
+    assert lm.calls == 1
+    assert results[0] == results[1]
+    assert judge.stats == {
+        "attempts": 1,
+        "model_calls": 1,
+        "cache_entries": 1,
+        "failures": 0,
+        "actual_cost_microusd": 0,
+    }
+
+
+def test_concurrent_different_keys_cannot_overrun_model_call_budget() -> None:
+    lm = _BlockingJudgeLM()
+    judge = CardEquivalenceJudge(lm, max_model_calls=1)
+    callers_ready = threading.Barrier(2)
+    candidates = (_REWORDED, _UNRELATED)
+
+    def invoke(candidate: dict[str, str]) -> CardEquivalenceAssessment:
+        callers_ready.wait(timeout=1)
+        return judge.equivalence(_ACCEPTED, candidate)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke, candidate) for candidate in candidates]
+        assert lm.first_call_entered.wait(timeout=1)
+        over_budget_call_reached_provider = lm.second_call_entered.wait(timeout=0.2)
+        lm.release.set()
+        results = [future.result(timeout=1) for future in futures]
+
+    assert over_budget_call_reached_provider is False
+    assert lm.calls == 1
+    assert sorted(result.status for result in results) == ["answered", "unavailable"]
+    assert judge.stats == {
+        "attempts": 2,
+        "model_calls": 1,
+        "cache_entries": 1,
+        "failures": 1,
+        "actual_cost_microusd": 0,
+    }
 
 
 def test_a_reworded_card_keeps_the_reviewers_pass() -> None:

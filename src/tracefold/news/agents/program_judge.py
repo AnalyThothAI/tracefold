@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import inspect
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from concurrent.futures import Future
 from contextlib import nullcontext
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar, cast
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,8 @@ from .program_compiler_security import METRIC_JUDGE_MAX_TOKENS, CompilerRoleBind
 from .semantic_program import DspyStrictJSONAdapter, ExactProviderCallCapture, PredictorAdapterError
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"
+
+_T = TypeVar("_T")
 
 _INSTRUCTION = """You are checking whether a rewritten Chinese news card preserved what a human reviewer had
 already accepted about the original. You are NOT judging which card is better written.
@@ -173,6 +176,10 @@ class CardEquivalenceJudge:
         # `run_baseline` exposes `num_threads`; without this the counters written into the receipt under-count
         # and two threads on the same pair each pay for a provider call.
         self._lock = threading.Lock()
+        self._in_flight: dict[tuple[str, str], Future[Any]] = {}
+        # This is deliberately distinct from `model_calls`: admission must be atomic before a slow provider
+        # call, while `model_calls` remains the exact physical-call count settled from provider metadata.
+        self._admitted_model_calls = 0
         self.calls = 0
         self.model_calls = 0
         self.failures = 0
@@ -269,49 +276,107 @@ class CardEquivalenceJudge:
                 candidate_semantics,
             ]
         )
-        with self._lock:
-            cached = self._cache.get(key)
-            if cached is not None:
-                return cached
-            self.calls += 1
-            if self._max_model_calls is not None and self.model_calls >= self._max_model_calls:
-                self.failures += 1
-                return _UNAVAILABLE
-        observe = getattr(self.lm, "observe_exact_call", None)
-        capture_context = observe() if callable(observe) else nullcontext(None)
-        try:
+
+        def invoke() -> CardEquivalenceAssessment:
             # Pin the adapter. Under DSPy's default the judge's structured reply fails the chat-format parse
             # and is silently retried as JSON — two provider calls for every one verdict, on a metric that runs
             # once per case per candidate.
+            prediction = self._predict(
+                accepted_headline_zh=accepted_headline,
+                accepted_why_zh=accepted_why,
+                accepted_semantics_json=accepted_semantics,
+                candidate_headline_zh=candidate_headline,
+                candidate_why_zh=candidate_why,
+                candidate_semantics_json=candidate_semantics,
+            )
+            verdict = prediction.verdict
+            parsed = verdict if isinstance(verdict, CardEquivalence) else CardEquivalence.model_validate(verdict)
+            return CardEquivalenceAssessment(status="answered", verdict=parsed)
+
+        return self._cached_model_call(
+            route="equivalence",
+            key=key,
+            cache=self._cache,
+            unavailable=_UNAVAILABLE,
+            invoke=invoke,
+        )
+
+    def _cached_model_call(
+        self,
+        *,
+        route: str,
+        key: str,
+        cache: dict[str, _T],
+        unavailable: _T,
+        invoke: Callable[[], _T],
+    ) -> _T:
+        flight_key = (route, key)
+        with self._lock:
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+            flight = self._in_flight.get(flight_key)
+            if flight is None:
+                self.calls += 1
+                if self._max_model_calls is not None and self._admitted_model_calls >= self._max_model_calls:
+                    self.failures += 1
+                    return unavailable
+                # Reserve before releasing the lock. Another key cannot observe stale settled accounting and
+                # overrun the local provider-call budget while this request is in flight.
+                self._admitted_model_calls += 1
+                flight = Future()
+                self._in_flight[flight_key] = flight
+                owns_flight = True
+            else:
+                owns_flight = False
+
+        if not owns_flight:
+            return cast(_T, flight.result())
+
+        try:
+            answered, result = self._invoke_model(invoke)
+        except BaseException as exc:
+            with self._lock:
+                self.failures += 1
+                self._in_flight.pop(flight_key, None)
+            flight.set_exception(exc)
+            raise
+
+        settled = cast(_T, result) if answered else unavailable
+        with self._lock:
+            if answered:
+                cache[key] = settled
+            else:
+                # Failure is shared only with callers already waiting on this flight. It never enters the
+                # persistent success cache, so a later independent call can try the provider again.
+                self.failures += 1
+            self._in_flight.pop(flight_key, None)
+        flight.set_result(settled)
+        return settled
+
+    def _invoke_model(self, invoke: Callable[[], _T]) -> tuple[bool, _T | None]:
+        capture: ExactProviderCallCapture | None = None
+        call_started = False
+        try:
+            observe = getattr(self.lm, "observe_exact_call", None)
+            capture_context = observe() if callable(observe) else nullcontext(None)
             with (
                 capture_context as capture,
                 dspy.context(lm=self.lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)),
             ):
-                prediction = self._predict(
-                    accepted_headline_zh=accepted_headline,
-                    accepted_why_zh=accepted_why,
-                    accepted_semantics_json=accepted_semantics,
-                    candidate_headline_zh=candidate_headline,
-                    candidate_why_zh=candidate_why,
-                    candidate_semantics_json=candidate_semantics,
-                )
-            verdict = prediction.verdict
-            parsed = verdict if isinstance(verdict, CardEquivalence) else CardEquivalence.model_validate(verdict)
-            result = CardEquivalenceAssessment(status="answered", verdict=parsed)
+                call_started = True
+                result = invoke()
         except Exception:
-            # Not cached: a transient provider failure must not pin this pair to "not equivalent" for the
-            # rest of the run.
-            self._settle_capture(locals().get("capture"))
-            with self._lock:
-                self.failures += 1
-            return _UNAVAILABLE
-        if not self._settle_capture(locals().get("capture")):
-            with self._lock:
-                self.failures += 1
-            return _UNAVAILABLE
-        with self._lock:
-            self._cache[key] = result
-        return result
+            if call_started:
+                self._settle_capture(capture)
+            return False, None
+        except BaseException:
+            if call_started:
+                self._settle_capture(capture)
+            raise
+        if not self._settle_capture(capture):
+            return False, None
+        return True, result
 
     def _settle_capture(self, capture: ExactProviderCallCapture | None) -> bool:
         if capture is None:
@@ -336,45 +401,29 @@ class CardEquivalenceJudge:
         candidate_why = str(candidate.get("why_zh") or "")
         candidate_semantics = _semantics(candidate)
         key = canonical_sha(["factual_evidence", evidence_json, candidate_headline, candidate_why, candidate_semantics])
-        with self._lock:
-            cached = self._factual_cache.get(key)
-            if cached is not None:
-                return cached
-            self.calls += 1
-            if self._max_model_calls is not None and self.model_calls >= self._max_model_calls:
-                self.failures += 1
-                return False
-        observe = getattr(self.lm, "observe_exact_call", None)
-        capture_context = observe() if callable(observe) else nullcontext(None)
-        try:
-            with (
-                capture_context as capture,
-                dspy.context(lm=self.lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)),
-            ):
-                prediction = self._factual_predict(
-                    evidence_json=evidence_json,
-                    candidate_headline_zh=candidate_headline,
-                    candidate_why_zh=candidate_why,
-                    candidate_semantics_json=candidate_semantics,
-                )
+
+        def invoke() -> bool:
+            prediction = self._factual_predict(
+                evidence_json=evidence_json,
+                candidate_headline_zh=candidate_headline,
+                candidate_why_zh=candidate_why,
+                candidate_semantics_json=candidate_semantics,
+            )
             verdict = prediction.verdict
             parsed = (
                 verdict
                 if isinstance(verdict, FactualEvidenceSupport)
                 else FactualEvidenceSupport.model_validate(verdict)
             )
-        except Exception:
-            self._settle_capture(locals().get("capture"))
-            with self._lock:
-                self.failures += 1
-            return False
-        if not self._settle_capture(locals().get("capture")):
-            with self._lock:
-                self.failures += 1
-            return False
-        with self._lock:
-            self._factual_cache[key] = parsed.supported_by_evidence
-        return parsed.supported_by_evidence
+            return parsed.supported_by_evidence
+
+        return self._cached_model_call(
+            route="factual_evidence",
+            key=key,
+            cache=self._factual_cache,
+            unavailable=False,
+            invoke=invoke,
+        )
 
     def retains(
         self,
