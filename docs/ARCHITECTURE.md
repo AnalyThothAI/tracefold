@@ -1083,6 +1083,19 @@ lost is a completed round trip, so observing no position escalates to a human
 rather than recording the entry as never having landed. A venue that *refuses*
 the close leaves the position open and escalates; it never books a result.
 
+The two legs also need different retry contracts, and giving the exit the
+entry's made a position unclosable. An entry gets one attempt ever — a resend
+doubles it, and no read makes that safe. An exit gets one attempt *per known
+state*: `exit_attempt_count` is released only when a read has proven the
+position is still open, which proves the previous close did not take effect, and
+`exit_attempt_total` caps that at three. `SAFETY_CLOSING` is the exit's analogue
+of `SUBMITTING` and terminalises the same way after a restart.
+
+`MANUAL_REVIEW_REQUIRED` is where every unprovable outcome lands, and it sits
+inside the active-underlying index on purpose — unknown exposure must block. It
+therefore needs a drain, and `tracefold trading resolve <order-id> closed|open`
+is it. Without one, escalating correctly would still halt the lane.
+
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the
 **model** owns the side — tolerable only because the kind is paper-only. `news_oi`

@@ -89,6 +89,14 @@ _RECONCILE_BACKOFF_MS = 30_000
 # A prepared intent that never reached the network is provably harmless after this, and terminalising
 # it is the only way a crash between the insert and the attempt claim gives back its underlying slot.
 _PREPARED_TTL_MS = 900_000
+# How long a frozen case may wait to be decided. Its own budget, separate from the freshness the
+# candidate rules already spent, so queueing behind another case's model call cannot discard a signal.
+_CASE_DECISION_TTL_MS = 300_000
+# The exit's bounded retry, mirrored from the schema CHECK so the runner can name the exhaustion.
+_MAX_EXIT_ATTEMPTS = 3
+# What still stops a News-only case even though it has no quadrant: no price to enter at, and the
+# measured chasing bucket above the pre-move ceiling.
+_NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_band_chasing"})
 # Five-minute bars: the interval the venue adapters already fetch for the News reaction plane. Coarse
 # for a 30-minute holding window, and deliberately so — asking for a finer feed would mean a second
 # request cadence and a tick history the project does not have.
@@ -411,11 +419,12 @@ class CandidateRunner:
         if plan.kind != "news_only" and regime.regime is OiRegime.UNCLEAR:
             funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
-        if plan.kind == "news_only" and regime.reason == "no_price_fail_closed":
+        if plan.kind == "news_only" and regime.reason in _NEWS_ONLY_BLOCKING_REASONS:
             # A News-only case has no OI frame and therefore no quadrant — rejecting it on UNCLEAR is
-            # what made the kind structurally unreachable. It still needs a price at the cutoff: the
-            # model owns the side, but nothing owns an entry without one.
-            funnel.count("freeze_reject:regime_no_price_fail_closed")
+            # what made the kind structurally unreachable. What it does *not* lose is the measured
+            # ceiling: a symbol that has already run 12% in the hour is the loss bucket whatever fired
+            # the case, and it still needs a price at the cutoff to have an entry at all.
+            funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
 
         # The mark is the bar closed at or before the cutoff, not the newest bar fetched. The manifest
@@ -511,7 +520,12 @@ class CandidateRunner:
         # A case carries a mark frozen at its cutoff. `max_age_ms` gates *creation*; nothing gated how
         # long a created case could sit unclaimed, so a paused lane resumed hours later would size and
         # stop off a stale bar close and book the whole interim move as free PnL.
-        if now - int(claimed["observed_at_ms"]) > self._config.eligibility.max_age_ms:
+        #
+        # Measured from `created_at_ms`, not from the trigger: eligibility has already spent the
+        # trigger's budget, so reusing it here blocked a frame frozen at 280 s old the moment the
+        # previous case's model call took twenty seconds — and `BLOCKED` plus a unique source key
+        # means that signal can never produce another case.
+        if now - int(claimed["created_at_ms"]) > _CASE_DECISION_TTL_MS:
             funnel.count("advance_reject:case_stale")
             await self._settle(case_id, CaseState.BLOCKED, "no_trade", "case_stale", now=now)
             return "case_stale"
@@ -834,6 +848,11 @@ async def commit_order(
 ) -> bool:
     """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
+    claimed = await db.read(
+        "trading_entry_claimable",
+        lambda repos: repos.trading.entry_claimable(order_id=order.order_id),
+        timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
+    )
     receipt = await _one_attempt(
         db=db,
         order=order,
@@ -842,8 +861,14 @@ async def commit_order(
         now=now,
     )
     if receipt is None:
-        # Either the attempt was already spent, or it raised and is now recorded AMBIGUOUS. Both
-        # count against the day: an order that may exist at the venue is exposure.
+        if not claimed:
+            # The attempt was already spent by an earlier caller, who already counted it. Counting it
+            # again would charge the day twice for one order.
+            if funnel is not None:
+                funnel.count("commit_reject:already_attempted")
+            return False
+        # It raised and is now recorded AMBIGUOUS. That does count: an order that may exist at the
+        # venue is exposure.
         await db.tx(
             "trading_order_day_count",
             lambda repos: repos.trading.bump_orders_today(day_key=_day_key(now), now_ms=now),
@@ -878,7 +903,8 @@ async def commit_order(
             content=receipt.model_dump(mode="json"),
             now_ms=now,
         )
-        repos.trading.bump_orders_today(day_key=_day_key(now), now_ms=now)
+        if state is not OrderState.REJECTED:
+            repos.trading.bump_orders_today(day_key=_day_key(now), now_ms=now)
 
     await db.tx("trading_order_receipt", _apply, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
     if funnel is not None:
@@ -957,6 +983,23 @@ class ReconcileRunner:
             await commit_order(db=self._db, adapter=self._adapter, order=order, policy=self._config.order, now=now)
             return True
 
+        if state == OrderState.SAFETY_CLOSING.value:
+            # The exit's analogue of the `SUBMITTING` orphan. Without it a crash between the attempt
+            # claim and the receipt write left a row the catch-all re-deferred forever, holding the
+            # slot with an exit that could never be re-claimed.
+            await self._db.tx(
+                "trading_reconcile_exit_orphan",
+                lambda repos: repos.trading.update_order(
+                    order_id=order_id,
+                    state=OrderState.AMBIGUOUS.value,
+                    state_reason="exit_safety_closing_after_restart",
+                    next_reconcile_at_ms=now,
+                    now_ms=now,
+                ),
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
+            return True
+
         if state == OrderState.SUBMITTING.value:
             # A `SUBMITTING` row that survived a restart is not a pending call — it is an attempt
             # whose answer was lost. Never resent, and never rerouted to the other venue.
@@ -1025,7 +1068,9 @@ class ReconcileRunner:
         try:
             observation = await observe(order)
         except Exception:
-            await self._defer(order.order_id, OrderState.RECONCILING.value, now)
+            # The row is still AMBIGUOUS; `reschedule_order` matches on the state it actually has, so
+            # passing an aspirational one silently updated nothing and defeated the backoff.
+            await self._defer(order.order_id, str(row["state"]), now)
             return False
 
         if observation is None:
@@ -1061,6 +1106,11 @@ class ReconcileRunner:
         opened = int(row.get("position_opened_at_ms") or row.get("created_at_ms") or now)
 
         def _adopt(repos: Any) -> None:
+            if exiting:
+                # The close did not take effect — the venue still shows the position — so re-issuing it
+                # cannot double-close. This release is the only thing that makes an ambiguous exit
+                # recoverable; without it the position was unclosable and the row hot-looped forever.
+                repos.trading.release_exit_attempt(order_id=order.order_id, now_ms=now)
             repos.trading.record_observation(
                 order_id=order.order_id,
                 observation_kind="reconcile",
@@ -1132,7 +1182,7 @@ class ReconcileRunner:
                 # active-underlying slot with no alarm, so the deadline escalates instead of waiting.
                 await self._escalate(order_id, "max_holding_without_price", now)
                 return True
-            await self._defer(order_id, OrderState.OPEN.value, now)
+            await self._defer(order_id, str(row["state"]), now)
             return False
 
         receipt = await _one_attempt(
@@ -1143,6 +1193,10 @@ class ReconcileRunner:
             now=now,
         )
         if receipt is None:
+            if int(row.get("exit_attempt_total") or 0) >= _MAX_EXIT_ATTEMPTS:
+                # The bounded retry is spent. Escalate rather than returning silently: an unwritten
+                # row stays due and re-enters this path every turn.
+                await self._escalate(order_id, "exit_attempts_exhausted", now)
             return True
         if receipt.state == "AMBIGUOUS":
             await self._db.tx(

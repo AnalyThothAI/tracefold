@@ -648,10 +648,10 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,show,blacklist,approve,reject,control} ...
+                         {status,cases,show,blacklist,approve,reject,resolve,control} ...
 
 positional arguments:
-  {status,cases,show,blacklist,approve,reject,control}
+  {status,cases,show,blacklist,approve,reject,resolve,control}
     status              mode, control, daily counters, and the 24 h funnel
     cases               list Trading cases newest first
     show                one case with its order and remote observations
@@ -659,6 +659,8 @@ positional arguments:
                         spelling of that underlying
     approve             approve one order by its exact payload digest
     reject              reject one order by its exact payload digest
+    resolve             drain one MANUAL_REVIEW_REQUIRED order after checking
+                        the venue yourself
     control             set the runtime control state
 
 options:
@@ -745,6 +747,21 @@ positional arguments:
 options:
   -h, --help       show this help message and exit
   --digest DIGEST
+  --reason REASON
+
+```
+
+## `trading resolve`
+
+```
+usage: tracefold trading resolve [-h] [--reason REASON] order_id {closed,open}
+
+positional arguments:
+  order_id
+  {closed,open}
+
+options:
+  -h, --help       show this help message and exit
   --reason REASON
 
 ```

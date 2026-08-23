@@ -581,7 +581,7 @@ reader/writer.
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|show|blacklist|approve|reject|control`;
+- Trading: `trading status|cases|show|blacklist|approve|reject|resolve|control`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile

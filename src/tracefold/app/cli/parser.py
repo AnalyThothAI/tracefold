@@ -311,6 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     trading_reject.add_argument("order_id")
     trading_reject.add_argument("--digest", required=True)
     trading_reject.add_argument("--reason", default="operator_rejected")
+    trading_resolve = trading_subcommands.add_parser(
+        "resolve",
+        help="drain one MANUAL_REVIEW_REQUIRED order after checking the venue yourself",
+    )
+    trading_resolve.add_argument("order_id")
+    trading_resolve.add_argument("outcome", choices=("closed", "open"))
+    trading_resolve.add_argument("--reason", default="operator_checked_venue")
     trading_control = trading_subcommands.add_parser("control", help="set the runtime control state")
     trading_control.add_argument("state", choices=("running", "close-only", "paused"))
 

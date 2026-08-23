@@ -654,29 +654,29 @@ def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | N
     if not trading.enabled:
         return None
 
-    program = None
-    if settings.llm.trading_decision_model and settings.llm.api_key and settings.llm.base_url:
-        # Same endpoint composition as every other DSPy call site: the LiteLLM provider prefix and the
-        # provider-specific thinking switches come from `configured_lm_endpoint`, not from a bare model
-        # string. Cache and hidden retries stay off for the same reason News pins them off.
-        endpoint = configured_lm_endpoint(settings, model_name=settings.llm.trading_decision_model)
-        program = TradingDecisionProgram(
-            lm=dspy.LM(
-                endpoint.model_name,
-                api_key=endpoint.api_key,
-                api_base=endpoint.api_base,
-                temperature=0,
-                max_tokens=TRADING_DECISION_MAX_TOKENS,
-                timeout=TRADING_DECISION_DEADLINE_SECONDS,
-                cache=False,
-                num_retries=0,
-                **dict(endpoint.model_kwargs or {}),
-            ),
-            model_name=endpoint.model_name,
-            deadline_seconds=TRADING_DECISION_DEADLINE_SECONDS,
-        )
-
     try:
+        program = None
+        if settings.llm.trading_decision_model and settings.llm.api_key and settings.llm.base_url:
+            # Same endpoint composition as every other DSPy call site: the LiteLLM provider prefix and the
+            # provider-specific thinking switches come from `configured_lm_endpoint`, not from a bare model
+            # string. Cache and hidden retries stay off for the same reason News pins them off.
+            endpoint = configured_lm_endpoint(settings, model_name=settings.llm.trading_decision_model)
+            program = TradingDecisionProgram(
+                lm=dspy.LM(
+                    endpoint.model_name,
+                    api_key=endpoint.api_key,
+                    api_base=endpoint.api_base,
+                    temperature=0,
+                    max_tokens=TRADING_DECISION_MAX_TOKENS,
+                    timeout=TRADING_DECISION_DEADLINE_SECONDS,
+                    cache=False,
+                    num_retries=0,
+                    **dict(endpoint.model_kwargs or {}),
+                ),
+                model_name=endpoint.model_name,
+                deadline_seconds=TRADING_DECISION_DEADLINE_SECONDS,
+            )
+
         return build_trading_pipeline(
             db=_TradingColdDb(db),
             config=trading_config_from_settings(settings),

@@ -145,6 +145,7 @@ def upgrade() -> None:
           state_reason           TEXT,
           provider_attempt_count INTEGER NOT NULL DEFAULT 0,
           exit_attempt_count     INTEGER NOT NULL DEFAULT 0,
+          exit_attempt_total     INTEGER NOT NULL DEFAULT 0,
           remote_order_id        TEXT,
           filled_quantity        NUMERIC,
           average_price          NUMERIC,
@@ -167,11 +168,19 @@ def upgrade() -> None:
           CONSTRAINT trading_orders_mode_check
             CHECK (mode IN ('paper', 'live_reviewed', 'live_bounded')),
           -- The one protection against a double write: OpenTrade has no client idempotency key, so the
-          -- ledger, not the provider, is what makes a second attempt impossible. The exit needs its own
-          -- counter rather than sharing the entry's — the entry has already spent that one by the time
-          -- a position can be closed, so a shared counter would leave the exit with no protection at all.
+          -- ledger, not the provider, is what makes a second attempt impossible. The two legs need
+          -- different contracts, though, and conflating them is a trap in both directions.
+          --
+          -- Entry: one attempt, ever. A resend doubles the position, and no read can make that safe.
+          --
+          -- Exit: one attempt *per known state*. `exit_attempt_count` is reset only when a read has
+          -- proven the position is still open — which proves the previous close did not take effect,
+          -- so re-issuing it cannot double-close. `exit_attempt_total` is the monotonic backstop that
+          -- turns that into a bounded retry instead of a loop. Giving the exit the entry's contract
+          -- unchanged meant an ambiguous close could never be retried: the position was unclosable.
           CONSTRAINT trading_orders_one_attempt CHECK (provider_attempt_count <= 1),
           CONSTRAINT trading_orders_one_exit_attempt CHECK (exit_attempt_count <= 1),
+          CONSTRAINT trading_orders_bounded_exit_attempts CHECK (exit_attempt_total <= 3),
           CONSTRAINT trading_orders_quantity_positive CHECK (quantity > 0),
           CONSTRAINT trading_orders_notional_positive CHECK (notional_usd > 0)
         )

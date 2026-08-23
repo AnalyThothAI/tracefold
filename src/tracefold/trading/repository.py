@@ -415,14 +415,84 @@ class TradingRepository:
                 UPDATE trading_orders
                    SET state = 'SAFETY_CLOSING',
                        exit_attempt_count = exit_attempt_count + 1,
+                       exit_attempt_total = exit_attempt_total + 1,
                        updated_at_ms = %s
                  WHERE order_id = %s
                    AND exit_attempt_count = 0
+                   AND exit_attempt_total < 3
                    AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL')
             """
         else:  # pragma: no cover - the caller passes a literal
             raise ValueError(f"trading_attempt_kind_invalid:{kind}")
         cursor = self.conn.execute(sql, (int(now_ms), order_id))
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def entry_claimable(self, *, order_id: str) -> bool:
+        """Whether the entry attempt is still unspent. Read-only; the claim itself is the authority.
+
+        `commit_order` needs to tell "this call is a new attempt" from "someone already attempted it",
+        because only the first of those may charge the daily order count.
+        """
+
+        row = self.conn.execute(
+            "SELECT provider_attempt_count, state FROM trading_orders WHERE order_id = %s", (order_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        return int(row["provider_attempt_count"]) == 0 and str(row["state"]) in ("PREPARED", "APPROVED")
+
+    def release_exit_attempt(self, *, order_id: str, now_ms: int) -> bool:
+        """Let the exit be attempted again, because a read proved the position is still open.
+
+        This is the only thing that makes the exit's one-attempt claim recoverable. It is safe for the
+        exact reason the entry has no equivalent: the read has proven the previous close did not take
+        effect, so re-issuing it cannot double-close. `exit_attempt_total` still caps the retries.
+        """
+
+        cursor = self.conn.execute(
+            "UPDATE trading_orders SET exit_attempt_count = 0, updated_at_ms = %s "
+            "WHERE order_id = %s AND exit_attempt_total < 3",
+            (int(now_ms), order_id),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def resolve_manual_review(self, *, order_id: str, outcome: str, reason: str, now_ms: int) -> bool:
+        """The operator drain for `MANUAL_REVIEW_REQUIRED`. Without it the state is a permanent wedge.
+
+        Five reconcile paths escalate here and the state sits inside the active-underlying index, so
+        two unresolved orders halt the lane with no remedy. `--closed` says the operator has confirmed
+        at the venue that nothing is outstanding; `--open` hands the order back to the reconciler.
+        """
+
+        if outcome == "closed":
+            cursor = self.conn.execute(
+                """
+                UPDATE trading_orders
+                   SET state = 'CLOSED',
+                       state_reason = %s,
+                       position_closed_at_ms = coalesce(position_closed_at_ms, %s),
+                       closed_at_ms = coalesce(closed_at_ms, %s),
+                       next_reconcile_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE order_id = %s AND state = 'MANUAL_REVIEW_REQUIRED'
+                """,
+                (f"operator_resolved:{reason}", int(now_ms), int(now_ms), int(now_ms), order_id),
+            )
+        elif outcome == "open":
+            cursor = self.conn.execute(
+                """
+                UPDATE trading_orders
+                   SET state = 'OPEN',
+                       state_reason = %s,
+                       exit_attempt_count = 0,
+                       next_reconcile_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE order_id = %s AND state = 'MANUAL_REVIEW_REQUIRED'
+                """,
+                (f"operator_resolved:{reason}", int(now_ms), int(now_ms), order_id),
+            )
+        else:  # pragma: no cover - the CLI constrains the choices
+            raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
     def reschedule_order(self, *, order_id: str, expected_state: str, next_reconcile_at_ms: int, now_ms: int) -> bool:

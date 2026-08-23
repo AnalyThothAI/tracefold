@@ -110,6 +110,23 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 }
             return 2, {"ok": False, "error": f"unknown blacklist action: {action}"}
 
+        if command == "resolve":
+            # Five reconcile paths escalate to MANUAL_REVIEW_REQUIRED and the state sits inside the
+            # active-underlying index, so without a drain two unresolved orders halt the lane with no
+            # remedy. The operator states what they confirmed at the venue; nothing here calls a
+            # provider, and `--open` hands the order back to the reconciler with its exit re-armed.
+            changed = trading.resolve_manual_review(
+                order_id=str(args.order_id),
+                outcome=str(args.outcome),
+                reason=str(getattr(args, "reason", "") or "operator_checked_venue"),
+                now_ms=now,
+            )
+            repos.conn.commit()
+            return (0 if changed else 1), {
+                "ok": bool(changed),
+                "data": {"order_id": str(args.order_id), "outcome": str(args.outcome), "changed": bool(changed)},
+            }
+
         if command == "control":
             control = _CONTROL.get(str(getattr(args, "state", "") or "").lower())
             if control is None:
