@@ -10,8 +10,11 @@ router, update the other.
 
 `Tracefold Market Research System`: a single Python service and CLI named
 `tracefold` that turns provider news pushes into audited research signals and
-serves them over HTTP / CLI to a React operator console. It is exactly one
-business capability — News V3 — over one PostgreSQL store; the former GMGN
+serves them over HTTP / CLI to a React operator console. It has two business
+capabilities over one PostgreSQL store — News V3, and the Trading core added in
+#104 — and they are siblings, not layers: `tracefold.news` and
+`tracefold.trading` never import each other and never read each other's tables,
+with `tracefold.app` as the only seam. The former GMGN
 social/token/DEX/CEX market lane, Search, Token Case, and the live WebSocket
 were removed (#47, #49, #50), and the Macro product line (six current modules,
 official-source acquisition, Fed document analyses, and the whole projection/EDF
@@ -276,6 +279,34 @@ recover by re-consuming durable broker queues plus database idempotency; there
 is no database wake plane, no projection/EDF frontier, and no durable queue
 terminal-evidence lane. Provider raw frames are inputs, not facts.
 
+`tracefold.trading` (#104) is the capital lane and is disabled by default. It
+consumes two public News projections — deterministic OI telemetry verdicts and
+model Triage verdicts — through the composition root, canonicalises the symbol,
+applies an operator-owned deny-list seeded with `BTC`/`ETH`/`CL` (one row blocks
+every provider spelling, and a read failure blocks everything), resolves exactly
+one native perp on `binance.perp` or `hl.perp`, and computes a deterministic
+OI/price quadrant. OI direction is never a side on its own; the pre-move filter
+is a measured **band** (default 100–600 bps over 1 h), because
+`oi-agent-design-2026-08-22.md` §1.6 found an inverted U over 630 frames with
+every losing bucket above the band. An `oi_only` case is arithmetic and calls no
+model — that is the high-frequency execution-kernel trial lane and it never
+reaches live; a News-bearing case spends exactly one `dspy.Predict` call with no
+tools, no agent framework anywhere in the tree, and every failure resolving to
+`no_trade`; a pure policy then maps context to `no_trade | long | short` and
+names its rule. Sizing is fixed-notional at 1x with a fixed stop and no
+take-profit, so the worst case is `fixed_notional x fixed_stop_bps x
+max_orders_per_day`. Because OpenTrade publishes no client idempotency key, the
+ledger commits `SUBMITTING` before the network call, `provider_attempt_count` is
+CHECKed at one, and a timeout, malformed answer or restart terminalises as
+`AMBIGUOUS` whose only legal successor is a read — never a resend, never a
+resend routed at the other venue. A partial unique index keeps one active order
+per venue-independent `underlying_key` in every state that can carry exposure,
+`APPROVED`/`RECONCILING`/`MANUAL_REVIEW_REQUIRED`/`UNPROTECTED` included. Two
+deterministic exits: the venue-side stop and `max_holding_seconds`. Five
+`trading_*` tables, two cold runners in the existing Workers root sharing the
+price plane's one-slot DB lane, no new queue, no new deployable, no UI, and no
+profitability claim from a paper trial.
+
 Which Strategies feed News is decided in the OpenNews account and nowhere else
 (#126). Tracefold sends no subscription frame, so the socket delivers what the
 account has enabled; there is no `news.opennews_strategy_ids`, the Receiver
@@ -340,7 +371,7 @@ route shell, or shared UI changes.
 | Development, issue specs, design, testing | `docs/DEVELOPMENT.md`                                                                    |
 | Secrets, config, authn changes            | `docs/SECURITY.md`                                                                       |
 | Operations, workers, PostgreSQL diagnosis | `docs/OPERATIONS.md`                                                                     |
-| Business package boundaries               | `docs/ARCHITECTURE.md`; the public Python interface is the `tracefold.news` package root |
+| Business package boundaries               | `docs/ARCHITECTURE.md`; the public Python interfaces are the `tracefold.news` and `tracefold.trading` package roots |
 | Durable specs and acceptance              | GitHub Issues; repository conventions are in `docs/agents/issue-tracker.md`              |
 | Auto-generated artefacts                  | `docs/generated/`                                                                        |
 

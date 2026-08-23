@@ -10,6 +10,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.query_audit import query_audit_catalog
 from tracefold.platform.postgres.postgres_audit import (
     NEWS_TABLES,
+    TRADING_TABLES,
     PostgresOperationalAudit,
     PostgresQueryAudit,
     ProjectionValidationAudit,
@@ -180,7 +181,10 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
     assert payload["engine"] == "postgresql"
     assert payload["migration_version"] == latest_migration_version()
     assert payload["migration_status"] == "ready"
-    assert set(payload["counts"]) == set(NEWS_TABLES)
+    # #104: the audit counts both capabilities. Their registries stay separate so "exactly these
+    # tables" remains a per-capability claim.
+    assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
+    assert payload["trading_schema"]["exact"] is True
     assert all(count >= 0 for count in payload["counts"].values())
     assert payload["counts"]["news_learning_epochs"] == 5
     assert payload["news_schema"] == {

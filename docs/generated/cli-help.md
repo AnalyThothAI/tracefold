@@ -5,16 +5,17 @@
 ## Top level
 
 ```
-usage: tracefold [-h] {serve,workers,init,config,db,news,ops} ...
+usage: tracefold [-h] {serve,workers,init,config,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,init,config,db,news,ops}
+  {serve,workers,init,config,db,news,trading,ops}
     serve               run the read-only HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
     news                News V3 broker, ReviewDesk, and learning commands
+    trading             Trading cases, orders, deny-list, and control (#104)
     ops                 maintenance commands
 
 options:
@@ -640,6 +641,141 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --limit LIMIT         messages to inspect/replay
+
+```
+
+## `trading`
+
+```
+usage: tracefold trading [-h]
+                         {status,cases,show,blacklist,approve,reject,resolve,control} ...
+
+positional arguments:
+  {status,cases,show,blacklist,approve,reject,resolve,control}
+    status              mode, control, daily counters, and the 24 h funnel
+    cases               list Trading cases newest first
+    show                one case with its order and remote observations
+    blacklist           the canonical deny-list; one row blocks every provider
+                        spelling of that underlying
+    approve             approve one order by its exact payload digest
+    reject              reject one order by its exact payload digest
+    resolve             drain one MANUAL_REVIEW_REQUIRED order after checking
+                        the venue yourself
+    control             set the runtime control state
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `trading status`
+
+```
+usage: tracefold trading status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `trading cases`
+
+```
+usage: tracefold trading cases [-h]
+                               [--state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,ORDER_PREPARED,BLOCKED}]
+                               [--limit LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,ORDER_PREPARED,BLOCKED}
+  --limit LIMIT
+
+```
+
+## `trading show`
+
+```
+usage: tracefold trading show [-h] case_id
+
+positional arguments:
+  case_id
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `trading blacklist`
+
+```
+usage: tracefold trading blacklist [-h] [--reason REASON]
+                                   {list,add,remove} [symbol]
+
+positional arguments:
+  {list,add,remove}
+  symbol
+
+options:
+  -h, --help         show this help message and exit
+  --reason REASON
+
+```
+
+## `trading approve`
+
+```
+usage: tracefold trading approve [-h] --digest DIGEST order_id
+
+positional arguments:
+  order_id
+
+options:
+  -h, --help       show this help message and exit
+  --digest DIGEST
+
+```
+
+## `trading reject`
+
+```
+usage: tracefold trading reject [-h] --digest DIGEST [--reason REASON]
+                                order_id
+
+positional arguments:
+  order_id
+
+options:
+  -h, --help       show this help message and exit
+  --digest DIGEST
+  --reason REASON
+
+```
+
+## `trading resolve`
+
+```
+usage: tracefold trading resolve [-h] [--reason REASON] order_id {closed,open}
+
+positional arguments:
+  order_id
+  {closed,open}
+
+options:
+  -h, --help       show this help message and exit
+  --reason REASON
+
+```
+
+## `trading control`
+
+```
+usage: tracefold trading control [-h] {running,close-only,paused}
+
+positional arguments:
+  {running,close-only,paused}
+
+options:
+  -h, --help            show this help message and exit
 
 ```
 

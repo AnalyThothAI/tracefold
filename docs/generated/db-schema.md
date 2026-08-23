@@ -450,6 +450,105 @@
 | `program_version` | `TEXT` | True | `None` |
 | `program_sha256` | `TEXT` | True | `None` |
 
+## `trading_cases`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `underlying_key` | `TEXT` | False | `None` |
+| `case_kind` | `TEXT` | False | `None` |
+| `mode` | `TEXT` | False | `None` |
+| `primary_source_key` | `TEXT` | False | `None` |
+| `supplemental_source_keys` | `JSONB` | False | `'[]'::jsonb` |
+| `manifest` | `JSONB` | False | `None` |
+| `manifest_sha256` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `run_id` | `TEXT` | True | `None` |
+| `lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `regime` | `TEXT` | True | `None` |
+| `program_version` | `TEXT` | True | `None` |
+| `program_sha256` | `TEXT` | True | `None` |
+| `program_output` | `JSONB` | True | `None` |
+| `policy_decision` | `TEXT` | True | `None` |
+| `policy_reason` | `TEXT` | True | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `decided_at_ms` | `BIGINT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_order_observations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `order_id` | `TEXT` | False | `None` |
+| `observation_kind` | `TEXT` | False | `None` |
+| `content_sha256` | `TEXT` | False | `None` |
+| `content` | `JSONB` | False | `None` |
+| `first_seen_at_ms` | `BIGINT` | False | `None` |
+| `last_seen_at_ms` | `BIGINT` | False | `None` |
+| `seen_count` | `INTEGER` | False | `1` |
+
+## `trading_orders`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `order_id` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `underlying_key` | `TEXT` | False | `None` |
+| `exchange_id` | `TEXT` | False | `None` |
+| `provider_symbol` | `TEXT` | False | `None` |
+| `account_ref` | `TEXT` | False | `None` |
+| `mode` | `TEXT` | False | `None` |
+| `side` | `TEXT` | False | `None` |
+| `notional_usd` | `NUMERIC` | False | `None` |
+| `quantity` | `NUMERIC` | False | `None` |
+| `entry_reference` | `NUMERIC` | False | `None` |
+| `stop_price` | `NUMERIC` | False | `None` |
+| `take_profit_price` | `NUMERIC` | True | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `payload_sha256` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `state_reason` | `TEXT` | True | `None` |
+| `provider_attempt_count` | `INTEGER` | False | `0` |
+| `exit_attempt_count` | `INTEGER` | False | `0` |
+| `exit_attempt_total` | `INTEGER` | False | `0` |
+| `remote_order_id` | `TEXT` | True | `None` |
+| `filled_quantity` | `NUMERIC` | True | `None` |
+| `average_price` | `NUMERIC` | True | `None` |
+| `exit_price` | `NUMERIC` | True | `None` |
+| `exit_reason` | `TEXT` | True | `None` |
+| `realized_bps` | `INTEGER` | True | `None` |
+| `position_opened_at_ms` | `BIGINT` | True | `None` |
+| `position_closed_at_ms` | `BIGINT` | True | `None` |
+| `must_close_at_ms` | `BIGINT` | True | `None` |
+| `next_reconcile_at_ms` | `BIGINT` | True | `None` |
+| `closed_at_ms` | `BIGINT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_runtime_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` | `SMALLINT` | False | `None` |
+| `control` | `TEXT` | False | `None` |
+| `day_key` | `TEXT` | False | `None` |
+| `orders_today` | `INTEGER` | False | `0` |
+| `dspy_calls_today` | `INTEGER` | False | `0` |
+| `funnel` | `JSONB` | False | `'{}'::jsonb` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_symbol_blacklist`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `base_symbol` | `TEXT` | False | `None` |
+| `reason` | `TEXT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `workers_runtime`
 
 | Column | Type | Nullable | Default |

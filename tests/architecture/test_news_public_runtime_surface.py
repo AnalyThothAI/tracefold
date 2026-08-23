@@ -16,6 +16,8 @@ PUBLIC_NEWS_INTERFACE = {
     "FACT_UNIT_VERSION",
     "DEFAULT_POLICY",
     "DEFAULT_OI_POLICY",
+    "OI_METRIC_VERSION",
+    "OI_PROGRAM_VERSION",
     "OiPolicy",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
@@ -268,6 +270,14 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         # The review drafter. Also metric-side: it proposes rubrics for a human to accept and has no write
         # authority anywhere — see `test_the_drafter_writes_nothing_to_the_review_plane`.
         NEWS_ROOT / "agents" / "program_review_drafter.py",
+        # #104: the Trading lane's single `dspy.Predict`. It is the one online decision outside News
+        # that calls a model, and it lives in its own capability rather than being smuggled into a
+        # News module. DeepAgents/LangGraph/ReAct stay absent tree-wide, which the next assertion keeps.
+        SRC / "trading" / "decision_program.py",
+        # #104: the composition root builds the Trading LM the same way it builds the News ones — via
+        # `configured_lm_endpoint`, so the LiteLLM prefix and the provider thinking switches apply.
+        # The Trading package itself never constructs one.
+        SRC / "app" / "workers" / "__init__.py",
     }
     dspy_offenders = sorted(
         str(path.relative_to(ROOT))
