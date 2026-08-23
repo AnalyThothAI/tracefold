@@ -22,7 +22,7 @@ def test_rollback_profile_pins_reviewed_v5_and_schema_0300() -> None:
         "factory_id": "tracefold.news.semantic_program.factory_v3",
         "learning_epoch": "program_v5",
         "migration_head": "20260823_0300",
-        "migration_sha256": "53bb4b0874c98344ad370f2a8269ba2570930ce144a7e3098a81f7c587a10f85",
+        "migration_sha256": "82b81e1de52cced149240691bb2eb7149376cc6182a9daadd9769903fa5bce5f",
         "policy_version": "news_triage_policy_v9",
         "profile_id": "program_v5_schema0300_rollback",
         "program_sha256": "c62e0d69bf6c1901b3e8a1a716ca153acaf92793421d5af2701030c0477cac3b",

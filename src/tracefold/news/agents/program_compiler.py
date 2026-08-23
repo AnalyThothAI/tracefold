@@ -17,7 +17,12 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, model_validator
 
 from ..artifact_identity import canonical_sha
-from .program_compiler_security import CompileBudgetV3, CompilerEndpointIdentity, CompilerProxyTariff
+from .program_compiler_security import (
+    CompileBudgetV3,
+    CompilerEndpointIdentity,
+    CompilerProxyTariff,
+    gepa_metric_call_ceiling,
+)
 from .program_compiler_trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 from .program_metric import (
     METRIC_ID,
@@ -646,10 +651,10 @@ class ProgramCompiler:
         # So it is derived from the configuration rather than guessed, and generously: the spend that actually
         # needs bounding is physical provider calls and cost, and `_BudgetMeter` bounds those on every single
         # request, before it is made. This check only proves the reported figure is present and sane.
-        metric_call_ceiling = (
-            request.budget.max_metric_calls
-            + len(val_examples)
-            + cast(int, optimizer_constructor["reflection_minibatch_size"])
+        metric_call_ceiling = gepa_metric_call_ceiling(
+            max_metric_calls=request.budget.max_metric_calls,
+            optimizer_config=optimizer_config_receipt,
+            expected_example_count=len(examples),
         )
         if metric_calls < 0 or metric_calls > metric_call_ceiling:
             raise ValueError(

@@ -58,6 +58,8 @@ from tracefold.news.agents.program_compiler_security import (
     CompilerProxyTariff,
     CompilerRoleBindingV3,
     ContentAddressedCompileReceipt,
+    OptimizerCompileProvenanceV3,
+    validate_compile_receipt_chain_v3,
 )
 from tracefold.news.agents.semantic_program import (
     CompileReceipt,
@@ -836,6 +838,7 @@ def _optimizer_provenance(
     rule_pack_root_sha256: str = "e" * 64,
     eligible_demo_bank_root_sha256: str = "4" * 64,
     patch_payload: dict[str, object] | None = None,
+    metric_calls: int = 12,
 ) -> tuple[dict[str, object], dict[str, object]]:
     epoch = conn.execute(
         "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
@@ -969,8 +972,22 @@ def _optimizer_provenance(
         error_codes=(),
         calls=proxy_calls,
     )
+    train_count = max(1, len(episodes) - 1)
+    val_count = max(1, len(episodes) - train_count)
     optimizer_config = {
-        "runner_optimizer_config": {"optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1", "seed": 129},
+        "runner_optimizer_config": {
+            "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
+            "seed": 129,
+            "constructor_scalar_arguments": {
+                "max_metric_calls": 20,
+                "reflection_minibatch_size": min(2, train_count),
+            },
+            "compile_call": {
+                "example_count": len(episodes),
+                "trainset_count": train_count,
+                "valset_count": val_count,
+            },
+        },
         "proxy_grant": grant.model_dump(mode="json"),
         "proxy_execution": proxy_execution.model_dump(mode="json"),
         "input_bundle_sha256": "1" * 64,
@@ -1029,7 +1046,7 @@ def _optimizer_provenance(
         "max_metric_judge_model_calls": 40,
         "max_cost_microusd": 1_000_000,
         "max_call_cost_microusd": grant.max_call_cost_microusd,
-        "metric_calls": 12,
+        "metric_calls": metric_calls,
         "task_model_calls": 20,
         "reflection_model_calls": 10,
         "metric_judge_attempts": 2,
@@ -1893,6 +1910,58 @@ def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
             )
         )
     assert _judge_call_count(judges) == 0
+
+
+def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receipt(conn) -> None:
+    _accepted_event(conn)
+    stable = _arm()
+    development = asyncio.run(
+        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    episode_count = len(development.cases)
+    train_count = max(1, episode_count - 1)
+    val_count = max(1, episode_count - train_count)
+    metric_call_ceiling = 20 + val_count + min(2, train_count)
+
+    allowed, chain = _optimizer_provenance(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        metric_calls=metric_call_ceiling,
+    )
+    proof = OptimizerCompileProvenanceV3.model_validate(allowed)
+    validate_compile_receipt_chain_v3(
+        chain,
+        provenance=proof,
+        patch_sha256=proof.patch_sha256,
+        parent_program_sha256=proof.parent_program_sha256,
+        parent_state_sha256=proof.parent_state_sha256,
+        eligible_demo_bank_root_sha256=proof.eligible_demo_bank_root_sha256,
+        target_runtime_manifest_sha256=proof.target_runtime_manifest_sha256,
+    )
+
+    excessive, excessive_chain = _optimizer_provenance(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        metric_calls=metric_call_ceiling + 1,
+    )
+    excessive_proof = OptimizerCompileProvenanceV3.model_validate(excessive)
+    with pytest.raises(ValueError, match="metric_budget"):
+        validate_compile_receipt_chain_v3(
+            excessive_chain,
+            provenance=excessive_proof,
+            patch_sha256=excessive_proof.patch_sha256,
+            parent_program_sha256=excessive_proof.parent_program_sha256,
+            parent_state_sha256=excessive_proof.parent_state_sha256,
+            eligible_demo_bank_root_sha256=excessive_proof.eligible_demo_bank_root_sha256,
+            target_runtime_manifest_sha256=excessive_proof.target_runtime_manifest_sha256,
+        )
 
 
 @pytest.mark.parametrize(

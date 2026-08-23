@@ -1829,7 +1829,9 @@ def test_trusted_patch_applier_changes_only_strategies_and_keeps_demo_bank_empty
         max_metric_judge_model_calls=10,
         max_cost_microusd=10_000,
         max_call_cost_microusd=1_000,
-        metric_calls=12,
+        # GEPA checks this budget between steps; the sealed optimizer receipt binds the bounded final-step
+        # overshoot, while the artifact retains the operator's requested value.
+        metric_calls=21,
         task_model_calls=15,
         reflection_model_calls=3,
         metric_judge_attempts=2,

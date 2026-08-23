@@ -1157,7 +1157,6 @@ class CompileProvenance(_ExactModel):
             or self.max_cost_microusd <= 0
             or self.max_call_cost_microusd <= 0
             or self.max_call_cost_microusd > self.max_cost_microusd
-            or self.metric_calls > self.max_metric_calls
             or self.task_model_calls > self.max_task_model_calls
             or self.reflection_model_calls > self.max_reflection_model_calls
             or self.metric_judge_model_calls > self.max_metric_judge_model_calls

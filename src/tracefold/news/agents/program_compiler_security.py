@@ -309,6 +309,47 @@ class CompilerProxyTariff(_ExactModel):
         )
 
 
+def gepa_metric_call_ceiling(
+    *,
+    max_metric_calls: int,
+    optimizer_config: Mapping[str, Any],
+    expected_example_count: int,
+) -> int:
+    """Return GEPA's sealed end-of-step metric ceiling.
+
+    GEPA checks ``max_metric_calls`` between steps. A started step can consume one
+    reflection minibatch and, when accepted, one full validation pass before it
+    stops. Those widths are trustworthy only when they are bound to the complete
+    train/validation split retained in the optimizer receipt.
+    """
+
+    constructor = optimizer_config.get("constructor_scalar_arguments")
+    compile_call = optimizer_config.get("compile_call")
+    if not isinstance(constructor, Mapping) or not isinstance(compile_call, Mapping):
+        raise ValueError("news_program_compile_optimizer_metric_budget_invalid")
+    requested = constructor.get("max_metric_calls")
+    minibatch = constructor.get("reflection_minibatch_size")
+    example_count = compile_call.get("example_count")
+    train_count = compile_call.get("trainset_count")
+    val_count = compile_call.get("valset_count")
+    values = (requested, minibatch, example_count, train_count, val_count, max_metric_calls, expected_example_count)
+    if (
+        any(type(value) is not int for value in values)
+        or requested != max_metric_calls
+        or max_metric_calls <= 0
+        or expected_example_count <= 0
+        or example_count != expected_example_count
+        or train_count <= 0
+        or train_count > example_count
+        or val_count <= 0
+        or val_count > example_count
+        or minibatch <= 0
+        or minibatch > train_count
+    ):
+        raise ValueError("news_program_compile_optimizer_metric_budget_invalid")
+    return max_metric_calls + val_count + minibatch
+
+
 class OptimizerCompileProvenanceV3(_ExactModel):
     """Framework-neutral exact optimizer provenance used by release governance.
 
@@ -370,8 +411,7 @@ class OptimizerCompileProvenanceV3(_ExactModel):
     @model_validator(mode="after")
     def _budgets_are_exact(self) -> OptimizerCompileProvenanceV3:
         if (
-            self.metric_calls > self.max_metric_calls
-            or self.task_model_calls > self.max_task_model_calls
+            self.task_model_calls > self.max_task_model_calls
             or self.reflection_model_calls > self.max_reflection_model_calls
             or self.metric_judge_model_calls > self.max_metric_judge_model_calls
             or self.metric_judge_model_calls > self.metric_judge_attempts
@@ -793,6 +833,19 @@ def validate_compile_receipt_chain_v3(
         "input_bundle_sha256",
     }:
         raise ValueError("news_program_compile_receipt_chain_optimizer_config_invalid")
+    runner_optimizer_config = optimizer.get("runner_optimizer_config")
+    if not isinstance(runner_optimizer_config, Mapping):
+        raise ValueError("news_program_compile_receipt_chain_optimizer_config_invalid")
+    try:
+        metric_call_ceiling = gepa_metric_call_ceiling(
+            max_metric_calls=proof.max_metric_calls,
+            optimizer_config=runner_optimizer_config,
+            expected_example_count=corpus.episode_count,
+        )
+    except ValueError as exc:
+        raise ValueError("news_program_compile_receipt_chain_optimizer_config_invalid") from exc
+    if proof.metric_calls > metric_call_ceiling:
+        raise ValueError("news_program_compile_receipt_chain_metric_budget_exceeded")
     raw_grant = optimizer.get("proxy_grant")
     if not isinstance(raw_grant, Mapping):
         raise ValueError("news_program_compile_receipt_chain_proxy_grant_invalid")
@@ -1241,6 +1294,7 @@ __all__ = [
     "ProgramImmutableDiffV3",
     "ProgramMachineDiffV3",
     "ProgramStrategyDiffV3",
+    "gepa_metric_call_ceiling",
     "seal_compile_input",
     "validate_compile_receipt_chain_v3",
 ]

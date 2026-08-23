@@ -402,6 +402,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 CompilerRunnerReceiptsV3,
                 ContentAddressedCompileReceipt,
                 OptimizerCompileProvenanceV3,
+                gepa_metric_call_ceiling,
                 seal_compile_input,
             )
             from tracefold.news.agents.program_compiler_source import (
@@ -580,6 +581,14 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 code="news_learning_compile_runner_receipt_invalid",
             )
             proxy_execution = launched.proxy_execution_receipt
+            try:
+                metric_call_ceiling = gepa_metric_call_ceiling(
+                    max_metric_calls=budget.max_metric_calls,
+                    optimizer_config=runner.optimizer_config,
+                    expected_example_count=bundle.corpus.episode_count,
+                )
+            except ValueError as exc:
+                raise ValueError("news_learning_compile_receipt_cross_binding_mismatch") from exc
             if (
                 runner.input_bundle_sha256 != bundle.bundle_sha256
                 or runner.parent_program_sha256 != parent.program_sha256
@@ -601,6 +610,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 or proxy_execution.metric_judge_model_calls != runner.metric_judge_model_calls
                 or runner.metric_judge_model_calls > runner.metric_judge_attempts
                 or runner.metric_judge_failures > runner.metric_judge_attempts
+                or runner.metric_calls > metric_call_ceiling
                 or proxy_execution.task_cost_microusd != runner.task_cost_microusd
                 or proxy_execution.reflection_cost_microusd != runner.reflection_cost_microusd
                 or proxy_execution.metric_judge_cost_microusd != runner.metric_judge_cost_microusd
