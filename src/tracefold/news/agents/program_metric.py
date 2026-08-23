@@ -126,6 +126,18 @@ def _frozen_policy(projection: Mapping[str, Any]) -> DecidePolicy:
         raise ValueError("news_program_metric_policy_values_invalid") from exc
 
 
+def verify_policy_projection(projection: Mapping[str, Any]) -> None:
+    """The metric's policy check, callable before any provider call.
+
+    Same function, same error codes — a second implementation would drift from the one that scores. The
+    baseline runs this over every case up front so a corrupt corpus costs nothing: it is a pure function of
+    the input, and discovering it after two Predictor calls turns "the policy is unverifiable" into "the
+    Program did not answer".
+    """
+
+    _frozen_policy(projection)
+
+
 def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) -> str:
     """The action the reader would actually have seen, from the exact frozen production policy.
 
@@ -790,4 +802,5 @@ __all__ = [
     "metric_receipt",
     "retrieval_receipt",
     "told_rows",
+    "verify_policy_projection",
 ]

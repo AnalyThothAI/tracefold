@@ -52,6 +52,7 @@ from .program_metric import (
     build_compile_example,
     metric_receipt,
     retrieval_receipt,
+    verify_policy_projection,
 )
 from .semantic_program import (
     PROGRAM_VERSION,
@@ -485,6 +486,15 @@ def run_baseline(
 
     if not cases:
         raise ValueError("news_program_baseline_requires_cases")
+    if mode != "recorded":
+        # Before the first provider call. Every input to this check is a pure function of `cases`, so a
+        # corpus that cannot verify its own policy must cost nothing to reject — not two Predictor calls per
+        # case and a report that files the defect as "the route did not answer".
+        for case in cases:
+            try:
+                verify_policy_projection(case.episode.policy_metric)
+            except ValueError as exc:
+                raise ValueError(f"news_program_baseline_policy_unusable:{case.episode.case_id[:16]}:{exc}") from exc
     metric = bind_metric(judge)
     strict = bind_metric(None) if judge is not None else None
     examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
@@ -523,7 +533,7 @@ def run_baseline(
             try:
                 captured[case_id] = metric(gold, pred, None, None, None)
             except Exception as exc:  # a defect in the ruler, not an outcome of the route
-                metric_errors[case_id] = getattr(exc, "code", None) or f"metric_error:{type(exc).__name__}"
+                metric_errors[case_id] = _error_code(exc)
                 return 0.0
             if strict is not None:
                 # The same predictions scored the old way — the judge's verdicts are already cached, so this
@@ -622,7 +632,7 @@ def run_baseline(
                 # Unguarded, one bad episode raised *after* `asyncio.run` had already executed every case —
                 # destroying a run that had spent up to six real calls per case on the endpoint that also
                 # serves production Triage, with no `--out` file written.
-                code = getattr(exc, "code", None) or f"metric_error:{type(exc).__name__}"
+                code = _error_code(exc)
                 results.append(
                     _failed_case(
                         case,
@@ -746,6 +756,12 @@ def _build_report(
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
             "case_root_sha256": canonical_sha(sorted(case.episode.case_id for case in cases)),
+            # The id list answers "the same cases?"; only this answers "the same inputs?". Hashing ids alone
+            # let one report SHA describe two different corpora — any evidence edit that kept the ids left the
+            # published address untouched, which is the one thing a content address must not do.
+            "corpus_sha256": canonical_sha(
+                [case.model_dump(mode="json") for case in sorted(cases, key=lambda item: item.episode.case_id)]
+            ),
             "cluster_root_sha256": canonical_sha(sorted({case.episode.cluster_id for case in cases})),
         },
         execution_scope=_EXECUTION_SCOPE[mode],
@@ -818,6 +834,20 @@ def _policy_identity(cases: Sequence[BaselineCase]) -> dict[str, Any]:
         raise ValueError(f"news_program_baseline_policy_not_uniform:{len(seen)}")
     sha, payload = next(iter(seen.items()))
     return {"policy_sha256": sha, **payload}
+
+
+def _error_code(exc: Exception) -> str:
+    """A failure code an operator can act on.
+
+    `metric_error:ValueError` said nothing; the message it swallowed said
+    `news_program_metric_policy_sha256_mismatch:6f59f3a6!=1c64d060`.
+    """
+
+    code = getattr(exc, "code", None)
+    if code:
+        return str(code)
+    detail = str(exc).strip().splitlines()[0][:80] if str(exc).strip() else type(exc).__name__
+    return f"metric_error:{detail}"
 
 
 def _failed_case(

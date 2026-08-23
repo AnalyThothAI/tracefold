@@ -372,3 +372,30 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
 
     _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", limit=500, max_model_cases=12))
     assert seen["limit"] == 12, "the smaller of the two bounds wins, so --limit cannot widen it"
+
+
+def test_a_live_baseline_refuses_all_cohorts(monkeypatch: Any) -> None:
+    """#150 forbids policy replay across retired cohorts, and only a live mode replays policy.
+
+    The `policy_not_uniform` guard cannot catch this: `_project_episodes` stamps every episode with the same
+    active arm, so a mixed-cohort run looks perfectly uniform while answering "what would today's rules do to
+    yesterday's Program?".
+    """
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the guard must fail before the corpus is read")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", refuse)
+
+    for mode in ("compile_live", "runtime_live"):
+        code, payload = _handle_learning(
+            _baseline_args(mode=mode, action_source="policy", max_model_cases=5, all_cohorts=True)
+        )
+        assert code == 2
+        assert payload["error"] == "news_program_baseline_live_mode_forbids_all_cohorts"
+
+    # `recorded` never replays policy, so the retired-cohort corpus stays available to it.
+    with pytest.raises(AssertionError, match="before the corpus is read"):
+        _handle_learning(_baseline_args(mode="recorded", all_cohorts=True))
