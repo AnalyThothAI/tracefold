@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from tracefold.app import database as database_module
-from tracefold.app.database import WorkerDatabase
+from tracefold.app import worker_database as database_module
+from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import (
@@ -540,7 +540,7 @@ def _settings(**venues: Any):
 def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches() -> None:
     """The composition root is the only place these adapters are chosen; nothing here calls a venue."""
 
-    from tracefold.app.workers import _event_reaction_loop, _quote_snapshot_loop
+    from tracefold.app.workers.wiring.market_review import _event_reaction_loop, _quote_snapshot_loop
 
     settings = _settings()
     quotes = _quote_snapshot_loop(settings, db=_FakeHeavyDb(), watchlist=["BTC"])
@@ -567,7 +567,7 @@ def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches
 
 
 def test_a_disabled_venue_removes_its_adapter_rather_than_failing_the_turn() -> None:
-    from tracefold.app.workers import _event_reaction_loop, _quote_snapshot_loop
+    from tracefold.app.workers.wiring.market_review import _event_reaction_loop, _quote_snapshot_loop
 
     binance_only = _settings(binance=True, hyperliquid=False)
     quotes = _quote_snapshot_loop(binance_only, db=_FakeHeavyDb(), watchlist=[])

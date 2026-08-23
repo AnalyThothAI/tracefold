@@ -231,7 +231,7 @@ def write_calibration_corpus(path: Path, payload: dict[str, Any]) -> int:
 
 def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs the live database
     from tracefold.app.learning_runtime import active_arm_manifest
-    from tracefold.app.repositories import postgres_connection
+    from tracefold.app.repository_session import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
     from tracefold.news.agents.semantic_program import load_stable_program_artifact
     from tracefold.platform.config.settings import load_settings

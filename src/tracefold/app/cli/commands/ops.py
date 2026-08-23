@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.app.repositories import repositories
+from tracefold.app.repository_session import repositories
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
 

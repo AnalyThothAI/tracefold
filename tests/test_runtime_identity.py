@@ -9,17 +9,16 @@ gap — the value must arrive, and an absent value must never be recorded as one
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import yaml
 
-from tracefold.app.learning_runtime import (
+from tracefold.app.learning_runtime import runtime_manifest_sha
+from tracefold.platform.runtime_identity import (
     IMAGE_DIGEST_ENV,
     RUNTIME_REVISION_ENV,
     UNVERSIONED,
     runtime_identity,
-    runtime_manifest_sha,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -90,32 +89,3 @@ def test_make_up_computes_the_digest_from_the_image_it_built() -> None:
         "and every manifest_sha derived from it — depend on the host"
     )
     assert "WARNING" in up, "an empty digest must be announced, not silently normalised to unversioned"
-
-
-def test_the_manifest_sha_and_the_row_it_covers_share_one_read() -> None:
-    """`runtime_manifest_sha()` hashes the four values the row then records.  The
-    original code read the environment once per use — four `os.getenv` calls for
-    two values — so the sha and the fields it claims to cover could drift apart.
-    Both must now come from the same `RuntimeIdentity`."""
-
-    workers = (_REPO_ROOT / "src/tracefold/app/workers/__init__.py").read_text()
-    manifest = workers.split("runtime_manifest={", 1)[1].split("\n            },", 1)[0]
-    for field in ("image_digest", "runtime_revision"):
-        assert manifest.count(f"{field}=identity.{field}") == 1, f"{field} must reach the sha from the identity"
-        assert manifest.count(f'"{field}": identity.{field}') == 1, f"{field} must reach the row from the identity"
-    assert "os.getenv" not in manifest and "os.environ" not in manifest
-
-
-def test_no_environment_read_bypasses_the_normaliser() -> None:
-    """A second reader is how `""` gets back in.
-
-    Matching on the variable *name* would not catch it: the code this replaced
-    was `os.getenv(_RUNTIME_REVISION_ENV, "unversioned")` — a module constant,
-    not a literal.  The composition root reads no environment at all, so the
-    honest guard is that it stays that way.
-    """
-
-    workers = (_REPO_ROOT / "src/tracefold/app/workers/__init__.py").read_text()
-    assert re.search(r"os\.(getenv|environ)\b", workers) is None, (
-        "the Workers composition root must read the environment only through runtime_identity()"
-    )

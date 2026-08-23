@@ -66,7 +66,7 @@ def _handle_bus_check() -> tuple[int, dict[str, Any]]:
 def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
     """Tradeable instrument universe (#75). `snapshot` writes; the rest are read-only."""
 
-    from tracefold.app.repositories import repositories
+    from tracefold.app.repository_session import repositories
 
     settings = load_settings(require_ws_token=False)
     stamp = int(time.time() * 1000)
@@ -145,7 +145,7 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import postgres_connection
+    from tracefold.app.repository_session import postgres_connection
     from tracefold.news import (
         BlindPairwiseSubmission,
         DeskQuery,
@@ -227,7 +227,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     `--min-confidence` and the explicit include/exclude lists, and hence the receipt naming exactly what went in.
     """
 
-    from tracefold.app.repositories import postgres_connection
+    from tracefold.app.repository_session import postgres_connection
     from tracefold.news import EventRubricSubmission, Principal, ReviewDesk, TaskRef
     from tracefold.news.agents.program_review_drafter import DRAFT_SCHEMA, ReviewDraft, submission_payload
     from tracefold.platform.postgres.postgres_client import transaction
@@ -330,7 +330,7 @@ def _sha_idempotency(batch_sha: Any, task_id: str) -> str:
 
 
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import postgres_connection
+    from tracefold.app.repository_session import postgres_connection
     from tracefold.news import (
         LEARNING_EPOCH,
         REVIEW_RUBRIC_VERSION,
@@ -351,7 +351,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     try:
         if action == "canary":
             from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
-            from tracefold.app.repositories import repositories
+            from tracefold.app.repository_session import repositories
             from tracefold.news import apply_canary_control, parse_canary_control
             from tracefold.news.agents.programs.candidates import compiled_canary_candidates
 
@@ -1037,7 +1037,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
 
     from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
     from tracefold.app.llm import configured_lm_endpoint
-    from tracefold.app.repositories import postgres_connection
+    from tracefold.app.repository_session import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
     from tracefold.news.agents.program_baseline import (
         build_baseline_cases,
@@ -1190,7 +1190,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
 
     del stable
     from tracefold.app.llm import configured_lm_endpoint
-    from tracefold.app.repositories import postgres_connection
+    from tracefold.app.repository_session import postgres_connection
     from tracefold.news import DeskQuery, Principal, ReviewDesk, TaskRef, canonical_json
     from tracefold.news.agents.program_baseline import build_metric_lm
     from tracefold.news.agents.program_review_drafter import ReviewDrafter, build_draft_batch
@@ -1456,7 +1456,7 @@ def _insert_learning_artifact(
 
 
 def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import repositories
+    from tracefold.app.repository_session import repositories
     from tracefold.news.eval.why import explain_event
 
     settings = load_settings(require_ws_token=False)
@@ -1520,7 +1520,7 @@ def _write_json(path: str, payload: Mapping[str, Any]) -> None:
 
 
 def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import repositories
+    from tracefold.app.repository_session import repositories
     from tracefold.news.eval.replay import replay_hits
 
     settings = load_settings(require_ws_token=False)

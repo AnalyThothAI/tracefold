@@ -10,7 +10,7 @@ from psycopg import OperationalError, pq
 from psycopg.rows import RowMaker
 from psycopg.sql import Composable
 
-from tracefold.app.repositories import RepositorySession, repositories_for_connection
+from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.postgres.postgres_client import connect_postgres
 from tracefold.platform.postgres.postgres_migrations import upgrade_head
 

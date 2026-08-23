@@ -10,7 +10,8 @@ from psycopg import InternalError, OperationalError
 from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
-from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
+from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
+from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 

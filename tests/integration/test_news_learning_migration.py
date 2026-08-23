@@ -13,7 +13,7 @@ from tests.postgres_test_utils import (
 from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 

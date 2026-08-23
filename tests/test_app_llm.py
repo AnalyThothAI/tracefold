@@ -5,8 +5,9 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
-from tracefold.app import learning_runtime, workers
+from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
+from tracefold.app.workers.wiring import news as workers
 from tracefold.news import DecidePolicy, canonical_sha
 from tracefold.news.agents.programs import candidates as candidate_programs
 from tracefold.news.agents.semantic_program import (
@@ -559,11 +560,14 @@ def _wire_startup_test(
     monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
     monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
     monkeypatch.setattr(workers, "load_stable_program_artifact", lambda: stable_artifact)
-    monkeypatch.setattr(
-        workers,
-        "runtime_identity",
-        lambda: SimpleNamespace(image_digest="image", runtime_revision="revision"),
-    )
+    identity_reads = 0
+
+    def read_runtime_identity() -> SimpleNamespace:
+        nonlocal identity_reads
+        identity_reads += 1
+        return SimpleNamespace(image_digest="image", runtime_revision="revision")
+
+    monkeypatch.setattr(workers, "runtime_identity", read_runtime_identity)
 
     bus, pipeline = asyncio.run(
         workers._wire_news_pipeline(
@@ -575,6 +579,16 @@ def _wire_startup_test(
 
     assert bus.connected is True
     assert pipeline.triage.judge is stable_program
+    assert identity_reads == 1
+    manifest = pipeline.triage.runtime_manifest
+    assert manifest["image_digest"] == "image"
+    assert manifest["runtime_revision"] == "revision"
+    assert manifest["manifest_sha"] == learning_runtime.runtime_manifest_sha(
+        stable_bundle_sha=stable_arm.bundle_sha,
+        candidate_shas=manifest["candidate_shas"],
+        image_digest=manifest["image_digest"],
+        runtime_revision=manifest["runtime_revision"],
+    )
     return pipeline, news
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.app.query_audit import query_audit_for_connection
-from tracefold.app.repositories import postgres_connection
+from tracefold.app.repository_session import postgres_connection
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import PostgresOperationalAudit
 from tracefold.platform.postgres.postgres_client import (

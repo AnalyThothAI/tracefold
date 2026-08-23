@@ -11,7 +11,7 @@ from psycopg.errors import InsufficientPrivilege, RaiseException
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.http.app import create_app
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import (
     LEARNING_EPOCH,
     BlindPairwiseSubmission,

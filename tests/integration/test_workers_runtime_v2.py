@@ -25,11 +25,11 @@ from tests.postgres_test_utils import (
 from tests.postgres_test_utils import (
     test_postgres_dsn as _test_postgres_dsn,
 )
-from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
-from tracefold.app.repositories import repositories_for_connection
-from tracefold.app.workers import _ProbeState
+from tracefold.app.repository_session import repositories_for_connection
+from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.probe import _create_workers_probe_app
+from tracefold.app.workers.root import _ProbeState
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message

@@ -7,8 +7,8 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tracefold.app.database import WorkerDatabase
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.repository_session import repositories_for_connection
+from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.postgres import postgres_client
 from tracefold.platform.postgres.postgres_client import create_pool
 

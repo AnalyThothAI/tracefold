@@ -16,9 +16,7 @@ MAX_NEW_FUNCTION_LINES = 100
 # no exception: the target module is new and must fit the default budget.
 GRANDFATHERED_MODULE_LINES = {
     "app/cli/commands/news.py": 1581,
-    "app/database.py": 821,
     "app/http/schemas_news.py": 853,
-    "app/workers/__init__.py": 1241,
     "news/agents/program_baseline.py": 1059,
     "news/agents/program_compiler.py": 804,
     "news/agents/program_compiler_launcher.py": 1334,
@@ -52,9 +50,9 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("app/cli/commands/news.py", "_handle_learning_draft_reviews"): 125,
     ("app/cli/commands/trading.py", "handle_trading"): 130,
     ("app/cli/parser.py", "build_parser"): 314,
-    ("app/database.py", "WorkerDatabase._run_executor"): 111,
-    ("app/workers/__init__.py", "run_workers"): 262,
-    ("app/workers/__init__.py", "_wire_news_pipeline"): 172,
+    ("app/worker_database.py", "WorkerDatabase._run_executor"): 111,
+    ("app/workers/root.py", "run_workers"): 262,
+    ("app/workers/wiring/news.py", "_wire_news_pipeline"): 172,
     ("news/agents/program_baseline.py", "run_baseline"): 239,
     ("news/agents/program_baseline.py", "_build_report"): 124,
     ("news/agents/program_compiler.py", "ProgramCompiler.compile"): 163,

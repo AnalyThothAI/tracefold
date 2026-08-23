@@ -17,7 +17,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import (
     RK_RAW_LIVE,
     RK_VERDICT_PUSH,

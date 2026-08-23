@@ -14,7 +14,7 @@ from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.news.test_news_program_compiler_sandbox import _valid_sandbox_launch_receipt
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import (
     LEARNING_EPOCH,
     ArmManifest,

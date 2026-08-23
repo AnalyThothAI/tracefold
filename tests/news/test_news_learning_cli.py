@@ -154,7 +154,7 @@ def test_learning_recording_verification_fails_closed_for_canary_before_loading_
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: stable)
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr(news_commands, "_load_candidate_bundle", lambda _path: (candidate, {}))
 
     code, payload = _handle_learning(
@@ -224,7 +224,7 @@ def test_emergency_canary_trip_does_not_load_stable_or_parse_candidate_catalog(m
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", unexpected_stable)
-    monkeypatch.setattr("tracefold.app.repositories.repositories", fake_repositories)
+    monkeypatch.setattr("tracefold.app.repository_session.repositories", fake_repositories)
     monkeypatch.setattr(
         candidate_programs,
         "COMPILED_CANDIDATE_DOCUMENTS",
@@ -322,7 +322,7 @@ def test_baseline_refuses_a_mode_and_action_source_that_measure_nothing(
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", refuse)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
 
     code, payload = _handle_learning(_baseline_args(mode=mode, action_source=action_source))
     assert code == 2
@@ -348,7 +348,7 @@ def test_a_live_baseline_refuses_to_run_without_an_explicit_provider_bound(monke
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", refuse)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
 
     for mode in ("compile_live", "runtime_live"):
         code, payload = _handle_learning(_baseline_args(mode=mode, action_source="policy"))
@@ -380,7 +380,7 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr("tracefold.news.CandidateEvaluator", _Evaluator)
 
     _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", limit=500, max_model_cases=12))
@@ -415,7 +415,7 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr("tracefold.news.CandidateEvaluator", _Evaluator)
 
     code, payload = _handle_learning(
