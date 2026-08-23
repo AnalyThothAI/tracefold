@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from .models import ADMITTED_ADMISSIONS
+from .triage_rules import STALE_SOURCE_KEY
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
 
@@ -78,6 +79,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "watchlist": "命中关注列表",
     "magnitude3": "重大事件",
     "high_priority_push": "高优先级来源，模型建议推送",
+    "stale_source_artifact": "来源推文本身已过时，按旧闻扣下",
     "contested_high_priority": "高优先级来源，模型判断有分歧，按召回优先推送",
     "fail_closed_fallback": "模型不可用，按规则兜底",
     "restatement": "重复：读者已收到同一事实",
@@ -183,6 +185,8 @@ DECISION_ZH: Final[dict[str, str]] = {
 # Policy v7 only writes `:seen`; cap/hard shapes remain here so historical
 # verdicts stay intelligible after the hard cut.
 _SEEN_SUFFIX: Final = ":seen"
+# #154. Constant rather than per-age so the top-10 `throttled_by_key` map keeps one bucket for the rule.
+_STALE_ARTIFACT_KEY: Final = STALE_SOURCE_KEY
 _THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)(?::hard(?P<hard>\d+))?$")
 _THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
 _THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
@@ -247,6 +251,8 @@ def throttled_by_zh(key: str | None) -> str:
         return ""
     if text == "hourly_cap":
         return "已达每小时推送上限"
+    if text == _STALE_ARTIFACT_KEY:
+        return "旧闻：这条推文在 provider 推送时就已过时"
     if text.endswith(_SEEN_SUFFIX):
         return "重复：读者刚收到过内容高度相近的卡片"
     if (m := _THROTTLE_ASSET_RE.match(text)) is not None:
@@ -342,7 +348,12 @@ def event_outcome(
     error_zh = error_code_zh(triage.get("error_code")) if degraded else ""
     if final == "throttled":
         throttled_by = str(triage.get("throttled_by") or "")
-        text = "未推送（重复）" if throttled_by.endswith(_SEEN_SUFFIX) else "未推送（历史限流）"
+        if throttled_by.endswith(_SEEN_SUFFIX):
+            text = "未推送（重复）"
+        elif throttled_by == _STALE_ARTIFACT_KEY:
+            text = "未推送（旧闻）"
+        else:
+            text = "未推送（历史限流）"
         return _outcome("throttled", text, throttled_by_zh(throttled_by))
     if final in _HELD_DECISIONS:
         if degraded:

@@ -118,6 +118,9 @@ def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) ->
             provider_score=gate.get("provider_score"),
             priority=str(gate.get("priority") or "normal"),
             admission=str(gate.get("admission") or "candidate"),
+            # #154: `news learning baseline` scores the production action, so this metric has to be able to
+            # reach `stale_source_artifact` too.
+            source_age_s=gate.get("source_age_s"),
         ),
         storyline_status(key, told=told, seen=seen),
         policy=DEFAULT_POLICY,

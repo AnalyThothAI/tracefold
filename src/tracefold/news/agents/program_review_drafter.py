@@ -20,7 +20,7 @@ not to become an author of record.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,7 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..artifact_identity import canonical_sha
 
 DRAFTER_ID = "tracefold.news.review_drafter_v1"
-DRAFT_SCHEMA = "tracefold.news.review_draft_batch.v1"
+# `Final` is what makes mypy infer the literal type rather than `str`, which is what the
+# `Literal[...]` field below needs as its default.
+DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v1"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
 crypto/US-equity trading desk. A human will accept or reject your draft; never assume it is final.

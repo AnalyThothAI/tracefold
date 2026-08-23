@@ -9,6 +9,9 @@ from typing import Any, Final
 from .models import Decision, TriageVerdict, base_symbol
 from .similarity import max_similarity
 
+# One owner for the withhold key: `outcome` renders it, `repository` counts it.
+STALE_SOURCE_KEY: Final = "artifact:stale"
+
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
 _MODEL_WANTS_PUSH = frozenset({"push", "escalate"})
 
@@ -65,6 +68,14 @@ class DecidePolicy:
     # while still asking to hold. Recall-first, that disagreement resolves toward the reader. Zero
     # disables the rule, and it never fires on a normal-priority Event.
     contested_push_min_magnitude: int = 2
+    # An artifact older than this when the provider pushed it is a replay, not news (#154). The artifact ledger
+    # catches a re-send of something we already delivered; this catches the case it cannot see — a stale artifact
+    # arriving for the first time, such as the 16-day-old tweet that shipped as "Take-Two 股票 $TTWO 周四在
+    # Solana 上线". Measured over 3174 x/twitter frames in 30 days the distribution is bimodal: 2491 within 10 s
+    # of the push, 7 beyond 16 h, nothing between, and never negative — so any threshold in [10 min, 16 h] picks
+    # exactly the same frames. 12 h is the `general` family window: older than that and our own dedup could no
+    # longer have seen the first delivery. Zero disables the rule.
+    stale_source_max_age_s: int = 12 * 60 * 60
     # Exchange listing/delisting frames are independent facts wearing one template: "Coinbase adds
     # ALIGN" and "Upbit adds BICO" name different instruments but share almost every character
     # bigram, so both the model's restatement judgment and the deterministic similarity check read
@@ -95,6 +106,9 @@ class GateFacts:
     provider_score: float | None
     priority: str  # high | normal
     admission: str
+    # Seconds between the source artifact's own publication and the provider's push (#154). `None` whenever the
+    # artifact does not carry its own timestamp, which is every non-x/twitter frame.
+    source_age_s: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +367,21 @@ def decide(
         final, rule = "push", "watchlist"
     else:
         final, rule = "drop", "below_threshold"
+
+    # #154: a replay is not a push, whatever the verdict says about it. `escalate` is exempt for the same reason
+    # it is exempt from the similarity check — a false positive is least affordable on the loudest cards — and a
+    # degraded verdict is exempt because the wire-headline fallback is already the conservative path.
+    if (
+        final == "push"
+        and not degraded
+        and policy.stale_source_max_age_s > 0
+        and facts.source_age_s is not None
+        and facts.source_age_s > policy.stale_source_max_age_s
+    ):
+        # A constant key on purpose: `throttled_by` is folded into a top-10 count map, so embedding the age
+        # would give every withhold its own count-1 bucket and hide the rule from `status.pipeline`. The age
+        # itself is in the trace.
+        return DecisionResult("throttled", "stale_source_artifact", STALE_SOURCE_KEY, baseline, watch_hits)
 
     seen_similarity: float | None = None
     seen_against = -1

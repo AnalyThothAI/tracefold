@@ -17,6 +17,8 @@ from tracefold.news.facts import extract_fact_units
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.models import ReaderReceipt, TriageAsset, TriageVerdict
+from tracefold.news.opennews import source_artifact_identity
+from tracefold.news.outcome import OVERRIDE_RULE_ZH, throttled_by_zh
 from tracefold.news.pricing import CHANGE_BASIS_ZH
 from tracefold.news.similarity import similarity
 from tracefold.news.storyline import (
@@ -29,6 +31,7 @@ from tracefold.news.titles import extract_title
 from tracefold.news.tokens import comparison_tokens, jaccard
 from tracefold.news.triage_rules import (
     DEFAULT_POLICY,
+    STALE_SOURCE_KEY,
     DecidePolicy,
     GateFacts,
     StorylineStatus,
@@ -470,6 +473,60 @@ _FACTS = GateFacts(
     priority="normal",
     admission="candidate",
 )
+
+
+def test_source_artifact_identity_survives_the_provider_url_spellings() -> None:
+    """#154: 17 of 29 repeat ingests in a 30-day window differed only in URL spelling.
+
+    `_article_url` lowercases the host but not the path, so `x.com/CoinDesk/...` and `twitter.com/coindesk/...`
+    are different strings for the same tweet. The status id is the platform's own primary key.
+    """
+
+    spellings = (
+        "https://x.com/soon_svm/status/2089994673804939740",
+        "https://twitter.com/soon_svm/status/2089994673804939740",
+        "https://X.com/SOON_SVM/status/2089994673804939740",
+        "https://www.twitter.com/soon_svm/statuses/2089994673804939740",
+        "https://x.com/soon_svm/status/2089994673804939740?s=20",
+    )
+    identities = {source_artifact_identity(url) for url in spellings}
+    assert len(identities) == 1
+    artifact_id, published_at_ms = identities.pop()
+    assert artifact_id == "x:2089994673804939740"
+    # Snowflake: the tweet itself, 1.7 s before the provider pushed it at 1787128536804.
+    assert published_at_ms == 1787128535115
+
+    for other in ("https://www.zerohedge.com/markets/story", "https://x.com/soon_svm", "", "not a url"):
+        assert source_artifact_identity(other) == ("", None)
+
+
+def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
+    """#154: a 16-day-old tweet shipped as `Take-Two 股票 $TTWO 周四在 Solana 上线`.
+
+    The artifact ledger cannot see that one — it was ingested exactly once — so age is the only signal. Escalate
+    stays exempt for the same reason it is exempt from the similarity check.
+    """
+
+    fresh = replace(_FACTS, source_age_s=2)
+    stale = replace(_FACTS, source_age_s=int(385.6 * 3600))
+    status = storyline_status("asset:TTWO")
+
+    assert decide(_verdict(magnitude=2), fresh, status).final == "push"
+    withheld = decide(_verdict(magnitude=2), stale, status)
+    assert withheld.final == "throttled"
+    assert withheld.override_rule == "stale_source_artifact"
+    # A constant key, not the age: `throttled_by` is counted into a top-10 map and a per-second key would
+    # give every withhold its own bucket.
+    assert withheld.throttled_by == STALE_SOURCE_KEY
+    assert throttled_by_zh(STALE_SOURCE_KEY) == "旧闻：这条推文在 provider 推送时就已过时"
+    assert OVERRIDE_RULE_ZH["stale_source_artifact"] == "来源推文本身已过时，按旧闻扣下"
+
+    assert decide(_verdict(magnitude=3), stale, status).final == "escalate"
+    # No artifact timestamp (every non-x/twitter frame) is not evidence of staleness.
+    assert decide(_verdict(magnitude=2), replace(_FACTS, source_age_s=None), status).final == "push"
+    # The knob turns it off without touching anything else.
+    off = DecidePolicy(stale_source_max_age_s=0)
+    assert decide(_verdict(magnitude=2), stale, status, policy=off).final == "push"
 
 
 def test_high_priority_pushes_without_shouting() -> None:

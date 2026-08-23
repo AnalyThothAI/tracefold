@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from .models import ADMITTED_ADMISSIONS, ReaderReceipt, display_title
+from .opennews import source_artifact_identity
 from .outcome import (
     audience_zh,
     decision_zh,
@@ -214,6 +215,7 @@ class NewsRepository:
         ingest_mode: str,
         trace_id: str,
         now_ms: int,
+        source_artifact_id: str = "",
     ) -> bool:
         """Insert or merge provenance. Returns True when the Item is new."""
 
@@ -222,8 +224,8 @@ class NewsRepository:
             INSERT INTO news_items (
               item_id, source_id, source_item_key, title, raw_first_line, description, canonical_url,
               reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
-              first_ingest_mode, trace_id, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
               provenance = (
                 SELECT COALESCE(jsonb_agg(DISTINCT value ORDER BY value), '[]'::jsonb)
@@ -249,11 +251,64 @@ class NewsRepository:
                 trace_id,
                 int(now_ms),
                 int(now_ms),
+                source_artifact_id,
             ),
         ).fetchone()
         return bool(row["inserted"])
 
     # ------------------------------------------------------------------ events
+    def find_artifact_event(
+        self,
+        *,
+        source_artifact_id: str,
+        family: str,
+        fingerprint: str,
+        item_id: str,
+        opened_after_ms: int,
+    ) -> dict[str, Any] | None:
+        """The Event another Item built from this same source artifact and this same fact (#154).
+
+        The fingerprint is part of the key, not decoration. Without it a digest split into four FactUnits would
+        collapse into one Event the second time the provider sent it, because all four units share the artifact.
+        With it, unit *k* can only join unit *k*.
+
+        What the artifact id buys is the right to ignore the two guards the text-derived path needs: the
+        three-token `shareable` floor (a tweet titled `What a coincidence!` scores below it and so was never
+        looked up at all — the provider sent it twice, four seconds apart, under two URL spellings, and the
+        reader got two cards) and the 12 h family window (`opened_after_ms` is the caller's longer horizon).
+        Both guards exist because *text* similarity is evidence; artifact identity is not evidence, it is the
+        platform's own primary key.
+        """
+
+        if not source_artifact_id:
+            return None
+        # Only an Event that can still reach a reader may absorb a live frame. The 12 h family window used to
+        # bound this implicitly; a 7-day horizon does not, and joining a `recovery` Event — which is in
+        # `_REGATE_ADMISSIONS`, so it can never be upgraded and never delivers — would swallow the card
+        # silently. A suppressed Event is excluded for the same reason.
+        row = self.conn.execute(
+            """
+            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
+              FROM news_items i
+              JOIN news_event_members m ON m.item_id = i.item_id
+              JOIN news_events e ON e.event_id = m.event_id
+             WHERE i.source_artifact_id = %s AND i.item_id <> %s
+               AND e.family = %s AND e.comparison_fingerprint = %s
+               AND e.opened_at_ms >= %s
+               AND e.admission = ANY(%s)
+             ORDER BY e.opened_at_ms ASC LIMIT 1
+            """,
+            (
+                source_artifact_id,
+                item_id,
+                family,
+                fingerprint,
+                int(opened_after_ms),
+                sorted(ADMITTED_ADMISSIONS),
+            ),
+        ).fetchone()
+        return dict(row) if row else None
+
     def find_exact_event(self, *, family: str, fingerprint: str, now_ms: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
@@ -688,6 +743,12 @@ class NewsRepository:
         )
         if focus.get("method") == "explicit_numbered":
             snapshot_card["raw_first_line"] = ""
+        # #154: how old the source artifact already was when the provider pushed it. Derived from the same
+        # parse that produces the artifact identity, so there is one owner of the rule and nothing to persist.
+        _, artifact_published_at_ms = source_artifact_identity(str(snapshot_card.get("leader_url") or ""))
+        pushed_at_ms = snapshot_card.get("leader_published_at_ms")
+        if artifact_published_at_ms is not None and pushed_at_ms:
+            snapshot_card["source_age_s"] = max(0, (int(pushed_at_ms) - artifact_published_at_ms) // 1000)
         snapshot = {
             "schema_version": "news_event_evidence_v1",
             "event_id": event_id,

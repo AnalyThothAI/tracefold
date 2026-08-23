@@ -502,6 +502,28 @@ def test_metric_scores_the_production_action_not_the_models_intent() -> None:
     assert restatement["decision"] == "push"
 
 
+def test_metric_sees_the_stale_source_withhold_production_applies() -> None:
+    """#154: `decide()` can turn a push into `throttled` on artifact age.
+
+    CLAUDE.md pins that `news learning baseline` runs literally the same metric object as production. If
+    `source_age_s` is dropped from the projection the metric scores `push` where the reader got nothing, and the
+    optimizer is rewarded for an action production would not have taken.
+    """
+
+    pushed = _metric_verdict(decision="push")
+    fresh = _metric_gold(policy_metric={"gate": {"source_age_s": 2}})
+    stale = _metric_gold(policy_metric={"gate": {"source_age_s": 16 * 3600}})
+
+    assert _score(fresh, pushed).production_action == "push"
+    assert _score(stale, pushed).production_action == "throttled"
+
+    # And the reviewer's verdict is scored against that action, not the model's intent: a `should_hold` review
+    # is satisfied by the stale withhold and failed by the fresh push.
+    held = {"accepted_review": {"should_push": "should_hold"}}
+    assert _score(_metric_gold(**held, policy_metric={"gate": {"source_age_s": 16 * 3600}}), pushed).score == 1.0
+    assert _score(_metric_gold(**held, policy_metric={"gate": {"source_age_s": 2}}), pushed).score < 1.0
+
+
 def test_metric_hard_gates_cannot_be_averaged_away_by_retention_anchors() -> None:
     gold = _metric_gold(
         accepted_review={

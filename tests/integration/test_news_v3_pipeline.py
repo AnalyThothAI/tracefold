@@ -13,7 +13,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news.events import admit_frame, admit_item
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
-from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 
 pytestmark = pytest.mark.integration
@@ -593,6 +593,161 @@ def test_a_bare_numbered_digest_never_grounds_one_bullet_on_another(conn) -> Non
     assert list(by_text["特斯拉 $TS"[:4]]["grounded_assets"]) == ["TSLA"]
     for other in ("美国航空航天局", "印度政府表示"):
         assert list(by_text[other[:4]]["grounded_assets"]) == []
+    conn.commit()
+
+
+def _artifact_frame(*, hit_id: int, text: str, url: str, ts: str):
+    event = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": {
+                **_hit(hit_id=hit_id, text=text, engine="news", score=80, coins=[], source="wire", ts=ts),
+                "link": url,
+            },
+        }
+    )
+    assert event is not None
+    return event
+
+
+def test_the_same_source_artifact_joins_one_event_across_url_spellings_and_windows(conn) -> None:
+    """#154, the three cases measured over 30 days of production.
+
+    The text-derived path cannot reach any of them: `What a coincidence!` scores below the three-token
+    `shareable` floor so no fingerprint lookup ever runs, and the other two arrive after the 12 h family window
+    has closed. All three are the same tweet.
+    """
+
+    repos = repositories_for_connection(conn)
+    cases = (
+        # Two URL spellings, four seconds apart. The reader got two cards for one whale trade.
+        (
+            "What a coincidence!",
+            3654362,
+            3654363,
+            "https://twitter.com/lookonchain/status/2090239389318410280",
+            "https://x.com/lookonchain/status/2090239389318410280",
+            "2026-08-20T08:48:00+08:00",
+            "2026-08-20T08:48:04+08:00",
+        ),
+        # Same spelling, 16.2 h apart: past the 12 h `general` window, inside the 7 d artifact window.
+        (
+            "Kraken launches U.S. stock trading for European customers on one regulated platform",
+            3700001,
+            3700002,
+            "https://x.com/CoinDesk/status/2089761853727490268",
+            "https://x.com/CoinDesk/status/2089761853727490268",
+            "2026-08-19T01:10:00+08:00",
+            "2026-08-19T17:22:00+08:00",
+        ),
+        # 88.7 h apart: the frame that started #154.
+        (
+            "Nvidia has agreed to provide a more than 100 billion dollar backstop for an OpenAI data center",
+            3641794,
+            3700789,
+            "https://x.com/soon_svm/status/2089994673804939740",
+            "https://x.com/soon_svm/status/2089994673804939740",
+            "2026-08-19T16:35:36+08:00",
+            "2026-08-23T09:16:24+08:00",
+        ),
+    )
+    for text, first_id, second_id, first_url, second_url, first_ts, second_ts in cases:
+        first = _artifact_frame(hit_id=first_id, text=text, url=first_url, ts=first_ts)
+        second = _artifact_frame(hit_id=second_id, text=text, url=second_url, ts=second_ts)
+        stamp = int(second.entry.published_at_ms or 0) + 1000
+        with repos.transaction():
+            opened = admit_item(
+                repos,
+                event=first,
+                ingest_mode="live",
+                observed_at_ms=int(first.entry.published_at_ms or 0),
+                trace_id="artifact-1",
+                watchlist_symbols=frozenset(),
+                now_ms=stamp,
+            )
+            rejoined = admit_item(
+                repos,
+                event=second,
+                ingest_mode="live",
+                observed_at_ms=stamp,
+                trace_id="artifact-2",
+                watchlist_symbols=frozenset(),
+                now_ms=stamp,
+            )
+        assert opened.event_created is True, text
+        assert rejoined.event_created is False, text
+        assert rejoined.event_id == opened.event_id, text
+        assert rejoined.match_kind == "exact", text
+    conn.commit()
+
+
+def test_a_repeated_digest_keeps_one_event_per_bullet(conn) -> None:
+    """The artifact key alone would collapse a split digest, because all four units share one tweet.
+
+    The lookup pairs it with the fingerprint, so unit *k* can only rejoin unit *k*.
+    """
+
+    repos = repositories_for_connection(conn)
+    text = (
+        "BREAKING: details include:<br/>1. 商务部反对欧方打压中国企业并要求纠正。<br/>"
+        "2. Moderna 下调全年指引，盘前下跌 13%。<br/>3. 沃尔玛上调全年销售预期至 4.8%。"
+    )
+    url = "https://x.com/wire/status/2089994673804939999"
+    first = _artifact_frame(hit_id=930001, text=text, url=url, ts="2026-08-19T10:00:00+08:00")
+    second = _artifact_frame(hit_id=930002, text=text, url=url, ts="2026-08-21T10:00:00+08:00")
+    stamp = int(second.entry.published_at_ms or 0) + 1000
+    with repos.transaction():
+        opened = admit_frame(
+            repos,
+            event=first,
+            ingest_mode="live",
+            observed_at_ms=int(first.entry.published_at_ms or 0),
+            trace_id="digest-1",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+        rejoined = admit_frame(
+            repos,
+            event=second,
+            ingest_mode="live",
+            observed_at_ms=stamp,
+            trace_id="digest-2",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+    assert len(opened.results) == 3 and all(r.event_created for r in opened.results)
+    assert len(rejoined.results) == 3 and not any(r.event_created for r in rejoined.results)
+    # Three Events in, three Events out — each bullet rejoined its own, none collapsed into a sibling.
+    assert [r.event_id for r in rejoined.results] == [r.event_id for r in opened.results]
+    assert len({r.event_id for r in rejoined.results}) == 3
+    conn.commit()
+
+
+def test_source_artifact_backfill_matches_the_parser(conn) -> None:
+    """The migration computes `source_artifact_id` in SQL; `opennews` computes it in Python. One rule."""
+
+    rows = conn.execute(
+        """
+        SELECT canonical_url,
+               CASE WHEN canonical_url ~* '(?i)^https?://(www\\.)?(x|twitter)\\.com/[^/]+/status(es)?/[0-9]{5,25}([/?#]|$)'
+                    THEN 'x:' || substring(canonical_url from '(?i)/status(?:es)?/([0-9]{5,25})')
+                    ELSE '' END AS sql_id
+          FROM (VALUES
+            ('https://x.com/soon_svm/status/2089994673804939740'),
+            ('https://twitter.com/soon_svm/status/2089994673804939740'),
+            ('https://www.twitter.com/soon_svm/statuses/2089994673804939740'),
+            ('https://x.com/soon_svm/status/2089994673804939740?s=20'),
+            ('https://www.zerohedge.com/markets/story'),
+            ('https://x.com/soon_svm'),
+            -- Case in both the handle and the path segment: `~*` matches but `substring` would not.
+            ('https://X.com/SOON_SVM/Status/2089994673804939740'),
+            ('https://twitter.com/CoinDesk/STATUSES/2089761853727490268')
+          ) AS t(canonical_url)
+        """
+    ).fetchall()
+    assert rows
+    for row in rows:
+        assert row["sql_id"] == source_artifact_identity(str(row["canonical_url"]))[0], row["canonical_url"]
     conn.commit()
 
 

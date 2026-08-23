@@ -899,6 +899,7 @@ class TriageConsumer:
             provider_score=card.get("provider_score_max"),
             priority=str(card.get("priority") or "normal"),
             admission=str(card.get("admission") or ""),
+            source_age_s=card.get("source_age_s"),
         )
         if str(card.get("admission") or "") == "telemetry_deterministic":
             # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
@@ -1243,6 +1244,7 @@ class TriageConsumer:
                     provider_score=card.get("provider_score_max"),
                     priority=str(card.get("priority") or "normal"),
                     admission=str(card.get("admission") or ""),
+                    source_age_s=card.get("source_age_s"),
                 )
                 refreshed_prelim_key = str(card.get("storyline_key") or "")
                 if refreshed_prelim_key != prelim_key:

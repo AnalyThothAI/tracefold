@@ -687,6 +687,9 @@ class CandidateEvaluator:
                 "provider_score": event.get("provider_score_max"),
                 "priority": str(event.get("priority") or "normal"),
                 "admission": str(event.get("admission") or "candidate"),
+                # #154: the optimizer metric has to see what production `decide()` saw, or it is rewarded for
+                # an action production would not have taken.
+                "source_age_s": event.get("source_age_s"),
             },
             "storyline": {
                 "title": str(event.get("leader_title") or ""),
@@ -1867,6 +1870,9 @@ class CandidateEvaluator:
             provider_score=event.get("provider_score_max"),
             priority=str(event.get("priority") or "normal"),
             admission=str(event.get("admission") or "candidate"),
+            # #154: without this the simulator can never reach `stale_source_artifact`, so a shadow, blind
+            # pairwise or canary arm would report `delivered` on exactly the Events production withheld.
+            source_age_s=event.get("source_age_s"),
         )
         decision = decide(
             verdict,

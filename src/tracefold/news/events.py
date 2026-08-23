@@ -23,6 +23,10 @@ from .titles import description_after_title, extract_title
 from .tokens import comparison_tokens, jaccard
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
+# How far back an exact *artifact* match may reach (#154). The family windows bound how long two texts stay
+# comparable; this bounds how long the platform's own primary key stays meaningful, which is much longer. The
+# measured worst case in a 30-day window was a tweet the provider re-sent 88.7 h later under a new record id.
+ARTIFACT_WINDOW_MS = 7 * 24 * 60 * 60_000
 _TICKER_RE = re.compile(r"\$([A-Z]{2,6})\b")
 _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|trillion)?", re.IGNORECASE)
 
@@ -188,6 +192,7 @@ def admit_item(
         ingest_mode=ingest_mode,
         trace_id=trace_id,
         now_ms=now_ms,
+        source_artifact_id=event.source_artifact_id,
     )
     existing_membership = repos.conn.execute(
         """
@@ -242,40 +247,54 @@ def admit_item(
     window_ms = event_window_ms(family)
     shareable = len(tokens) >= 3
 
+    exact = news.find_exact_event(family=family, fingerprint=fingerprint, now_ms=now_ms) if shareable else None
+    if exact is not None and int(exact["opened_at_ms"]) + window_ms <= published_at_ms:
+        exact = None
+    if exact is None:
+        # #154: the same source artifact, the same fact, a longer horizon. The text-derived path above needs
+        # its three-token floor and its 12 h window because text similarity is only evidence; a status id is
+        # the platform's own primary key, so neither guard applies to it.
+        exact = news.find_artifact_event(
+            source_artifact_id=event.source_artifact_id,
+            family=family,
+            fingerprint=fingerprint,
+            item_id=item_id,
+            opened_after_ms=published_at_ms - ARTIFACT_WINDOW_MS,
+        )
+    if exact is not None:
+        news.add_member(
+            event_id=str(exact["event_id"]),
+            item_id=item_id,
+            joined_at_ms=published_at_ms,
+            match_kind="exact",
+            jaccard_estimate=1.0,
+            provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
+            fact_id=fact.fact_id,
+            fact_text=fact.text,
+            now_ms=now_ms,
+        )
+        result = _member_result(
+            repos,
+            event_id=str(exact["event_id"]),
+            item_id=item_id,
+            inserted=inserted,
+            match_kind="exact",
+            gate=gate,
+            family=family,
+            fingerprint=fingerprint,
+            title=title,
+            reporting_origin=event.entry.reporting_origin or "opennews",
+            now_ms=now_ms,
+        )
+        news.append_evidence_snapshot(
+            event_id=result.event_id,
+            now_ms=now_ms,
+            focus_item_id=item_id if result.evidence_focus_changed else None,
+            focus_fact=fact if result.evidence_focus_changed else None,
+        )
+        return result
+
     if shareable:
-        exact = news.find_exact_event(family=family, fingerprint=fingerprint, now_ms=now_ms)
-        if exact is not None and int(exact["opened_at_ms"]) + window_ms > published_at_ms:
-            news.add_member(
-                event_id=str(exact["event_id"]),
-                item_id=item_id,
-                joined_at_ms=published_at_ms,
-                match_kind="exact",
-                jaccard_estimate=1.0,
-                provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
-                fact_id=fact.fact_id,
-                fact_text=fact.text,
-                now_ms=now_ms,
-            )
-            result = _member_result(
-                repos,
-                event_id=str(exact["event_id"]),
-                item_id=item_id,
-                inserted=inserted,
-                match_kind="exact",
-                gate=gate,
-                family=family,
-                fingerprint=fingerprint,
-                title=title,
-                reporting_origin=event.entry.reporting_origin or "opennews",
-                now_ms=now_ms,
-            )
-            news.append_evidence_snapshot(
-                event_id=result.event_id,
-                now_ms=now_ms,
-                focus_item_id=item_id if result.evidence_focus_changed else None,
-                focus_fact=fact if result.evidence_focus_changed else None,
-            )
-            return result
         signature = minhash_signature(tokens)
         keys = band_keys(signature)
         mine = _strong_facts(title, gate.grounded_assets)
