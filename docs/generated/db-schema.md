@@ -225,6 +225,7 @@
 | `trace_id` | `TEXT` | False | `''::text` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `source_artifact_id` | `TEXT` | False | `''::text` |
 
 ## `news_learning_artifacts`
 

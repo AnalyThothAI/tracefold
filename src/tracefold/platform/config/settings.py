@@ -317,6 +317,9 @@ class NewsPolicySettings(BaseModel):
     # Exchange listing/delisting frames share one wire template but name different instruments, so
     # they are exempt from the restatement drop and the similarity throttle.
     listing_exempt_from_duplicate: bool = True
+    # #154: an artifact already this old when the provider pushed it is a replay, not news. Only
+    # x/twitter frames carry their own publication time; everything else is unaffected. Zero disables.
+    stale_source_max_age_s: int = 12 * 60 * 60
 
     @field_validator("unclear_push_event_types", mode="before")
     @classmethod
@@ -694,6 +697,7 @@ news:
     noise_veto_respects_gate_priority: true
     contested_push_min_magnitude: 2
     listing_exempt_from_duplicate: true
+    stale_source_max_age_s: 43200  # #154: an x/twitter artifact older than this on arrival is a replay
   oi:                             # #137 open-interest telemetry, judged by rule instead of by model
     window_ms: 14400000           # 4 h rolling window the rank counts within
     max_rank_in_window: 2         # push a symbol's first N frames in that window

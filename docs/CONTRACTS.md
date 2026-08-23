@@ -423,7 +423,11 @@ two calls), and both executions remain in the verdict audit.
 `unclear_push_event_types`, `restatement_drop`, `similarity_max`,
 `high_priority_escalates`, and the policy v8 recall knobs
 `noise_veto_max_magnitude` (1), `noise_veto_respects_gate_priority` (true),
-`contested_push_min_magnitude` (2), and `listing_exempt_from_duplicate` (true). There is no runtime reader quota. Retired quota keys
+`contested_push_min_magnitude` (2), `listing_exempt_from_duplicate` (true), and
+`stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
+than this when the provider pushed it is a replay, withheld as
+`stale_source_artifact`; `escalate` is exempt and 0 disables the rule).
+There is no runtime reader quota. Retired quota keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a

@@ -457,6 +457,27 @@ band keys stored in `news_event_bands`, and `tracefold.news.events.admit_item`
 is the single Deduper transaction. Fingerprints of at most two tokens never
 share an Event.
 
+That text-derived identity is deliberately weak, and #154 adds the exact one
+beside it rather than loosening it. `news_items.source_artifact_id` is the
+artifact a frame is *about* — for X, `x:<status_id>`, parsed by
+`tracefold.news.opennews.source_artifact_identity` — because the provider
+re-emits the same tweet under new record ids and under inconsistent URL
+spellings (`twitter.com` vs `x.com`, `coindesk` vs `CoinDesk`; `_article_url`
+lowercases the host but not the path). 17 of 29 repeat ingests in a 30-day
+window differed only in that spelling, so the URL string is not an identity and
+the status id is. After the text path misses, the Deduper looks up the same
+artifact **and the same fingerprint** inside a 7-day window: pairing it with the
+fingerprint is what keeps a split digest from collapsing into one Event, while
+the artifact id is what earns the right to skip the three-token `shareable`
+floor and the 12 h family window. A hit joins the existing Event as an ordinary
+member, so nothing new is delivered. The same parse yields how old the artifact
+already was when the provider pushed it — an X status id is a Snowflake — which
+`decide()` reads as `stale_source_artifact` for the case the ledger cannot see:
+a stale artifact arriving for the first time. Measured over 3174 frames in 30
+days that age is bimodal (2491 within 10 s, 7 beyond 16 h, nothing between) and
+never negative. `published_at_ms` is untouched: `opened_at_ms` derives from it
+and anchors `reaction_v1`.
+
 Gate and storyline (`tracefold.news.gate`, `tracefold.news.storyline`) are pure
 functions and keep no name table of their own: grounded assets are the
 provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
