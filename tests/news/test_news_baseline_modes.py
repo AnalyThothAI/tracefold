@@ -195,7 +195,8 @@ def test_each_mode_publishes_the_route_facts_only_it_can_know() -> None:
     )
     runtime = _runtime([case], program)
     assert runtime.route["answered_by"] == {"primary": 1}
-    assert runtime.latency_ms.keys() == {"wall_ms", "p50", "p95", "max", "num_threads"}
+    assert {"wall_ms", "p50", "p95", "max", "num_threads"} <= runtime.latency_ms.keys()
+    assert {"p95_with_failures", "max_with_failures"} <= runtime.latency_ms.keys()
     assert any("excludes:" in line for line in runtime.execution_scope), (
         "the runtime mode is the Program route, not the consumer — it must say what it still does not cover"
     )
@@ -490,3 +491,96 @@ def test_prediction_dimensions_follow_the_candidate_while_labels_do_not() -> Non
     assert kept.prediction_dimensions != changed.prediction_dimensions
     assert kept.prediction_dimensions["headline_fidelity"]["retention_hit"] == 1
     assert changed.prediction_dimensions["headline_fidelity"].get("retention_hit", 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("damage", "code"),
+    [
+        ("missing", "news_program_metric_policy_values_missing"),
+        ("tampered", "news_program_metric_policy_sha256_mismatch"),
+    ],
+)
+def test_an_unusable_policy_is_refused_before_the_first_provider_call(damage: str, code: str) -> None:
+    """A corpus that cannot verify its own policy costs nothing to reject.
+
+    The predecessor discovered it inside the metric — after two Predictor calls per case — and filed it as an
+    ordinary failed case, so "the policy is unverifiable" was published as "the route did not answer". Both
+    inputs are pure functions of `cases`, so the check belongs before the first request.
+    """
+
+    projection = dict(_case(1).episode.policy_metric)
+    if damage == "missing":
+        projection.pop("policy_values")
+        projection.pop("policy_sha256")
+    else:
+        projection["policy_values"] = {**projection["policy_values"], "similarity_max": 0.9}
+    broken = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}), recorded_action="")
+
+    primary = ScriptedPredictorAdapter([_SEMANTICS, _CARD])
+    program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
+    with pytest.raises(ValueError, match=f"news_program_baseline_policy_unusable:.*{code}"):
+        _runtime([broken], program)
+    assert primary.requests == [], "the corpus was rejected before anything was spent on it"
+
+
+def test_the_report_address_covers_the_corpus_content_not_only_its_ids() -> None:
+    """Two runs over the same case ids and different evidence must not share one address."""
+
+    program = DspyNewsSemanticProgram(
+        load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
+    )
+    base = _runtime([_case(1)], program)
+
+    edited = _case(1)
+    context = edited.episode.context.model_copy(update={"queue_lag_ms": edited.episode.context.queue_lag_ms + 9_000})
+    other = _runtime(
+        [BaselineCase(episode=edited.episode.model_copy(update={"context": context}), recorded_action="")],
+        DspyNewsSemanticProgram(
+            load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
+        ),
+    )
+
+    assert base.identity["case_root_sha256"] == other.identity["case_root_sha256"], "same cases"
+    assert base.identity["corpus_sha256"] != other.identity["corpus_sha256"], "different inputs"
+    assert base.report_sha256 != other.report_sha256
+
+
+def test_a_policy_without_a_version_is_refused_like_any_other_unusable_policy() -> None:
+    """The receipt names a `policy_version`. Scoring without one publishes provenance the example never had."""
+
+    projection = dict(_case(1).episode.policy_metric)
+    projection.pop("policy_version")
+    case = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}), recorded_action="")
+    program = DspyNewsSemanticProgram(
+        load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
+    )
+    with pytest.raises(ValueError, match="news_program_metric_policy_version_missing"):
+        _runtime([case], program)
+
+
+def test_the_route_publishes_its_retries_and_both_latency_populations() -> None:
+    """A retry is spend and a failure is the slowest case there is; the receipt has to say both."""
+
+    retried = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, _CARD])
+    report = _runtime([_case(1)], DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=retried))
+    assert report.route["retry_count"] == 1
+    assert report.route["physical_call_count"] == 3
+
+    clean = ScriptedPredictorAdapter([_SEMANTICS, _CARD])
+    quiet = _runtime([_case(2)], DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=clean))
+    assert quiet.route["retry_count"] == 0
+    # p50/p95/max cover answered cases, as the spec asks; the failure tail is published beside them.
+    assert "answered cases" in quiet.latency_ms["population"]
+    assert quiet.latency_ms["max_with_failures"] >= quiet.latency_ms["max"]
+
+
+def test_the_runtime_scope_names_the_told_context_it_replayed() -> None:
+    """It feeds each case the ToldContext frozen at production time, not a ledger rebuilt from this run's own
+    outputs. Without that line a reader may take the mode for a continuous production simulation."""
+
+    program = DspyNewsSemanticProgram(
+        load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
+    )
+    scope = _runtime([_case(1)], program).execution_scope
+    assert any("frozen production ToldContext" in line for line in scope)
+    assert any("no arm-local ledger replay" in line for line in scope)

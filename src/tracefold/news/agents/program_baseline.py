@@ -44,14 +44,15 @@ from ..models import TriageVerdict
 from ..semantic_contract import TriageContext
 from .program_judge import CardEquivalenceJudge
 from .program_metric import (
+    LABEL_GROUP,
     METRIC_ID,
-    NOT_SCORED,
-    SCORED_BY_PREDICTOR,
+    UNGROUPED_LABEL,
     DevelopmentEpisode,
     bind_metric,
     build_compile_example,
     metric_receipt,
     retrieval_receipt,
+    verify_policy_projection,
 )
 from .semantic_program import (
     PROGRAM_VERSION,
@@ -81,6 +82,7 @@ _EXECUTION_SCOPE = {
         "one shared fast retry per route",
         "fallback restarts the graph",
         "per-route deadline and primary circuit breaker",
+        "replays the frozen production ToldContext; no arm-local ledger replay",
         "excludes: consumer transaction, advisory lock, stale-evidence re-ask,"
         " degraded wire-card fallback, broker, delivery",
     ),
@@ -201,12 +203,12 @@ def _stored_prediction(case: BaselineCase) -> dspy.Prediction:
 
 
 def _dimension_tally(cases: Sequence[BaselineCase]) -> dict[str, Any]:
-    """What reviewers labelled, grouped by which Predictor's score the label feeds.
+    """What reviewers labelled, grouped by the stage each label describes.
 
     Grouped rather than flat because #150's Stage D is an ownership repair: `timeliness` is delivery-owned and
     no longer scored against EventSemantics, but dropping it from the report would hide that operators keep
-    labelling it. Under `not_scored` it stays visible as corpus metadata and can never be mistaken for
-    something a Predictor was graded on.
+    labelling it. Under `delivery` it stays visible as corpus metadata and can never be mistaken for
+    something a Predictor was graded on; `not_scored` is the catch-all for a dimension nobody has placed yet.
     """
 
     tally: dict[str, dict[str, dict[str, int]]] = {}
@@ -218,7 +220,7 @@ def _dimension_tally(cases: Sequence[BaselineCase]) -> dict[str, Any]:
             label = str(value or "")
             if label not in {"pass", "fail"}:
                 continue
-            group = SCORED_BY_PREDICTOR.get(str(name), NOT_SCORED)
+            group = LABEL_GROUP.get(str(name), UNGROUPED_LABEL)
             row = tally.setdefault(group, {}).setdefault(str(name), {"pass": 0, "fail": 0})
             row[label] += 1
     return {
@@ -405,12 +407,21 @@ def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
     table: dict[str, dict[str, int]] = {}
     for result in results:
         for name, outcome in result.dimension_outcomes:
-            table.setdefault(name, {})[outcome] = table.setdefault(name, {}).get(outcome, 0) + 1
+            row = table.setdefault(name, {})
+            row[outcome] = row.get(outcome, 0) + 1
     summary: dict[str, Any] = {}
     for name, counts in sorted(table.items()):
         total = sum(counts.values())
-        hits = counts.get("gold_hit", 0) + counts.get("retention_hit", 0) + counts.get("ungolded_change", 0)
-        summary[name] = {**counts, "n": total, "hit_rate": round(hits / total, 6) if total else None}
+        hits = sum(value for outcome, value in counts.items() if outcome.endswith("_hit"))
+        summary[name] = {
+            **counts,
+            "n": total,
+            # The reviewer labelled this dimension on `n` cases and left the rest alone. Publishing the
+            # silence keeps `n` readable: a dimension scored on 40 of 242 cases is a different claim from one
+            # scored on 240, and the rate alone cannot tell them apart.
+            "not_labelled": len(results) - total,
+            "hit_rate": round(hits / total, 6) if total else None,
+        }
     return summary
 
 
@@ -435,6 +446,7 @@ def _spend_from_partial_trace(program_trace: Any, attempts: int) -> dict[str, in
     return {
         "call_count": len(calls) if calls else max(0, int(attempts)),
         "physical_call_count": len(physical),
+        "retry_count": sum(1 for call in calls if int(getattr(call, "attempt", 1)) > 1),
         "input_tokens": sum(call.input_tokens for call in physical),
         "output_tokens": sum(call.output_tokens for call in physical),
         "provider_cost_microusd": sum(costs) if costs and all(cost is not None for cost in costs) else None,
@@ -479,12 +491,22 @@ def run_baseline(
     judge: CardEquivalenceJudge | None = None,
     semantic_judge: Any = None,
     runtime_identity: Mapping[str, Any] | None = None,
+    cohort_scope: str = "unknown",
     num_threads: int = 1,
 ) -> BaselineReport:
     """Score `cases` and return one content-addressable report. Never writes, never delivers, never promotes."""
 
     if not cases:
         raise ValueError("news_program_baseline_requires_cases")
+    if mode != "recorded":
+        # Before the first provider call. Every input to this check is a pure function of `cases`, so a
+        # corpus that cannot verify its own policy must cost nothing to reject — not two Predictor calls per
+        # case and a report that files the defect as "the route did not answer".
+        for case in cases:
+            try:
+                verify_policy_projection(case.episode.policy_metric)
+            except ValueError as exc:
+                raise ValueError(f"news_program_baseline_policy_unusable:{case.episode.case_id[:16]}:{exc}") from exc
     metric = bind_metric(judge)
     strict = bind_metric(None) if judge is not None else None
     examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
@@ -523,7 +545,7 @@ def run_baseline(
             try:
                 captured[case_id] = metric(gold, pred, None, None, None)
             except Exception as exc:  # a defect in the ruler, not an outcome of the route
-                metric_errors[case_id] = getattr(exc, "code", None) or f"metric_error:{type(exc).__name__}"
+                metric_errors[case_id] = _error_code(exc)
                 return 0.0
             if strict is not None:
                 # The same predictions scored the old way — the judge's verdicts are already cached, so this
@@ -571,14 +593,20 @@ def run_baseline(
         executed = asyncio.run(_run_runtime_route(cases, semantic_judge))
         wall_ms = int((time.monotonic() - started) * 1000)
         by_id = {case.episode.case_id: example for case, example in zip(cases, examples, strict=True)}
-        per_case_latency: list[int] = []
+        # Two populations, published separately. The spec asks for per-answered-case latency; a route that
+        # exhausts the chain is also the slowest case there is, so hiding it would understate exactly the
+        # tail an operator is bounding the run against.
+        answered_latency: list[int] = []
+        all_latency: list[int] = []
+        retries = 0
         calls = physical = input_tokens = output_tokens = 0
         known_cost = 0
         cost_unknown_n = 0
         routes: dict[str, int] = {}
         for case, judgment, error, elapsed_ms, spent in executed:
-            per_case_latency.append(elapsed_ms)
+            all_latency.append(elapsed_ms)
             if judgment is None:
+                retries += int(spent.get("retry_count") or 0)
                 calls += int(spent.get("call_count") or 0)
                 physical += int(spent.get("physical_call_count") or 0)
                 input_tokens += int(spent.get("input_tokens") or 0)
@@ -599,6 +627,8 @@ def run_baseline(
                     )
                 )
                 continue
+            answered_latency.append(elapsed_ms)
+            retries += sum(1 for call in judgment.trace.calls if int(getattr(call, "attempt", 1)) > 1)
             usage = judgment.usage
             calls += usage.call_count
             physical += usage.physical_call_count
@@ -622,7 +652,7 @@ def run_baseline(
                 # Unguarded, one bad episode raised *after* `asyncio.run` had already executed every case —
                 # destroying a run that had spent up to six real calls per case on the endpoint that also
                 # serves production Triage, with no `--out` file written.
-                code = getattr(exc, "code", None) or f"metric_error:{type(exc).__name__}"
+                code = _error_code(exc)
                 results.append(
                     _failed_case(
                         case,
@@ -648,14 +678,18 @@ def run_baseline(
             )
         latency = {
             "wall_ms": wall_ms,
-            "p50": _percentile(per_case_latency, 0.50),
-            "p95": _percentile(per_case_latency, 0.95),
-            "max": max(per_case_latency) if per_case_latency else 0,
+            "population": "answered cases; *_with_failures covers every requested case",
+            "p50": _percentile(answered_latency, 0.50),
+            "p95": _percentile(answered_latency, 0.95),
+            "max": max(answered_latency) if answered_latency else 0,
+            "p95_with_failures": _percentile(all_latency, 0.95),
+            "max_with_failures": max(all_latency) if all_latency else 0,
             "num_threads": 1,
         }
         route = {
             "answered_by": dict(sorted(routes.items())),
             "unanswered_n": sum(1 for outcome in executed if outcome.judgment is None),
+            "retry_count": retries,
             "call_count": calls,
             "physical_call_count": physical,
             "input_tokens": input_tokens,
@@ -677,6 +711,7 @@ def run_baseline(
         latency=latency,
         route=route,
         runtime_identity=runtime_identity,
+        cohort_scope=cohort_scope,
     )
 
 
@@ -691,6 +726,7 @@ def _build_report(
     latency: Mapping[str, Any],
     route: Mapping[str, Any],
     runtime_identity: Mapping[str, Any] | None,
+    cohort_scope: str = "unknown",
 ) -> BaselineReport:
     answered = [result for result in results if result.answered]
     failed = [result for result in results if not result.answered]
@@ -745,7 +781,18 @@ def _build_report(
             "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v2+v3"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
+            # `current` is the release-plane population (this Program, this policy, this epoch); `all`
+            # drops that and reads every accepted review in the window. Both are legitimate and they answer
+            # different questions, so the receipt names which one it read rather than leaving it to the
+            # command line that produced it.
+            "cohort_scope": cohort_scope,
             "case_root_sha256": canonical_sha(sorted(case.episode.case_id for case in cases)),
+            # The id list answers "the same cases?"; only this answers "the same inputs?". Hashing ids alone
+            # let one report SHA describe two different corpora — any evidence edit that kept the ids left the
+            # published address untouched, which is the one thing a content address must not do.
+            "corpus_sha256": canonical_sha(
+                [case.model_dump(mode="json") for case in sorted(cases, key=lambda item: item.episode.case_id)]
+            ),
             "cluster_root_sha256": canonical_sha(sorted({case.episode.cluster_id for case in cases})),
         },
         execution_scope=_EXECUTION_SCOPE[mode],
@@ -817,7 +864,25 @@ def _policy_identity(cases: Sequence[BaselineCase]) -> dict[str, Any]:
     if len(seen) > 1:
         raise ValueError(f"news_program_baseline_policy_not_uniform:{len(seen)}")
     sha, payload = next(iter(seen.items()))
+    if canonical_sha(dict(payload["policy_values"])) != sha:
+        # Recomputed rather than forwarded. The projection's own pair is what the metric verifies per example;
+        # publishing it unchecked let a tampered corpus put mismatched values and SHA into the receipt.
+        raise ValueError("news_program_baseline_policy_identity_mismatch")
     return {"policy_sha256": sha, **payload}
+
+
+def _error_code(exc: Exception) -> str:
+    """A failure code an operator can act on.
+
+    `metric_error:ValueError` said nothing; the message it swallowed said
+    `news_program_metric_policy_sha256_mismatch:6f59f3a6!=1c64d060`.
+    """
+
+    code = getattr(exc, "code", None)
+    if code:
+        return str(code)
+    detail = str(exc).strip().splitlines()[0][:80] if str(exc).strip() else type(exc).__name__
+    return f"metric_error:{detail}"
 
 
 def _failed_case(

@@ -1093,6 +1093,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
+        cohort_scope="all" if bool(args.all_cohorts) else "current",
         mode=mode,
         artifact=artifact,
         program_factory=compile_program_factory if mode == "compile_live" else None,
