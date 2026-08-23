@@ -229,7 +229,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
 
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import EventRubricSubmission, Principal, ReviewDesk, TaskRef
-    from tracefold.news.agents.program_review_drafter import ReviewDraft, submission_payload
+    from tracefold.news.agents.program_review_drafter import DRAFT_SCHEMA, ReviewDraft, submission_payload
     from tracefold.platform.postgres.postgres_client import transaction
 
     # A distinguishable author, on purpose. Measured against 25 Events a human had already judged, the drafter
@@ -240,7 +240,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     principal = Principal(subject=str(args.reviewer))
 
     batch = _read_json_or_yaml(str(args.file))
-    if str(batch.get("schema_id") or "") != "tracefold.news.review_draft_batch.v1":
+    if str(batch.get("schema_id") or "") != DRAFT_SCHEMA:
         raise ValueError("news_review_accept_drafts_schema_invalid")
     minimum = float(args.min_confidence)
     only = tuple(part.strip() for part in str(args.only).split(",") if part.strip())
