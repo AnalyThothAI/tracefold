@@ -14,16 +14,11 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
     # public News projection row into a Trading candidate.
     "trading": {"trading", "platform"},
 }
-# Exact private seams for the composition root and concrete adapters. They are
-# implementation collaborators of the public News capabilities, not
-# product callers or compatibility interfaces; every new edge must be named.
-ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
-    "src/tracefold/app/cli/commands/news.py": {
-        # #143: the offline baseline harness. The CLI reads the corpus and prints the receipt; DSPy stays
-        # behind this module, so the "no dspy in the CLI layer" boundary is unaffected.
+# Private implementation imports are ownership rules, not historical file exceptions. Only the
+# named composition families and concrete adapter families may reach the named private contracts.
+PRIVATE_BUSINESS_IMPORT_RULES = {
+    "app.news_cli": (
         "tracefold.news.agents.program_baseline",
-        # #148: model-drafted rubrics. Proposals only — the CLI writes them to a file, and a human accepts
-        # each one through the existing ReviewDesk submit path.
         "tracefold.news.agents.program_review_drafter",
         "tracefold.news.agents.program_compiler_launcher",
         "tracefold.news.agents.program_compiler_proxy",
@@ -35,43 +30,27 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.agents.semantic_program",
         "tracefold.news.bus",
         "tracefold.news.candidate_evaluator",
-        "tracefold.news.review",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
-    },
-    "src/tracefold/app/query_audit.py": {
-        "tracefold.news.query_specs",
-    },
-    "src/tracefold/app/learning_runtime.py": {
+        "tracefold.news.review",
+    ),
+    "app.composition": (
         "tracefold.news.agents.semantic_program",
-    },
-    "src/tracefold/app/repositories.py": {
         "tracefold.news.instruments_repository",
         "tracefold.news.price_repository",
+        "tracefold.news.query_specs",
         "tracefold.news.repository",
-        # #104: the same seam one capability over. Composition only — the session hands each
-        # repository the connection and nothing else.
         "tracefold.trading.repository",
-    },
-    "src/tracefold/app/workers/__init__.py": {
+    ),
+    "app.workers": (
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
         "tracefold.news.canary",
         "tracefold.news.consumers",
-    },
-    # #162: the Workers root's typed task declaration is composition, not a News product caller.
-    "src/tracefold/app/workers/task_contract.py": {"tracefold.news.consumers"},
-    "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
-    # The venue adapters are the #75 analogue of the OpenNews adapter: they parse a provider catalogue into the
-    # pure `Instrument` shape the News package owns.
-    "src/tracefold/integrations/venues/binance.py": {"tracefold.news.instruments"},
-    # #88: the price adapters are the same seam one layer over — they parse provider quotes and candles into
-    # the pure `ProviderQuote` / `Candle` shapes the News package owns.
-    "src/tracefold/integrations/venues/candles.py": {"tracefold.news.pricing"},
-    "src/tracefold/integrations/venues/quotes.py": {"tracefold.news.pricing"},
-    "src/tracefold/integrations/venues/hyperliquid.py": {"tracefold.news.instruments"},
-    "src/tracefold/integrations/venues/us_reference.py": {"tracefold.news.instruments"},
-    "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
+    ),
+    "integrations.opennews": ("tracefold.news.opennews",),
+    "integrations.rabbitmq": ("tracefold.news.bus",),
+    "integrations.venues": ("tracefold.news.instruments", "tracefold.news.pricing"),
 }
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
 # would have to be named here; no News module may write another business package's tables.
@@ -147,15 +126,101 @@ def _python_files(root: Path) -> list[Path]:
     )
 
 
+def _module_exists(module: str) -> bool:
+    if not module.startswith("tracefold."):
+        return False
+    relative = module.split(".")[1:]
+    return SRC.joinpath(*relative).with_suffix(".py").exists() or SRC.joinpath(*relative, "__init__.py").exists()
+
+
 def _imports(path: Path) -> set[str]:
     imports: set[str] = set()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolved_from_module(path, node)
+            if not module:
+                continue
+            imports.add(module)
+            # ``from tracefold.news import consumers`` imports the private submodule just as surely
+            # as ``import tracefold.news.consumers``. Record that edge without mistaking public
+            # symbols exported by the package root for modules.
+            imports.update(
+                candidate
+                for alias in node.names
+                if alias.name != "*"
+                if _module_exists(candidate := f"{module}.{alias.name}")
+            )
     return imports
+
+
+def _module_name(path: Path) -> str:
+    relative = path.relative_to(SRC).with_suffix("")
+    parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
+    return ".".join(("tracefold", *parts))
+
+
+def _resolved_from_module(path: Path, node: ast.ImportFrom) -> str:
+    if node.level == 0:
+        return node.module or ""
+    importer_parts = _module_name(path).split(".")
+    package_parts = importer_parts if path.name == "__init__.py" else importer_parts[:-1]
+    keep = len(package_parts) - (node.level - 1)
+    if keep < 0:
+        return ""
+    suffix = (node.module or "").split(".") if node.module else []
+    return ".".join((*package_parts[:keep], *suffix))
+
+
+def _business_dependencies(path: Path) -> set[str]:
+    dependencies: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = (alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            resolved = _resolved_from_module(path, node)
+            if resolved == "tracefold":
+                dependencies.update(alias.name for alias in node.names if alias.name in BUSINESS_PACKAGES)
+                continue
+            names = (resolved,) if resolved else ()
+        else:
+            continue
+        for imported in names:
+            parts = imported.split(".")
+            if len(parts) > 1 and parts[0] == "tracefold" and parts[1] in BUSINESS_PACKAGES:
+                dependencies.add(parts[1])
+    return dependencies
+
+
+def _private_import_allowed(importer: str, imported: str) -> bool:
+    parts = importer.split(".")
+    family: str | None = None
+    if parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("news"):
+        family = "app.news_cli"
+    elif parts[:3] == ["tracefold", "app", "workers"]:
+        family = "app.workers"
+    elif parts[:2] == ["tracefold", "app"] and len(parts) == 3:
+        family = "app.composition"
+    elif parts[:3] == ["tracefold", "integrations", "opennews"]:
+        family = "integrations.opennews"
+    elif parts[:3] == ["tracefold", "integrations", "venues"]:
+        family = "integrations.venues"
+    elif parts == ["tracefold", "integrations", "rabbitmq"]:
+        family = "integrations.rabbitmq"
+    allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())
+    return any(imported == allowed or imported.startswith(f"{allowed}.") for allowed in allowed_imports)
+
+
+def test_private_business_import_rules_follow_consumer_families() -> None:
+    assert _private_import_allowed(
+        "tracefold.app.cli.commands.news_learning",
+        "tracefold.news.agents.program_baseline",
+    )
+    assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.repository")
+    assert not _private_import_allowed("tracefold.app.http.routes_news", "tracefold.news.repository")
 
 
 def test_backend_has_only_the_expected_package_shape() -> None:
@@ -237,12 +302,31 @@ def test_business_dependency_dag_is_one_way() -> None:
     violations: dict[str, list[str]] = {}
     for owner, allowed in ALLOWED_BUSINESS_DEPENDENCIES.items():
         for path in _python_files(SRC / owner):
-            dependencies = {
-                imported.split(".")[1]
-                for imported in _imports(path)
-                if imported.startswith("tracefold.") and len(imported.split(".")) > 1
-            }
+            dependencies = _business_dependencies(path)
             unexpected = sorted(dependencies - allowed)
+            if unexpected:
+                violations[path.relative_to(ROOT).as_posix()] = unexpected
+    assert violations == {}
+
+
+def test_relative_sibling_imports_are_resolved_before_dag_classification() -> None:
+    node = ast.parse("from ..trading import Candidate\n").body[0]
+    assert isinstance(node, ast.ImportFrom)
+    assert _resolved_from_module(SRC / "news" / "probe.py", node) == "tracefold.trading"
+
+
+def test_app_is_the_only_top_level_package_that_may_know_both_businesses() -> None:
+    allowed = {
+        "app": {"news", "trading"},
+        "integrations": {"news"},
+        "news": {"news"},
+        "platform": set(),
+        "trading": {"trading"},
+    }
+    violations: dict[str, list[str]] = {}
+    for owner, owner_allowed in allowed.items():
+        for path in _python_files(SRC / owner):
+            unexpected = sorted(_business_dependencies(path) - owner_allowed)
             if unexpected:
                 violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}
@@ -280,12 +364,11 @@ def test_external_consumers_use_declared_business_interfaces() -> None:
         for path in _python_files(SRC):
             if path.relative_to(SRC).parts[0] == package:
                 continue
-            relative = path.relative_to(ROOT).as_posix()
-            allowed_internal_seams = ALLOWED_INTERNAL_BUSINESS_IMPORTS.get(relative, set())
+            importer = _module_name(path)
             violations.extend(
                 f"{path.relative_to(ROOT)} -> {imported}"
                 for imported in _imports(path)
-                if imported.startswith(prefix) and imported not in allowed_internal_seams
+                if imported.startswith(prefix) and not _private_import_allowed(importer, imported)
             )
     assert violations == []
 
@@ -312,9 +395,17 @@ def test_business_sql_uses_only_owned_tables() -> None:
 
 
 def test_worker_runtime_v2_has_one_public_root_and_no_retired_framework() -> None:
-    workers_source = (SRC / "app" / "workers" / "__init__.py").read_text(encoding="utf-8")
-    assert '__all__ = ["run_workers"]' in workers_source
-    assert "async def run_workers(" in workers_source
+    from tracefold.app import workers
+
+    assert workers.__all__ == ["run_workers"]
+    implementations = [
+        path.relative_to(ROOT).as_posix()
+        for path in _python_files(SRC / "app" / "workers")
+        for node in ast.parse(path.read_text(encoding="utf-8"), filename=str(path)).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_workers"
+    ]
+    assert len(implementations) == 1
+    assert callable(workers.run_workers)
     retired = (
         SRC / "app" / "worker_manifest.py",
         SRC / "app" / "worker_runtime_supervisor.py",
@@ -348,7 +439,7 @@ def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> N
 
 def test_news_v3_has_one_pipeline_wiring_and_one_broker_adapter() -> None:
     news_source = "\n".join(path.read_text(encoding="utf-8") for path in _python_files(SRC / "news"))
-    workers_source = (SRC / "app" / "workers" / "__init__.py").read_text(encoding="utf-8")
+    workers_source = "\n".join(path.read_text(encoding="utf-8") for path in _python_files(SRC / "app" / "workers"))
 
     assert news_source.count("class NewsPipeline:") == 1
     assert news_source.count("class DeduperConsumer:") == 1
