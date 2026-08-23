@@ -25,6 +25,10 @@ _BREAK_RE = re.compile(r"<br\s*/?>|\r\n|\r|\n", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 _NUMBERED_RE = re.compile(r"^\s*(?P<number>\d{1,2})[.)、:：]\s*(?P<text>\S.*)$")
+# `10:30 中国8月社会消费品零售总额` is a clock time, not item 10.  A 财经日程 lists consecutive hours, so the
+# numbering reads as sequential and the whole calendar splits into Events whose titles have lost their hour
+# ("30 中国8月社会消费品零售总额").  Leading zeros do not help: `01:30 / 02:00 / 03:00` parses as 1, 2, 3.
+_CLOCK_RE = re.compile(r"^\s*\d{1,2}[:：]\d{2}(?!\d)")
 _WORD_RE = re.compile(r"\w")
 _MIN_EXPLICIT_UNITS = 3
 _MIN_FACT_CHARS = 12
@@ -119,7 +123,7 @@ def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> t
     blocks = _blocks(raw_text)
     numbered: list[tuple[int, str, int, int]] = []
     for block, start, end in blocks:
-        match = _NUMBERED_RE.match(block)
+        match = None if _CLOCK_RE.match(block) else _NUMBERED_RE.match(block)
         if match is None:
             continue
         text = _SPACE_RE.sub(" ", match.group("text")).strip()

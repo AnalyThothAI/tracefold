@@ -219,6 +219,11 @@ def admit_item(
 
     coins = tuple(c for c in (metadata.get("coins") or []) if isinstance(c, Mapping))
     provider_score = metadata.get("score")
+    # A split unit's shared evidence is the digest's lead, not the parent's first line — which on a bare numbered
+    # digest *is* bullet 1.  The Gate reads `title + raw_first_line` for cashtags and for the macro/energy/PR
+    # lexicons, so the old value grounded every bullet on whatever the first one happened to say.  This is the same
+    # text the model receives as `content`, so the two now agree on what the digest's shared context is.
+    gate_context = fact.context if fact.method == "explicit_numbered" else parent_extracted.first_line
     gate = evaluate_gate(
         GateInput(
             title=title,
@@ -228,7 +233,7 @@ def admit_item(
             coins=coins,
             ingest_mode=ingest_mode,
             watchlist_symbols=watchlist_symbols,
-            raw_first_line=parent_extracted.first_line,
+            raw_first_line=gate_context,
             suppress_low_signal=suppress_low_signal,
             instrument_classes=instrument_classes,
         )

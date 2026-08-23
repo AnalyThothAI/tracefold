@@ -168,6 +168,28 @@ def test_fact_unit_context_keeps_the_lead_when_the_preamble_overflows() -> None:
     assert units[0].context.count(filler) == 1
 
 
+def test_fact_units_never_read_a_clock_time_as_a_numbered_item() -> None:
+    """A 财经日程 lists consecutive hours, so `10:30 / 11:00 / 12:00` used to parse as items 10, 11, 12 —
+    sequential, three of them — and split the calendar into Events whose titles had lost their hour."""
+
+    for calendar in (
+        "今日财经日程：\r\n10:30 中国8月社会消费品零售总额同比公布\r\n"
+        "11:00 欧元区工业产出月率数据公布\r\n12:00 美国至9月API原油库存变动数据公布",
+        # Leading zeros parse as 1, 2, 3 — a `numbers[0] == 1` guard would not have caught this one.
+        "财经日历\r\n01:30 美联储主席鲍威尔在杰克逊霍尔发表主旨演讲\r\n"
+        "02:00 美国至9月API原油库存变动数据公布\r\n03:00 新西兰联储公布利率决议与政策声明",
+    ):
+        units = extract_fact_units(item_id="item-6", raw_text=calendar, fallback_title="财经日程")
+        assert len(units) == 1 and units[0].method == "whole_item"
+
+    # A real numbered digest that merely mentions a time still splits.
+    mixed = (
+        "市场快讯：\r\n1. 商务部反对欧方打压中国企业并要求纠正。\r\n"
+        "2. Moderna 将于 10:30 公布下调后的全年指引。\r\n3. 沃尔玛上调全年销售预期至 4.8%。"
+    )
+    assert len(extract_fact_units(item_id="item-7", raw_text=mixed, fallback_title="市场快讯")) == 3
+
+
 def test_fact_unit_context_is_empty_when_the_digest_has_no_preamble() -> None:
     """A bare jin10 list has no lead, and the first bullet is *not* one: it is a different fact."""
 
