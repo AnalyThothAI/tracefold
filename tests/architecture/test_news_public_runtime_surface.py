@@ -224,7 +224,7 @@ def test_pure_news_modules_do_not_import_io_clients() -> None:
     for name in PURE_NEWS_MODULES:
         modules = _imported_modules(NEWS_ROOT / name)
         assert not any(module.startswith("tracefold.news.repository") for module in modules), name
-        assert not any(module.startswith("tracefold.news.consumers") for module in modules), name
+        assert not any(module.startswith("tracefold.news.pipeline") for module in modules), name
         assert not any(module.startswith("tracefold.integrations") for module in modules), name
 
 
@@ -245,9 +245,9 @@ def test_analyst_lane_is_retired() -> None:
     for retired in ("analyst.py", "tools.py"):
         assert not (NEWS_ROOT / "agents" / retired).exists()
     assert not (NEWS_ROOT / "agents" / "prompts" / "NEWS_ANALYST.md").exists()
-    consumers = (NEWS_ROOT / "consumers.py").read_text(encoding="utf-8")
-    assert "AnalystConsumer" not in consumers
-    assert "news.deep" not in consumers and "render_followup_card" not in consumers
+    pipeline = "\n".join(path.read_text(encoding="utf-8") for path in sorted((NEWS_ROOT / "pipeline").glob("*.py")))
+    assert "AnalystConsumer" not in pipeline
+    assert "news.deep" not in pipeline and "render_followup_card" not in pipeline
     assert not (NEWS_ROOT / "agents" / "triage_model.py").exists()
     program = (NEWS_ROOT / "agents" / "semantic_program.py").read_text(encoding="utf-8")
     assert "EventSemantics" in program and "ReaderCard" in program and "_assemble" in program
@@ -337,7 +337,7 @@ def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:
         for path in (
             NEWS_ROOT / "triage_rules.py",
             NEWS_ROOT / "repository.py",
-            NEWS_ROOT / "consumers.py",
+            *(sorted((NEWS_ROOT / "pipeline").glob("*.py"))),
             NEWS_ROOT / "candidate_evaluator.py",
             SRC / "platform" / "config" / "models.py",
         )
@@ -348,7 +348,7 @@ def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:
     routes = [SRC / "app" / "http" / "routes" / name for name in ("feed.py", "events.py", "review.py", "status.py")]
     modules = set().union(*(_imported_modules(path) for path in routes))
-    assert not any(module.startswith(("tracefold.news.consumers", "tracefold.news.bus")) for module in modules)
+    assert not any(module.startswith(("tracefold.news.pipeline", "tracefold.news.bus")) for module in modules)
     assert not any(module.startswith("tracefold.integrations.rabbitmq") for module in modules)
     assert set().union(*(_imported_roots(path) for path in routes)).isdisjoint(IO_MODULE_ROOTS)
     called = set().union(*(_called_attribute_names(path) for path in routes))

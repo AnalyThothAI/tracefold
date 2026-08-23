@@ -28,7 +28,9 @@ GRANDFATHERED_MODULE_LINES = {
     "news/agents/program_metric.py": 1120,
     "news/agents/semantic_program.py": 3645,
     "news/candidate_evaluator.py": 3785,
-    "news/consumers.py": 2075,
+    # PR4 moved the 823-line TriageConsumer atomically. Its body is deliberately untouched here;
+    # later ownership PRs may reduce this final module exception without changing the live route.
+    "news/pipeline/triage.py": 966,
     "news/price_repository.py": 1048,
     "news/repository.py": 2588,
     "news/review.py": 2456,
@@ -70,10 +72,10 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/candidate_evaluator.py", "CandidateEvaluator._persist_program_call"): 212,
     ("news/candidate_evaluator.py", "CandidateEvaluator._evaluate_evidence"): 311,
     ("news/candidate_evaluator.py", "_observed_production_output"): 142,
-    ("news/consumers.py", "TriageConsumer.handle"): 419,
-    ("news/consumers.py", "TriageConsumer._judge_telemetry"): 126,
+    ("news/pipeline/triage.py", "TriageConsumer.handle"): 419,
+    ("news/pipeline/triage.py", "TriageConsumer._judge_telemetry"): 126,
     ("news/eval/replay.py", "replay_hits"): 133,
-    ("news/events.py", "admit_item"): 261,
+    ("news/pipeline/admission.py", "admit_item"): 261,
     ("news/price_loops.py", "EventReactionLoop.turn"): 104,
     ("news/query_specs.py", "news_query_specs"): 145,
     ("news/repository.py", "NewsRepository.insert_event"): 103,
@@ -131,24 +133,6 @@ LEGACY_INTERNAL_ABSOLUTE_IMPORTS = {
     ("news/candidate_evaluator.py", "tracefold.news.SemanticJudge"),
     ("news/candidate_evaluator.py", "tracefold.news.SemanticJudgeError"),
     ("news/candidate_evaluator.py", "tracefold.news.TriageContext"),
-    ("news/consumers.py", "tracefold.news.EditorialEnvelope"),
-    ("news/consumers.py", "tracefold.news.ProgramTrace"),
-    ("news/consumers.py", "tracefold.news.ProgramUsage"),
-    ("news/consumers.py", "tracefold.news.ScoredJudgment"),
-    ("news/consumers.py", "tracefold.news.SemanticJudge"),
-    ("news/consumers.py", "tracefold.news.SemanticJudgeError"),
-    ("news/consumers.py", "tracefold.news.TOLD_SOURCE_MAX"),
-    ("news/consumers.py", "tracefold.news.TOLD_WINDOW_MS"),
-    ("news/consumers.py", "tracefold.news.TriageContext"),
-    ("news/eval/replay.py", "tracefold.news.events"),
-    ("news/eval/replay.py", "tracefold.news.exact_atom_identity"),
-    ("news/eval/replay.py", "tracefold.news.gate"),
-    ("news/eval/replay.py", "tracefold.news.minhash"),
-    ("news/eval/replay.py", "tracefold.news.models"),
-    ("news/eval/replay.py", "tracefold.news.opennews"),
-    ("news/eval/replay.py", "tracefold.news.storyline"),
-    ("news/eval/replay.py", "tracefold.news.titles"),
-    ("news/eval/replay.py", "tracefold.news.tokens"),
     ("news/query_specs.py", "tracefold.news.pricing"),
     ("news/recording_replay.py", "tracefold.news.SemanticJudgment"),
     ("news/recording_replay.py", "tracefold.news.TriageContext"),
@@ -285,6 +269,22 @@ def test_production_module_and_function_sizes_only_ratchet_down() -> None:
         for relative, qualified_name in GRANDFATHERED_FUNCTION_LINES.keys() - seen_functions
     )
     assert violations == []
+
+
+def test_news_pipeline_split_has_no_compatibility_aliases() -> None:
+    assert not (SRC / "news" / "consumers.py").exists()
+    assert not (SRC / "news" / "events.py").exists()
+    assert {
+        "admission.py",
+        "delivery.py",
+        "maintenance.py",
+        "receiver.py",
+        "recovery.py",
+        "root.py",
+        "runtime.py",
+        "triage.py",
+        "triage_audit.py",
+    } <= {path.name for path in (SRC / "news" / "pipeline").glob("*.py")}
 
 
 def test_business_modules_do_not_add_package_root_back_imports() -> None:

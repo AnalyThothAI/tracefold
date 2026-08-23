@@ -20,7 +20,6 @@ from tracefold.news import (
     SemanticJudgment,
     TriageContext,
 )
-from tracefold.news import consumers as consumers_module
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
@@ -31,14 +30,15 @@ from tracefold.news.bus import (
     TransientError,
 )
 from tracefold.news.canary import CanaryRuntimeArm
-from tracefold.news.consumers import (
-    DeduperConsumer,
-    DelivererConsumer,
-    JanitorLoop,
-    RecoveryRunner,
-    TriageConsumer,
-)
 from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION
+from tracefold.news.oi_signals import DEFAULT_OI_POLICY, program_sha256
+from tracefold.news.pipeline import admission as admission_module
+from tracefold.news.pipeline import triage_audit as triage_audit_module
+from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.maintenance import JanitorLoop
+from tracefold.news.pipeline.recovery import RecoveryRunner
+from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.semantic_contract import ProgramCallTrace
 from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
@@ -269,7 +269,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
         seen.append(kwargs)
         return SimpleNamespace(results=(next(admissions),))
 
-    monkeypatch.setattr(consumers_module, "admit_frame", fake_admit)
+    monkeypatch.setattr(admission_module, "admit_frame", fake_admit)
     news = RecordingNews()
     bus = FakeBus()
     deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"BTC"}))
@@ -317,7 +317,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
 
 def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consumers_module, "admit_frame", lambda *_a, **_k: pytest.fail("db never admitted"))
+    monkeypatch.setattr(admission_module, "admit_frame", lambda *_a, **_k: pytest.fail("db never admitted"))
     news = RecordingNews()
     bus = FakeBus()
     deduper = DeduperConsumer(
@@ -663,10 +663,10 @@ def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_cal
         calls=(synthetic, *fallback_calls),
     )
 
-    usage = consumers_module._usage_from_partial_trace(program_trace, attempts=3)
+    usage = triage_audit_module._usage_from_partial_trace(program_trace, attempts=3)
     trace: dict[str, Any] = {}
     executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
-    consumers_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
+    triage_audit_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
 
     assert usage == {
         "wall_latency_ms": 14,
@@ -688,10 +688,10 @@ def test_failed_program_synthetic_only_trace_has_zero_physical_cost() -> None:
     synthetic = _synthetic_program_call()
     program_trace = _program_trace(verdict_sha256=None, calls=(synthetic,))
 
-    usage = consumers_module._usage_from_partial_trace(program_trace, attempts=1)
+    usage = triage_audit_module._usage_from_partial_trace(program_trace, attempts=1)
     trace: dict[str, Any] = {}
     executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
-    consumers_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
+    triage_audit_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
 
     assert usage == {
         "wall_latency_ms": 0,
@@ -1028,7 +1028,7 @@ def _oi_delivery_news() -> RecordingNews:
         latest_verdict=lambda *, event_id, stage: {
             "final_decision": "push",
             "program_version": "news_oi_signal_v1",
-            "program_sha256": consumers_module.program_sha256(consumers_module.DEFAULT_OI_POLICY),
+            "program_sha256": program_sha256(DEFAULT_OI_POLICY),
             "verdict": {
                 "direction": "bullish",
                 "magnitude": 2,
@@ -1086,7 +1086,7 @@ def test_deliverer_does_not_upgrade_a_queued_pre_v2_oi_verdict() -> None:
     news = _oi_delivery_news()
     current = news.responses["latest_verdict"]
     pre_v2_program_sha256 = "a0c21e0745d4a7536431db744de3d4df241b223ca8345cc2e389426c245ad626"
-    assert pre_v2_program_sha256 != consumers_module.program_sha256(consumers_module.DEFAULT_OI_POLICY)
+    assert pre_v2_program_sha256 != program_sha256(DEFAULT_OI_POLICY)
     news.responses["latest_verdict"] = lambda *, event_id, stage: {
         **current(event_id=event_id, stage=stage),
         "program_sha256": pre_v2_program_sha256,

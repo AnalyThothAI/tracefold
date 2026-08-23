@@ -15,8 +15,8 @@ from tests.postgres_test_utils import (
 from tracefold.app.http.app import create_app
 from tracefold.app.http.responses import _json
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import NewsSettings, Settings
 
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"

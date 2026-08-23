@@ -10,15 +10,15 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from tracefold.news.events import NEAR_DUPLICATE_THRESHOLD, _compatible, _engine_type, _strong_facts
-from tracefold.news.exact_atom_identity import event_family, event_window_ms
-from tracefold.news.gate import GateInput, evaluate_gate
-from tracefold.news.minhash import band_keys, minhash_signature
-from tracefold.news.models import EngineType
-from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.storyline import preliminary_storyline_key
-from tracefold.news.titles import extract_title
-from tracefold.news.tokens import comparison_tokens, jaccard
+from ..exact_atom_identity import event_family, event_window_ms
+from ..gate import GateInput, evaluate_gate
+from ..minhash import band_keys, minhash_signature
+from ..models import EngineType
+from ..opennews import parse_opennews_message
+from ..pipeline.admission import NEAR_DUPLICATE_THRESHOLD, _compatible, _engine_type, _strong_facts
+from ..storyline import preliminary_storyline_key
+from ..titles import extract_title
+from ..tokens import comparison_tokens, jaccard
 
 
 def replay_hits(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from tracefold.app.workers.task_contract import worker_task_names
-from tracefold.news.consumers import NewsPipeline
+from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading import TradingConfig, build_pipeline
 
 

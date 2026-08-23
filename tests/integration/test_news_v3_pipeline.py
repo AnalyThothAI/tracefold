@@ -12,9 +12,9 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.events import admit_frame, admit_item
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
+from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 
 pytestmark = pytest.mark.integration

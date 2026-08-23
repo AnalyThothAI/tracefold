@@ -158,11 +158,16 @@ tracefold.news
   candidate_evaluator.py content-addressed program_v6 datasets and stable/candidate evaluation workflow
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
-  events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   agents/             SemanticJudge, DSPy Program artifacts/adapters, and the cold compiler
   delivery.py / control.py  cards, control commands
-  consumers.py        Receiver, Recovery, Deduper, Triage, Deliverer, Janitor
+  pipeline/
+    admission.py      the atomic Deduper transaction and raw-queue consumer
+    receiver.py / recovery.py  live OpenNews ingest and official-history recovery
+    triage.py / triage_audit.py  SemanticJudge route, policy persistence, execution audit
+    delivery.py       one-attempt reader-card delivery consumer
+    maintenance.py    instrument snapshot, retention, broker snapshot, outbox catch-up
+    root.py / runtime.py  Workers composition and shared database/stop mechanics
   repository.py / query_specs.py  news_* access and audited reads
   eval/               provider-hits Deduper+Gate replay only
 
@@ -480,8 +485,9 @@ on startup and after any gap.
 
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
 `aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, error classes,
-and Publisher/Consumer protocols. `tracefold.news.consumers` holds the six
-consumers wired by `tracefold.app.workers.wiring.news`; they run as
+and Publisher/Consumer protocols. `tracefold.news.pipeline` physically separates
+Receiver, Recovery, Admission, Triage, Delivery, and Maintenance; the concrete
+stages are wired directly by `tracefold.app.workers.wiring.news` and run as
 asyncio tasks in the single Workers process but coordinate only through the
 broker and PostgreSQL keys, so they can be scaled out without code changes.
 News consumers use their own four-slot database lane
@@ -496,7 +502,7 @@ lines and pinned wire source labels/suffixes; exchange names and `@handles`
 are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
 `tracefold.news.exact_atom_identity`
 normalizes for comparison, `tracefold.news.tokens` + `minhash` produce the
-band keys stored in `news_event_bands`, and `tracefold.news.events.admit_item`
+band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.admit_item`
 is the single Deduper transaction. Fingerprints of at most two tokens never
 share an Event.
 

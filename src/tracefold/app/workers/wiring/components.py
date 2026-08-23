@@ -7,7 +7,7 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
-from tracefold.news.consumers import NewsPipeline
+from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings
 
 

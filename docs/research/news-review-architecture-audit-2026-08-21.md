@@ -224,7 +224,7 @@ Triage/复盘必须明确自己读取哪一个，不能用一个含混 SQL 同�
 
 ### P0-2：Event evidence 在首次 leader 上过早冻结
 
-`event_card()` 只读取 leader item。后来的 stronger member 能升级 Gate facts/assets 并让 suppressed Event 进入 Triage，却不会替换 leader 文本或 provider metadata；已经 judged 的 Event 加强后也不会产生新的判断。[`repository.py`](../../src/tracefold/news/repository.py#L530-L541)；[`events.py`](../../src/tracefold/news/events.py#L260-L316)
+`event_card()` 只读取 leader item。后来的 stronger member 能升级 Gate facts/assets 并让 suppressed Event 进入 Triage，却不会替换 leader 文本或 provider metadata；已经 judged 的 Event 加强后也不会产生新的判断。[`repository.py`](../../src/tracefold/news/repository.py#L530-L541)；[`pipeline/admission.py`](../../src/tracefold/news/pipeline/admission.py)
 
 这会出现“更强证据使事件入场，但模型仍只看到旧弱标题”的不一致。需要不可变的：
 

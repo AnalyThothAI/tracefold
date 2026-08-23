@@ -26,8 +26,8 @@ from tracefold.news import (
     TradeRelevanceV1,
     TriageVerdict,
 )
-from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import Settings
 
 pytestmark = pytest.mark.integration

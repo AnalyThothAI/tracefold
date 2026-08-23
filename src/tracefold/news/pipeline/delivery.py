@@ -1,0 +1,188 @@
+"""At-most-once reader-card delivery stage."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+from collections.abc import Sequence
+from typing import Any
+
+from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
+from ..delivery import reader_assets, render_first_card
+from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
+from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
+from .runtime import _Db
+
+# The quote read gets its own short session. A price is display-only and must
+# never delay, retry, or suppress a delivery; every failure degrades to no
+# market line while the card proceeds normally (#113).
+_QUOTE_READ_TIMEOUT_SECONDS = 1.5
+
+
+class DelivererConsumer:
+    """SAC consumer: one Feishu attempt per (event, kind); crash between send and ack never resends."""
+
+    def __init__(
+        self,
+        *,
+        bus: Any,
+        db: Any,
+        sender: Any | None,
+        finite_operations: Any,
+        min_interval_seconds: float,
+        oi_policy: OiPolicy = DEFAULT_OI_POLICY,
+    ) -> None:
+        self.bus = bus
+        self.db = _Db(db)
+        self.sender = sender
+        self.finite = finite_operations
+        self.min_interval = float(min_interval_seconds)
+        self._oi_program_sha256 = program_sha256(oi_policy)
+        self._last_send_at = 0.0
+
+    async def run(self, *, stop_event: asyncio.Event) -> None:
+        with contextlib.suppress(TransientError, DeferError):
+            await self.db.tx(
+                "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
+            )
+        await self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event)
+
+    async def handle(self, message: BusMessage) -> None:
+        event_id = str(message.payload.get("event_id") or "")
+        kind = "first"  # one Event, one card; there is no follow-up lane
+        if not event_id:
+            raise PermanentError("news_event_id_missing")
+        stamp = now_ms()
+        bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
+        if bundle is None:
+            raise PermanentError("news_delivery_inputs_missing")
+        card, triage_row, oi_signal = bundle
+        tv = dict(triage_row.get("verdict") or {})
+        if triage_row["final_decision"] not in {"push", "escalate"}:
+            return
+        if self.sender is None:
+            await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
+            return
+        # Only query a quote after every policy return above. A quote failure
+        # never changes the delivery decision.
+        shown = reader_assets(
+            event=card,
+            verdict=tv,
+            grounded_assets=list(card.get("grounded_assets") or []),
+            program_version=str(triage_row.get("program_version") or ""),
+            verdict_program_sha256=str(triage_row.get("program_sha256") or ""),
+            expected_program_sha256=self._oi_program_sha256,
+            oi_signal=oi_signal,
+        )
+        quotes = await self._quotes(shown, stamp)
+        card_payload = render_first_card(
+            event=card,
+            verdict=tv,
+            decision=str(triage_row["final_decision"]),
+            grounded_assets=list(card.get("grounded_assets") or []),
+            assets=shown,
+            degraded=bool(triage_row.get("degraded")),
+            quotes=quotes,
+        )
+        state = await self.db.tx(
+            "news_delivery_begin",
+            lambda repos: repos.news.begin_delivery(event_id=event_id, kind=kind, card=card_payload, now_ms=stamp),
+        )
+        if state != "new":
+            if state == "sending":
+                await self.db.tx(
+                    "news_delivery_ambiguous",
+                    lambda repos: repos.news.settle_delivery(
+                        event_id=event_id,
+                        kind=kind,
+                        state="terminal",
+                        receipt=None,
+                        error_code="ambiguous_after_crash",
+                        now_ms=now_ms(),
+                    ),
+                )
+            return
+        wait = self.min_interval - (time.monotonic() - self._last_send_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        error_code: str | None = None
+        receipt: dict[str, Any] | None = None
+        try:
+            result = await self.finite.run(
+                "news_delivery_feishu_send", self.sender.send_card, card_payload, timeout_seconds=8.0
+            )
+            receipt = dict(result)
+        except Exception as exc:
+            error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
+        finally:
+            self._last_send_at = time.monotonic()
+        settled_state = "sent" if error_code is None else "terminal"
+        try:
+            await self.db.tx(
+                "news_delivery_settle",
+                lambda repos: repos.news.settle_delivery(
+                    event_id=event_id,
+                    kind=kind,
+                    state=settled_state,
+                    receipt=receipt,
+                    error_code=error_code,
+                    now_ms=now_ms(),
+                ),
+            )
+        except (TransientError, DeferError) as exc:
+            raise RuntimeError("news_delivery_settlement_unavailable") from exc
+
+    async def _settle_direct(self, event_id: str, kind: str, error_code: str, stamp: int) -> None:
+        def _fn(repos: Any) -> None:
+            state = repos.news.begin_delivery(event_id=event_id, kind=kind, card={}, now_ms=stamp)
+            if state == "new":
+                repos.news.settle_delivery(
+                    event_id=event_id, kind=kind, state="terminal", receipt=None, error_code=error_code, now_ms=stamp
+                )
+
+        await self.db.tx("news_delivery_settle_direct", _fn)
+
+    async def _quotes(self, shown: Sequence[str], stamp: int) -> list[Any]:
+        """Fresh prices for exactly the assets rendered on the card.
+
+        The caller passes the same code-verified asset list to the renderer, so
+        the facts and quote lines cannot describe different symbols. Resolution
+        remains owned by PriceRepository. Every price-plane failure returns an
+        empty display value and leaves the already-made send decision untouched.
+        """
+
+        if not shown:
+            return []
+        try:
+            rows = await self.db.read(
+                "news_delivery_quotes",
+                lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
+                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:  # price is display-only; all failures degrade to no line
+            return []
+        return list(rows or [])
+
+    def _load(self, repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
+        del stamp
+        card = repos.news.event_card(event_id)
+        triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
+        if card is None or triage is None:
+            return None
+        oi_signal = None
+        if (
+            str(card.get("admission") or "") == "telemetry_deterministic"
+            and str(triage.get("program_version") or "") == OI_PROGRAM_VERSION
+            and str(triage.get("program_sha256") or "") == self._oi_program_sha256
+        ):
+            oi_signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
+        return card, triage, oi_signal
+
+    async def close(self) -> None:
+        if self.sender is not None:
+            with contextlib.suppress(Exception):
+                await self.finite.run(
+                    "news_delivery_sender_close", self.sender.close, timeout_seconds=5.0, allow_shutdown=True
+                )

@@ -9,13 +9,13 @@ from websockets.exceptions import ConcurrencyError, ProtocolError
 
 from tracefold.integrations.opennews import client as opennews_client
 from tracefold.news import OPENNEWS_SOURCE_ID, OpenNewsExpectedError, OpenNewsHistoryError
-from tracefold.news import consumers as news_consumers
 from tracefold.news.opennews import (
     enabled_strategy_ids,
     parse_opennews_message,
     parse_opennews_strategy_hits,
     parse_opennews_strategy_list,
 )
+from tracefold.news.pipeline import runtime as news_pipeline_runtime
 from tracefold.platform.config.models import NewsSettings
 
 
@@ -644,7 +644,7 @@ def test_opennews_receive_race_owns_child_tasks_during_cancellation() -> None:
 
     async def scenario() -> None:
         client = _Client()
-        task = asyncio.create_task(news_consumers._receive_or_stop(client, stop_event=asyncio.Event()))
+        task = asyncio.create_task(news_pipeline_runtime._receive_or_stop(client, stop_event=asyncio.Event()))
         await asyncio.wait_for(client.started.wait(), timeout=1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
