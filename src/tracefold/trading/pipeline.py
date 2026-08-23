@@ -794,7 +794,7 @@ async def _one_attempt(
     kind: Literal["entry", "exit"],
     call: Callable[[], Awaitable[ExecutionReceipt]],
     now: int,
-) -> ExecutionReceipt | None:
+) -> tuple[ExecutionReceipt | None, str]:
     """The durable one-attempt contract, shared by the entry and the exit.
 
     OpenTrade publishes no client idempotency key, so nothing downstream can deduplicate a resend.
@@ -809,17 +809,17 @@ async def _one_attempt(
     untouched and the same close was re-issued every thirty seconds forever.
     """
 
-    claimed = await db.tx(
+    claim = await db.tx(
         "trading_attempt_claim",
         lambda repos: repos.trading.claim_attempt(order_id=order.order_id, kind=kind, now_ms=now),
         timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
     )
-    if not claimed:
-        log.info("trading %s attempt already spent order=%s", kind, order.order_id)
-        return None
+    if claim != "claimed":
+        log.info("trading %s attempt refused order=%s reason=%s", kind, order.order_id, claim)
+        return None, claim
 
     try:
-        return await call()
+        return await call(), "claimed"
     except Exception as exc:
         reason = f"provider_exception:{type(exc).__name__}"
         log.warning("trading %s attempt did not answer: %s", kind, type(exc).__name__)
@@ -834,7 +834,7 @@ async def _one_attempt(
             ),
             timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
         )
-        return None
+        return None, "ambiguous"
 
 
 async def commit_order(
@@ -848,12 +848,7 @@ async def commit_order(
 ) -> bool:
     """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
-    claimed = await db.read(
-        "trading_entry_claimable",
-        lambda repos: repos.trading.entry_claimable(order_id=order.order_id),
-        timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
-    )
-    receipt = await _one_attempt(
+    receipt, claim = await _one_attempt(
         db=db,
         order=order,
         kind="entry",
@@ -861,7 +856,7 @@ async def commit_order(
         now=now,
     )
     if receipt is None:
-        if not claimed:
+        if claim != "ambiguous":
             # The attempt was already spent by an earlier caller, who already counted it. Counting it
             # again would charge the day twice for one order.
             if funnel is not None:
@@ -978,8 +973,21 @@ class ReconcileRunner:
                 # could stop an approved entry from being submitted.
                 await self._defer(order_id, state, now)
                 return False
-            # The one place an approved order becomes a provider write. Without this transition
-            # `APPROVED` was a terminal state that still held the active-underlying slot.
+            # The one place an approved order becomes a provider write. The caps are re-checked here
+            # because `22eabf66` moved them into `_place._insert` — "count it where it is spent" — and
+            # an AWAITING_APPROVAL order is inserted long before it is spent. Without this, ten orders
+            # approved over several days all submit in one turn regardless of `max_orders_per_day`.
+            over_cap = await self._db.read(
+                "trading_approved_caps",
+                lambda repos: (
+                    repos.trading.orders_today(day_key=_day_key(now)) >= self._config.order.max_orders_per_day,
+                    len(repos.trading.active_underlyings()) > self._config.order.max_open_underlyings,
+                ),
+                timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
+            )
+            if any(over_cap):
+                await self._defer(order_id, state, now)
+                return False
             await commit_order(db=self._db, adapter=self._adapter, order=order, policy=self._config.order, now=now)
             return True
 
@@ -1166,6 +1174,27 @@ class ReconcileRunner:
                 log.warning("trading reconcile bar fetch failed order=%s", order_id)
                 bars = ()
 
+        current_state = str(row["state"])
+        if current_state == OrderState.ACKNOWLEDGED.value:
+            # `_defer` used to double as this transition and stopped doing so when it became guarded.
+            # Both states route here, so nothing broke mechanically — but `trading status` showed live
+            # positions as ACKNOWLEDGED and the documented machine no longer matched the code.
+            await self._db.tx(
+                "trading_reconcile_open",
+                lambda repos: repos.trading.update_order(
+                    order_id=order_id,
+                    state=OrderState.OPEN.value,
+                    state_reason="observed_open",
+                    next_reconcile_at_ms=now,
+                    now_ms=now,
+                ),
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
+            # The batch snapshot is now behind the row. Every later guarded write in this call has to
+            # use the state the row actually holds, or it silently matches nothing — the same shape
+            # that made the guarded `_defer` a no-op in the first place.
+            current_state = OrderState.OPEN.value
+
         exit_at = evaluate_paper_exit(
             side=cast(OrderSide, row["side"]),
             entry=Decimal(str(row["entry_reference"])),
@@ -1182,10 +1211,10 @@ class ReconcileRunner:
                 # active-underlying slot with no alarm, so the deadline escalates instead of waiting.
                 await self._escalate(order_id, "max_holding_without_price", now)
                 return True
-            await self._defer(order_id, str(row["state"]), now)
+            await self._defer(order_id, current_state, now)
             return False
 
-        receipt = await _one_attempt(
+        receipt, claim = await _one_attempt(
             db=self._db,
             order=order,
             kind="exit",
@@ -1193,10 +1222,14 @@ class ReconcileRunner:
             now=now,
         )
         if receipt is None:
-            if int(row.get("exit_attempt_total") or 0) >= _MAX_EXIT_ATTEMPTS:
+            if claim == "exhausted":
                 # The bounded retry is spent. Escalate rather than returning silently: an unwritten
-                # row stays due and re-enters this path every turn.
+                # row stays due and re-enters this path every turn. The reason comes from the claim
+                # itself, not from the batch snapshot — that copy of `exit_attempt_total` predates the
+                # increment the claim just tested, so it was always one behind the value it guarded.
                 await self._escalate(order_id, "exit_attempts_exhausted", now)
+            elif claim == "already_spent":
+                await self._defer(order_id, current_state, now)
             return True
         if receipt.state == "AMBIGUOUS":
             await self._db.tx(

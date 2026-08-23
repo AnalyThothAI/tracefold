@@ -19,6 +19,9 @@ _JSON_SEPARATORS = (",", ":")
 _TRADING_LOCK_NAMESPACE: Final = 0x54524447
 
 _ACTIVE_SQL: Final = ", ".join(f"'{state}'" for state in ACTIVE_ORDER_STATES)
+# Mirrored in the schema CHECK and in the runner. The exit gets a bounded retry rather than the
+# entry's single irrevocable shot, because a read can prove a close did not take effect.
+_MAX_EXIT_ATTEMPTS: Final = 3
 
 
 def _dumps(value: Any) -> str:
@@ -391,7 +394,7 @@ class TradingRepository:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def claim_attempt(self, *, order_id: str, kind: str, now_ms: int) -> bool:
+    def claim_attempt(self, *, order_id: str, kind: str, now_ms: int) -> str:
         """Record one capital write *before* the network call, and only ever once for that leg.
 
         The counter predicate plus the schema CHECK is what makes a second write unrecordable: a caller
@@ -419,27 +422,23 @@ class TradingRepository:
                        updated_at_ms = %s
                  WHERE order_id = %s
                    AND exit_attempt_count = 0
-                   AND exit_attempt_total < 3
+                   AND exit_attempt_total < %(ceiling)s
                    AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL')
             """
         else:  # pragma: no cover - the caller passes a literal
             raise ValueError(f"trading_attempt_kind_invalid:{kind}")
-        cursor = self.conn.execute(sql, (int(now_ms), order_id))
-        return int(getattr(cursor, "rowcount", 0) or 0) > 0
-
-    def entry_claimable(self, *, order_id: str) -> bool:
-        """Whether the entry attempt is still unspent. Read-only; the claim itself is the authority.
-
-        `commit_order` needs to tell "this call is a new attempt" from "someone already attempted it",
-        because only the first of those may charge the daily order count.
-        """
-
+        cursor = self.conn.execute(sql.replace("%(ceiling)s", str(_MAX_EXIT_ATTEMPTS)), (int(now_ms), order_id))
+        if int(getattr(cursor, "rowcount", 0) or 0) > 0:
+            return "claimed"
         row = self.conn.execute(
-            "SELECT provider_attempt_count, state FROM trading_orders WHERE order_id = %s", (order_id,)
+            "SELECT state, provider_attempt_count, exit_attempt_total FROM trading_orders WHERE order_id = %s",
+            (order_id,),
         ).fetchone()
         if row is None:
-            return False
-        return int(row["provider_attempt_count"]) == 0 and str(row["state"]) in ("PREPARED", "APPROVED")
+            return "missing"
+        if kind == "exit" and int(row["exit_attempt_total"]) >= _MAX_EXIT_ATTEMPTS:
+            return "exhausted"
+        return "already_spent"
 
     def release_exit_attempt(self, *, order_id: str, now_ms: int) -> bool:
         """Let the exit be attempted again, because a read proved the position is still open.
@@ -451,7 +450,7 @@ class TradingRepository:
 
         cursor = self.conn.execute(
             "UPDATE trading_orders SET exit_attempt_count = 0, updated_at_ms = %s "
-            "WHERE order_id = %s AND exit_attempt_total < 3",
+            f"WHERE order_id = %s AND exit_attempt_total < {_MAX_EXIT_ATTEMPTS}",
             (int(now_ms), order_id),
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
@@ -479,12 +478,19 @@ class TradingRepository:
                 (f"operator_resolved:{reason}", int(now_ms), int(now_ms), int(now_ms), order_id),
             )
         elif outcome == "open":
+            # `exit_attempt_total` is reset too, not only the per-state counter. The ceiling exists to
+            # stop an *unattended* loop from re-issuing a close forever, and `release_exit_attempt`
+            # rightly refuses to lift its own. A human who has checked the venue is the actor the
+            # ceiling should defer to — without this reset, `resolve <id> open` after exhaustion put
+            # the row straight back into MANUAL_REVIEW_REQUIRED on the next turn with no explanation,
+            # and the only escape left was asserting `closed` about a position that is still open.
             cursor = self.conn.execute(
                 """
                 UPDATE trading_orders
                    SET state = 'OPEN',
                        state_reason = %s,
                        exit_attempt_count = 0,
+                       exit_attempt_total = 0,
                        next_reconcile_at_ms = %s,
                        updated_at_ms = %s
                  WHERE order_id = %s AND state = 'MANUAL_REVIEW_REQUIRED'
@@ -663,11 +669,13 @@ class TradingRepository:
             "SELECT case_kind, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY case_kind",
             (int(since_ms),),
         ).fetchall()
-        # Only real exits enter the realised-PnL denominator. Counting operator rejections and
-        # never-submitted intents alongside them turned one +150 bps winner into a reported mean of 37.5.
+        # Only *measured* exits enter the realised-PnL denominator. An operator-resolved order closed
+        # a position — so it cools the symbol down — but nobody computed a return for it, and counting
+        # it turned one +150 bps winner beside three resolutions into a reported mean of 37.5.
         realized = self.conn.execute(
             "SELECT count(*) AS n, coalesce(sum(realized_bps), 0) AS total_bps "
-            "FROM trading_orders WHERE position_closed_at_ms IS NOT NULL AND position_closed_at_ms >= %s",
+            "FROM trading_orders WHERE realized_bps IS NOT NULL "
+            "AND position_closed_at_ms IS NOT NULL AND position_closed_at_ms >= %s",
             (int(since_ms),),
         ).fetchone()
         return {

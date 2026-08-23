@@ -220,10 +220,10 @@ def test_the_ledger_can_record_exactly_one_provider_attempt(conn) -> None:
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="PREPARED")
     trading = _repos(conn).trading
-    assert trading.claim_attempt(order_id="o1", kind="entry", now_ms=NOW) is True
+    assert trading.claim_attempt(order_id="o1", kind="entry", now_ms=NOW) == "claimed"
     conn.commit()
     # A caller that somehow tried again finds zero rows updated and must not call the provider.
-    assert trading.claim_attempt(order_id="o1", kind="entry", now_ms=NOW) is False
+    assert trading.claim_attempt(order_id="o1", kind="entry", now_ms=NOW) == "already_spent"
     conn.commit()
     assert int(trading.order(order_id="o1")["provider_attempt_count"]) == 1
 
@@ -760,15 +760,15 @@ def test_the_exit_gets_its_own_one_attempt_guard(conn) -> None:
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="PREPARED")
     trading = _repos(conn).trading
-    assert trading.claim_attempt(order_id="o1", kind="entry", now_ms=NOW) is True
+    assert trading.claim_attempt(order_id="o1", kind="entry", now_ms=NOW) == "claimed"
     conn.commit()
     # The entry has now spent its counter; the position opens and later has to be closed.
     conn.execute("UPDATE trading_orders SET state = 'OPEN' WHERE order_id = 'o1'")
     conn.commit()
 
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is True
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
     conn.commit()
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is False
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) in ("already_spent", "exhausted")
     conn.commit()
     row = trading.order(order_id="o1")
     assert (int(row["provider_attempt_count"]), int(row["exit_attempt_count"])) == (1, 1)
@@ -971,16 +971,16 @@ def test_an_ambiguous_exit_can_be_retried_once_a_read_proves_the_position_is_sti
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
     trading = _repos(conn).trading
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is True
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
     conn.commit()
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is False
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) in ("already_spent", "exhausted")
 
     # A read proves the close did not take effect, so re-issuing it cannot double-close. This is what
     # `_resolve_ambiguity._adopt` does: put the row back to OPEN and re-arm the exit together.
     trading.update_order(order_id="o1", state="OPEN", now_ms=NOW)
     assert trading.release_exit_attempt(order_id="o1", now_ms=NOW) is True
     conn.commit()
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is True
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
     conn.commit()
     assert int(trading.order(order_id="o1")["exit_attempt_total"]) == 2
 
@@ -990,13 +990,13 @@ def test_the_exit_retry_is_bounded(conn) -> None:
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
     trading = _repos(conn).trading
     for _ in range(3):
-        assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is True
+        assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
         conn.commit()
         conn.execute("UPDATE trading_orders SET state = 'OPEN' WHERE order_id = 'o1'")
         trading.release_exit_attempt(order_id="o1", now_ms=NOW)
         conn.commit()
     # Three total attempts is the ceiling; the release cannot lift it.
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) is False
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) in ("already_spent", "exhausted")
     conn.commit()
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute("UPDATE trading_orders SET exit_attempt_total = 4 WHERE order_id = 'o1'")
@@ -1044,7 +1044,8 @@ def test_a_deferral_pushes_the_backoff_out_for_an_acknowledged_row(conn) -> None
     )
     asyncio.run(reconcile.turn())
     row = conn.execute("SELECT * FROM trading_orders").fetchone()
-    assert row["state"] == "ACKNOWLEDGED"
+    # The acknowledged row is promoted to OPEN on its first managed turn, then backed off.
+    assert row["state"] == "OPEN"
     assert int(row["next_reconcile_at_ms"]) > now + 60_000
 
 
@@ -1115,3 +1116,82 @@ def test_draining_a_manual_review_order_back_to_open_re_arms_its_exit(conn) -> N
     row = _order_row(conn, "o1")
     assert row["state"] == "OPEN"
     assert int(row["exit_attempt_count"]) == 0
+
+
+def test_the_operator_drain_lifts_the_exit_ceiling_the_automated_release_cannot(conn) -> None:
+    """The ceiling stops an unattended loop; a human who checked the venue is the actor it defers to.
+
+    Without resetting `exit_attempt_total`, `resolve <id> open` after exhaustion put the row straight
+    back into MANUAL_REVIEW_REQUIRED on the next turn with no explanation, and the only escape left
+    was asserting `closed` about a position that is demonstrably still open.
+    """
+
+    trading = _repos(conn).trading
+    _case(conn, case_id="c1", source_key="k1")
+    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
+    for _ in range(3):
+        assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
+        trading.update_order(order_id="o1", state="OPEN", now_ms=NOW)
+        trading.release_exit_attempt(order_id="o1", now_ms=NOW)
+        conn.commit()
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "exhausted"
+    conn.commit()
+
+    trading.update_order(order_id="o1", state="MANUAL_REVIEW_REQUIRED", now_ms=NOW)
+    conn.commit()
+    assert trading.resolve_manual_review(order_id="o1", outcome="open", reason="still_open", now_ms=NOW) is True
+    conn.commit()
+    row = _order_row(conn, "o1")
+    assert (int(row["exit_attempt_count"]), int(row["exit_attempt_total"])) == (0, 0)
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
+
+
+def test_an_operator_resolved_close_cools_the_symbol_but_is_not_a_measured_result(conn) -> None:
+    trading = _repos(conn).trading
+    _case(conn, case_id="c1", source_key="k1")
+    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
+    trading.update_order(order_id="o1", state="MANUAL_REVIEW_REQUIRED", now_ms=NOW)
+    trading.resolve_manual_review(order_id="o1", outcome="closed", reason="flat", now_ms=NOW)
+    conn.commit()
+
+    # The cooldown applies: a position was open and is now confirmed flat.
+    assert trading.last_close_at_ms(underlying_key="crypto:DOGE") == NOW
+    # The PnL denominator does not: nobody computed a return for it.
+    counts = trading.status_counts(since_ms=NOW - 86_400_000)
+    assert (counts["closed_orders"], counts["closed_realized_bps"]) == (0, 0)
+
+
+def test_an_approved_order_respects_the_daily_cap_the_insert_path_enforces(conn) -> None:
+    """The reconciler is a second entry into `commit_order`; the caps live where the order is spent."""
+
+    trading = _repos(conn).trading
+    trading.bump_orders_today(day_key=_day_key_for(NOW), now_ms=NOW)
+    conn.commit()
+    _case(conn, case_id="c1", source_key="k1")
+    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="APPROVED")
+
+    adapter = PaperAdapter()
+    config = _config(order=OrderPolicy(max_holding_ms=900_000, max_orders_per_day=1, max_open_underlyings=4))
+    reconcile = ReconcileRunner(
+        db=_DirectDb(conn), config=config, bars=lambda _v: None, adapter=adapter, clock=lambda: NOW
+    )
+    asyncio.run(reconcile.turn())
+    assert adapter.attempts == 0
+    assert _order_row(conn, "o1")["state"] == "APPROVED"
+
+
+def test_a_live_paper_position_is_reported_as_open_not_acknowledged(conn) -> None:
+    now = NOW
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE)
+    adapter = PaperAdapter()
+    asyncio.run(_runner(conn, adapter=adapter, now=now).turn())
+    assert conn.execute("SELECT state FROM trading_orders").fetchone()["state"] == "ACKNOWLEDGED"
+
+    async def feed(_symbol: str, _start: int, _end: int) -> Any:
+        return (Bar(open_at_ms=now, close_at_ms=now + 300_000, close=Decimal("102")),)
+
+    reconcile = ReconcileRunner(
+        db=_DirectDb(conn), config=_config(), bars=lambda _v: feed, adapter=adapter, clock=lambda: now + 400_000
+    )
+    asyncio.run(reconcile.turn())
+    assert conn.execute("SELECT state FROM trading_orders").fetchone()["state"] == "OPEN"
