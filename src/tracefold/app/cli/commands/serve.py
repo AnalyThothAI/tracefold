@@ -3,7 +3,7 @@ from __future__ import annotations
 import uvicorn
 
 from tracefold.app.http.app import create_app
-from tracefold.platform.config.settings import load_settings
+from tracefold.platform.config.loader import load_settings
 from tracefold.platform.observability import setup_logging
 
 

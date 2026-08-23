@@ -33,7 +33,7 @@ from tracefold.app.workers.root import _ProbeState
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.runtime_roles import (
     RUNTIME_LOGIN_ROLES,
     provision_runtime_role_passwords,

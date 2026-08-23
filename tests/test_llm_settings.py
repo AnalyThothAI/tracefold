@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from tracefold.platform.config.settings import LlmCompilerTariffConfig, LlmConfig, news_model_availability
+from tracefold.platform.config.models import LlmCompilerTariffConfig, LlmConfig, news_model_availability
 
 
 def _availability(llm: LlmConfig):

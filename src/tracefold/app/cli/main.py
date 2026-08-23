@@ -38,9 +38,9 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
 
         return _finish(db.handle_db(args), stdout)
     if command == "news":
-        from .commands import news
+        from .commands import news_diagnostics
 
-        return _finish(news.handle_news(args), stdout)
+        return _finish(news_diagnostics.handle_news(args), stdout)
     if command == "trading":
         from .commands import trading
 

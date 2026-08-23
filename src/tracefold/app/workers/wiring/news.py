@@ -33,7 +33,7 @@ from tracefold.news.consumers import (
     RecoveryRunner,
     TriageConsumer,
 )
-from tracefold.platform.config.settings import Settings, news_push_availability
+from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.runtime_identity import runtime_identity
 
 

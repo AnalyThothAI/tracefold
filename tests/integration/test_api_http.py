@@ -17,7 +17,7 @@ from tracefold.app.http.responses import _json
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.platform.config.settings import NewsSettings, Settings
+from tracefold.platform.config.models import NewsSettings, Settings
 
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 

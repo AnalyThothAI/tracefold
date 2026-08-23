@@ -7,8 +7,9 @@ from typing import Any
 import pytest
 
 from tracefold.app import learning_runtime
-from tracefold.app.cli.commands import news as news_commands
-from tracefold.app.cli.commands.news import _handle_learning, _learning_program_judges
+from tracefold.app.cli.commands import news_learning as news_commands
+from tracefold.app.cli.commands.news_learning import _handle_learning
+from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.agents.programs import candidates as candidate_programs
 from tracefold.news.agents.semantic_program import load_stable_program_artifact

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from tracefold.news import opennews
 from tracefold.news.consumers import DeduperConsumer, OpenNewsReceiver, RecoveryRunner
-from tracefold.platform.config.settings import NewsSettings
+from tracefold.platform.config.models import NewsSettings
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"

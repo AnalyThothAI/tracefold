@@ -21,7 +21,7 @@ from tracefold.news.canary import (
     CANARY_SELECTOR_VERSION,
 )
 from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest, ProposalReceipt
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 
 
 def test_deepseek_v4_disables_thinking_for_structured_tool_calls() -> None:

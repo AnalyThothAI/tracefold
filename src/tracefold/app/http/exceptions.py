@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from tracefold.app.http.responses import _json
+from .responses import _json
 
 
 class ApiUnauthorized(Exception):

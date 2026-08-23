@@ -55,7 +55,7 @@ from tracefold.news.eval.replay import replay_hits
 from tracefold.news.models import ReaderReceipt, TriageVerdict
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.trading import (
     ACTIVE_ORDER_STATES,

@@ -15,8 +15,6 @@ MAX_NEW_FUNCTION_LINES = 100
 # Existing oversized modules may shrink or disappear, never grow. A rename without a split receives
 # no exception: the target module is new and must fit the default budget.
 GRANDFATHERED_MODULE_LINES = {
-    "app/cli/commands/news.py": 1581,
-    "app/http/schemas_news.py": 853,
     "news/agents/program_baseline.py": 1059,
     "news/agents/program_compiler.py": 804,
     "news/agents/program_compiler_launcher.py": 1334,
@@ -35,7 +33,6 @@ GRANDFATHERED_MODULE_LINES = {
     "news/repository.py": 2588,
     "news/review.py": 2456,
     "news/semantic_contract.py": 902,
-    "platform/config/settings.py": 889,
     "trading/pipeline.py": 1396,
     "trading/repository.py": 715,
 }
@@ -44,10 +41,10 @@ GRANDFATHERED_MODULE_LINES = {
 # moves one of these functions must explicitly move its entry while preserving (or lowering) the limit;
 # unrelated functions with the same generic name cannot inherit an exception.
 GRANDFATHERED_FUNCTION_LINES = {
-    ("app/cli/commands/news.py", "_handle_review_accept_drafts"): 105,
-    ("app/cli/commands/news.py", "_handle_learning"): 697,
-    ("app/cli/commands/news.py", "_handle_learning_baseline"): 121,
-    ("app/cli/commands/news.py", "_handle_learning_draft_reviews"): 125,
+    ("app/cli/commands/news_review.py", "_handle_review_accept_drafts"): 105,
+    ("app/cli/commands/news_learning.py", "_handle_learning"): 697,
+    ("app/cli/commands/news_learning_baseline.py", "_handle_learning_baseline"): 121,
+    ("app/cli/commands/news_learning_baseline.py", "_handle_learning_draft_reviews"): 125,
     ("app/cli/commands/trading.py", "handle_trading"): 130,
     ("app/cli/parser.py", "build_parser"): 314,
     ("app/worker_database.py", "WorkerDatabase._run_executor"): 111,

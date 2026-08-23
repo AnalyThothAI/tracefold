@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
 from tracefold.app.http.app import _mount_frontend, create_app
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 
 
 def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):

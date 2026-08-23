@@ -28,7 +28,7 @@ from tracefold.news import (
 )
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 
 pytestmark = pytest.mark.integration
 

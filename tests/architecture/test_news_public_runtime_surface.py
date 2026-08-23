@@ -339,19 +339,19 @@ def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:
             NEWS_ROOT / "repository.py",
             NEWS_ROOT / "consumers.py",
             NEWS_ROOT / "candidate_evaluator.py",
-            SRC / "platform" / "config" / "settings.py",
+            SRC / "platform" / "config" / "models.py",
         )
     )
     assert {token for token in retired if token in runtime} == set()
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:
-    routes = SRC / "app" / "http" / "routes_news.py"
-    modules = _imported_modules(routes)
+    routes = [SRC / "app" / "http" / "routes" / name for name in ("feed.py", "events.py", "review.py", "status.py")]
+    modules = set().union(*(_imported_modules(path) for path in routes))
     assert not any(module.startswith(("tracefold.news.consumers", "tracefold.news.bus")) for module in modules)
     assert not any(module.startswith("tracefold.integrations.rabbitmq") for module in modules)
-    assert _imported_roots(routes).isdisjoint(IO_MODULE_ROOTS)
-    called = _called_attribute_names(routes)
+    assert set().union(*(_imported_roots(path) for path in routes)).isdisjoint(IO_MODULE_ROOTS)
+    called = set().union(*(_called_attribute_names(path) for path in routes))
     assert called.isdisjoint(set(WRITE_REPOSITORY_METHODS) | {"transaction", "publish"})
     assert {"list_feed", "event_detail", "status_snapshot"} <= called
 

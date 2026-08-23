@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from tracefold.platform.config.settings import NewsPolicySettings, NewsPushSettings
+from tracefold.platform.config.models import NewsPolicySettings, NewsPushSettings
 
 
 def test_policy_defaults_match_the_live_decide_policy() -> None:

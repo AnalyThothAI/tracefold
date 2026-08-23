@@ -234,7 +234,7 @@ def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
     from tracefold.news.agents.semantic_program import load_stable_program_artifact
-    from tracefold.platform.config.settings import load_settings
+    from tracefold.platform.config.loader import load_settings
 
     settings = load_settings()
     stable = active_arm_manifest(settings)

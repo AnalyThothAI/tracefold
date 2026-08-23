@@ -5,7 +5,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from tracefold.platform.config.settings import load_settings
+from tracefold.platform.config.loader import load_settings
 from tracefold.platform.postgres.postgres_client import local_docker_host_dsn, with_password_from_file
 
 config = context.config

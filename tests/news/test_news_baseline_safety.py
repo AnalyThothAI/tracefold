@@ -66,7 +66,7 @@ def _called_names(node: ast.AST) -> set[str]:
 
 
 def _cli_handler() -> ast.FunctionDef:
-    import tracefold.app.cli.commands.news as cli_module
+    import tracefold.app.cli.commands.news_learning_baseline as cli_module
 
     tree = _module_tree(cli_module)
     handler = next(
