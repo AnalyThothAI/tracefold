@@ -19,7 +19,10 @@ Deliberately narrow:
 * Only free-text dimensions consult it. `magnitude`, `direction`, `asset_grounding` and `novelty` stay on exact
   comparison — they are supposed to be exact, and a judge there would only add noise.
 * It is asked only when the literal comparison already failed. Identical text needs no model call, so
-  `--mode recorded` (where candidate *is* production) spends nothing and its golden 0.896373 is untouched.
+  `--mode recorded` — where the candidate *is* the production verdict — spends nothing and its score is
+  unchanged by attaching a judge. (That score is a property of the corpus as well as the code: it read
+  0.896373 over 162 cases before #148's drafted reviews landed, and moves whenever the corpus grows. Pin the
+  judge's no-op, not the literal.)
 * It belongs to the metric, not the Program: it never renders into a prompt, never enters the QualityKernel,
   and cannot change `program_sha256`.
 """
