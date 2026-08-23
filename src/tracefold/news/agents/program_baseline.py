@@ -545,7 +545,11 @@ def run_baseline(
                 verify_policy_projection(case.episode.policy_metric)
             except ValueError as exc:
                 raise ValueError(f"news_program_baseline_policy_unusable:{case.episode.case_id[:16]}:{exc}") from exc
-    metric = bind_metric(judge)
+    # `recorded` measures the judgment and action that already shipped. It never asks a model whether that
+    # historical card repaired a failed factual label: there is no candidate repair to verify, and doing so
+    # would make the deterministic calibration depend on provider availability. The configured judge remains
+    # in the receipt with zero usage; both live modes keep using it for candidate retention and factual repair.
+    metric = bind_metric(None if mode == "recorded" else judge)
     strict = bind_metric(None) if judge is not None else None
     examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
     by_case = {case.episode.case_id: case for case in cases}

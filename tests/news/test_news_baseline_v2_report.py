@@ -119,9 +119,40 @@ class _SilentJudgeLM(dspy.BaseLM):  # type: ignore[misc]
         super().__init__(model="scripted/judge")
         self.cache = False
         self.num_retries = 0
+        self.calls = 0
 
     def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+        self.calls += 1
         raise AssertionError("recorded mode consulted the semantic judge")
+
+
+def test_recorded_factual_failure_fails_closed_without_a_judge_call() -> None:
+    """Historical scoring never asks a model whether the already-shipped card repaired itself."""
+
+    case = _case(1)
+    review = {
+        **case.episode.accepted_review,
+        "dimensions": {"factual_fidelity": "fail"},
+        "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+    }
+    recorded = BaselineCase(
+        episode=case.episode.model_copy(update={"accepted_review": review}),
+        recorded_decision_result=case.recorded_decision_result,
+    )
+    lm = _SilentJudgeLM()
+
+    report = run_baseline(
+        [recorded],
+        mode="recorded",
+        artifact=load_stable_program_artifact(),
+        judge=CardEquivalenceJudge(lm),
+    )
+
+    assert report.cases[0].score == 0.0
+    assert report.cases[0].hard_gate == "factual_contradiction"
+    assert lm.calls == 0
+    assert report.semantic_judge["attempts"] == 0
+    assert report.semantic_judge["model_calls"] == 0
 
 
 def test_failures_are_published_as_a_second_score_not_dropped_from_the_first() -> None:
