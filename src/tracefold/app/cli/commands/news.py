@@ -387,6 +387,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return _handle_learning_draft_reviews(args, settings, stable)
         if action == "compile":
             from tracefold.app.learning_runtime import compose_news_program_runtime
+            from tracefold.app.llm import configured_lm_endpoint
             from tracefold.news.agents.program_compiler_launcher import ProgramCompilerLauncher
             from tracefold.news.agents.program_compiler_proxy import (
                 CompilerModelProxyGrant,
@@ -395,13 +396,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             from tracefold.news.agents.program_compiler_sandbox import CompilerSandboxPolicy
             from tracefold.news.agents.program_compiler_security import (
-                CompileBudgetV2,
+                CompileBudgetV3,
                 CompileReceiptChain,
-                CompilerEndpointIdentity,
                 CompilerProxyTariff,
-                CompilerRunnerReceiptsV2,
+                CompilerRunnerReceiptsV3,
                 ContentAddressedCompileReceipt,
-                OptimizerCompileProvenanceV2,
+                OptimizerCompileProvenanceV3,
                 seal_compile_input,
             )
             from tracefold.news.agents.program_compiler_source import (
@@ -409,6 +409,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 proxy_source_sha256,
             )
             from tracefold.news.agents.program_compiler_trusted import (
+                METRIC_JUDGE_MAX_TOKENS,
+                METRIC_JUDGE_TIMEOUT_SECONDS,
                 REFLECTION_MAX_TOKENS,
                 REFLECTION_TIMEOUT_SECONDS,
                 ProgramPatchV2,
@@ -428,7 +430,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 parent.program_sha256 != stable.program_sha256
                 or parent.parent_program_sha256 is not None
                 or parent.schema_version != "news_semantic_program_artifact_v2"
-                or parent.factory_id != "tracefold.news.semantic_program.factory_v3"
+                or parent.factory_id != "tracefold.news.semantic_program.factory_v4"
             ):
                 raise ValueError("news_learning_compile_stable_program_mismatch")
             # This is the only DB contact in the compile path.  It ends before
@@ -459,6 +461,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     parent.route_spec.event_semantics_max_tokens,
                     parent.route_spec.reader_card_max_tokens,
                 ),
+                temperature=0,
                 model_kwargs=endpoint.model_kwargs,
             )
             configured_tariff = getattr(settings.llm, "news_compiler_tariff", None)
@@ -472,46 +475,59 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             configured_reflection = getattr(settings.llm, "news_compiler_reflection", None)
             if configured_reflection is None or not bool(getattr(configured_reflection, "configured", False)):
                 raise ValueError("news_learning_compile_reflection_not_configured")
-            reflection_secret = CompilerProviderEndpointSecret(
-                model=str(configured_reflection.model),
+            compiler_endpoint = configured_lm_endpoint(
+                settings,
+                model_name=str(configured_reflection.model),
                 api_key=str(configured_reflection.api_key),
-                api_base=str(configured_reflection.base_url),
+                base_url=str(configured_reflection.base_url),
+            )
+            reflection_secret = CompilerProviderEndpointSecret(
+                model=compiler_endpoint.model_name,
+                api_key=compiler_endpoint.api_key,
+                api_base=compiler_endpoint.api_base,
                 timeout=REFLECTION_TIMEOUT_SECONDS,
                 max_tokens=REFLECTION_MAX_TOKENS,
-                model_kwargs={},
+                temperature=1,
+                model_kwargs=compiler_endpoint.model_kwargs,
+            )
+            metric_judge_secret = CompilerProviderEndpointSecret(
+                model=compiler_endpoint.model_name,
+                api_key=compiler_endpoint.api_key,
+                api_base=compiler_endpoint.api_base,
+                timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
+                max_tokens=METRIC_JUDGE_MAX_TOKENS,
+                temperature=0,
+                model_kwargs=compiler_endpoint.model_kwargs,
             )
             proxy_secrets = CompilerProxySecretConfig(
                 task=endpoint_secret,
                 reflection=reflection_secret,
+                metric_judge=metric_judge_secret,
                 tariff=tariff,
             )
-            task_identity = CompilerEndpointIdentity.issue(
-                model=endpoint_secret.model,
-                api_base=endpoint_secret.api_base,
-            )
-            reflection_identity = CompilerEndpointIdentity.issue(
-                model=reflection_secret.model,
-                api_base=reflection_secret.api_base,
-            )
+            task_binding = endpoint_secret.binding("task")
+            reflection_binding = reflection_secret.binding("reflection")
+            metric_judge_binding = metric_judge_secret.binding("metric_judge")
             source_sha = compiler_source_sha256()
             proxy_source_sha = proxy_source_sha256()
             sandbox_policy = CompilerSandboxPolicy.issue()
             proxy_grant = CompilerModelProxyGrant.issue(
-                task_endpoint=task_identity,
-                reflection_endpoint=reflection_identity,
-                max_model_calls=int(args.max_task_model_calls),
+                task=task_binding,
+                reflection=reflection_binding,
+                metric_judge=metric_judge_binding,
+                max_task_model_calls=int(args.max_task_model_calls),
+                max_reflection_model_calls=int(args.max_reflection_model_calls),
+                max_metric_judge_model_calls=int(args.max_metric_judge_model_calls),
                 max_cost_microusd=int(args.max_cost_microusd),
                 tariff=tariff,
-                task_max_output_tokens=endpoint_secret.max_tokens,
-                reflection_max_output_tokens=reflection_secret.max_tokens,
-                task_timeout_seconds=endpoint_secret.timeout,
-                reflection_timeout_seconds=reflection_secret.timeout,
                 proxy_config_sha256=proxy_secrets.secret_free_config_sha256,
                 proxy_source_sha256=proxy_source_sha,
             )
-            budget = CompileBudgetV2(
+            budget = CompileBudgetV3(
                 max_metric_calls=int(args.max_metric_calls),
                 max_task_model_calls=int(args.max_task_model_calls),
+                max_reflection_model_calls=int(args.max_reflection_model_calls),
+                max_metric_judge_model_calls=int(args.max_metric_judge_model_calls),
                 max_cost_microusd=int(args.max_cost_microusd),
                 max_call_cost_microusd=proxy_grant.max_call_cost_microusd,
                 seed=int(args.seed),
@@ -528,16 +544,13 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 stable_bundle_sha256=stable.bundle_sha,
                 target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
                 eligible_demo_bank_root_sha256=eligible_demo_bank.eligible_demo_bank_root_sha256,
-                task_endpoint=task_identity,
-                reflection_endpoint=reflection_identity,
+                task=task_binding,
+                reflection=reflection_binding,
+                metric_judge=metric_judge_binding,
                 proxy_grant_sha256=proxy_grant.grant_sha256,
                 proxy_config_sha256=proxy_secrets.secret_free_config_sha256,
                 tariff_sha256=proxy_secrets.tariff_sha256,
                 proxy_tariff=tariff,
-                task_max_output_tokens=endpoint_secret.max_tokens,
-                reflection_max_output_tokens=endpoint_secret.max_tokens,
-                task_timeout_seconds=endpoint_secret.timeout,
-                reflection_timeout_seconds=endpoint_secret.timeout,
                 compiler_source_sha256=source_sha,
                 proxy_source_sha256=proxy_source_sha,
                 compiler_lock_sha256=parent.quality_kernel.dependency_lock_sha256,
@@ -563,7 +576,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             runner = _canonical_model_document(
                 launched.runner_receipts_document,
-                CompilerRunnerReceiptsV2,
+                CompilerRunnerReceiptsV3,
                 code="news_learning_compile_runner_receipt_invalid",
             )
             proxy_execution = launched.proxy_execution_receipt
@@ -576,22 +589,31 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 or runner.proxy_source_sha256 != proxy_source_sha
                 or runner.compiler_lock_sha256 != parent.quality_kernel.dependency_lock_sha256
                 or runner.sandbox_policy_sha256 != sandbox_policy.policy_sha256
-                or runner.task_endpoint_identity_sha256 != task_identity.binding_sha256
-                or runner.reflection_endpoint_identity_sha256 != reflection_identity.binding_sha256
+                or runner.task_endpoint_identity_sha256 != task_binding.endpoint.binding_sha256
+                or runner.reflection_endpoint_identity_sha256 != reflection_binding.endpoint.binding_sha256
+                or runner.metric_judge_endpoint_identity_sha256 != metric_judge_binding.endpoint.binding_sha256
                 or patch.parent_program_sha256 != parent.program_sha256
                 or patch.parent_state_sha256 != parent.state_sha256
                 or patch.eligible_demo_bank_root_sha256 != eligible_demo_bank.eligible_demo_bank_root_sha256
                 or proxy_execution.grant_sha256 != proxy_grant.grant_sha256
                 or proxy_execution.task_model_calls != runner.task_model_calls
                 or proxy_execution.reflection_model_calls != runner.reflection_model_calls
+                or proxy_execution.metric_judge_model_calls != runner.metric_judge_model_calls
+                or runner.metric_judge_model_calls > runner.metric_judge_attempts
+                or runner.metric_judge_failures > runner.metric_judge_attempts
+                or proxy_execution.task_cost_microusd != runner.task_cost_microusd
+                or proxy_execution.reflection_cost_microusd != runner.reflection_cost_microusd
+                or proxy_execution.metric_judge_cost_microusd != runner.metric_judge_cost_microusd
                 or proxy_execution.actual_cost_microusd != runner.actual_cost_microusd
                 or proxy_execution.reserved_cost_microusd > budget.max_cost_microusd
-                or proxy_execution.error_codes
-                or len(proxy_execution.calls) != runner.task_model_calls + runner.reflection_model_calls
+                or proxy_execution.task_failures
+                or proxy_execution.reflection_failures
+                or proxy_execution.metric_judge_failures > runner.metric_judge_failures
+                or len(proxy_execution.calls)
+                < runner.task_model_calls + runner.reflection_model_calls + runner.metric_judge_model_calls
                 or any(
-                    not call.provider_invoked
-                    or call.error_code is not None
-                    or call.total_tokens <= 0
+                    (call.role != "metric_judge" and (not call.provider_invoked or call.error_code is not None))
+                    or (call.provider_invoked and call.total_tokens <= 0)
                     or call.reserved_cost_microusd > budget.max_call_cost_microusd
                     or call.provider_cost_microusd > call.reserved_cost_microusd
                     for call in proxy_execution.calls
@@ -615,9 +637,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     ContentAddressedCompileReceipt.issue("patch", patch),
                 )
             )
-            provenance = OptimizerCompileProvenanceV2(
+            provenance = OptimizerCompileProvenanceV3(
                 development_dataset_sha=bundle.corpus.development_dataset_sha,
-                learning_epoch="program_v5",
+                learning_epoch="program_v6",
                 learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
                 projection_schema_id=bundle.corpus.projection_schema_id,
                 metric_sha256=canonical_sha(runner.metric),
@@ -625,11 +647,19 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 seed=budget.seed,
                 max_metric_calls=budget.max_metric_calls,
                 max_task_model_calls=budget.max_task_model_calls,
+                max_reflection_model_calls=budget.max_reflection_model_calls,
+                max_metric_judge_model_calls=budget.max_metric_judge_model_calls,
                 max_cost_microusd=budget.max_cost_microusd,
                 max_call_cost_microusd=budget.max_call_cost_microusd,
                 metric_calls=runner.metric_calls,
                 task_model_calls=runner.task_model_calls,
                 reflection_model_calls=runner.reflection_model_calls,
+                metric_judge_attempts=runner.metric_judge_attempts,
+                metric_judge_model_calls=runner.metric_judge_model_calls,
+                metric_judge_failures=runner.metric_judge_failures,
+                task_cost_microusd=runner.task_cost_microusd,
+                reflection_cost_microusd=runner.reflection_cost_microusd,
+                metric_judge_cost_microusd=runner.metric_judge_cost_microusd,
                 actual_cost_microusd=runner.actual_cost_microusd,
                 trajectory_sha256=canonical_sha(runner.trajectory),
                 checkpoint_sha256=canonical_sha(runner.checkpoint),
@@ -647,8 +677,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 receipt_payload_root_sha256=receipts.receipt_payload_root_sha256,
                 sandbox_launch_receipt_sha256=launched.launch_receipt.launch_receipt_sha256,
                 target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
-                task_endpoint_identity_sha256=task_identity.binding_sha256,
-                reflection_endpoint_identity_sha256=reflection_identity.binding_sha256,
+                task_endpoint_identity_sha256=task_binding.endpoint.binding_sha256,
+                reflection_endpoint_identity_sha256=reflection_binding.endpoint.binding_sha256,
+                metric_judge_endpoint_identity_sha256=metric_judge_binding.endpoint.binding_sha256,
                 compiler_source_sha256=source_sha,
                 compiler_lock_sha256=parent.quality_kernel.dependency_lock_sha256,
                 sandbox_policy_sha256=sandbox_policy.policy_sha256,
@@ -666,11 +697,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             machine_diff = program_machine_diff(parent, candidate_artifact)
             payload = {
                 "target": "program",
-                "hypothesis": "Repair the accepted program_v5 failure clusters with bounded DSPy GEPA.",
+                "hypothesis": "Repair the accepted program_v6 failure clusters with bounded DSPy GEPA.",
                 "target_dimensions": list(runner.target_dimensions),
                 "failure_cluster_ids": list(runner.failure_cluster_ids),
                 "guardrails": [
-                    "fixed_factory_v2",
+                    "fixed_factory_v4",
                     "development_only",
                     "holdout_unseen",
                     "no_dynamic_code",
@@ -680,8 +711,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "generator_prompt_sha": provenance.metric_sha256,
                 "generator_model_sha": canonical_sha(
                     {
-                        "task": task_identity.binding_sha256,
-                        "reflection": reflection_identity.binding_sha256,
+                        "task": task_binding.binding_sha256,
+                        "reflection": reflection_binding.binding_sha256,
+                        "metric_judge": metric_judge_binding.binding_sha256,
                         "proxy_config": proxy_secrets.secret_free_config_sha256,
                         "tariff": proxy_secrets.tariff_sha256,
                     }
@@ -713,9 +745,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "propose":
             from tracefold.news.agents.program_compiler_security import (
                 CompileReceiptChain,
-                OptimizerCompileProvenanceV2,
-                ProgramMachineDiffV2,
-                validate_compile_receipt_chain_v2,
+                OptimizerCompileProvenanceV3,
+                ProgramMachineDiffV3,
+                validate_compile_receipt_chain_v3,
             )
             from tracefold.news.agents.program_compiler_trusted import (
                 ProgramPatchV2,
@@ -742,19 +774,19 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 if str(spec.get("program_state_sha256") or "") != artifact.state_sha256:
                     raise ValueError("news_learning_program_state_identity_mismatch")
                 parent_artifact = load_program_artifact()
-                machine_diff = ProgramMachineDiffV2.model_validate(program_machine_diff(parent_artifact, artifact))
-                provided_diff = ProgramMachineDiffV2.model_validate(spec.get("program_machine_diff"))
+                machine_diff = ProgramMachineDiffV3.model_validate(program_machine_diff(parent_artifact, artifact))
+                provided_diff = ProgramMachineDiffV3.model_validate(spec.get("program_machine_diff"))
                 if provided_diff.model_dump(mode="json") != machine_diff.model_dump(mode="json"):
                     raise ValueError("news_learning_program_machine_diff_mismatch")
                 manifest_provenance = optimizer_provenance_from_artifact(artifact)
-                compile_provenance = OptimizerCompileProvenanceV2.model_validate(spec.get("compile_provenance"))
+                compile_provenance = OptimizerCompileProvenanceV3.model_validate(spec.get("compile_provenance"))
                 if compile_provenance.model_dump(mode="json") != manifest_provenance.model_dump(mode="json"):
                     raise ValueError("news_learning_program_compile_provenance_mismatch")
                 if str(args.development) != compile_provenance.development_dataset_sha:
                     raise ValueError("news_learning_program_development_dataset_mismatch")
                 patch = ProgramPatchV2.model_validate(spec.get("program_patch"))
                 chain = CompileReceiptChain.model_validate(spec.get("compile_receipt_chain"))
-                validate_compile_receipt_chain_v2(
+                validate_compile_receipt_chain_v3(
                     chain,
                     provenance=compile_provenance,
                     patch_sha256=patch.patch_sha256,
@@ -1010,12 +1042,10 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
     if mode == "recorded" and action_source != "recorded":
         # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
-        raise ValueError("news_program_baseline_recorded_mode_requires_recorded_action")
+        raise ValueError("news_program_baseline_recorded_mode_requires_recorded_decision")
     if mode != "recorded" and action_source == "recorded":
-        # The other direction is worse, because it looks like it works. `recorded_action` short-circuits
-        # `_production_action`, so a live mode would generate a fresh verdict and then score it against the
-        # action a *different* verdict shipped — silently zeroing the meaning of the metric's heaviest
-        # component (0.50) while every `action` in the report reads as a real result.
+        # A live mode must score the fresh judgment through the frozen policy. Reusing a recorded decision
+        # would compare outputs that never coexisted and invalidate the 45% final-action component.
         raise ValueError("news_program_baseline_live_mode_requires_policy_action")
     # Every other model-spending command in this plane makes its budget `required=True`; before #150 this one
     # defaulted to 500 cases, which in `runtime_live` is 1,000-3,000 sequential provider calls against the
@@ -1136,7 +1166,7 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
 
 
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Propose `news_review_v3` rubrics with gold. Read-only: the output is a file, never a review.
+    """Propose `news_review_v4` rubrics with exact gold. The output is a file, never a review.
 
     `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
     be accepted release evidence the instant it landed. The human stays the acceptance authority; this only

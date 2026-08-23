@@ -245,11 +245,15 @@ class CliTests(unittest.TestCase):
             },
         )
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
-        self.assertEqual(news["policy"]["min_push_magnitude"], 1)
-        self.assertEqual(news["policy"]["similarity_max"], 0.25)
-        self.assertNotIn("theme_cap_4h", news["policy"])
-        self.assertNotIn("distinct_hard_cap_4h", news["policy"])
-        self.assertNotIn("distinct_asset_cap_2h", news["policy"])
+        self.assertEqual(
+            news["policy"],
+            {
+                "listing_exempt_from_duplicate": True,
+                "restatement_drop": True,
+                "similarity_max": 0.25,
+                "stale_source_max_age_s": 43_200,
+            },
+        )
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
         self.assertIs(news["gate"]["suppress_low_signal"], False)

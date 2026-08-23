@@ -16,11 +16,15 @@ from tracefold.news import (
     LEARNING_EPOCH,
     BlindPairwiseSubmission,
     DeskQuery,
+    EditorialEnvelope,
     EventRubricSubmission,
     ExternalMissSubmission,
     Principal,
     ReviewDesk,
+    ScoredJudgment,
     TaskRef,
+    TradeRelevanceV1,
+    TriageVerdict,
 )
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
@@ -58,6 +62,7 @@ def _open_event(
     title: str = "Micron says DRAM contract prices rose again in August",
     bundle_sha: str = ACTIVE_BUNDLE,
     program_sha256: str = "d" * 64,
+    relevance_overrides: dict[str, object] | None = None,
 ) -> str:
     repos = repositories_for_connection(conn)
     wire = {
@@ -86,32 +91,52 @@ def _open_event(
         )
         evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert evidence is not None
-        verdict = {
-            "novelty": "new_fact",
-            "restates": -1,
-            "event_type": "macro",
-            "assets": [],
-            "direction": "bullish",
-            "scope": "sector",
-            "magnitude": 2,
-            "actionable": True,
-            "confidence": 0.7,
-            "decision": "push",
-            "audience": "us_equity",
-            "headline_zh": "DRAM 合约价继续上涨",
-            "title_zh": "",
-            "why_zh": "存储厂商议价能力改善，但持续性仍需后续数据确认。",
+        verdict = TriageVerdict.model_validate(
+            {
+                "novelty": "new_fact",
+                "restates": -1,
+                "event_type": "macro",
+                "assets": [],
+                "direction": "bullish",
+                "scope": "sector",
+                "magnitude": 2,
+                "actionable": True,
+                "confidence": 0.7,
+                "decision": "push",
+                "audience": "us_equity",
+                "headline_zh": "DRAM 合约价继续上涨",
+                "title_zh": "",
+                "why_zh": "存储厂商议价能力改善，但持续性仍需后续数据确认。",
+            }
+        )
+        relevance = {
+            "impact_breadth": "sector",
+            "tradability": "direct",
+            "surprise": "unknown",
+            "development_delta": "material_detail",
+            "channels": ("earnings_cashflow",),
+            "affected_markets": ("single_asset",),
+            "reader_value": "realtime",
         }
+        relevance.update(relevance_overrides or {})
+        editorial = EditorialEnvelope.issue(
+            editorial_origin="model",
+            relevance=TradeRelevanceV1.model_validate(relevance),
+        )
+        judgment = ScoredJudgment.issue(verdict=verdict, editorial=editorial)
         assert repos.news.insert_verdict(
             event_id=opened.event_id,
             stage="triage",
-            policy_version="v6",
+            policy_version="news_triage_policy_v10",
             model_decision="push",
-            rule_baseline_decision="push",
+            rule_baseline_decision="drop",
             final_decision="push",
-            override_rule="model_push_actionable",
+            override_rule="trade_relevance_realtime",
             throttled_by=None,
-            verdict=verdict,
+            verdict=verdict.model_dump(mode="json"),
+            editorial=editorial.model_dump(mode="json"),
+            scored_judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha="a" * 64,
             model="test-model",
             program_version="news_semantic_program_test",
             program_sha256=program_sha256,
@@ -197,7 +222,7 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
     evidence = desk.evidence(ref, principal=PRINCIPAL)
     assert evidence["evidence"]["focus_fact"]["text"].startswith("Micron")
-    assert evidence["agent"]["cohort"] == "news_semantic_program_test/v6/test-model"
+    assert evidence["agent"]["cohort"] == "news_semantic_program_test/news_triage_policy_v10/test-model"
     assert evidence["agent"]["agent_cohort"]["cohort_sha256"] == task["agent_cohort"]["cohort_sha256"]
     cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     repeated_cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
@@ -256,12 +281,14 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
         hit_id=112011,
         title="Micron DRAM contract prices rise in August",
         bundle_sha=first_bundle,
+        relevance_overrides={"impact_breadth": "regional"},
     )
     second_event = _open_event(
         conn,
         hit_id=112012,
         title="Federal Reserve governor announces an immediate resignation",
         bundle_sha=second_bundle,
+        relevance_overrides={"impact_breadth": "regional"},
     )
     epoch_start = int(
         conn.execute(
@@ -278,7 +305,10 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
         "UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s",
         (epoch_start + 2_000, second_event),
     )
-    conn.execute("UPDATE news_events SET priority = 'high' WHERE event_id = ANY(%s)", ([first_event, second_event],))
+    conn.execute(
+        "UPDATE news_events SET queue_priority = 'high' WHERE event_id = ANY(%s)",
+        ([first_event, second_event],),
+    )
 
     desk = ReviewDesk(conn, now_ms=review_now)
     for event_id in (first_event, second_event):
@@ -295,7 +325,9 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
     by_cohort = {row["cohort"]: row for row in coverage["cohorts"]}
     assert set(by_cohort) == {first_bundle}
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
-    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"news_semantic_program_test/v6/test-model"}
+    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {
+        "news_semantic_program_test/news_triage_policy_v10/test-model"
+    }
     assert coverage["funnel"]["total"] == 1
     assert coverage["funnel"]["accepted"] == 1
     eligibility = conn.execute(
@@ -456,7 +488,7 @@ def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_bad_taxonom
     )
     market = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="market"), principal=PRINCIPAL)
     assert market["status"] == "ready"
-    assert market["reaction"]["meta"]["cohort"] == "news_semantic_program_test/v6/test-model"
+    assert market["reaction"]["meta"]["cohort"] == ("news_semantic_program_test/news_triage_policy_v10/test-model")
     assert market["reaction"]["meta"]["cohort_sha256"] == ACTIVE_BUNDLE
     assert market["reaction"]["meta"]["program_sha256"] == "d" * 64
     assert market["reaction"]["coverage"][0]["eligible_n"] == 1
@@ -489,7 +521,7 @@ def test_high_reaction_held_case_is_discovery_only_and_not_release_truth(conn) -
         "reason": "market_discovery_only",
         "reason_zh": "仅因事后波动进入发现队列",
         "sampling_probability": 1.0,
-        "selection_version": "news_review_sampler_v1",
+        "selection_version": "news_review_sampler_v3",
     }
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
     with repos.transaction():

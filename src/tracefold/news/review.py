@@ -17,17 +17,27 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from .artifact_identity import canonical_json, canonical_sha
 from .outcome import decision_zh
 from .price_repository import MarketReviewCohort, PriceRepository
+from .semantic_contract import (
+    TRADE_AFFECTED_MARKET_ORDER,
+    TRADE_CHANNEL_ORDER,
+    ReaderValue,
+    TradeAffectedMarket,
+    TradeChannel,
+    TradeDevelopmentDelta,
+    TradeImpactBreadth,
+    TradeSurprise,
+    TradeTradability,
+)
 
-REVIEW_RUBRIC_VERSION = "news_review_v3"
-# Every rubric revision whose accepted rows still mean what they said. v3 only *adds* the optional `expected`
-# gold; every v2 field kept its meaning, so widening the read is what lets a corpus survive the revision instead
-# of restarting at zero — the same mistake `bundle_sha` eligibility was making until #143.
-REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = ("news_review_v2", "news_review_v3")
+REVIEW_RUBRIC_VERSION = "news_review_v4"
+# v2/v3 rows remain append-only audit history, but the v6 optimizer accepts
+# only the exact TradeRelevance gold introduced by v4.
+REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = (REVIEW_RUBRIC_VERSION,)
 READER_CONTRACT_VERSION = "reader_contract_v2"
 # This is product truth, not prompt advice.  v2 is the operator-approved
 # no-quota contract: a distinct fact that satisfies push/escalate reaches
@@ -78,6 +88,13 @@ _DIMENSIONS = {
     "why_support",
     "why_value",
     "timeliness",
+    "trade_impact_breadth",
+    "trade_tradability",
+    "trade_surprise",
+    "trade_development_delta",
+    "trade_channels",
+    "trade_affected_markets",
+    "reader_value",
 }
 _NOVELTY = {"new_fact", "progression", "restatement", "uncertain"}
 _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
@@ -89,9 +106,22 @@ _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "headline_fidelity": "triage_prompt",
     "why_support": "triage_prompt",
     "why_value": "triage_prompt",
+    "trade_impact_breadth": "triage_prompt",
+    "trade_tradability": "triage_prompt",
+    "trade_surprise": "triage_prompt",
+    "trade_development_delta": "triage_prompt",
+    "trade_channels": "triage_prompt",
+    "trade_affected_markets": "triage_prompt",
+    "reader_value": "triage_prompt",
 }
 
 _STRATUM_ZH = {
+    "local_macro_false_interrupt": "局部宏观误打断",
+    "systemic_macro_must_interrupt": "系统性宏观必须打断",
+    "regional_direct_exception": "区域事件直接交易例外",
+    "scheduled_or_in_line_macro": "计划内或符合预期宏观",
+    "color_only_progression": "仅补充背景的后续",
+    "macro_random_control": "宏观随机对照",
     "delivery_ambiguous": "送达状态未知",
     "delivery_failed": "送达明确失败",
     "critical": "重点事件",
@@ -106,9 +136,11 @@ _STRATUM_ZH = {
     "development_pairwise": "开发集候选对比",
 }
 _SELECTION_REASON_ZH = {
+    "trade_relevance_targeted_stratum": "按交易相关性边界定向抽样",
+    "macro_coverage_control": "宏观交易相关性随机对照",
     "delivery_truth_unknown": "投递结果无法确定",
     "delivery_terminal_failure": "投递已明确失败",
-    "high_priority_or_escalate": "高优先级或重点推送",
+    "semantic_escalation": "语义判断为即时重点推送",
     "duplicate_or_historical_throttle": "同事实重复或历史版本数量拦截",
     "sent_quality_sample": "从真实送达中抽样",
     "market_discovery_only": "仅因事后波动进入发现队列",
@@ -148,6 +180,13 @@ _DIMENSION_ZH = {
     "why_support": "Why 证据支持",
     "why_value": "Why 读者价值",
     "novelty": "新颖性",
+    "trade_impact_breadth": "影响广度",
+    "trade_tradability": "可交易传导",
+    "trade_surprise": "意外程度",
+    "trade_development_delta": "事态变化",
+    "trade_channels": "传导渠道",
+    "trade_affected_markets": "受影响市场",
+    "reader_value": "读者时效价值",
 }
 _RELEASE_CODE_ZH = {
     "active_stable_changed": "运行期间稳定版已变化",
@@ -232,7 +271,7 @@ class ExpectedAsset(BaseModel):
 
 
 class ExpectedCorrection(BaseModel):
-    """The reviewer's stated correct values — `news_review_v3` gold.
+    """The reviewer's stated correct values — `news_review_v4` exact gold.
 
     Without this the metric can only ask "did the candidate change the field the reviewer failed?", which
     scores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one
@@ -245,6 +284,30 @@ class ExpectedCorrection(BaseModel):
     magnitude: int | None = Field(default=None, ge=0, le=3)
     direction: Literal["bullish", "bearish", "neutral", "unclear"] | None = None
     assets: list[ExpectedAsset] | None = Field(default=None, max_length=16)
+    trade_impact_breadth: TradeImpactBreadth | None = None
+    trade_tradability: TradeTradability | None = None
+    trade_surprise: TradeSurprise | None = None
+    trade_development_delta: TradeDevelopmentDelta | None = None
+    trade_channels: list[TradeChannel] | None = Field(default=None, max_length=4)
+    trade_affected_markets: list[TradeAffectedMarket] | None = Field(default=None, max_length=4)
+    reader_value: ReaderValue | None = None
+
+    @field_validator("trade_channels", mode="after")
+    @classmethod
+    def canonical_channels(cls, value: list[TradeChannel] | None) -> list[TradeChannel] | None:
+        if value is None:
+            return None
+        present = set(value)
+        return [item for item in TRADE_CHANNEL_ORDER if item in present]
+
+    @field_validator("trade_affected_markets", mode="after")
+    @classmethod
+    def canonical_markets(cls, value: list[TradeAffectedMarket] | None) -> list[TradeAffectedMarket] | None:
+        if value is None:
+            return None
+        present = set(value)
+        return [item for item in TRADE_AFFECTED_MARKET_ORDER if item in present]
+
     # No `novelty` field: the accepted novelty already *is* gold — `novelty.judgment` is the reviewer's own
     # answer, not a pass/fail on someone else's — and the metric scores against it directly. A second place to
     # state the same thing could only disagree with the first.
@@ -278,6 +341,13 @@ class EventRubricSubmission(BaseModel):
                 ("magnitude", "magnitude"),
                 ("direction", "direction"),
                 ("assets", "asset_grounding"),
+                ("trade_impact_breadth", "trade_impact_breadth"),
+                ("trade_tradability", "trade_tradability"),
+                ("trade_surprise", "trade_surprise"),
+                ("trade_development_delta", "trade_development_delta"),
+                ("trade_channels", "trade_channels"),
+                ("trade_affected_markets", "trade_affected_markets"),
+                ("reader_value", "reader_value"),
             ):
                 if getattr(self.expected, field) is not None and self.dimensions.get(dimension) != "fail":
                     raise ValueError(f"news_review_expected_requires_failed_dimension:{dimension}")
@@ -1864,12 +1934,55 @@ def _blind_output(observation: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
-    if row.get("delivery_error_code") == "ambiguous_after_crash":
+    verdict = dict(row.get("verdict") or {})
+    editorial = dict(row.get("editorial") or {})
+    relevance = (
+        dict(editorial.get("relevance") or {}) if str(editorial.get("editorial_origin") or "") == "model" else {}
+    )
+    macro = str(verdict.get("scope") or "") == "macro"
+    breadth = str(relevance.get("impact_breadth") or "")
+    tradability = str(relevance.get("tradability") or "")
+    surprise = str(relevance.get("surprise") or "")
+    delta = str(relevance.get("development_delta") or "")
+    reader_value = str(relevance.get("reader_value") or "")
+    if relevance and breadth == "global_systemic" and reader_value == "escalate":
+        stratum, reason, probability = (
+            "systemic_macro_must_interrupt",
+            "trade_relevance_targeted_stratum",
+            1.0,
+        )
+    elif relevance and breadth == "regional" and tradability in {"direct", "second_order"}:
+        stratum, reason, probability = (
+            "regional_direct_exception",
+            "trade_relevance_targeted_stratum",
+            1.0,
+        )
+    elif relevance and (delta == "scheduled" or surprise == "in_line"):
+        stratum, reason, probability = (
+            "scheduled_or_in_line_macro",
+            "trade_relevance_targeted_stratum",
+            1.0,
+        )
+    elif relevance and delta == "color_only":
+        stratum, reason, probability = (
+            "color_only_progression",
+            "trade_relevance_targeted_stratum",
+            1.0,
+        )
+    elif relevance and breadth in {"none", "single_instrument"} and reader_value in {"realtime", "escalate"}:
+        stratum, reason, probability = (
+            "local_macro_false_interrupt",
+            "trade_relevance_targeted_stratum",
+            1.0,
+        )
+    elif relevance and macro:
+        stratum, reason, probability = "macro_random_control", "macro_coverage_control", 0.25
+    elif row.get("delivery_error_code") == "ambiguous_after_crash":
         stratum, reason, probability = "delivery_ambiguous", "delivery_truth_unknown", 1.0
     elif row.get("delivery_state") == "terminal":
         stratum, reason, probability = "delivery_failed", "delivery_terminal_failure", 1.0
-    elif row.get("priority") == "high" or row.get("final_decision") == "escalate":
-        stratum, reason, probability = "critical", "high_priority_or_escalate", 1.0
+    elif row.get("final_decision") == "escalate":
+        stratum, reason, probability = "critical", "semantic_escalation", 1.0
     elif row.get("final_decision") == "throttled":
         stratum, reason, probability = "throttled", "duplicate_or_historical_throttle", 1.0
     elif row.get("delivery_state") == "sent":
@@ -1888,7 +2001,7 @@ def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
         "reason": reason,
         "reason_zh": _SELECTION_REASON_ZH.get(reason, "未识别抽样原因"),
         "sampling_probability": probability,
-        "selection_version": "news_review_sampler_v1",
+        "selection_version": "news_review_sampler_v3",
     }
 
 
@@ -1947,6 +2060,19 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
     if verdict.get("direction") in {"bullish", "bearish"}:
         dimensions.extend(["direction", "magnitude"])
     dimensions.append("timeliness")
+    editorial = dict(row.get("editorial") or {})
+    if editorial.get("editorial_origin") == "model" and editorial.get("relevance") is not None:
+        dimensions.extend(
+            [
+                "trade_impact_breadth",
+                "trade_tradability",
+                "trade_surprise",
+                "trade_development_delta",
+                "trade_channels",
+                "trade_affected_markets",
+                "reader_value",
+            ]
+        )
     return {
         "should_push_values": ["must_push", "should_push", "should_hold", "must_hold", "uncertain"],
         "dimensions": dimensions,
@@ -1958,46 +2084,38 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     verdict = dict(row.get("verdict") or {})
+    relevance = dict(dict(row.get("editorial") or {}).get("relevance") or {})
     final = str(row.get("final_decision") or "")
     rule = str(row.get("override_rule") or "")
     # The thresholds this verdict actually ran under, not today's defaults: a stored decision
     # carries its own policy numbers (#81) so an older row is judged by the rules it obeyed.
     policy = dict(dict(row.get("trace") or {}).get("policy") or {})
-    # These three flags encode invariants that policy v7 enforced unconditionally. Policy v8
-    # deliberately breaks each of them on a named rule, so a flag that still fired would mark a
-    # decision the policy meant to make and a reviewer could no longer tell a bug from a choice.
-    # They stay loud for every path the policy did not choose.
-    deliberate = rule in {"contested_high_priority", "high_priority_push"}
     flags: list[dict[str, str]] = []
-    if final in {"push", "escalate"} and verdict.get("actionable") is False and not deliberate:
+    if rule == "trade_relevance_inconsistent":
         flags.append(
             {
-                "code": "pushed_non_actionable",
-                "severity": "warning",
-                "message_zh": "最终推送，但语义输出 actionable=false。",
+                "code": "trade_relevance_inconsistent",
+                "severity": "critical",
+                "message_zh": "交易相关性组合不符合代码固定的实时推送条件。",
             }
         )
-    if verdict.get("event_type") == "noise" and final not in {"drop", "throttled"}:
-        # A noise label that reached the reader is only expected where the verdict outweighed it:
-        # the model asked to push, called it actionable, or weighed it above the veto ceiling.
-        # An absent key means the row ran under a policy where `noise` was an unconditional veto, so
-        # reaching the reader was a bug: default to "no contradiction" rather than to a ceiling of 0,
-        # which would downgrade exactly the rows that most need the critical flag.
-        ceiling = policy.get("noise_veto_max_magnitude")
-        contradicted = (
-            bool(verdict.get("actionable"))
-            or str(verdict.get("decision") or "") in {"push", "escalate"}
-            or (ceiling is not None and int(verdict.get("magnitude") or 0) > int(ceiling))
-            or deliberate
-        )
+    objective_rule = rule in {
+        "listing_deterministic",
+        "telemetry_deterministic",
+        "watchlist_objective_guard",
+        "degraded_listing_objective",
+        "degraded_telemetry_objective",
+        "degraded_watchlist_objective",
+    }
+    if relevance.get("reader_value") in {"background", "none"} and final in {"push", "escalate"}:
         flags.append(
             {
-                "code": "noise_not_held",
-                "severity": "warning" if contradicted else "critical",
+                "code": "background_delivered",
+                "severity": "info" if objective_rule else "critical",
                 "message_zh": (
-                    "语义输出为 noise，但该判断与自身的 magnitude/actionable/decision 不一致，按召回优先放行。"
-                    if contradicted
-                    else "语义输出为 noise，但最终没有拦截。"
+                    "语义判断为背景信息，但命中了上架、OI 或自选标的客观保护。"
+                    if objective_rule
+                    else "语义判断为背景信息，却在没有客观保护时送达。"
                 ),
             }
         )
@@ -2283,9 +2401,9 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         now_ms=int(now_ms),
         cohort=MarketReviewCohort(
             bundle_sha256="0" * 64,
-            program_version="news_semantic_program_v3",
+            program_version="news_semantic_program_v4",
             program_sha256="1" * 64,
-            policy_version="news_triage_policy_v7",
+            policy_version="news_triage_policy_v10",
             model="audit-model",
         ),
     )

@@ -1,4 +1,4 @@
-"""Model-drafted `news_review_v3` rubrics, for a human to accept or reject (#148).
+"""Model-drafted `news_review_v4` rubrics, for a human to accept or reject (#148, #160).
 
 Two facts set the whole shape of this module.
 
@@ -26,11 +26,20 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
+from ..semantic_contract import (
+    ReaderValue,
+    TradeAffectedMarket,
+    TradeChannel,
+    TradeDevelopmentDelta,
+    TradeImpactBreadth,
+    TradeSurprise,
+    TradeTradability,
+)
 
-DRAFTER_ID = "tracefold.news.review_drafter_v1"
+DRAFTER_ID = "tracefold.news.review_drafter_v2"
 # `Final` is what makes mypy infer the literal type rather than `str`, which is what the
 # `Literal[...]` field below needs as its default.
-DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v1"
+DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v2"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
 crypto/US-equity trading desk. A human will accept or reject your draft; never assume it is final.
@@ -50,6 +59,13 @@ For each dimension answer pass / fail / not_applicable:
   delisting, regulation landing, security incident, notable ETF flow, macro well off consensus); 3 macro
   turning point, systemic risk or geopolitical escalation.
 - timeliness: not_applicable unless the evidence shows the card was late enough to matter.
+- trade_impact_breadth: none / single_instrument / sector / regional / cross_asset / global_systemic.
+- trade_tradability: direct / second_order / contextual / none.
+- trade_surprise: unscheduled / material_vs_expectation / in_line / unknown.
+- trade_development_delta: state_change / material_detail / color_only / scheduled.
+- trade_channels: the exact supported causal channels, with no inferred extras.
+- trade_affected_markets: the exact directly or causally affected market surfaces.
+- reader_value: escalate / realtime / background / none under the typed trade-attention contract.
 
 Do NOT judge why_support or why_value. Leave them out of `dimensions` entirely — the human reviewer writes
 those. Measured against 25 human-reviewed Events you agree with a reviewer 76-88% of the time on the
@@ -62,8 +78,8 @@ marketing pushed).
 novelty: new_fact / progression / restatement, judged against the told ledger you are shown. Use
 `restatement` only when a told entry carries the same fact, and then name that entry's event_id.
 
-expected: ONLY for dimensions you marked fail, state the correct value — the right magnitude, the right
-direction, or the instruments the card should have named. Leave a field out when you are not confident.
+expected: ONLY for dimensions you marked fail, state the exact correct value — including every failed typed
+trade-relevance dimension. Leave a field out when you are not confident.
 This is the most valuable part of the draft: "wrong" without "and the answer is X" teaches nothing.
 
 confidence: 0.0-1.0, how sure you are a human would agree with this draft.
@@ -85,6 +101,13 @@ class DraftExpected(BaseModel):
     magnitude: int | None = Field(default=None, ge=0, le=3)
     direction: Literal["bullish", "bearish", "neutral", "unclear"] | None = None
     assets: list[DraftAsset] | None = Field(default=None, max_length=16)
+    trade_impact_breadth: TradeImpactBreadth | None = None
+    trade_tradability: TradeTradability | None = None
+    trade_surprise: TradeSurprise | None = None
+    trade_development_delta: TradeDevelopmentDelta | None = None
+    trade_channels: list[TradeChannel] | None = Field(default=None, max_length=4)
+    trade_affected_markets: list[TradeAffectedMarket] | None = Field(default=None, max_length=4)
+    reader_value: ReaderValue | None = None
 
 
 class DraftNovelty(BaseModel):
@@ -101,7 +124,21 @@ class DraftNovelty(BaseModel):
 # number of failures a reviewer disagrees with into the corpus, where the optimizer would learn from them.
 # They also carry no gold: "the correct Chinese sentence" is not a value a rubric can hold.
 DRAFTABLE_DIMENSIONS = frozenset(
-    {"factual_fidelity", "headline_fidelity", "asset_grounding", "direction", "magnitude", "timeliness"}
+    {
+        "factual_fidelity",
+        "headline_fidelity",
+        "asset_grounding",
+        "direction",
+        "magnitude",
+        "timeliness",
+        "trade_impact_breadth",
+        "trade_tradability",
+        "trade_surprise",
+        "trade_development_delta",
+        "trade_channels",
+        "trade_affected_markets",
+        "reader_value",
+    }
 )
 
 
@@ -142,7 +179,7 @@ class DraftedReview(BaseModel):
 class ReviewDraftBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal["tracefold.news.review_draft_batch.v1"] = DRAFT_SCHEMA
+    schema_id: Literal["tracefold.news.review_draft_batch.v2"] = DRAFT_SCHEMA
     drafter: dict[str, Any]
     drafts: tuple[DraftedReview, ...]
 

@@ -44,6 +44,7 @@ from ..models import TriageVerdict
 from ..semantic_contract import TriageContext
 from .program_judge import CardEquivalenceJudge
 from .program_metric import (
+    COMPONENT_FIELDS,
     LABEL_GROUP,
     METRIC_ID,
     UNGROUPED_LABEL,
@@ -90,12 +91,12 @@ _EXECUTION_SCOPE = {
 
 
 class BaselineCase(BaseModel):
-    """One scored case. A superset of `DevelopmentEpisode` by exactly one field: the action that shipped."""
+    """One scored case plus the persisted production ``DecisionResult`` when replay is forbidden."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     episode: DevelopmentEpisode
-    recorded_action: str = ""
+    recorded_decision_result: dict[str, Any] | None = None
 
 
 class CaseResult(BaseModel):
@@ -117,6 +118,13 @@ class CaseResult(BaseModel):
     dimension_outcomes: tuple[tuple[str, str], ...] = ()
     # Which hard gate zeroed this case, or "" when none did.
     hard_gate: str = ""
+    production_rule: str = ""
+    production_throttled_by: str = ""
+    objective_guard: str = "none"
+    component_scores: dict[str, float | None] = Field(default_factory=dict)
+    component_denominators: dict[str, int] = Field(default_factory=dict)
+    component_diagnostics: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    effective_weight_mass: float = 0.0
     route: str | None = None
     physical_calls: int = 0
     input_tokens: int = 0
@@ -184,22 +192,22 @@ def _gold_example(case: BaselineCase) -> dspy.Example:
     """The metric's gold side. `recorded` mode pins the shipped action; the others let `decide()` run."""
 
     example = build_compile_example(case.episode)
-    if not case.recorded_action:
-        # `baseline_episodes` yields "" when `news_verdicts.final_decision` is NULL or the episode carries no
-        # `event_id`. Falling through would leave `_production_action` to replay today's `decide()` inside the
-        # one mode whose `execution_scope` promises it does not — and, on the frozen fixture, to run the
-        # character-bigram duplicate check over redacted headlines. Refuse the case instead of measuring
-        # something else under its name.
-        raise ValueError(f"news_program_baseline_recorded_action_missing:{case.episode.case_id[:16]}")
+    if not case.recorded_decision_result:
+        raise ValueError(f"news_program_baseline_recorded_decision_missing:{case.episode.case_id[:16]}")
     projection = dict(example.get("policy_metric") or {})
-    projection["recorded_action"] = case.recorded_action
+    projection["recorded_decision_result"] = dict(case.recorded_decision_result)
     example = example.copy(policy_metric=projection)
     return example
 
 
 def _stored_prediction(case: BaselineCase) -> dspy.Prediction:
-    verdict = dict(case.episode.production_verdict or {})
-    return dspy.Prediction(verdict=verdict)
+    judgment = case.episode.production_judgment
+    if judgment is None:
+        return dspy.Prediction(verdict={}, editorial={})
+    return dspy.Prediction(
+        verdict=judgment.verdict.model_dump(mode="json"),
+        editorial=judgment.editorial.model_dump(mode="json"),
+    )
 
 
 def _dimension_tally(cases: Sequence[BaselineCase]) -> dict[str, Any]:
@@ -259,7 +267,7 @@ def build_runtime_lm(
     max_tokens: int,
     model_kwargs: Mapping[str, Any] | None = None,
 ) -> dspy.LM:
-    """The provider binding for `--mode live`, kept here so the CLI layer never imports DSPy."""
+    """Provider binding for the explicit live evaluation modes; the CLI layer never imports DSPy."""
 
     extras = dict(model_kwargs or {})
     owned = {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
@@ -423,6 +431,36 @@ def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
             "hit_rate": round(hits / total, 6) if total else None,
         }
     return summary
+
+
+def _aggregate_component_diagnostics(results: Sequence[CaseResult]) -> dict[str, dict[str, Any]]:
+    """Aggregate the exact per-case support emitted by the shared metric ruler."""
+
+    totals: dict[str, dict[str, Any]] = {
+        component: {
+            "denominator": 0,
+            "effective_weight_mass": 0.0,
+            "gold_scored_n": 0,
+            "labelled_n": 0,
+            "field_n": {field: 0 for field in fields},
+        }
+        for component, fields in COMPONENT_FIELDS.items()
+    }
+    for result in results:
+        for component, fields in COMPONENT_FIELDS.items():
+            source = result.component_diagnostics[component]
+            target = totals[component]
+            target["denominator"] += int(source["denominator"])
+            target["effective_weight_mass"] += float(source["effective_weight_mass"])
+            target["gold_scored_n"] += int(source["gold_scored_n"])
+            target["labelled_n"] += int(source["labelled_n"])
+            for field in fields:
+                target["field_n"][field] += int(source["field_n"][field])
+    for target in totals.values():
+        target["effective_weight_mass"] = round(float(target["effective_weight_mass"]), 6)
+        labelled_n = int(target["labelled_n"])
+        target["gold_coverage"] = round(int(target["gold_scored_n"]) / labelled_n, 6) if labelled_n else None
+    return totals
 
 
 class RouteOutcome(NamedTuple):
@@ -643,7 +681,10 @@ def run_baseline(
             answering_route = "fallback" if judgment.fallback_from else "primary"
             routes[answering_route] = routes.get(answering_route, 0) + 1
             example = by_id[case.episode.case_id]
-            prediction = dspy.Prediction(verdict=judgment.verdict.model_dump(mode="json"))
+            prediction = dspy.Prediction(
+                verdict=judgment.verdict.model_dump(mode="json"),
+                editorial=judgment.editorial.model_dump(mode="json"),
+            )
             try:
                 outcome = metric(example, prediction, None, None, None)
                 if strict is not None:
@@ -749,6 +790,7 @@ def _build_report(
     gold_n = sum(result.gold_scored_n for result in answered)
     labelled_n = sum(result.labelled_n for result in answered)
     policy = _policy_identity(cases)
+    component_diagnostics = _aggregate_component_diagnostics(answered)
     scores: dict[str, Any] = {
         "case_macro_answered": case_answered,
         "case_macro_failure_as_zero": case_zero,
@@ -761,6 +803,21 @@ def _build_report(
             "answered-only is quality given an answer; failure-as-zero is the end-to-end lower bound. "
             "They differ by exactly the unanswered cases."
         ),
+        "component_denominators": {
+            name: diagnostic["denominator"] for name, diagnostic in component_diagnostics.items()
+        },
+        "component_diagnostics": component_diagnostics,
+        "effective_weight_mass_mean": (
+            round(statistics.fmean(result.effective_weight_mass for result in answered), 6) if answered else None
+        ),
+        "objective_guard_distribution": {
+            name: sum(result.objective_guard == name for result in answered)
+            for name in sorted({result.objective_guard for result in answered})
+        },
+        "production_rule_distribution": {
+            name: sum(result.production_rule == name for result in answered)
+            for name in sorted({result.production_rule for result in answered})
+        },
     }
     if strict_scores:
         answered_ids = {result.case_id for result in answered}
@@ -778,7 +835,7 @@ def _build_report(
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
             "policy_source": policy["policy_source"],
-            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v2+v3"),
+            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v4"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
             # `current` is the release-plane population (this Program, this policy, this epoch); `all`
@@ -844,7 +901,7 @@ def _policy_identity(cases: Sequence[BaselineCase]) -> dict[str, Any]:
     Fails closed on disagreement: a report covering two policies cannot honestly name one.
     """
 
-    if all(case.recorded_action for case in cases):
+    if all(case.recorded_decision_result for case in cases):
         return dict(_ABSENT_POLICY)
     seen: dict[str, dict[str, Any]] = {}
     for case in cases:
@@ -930,6 +987,15 @@ def _case_result(
         should_push=str(case.episode.accepted_review.get("should_push") or "uncertain"),
         feedback=str(outcome.feedback or ""),
         hard_gate=str(getattr(outcome, "hard_gate", "") or ""),
+        production_rule=str(getattr(outcome, "production_rule", "") or ""),
+        production_throttled_by=str(getattr(outcome, "production_throttled_by", "") or ""),
+        objective_guard=str(getattr(outcome, "objective_guard", "none") or "none"),
+        component_scores=dict(getattr(outcome, "component_scores", {}) or {}),
+        component_denominators={
+            str(name): int(value) for name, value in dict(getattr(outcome, "component_denominators", {}) or {}).items()
+        },
+        component_diagnostics={str(name): dict(value) for name, value in dict(outcome.component_diagnostics).items()},
+        effective_weight_mass=float(getattr(outcome, "effective_weight_mass", 0.0) or 0.0),
         gold_scored_n=int(getattr(outcome, "gold_scored_n", 0) or 0),
         labelled_n=int(getattr(outcome, "labelled_n", 0) or 0),
         dimension_outcomes=tuple(getattr(outcome, "dimension_outcomes", ()) or ()),
@@ -951,19 +1017,24 @@ def compile_program_factory(artifact: ProgramArtifact) -> dspy.Module:
 def build_baseline_cases(episodes: Sequence[Mapping[str, Any]], *, action_source: str) -> tuple[BaselineCase, ...]:
     """Project the evaluator's episode dicts into scored cases.
 
-    ``action_source='recorded'`` reads the action that actually shipped out of the episode; ``'policy'`` leaves
-    it empty so the metric re-runs today's `decide()` over the candidate verdict.
+    ``action_source='recorded'`` reads the complete persisted decision projection; ``'policy'`` omits it so
+    the metric runs the frozen policy over the candidate judgment.
     """
 
     cases: list[BaselineCase] = []
     for raw in episodes:
         payload = dict(raw)
-        recorded = str(payload.pop("recorded_action", "") or "")
+        recorded = payload.pop("recorded_decision_result", None)
         # Loader-only keys. `DevelopmentEpisode` forbids extras on purpose: the compiler-visible projection is
         # a contract, and a baseline convenience field must not silently widen it.
         payload.pop("event_id", None)
         episode = DevelopmentEpisode.model_validate(payload)
-        cases.append(BaselineCase(episode=episode, recorded_action=recorded if action_source == "recorded" else ""))
+        cases.append(
+            BaselineCase(
+                episode=episode,
+                recorded_decision_result=dict(recorded) if action_source == "recorded" and recorded else None,
+            )
+        )
     return tuple(cases)
 
 

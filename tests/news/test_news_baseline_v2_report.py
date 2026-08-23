@@ -7,6 +7,7 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tests.support.news_judgment import recorded_decision, scored_judgment
 from tracefold.news.agents.program_baseline import (
     BASELINE_SCHEMA,
     BaselineCase,
@@ -17,6 +18,7 @@ from tracefold.news.agents.program_judge import CardEquivalenceJudge
 from tracefold.news.agents.program_metric import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
@@ -31,7 +33,7 @@ _CARD: dict[str, Any] = {
     "reporting_origin": "wire",
     "family": "general",
     "admission": "candidate",
-    "priority": "normal",
+    "queue_priority": "normal",
     "asset_class": "equity_or_commodity",
     "engine_type": "news",
     "ingest_mode": "live",
@@ -72,7 +74,7 @@ _VERDICT: dict[str, Any] = {
 def _policy() -> dict[str, Any]:
     values = DEFAULT_POLICY.as_dict()
     return {
-        "policy_version": "news_triage_policy_v8",
+        "policy_version": TRIAGE_POLICY_VERSION,
         "policy_values": values,
         "policy_sha256": canonical_sha(values),
     }
@@ -95,7 +97,7 @@ def _case(index: int, *, cluster: str | None = None, should_push: str = "should_
             "dimensions": {"factual_fidelity": "pass", "magnitude": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
         },
-        production_verdict=dict(_VERDICT),
+        production_judgment=scored_judgment(_VERDICT),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"]},
             "storyline": {"title": "Tesla"},
@@ -103,7 +105,7 @@ def _case(index: int, *, cluster: str | None = None, should_push: str = "should_
             **_policy(),
         },
     )
-    return BaselineCase(episode=episode, recorded_action="push")
+    return BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))
 
 
 def _report(cases: list[BaselineCase]) -> Any:
@@ -115,6 +117,8 @@ class _SilentJudgeLM(dspy.BaseLM):  # type: ignore[misc]
 
     def __init__(self) -> None:
         super().__init__(model="scripted/judge")
+        self.cache = False
+        self.num_retries = 0
 
     def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
         raise AssertionError("recorded mode consulted the semantic judge")
@@ -217,9 +221,11 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
         [
             BaselineCase(
                 episode=changed_case.episode.model_copy(
-                    update={"production_verdict": {**_VERDICT, "magnitude": 0, "headline_zh": "别的说法"}}
+                    update={
+                        "production_judgment": scored_judgment({**_VERDICT, "magnitude": 0, "headline_zh": "别的说法"})
+                    }
                 ),
-                recorded_action="push",
+                recorded_decision_result=recorded_decision("push"),
             )
         ],
         mode="recorded",
@@ -231,6 +237,63 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
     )
     assert "magnitude" in kept.prediction_dimensions
     assert kept.prediction_dimensions["magnitude"]["retention_hit"] == 1
+
+
+def test_report_exposes_complete_diagnostics_for_each_score_component() -> None:
+    """A scalar mass and four denominators cannot show which fields actually support each weight."""
+
+    diagnostics = _report([_case(1)]).scores["component_diagnostics"]
+
+    assert diagnostics["final_action"] == {
+        "denominator": 1,
+        "effective_weight_mass": 0.45,
+        "gold_scored_n": 1,
+        "labelled_n": 1,
+        "gold_coverage": 1.0,
+        "field_n": {"should_push": 1},
+    }
+    assert diagnostics["trade_relevance"] == {
+        "denominator": 0,
+        "effective_weight_mass": 0.0,
+        "gold_scored_n": 0,
+        "labelled_n": 0,
+        "gold_coverage": None,
+        "field_n": {
+            "trade_impact_breadth": 0,
+            "trade_tradability": 0,
+            "trade_surprise": 0,
+            "trade_development_delta": 0,
+            "trade_channels": 0,
+            "trade_affected_markets": 0,
+            "reader_value": 0,
+        },
+    }
+    assert diagnostics["semantics_novelty"] == {
+        "denominator": 2,
+        "effective_weight_mass": 0.1,
+        "gold_scored_n": 1,
+        "labelled_n": 2,
+        "gold_coverage": 0.5,
+        "field_n": {
+            "asset_grounding": 0,
+            "direction": 0,
+            "magnitude": 1,
+            "novelty": 1,
+        },
+    }
+    assert diagnostics["reader_card"] == {
+        "denominator": 1,
+        "effective_weight_mass": 0.1,
+        "gold_scored_n": 0,
+        "labelled_n": 1,
+        "gold_coverage": 0.0,
+        "field_n": {
+            "factual_fidelity": 1,
+            "headline_fidelity": 0,
+            "why_support": 0,
+            "why_value": 0,
+        },
+    }
 
 
 def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
@@ -250,7 +313,7 @@ def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
         [
             BaselineCase(
                 episode=labelled.episode.model_copy(update={"accepted_review": review}),
-                recorded_action="push",
+                recorded_decision_result=recorded_decision("push"),
             )
         ]
     )
@@ -293,14 +356,16 @@ def test_a_report_cannot_cover_two_policies() -> None:
     values = {**DEFAULT_POLICY.as_dict(), "similarity_max": 0.9}
     drifted.update({"policy_values": values, "policy_sha256": canonical_sha(values)})
     replayed = [
-        BaselineCase(episode=_case(1).episode, recorded_action=""),
-        BaselineCase(episode=other.episode.model_copy(update={"policy_metric": drifted}), recorded_action=""),
+        BaselineCase(episode=_case(1).episode),
+        BaselineCase(episode=other.episode.model_copy(update={"policy_metric": drifted})),
     ]
     with pytest.raises(ValueError, match="news_program_baseline_policy_not_uniform"):
         _policy_identity(replayed)
 
     # And a recorded run over the same two cases names no policy at all rather than picking one.
-    recorded = [BaselineCase(episode=case.episode, recorded_action="push") for case in replayed]
+    recorded = [
+        BaselineCase(episode=case.episode, recorded_decision_result=recorded_decision("push")) for case in replayed
+    ]
     assert _policy_identity(recorded)["policy_sha256"] is None
 
 
@@ -344,7 +409,7 @@ def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
 
     from tracefold.news.agents.program_metric import METRIC_ID
 
-    assert METRIC_ID.endswith("_v3")
+    assert METRIC_ID.endswith("_v4")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
 
 
@@ -357,7 +422,8 @@ def test_a_dimension_reports_how_often_nobody_labelled_it() -> None:
         [
             _case(1),
             BaselineCase(
-                episode=unlabelled.episode.model_copy(update={"accepted_review": review}), recorded_action="push"
+                episode=unlabelled.episode.model_copy(update={"accepted_review": review}),
+                recorded_decision_result=recorded_decision("push"),
             ),
         ]
     )
@@ -373,6 +439,6 @@ def test_the_published_policy_hash_is_recomputed_not_forwarded() -> None:
 
     drifted = dict(_case(1).episode.policy_metric)
     drifted["policy_values"] = {**drifted["policy_values"], "similarity_max": 0.9}
-    tampered = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": drifted}), recorded_action="")
+    tampered = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": drifted}))
     with pytest.raises(ValueError, match="news_program_baseline_policy_identity_mismatch"):
         _policy_identity([tampered])
