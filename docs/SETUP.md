@@ -159,6 +159,13 @@ llm:
     api_key: "<reader fallback secret>"
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
+  # Required only for the cold compiler. Reflection uses this endpoint with
+  # code-owned 32k/300s/temperature-1; metric_judge derives a distinct sealed
+  # role from it with its own schema, budget, tariff and receipt.
+  news_compiler_reflection:
+    api_key: "<compiler reflection secret>"
+    base_url: "https://reflection.example/v1"
+    model: "reflection-model"
   # Optional cold-compiler contract. All values are required together and do
   # not affect production News calls. Rates are micro-USD per million tokens.
   news_compiler_tariff:
@@ -168,6 +175,8 @@ llm:
     task_output_microusd_per_million: 1200000
     reflection_input_microusd_per_million: 300000
     reflection_output_microusd_per_million: 1200000
+    metric_judge_input_microusd_per_million: 400000
+    metric_judge_output_microusd_per_million: 1600000
 
 news:
   enabled: true
@@ -179,19 +188,11 @@ news:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
-  policy:                     # decide() thresholds and switches (all optional; these are the defaults)
-    min_push_magnitude: 1
-    min_watchlist_magnitude: 1
-    escalate_magnitude: 3
-    unclear_push_min_magnitude: 2
-    unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
+  policy:                     # policy-v10 duplicate/safety knobs (all optional; these are the defaults)
     restatement_drop: true      # a restatement of a card the reader already received never pushes
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
-    high_priority_escalates: false  # true = the Gate's AMQP priority also earns the ⚡ header (pre-v4, #77)
-    noise_veto_max_magnitude: 1     # `noise` drops on its own only at or below this magnitude (policy v8)
-    noise_veto_respects_gate_priority: true   # false = a `noise` label may drop a Gate high-priority Event
-    contested_push_min_magnitude: 2 # Gate high priority beats a model hold at this magnitude; 0 disables
     listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
+    stale_source_max_age_s: 43200  # an x/twitter artifact already older than 12 h on arrival is a replay
   retention:
     raw_days: 30                # an Item nobody judged is storage
     judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
@@ -212,39 +213,53 @@ news:
     - {symbol: COIN}
 ```
 
-`news.policy` and `news.gate` are the operator's recall/precision knobs: the
+`news.gate` controls admission and `news.policy` exposes only four duplicate/
+safety knobs; trade-relevance action eligibility is code-owned. The
 Gate admits nearly every Item (only recovery replays, law-firm templates,
 and — behind `suppress_low_signal` — low-score ungrounded social posts skip
 Program execution; exchange listing/delisting frames are admitted and judged like any
 candidate), Triage is the semantic filter, and
-`decide()` applies these thresholds. Semantic generation is the code-owned
-`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
-deterministic assembler` Program behind
+`decide()` applies policy v10 to one `ScoredJudgment`. Semantic generation is
+the code-owned `EventSemantics.v2 -> deterministic SemanticNormalizer ->
+ReaderCard.v2 -> deterministic assembler` Program; `TradeRelevanceV1` is nested
+inside EventSemantics.v2. It remains behind
 `SemanticJudge.judge(TriageContext)`. A normal judgment makes two serial
 provider calls; the Program artifact owns the route deadline and retry/call
-budget, so `deadline_seconds` is not an operator setting. Changes are
+budget, so `deadline_seconds` is not an operator setting.
+The model-visible projection excludes queue priority, provider score, Gate
+macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
+semantic view and never ToldContext or reader intent. Queue priority remains a
+broker scheduling/audit fact and is absent from reader HTTP/OpenAPI/React.
+
+Changes are
 exact-one-variable `program` or `policy` candidates:
 record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
 The optional `learning compile` workflow seals accepted development, runs
 bounded DSPy GEPA without DB/holdout/application credentials, and accepts only
-a typed LearnedStrategy/Demo patch. It requires the complete trusted tariff
-above, an exact local `--compiler-image sha256:<64 hex>`, explicit
-metric/model/total-cost and resource limits, plus a seed; it cannot accept,
+a typed patch to the two LearnedStrategy instructions; DemoBank stays empty. It
+requires the complete trusted tariff above, an exact local
+`--compiler-image sha256:<64 hex>`, explicit metric/task/reflection/metric-judge
+call limits, total-cost/resource limits and a seed; it cannot accept,
 deploy or promote. Migration
 `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality
-`program_v3` epoch; migration `0295` preserves v1-v3 and starts D-generation
-`program_v5`. Every earlier cohort remains audit-only, and quality evidence
-restarts from zero at the `program_v5`
+`program_v3` epoch; migration `0295` preserves v1-v3 and starts
+`program_v5`; migration `0300` preserves history and starts `program_v6` for
+factory/executable v4, policy v10, review/metric v4 and compiler protocol v3.
+Every earlier cohort remains audit-only, and quality evidence
+restarts from zero at the `program_v6`
 deployment. The hard cut itself
-does not prove a quality uplift; it
-creates future per-Predictor feedback, demo, routing and fine-tuning leverage
-at the immediate cost of the normal call count increasing from one to two.
-`tracefold config` prints the effective values. Policy v7 has no 1 h/2 h/4 h
-reader-count veto: every distinct fact that passes the semantic contract moves
+does not prove a cross-generation quality uplift; v6 evidence starts from zero
+and the normal graph remains exactly two serial Predictor calls.
+The production image has one loader only: artifact v2, factory/executable v4,
+epoch v6 and policy v10. The separately built new-schema/v5-behaviour rollback
+image is a deployment-safety artifact, not an alternate registry entry or
+runtime switch.
+`tracefold config` prints the effective values. Policy v10 retains policy v7's
+removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes the semantic contract moves
 to delivery; the sent-reader ledger remains only for same-fact suppression.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
@@ -275,7 +290,13 @@ credential path or inferred URL/model. Configs written before the GMGN lane remo
 `gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
 `api.replay_limit` keys, and configs written before the Analyst lane removal
 (#57) must drop `news.analyst.*` and `llm.news_analyst_model`; the schema
-rejects them.
+rejects them. Before #160, also remove the retired policy-v9 action/priority
+keys (`escalate_magnitude`, `min_push_magnitude`,
+`min_watchlist_magnitude`, `unclear_push_min_magnitude`,
+`unclear_push_event_types`, `high_priority_escalates`,
+`noise_veto_max_magnitude`, `noise_veto_respects_gate_priority`, and
+`contested_push_min_magnitude`) and run `uv run tracefold config`; there are no
+aliases.
 
 The OpenNews Receiver authenticates one WSS and sends zero application
 subscription frames; the server pushes the account owner's `strategy.triggered`
