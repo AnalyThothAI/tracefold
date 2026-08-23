@@ -488,11 +488,11 @@ class CandidateEvaluator:
     ) -> tuple[dict[str, Any], ...]:
         """Project accepted reviews in a window for the offline baseline. Freezes nothing, writes nothing.
 
-        ``cohort=True`` applies the release-plane eligibility (this Program and this policy) — the population a
-        candidate would later be judged on. ``cohort=False`` drops it and takes every accepted event review in
-        the window, which is what a metric-wiring proof needs: the only labelled corpus this project has was
-        produced by an arm that has since been retired, and refusing to read it would mean the baseline could
-        never be checked against a known number.
+        ``cohort=True`` applies the release-plane eligibility for the exact active Program bundle — the
+        population a candidate would later be judged on. ``cohort=False`` drops it and takes every accepted
+        event review in the window, which is what a metric-wiring proof needs: the only labelled corpus this
+        project has was produced by an arm that has since been retired, and refusing to read it would mean the
+        baseline could never be checked against a known number.
 
         Each episode carries the persisted ``DecisionResult`` projection so a caller can score history as it
         happened instead of as today's ``decide()`` would replay it.  A final-action string is insufficient:
@@ -1112,6 +1112,7 @@ class CandidateEvaluator:
                AND source.ingest_mode = 'live' AND source.evidence_release_eligible
                AND source.program_version = %s AND source.program_sha256 = %s
                AND source.policy_version = %s
+               AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
                AND NOT (
                  source.final_decision IN ('push', 'escalate')
                  AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
@@ -1132,6 +1133,7 @@ class CandidateEvaluator:
                 self._stable.program_version,
                 self._stable.program_sha256,
                 TRIAGE_POLICY_VERSION,
+                self._stable.bundle_sha,
             ),
         ).fetchall()
         external = self._conn.execute(
@@ -1245,38 +1247,22 @@ class CandidateEvaluator:
                 safety.add(case.cluster_id)
             strata.add(case.stratum)
             days.add(case.opened_at_ms // 86_400_000)
-        # Eligibility is the semantic arm — Program plus the policy `decide()` actually ran — and no longer the
-        # whole runtime bundle. `bundle_sha` also hashes the runtime model bindings and the retrieval identity,
-        # so a `similarity_max` edit or a model rebind used to void every accepted review in the window: four
-        # days of production produced seven bundles and never once reached the 200-event development floor.
-        # Retrieval quality is measured on its own (`retrieval_receipt`), and the bundles a window actually
-        # spans are reported below rather than silently excluded.
+        # A release cohort is the whole runtime bundle. Mixing model bindings or retrieval identity into a
+        # Program/policy cohort would score a candidate against evidence produced by a different executable arm.
         eligible = self._conn.execute(
             "SELECT count(*) AS n FROM news_review_task_source_v1 "
             "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s",
+            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
+            "AND trace #>> '{agent_assignment,bundle_sha}' = %s",
             (
                 spec.window.from_ms,
                 spec.window.to_ms,
                 self._stable.program_version,
                 self._stable.program_sha256,
                 TRIAGE_POLICY_VERSION,
+                self._stable.bundle_sha,
             ),
         ).fetchone()
-        bundles = self._conn.execute(
-            "SELECT COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') AS bundle_sha, count(*) AS n "
-            "FROM news_review_task_source_v1 "
-            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
-            "GROUP BY 1 ORDER BY 2 DESC, 1",
-            (
-                spec.window.from_ms,
-                spec.window.to_ms,
-                self._stable.program_version,
-                self._stable.program_sha256,
-                TRIAGE_POLICY_VERSION,
-            ),
-        ).fetchall()
         return {
             "case_n": len(cases),
             "independent_cluster_n": len({case.cluster_id for case in cases}),
@@ -1289,15 +1275,11 @@ class CandidateEvaluator:
             "strata": sorted(strata),
             "eligible_event_n": int(eligible["n"] or 0),
             "eligibility": {
-                "unit": "program_sha256+policy_version",
+                "unit": "agent_bundle_sha",
+                "bundle_sha": self._stable.bundle_sha,
                 "program_sha256": self._stable.program_sha256,
                 "policy_version": TRIAGE_POLICY_VERSION,
                 "rubric_versions": list(REVIEW_RUBRIC_VERSIONS),
-                # What the window actually spans. Runtime rebinds no longer void a review, so the receipt has
-                # to say which runtimes are mixed into the number above.
-                "runtime_bundles": [
-                    {"bundle_sha": str(row["bundle_sha"]), "event_n": int(row["n"])} for row in bundles
-                ],
             },
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }

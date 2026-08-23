@@ -491,12 +491,14 @@ def _arm(
     policy: dict[str, object] | None = None,
     program_version: str = "news_semantic_program_v4",
     program_sha256: str | None = None,
+    runtime_model_bindings_sha256: str | None = None,
 ) -> ArmManifest:
     selected_policy = policy or DEFAULT_POLICY.as_dict()
     return ArmManifest(
         program_version=program_version,
         program_sha256=program_sha256 or _sha({"program": program_version, "fixture": "stable"}),
-        runtime_model_bindings_sha256=_sha({"model_bindings": "fixture-primary+fallback"}),
+        runtime_model_bindings_sha256=runtime_model_bindings_sha256
+        or _sha({"model_bindings": "fixture-primary+fallback"}),
         retrieval_sha256=_sha({"told": "v1", "evidence": "v1"}),
         policy=selected_policy,
         policy_sha256=_sha(selected_policy),
@@ -1547,6 +1549,8 @@ def _accepted_event(
     why: str = "fail",
     stale_reask: bool = False,
     stable: ArmManifest | None = None,
+    hit_id: int = 112001,
+    title: str = "Micron says DRAM contract prices rose again in August",
 ) -> str:
     selected_stable = stable or _arm()
     event_id = _open_event(
@@ -1555,6 +1559,8 @@ def _accepted_event(
         program_version=selected_stable.program_version,
         program_sha256=selected_stable.program_sha256,
         stale_reask=stale_reask,
+        hit_id=hit_id,
+        title=title,
     )
     conn.execute(
         "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
@@ -1574,6 +1580,56 @@ def _accepted_event(
             idempotency_key=str(uuid.uuid4()),
         )
     return event_id
+
+
+def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None:
+    stable = _arm()
+    prior_runtime = _arm(runtime_model_bindings_sha256=_sha({"model_bindings": "retired-four-slot-runtime"}))
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": prior_runtime.bundle_sha, "runtime": "retired-four-slot-runtime"}),
+            stable_bundle_sha=prior_runtime.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:retired-test-image",
+            runtime_revision="retired-four-slot-runtime",
+            now_ms=NOW - 4 * 3_600_000,
+        )
+    prior_event_id = _accepted_event(
+        conn,
+        stable=prior_runtime,
+        hit_id=112011,
+        title="SK Hynix expands advanced packaging capacity in South Korea",
+    )
+    with repos.transaction():
+        repos.news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "current-four-slot-runtime"}),
+            stable_bundle_sha=stable.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:current-test-image",
+            runtime_revision="current-four-slot-runtime",
+            now_ms=NOW - 3 * 3_600_000,
+        )
+    exact_event_id = _accepted_event(
+        conn,
+        stable=stable,
+        hit_id=112010,
+        title="Micron raises its current-quarter DRAM contract price outlook",
+    )
+
+    development = asyncio.run(
+        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+
+    assert [case.event_id for case in development.cases] == [exact_event_id]
+    assert prior_event_id not in {case.event_id for case in development.cases}
+    assert development.counts["eligible_event_n"] == 1
+    assert development.counts["eligibility"]["bundle_sha"] == stable.bundle_sha
 
 
 def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(conn) -> None:
