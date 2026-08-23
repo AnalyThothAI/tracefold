@@ -491,6 +491,7 @@ def run_baseline(
     judge: CardEquivalenceJudge | None = None,
     semantic_judge: Any = None,
     runtime_identity: Mapping[str, Any] | None = None,
+    cohort_scope: str = "unknown",
     num_threads: int = 1,
 ) -> BaselineReport:
     """Score `cases` and return one content-addressable report. Never writes, never delivers, never promotes."""
@@ -710,6 +711,7 @@ def run_baseline(
         latency=latency,
         route=route,
         runtime_identity=runtime_identity,
+        cohort_scope=cohort_scope,
     )
 
 
@@ -724,6 +726,7 @@ def _build_report(
     latency: Mapping[str, Any],
     route: Mapping[str, Any],
     runtime_identity: Mapping[str, Any] | None,
+    cohort_scope: str = "unknown",
 ) -> BaselineReport:
     answered = [result for result in results if result.answered]
     failed = [result for result in results if not result.answered]
@@ -778,6 +781,11 @@ def _build_report(
             "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v2+v3"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
+            # `current` is the release-plane population (this Program, this policy, this epoch); `all`
+            # drops that and reads every accepted review in the window. Both are legitimate and they answer
+            # different questions, so the receipt names which one it read rather than leaving it to the
+            # command line that produced it.
+            "cohort_scope": cohort_scope,
             "case_root_sha256": canonical_sha(sorted(case.episode.case_id for case in cases)),
             # The id list answers "the same cases?"; only this answers "the same inputs?". Hashing ids alone
             # let one report SHA describe two different corpora — any evidence edit that kept the ids left the

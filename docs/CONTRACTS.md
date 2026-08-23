@@ -613,15 +613,22 @@ names what it still excludes (the consumer transaction, the advisory lock,
 stale-evidence re-ask, the degraded wire-card fallback, the broker and
 delivery).
 
-A live mode also refuses `--all-cohorts`: it replays `decide()`, the only policy
-it can replay is the active arm's, and applying today's rules to a retired
-cohort answers a question with no release meaning. The `policy_not_uniform`
-guard cannot catch that combination, because every episode is stamped with the
-same active policy and so looks perfectly uniform. Both live modes verify every
-example's frozen policy *before the first provider call*, and refuse the whole
-run with `news_program_baseline_policy_unusable:<case>:<reason>` — a corpus that
-cannot verify its own policy is a pure function of the input, and discovering it
-after two Predictor calls per case turns it into "the route did not answer".
+Both live modes verify every example's frozen policy *before the first provider
+call* and refuse the whole run with
+`news_program_baseline_policy_unusable:<case>:<reason>` — a corpus that cannot
+verify its own policy is a pure function of the input, and discovering it after
+two Predictor calls per case turns it into "the route did not answer".
+
+`--all-cohorts` stays available to every mode, and `identity.cohort_scope` names
+which population was read (`current` = the release-plane cohort, `all` = every
+accepted review in the window). What #150 forbids is replaying today's policy
+over a *stored retired verdict*, which is `--mode recorded --action-source
+policy`; the handler rejects that pairing. A live mode has no stored verdict —
+it generates one with today's Program and scores it under today's policy, and
+only the evidence and the reviewer's labels are historical. Banning the
+combination outright would make both live modes unrunnable rather than safer:
+every accepted review this project holds belongs to a cohort that has since been
+retired.
 
 `--action-source` has exactly one valid value per mode and the handler rejects
 the other: `recorded` outside `--mode recorded` short-circuits the policy replay,

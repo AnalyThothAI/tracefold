@@ -1023,12 +1023,6 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     max_model_cases = int(getattr(args, "max_model_cases", 0) or 0)
     if mode != "recorded" and max_model_cases <= 0:
         raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
-    if mode != "recorded" and bool(args.all_cohorts):
-        # A live mode replays `decide()`, and the only policy available to replay is the active arm's. Over a
-        # retired cohort that answers "what would today's rules do to yesterday's Program?" — a question with
-        # no release meaning, and one the `policy_not_uniform` guard cannot catch because every episode gets
-        # stamped with the same active policy. #150 forbids the combination; disclosure is not enough.
-        raise ValueError("news_program_baseline_live_mode_forbids_all_cohorts")
     window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
     with postgres_connection(settings, role="serve") as conn:
         evaluator = CandidateEvaluator(conn, stable=stable, judges={})
@@ -1099,6 +1093,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
+        cohort_scope="all" if bool(args.all_cohorts) else "current",
         mode=mode,
         artifact=artifact,
         program_factory=compile_program_factory if mode == "compile_live" else None,

@@ -374,28 +374,43 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
     assert seen["limit"] == 12, "the smaller of the two bounds wins, so --limit cannot widen it"
 
 
-def test_a_live_baseline_refuses_all_cohorts(monkeypatch: Any) -> None:
-    """#150 forbids policy replay across retired cohorts, and only a live mode replays policy.
+def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) -> None:
+    """What #150 forbids is replaying today's policy over a *stored retired verdict*, and that is
+    `--mode recorded --action-source policy`, which the handler already rejects.
 
-    The `policy_not_uniform` guard cannot catch this: `_project_episodes` stamps every episode with the same
-    active arm, so a mixed-cohort run looks perfectly uniform while answering "what would today's rules do to
-    yesterday's Program?".
+    A live mode generates the verdict with today's Program and scores it under today's policy; only the
+    evidence and the reviewer's labels are historical, which is the only pairing that can be measured at all —
+    every accepted review this project has belongs to a retired cohort, so banning the combination made both
+    live modes unrunnable rather than safer. The receipt names the population instead.
     """
 
-    def refuse(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("the guard must fail before the corpus is read")
+    seen: dict[str, Any] = {}
+
+    class _Evaluator:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def baseline_episodes(self, _window: Any, *, cohort: bool, limit: int) -> list[Any]:
+            seen["cohort"] = cohort
+            seen["limit"] = limit
+            return []
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", refuse)
+    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.CandidateEvaluator", _Evaluator)
 
-    for mode in ("compile_live", "runtime_live"):
-        code, payload = _handle_learning(
-            _baseline_args(mode=mode, action_source="policy", max_model_cases=5, all_cohorts=True)
-        )
-        assert code == 2
-        assert payload["error"] == "news_program_baseline_live_mode_forbids_all_cohorts"
+    code, payload = _handle_learning(
+        _baseline_args(mode="runtime_live", action_source="policy", max_model_cases=5, all_cohorts=True)
+    )
+    assert seen["cohort"] is False
+    assert code == 2 and payload["error"]["code"] == "news_program_baseline_no_accepted_reviews_in_window"
 
-    # `recorded` never replays policy, so the retired-cohort corpus stays available to it.
-    with pytest.raises(AssertionError, match="before the corpus is read"):
-        _handle_learning(_baseline_args(mode="recorded", all_cohorts=True))
+    # The genuinely forbidden pairing stays blocked.
+    code, payload = _handle_learning(_baseline_args(mode="recorded", action_source="policy", all_cohorts=True))
+    assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_action"
