@@ -32,6 +32,11 @@ from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
+from tracefold.app.workers.task_contract import (
+    WORKERS_CONTROL_TASK_NAME,
+    WORKERS_PROBE_TASK_NAME,
+    worker_business_runners,
+)
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.venues import (
@@ -241,24 +246,18 @@ async def run_workers(settings: Settings) -> None:
                     _run_probe(server, stop_event=probe_stop_event),
                     on_fatal=enter_fatal,
                 ),
-                name="workers-probe",
+                name=WORKERS_PROBE_TASK_NAME,
             )
-            if components.news_pipeline is not None:
-                for task_name, runner in components.news_pipeline.runners():
-                    business_tasks.append(
-                        group.create_task(
-                            _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
-                            name=task_name,
-                        )
+            for task_name, runner in worker_business_runners(
+                news_pipeline=components.news_pipeline,
+                trading_pipeline=components.trading_pipeline,
+            ):
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
+                        name=task_name,
                     )
-            if components.trading_pipeline is not None:
-                for task_name, runner in components.trading_pipeline.runners():
-                    business_tasks.append(
-                        group.create_task(
-                            _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
-                            name=task_name,
-                        )
-                    )
+                )
             await _guard_child(
                 _wait_for_probe_start(server),
                 on_fatal=enter_fatal,
@@ -300,7 +299,7 @@ async def run_workers(settings: Settings) -> None:
                         ),
                         on_fatal=enter_fatal,
                     ),
-                    name="workers-control",
+                    name=WORKERS_CONTROL_TASK_NAME,
                 )
                 phase = "runtime"
 

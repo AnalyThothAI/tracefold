@@ -7,20 +7,26 @@ the compose broker); skips otherwise. Every test declares its own prefixed topol
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import socket
 import time
+import urllib.request
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
+import aio_pika
 import pytest
+from aio_pika import DeliveryMode, ExchangeType
 
-from tracefold.integrations.rabbitmq import RabbitMQBus, topology
+from tracefold.integrations.rabbitmq import BrokerBackpressure, RabbitMQBus, topology
 from tracefold.news.bus import (
     Q_DEAD,
     Q_TRIAGE,
+    RETRY_TTL_MS,
     BusMessage,
     DeferError,
     PermanentError,
@@ -31,6 +37,11 @@ from tracefold.news.bus import (
 pytestmark = pytest.mark.integration
 
 AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
+_AMQP = urlsplit(AMQP_URL)
+MANAGEMENT_URL = os.environ.get(
+    "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
+    f"http://{_AMQP.hostname or '127.0.0.1'}:15672",
+).rstrip("/")
 
 
 def _broker_reachable() -> bool:
@@ -46,9 +57,14 @@ skip_without_broker = pytest.mark.skipif(not _broker_reachable(), reason="Rabbit
 
 
 @asynccontextmanager
-async def _bus() -> AsyncIterator[RabbitMQBus]:
+async def _bus(*, retry_ttl_ms: int = 2_000) -> AsyncIterator[RabbitMQBus]:
     prefix = f"tf_test_{uuid.uuid4().hex[:8]}"
-    bus = RabbitMQBus(url=AMQP_URL, name_prefix=prefix, connect_timeout_seconds=5, retry_ttl_ms=2_000)
+    bus = RabbitMQBus(
+        url=AMQP_URL,
+        name_prefix=prefix,
+        connect_timeout_seconds=5,
+        retry_ttl_ms=retry_ttl_ms,
+    )
     await bus.connect()
     try:
         yield bus
@@ -58,16 +74,40 @@ async def _bus() -> AsyncIterator[RabbitMQBus]:
         await bus.close()
 
 
-def _event(message_id: str, payload: dict[str, object], *, priority: int = 0) -> BusMessage:
+def _event(
+    message_id: str,
+    payload: dict[str, object],
+    *,
+    priority: int = 0,
+    routing_key: str = "event.general.normal",
+) -> BusMessage:
     return BusMessage(
         kind="event",
         message_id=message_id,
-        routing_key="event.general.normal",
+        routing_key=routing_key,
         payload=payload,
         trace_id=new_trace_id(),
         occurred_at_ms=1,
         priority=priority,
     )
+
+
+def _management_json(path: str) -> object:
+    username = unquote(_AMQP.username or "guest")
+    password = unquote(_AMQP.password or "guest")
+    token = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+    request = urllib.request.Request(  # noqa: S310 - test-only HTTP management endpoint
+        f"{MANAGEMENT_URL}{path}",
+        headers={"Authorization": f"Basic {token}"},
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=5) as response:
+        return json.load(response)
+
+
+def _management_vhost() -> str:
+    raw = unquote(_AMQP.path.lstrip("/"))
+    return raw or "/"
 
 
 @skip_without_broker
@@ -79,6 +119,97 @@ def test_topology_is_three_queues_one_dlq_one_retry_lane() -> None:
             assert names == {"news.raw", "news.triage", "news.deliver", "news.dead", "news.retry"}  # no news.deep (#57)
             depths = await bus.queue_depths()
             assert set(depths) == set(declared["queues"])
+
+    asyncio.run(scenario())
+
+
+@skip_without_broker
+def test_declarations_confirms_and_publisher_properties_match_the_runtime_contract() -> None:
+    async def scenario() -> None:
+        async with _bus(retry_ttl_ms=RETRY_TTL_MS) as bus:
+            await bus.declare_topology()
+            declared = topology(bus.prefix)
+            vhost = quote(_management_vhost(), safe="")
+
+            expected_exchanges = {
+                declared.exchange: ("topic", True),
+                declared.dlx: ("fanout", True),
+                declared.retry_exchange: ("fanout", True),
+            }
+            for name, expected in expected_exchanges.items():
+                exchange = _management_json(f"/api/exchanges/{vhost}/{quote(name, safe='')}")
+                assert isinstance(exchange, dict)
+                assert (exchange["type"], exchange["durable"]) == expected
+
+            expected_queues = {spec.name: dict(spec.arguments) for spec in declared.queues}
+            expected_queues[declared.retry_queue] = {
+                "x-queue-type": "quorum",
+                "x-message-ttl": RETRY_TTL_MS,
+                "x-dead-letter-exchange": declared.exchange,
+            }
+            expected_bindings = {
+                **{
+                    spec.name: {(declared.exchange, key) for key in spec.bindings} or {(declared.dlx, "#")}
+                    for spec in declared.queues
+                },
+                declared.retry_queue: {(declared.retry_exchange, "#")},
+            }
+            for name, arguments in expected_queues.items():
+                queue = _management_json(f"/api/queues/{vhost}/{quote(name, safe='')}")
+                assert isinstance(queue, dict)
+                assert queue["durable"] is True
+                assert queue["arguments"] == arguments
+                bindings = _management_json(f"/api/queues/{vhost}/{quote(name, safe='')}/bindings")
+                assert isinstance(bindings, list)
+                actual = {(binding["source"], binding["routing_key"]) for binding in bindings if binding.get("source")}
+                assert actual == expected_bindings[name]
+
+            connection = await aio_pika.connect_robust(AMQP_URL, timeout=5)
+            channel = await connection.channel(publisher_confirms=True)
+            overflow_name = f"{bus.prefix}.confirm"
+            try:
+                triage = await channel.declare_queue(bus.queue_name(Q_TRIAGE), passive=True)
+                published = _event("publisher-contract", {"value": 1}, priority=7)
+                await bus.publish(published)
+                incoming = await triage.get(timeout=5)
+                assert incoming is not None
+                assert incoming.content_type == "application/json"
+                assert incoming.delivery_mode == DeliveryMode.PERSISTENT
+                assert incoming.priority == 7
+                assert incoming.message_id == published.message_id
+                assert incoming.headers["x-news-attempt"] == 1
+                assert incoming.headers["x-news-trace"] == published.trace_id
+                await incoming.ack()
+
+                exchange = await channel.declare_exchange(
+                    declared.exchange,
+                    ExchangeType.TOPIC,
+                    durable=True,
+                    passive=True,
+                )
+                overflow = await channel.declare_queue(
+                    overflow_name,
+                    durable=True,
+                    arguments={
+                        "x-queue-type": "quorum",
+                        "x-max-length": 1,
+                        "x-overflow": "reject-publish",
+                    },
+                )
+                await overflow.bind(exchange, routing_key="contract.confirm")
+                await bus.publish(_event("confirm:first", {}, routing_key="contract.confirm"))
+                rejected = False
+                for index in range(64):
+                    try:
+                        await bus.publish(_event(f"confirm:overflow:{index}", {}, routing_key="contract.confirm"))
+                    except BrokerBackpressure:
+                        rejected = True
+                        break
+                assert rejected, "the confirmed publisher never surfaced broker overflow"
+            finally:
+                await channel.queue_delete(overflow_name, if_unused=False, if_empty=False)
+                await channel.close()
+                await connection.close()
 
     asyncio.run(scenario())
 

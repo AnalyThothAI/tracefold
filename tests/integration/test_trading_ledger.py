@@ -30,17 +30,25 @@ from tracefold.trading import (
     ACTIVE_ORDER_STATES,
     TRADING_MANIFEST_VERSION,
     Bar,
+    Blacklist,
     CandidateRunner,
     EligibilityPolicy,
     Funnel,
+    InstrumentRef,
+    NewsTradeCandidate,
+    OiTradeCandidate,
     OrderPolicy,
     PaperAdapter,
     PaperFaults,
     ReconcileRunner,
     RegimePolicy,
     TradePolicy,
+    TradingCaseManifest,
     TradingConfig,
+    assess,
     canonical_sha256,
+    news_candidate,
+    oi_candidate,
 )
 
 pytestmark = pytest.mark.integration
@@ -433,6 +441,22 @@ def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int
     conn.commit()
 
 
+def _promote_to_model_projection(conn: Any, *, event_id: str, symbol: str) -> None:
+    conn.execute("UPDATE news_events SET admission = 'candidate' WHERE event_id = %s", (event_id,))
+    conn.execute(
+        "UPDATE news_verdicts SET program_version = 'news_semantic_program_v4', verdict = %s::jsonb, "
+        "editorial = jsonb_build_object('editorial_origin', 'model', "
+        "'editorial_sha256', repeat('e', 64), 'relevance', '{}'::jsonb) WHERE event_id = %s",
+        (
+            '{"assets":[{"symbol":"' + symbol + '","role":"primary"}],"novelty":"new_fact","magnitude":2,'
+            '"direction":"bullish","scope":"single_name","event_type":"listing",'
+            '"headline_zh":"标题","why_zh":"机制"}',
+            event_id,
+        ),
+    )
+    conn.commit()
+
+
 def _config(**kwargs: Any) -> TradingConfig:
     defaults: dict[str, Any] = {
         "mode": "paper",
@@ -541,6 +565,134 @@ def test_model_projection_requires_v4_model_editorial_in_the_v6_epoch(conn) -> N
     assert rows[0]["program_version"] == "news_semantic_program_v4"
     assert rows[0]["editorial_origin"] == "model"
     assert len(rows[0]["runtime_manifest_sha"]) == 64
+
+
+def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_identity(conn) -> None:
+    after = NOW - 2 * MINUTE
+    middle = NOW - MINUTE
+    for event_id, symbol, created_at_ms in (
+        ("oi-after-boundary", "ADA", after),
+        ("oi-b", "SOL", middle),
+        ("oi-a", "DOGE", middle),
+        ("oi-until-boundary", "XRP", NOW),
+    ):
+        _seed_oi_event(conn, event_id=event_id, symbol=symbol, observed_at_ms=created_at_ms)
+
+    for event_id, symbol, created_at_ms in (
+        ("news-after-boundary", "ADA", after),
+        ("news-b", "SOL", middle),
+        ("news-a", "DOGE", middle),
+        ("news-until-boundary", "XRP", NOW),
+    ):
+        _seed_oi_event(conn, event_id=event_id, symbol=symbol, observed_at_ms=created_at_ms)
+        _promote_to_model_projection(conn, event_id=event_id, symbol=symbol)
+
+    news_repository = _repos(conn).news
+    oi_rows = news_repository.trade_candidate_oi_rows(
+        metric_version="oi_signal_v1",
+        after_created_at_ms=after,
+        until_created_at_ms=NOW,
+        max_rank_in_window=5,
+        min_oi_value_usd=1,
+    )
+    news_rows = news_repository.trade_candidate_news_rows(
+        after_created_at_ms=after,
+        until_created_at_ms=NOW,
+    )
+
+    assert [row["event_id"] for row in oi_rows] == ["oi-a", "oi-b", "oi-until-boundary"]
+    assert [row["event_id"] for row in news_rows] == ["news-a", "news-b", "news-until-boundary"]
+    assert set(oi_rows[0]) == {
+        "direction",
+        "editorial_origin",
+        "editorial_sha256",
+        "event_id",
+        "final_decision",
+        "ingest_mode",
+        "learning_epoch",
+        "metric_version",
+        "observed_at_ms",
+        "oi_change_bps",
+        "oi_value_usd",
+        "policy_version",
+        "program_sha256",
+        "program_version",
+        "rank_in_window",
+        "runtime_manifest_sha",
+        "scored_judgment_sha256",
+        "symbol",
+        "venue",
+        "verdict_created_at_ms",
+        "whale_long_profit_bps",
+        "whale_oi_ratio_bps",
+    }
+    assert set(news_rows[0]) == {
+        "asset_class",
+        "comparison_fingerprint",
+        "editorial_origin",
+        "editorial_sha256",
+        "event_id",
+        "evidence_sha256",
+        "evidence_version",
+        "final_decision",
+        "focus_fact_id",
+        "grounded_assets",
+        "ingest_mode",
+        "learning_epoch",
+        "opened_at_ms",
+        "policy_version",
+        "program_sha256",
+        "program_version",
+        "runtime_manifest_sha",
+        "scored_judgment_sha256",
+        "source_artifact_id",
+        "source_published_at_ms",
+        "verdict",
+        "verdict_created_at_ms",
+    }
+    assert {
+        (row["learning_epoch"], row["program_version"], row["policy_version"], row["editorial_origin"])
+        for row in oi_rows
+    } == {("program_v6", "news_oi_signal_v1", "news_triage_policy_v10", "telemetry_deterministic")}
+    assert {
+        (row["learning_epoch"], row["program_version"], row["policy_version"], row["editorial_origin"])
+        for row in news_rows
+    } == {("program_v6", "news_semantic_program_v4", "news_triage_policy_v10", "model")}
+
+    blacklist = Blacklist.from_rows([])
+    oi = oi_candidate(
+        next(row for row in oi_rows if row["event_id"] == "oi-a"),
+        now_ms=NOW,
+        blacklist=blacklist,
+    )
+    projected_news = news_candidate(
+        next(row for row in news_rows if row["event_id"] == "news-a"),
+        now_ms=NOW,
+        blacklist=blacklist,
+    )
+    assert isinstance(oi, OiTradeCandidate)
+    assert isinstance(projected_news, NewsTradeCandidate)
+    manifest = TradingCaseManifest(
+        case_kind="news_oi",
+        underlying_key="crypto:DOGE",
+        base_symbol="DOGE",
+        cutoff_ms=NOW,
+        oi=oi,
+        news=projected_news,
+        regime=assess(oi_direction=oi.oi_direction, move=200),
+        instrument=InstrumentRef(
+            exchange_id="binance",
+            venue="binance.perp",
+            provider_symbol="DOGEUSDT",
+            base_symbol="DOGE",
+            instrument_class="crypto",
+            quote_asset="USDT",
+            observed_at_ms=NOW,
+        ),
+        mark_price=Decimal("102"),
+        pre_move_bps=200,
+    )
+    assert manifest.digest() == "d41ce17a8f46af1aefeea08a5a750498765fb15960f9d4566a97f6985555ccba"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:

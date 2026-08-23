@@ -26,7 +26,7 @@ def test_generated_directory_present() -> None:
 
 def test_expected_generated_files() -> None:
     actual = {p.name for p in GENERATED.iterdir() if p.is_file()}
-    expected = EXPECTED | {"openapi.json"}
+    expected = EXPECTED | {"openapi.json", "refactor-baseline-9441ce99.json"}
     assert actual == expected, f"unexpected docs/generated/ contents: {actual ^ expected}"
 
 
