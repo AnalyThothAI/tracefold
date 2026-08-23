@@ -289,3 +289,20 @@ def test_generated_contracts_have_no_retired_product_ai_surface() -> None:
     for token in retired_contract_tokens:
         assert token not in openapi_text
         assert token not in openapi_ts_text
+
+
+def test_contracts_md_lists_the_same_trade_channels_as_the_code() -> None:
+    """`docs/CONTRACTS.md` is the hand-written public-surface truth CLAUDE.md points readers at.
+
+    It spells the channel enum out in prose, so nothing else notices when the code-owned order gains a value:
+    #173 added `product_progress` and the doc kept listing eleven codes until a reviewer read both. A client
+    validating a `news_review_v3` payload against the stale list rejects a legitimate channel.
+    """
+
+    from tracefold.news.semantic_contract import TRADE_CHANNEL_ORDER
+
+    document = (Path(__file__).resolve().parents[2] / "docs" / "CONTRACTS.md").read_text(encoding="utf-8")
+    documented = "|".join(TRADE_CHANNEL_ORDER)
+    assert f"`{documented}`" in document, (
+        f"docs/CONTRACTS.md does not spell the current code-owned channel order; expected the literal `{documented}`"
+    )

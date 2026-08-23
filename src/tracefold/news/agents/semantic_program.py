@@ -1180,7 +1180,7 @@ class CompileReceipt(CompileProvenance):
         if self.mode == "code_owned_baseline":
             if (
                 self.compiler != "code_owned_baseline"
-                or self.source != "issue_160/v6_baseline"
+                or self.source != "issue_173/product_recall_baseline"
                 or self.accepted_by != "code_owner"
             ):
                 raise ValueError("news_program_baseline_compile_identity_invalid")
@@ -1233,7 +1233,7 @@ class ProgramArtifact(_ExactModel):
             if self.compile_receipt.mode != "code_owned_baseline" or self.compile_receipt.accepted_by != "code_owner":
                 raise ValueError("news_program_baseline_parent_receipt_invalid")
             if self.compile_receipt.compiler != "code_owned_baseline" or self.compile_receipt.source not in {
-                "issue_160/v6_baseline",
+                "issue_173/product_recall_baseline",
             }:
                 raise ValueError("news_program_baseline_compile_identity_invalid")
             if (
@@ -1634,7 +1634,7 @@ def build_code_owned_program_artifact_v2() -> ProgramArtifact:
         rule_packs=rule_packs,
         learned_strategies=strategies,
         demo_bank=DemoBank.empty(),
-        compile_receipt=_baseline_compile_receipt(source="issue_160/v6_baseline"),
+        compile_receipt=_baseline_compile_receipt(source="issue_173/product_recall_baseline"),
     )
 
 

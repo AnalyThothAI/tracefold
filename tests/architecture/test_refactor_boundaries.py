@@ -32,7 +32,8 @@ GRANDFATHERED_MODULE_LINES = {
     # later ownership PRs may reduce this final module exception without changing the live route.
     "news/pipeline/triage.py": 966,
     "news/review.py": 2456,
-    "news/semantic_contract.py": 902,
+    # #173 added the `product_progress` TradeChannel and its rationale: +2 enum lines, +4 comment lines.
+    "news/semantic_contract.py": 908,
 }
 
 # Function debt is identified by exact source path and qualified name. A structural PR that purely

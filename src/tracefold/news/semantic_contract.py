@@ -53,6 +53,10 @@ TradeImpactBreadth = Literal[
 TradeTradability = Literal["direct", "second_order", "contextual", "none"]
 TradeSurprise = Literal["unscheduled", "material_vs_expectation", "in_line", "unknown"]
 TradeDevelopmentDelta = Literal["state_change", "material_detail", "color_only", "scheduled"]
+# `product_progress` (#173): a first-party product/protocol/market capability reaching a verifiable new state
+# had no true channel — `exchange_access` is only who may trade, `earnings_cashflow` only the money mechanism —
+# so it came back empty, and empty channels may co-exist only with contextual/none + background/none, which
+# structurally held every product event. Never brand marketing, a roadmap, or a cumulative vanity count.
 TradeChannel = Literal[
     "rates",
     "liquidity",
@@ -62,6 +66,7 @@ TradeChannel = Literal[
     "commodity_demand",
     "regulation",
     "exchange_access",
+    "product_progress",
     "earnings_cashflow",
     "positioning_flow",
     "security_incident",
@@ -86,6 +91,7 @@ TRADE_CHANNEL_ORDER: Final[tuple[TradeChannel, ...]] = (
     "commodity_demand",
     "regulation",
     "exchange_access",
+    "product_progress",
     "earnings_cashflow",
     "positioning_flow",
     "security_incident",
