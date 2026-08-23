@@ -242,6 +242,20 @@ def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any])
     )
 
 
+def _reader_card_owns_action_feedback(decision: DecisionResult, projection: Mapping[str, Any]) -> bool:
+    """Whether this live action changed solely because ReaderCard produced a duplicate headline."""
+
+    throttled_by = str(decision.throttled_by or "")
+    return (
+        not isinstance(projection.get("recorded_decision_result"), Mapping)
+        and decision.final == "throttled"
+        and decision.seen_scope == "all"
+        and decision.seen_against >= 0
+        and throttled_by.startswith("storyline:")
+        and throttled_by.endswith(":seen")
+    )
+
+
 def _labelled(dimensions: Mapping[str, Any], names: Sequence[str]) -> list[tuple[str, str]]:
     """Only dimensions a reviewer actually decided. A missing or ``uncertain`` label leaves the component
     denominator, rather than counting as a pass and diluting the failures next to it."""
@@ -516,9 +530,9 @@ def accepted_review_metric(
         if grounded_values & watchlist_values
         else "none"
     )
-    action_feedback_allowed = (
-        pred_name != "reader_card" or str(projection.get("action_feedback_owner") or "") == "headline_duplicate"
-    )
+    # Early schema/advisory gates have no exact DecisionResult to attribute. ReaderCard action feedback starts
+    # disabled and is enabled below only when the live decision proves its own headline caused a seen throttle.
+    action_feedback_allowed = pred_name != "reader_card"
     relevance_anchors = (
         ()
         if objective_guard in {"listing_deterministic", "telemetry_deterministic"}
@@ -632,6 +646,8 @@ def accepted_review_metric(
 
     feedback: list[str] = []
     decision = production_decision(judgment, projection)
+    if pred_name == "reader_card":
+        action_feedback_allowed = _reader_card_owns_action_feedback(decision, projection)
     action = decision.final
     reaches_reader = action in {"push", "escalate"}
     decision_metadata = {

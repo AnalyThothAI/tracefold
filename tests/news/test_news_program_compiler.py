@@ -710,6 +710,46 @@ def test_metric_feedback_never_asks_a_predictor_to_repair_what_it_cannot_cause()
     assert "why_support" in card and "asset_grounding" not in card
 
 
+def test_reader_card_ignores_claimed_action_ownership_for_an_ordinary_action_mismatch() -> None:
+    gold = _metric_gold(
+        accepted_review={"should_push": "must_push"},
+        policy_metric={"action_feedback_owner": "headline_duplicate"},
+    )
+
+    outcome = _score(gold, _metric_verdict(magnitude=1), "reader_card")
+
+    assert outcome.hard_gate == "must_push_miss"
+    assert outcome.production_rule == "trade_relevance_inconsistent"
+    assert outcome.production_throttled_by == ""
+    assert "must receive" not in outcome.feedback
+    assert "No ReaderCard-owned correction" in outcome.feedback
+
+
+def test_reader_card_gets_action_feedback_for_an_exact_seen_headline_duplicate() -> None:
+    gold = _metric_gold(
+        accepted_review={"should_push": "must_push"},
+        policy_metric={
+            "seen": [
+                {
+                    "event_id": "prior",
+                    "headline_zh": "发行人提交重大更新",
+                    "direction": "bullish",
+                    "grounded_assets": ["ABC"],
+                    "assets": [{"symbol": "ABC", "role": "primary"}],
+                }
+            ]
+        },
+    )
+
+    outcome = _score(gold, _metric_verdict(), "reader_card")
+
+    assert outcome.hard_gate == "must_push_miss"
+    assert outcome.production_action == "throttled"
+    assert outcome.production_rule == "trade_relevance_realtime"
+    assert outcome.production_throttled_by.endswith(":seen")
+    assert "must receive" in outcome.feedback
+
+
 def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback() -> None:
     gold = _metric_gold(
         accepted_review={
