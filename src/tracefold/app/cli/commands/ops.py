@@ -4,7 +4,7 @@ from typing import Any
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
-from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
+from tracefold.platform.postgres.audit import ProjectionValidationAudit
 
 
 def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:

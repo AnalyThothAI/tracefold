@@ -12,8 +12,8 @@ from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.postgres_client import postgres_health_check
-from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.client import postgres_health_check
+from tracefold.platform.postgres.migrations import latest_migration_version
 
 
 @dataclass(slots=True)

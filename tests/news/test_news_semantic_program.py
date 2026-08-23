@@ -16,7 +16,6 @@ import dspy
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news import EditorialEnvelope, ScoredJudgment, SemanticJudgeError, SemanticJudgment, TradeRelevanceV1
 from tracefold.news.agents import semantic_program as semantic_program_module
 from tracefold.news.agents.semantic_program import (
     PROGRAM_DEPENDENCY_LOCK_SHA256,
@@ -55,6 +54,13 @@ from tracefold.news.agents.semantic_program import (
 )
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.models import TriageAsset, TriageVerdict
+from tracefold.news.semantic_contract import (
+    EditorialEnvelope,
+    ScoredJudgment,
+    SemanticJudgeError,
+    SemanticJudgment,
+    TradeRelevanceV1,
+)
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:

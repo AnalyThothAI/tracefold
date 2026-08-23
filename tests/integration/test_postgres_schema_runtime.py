@@ -3,8 +3,8 @@ from __future__ import annotations
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.platform.postgres.postgres_audit import NEWS_TABLES, TRADING_TABLES
-from tracefold.platform.postgres.postgres_migrations import (
+from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
+from tracefold.platform.postgres.migrations import (
     latest_migration_version,
     upgrade_head,
 )

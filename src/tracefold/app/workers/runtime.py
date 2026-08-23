@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
+from tracefold.platform.postgres.audit import ReadQuerySpec
 
 WORKERS_RUNTIME_STALE_AFTER_MS = 15_000
 WORKERS_RUNTIME_VERSION = "2"

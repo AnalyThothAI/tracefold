@@ -25,13 +25,14 @@ outputs, or evaluation control planes require an explicit current need.
 
 ## Package design
 
-The sibling business capabilities are exported from `tracefold.news` and
-`tracefold.trading`; neither package imports the other or reaches the other's
-tables. Code outside an owning package uses its root interface. The one
-exception is `tracefold.app`, the composition seam that wires concrete internal
-implementations from both capabilities. Only the App composition families and
-provider-adapter families declared by the architecture harness may import a
-private business contract, and only from the contract families named there.
+The sibling business capabilities export only stable value and port contracts
+from `tracefold.news` and `tracefold.trading`; neither package imports the other
+or reaches the other's tables. Ordinary feature code uses those root
+interfaces. `tracefold.app` is the composition seam that wires concrete
+internal implementations from both capabilities, so it uses explicit owner
+imports rather than widening a package root. Only the App composition families
+and provider-adapter families declared by the architecture harness may import
+a private business contract, and only from the contract families named there.
 
 Inside a business package, use relative module imports rather than importing
 back through the package root. Keep modules cohesive and move behavior behind a

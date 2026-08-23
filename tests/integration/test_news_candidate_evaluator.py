@@ -15,34 +15,6 @@ from tests.news.test_news_program_compiler_sandbox import _valid_sandbox_launch_
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news import (
-    LEARNING_EPOCH,
-    ArmManifest,
-    BlindPairwiseSubmission,
-    CandidateManifest,
-    ClosedWindow,
-    DatasetSpec,
-    DeskQuery,
-    EditorialEnvelope,
-    EvaluationRequest,
-    ExternalMissSubmission,
-    ProgramTrace,
-    ProgramUsage,
-    ProposalReceipt,
-    ReplayArmSpec,
-    ScoredJudgment,
-    SemanticJudgeError,
-    SemanticJudgment,
-    TaskRef,
-    TradeRelevanceV1,
-    TriageContext,
-    TriageVerdict,
-    load_recording_replay_capability,
-)
-from tracefold.news import (
-    CandidateEvaluator as _CandidateEvaluator,
-)
-from tracefold.news import ReviewDesk as _ReviewDesk
 from tracefold.news.agents.program_compiler_proxy import (
     CompilerModelProxyGrant,
     CompilerProxyCallLeaf,
@@ -77,9 +49,42 @@ from tracefold.news.canary import (
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
+from tracefold.news.candidate_evaluator import (
+    LEARNING_EPOCH,
+    ArmManifest,
+    CandidateManifest,
+    ClosedWindow,
+    DatasetSpec,
+    EvaluationRequest,
+    ProposalReceipt,
+)
+from tracefold.news.candidate_evaluator import (
+    CandidateEvaluator as _CandidateEvaluator,
+)
+from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.review import REVIEW_RUBRIC_VERSION
+from tracefold.news.recording_replay import ReplayArmSpec, load_recording_replay_capability
+from tracefold.news.review import (
+    REVIEW_RUBRIC_VERSION,
+    BlindPairwiseSubmission,
+    DeskQuery,
+    ExternalMissSubmission,
+    TaskRef,
+)
+from tracefold.news.review import (
+    ReviewDesk as _ReviewDesk,
+)
+from tracefold.news.semantic_contract import (
+    EditorialEnvelope,
+    ProgramTrace,
+    ProgramUsage,
+    ScoredJudgment,
+    SemanticJudgeError,
+    SemanticJudgment,
+    TradeRelevanceV1,
+    TriageContext,
+)
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 pytestmark = pytest.mark.integration

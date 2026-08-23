@@ -30,8 +30,8 @@ from tracefold.app.workers.task_contract import (
 from tracefold.app.workers.wiring.components import _Components, _wire_components
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.postgres_client import postgres_health_check
-from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.client import postgres_health_check
+from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 from tracefold.platform.runtime_identity import UNVERSIONED, runtime_identity
 

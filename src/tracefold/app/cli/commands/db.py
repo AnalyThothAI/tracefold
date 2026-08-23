@@ -5,13 +5,13 @@ from typing import Any
 from tracefold.app.query_audit import query_audit_for_connection
 from tracefold.app.repository_session import postgres_connection
 from tracefold.platform.config.loader import load_settings
-from tracefold.platform.postgres.postgres_audit import PostgresOperationalAudit
-from tracefold.platform.postgres.postgres_client import (
+from tracefold.platform.postgres.audit import PostgresOperationalAudit
+from tracefold.platform.postgres.client import (
     local_docker_host_dsn,
     postgres_health_check,
     with_password_from_file,
 )
-from tracefold.platform.postgres.postgres_migrations import latest_migration_version, upgrade_head
+from tracefold.platform.postgres.migrations import latest_migration_version, upgrade_head
 
 
 def handle_db(args: object) -> tuple[int, dict[str, Any]]:

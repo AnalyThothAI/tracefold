@@ -13,8 +13,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, NoReturn, cast
 
-from tracefold.news import SemanticJudgment, TriageContext
-
 from .agents.semantic_program import (
     PROGRAM_FACTORY_ID,
     PROGRAM_SCHEMA_VERSION,
@@ -28,6 +26,7 @@ from .agents.semantic_program import (
     RuntimeModelIdentity,
 )
 from .artifact_identity import canonical_sha
+from .semantic_contract import SemanticJudgment, TriageContext
 
 ArmName = Literal["stable", "candidate"]
 _CAPABILITY_ISSUER = object()

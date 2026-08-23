@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
 from tracefold.news.storage.root import NewsRepository
-from tracefold.platform.postgres.postgres_client import (
+from tracefold.platform.postgres.client import (
     connect_postgres,
     require_transaction,
     transaction,

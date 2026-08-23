@@ -8,7 +8,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.query_audit import query_audit_catalog
-from tracefold.platform.postgres.postgres_audit import (
+from tracefold.platform.postgres.audit import (
     NEWS_TABLES,
     TRADING_TABLES,
     PostgresOperationalAudit,
@@ -18,7 +18,7 @@ from tracefold.platform.postgres.postgres_audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
-from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.migrations import latest_migration_version
 
 
 def test_query_audit_requires_an_explicit_catalog_and_explains_only_its_queries():

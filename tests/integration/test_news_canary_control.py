@@ -14,13 +14,14 @@ from tracefold.app import learning_runtime
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news import apply_canary_control, parse_canary_control
 from tracefold.news.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
+    apply_canary_control,
+    parse_canary_control,
 )
-from tracefold.platform.postgres.postgres_client import create_pool
+from tracefold.platform.postgres.client import create_pool
 
 pytestmark = pytest.mark.integration
 

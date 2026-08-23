@@ -28,18 +28,17 @@ from .news_learning_runtime import (
 
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news import (
+    from tracefold.news.artifact_identity import canonical_json, canonical_sha
+    from tracefold.news.candidate_evaluator import (
         LEARNING_EPOCH,
-        REVIEW_RUBRIC_VERSION,
         CandidateEvaluator,
         CandidateManifest,
         ClosedWindow,
         DatasetSpec,
         EvaluationRequest,
         ProposalReceipt,
-        canonical_json,
-        canonical_sha,
     )
+    from tracefold.news.review import REVIEW_RUBRIC_VERSION
 
     settings = load_settings(require_ws_token=False)
     action = str(args.learning_command)
@@ -49,8 +48,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "canary":
             from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
             from tracefold.app.repository_session import repositories
-            from tracefold.news import apply_canary_control, parse_canary_control
             from tracefold.news.agents.programs.candidates import compiled_canary_candidates
+            from tracefold.news.canary import apply_canary_control, parse_canary_control
 
             subcommand = str(args.canary_command)
             payload = {
@@ -681,7 +680,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             recording_replay = None
             if verify_recordings:
-                from tracefold.news import evaluation_run_sha
+                from tracefold.news.candidate_evaluator import evaluation_run_sha
 
                 run_sha = evaluation_run_sha(
                     request,

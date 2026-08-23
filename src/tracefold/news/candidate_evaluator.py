@@ -20,8 +20,6 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tracefold.news import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
-
 from .agents.program_compiler_security import (
     COMPILE_EPISODE_PROJECTION_SCHEMA,
     OptimizerCompileProvenanceV3,
@@ -39,6 +37,7 @@ from .review import (
     REVIEW_RUBRIC_VERSION,
     REVIEW_RUBRIC_VERSIONS,
 )
+from .semantic_contract import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from .triage_rules import DecidePolicy
 
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"

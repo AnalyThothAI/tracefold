@@ -181,7 +181,7 @@ build-news-rollback-image: preflight ## build the independent Program-v5/schema-
 		rollback_sha=$$(uv run python -c \
 			'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["program_sha256"])' "$$profile"); \
 		current_schema_head=$$(uv run python -c \
-			'from tracefold.platform.postgres.postgres_migrations import latest_migration_version; print(latest_migration_version())'); \
+			'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'); \
 		if [ "$$current_schema_head" != "$$schema_head" ]; then \
 			echo "Rollback profile schema '$$schema_head' does not match current source head '$$current_schema_head'." >&2; \
 			exit 2; \
@@ -306,8 +306,8 @@ _deploy-image-locked:
 			echo "Docker resolved IMAGE_ID to $$inspected_image_id instead of the exact requested ID." >&2; \
 			exit 2; \
 		fi; \
-		source_head=$$(uv run python -c 'from tracefold.platform.postgres.postgres_migrations import latest_migration_version; print(latest_migration_version())'); \
-		if ! image_head=$$(docker run --rm --entrypoint python "$$image_id" -c 'from tracefold.platform.postgres.postgres_migrations import latest_migration_version; print(latest_migration_version())'); then \
+		source_head=$$(uv run python -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'); \
+		if ! image_head=$$(docker run --rm --entrypoint python "$$image_id" -c 'import importlib.util; from importlib import import_module; module_name="tracefold.platform.postgres.migrations" if importlib.util.find_spec("tracefold.platform.postgres.migrations") is not None else "tracefold.platform.postgres.postgres_migrations"; print(import_module(module_name).latest_migration_version())'); then \
 			echo "Could not inspect the target image Alembic head: $$image_id" >&2; \
 			exit 2; \
 		fi; \

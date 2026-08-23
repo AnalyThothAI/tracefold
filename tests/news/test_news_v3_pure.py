@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
-from tracefold.news import bus
+from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.delivery import _CHANGE_BASIS_LABEL, _quote_line, card_assets, render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.events.facts import extract_fact_units
@@ -1248,7 +1248,7 @@ def test_card_marks_a_progression() -> None:
 
 
 def test_bus_envelope_roundtrip() -> None:
-    m = bus.BusMessage(
+    m = BusMessage(
         kind="event",
         message_id="event:1",
         routing_key="event.general.high",
@@ -1257,10 +1257,10 @@ def test_bus_envelope_roundtrip() -> None:
         occurred_at_ms=5,
         priority=5,
     )
-    back = bus.decode_body(m.body(), routing_key=m.routing_key, priority=5, headers={"x-news-attempt": 2})
+    back = decode_body(m.body(), routing_key=m.routing_key, priority=5, headers={"x-news-attempt": 2})
     assert back.payload == {"event_id": "1"} and back.attempt == 2 and back.priority == 5
-    with pytest.raises(bus.BusDecodeError):
-        bus.decode_body(b"{}", routing_key="x", priority=0, headers=None)
+    with pytest.raises(BusDecodeError):
+        decode_body(b"{}", routing_key="x", priority=0, headers=None)
 
 
 # ---------------------------------------------------------------- golden replay

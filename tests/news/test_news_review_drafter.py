@@ -131,7 +131,8 @@ def test_the_drafter_writes_nothing_to_the_review_plane() -> None:
         elif isinstance(node, ast.ImportFrom):
             imported.add(str(node.module or ""))
     assert not any("review" in name for name in imported), imported
-    assert not any(name.endswith(("repository", "repositories", "postgres_client")) for name in imported), imported
+    assert not any(name.endswith(("repository", "repositories")) for name in imported), imported
+    assert "tracefold.platform.postgres.client" not in imported, imported
     assert not any("psycopg" in name for name in imported), imported
 
 

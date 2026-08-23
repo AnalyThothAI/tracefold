@@ -7,12 +7,6 @@ from typing import Any
 
 import pytest
 
-from tracefold.news import (
-    RecordingReplayError,
-    ReplayArmSpec,
-    TriageContext,
-    load_recording_replay_capability,
-)
 from tracefold.news.agents.semantic_program import (
     DspyNewsSemanticProgram,
     ProgramCallTrace,
@@ -20,7 +14,13 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.recording_replay import RecordingReplayMiss
+from tracefold.news.recording_replay import (
+    RecordingReplayError,
+    RecordingReplayMiss,
+    ReplayArmSpec,
+    load_recording_replay_capability,
+)
+from tracefold.news.semantic_contract import TriageContext
 
 RUN_SHA = "a" * 64
 STABLE_BUNDLE_SHA = "1" * 64

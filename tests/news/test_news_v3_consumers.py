@@ -12,14 +12,6 @@ from typing import Any, Literal
 import pytest
 
 from tests.support.news_judgment import trade_relevance
-from tracefold.news import (
-    EditorialEnvelope,
-    ProgramTrace,
-    ProgramUsage,
-    SemanticJudgeError,
-    SemanticJudgment,
-    TriageContext,
-)
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
@@ -39,7 +31,15 @@ from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.semantic_contract import ProgramCallTrace
+from tracefold.news.semantic_contract import (
+    EditorialEnvelope,
+    ProgramCallTrace,
+    ProgramTrace,
+    ProgramUsage,
+    SemanticJudgeError,
+    SemanticJudgment,
+    TriageContext,
+)
 from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
 

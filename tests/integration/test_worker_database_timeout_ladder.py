@@ -9,7 +9,7 @@ from psycopg.errors import IdleInTransactionSessionTimeout
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers import root as workers_module
-from tracefold.platform.postgres.postgres_client import connect_postgres, create_pool
+from tracefold.platform.postgres.client import connect_postgres, create_pool
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 

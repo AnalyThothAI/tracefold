@@ -1,5 +1,7 @@
 """Exercise the v5 repository against a disposable schema-0301 database."""
 
+# ruff: noqa: I001 -- copied onto the pinned v5 tree, where postgres_migrations is the current module.
+
 from __future__ import annotations
 
 import os

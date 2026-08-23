@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import re
 from pathlib import Path
 
 import pytest
 
-from tracefold.news import triage_rules
 from tracefold.news.health import status_health
 from tracefold.news.outcome import (
     OUTCOME_GROUP,
@@ -22,6 +22,7 @@ from tracefold.news.outcome import (
 from tracefold.news.timeline import event_timeline
 
 NOW = 1_800_000_000_000
+triage_rules = importlib.import_module("tracefold.news.triage_rules")
 
 
 def _triage(final: str, **over: object) -> dict[str, object]:

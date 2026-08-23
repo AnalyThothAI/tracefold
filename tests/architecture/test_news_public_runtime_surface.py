@@ -5,93 +5,31 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import tracefold.news.agents as news_agents
 from tracefold import news
-from tracefold.news import agents as news_agents
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
-    "FACT_UNIT_VERSION",
-    "DEFAULT_POLICY",
-    "DEFAULT_OI_POLICY",
-    "OI_METRIC_VERSION",
-    "OI_PROGRAM_VERSION",
-    "OiPolicy",
-    "GATE_POLICY_VERSION",
-    "OPENNEWS_SOURCE_ID",
-    # #88: the public bounds of `/api/news/quotes` and `/api/news/review`, read by the HTTP layer from the
-    # package root exactly like `status_health` rather than reaching into the pricing module.
-    "QUOTE_REQUEST_SYMBOL_MAX",
-    "REACTION_METRIC_VERSION",
-    "READER_CONTRACT_VERSION",
-    "REVIEW_DEFAULT_HOURS",
-    "REVIEW_MAX_HOURS",
-    "REVIEW_RUBRIC_VERSION",
-    "TRIAGE_POLICY_VERSION",
-    "LEARNING_EPOCH",
-    "TRUSTED_ROOT_SHA",
-    "TOLD_MAX",
-    "TOLD_SELECTOR_ID",
-    "TOLD_SELECTOR_SHA256",
-    "TOLD_SOURCE_MAX",
-    "TOLD_STORYLINE_TIER_MAX",
-    "TOLD_WINDOW_MS",
-    "ArmManifest",
-    "BlindPairwiseSubmission",
-    "CandidateEvaluator",
-    "CandidateManifest",
-    "ClosedWindow",
-    "DatasetManifest",
-    "DatasetSpec",
-    "DecidePolicy",
-    "DeskQuery",
-    "EvaluationReport",
-    "EvaluationRequest",
     "EditorialEnvelope",
-    "EventRubricSubmission",
-    "ExternalMissSubmission",
-    "FactUnit",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
-    "Outcome",
-    "Principal",
-    "ProposalReceipt",
     "ProgramTrace",
     "ProgramUsage",
     "ReaderCardSemanticView",
     "ReaderReceipt",
-    "RecordingReplayCapability",
-    "RecordingReplayError",
-    "ReplayArmSpec",
-    "ReviewDesk",
-    "ReviewSubmission",
     "ScoredJudgment",
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
-    "TaskRef",
     "TradeRelevanceV1",
-    "TriageVerdict",
     "TriageContext",
-    "apply_canary_control",
-    "event_outcome",
-    "evaluation_run_sha",
-    "canonical_json",
-    "canonical_sha",
-    # #87: the console's «符号落表» funnel segment folds two halves neither repository reaches across for —
-    # News owns which tags an Event carried, the instrument universe owns what they name. The fold is pure,
-    # so the HTTP route imports it from the package root like `status_health`.
-    "grounding_rollup",
-    "load_recording_replay_capability",
-    "extract_fact_units",
-    "parse_canary_control",
-    "parse_opennews_message",
-    "status_health",
+    "TriageVerdict",
 }
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}
@@ -180,7 +118,7 @@ def _called_attribute_names(path: Path) -> set[str]:
     }
 
 
-def test_news_root_exposes_only_public_models_and_opennews_parser() -> None:
+def test_news_root_exposes_only_stable_values_and_ports() -> None:
     assert set(news.__all__) == PUBLIC_NEWS_INTERFACE
     assert "__getattr__" not in news.__dict__
     leaked_implementation = {
@@ -189,9 +127,15 @@ def test_news_root_exposes_only_public_models_and_opennews_parser() -> None:
         "DeduperConsumer",
         "TriageConsumer",
         "RabbitMQBus",
+        "CandidateEvaluator",
+        "DecidePolicy",
+        "ReviewDesk",
         "admit_item",
         "build_story_projection",
+        "canonical_sha",
+        "parse_opennews_message",
         "rebuild_all_news_for_maintenance",
+        "status_health",
     }
     assert leaked_implementation.isdisjoint(news.__dict__)
 
@@ -298,7 +242,7 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
 
 
 def test_semantic_judge_contract_has_public_locality() -> None:
-    """#134: hot callers learn the framework-neutral Interface from ``tracefold.news`` only."""
+    """#134: callers learn the framework-neutral Interface from ``tracefold.news`` only."""
 
     for symbol in (
         "SemanticJudge",
@@ -311,10 +255,6 @@ def test_semantic_judge_contract_has_public_locality() -> None:
         assert symbol in news.__all__
         assert getattr(news, symbol) is not None
         assert not hasattr(news_agents, symbol)
-    assert news.TOLD_MAX == 16 and news.TOLD_STORYLINE_TIER_MAX == 8
-    assert news.TOLD_SOURCE_MAX == 128
-    assert len(news.TOLD_SELECTOR_SHA256) == 64
-    assert news.TOLD_WINDOW_MS == 4 * 3_600_000
 
 
 def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:

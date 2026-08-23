@@ -15,7 +15,7 @@ from psycopg_pool import PoolTimeout
 
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
+from tracefold.platform.postgres.client import create_pool, with_password_from_file
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
     ResourceCapability,
