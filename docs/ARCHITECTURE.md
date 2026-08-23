@@ -2,10 +2,13 @@
 
 Tracefold is one Python codebase/image with two mutually exclusive runtime
 composition roots, one CLI, one React console, and one PostgreSQL database.
-It has exactly one business capability, News V3. The architecture
-remains Kappa/CQRS: append-oriented material facts are the only business
-truth; deterministic current views and bounded immutable model publications
-are derived state.
+It has two business capabilities: News V3, and — since #104 — the Trading
+core, a bounded context that turns persisted News and open-interest verdicts
+into at most one small, deterministic, recoverable order. They are siblings,
+not layers: neither imports the other and neither reads the other's tables. The
+architecture remains Kappa/CQRS: append-oriented material facts are the only
+business truth; deterministic current views and bounded immutable model
+publications are derived state.
 
 ## Data flow
 
@@ -26,6 +29,15 @@ not a market lane: no tick history, no socket, no OI, no order book, and no
 price reaches the Gate, Triage, `decide()` or a delivery card. Its failure is
 local by construction; News ingestion, judgment, delivery and readiness do not
 depend on it.
+
+Beside both runs the Trading core (#104), disabled by default. Two more cold
+polling loops in the same Workers root read persisted Triage verdicts through
+two **public News projections**, freeze one content-addressed case, decide it —
+arithmetic for an open-interest case, one `dspy.Predict` call for a News one —
+and, when the pure policy says so, write one durable order through a paper or
+OpenTrade adapter. It shares the price plane's one-slot cold database
+admission rather than the four News lane slots, holds no agent framework, and
+its failure is local the same way the price plane's is.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -152,6 +164,18 @@ tracefold.news
   repository.py / query_specs.py  news_* access and audited reads
   eval/               provider-hits Deduper+Gate replay only
 
+tracefold.trading
+  models.py           Case/Order/Manifest/regime vocabulary; Decimal money, bps thresholds
+  blacklist.py        the canonical deny-list; one row blocks every provider spelling
+  candidates.py       News/OI projections -> eligible candidates, fusion, venue routing, the funnel
+  regime.py           the deterministic OI/price quadrant and its measured pre-move band
+  decision_program.py one `dspy.Predict` call; no tools, no agent loop, failure is always no-trade
+  policy.py           the pure no_trade/long/short mapping; every path names its rule
+  order.py            fixed-notional sizing, the frozen payload, the one-attempt commit contract
+  paper.py            the fault-scriptable paper adapter and the deterministic paper exit
+  repository.py       trading_* persistence
+  pipeline.py         exactly two runners: trading-candidate and trading-reconcile
+
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu
 
@@ -163,7 +187,8 @@ tracefold.app
   composition, repositories, the worker root package (`app/workers/`), HTTP, and CLI
 ```
 
-The business package root is its public Python interface: `tracefold.news`.
+Each business package root is its public Python interface: `tracefold.news`
+and `tracefold.trading`.
 Consumers outside the owning package import from the root only. Internal
 subpackages may change without creating a repository-wide import graph.
 
@@ -181,8 +206,14 @@ The dependency direction is:
 app -> integrations + business packages + platform
 integrations -> business package interfaces + platform
 news -> platform
+trading -> platform
 platform -> Python / third-party libraries only
 ```
+
+`tracefold.app` is the only seam that knows both capabilities. It is where a
+public News projection row becomes a Trading candidate, and it is the reason
+Trading can consume News truth without a cross-domain import or a reach-through
+read.
 
 Business packages never import `tracefold.app`, provider integrations, or each
 other. Transport adapters do not own business rules. The Workers root and its
@@ -200,8 +231,8 @@ queue. Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
 
-SQL ownership follows the same boundary: News owns `news_*`; platform owns
-Alembic and `workers_runtime`. News makes no cross-domain read: its single
+SQL ownership follows the same boundary: News owns `news_*`; Trading owns
+`trading_*`; platform owns Alembic and `workers_runtime`. News makes no cross-domain read: its single
 read-only seam (`macro_module_current` as Analyst evidence) went with the
 Analyst lane in #57, and the Macro tables themselves went in #68. The
 architecture gate checks SQL table references against the generated current
@@ -255,12 +286,13 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
 `news-deliverer`, `news-janitor`), the bounded cold loops
 (`news-instruments`, and with venues enabled `news-quotes`,
-`news-reactions`), and `workers-control` (singleton lock, heartbeat, runtime
-row). There is no acquisition clock, projection coordinator, model arbiter,
-stream ingester, identity backfill, or universe sync task. The three cold
-loops poll public catalogues and prices on code-owned cadences and admit their
-database work through a separate one-slot lane, never the four News hot-path
-slots.
+`news-reactions`), the two Trading loops when Trading is enabled
+(`trading-candidate`, `trading-reconcile`), and `workers-control` (singleton
+lock, heartbeat, runtime row). There is no acquisition clock, projection
+coordinator, model arbiter, stream ingester, identity backfill, or universe
+sync task. The five cold loops poll public catalogues, prices and their own
+PostgreSQL work on code-owned cadences and admit their database work through a
+separate one-slot lane, never the four News hot-path slots.
 
 ## Product flows
 
@@ -968,6 +1000,96 @@ byte-identical schemas.
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
 
+
+## Trading core (#104)
+
+`tracefold.trading` is the second business capability and is disabled by
+default. It exists to turn a persisted judgement into at most one small,
+recoverable, auditable order — not to claim an edge.
+
+```text
+persisted Triage verdict (model, or deterministic OI)
+  -> public News projection             owned by tracefold.news
+  -> canonical symbol + deny-list + freshness + active/cooldown
+  -> exact native perp on one venue     binance.perp | hl.perp
+  -> deterministic OI/price regime      arithmetic, never a model
+  -> one dspy.Predict                   News-bearing cases only
+  -> pure policy                        no_trade | long | short, always a named rule
+  -> fixed notional / 1x / fixed stop / max holding
+  -> durable order: PREPARED -> SUBMITTING -> one write -> ACK | AMBIGUOUS
+  -> read-only reconciliation -> OPEN -> CLOSED
+```
+
+**The trigger is the persisted verdict, not delivery.** Feishu `sent` is
+notification transport success; capital must not depend on a notification
+channel being reachable.
+
+**Three case kinds, three authorities.** `oi_only` is arithmetic and is the
+execution-kernel trial lane — it never reaches a live mode, and it never calls
+a model. `news_only` is shadow/paper. `news_oi` is the only kind a live mode may
+execute, and only when the model's read and the deterministic regime agree.
+
+**Open-interest direction is not price direction.** The reader card maps
+`OI rise -> bullish` to fit the News delivery vocabulary; Trading pairs the
+frame with the realised price move over a fixed 1 h lookback and only the pair
+suggests a side. The pre-move filter is a **band**, not a floor
+(`trading.regime.min_price_move_bps` / `max_price_move_bps`, default
+100–600 bps): `docs/research/oi-agent-design-2026-08-22.md` §1.6 measured an
+inverted U over 630 aligned frames, with every losing bucket *above* the band,
+so a floor-only rule would keep exactly the chasing trades the measurement
+rejects. The settings model refuses a band with no ceiling.
+
+**The model cannot act.** A DSPy Predictor returns a value; it holds no tool,
+no filesystem, no shell and no account. There is no DeepAgents, LangGraph or
+ReAct anywhere in the tree, and an architecture test keeps it that way. Every
+model failure — timeout, schema violation, unconfigured endpoint, identity
+mismatch — resolves to `no_trade` with a named reason. The three input
+documents are screened by `assert_model_input_safe`, which refuses to build a
+prompt carrying an account, credential, quantity, stop or provider payload.
+
+**Sizing is notional-first.** `quantity = floor_to_step(fixed_notional /
+mark / contract_size)`, stop at a fixed distance, no take-profit (a measured
+stop/TP grid found every fixed take-profit negative because the return
+distribution is right-tailed). The worst case is a multiplication the operator
+can read off the config: `fixed_notional x fixed_stop_bps x max_orders_per_day`.
+Stop-distance sizing is deliberately absent: it makes the notional cap and the
+stop bounds silently unreachable in combination.
+
+**One provider attempt, ever.** OpenTrade publishes no client idempotency key,
+so nothing downstream can deduplicate a resend. The ledger row moves to
+`SUBMITTING` and the transaction **commits before** the network call;
+`provider_attempt_count` is CHECKed at one, so a second attempt cannot even be
+recorded; a timeout, reset, malformed answer or restart terminalises as
+`AMBIGUOUS`, whose only legal successor is a read. Never a resend, and never a
+resend routed at the other venue.
+
+**One underlying, one active order, across both venues.** `underlying_key` is
+venue-independent (`crypto:<canonical base>`), and a partial unique index on
+`trading_orders (underlying_key)` holds for every state that carries — or may
+yet turn out to carry — exposure. The predicate deliberately includes
+`APPROVED`, `RECONCILING`, `MANUAL_REVIEW_REQUIRED` and `UNPROTECTED`: "we do
+not know whether Binance filled it" is exactly when a Hyperliquid entry must be
+blocked.
+
+**Two deterministic exits.** The venue-side protective stop rides with the
+entry so it survives this process dying; `max_holding_seconds` closes the
+lifecycle through the same durable one-attempt contract, without another News
+event and without a model.
+
+**Five tables**, all `trading_*`: `trading_symbol_blacklist`,
+`trading_runtime_state` (control, daily counters, the day's funnel),
+`trading_cases`, `trading_orders`, `trading_order_observations`. The scanner
+keeps no cursor — it re-reads a bounded overlap window and lets
+`trading_cases.primary_source_key` reject what it has already seen, which is
+what makes a crash or a redeploy idempotent without a checkpoint to corrupt.
+
+**What it is not.** No separate service, database, queue or UI. No agent
+framework, subagent, tool loop or model-visible filesystem. No portfolio
+optimizer, VaR or correlation framework. No scale-in, pyramiding, flip or
+multi-leg order. No model-selected account, venue, quantity, leverage, stop or
+payload. No HIP-3 builder venue. No exactly-once claim. And no profitability
+claim from a paper trial: production-grade here means recoverable, auditable,
+duplicate-safe and loss-bounded.
 
 ## Open-interest telemetry (#137)
 

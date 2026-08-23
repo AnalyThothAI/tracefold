@@ -6,9 +6,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
-BUSINESS_PACKAGES = ("news",)
+BUSINESS_PACKAGES = ("news", "trading")
 ALLOWED_BUSINESS_DEPENDENCIES = {
     "news": {"news", "platform"},
+    # #104: Trading is a sibling capability, not a News extension. It never imports News and News
+    # never imports it; `tracefold.app` is the only seam that knows both, and it is what turns a
+    # public News projection row into a Trading candidate.
+    "trading": {"trading", "platform"},
 }
 # Exact private seams for the composition root and concrete adapters. They are
 # implementation collaborators of the public News capabilities, not
@@ -45,6 +49,9 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.instruments_repository",
         "tracefold.news.price_repository",
         "tracefold.news.repository",
+        # #104: the same seam one capability over. Composition only — the session hands each
+        # repository the connection and nothing else.
+        "tracefold.trading.repository",
     },
     "src/tracefold/app/workers/__init__.py": {
         "tracefold.news.agents.programs.candidates",
@@ -155,6 +162,9 @@ def test_backend_has_only_the_expected_package_shape() -> None:
         "integrations",
         "news",
         "platform",
+        # #104: the second business capability. `docs/ARCHITECTURE.md` names the seam; the dependency
+        # test above is what keeps it from becoming a News extension.
+        "trading",
     }
     assert not (SRC / "domains").exists()
     assert not (SRC / "market").exists()
@@ -409,4 +419,8 @@ def test_news_kiss_retired_tables_have_no_production_owner() -> None:
 def _business_table_owner(table: str) -> str:
     if table.startswith("news_"):
         return "news"
+    # #104: table prefix is the ownership claim. A `trading_*` table read or written from a News
+    # module — or the reverse — fails here before it can become a cross-domain dependency.
+    if table.startswith("trading_"):
+        return "trading"
     raise AssertionError(f"unowned business table: {table}")

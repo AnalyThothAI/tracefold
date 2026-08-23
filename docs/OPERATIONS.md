@@ -185,12 +185,14 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the cold loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
+     when Trading is enabled, trading-candidate and trading-reconcile;
      workers-control
 ```
 
-The three cold loops (#75 instruments, #88 quotes and Event Reactions) admit
-their database work through the one-slot heavy-business lane, never the four
-News hot-path slots, so a price backlog cannot starve a live Event. Their
+The five cold loops (#75 instruments, #88 quotes and Event Reactions, #104's
+two Trading runners) admit their database work through the one-slot
+heavy-business lane, never the four News hot-path slots, so neither a price
+backlog nor a Trading backlog can starve a live Event. Their
 provider calls are bounded (quotes: one batch per source per turn — the #109 day
 read replaces that turn's price read rather than adding a call — concurrency 4, a 10 s
 turn deadline, 20 s cadence, never overlapping; reactions: at most 32 merged

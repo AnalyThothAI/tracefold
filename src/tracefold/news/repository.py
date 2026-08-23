@@ -942,6 +942,156 @@ class NewsRepository:
             ),
         )
 
+    # ------------------------------------------------------------------ public trade-candidate projections (#104)
+    # Two bounded, point-in-time reads that `tracefold.trading` consumes through the composition root.
+    # They return rows, not Trading models: `news -> platform` is the dependency rule, so the seam that
+    # knows both packages is the only place that builds a Trading shape. Neither read joins a reaction,
+    # a review or a later member — a manifest that can see the future is a backtest that proves nothing.
+    def trade_candidate_oi_rows(
+        self,
+        *,
+        metric_version: str,
+        after_created_at_ms: int,
+        until_created_at_ms: int,
+        max_rank_in_window: int,
+        min_oi_value_usd: int,
+        limit: int = 64,
+    ) -> list[dict[str, Any]]:
+        """Deterministic telemetry verdicts that pushed, with their rank-ledger row and the frame's venue.
+
+        `venue` comes from the Item's own `provider_metadata.source` rather than the ledger, which does
+        not store it. That field is the single strongest discriminator the OI research measured
+        (Hyperliquid +1.35% vs Binance -0.26% at 4 h), so a projection that dropped it would leave the
+        trading lane unable to test its best-supported hypothesis.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT v.event_id,
+                   v.created_at_ms          AS verdict_created_at_ms,
+                   v.final_decision,
+                   v.program_version,
+                   s.metric_version,
+                   s.symbol,
+                   s.direction,
+                   s.oi_change_bps,
+                   s.oi_value_usd,
+                   s.whale_long_profit_bps,
+                   s.whale_oi_ratio_bps,
+                   s.rank_in_window,
+                   s.observed_at_ms,
+                   e.ingest_mode,
+                   i.provider_metadata ->> 'source' AS venue
+              FROM news_verdicts v
+              JOIN news_oi_signals s
+                ON s.event_id = v.event_id AND s.metric_version = %s
+              JOIN news_events e ON e.event_id = v.event_id
+              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+             WHERE v.stage = 'triage'
+               AND v.program_version = 'news_oi_signal_v1'
+               AND v.final_decision IN ('push', 'escalate')
+               AND v.degraded = false
+               AND e.ingest_mode = 'live'
+               AND v.created_at_ms > %s
+               AND v.created_at_ms <= %s
+               AND s.rank_in_window <= %s
+               AND s.oi_value_usd >= %s
+             ORDER BY v.created_at_ms, v.event_id
+             LIMIT %s
+            """,
+            (
+                metric_version,
+                int(after_created_at_ms),
+                int(until_created_at_ms),
+                int(max_rank_in_window),
+                int(min_oi_value_usd),
+                int(limit),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def trade_candidate_news_rows(
+        self,
+        *,
+        after_created_at_ms: int,
+        until_created_at_ms: int,
+        limit: int = 64,
+    ) -> list[dict[str, Any]]:
+        """Model Triage verdicts that pushed on a crypto-class Event, frozen at the verdict cutoff.
+
+        Only the structural conditions live in SQL. Single-primary, grounding, novelty and magnitude are
+        the trading lane's own eligibility rules and stay pure functions over the verdict document, so
+        they are testable without a database and cannot silently diverge from the funnel report.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT v.event_id,
+                   v.created_at_ms  AS verdict_created_at_ms,
+                   v.final_decision,
+                   v.evidence_version,
+                   v.evidence_sha256,
+                   v.focus_fact_id,
+                   v.verdict,
+                   v.program_version,
+                   v.policy_version,
+                   e.opened_at_ms,
+                   e.comparison_fingerprint,
+                   e.asset_class,
+                   e.grounded_assets,
+                   e.ingest_mode,
+                   i.source_artifact_id,
+                   i.canonical_url
+              FROM news_verdicts v
+              JOIN news_events e ON e.event_id = v.event_id
+              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+             WHERE v.stage = 'triage'
+               AND v.program_version IS DISTINCT FROM 'news_oi_signal_v1'
+               AND v.final_decision IN ('push', 'escalate')
+               AND v.degraded = false
+               AND e.ingest_mode = 'live'
+               AND e.asset_class = 'crypto'
+               AND v.created_at_ms > %s
+               AND v.created_at_ms <= %s
+             ORDER BY v.created_at_ms, v.event_id
+             LIMIT %s
+            """,
+            (int(after_created_at_ms), int(until_created_at_ms), int(limit)),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            # #154/#157 keep the artifact id as a column and derive its publication time from the URL's
+            # own identity (a snowflake, for x.com), so the projection derives it the same way the
+            # delivery card's `source_age_s` does rather than inventing a second answer.
+            _, published_at_ms = source_artifact_identity(str(record.pop("canonical_url", "") or ""))
+            record["source_published_at_ms"] = published_at_ms
+            out.append(record)
+        return out
+
+    def trade_candidate_instrument(self, *, base_symbol: str, venues: Sequence[str]) -> list[dict[str, Any]]:
+        """Exactly-listed native crypto perpetuals for one underlying, in the caller's venue order.
+
+        `instrument_class = 'crypto'` is not decoration: Binance labels its 169 TradFi perps `EQUITY`
+        and friends, so a `WMT` Event whose Gate class says crypto still resolves to nothing here.
+        HIP-3 builder venues (`hl.xyz`) are excluded by naming the two native perp venues explicitly.
+        """
+
+        if not venues:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+              FROM news_market_instruments
+             WHERE base_symbol = %s
+               AND venue = ANY(%s)
+               AND status = 'trading'
+               AND instrument_class = 'crypto'
+            """,
+            (str(base_symbol or "").strip().upper(), list(venues)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     # ------------------------------------------------------------------ verdicts
     def insert_verdict(
         self,

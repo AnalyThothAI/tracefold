@@ -9,7 +9,7 @@ There are no compatibility aliases for retired products, tables, worker names, r
 The active operator-owned application file is
 `~/.tracefold/config.yaml`. It contains deployment/domain choices,
 PostgreSQL role DSNs and password-file references, credentials, API bind/auth,
-and News settings. Worker topology,
+and News and Trading settings. Worker topology,
 cadence, deadlines, resource limits, batches, leases, retries, and model
 reservations are code-owned and are not configuration fields.
 
@@ -124,6 +124,30 @@ keys, or webhook.
 Push delivery is available only when `news.push.enabled` is true and the
 webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
 Workers still start and deliveries settle `terminal/delivery_unavailable`.
+
+`trading.*` is the whole Trading surface (#104) and it is `enabled: false` by
+default; a disabled Trading context constructs no program, no adapter and no
+runner. `trading.mode` is `paper | live_reviewed | live_bounded` and is
+startup-owned — a prompt or a tool argument cannot change it, and paper never
+reads the OpenTrade token. `trading.candidates.*` bounds what may become a case
+(`max_age_seconds`, `news_lookback_seconds`, `oi_lookback_seconds`,
+`symbol_cooldown_seconds`, `max_rank_in_window`, `min_oi_value_usd`,
+`max_dspy_cases_per_day`); `trading.regime.*` is the OI/price band
+(`lookback_seconds`, `min_price_move_bps`, `max_price_move_bps` — a band with no
+ceiling is rejected at startup); `trading.policy.*` gates the pure mapping
+(`allow_short` defaults to false, `live_min_surprise`, `live_max_price_in`,
+`min_whale_long_profit_bps`); `trading.venues.*` is the static priority over
+`binance` and `hyperliquid`; `trading.order.*` is every order parameter
+(`fixed_notional_usd`, `leverage` fixed at 1, `fixed_stop_bps`,
+`take_profit_bps`, `max_holding_seconds`, `max_spread_bps`,
+`max_open_underlyings`, `max_orders_per_day`), so the worst-case daily envelope
+is the multiplication `fixed_notional x fixed_stop_bps x max_orders_per_day`;
+`trading.opentrade.*` is the provider contract (`base_url`, `token_file`,
+`request_timeout_seconds`). A live mode without a configured OpenTrade contract
+or an enabled venue fails at startup, not at the first order.
+`llm.trading_decision_model` selects the single `dspy.Predict` endpoint; without
+it a News-bearing case settles as `no_trade / program_unconfigured` and an
+open-interest case still decides, because that lane calls no model at all.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, News broker topology and consumer set, and all resource
@@ -557,6 +581,7 @@ reader/writer.
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
+- Trading: `trading status|cases|show|blacklist|approve|reject|control`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -572,7 +597,10 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260822_0297`).
+append without rewrite access (current at migration `20260823_0300`). Since
+#104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
+contract; the two registries stay separate so "exactly these tables" remains a
+per-capability claim.
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
@@ -772,6 +800,19 @@ Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)
 and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`.
+
+The `trading` family is read-mostly, and deliberately has no command that
+places, amends or cancels an order. `trading status` reports mode, control
+state, the day's counters and the day's funnel plus the worst-case daily
+envelope; `trading cases [--state] [--limit]` and `trading show <case-id>` read
+the case, its order and its deduplicated remote observations. The three writes
+are narrow: `trading blacklist list|add|remove` owns the canonical deny-list
+(one row per underlying — `CL` blocks `CL` and `XYZ-CL`; a read failure blocks
+every symbol), `trading control running|close-only|paused` sets the runtime
+control (`CLOSE_ONLY` and `PAUSED` still permit reconciliation and the
+deterministic safety close), and `trading approve|reject <order-id> --digest`
+settles one order bound to its exact frozen payload digest, idempotent by state
+so a second approval of an already-approved order changes nothing.
 
 The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded

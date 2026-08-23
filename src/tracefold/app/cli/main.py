@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import news
 
         return _finish(news.handle_news(args), stdout)
+    if command == "trading":
+        from .commands import trading
+
+        return _finish(trading.handle_trading(args), stdout)
     if command == "ops":
         from .commands import ops
 

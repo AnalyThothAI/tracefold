@@ -44,6 +44,7 @@ from tracefold.integrations.venues import (
     fetch_hyperliquid_quotes,
     fetch_us_reference_instruments,
 )
+from tracefold.news import OI_METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.news import CandidateManifest, DecidePolicy, OiPolicy
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.canary import CanaryRuntimeArm
@@ -67,6 +68,16 @@ from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.trading import Bar as TradingBar
+from tracefold.trading import (
+    EligibilityPolicy,
+    OrderPolicy,
+    RegimePolicy,
+    TradePolicy,
+    TradingConfig,
+    TradingDecisionProgram,
+)
+from tracefold.trading import build_pipeline as build_trading_pipeline
 
 GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 FATAL_EXIT_TIMEOUT_SECONDS = 5.0
@@ -128,6 +139,7 @@ class _ProbeState:
 class _Components:
     news_pipeline: NewsPipeline | None
     news_bus: Any | None
+    trading_pipeline: Any | None = None
 
 
 async def run_workers(settings: Settings) -> None:
@@ -229,6 +241,14 @@ async def run_workers(settings: Settings) -> None:
             )
             if components.news_pipeline is not None:
                 for task_name, runner in components.news_pipeline.runners():
+                    business_tasks.append(
+                        group.create_task(
+                            _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
+                            name=task_name,
+                        )
+                    )
+            if components.trading_pipeline is not None:
+                for task_name, runner in components.trading_pipeline.runners():
                     business_tasks.append(
                         group.create_task(
                             _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
@@ -543,7 +563,135 @@ async def _wire_components(
     if settings.news.enabled:
         news_bus, news_pipeline = await _wire_news_pipeline(settings=settings, db=db, finite=finite)
         await news_pipeline.register_runtime_manifest()
-    return _Components(news_pipeline=news_pipeline, news_bus=news_bus)
+    trading_pipeline = _wire_trading_pipeline(settings=settings, db=db)
+    return _Components(news_pipeline=news_pipeline, news_bus=news_bus, trading_pipeline=trading_pipeline)
+
+
+class _TradingColdDb:
+    """Trading's database admission: one slot on the heavy-business lane, never the News lane.
+
+    Same shape and same reasoning as the price plane's cold lane (#88). The composition root owns it
+    because `WorkerDatabase` is an app type and `tracefold.trading` depends on `platform` only.
+    """
+
+    def __init__(self, db: WorkerDatabase) -> None:
+        self._db = db
+        self._lane = db.heavy_business()
+
+    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
+        def _run() -> Any:
+            with self._db.worker_session(name, timeout_seconds) as repos, repos.transaction():
+                return fn(repos)
+
+        return await self._lane.run_business(name, _run, operation_timeout_seconds=timeout_seconds)
+
+    async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
+        def _run() -> Any:
+            with self._db.worker_session(name, timeout_seconds) as repos:
+                return fn(repos)
+
+        return await self._lane.run_business(name, _run, operation_timeout_seconds=timeout_seconds)
+
+
+def trading_config_from_settings(settings: Settings) -> TradingConfig:
+    """Operator YAML -> the one frozen object a Trading turn runs under."""
+
+    trading = settings.trading
+    candidates = trading.candidates
+    order = trading.order
+    return TradingConfig(
+        mode=trading.mode,
+        account_ref=trading.account_ref,
+        poll_seconds=float(trading.poll_seconds),
+        oi_metric_version=NEWS_OI_METRIC_VERSION,
+        venue_priority=trading.venues.enabled,
+        eligibility=EligibilityPolicy(
+            max_age_ms=candidates.max_age_seconds * 1000,
+            max_rank_in_window=candidates.max_rank_in_window,
+            min_oi_value_usd=candidates.min_oi_value_usd,
+            news_lookback_ms=candidates.news_lookback_seconds * 1000,
+            oi_lookback_ms=candidates.oi_lookback_seconds * 1000,
+            symbol_cooldown_ms=candidates.symbol_cooldown_seconds * 1000,
+        ),
+        regime=RegimePolicy(
+            lookback_ms=trading.regime.lookback_seconds * 1000,
+            min_price_move_bps=trading.regime.min_price_move_bps,
+            max_price_move_bps=trading.regime.max_price_move_bps,
+        ),
+        trade=TradePolicy(
+            allow_short=trading.policy.allow_short,
+            live_min_surprise=trading.policy.live_min_surprise,
+            live_max_price_in=trading.policy.live_max_price_in,
+            min_whale_long_profit_bps=trading.policy.min_whale_long_profit_bps,
+            min_oi_value_usd=candidates.min_oi_value_usd,
+        ),
+        order=OrderPolicy(
+            fixed_notional_usd=order.fixed_notional_usd,
+            fixed_stop_bps=order.fixed_stop_bps,
+            take_profit_bps=order.take_profit_bps,
+            max_holding_ms=order.max_holding_seconds * 1000,
+            max_spread_bps=order.max_spread_bps,
+            max_open_underlyings=order.max_open_underlyings,
+            max_orders_per_day=order.max_orders_per_day,
+        ),
+        max_dspy_cases_per_day=candidates.max_dspy_cases_per_day,
+    )
+
+
+def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | None:
+    """#104. Disabled by default; a disabled Trading context constructs no program and no adapter.
+
+    The runners share the price plane's one-slot cold admission rather than the four News lane slots,
+    for the same reason #88 gave: a trading backlog must not compete with the Deduper, Triage and the
+    Deliverer for the lane they were budgeted.
+    """
+
+    trading = settings.trading
+    if not trading.enabled:
+        return None
+
+    program = None
+    if settings.llm.trading_decision_model and settings.llm.api_key and settings.llm.base_url:
+        program = TradingDecisionProgram.build(
+            model_name=settings.llm.trading_decision_model,
+            api_key=settings.llm.api_key,
+            api_base=settings.llm.base_url,
+        )
+
+    return build_trading_pipeline(
+        db=_TradingColdDb(db),
+        config=trading_config_from_settings(settings),
+        bars=_trading_bar_fetcher(settings),
+        program=program,
+    )
+
+
+def _trading_bar_fetcher(settings: Any) -> Any:
+    """Exchange id -> native perp candles, reusing the venue adapters the reaction plane already owns.
+
+    Only the two native perp venues are wired. HIP-3 builder markets (`hl.xyz`) are excluded in V1, so
+    there is deliberately no path here that could price one.
+    """
+
+    venue_for = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
+
+    def factory(exchange_id: str) -> Any | None:
+        venue = venue_for.get(str(exchange_id))
+        if venue is None or not _price_venue_enabled(settings, venue):
+            return None
+
+        async def fetch(provider_symbol: str, start_ms: int, end_ms: int) -> Any:
+            if venue.startswith("binance."):
+                candles = await fetch_binance_candles(provider_symbol, venue=venue, start_ms=start_ms, end_ms=end_ms)
+            else:
+                candles = await fetch_hyperliquid_candles(
+                    provider_symbol, venue=venue, start_ms=start_ms, end_ms=end_ms
+                )
+            return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
+
+        return fetch
+
+    return factory
 
 
 async def _wire_news_pipeline(
@@ -860,6 +1008,8 @@ async def _graceful_cleanup(
         finite.close_admission()
         if components.news_pipeline is not None:
             await _within(components.news_pipeline.close(), started_at)
+        if components.trading_pipeline is not None:
+            await _within(components.trading_pipeline.close(), started_at)
         if components.news_bus is not None:
             await _within(components.news_bus.close(), started_at)
         if not await db.drain_business(timeout_seconds=_remaining(started_at)):

@@ -15,6 +15,7 @@ from tracefold.platform.postgres.postgres_client import (
     transaction,
     with_password_from_file,
 )
+from tracefold.trading.repository import TradingRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class RepositorySession:
     news: NewsRepository
     instruments: InstrumentsRepository
     price: PriceRepository
+    trading: TradingRepository
     transaction_observer: Callable[[float], None] | None = None
 
     def transaction(self) -> AbstractContextManager[None]:
@@ -52,6 +54,7 @@ def repositories_for_connection(
         news=NewsRepository(conn),
         instruments=InstrumentsRepository(conn),
         price=PriceRepository(conn),
+        trading=TradingRepository(conn),
         transaction_observer=transaction_observer,
     )
 

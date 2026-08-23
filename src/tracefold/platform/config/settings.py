@@ -4,6 +4,7 @@ import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
@@ -171,13 +172,14 @@ class LlmConfig(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
+    trading_decision_model: str | None = None
     news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
     news_compiler_reflection: LlmCompilerReflectionConfig = Field(default_factory=LlmCompilerReflectionConfig)
     news_compiler_tariff: LlmCompilerTariffConfig = Field(default_factory=LlmCompilerTariffConfig)
 
-    @field_validator("api_key", "news_triage_model", mode="before")
+    @field_validator("api_key", "news_triage_model", "trading_decision_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -440,6 +442,203 @@ class NewsSettings(BaseModel):
         return frozenset(entry.symbol for entry in self.watchlist)
 
 
+class TradingCandidateSettings(BaseModel):
+    """What may become a Trading case at all (#104). Every bound here is a universe filter, not sizing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_age_seconds: int = 300
+    news_lookback_seconds: int = 3_600
+    oi_lookback_seconds: int = 1_800
+    symbol_cooldown_seconds: int = 1_800
+    max_rank_in_window: int = 2
+    # 20M, not the 1M a "universe-quality floor" suggests. `docs/research/oi-agent-design-2026-08-22.md`
+    # §1.5 measured the 10-50M OI bucket as the *worst* (+4h -0.77%, 48% win) and >200M as the best; a
+    # one-million floor admits the losing bucket wholesale.
+    min_oi_value_usd: int = 20_000_000
+    max_dspy_cases_per_day: int = 12
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> TradingCandidateSettings:
+        if not 30 <= self.max_age_seconds <= 3_600:
+            raise ValueError("trading_candidate_max_age_invalid")
+        if not 1 <= self.max_rank_in_window <= 10:
+            raise ValueError("trading_candidate_rank_invalid")
+        if not 0 <= self.max_dspy_cases_per_day <= 500:
+            raise ValueError("trading_candidate_dspy_budget_invalid")
+        return self
+
+
+class TradingRegimeSettings(BaseModel):
+    """The OI/price quadrant band. See `tracefold.trading.regime` for the measurement behind the defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lookback_seconds: int = 3_600
+    min_price_move_bps: int = 100
+    max_price_move_bps: int = 600
+
+    @model_validator(mode="after")
+    def validate_band(self) -> TradingRegimeSettings:
+        if not 300 <= self.lookback_seconds <= 86_400:
+            raise ValueError("trading_regime_lookback_invalid")
+        if self.min_price_move_bps < 0 or self.max_price_move_bps <= self.min_price_move_bps:
+            # A maximum is mandatory: with only a floor the rule keeps exactly the chasing trades the
+            # measured inverted-U rejects.
+            raise ValueError("trading_regime_band_invalid")
+        return self
+
+
+class TradingPolicySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allow_short: bool = False
+    live_min_surprise: int = 2
+    live_max_price_in: int = 1
+    min_whale_long_profit_bps: int = 9_500
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> TradingPolicySettings:
+        if not 0 <= self.live_min_surprise <= 3:
+            raise ValueError("trading_policy_surprise_invalid")
+        if not 0 <= self.live_max_price_in <= 3:
+            raise ValueError("trading_policy_price_in_invalid")
+        if not 0 <= self.min_whale_long_profit_bps <= 100_000:
+            raise ValueError("trading_policy_whale_profit_invalid")
+        return self
+
+
+class TradingVenueSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority: tuple[str, ...] = ("binance", "hyperliquid")
+    binance_enabled: bool = True
+    hyperliquid_enabled: bool = True
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def parse_priority(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ("binance", "hyperliquid")
+        if not isinstance(value, list | tuple):
+            raise ValueError("trading_venue_priority_invalid")
+        return tuple(str(item).strip().lower() for item in value)
+
+    @model_validator(mode="after")
+    def validate_priority(self) -> TradingVenueSettings:
+        allowed = {"binance", "hyperliquid"}
+        if not self.priority or set(self.priority) - allowed:
+            raise ValueError("trading_venue_priority_invalid")
+        if len(set(self.priority)) != len(self.priority):
+            raise ValueError("trading_venue_priority_duplicate")
+        return self
+
+    @property
+    def enabled(self) -> tuple[str, ...]:
+        flags = {"binance": self.binance_enabled, "hyperliquid": self.hyperliquid_enabled}
+        return tuple(venue for venue in self.priority if flags.get(venue, False))
+
+
+class TradingOrderSettings(BaseModel):
+    """Deterministic order parameters. Nothing here is ever chosen by a model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fixed_notional_usd: Decimal = Decimal("50")
+    leverage: int = 1
+    fixed_stop_bps: int = 200
+    take_profit_bps: int = 0
+    max_holding_seconds: int = 1_800
+    max_spread_bps: int = 30
+    max_open_underlyings: int = 2
+    max_orders_per_day: int = 4
+
+    @field_validator("fixed_notional_usd", mode="before")
+    @classmethod
+    def parse_notional(cls, value: Any) -> Decimal:
+        try:
+            return Decimal(str(value))
+        except (ArithmeticError, ValueError) as exc:
+            raise ValueError("trading_order_notional_invalid") from exc
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> TradingOrderSettings:
+        if not Decimal("1") <= self.fixed_notional_usd <= Decimal("10000"):
+            raise ValueError("trading_order_notional_invalid")
+        if self.leverage != 1:
+            raise ValueError("trading_order_leverage_must_be_one")
+        if not 20 <= self.fixed_stop_bps <= 2_000:
+            raise ValueError("trading_order_stop_invalid")
+        if self.take_profit_bps and self.take_profit_bps <= self.fixed_stop_bps:
+            raise ValueError("trading_order_take_profit_invalid")
+        if not 60 <= self.max_holding_seconds <= 86_400:
+            raise ValueError("trading_order_max_holding_invalid")
+        if not 1 <= self.max_open_underlyings <= 10:
+            raise ValueError("trading_order_open_underlyings_invalid")
+        if not 1 <= self.max_orders_per_day <= 100:
+            raise ValueError("trading_order_daily_cap_invalid")
+        return self
+
+    @property
+    def worst_case_daily_loss_usd(self) -> Decimal:
+        """`fixed_notional x fixed_stop_bps x max_orders_per_day` — the envelope the operator signs off."""
+
+        return (
+            self.fixed_notional_usd * Decimal(self.fixed_stop_bps) / Decimal(10_000) * Decimal(self.max_orders_per_day)
+        )
+
+
+class TradingOpenTradeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    base_url: str | None = None
+    token_file: str | None = "opentrade_token"
+    request_timeout_seconds: float = 8.0
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def parse_base_url(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip().rstrip("/")
+        return normalized or None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.token_file)
+
+
+class TradingSettings(BaseModel):
+    """`tracefold.trading`. Disabled by default; paper never reads the OpenTrade token."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    mode: Literal["paper", "live_reviewed", "live_bounded"] = "paper"
+    poll_seconds: float = 2.0
+    account_ref: str = "default"
+    candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
+    regime: TradingRegimeSettings = Field(default_factory=TradingRegimeSettings)
+    policy: TradingPolicySettings = Field(default_factory=TradingPolicySettings)
+    venues: TradingVenueSettings = Field(default_factory=TradingVenueSettings)
+    order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
+    opentrade: TradingOpenTradeSettings = Field(default_factory=TradingOpenTradeSettings)
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> TradingSettings:
+        if not 0.5 <= self.poll_seconds <= 60.0:
+            raise ValueError("trading_poll_seconds_invalid")
+        if self.mode != "paper" and not self.opentrade.configured:
+            # Startup, not first order: a live mode with no provider contract would discover it only
+            # once a case had already been decided.
+            raise ValueError("trading_live_mode_requires_opentrade")
+        if self.mode != "paper" and not self.venues.enabled:
+            raise ValueError("trading_live_mode_requires_enabled_venue")
+        return self
+
+    @property
+    def is_live(self) -> bool:
+        return self.mode in ("live_reviewed", "live_bounded")
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -450,6 +649,7 @@ class Settings(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     news: NewsSettings = Field(default_factory=NewsSettings)
+    trading: TradingSettings = Field(default_factory=TradingSettings)
 
     def set_config_dir(self, value: Path) -> None:
         self._config_dir = value

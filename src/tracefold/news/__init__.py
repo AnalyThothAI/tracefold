@@ -43,6 +43,8 @@ from .models import (
     TriageVerdict,
 )
 from .oi_signals import DEFAULT_OI_POLICY, OiPolicy
+from .oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .opennews import (
     OPENNEWS_SOURCE_ID,
     OpenNewsEvent,
@@ -82,6 +84,8 @@ __all__ = [
     "FACT_UNIT_VERSION",
     "GATE_POLICY_VERSION",
     "LEARNING_EPOCH",
+    "OI_METRIC_VERSION",
+    "OI_PROGRAM_VERSION",
     "OPENNEWS_SOURCE_ID",
     "QUOTE_REQUEST_SYMBOL_MAX",
     "REACTION_METRIC_VERSION",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.platform.postgres.postgres_audit import NEWS_TABLES
+from tracefold.platform.postgres.postgres_audit import NEWS_TABLES, TRADING_TABLES
 from tracefold.platform.postgres.postgres_migrations import (
     latest_migration_version,
     upgrade_head,
@@ -178,6 +178,9 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "alembic_version",
         "workers_runtime",
         *PROFESSIONAL_NEWS_TABLES,
+        # #104: the Trading bounded context's own five tables. Registered separately from
+        # `NEWS_TABLES` so "exactly these tables" stays a per-capability claim.
+        *TRADING_TABLES,
     }
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
@@ -260,7 +263,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     unpublished_index = news_v3_indexes["ix_news_events_unpublished"]
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260823_0299"
+    assert version == latest_migration_version() == "20260823_0300"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -285,4 +288,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260823_0299"
+    assert version == latest_migration_version() == "20260823_0300"

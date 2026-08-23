@@ -73,6 +73,17 @@ NEWS_TABLES = (
     "news_learning_retention_state",
 )
 
+# #104: the Trading bounded context's own registry. Kept beside `NEWS_TABLES` rather than merged into
+# it, because "exactly these tables" is a per-capability claim: a trading table appearing under the
+# News heading would make the News schema audit pass for the wrong reason.
+TRADING_TABLES = (
+    "trading_symbol_blacklist",
+    "trading_runtime_state",
+    "trading_cases",
+    "trading_orders",
+    "trading_order_observations",
+)
+
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
         "name": "readiness_schema",
@@ -98,12 +109,18 @@ class PostgresOperationalAudit:
         self.expected_migration_version = expected_migration_version or latest_migration_version()
 
     def run(self) -> dict[str, Any]:
-        counts = self._counts(NEWS_TABLES)
-        actual_news_tables = self._news_tables()
+        counts = self._counts(NEWS_TABLES + TRADING_TABLES)
+        actual_news_tables = self._tables_with_prefix("news_")
         news_schema = {
             "expected_tables": list(NEWS_TABLES),
             "actual_tables": sorted(actual_news_tables),
             "exact": actual_news_tables == set(NEWS_TABLES),
+        }
+        actual_trading_tables = self._tables_with_prefix("trading_")
+        trading_schema = {
+            "expected_tables": list(TRADING_TABLES),
+            "actual_tables": sorted(actual_trading_tables),
+            "exact": actual_trading_tables == set(TRADING_TABLES),
         }
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
@@ -113,6 +130,7 @@ class PostgresOperationalAudit:
                 migration_ready
                 and all(count >= 0 for count in counts.values())
                 and bool(news_schema["exact"])
+                and bool(trading_schema["exact"])
                 and bool(runtime_roles["ok"])
             ),
             "engine": "postgresql",
@@ -121,6 +139,7 @@ class PostgresOperationalAudit:
             "migration_status": "ready" if migration_ready else "stale",
             "counts": counts,
             "news_schema": news_schema,
+            "trading_schema": trading_schema,
             "runtime_roles": runtime_roles,
         }
 
@@ -146,15 +165,16 @@ class PostgresOperationalAudit:
         ).fetchone()
         return row is not None
 
-    def _news_tables(self) -> set[str]:
+    def _tables_with_prefix(self, prefix: str) -> set[str]:
         rows = self.conn.execute(
             """
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
               AND table_type = 'BASE TABLE'
-              AND left(table_name, 5) = 'news_'
-            """
+              AND left(table_name, %s) = %s
+            """,
+            (len(prefix), prefix),
         ).fetchall()
         return {str(row["table_name"]) for row in rows}
 
