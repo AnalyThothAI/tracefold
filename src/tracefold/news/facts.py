@@ -25,8 +25,11 @@ _BREAK_RE = re.compile(r"<br\s*/?>|\r\n|\r|\n", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 _NUMBERED_RE = re.compile(r"^\s*(?P<number>\d{1,2})[.)、:：]\s*(?P<text>\S.*)$")
+_WORD_RE = re.compile(r"\w")
 _MIN_EXPLICIT_UNITS = 3
 _MIN_FACT_CHARS = 12
+# Aligned with the model-visible `content` bound so the lead is never trimmed twice.
+_MAX_LEAD_CHARS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,13 +82,38 @@ def _blocks(raw_text: str) -> list[tuple[str, int, int]]:
     return out
 
 
+def _lead_context(blocks: list[tuple[str, int, int]], *, first_numbered_start: int) -> str:
+    """The digest's own preamble: every word-bearing block above the first numbered one.
+
+    The block sitting directly on top of the list is the lead that gives every bullet its subject
+    ("BREAKING: Nvidia ... Details include:"); anything higher is the poster's framing.  A long preamble is
+    therefore budgeted from the bottom up, so the lead is what survives.  Separator-only blocks — the
+    provider emits a bare ``|`` line between a quote tweet's two authors — carry no subject and are dropped.
+    """
+
+    preamble = [block for block, start, _ in blocks if start < first_numbered_start and _WORD_RE.search(block)]
+    if not preamble:
+        return ""
+    kept: list[str] = []
+    used = 0
+    for block in reversed(preamble):
+        cost = len(block) + (1 if kept else 0)
+        if used + cost > _MAX_LEAD_CHARS:
+            break
+        kept.append(block)
+        used += cost
+    if not kept:
+        return preamble[-1][:_MAX_LEAD_CHARS]
+    return " ".join(reversed(kept))
+
+
 def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> tuple[FactUnit, ...]:
     """Split only a high-confidence explicit numbered digest.
 
-    The numbered sequence may have an unnumbered source/header block before it,
-    but every emitted unit must be a numbered block, numbering must be
-    contiguous, and there must be at least three units.  Otherwise a single
-    whole-item unit is returned.
+    The numbered sequence may have an unnumbered preamble before it — which
+    becomes every unit's shared context — but every emitted unit must be a
+    numbered block, numbering must be contiguous, and there must be at least
+    three units.  Otherwise a single whole-item unit is returned.
     """
 
     blocks = _blocks(raw_text)
@@ -103,13 +131,13 @@ def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> t
     numbers = [row[0] for row in numbered]
     sequential = bool(numbers) and numbers == list(range(numbers[0], numbers[0] + len(numbers)))
     if len(numbered) >= _MIN_EXPLICIT_UNITS and sequential:
-        header = next((block for block, _, _ in blocks if _NUMBERED_RE.match(block) is None), "")
+        lead = _lead_context(blocks, first_numbered_start=numbered[0][2])
         return tuple(
             FactUnit(
                 fact_id=_fact_id(item_id=item_id, ordinal=index, text=text, method="explicit_numbered"),
                 ordinal=index,
                 text=text,
-                context=header[:240],
+                context=lead,
                 span_start=start,
                 span_end=end,
                 method="explicit_numbered",

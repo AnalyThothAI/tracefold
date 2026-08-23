@@ -123,6 +123,60 @@ def test_fact_units_split_only_explicit_sequential_numbered_digests() -> None:
         assert len(whole) == 1 and whole[0].method == "whole_item" and whole[0].text == "原标题"
 
 
+def test_fact_unit_context_is_the_lead_above_the_list_not_the_first_block() -> None:
+    """#152: the block directly above the list is what gives every bullet its subject.
+
+    The shape is a real one: a quote tweet whose own slogan is the first block, the provider's bare ``|``
+    separator, and only then the quoted wire lead.  Taking the *first* unnumbered block handed the model
+    "The AI race is moving down the stack." and dropped Nvidia, OpenAI and Ohio entirely.
+    """
+
+    raw = (
+        "quote: The AI race is moving down the stack.\r\n"
+        "Machine-native capital markets are coming.\r\n"
+        "|\r\n"
+        "BREAKING: Nvidia, $NVDA, has agreed to provide a more than $100 billion backstop for a massive new "
+        "OpenAI data center in Ohio, per FT. Details include:\r\n"
+        '1. Nvidia will provide credit support for the "land, power and shell" capped at $105 billion\r\n'
+        "2. The data center is being developed alongside a SoftBank-led energy company\r\n"
+        "3. Nvidia will also invest $1.5 billion into SB Energy\r\n"
+        "4. OpenAI plans to lease as much as 8 gigawatts at the data center in Pike County, Ohio"
+    )
+    units = extract_fact_units(item_id="item-3", raw_text=raw, fallback_title="fallback")
+    assert len(units) == 4
+    context = units[0].context
+    assert all(u.context == context for u in units)
+    assert "OpenAI data center in Ohio" in context and "per FT" in context
+    assert context.startswith("quote: The AI race")
+    assert " | " not in context and not context.endswith("|")
+
+
+_BULLETS = (
+    "1. 第一条内容足够长的具体事实描述。\r\n2. 第二条内容足够长的具体事实描述。\r\n3. 第三条内容足够长的具体事实描述。"
+)
+
+
+def test_fact_unit_context_keeps_the_lead_when_the_preamble_overflows() -> None:
+    """A long preamble is budgeted from the bottom up: the poster's framing is what gets dropped."""
+
+    filler = "x" * 400
+    raw = f"{filler}\r\n{filler}\r\nWire lead that names the subject:\r\n{_BULLETS}"
+    units = extract_fact_units(item_id="item-4", raw_text=raw, fallback_title="fallback")
+    assert len(units) == 3
+    assert units[0].context.endswith("Wire lead that names the subject:")
+    assert len(units[0].context) <= 600
+    assert units[0].context.count(filler) == 1
+
+
+def test_fact_unit_context_is_empty_when_the_digest_has_no_preamble() -> None:
+    """A bare jin10 list has no lead, and the first bullet is *not* one: it is a different fact."""
+
+    first_bullet = _BULLETS.split("\r\n", maxsplit=1)[0]
+    units = extract_fact_units(item_id="item-5", raw_text=_BULLETS, fallback_title=first_bullet)
+    assert len(units) == 3
+    assert all(u.context == "" for u in units)
+
+
 def test_reader_receipt_never_confuses_decision_or_ambiguous_send_with_received() -> None:
     assert ReaderReceipt.from_delivery(None).state == "not_received"
     assert ReaderReceipt.from_delivery({"state": "sending"}).state == "not_received"

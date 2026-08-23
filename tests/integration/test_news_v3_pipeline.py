@@ -509,7 +509,9 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
     rows = conn.execute(
         """
         SELECT e.event_id, e.focus_fact_id, e.focus_fact_text, e.focus_fact_method,
-               s.evidence_version, s.snapshot #>> '{card,leader_description}' AS content
+               s.evidence_version, s.snapshot #>> '{card,leader_description}' AS content,
+               s.snapshot #>> '{card,leader_title}' AS model_title,
+               s.snapshot #>> '{card,raw_first_line}' AS model_raw_first_line
           FROM news_events e
           JOIN news_event_evidence_snapshots s
             ON s.event_id = e.event_id AND s.evidence_version = 1
@@ -522,6 +524,10 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
     assert {int(row["evidence_version"]) for row in rows} == {1}
     assert all(row["content"] == "市场快讯：" for row in rows)
     assert any(str(row["focus_fact_text"]).startswith("Moderna") for row in rows)
+    # #152: the parent's first line is bullet 1.  Showing it while judging bullet 3 is not context, it is a
+    # different fact; `leader_title` already carries this bullet's own unnormalized text.
+    assert all(row["model_raw_first_line"] == "" for row in rows)
+    assert {row["model_title"] for row in rows} == {str(row["focus_fact_text"]) for row in rows}
     conn.commit()
 
 
