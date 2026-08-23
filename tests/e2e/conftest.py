@@ -109,7 +109,7 @@ def e2e_postgres() -> Iterator[str]:
     from testcontainers.postgres import PostgresContainer
 
     from tests.tracefold_postgres_container import tracefold_postgres_container
-    from tracefold.platform.postgres.postgres_migrations import upgrade_head
+    from tracefold.platform.postgres.migrations import upgrade_head
 
     with tracefold_postgres_container(PostgresContainer) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")

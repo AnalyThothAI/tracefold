@@ -14,7 +14,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from tracefold.news import opennews
+from tracefold.news.opennews import parse_opennews_message, parse_opennews_strategy_hits
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
@@ -38,7 +38,7 @@ def test_settings_carry_no_strategy_allowlist() -> None:
 
 
 def test_frame_parsers_take_no_strategy_filter() -> None:
-    for parser in (opennews.parse_opennews_message, opennews.parse_opennews_strategy_hits):
+    for parser in (parse_opennews_message, parse_opennews_strategy_hits):
         assert "strategy_ids" not in inspect.signature(parser).parameters, parser.__name__
 
 

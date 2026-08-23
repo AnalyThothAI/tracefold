@@ -6,9 +6,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news import (
-    REVIEW_DEFAULT_HOURS,
-    REVIEW_MAX_HOURS,
+from tracefold.news.market_review.pricing import REVIEW_DEFAULT_HOURS, REVIEW_MAX_HOURS
+from tracefold.news.review import (
     BlindPairwiseSubmission,
     DeskQuery,
     EventRubricSubmission,

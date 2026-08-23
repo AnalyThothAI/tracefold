@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.runtime_roles import runtime_role_contract
 from tracefold.platform.validation import require_nonnegative_int
 

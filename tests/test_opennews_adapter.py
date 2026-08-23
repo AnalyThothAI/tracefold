@@ -8,8 +8,10 @@ from pydantic import ValidationError
 from websockets.exceptions import ConcurrencyError, ProtocolError
 
 from tracefold.integrations.opennews import client as opennews_client
-from tracefold.news import OPENNEWS_SOURCE_ID, OpenNewsExpectedError, OpenNewsHistoryError
 from tracefold.news.opennews import (
+    OPENNEWS_SOURCE_ID,
+    OpenNewsExpectedError,
+    OpenNewsHistoryError,
     enabled_strategy_ids,
     parse_opennews_message,
     parse_opennews_strategy_hits,

@@ -190,7 +190,7 @@ tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu
 
 tracefold.platform
-  config models/loader, PostgreSQL/Alembic, telemetry, paths,
+  config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
   bounded resource primitives, docker host translation
 
 tracefold.app
@@ -201,18 +201,20 @@ tracefold.app
   resource modules under `app/http/`.
 ```
 
-Each business package root is its public Python interface: `tracefold.news`
-and `tracefold.trading`.
-Consumers outside the owning package import from the root only. Internal
-subpackages may change without creating a repository-wide import graph.
+Each business package root is its stable public Python interface:
+`tracefold.news` and `tracefold.trading` export only value and port contracts.
+Ordinary feature callers import those contracts from the root. Runtime
+policies, evaluators, persistence, review workflows, and composition helpers
+remain with their concrete owners and are not re-exported.
 
 The application composition root and concrete provider adapters are private
 implementation collaborators, not product consumers. Where one of them must
 construct a repository, schedule an internal worker, or reuse the exact pinned
 parser/composer implementation behind a public protocol, its consumer family
 and allowed contract family are bounded by the architecture harness. Those
-seams are not re-exported, compatibility interfaces, or available to feature callers;
-all public models and protocols still come from the package root.
+seams use explicit owner imports so they cannot masquerade as product APIs.
+They are not re-exported, compatibility interfaces, or available to feature
+callers; all public models and protocols still come from the package root.
 
 The dependency direction is:
 

@@ -7,7 +7,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
-from tracefold.news import grounding_rollup, status_health
+from tracefold.news.health import status_health
+from tracefold.news.market_review.instruments import grounding_rollup
 from tracefold.platform.config.models import news_model_availability, news_push_availability
 
 from ..dependencies import _authenticated_runtime, _validate_query_params

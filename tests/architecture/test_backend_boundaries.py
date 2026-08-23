@@ -28,26 +28,42 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.agents.program_compiler_trusted",
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
+        "tracefold.news.artifact_identity",
         "tracefold.news.bus",
+        "tracefold.news.canary",
         "tracefold.news.candidate_evaluator",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
+        "tracefold.news.recording_replay",
         "tracefold.news.review",
+        "tracefold.news.semantic_contract",
     ),
     "app.composition": (
         "tracefold.news.agents.semantic_program",
+        "tracefold.news.artifact_identity",
+        "tracefold.news.candidate_evaluator",
         "tracefold.news.market_review.storage",
         "tracefold.news.query_specs",
+        "tracefold.news.semantic_contract",
         "tracefold.news.storage.root",
         "tracefold.trading.storage.root",
+    ),
+    "app.http": (
+        "tracefold.news.health",
+        "tracefold.news.market_review.instruments",
+        "tracefold.news.market_review.pricing",
+        "tracefold.news.review",
     ),
     "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
         "tracefold.news.canary",
+        "tracefold.news.candidate_evaluator",
+        "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
+        "tracefold.news.triage_rules",
         "tracefold.trading.candidate.eligibility",
         "tracefold.trading.contracts",
         "tracefold.trading.decision.policy",
@@ -214,6 +230,8 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
         family = "app.trading_cli"
     elif parts[:3] == ["tracefold", "app", "workers"]:
         family = "app.workers"
+    elif parts[:3] == ["tracefold", "app", "http"]:
+        family = "app.http"
     elif parts[:2] == ["tracefold", "app"] and len(parts) == 3:
         family = "app.composition"
     elif parts[:3] == ["tracefold", "integrations", "opennews"]:
@@ -232,6 +250,7 @@ def test_private_business_import_rules_follow_consumer_families() -> None:
         "tracefold.news.agents.program_baseline",
     )
     assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.storage.root")
+    assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.review")
     assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.storage.root")
 
 

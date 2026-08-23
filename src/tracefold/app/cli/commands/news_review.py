@@ -11,7 +11,7 @@ from .news_learning_documents import _read_json_or_yaml
 
 def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news import (
+    from tracefold.news.review import (
         BlindPairwiseSubmission,
         DeskQuery,
         EventRubricSubmission,
@@ -20,7 +20,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         ReviewDesk,
         TaskRef,
     )
-    from tracefold.platform.postgres.postgres_client import transaction
+    from tracefold.platform.postgres.client import transaction
 
     settings = load_settings(require_ws_token=False)
     principal = Principal(subject="operator")
@@ -93,9 +93,9 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     """
 
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news import EventRubricSubmission, Principal, ReviewDesk, TaskRef
     from tracefold.news.agents.program_review_drafter import DRAFT_SCHEMA, ReviewDraft, submission_payload
-    from tracefold.platform.postgres.postgres_client import transaction
+    from tracefold.news.review import EventRubricSubmission, Principal, ReviewDesk, TaskRef
+    from tracefold.platform.postgres.client import transaction
 
     # A distinguishable author, on purpose. Measured against 25 Events a human had already judged, the drafter
     # agrees 70-88% on the dimensions it may emit, so a bulk accept carries roughly 15-20% wrong dimension
@@ -189,6 +189,6 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
 def _sha_idempotency(batch_sha: Any, task_id: str) -> str:
     """Stable per (batch, task), so re-running an interrupted accept does not double-write."""
 
-    from tracefold.news import canonical_sha
+    from tracefold.news.artifact_identity import canonical_sha
 
     return canonical_sha({"batch": str(batch_sha or ""), "task_id": task_id})

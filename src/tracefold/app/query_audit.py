@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Protocol
 
-from tracefold.platform.postgres.postgres_audit import (
+from tracefold.platform.postgres.audit import (
     PostgresQueryAudit,
     QueryAuditCatalog,
     ReadQuerySpec,

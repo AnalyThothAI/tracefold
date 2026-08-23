@@ -1,8 +1,8 @@
 """Generate and verify the behavior/structure baseline for refactor epic #162.
 
 This is test support rather than an application caller: it deliberately reaches the
-current internal seams that later PRs will move, then records their observable values.
-Production callers must continue to import the business package roots.
+concrete owner seams and records their observable values. Stable value and port contracts
+remain available from the business package roots.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from tests.support.news_judgment import trade_relevance
-from tracefold import news
 from tracefold.app.workers.task_contract import worker_task_names
 from tracefold.integrations import rabbitmq as rabbitmq_module
 from tracefold.news.agents.program_compiler import COMPILER_ID
@@ -48,15 +47,24 @@ from tracefold.news.agents.semantic_program import (
     PROGRAM_VERSION,
     load_stable_program_artifact,
 )
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import MAX_TRANSIENT_ATTEMPTS, RETRY_TTL_MS
 from tracefold.news.delivery import render_first_card
 from tracefold.news.eval.replay import replay_hits
-from tracefold.news.models import ReaderReceipt, TriageVerdict
+from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
 from tracefold.news.pipeline.root import NewsPipeline
+from tracefold.news.review import REVIEW_RUBRIC_VERSION
+from tracefold.news.semantic_contract import (
+    EditorialEnvelope,
+    ProgramTrace,
+    ProgramUsage,
+    SemanticJudgment,
+    TriageContext,
+)
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
 from tracefold.platform.config.models import Settings
-from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.candidate.eligibility import news_candidate, oi_candidate
 from tracefold.trading.candidate.routing import resolve_instrument
@@ -212,8 +220,8 @@ def _program_contract() -> dict[str, Any]:
         "assembler_sha256": PROGRAM_ASSEMBLER_SHA256,
         "input_contract_sha256": PROGRAM_INPUT_CONTRACT_SHA256,
         "renderer_sha256": PROGRAM_RENDERER_SHA256,
-        "policy_version": news.TRIAGE_POLICY_VERSION,
-        "review_rubric_version": news.REVIEW_RUBRIC_VERSION,
+        "policy_version": TRIAGE_POLICY_VERSION,
+        "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "metric_id": METRIC_ID,
         "compiler_id": COMPILER_ID,
         "compiler_schemas": sorted(
@@ -325,7 +333,7 @@ def _news_event() -> dict[str, Any]:
 
 def _news_flow_snapshot() -> dict[str, Any]:
     event = _news_event()
-    context = news.TriageContext.from_card(
+    context = TriageContext.from_card(
         event,
         watchlist=("BTC",),
         told_rows=(),
@@ -347,9 +355,9 @@ def _news_flow_snapshot() -> dict[str, Any]:
         title_zh="",
         why_zh="新集成扩大可用渠道，可能带来新增交易与支付需求。",
     )
-    editorial = news.EditorialEnvelope.issue(editorial_origin="model", relevance=trade_relevance())
+    editorial = EditorialEnvelope.issue(editorial_origin="model", relevance=trade_relevance())
     artifact = load_stable_program_artifact()
-    trace = news.ProgramTrace(
+    trace = ProgramTrace(
         program_version=PROGRAM_VERSION,
         program_sha256=artifact.program_sha256,
         context_sha256=context.selected_context_sha256(),
@@ -357,17 +365,17 @@ def _news_flow_snapshot() -> dict[str, Any]:
         topology_sha256=PROGRAM_TOPOLOGY_SHA256,
         adapter_sha256=PROGRAM_ADAPTER_SHA256,
         assembler_sha256=PROGRAM_ASSEMBLER_SHA256,
-        verdict_sha256=news.canonical_sha(verdict.model_dump(mode="json")),
+        verdict_sha256=canonical_sha(verdict.model_dump(mode="json")),
         editorial_sha256=editorial.editorial_sha256,
         answering_route="primary",
     )
-    semantic = news.SemanticJudgment(
+    semantic = SemanticJudgment(
         verdict=verdict,
         editorial=editorial,
         program_version=PROGRAM_VERSION,
         program_sha256=artifact.program_sha256,
         trace=trace,
-        usage=news.ProgramUsage(
+        usage=ProgramUsage(
             wall_latency_ms=0,
             call_count=0,
             physical_call_count=0,

@@ -9,7 +9,7 @@ from loguru import logger
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
-from tracefold.news import OI_METRIC_VERSION as NEWS_OI_METRIC_VERSION
+from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
 from tracefold.trading.candidate.eligibility import EligibilityPolicy
 from tracefold.trading.contracts import Bar as TradingBar

@@ -15,7 +15,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
-from tracefold.platform.postgres.postgres_migrations import alembic_config
+from tracefold.platform.postgres.migrations import alembic_config
 
 
 def _upgrade(revision: str) -> None:

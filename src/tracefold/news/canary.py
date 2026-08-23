@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from tracefold.news import SemanticJudge
+from .semantic_contract import SemanticJudge
 
 CANARY_SELECTOR_VERSION = "news_canary_selector_v2"
 CANARY_EXPOSURE_BPS = 1_000

@@ -11,7 +11,7 @@ from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
+from tracefold.platform.postgres.client import create_pool, with_password_from_file
 
 _SERVE_POOL_SIZE = 7  # 6 ordinary read permits + 1 control permit
 _SERVE_CHECKOUT_TIMEOUT_SECONDS = 0.250

@@ -27,7 +27,7 @@ GRANDFATHERED_MODULE_LINES = {
     "news/agents/program_compiler_trusted.py": 408,
     "news/agents/program_metric.py": 1120,
     "news/agents/semantic_program.py": 3645,
-    "news/candidate_evaluator.py": 3785,
+    "news/candidate_evaluator.py": 3784,
     # PR4 moved the 823-line TriageConsumer atomically. Its body is deliberately untouched here;
     # later ownership PRs may reduce this final module exception without changing the live route.
     "news/pipeline/triage.py": 966,
@@ -40,7 +40,7 @@ GRANDFATHERED_MODULE_LINES = {
 # unrelated functions with the same generic name cannot inherit an exception.
 GRANDFATHERED_FUNCTION_LINES = {
     ("app/cli/commands/news_review.py", "_handle_review_accept_drafts"): 105,
-    ("app/cli/commands/news_learning.py", "_handle_learning"): 697,
+    ("app/cli/commands/news_learning.py", "_handle_learning"): 696,
     ("app/cli/commands/news_learning_baseline.py", "_handle_learning_baseline"): 121,
     ("app/cli/commands/news_learning_baseline.py", "_handle_learning_draft_reviews"): 125,
     ("app/cli/commands/trading.py", "handle_trading"): 130,
@@ -106,9 +106,9 @@ TYPE_EXPRESSION_NODES = (
     ast.Tuple,
 )
 
-# News still has absolute self-imports and imports through its public root. Later ownership PRs remove
-# these exact edges; no new module or root symbol may join the debt. Relative submodule imports are the
-# target style and do not appear here. Trading starts at zero.
+# The cold compiler subprocess still uses absolute module identities as part of its explicit launch
+# protocol. Runtime News and Trading otherwise use relative owner imports and start at zero package-root
+# back-import debt.
 LEGACY_INTERNAL_ABSOLUTE_IMPORTS = {
     ("news/agents/program_compiler_proxy_sidecar.py", "tracefold.news.agents.program_compiler_proxy"),
     ("news/agents/program_compiler_proxy_sidecar.py", "tracefold.news.agents.program_compiler_source"),
@@ -123,14 +123,6 @@ LEGACY_INTERNAL_ABSOLUTE_IMPORTS = {
     ("news/agents/program_compiler_runner.py", "tracefold.news.agents.semantic_program"),
     ("news/agents/program_compiler_runner.py", "tracefold.news.artifact_identity"),
     ("news/agents/programs/candidates.py", "tracefold.news.candidate_evaluator"),
-    ("news/canary.py", "tracefold.news.SemanticJudge"),
-    ("news/candidate_evaluator.py", "tracefold.news.EditorialEnvelope"),
-    ("news/candidate_evaluator.py", "tracefold.news.ScoredJudgment"),
-    ("news/candidate_evaluator.py", "tracefold.news.SemanticJudge"),
-    ("news/candidate_evaluator.py", "tracefold.news.SemanticJudgeError"),
-    ("news/candidate_evaluator.py", "tracefold.news.TriageContext"),
-    ("news/recording_replay.py", "tracefold.news.SemanticJudgment"),
-    ("news/recording_replay.py", "tracefold.news.TriageContext"),
 }
 
 
@@ -340,6 +332,46 @@ def test_trading_ownership_split_has_no_compatibility_aliases() -> None:
     }
 
 
+def test_postgres_modules_have_owner_names_without_compatibility_aliases() -> None:
+    postgres = SRC / "platform" / "postgres"
+    assert sorted(path.name for path in postgres.glob("postgres_*.py")) == []
+    assert {"audit.py", "client.py", "migrations.py"} <= {path.name for path in postgres.glob("*.py")}
+
+    retired_imports = tuple(f"postgres_{suffix}" for suffix in ("audit", "client", "migrations"))
+    # `deploy/news-program-v5-schema0301` is copied into a pinned pre-refactor source tree and must
+    # continue importing that historical module name; it is an independent rollback image, not a
+    # compatibility path in the current runtime.
+    code_roots = (SRC, ROOT / "tests", ROOT / "scripts")
+    files = [path for root in code_roots for path in root.rglob("*") if path.is_file()]
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for path in files
+        if path.suffix in {"", ".py"}
+        and path != BASELINE
+        and any(retired in path.read_text(encoding="utf-8") for retired in retired_imports)
+    ]
+
+    # One Makefile command executes only inside the pinned pre-refactor rollback image. The other
+    # inspects an arbitrary deployable image and selects its new or pinned-old module name without
+    # adding a compatibility module to the current source. Host/source probes use only the new path.
+    makefile_lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+    historical_image_probes = [
+        line
+        for line in makefile_lines
+        if any(retired in line for retired in retired_imports)
+        and (
+            "PROGRAM_FACTORY_ID" in line or ("image_head=$$(docker run" in line and "importlib.util.find_spec" in line)
+        )
+    ]
+    assert len(historical_image_probes) == 2
+    violations.extend(
+        f"Makefile:{line_number}"
+        for line_number, line in enumerate(makefile_lines, start=1)
+        if any(retired in line for retired in retired_imports) and line not in historical_image_probes
+    )
+    assert violations == []
+
+
 def test_news_domain_modules_do_not_reach_through_repository_connections() -> None:
     violations = [
         path.relative_to(ROOT).as_posix()
@@ -390,6 +422,25 @@ def test_business_modules_do_not_add_package_root_back_imports() -> None:
 def test_package_exports_remain_at_the_intentional_public_seam() -> None:
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     expected = baseline["historical_structure"]["package_exports"]
+    expected["tracefold.news"] = [
+        "EditorialEnvelope",
+        "NewsFeedEntry",
+        "OpenNewsEvent",
+        "OpenNewsExpectedError",
+        "OpenNewsHistoryError",
+        "OpenNewsStrategyHistory",
+        "ProgramTrace",
+        "ProgramUsage",
+        "ReaderCardSemanticView",
+        "ReaderReceipt",
+        "ScoredJudgment",
+        "SemanticJudge",
+        "SemanticJudgeError",
+        "SemanticJudgment",
+        "TradeRelevanceV1",
+        "TriageContext",
+        "TriageVerdict",
+    ]
     expected["tracefold.trading"] = ["Bar", "ExecutionReceipt", "InstrumentRef", "PreparedOrder", "TradingMode"]
     actual = {module: _declared_exports(_package_path(module)) for module in expected}
     assert actual == expected

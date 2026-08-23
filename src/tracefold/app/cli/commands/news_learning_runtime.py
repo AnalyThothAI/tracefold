@@ -10,7 +10,7 @@ from .news_learning_documents import _read_json_or_yaml
 def _load_candidate_bundle(path: str) -> tuple[Any | None, dict[str, str]]:
     if not path:
         return None, {}
-    from tracefold.news import CandidateManifest
+    from tracefold.news.candidate_evaluator import CandidateManifest
 
     document = _read_json_or_yaml(path)
     candidate = CandidateManifest.model_validate(document.get("candidate") or document)
@@ -77,7 +77,7 @@ def _learning_recording_replay_capability(
     artifact_paths: Mapping[str, str],
     run_sha: str,
 ) -> Any:
-    from tracefold.news import ReplayArmSpec, load_recording_replay_capability
+    from tracefold.news.recording_replay import ReplayArmSpec, load_recording_replay_capability
 
     arm_artifacts = _learning_program_arm_artifacts(
         stable=stable,
@@ -141,7 +141,7 @@ def _insert_learning_artifact(
     created_at_ms: int,
 ) -> str:
     public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
-    from tracefold.news import canonical_sha
+    from tracefold.news.artifact_identity import canonical_sha
 
     artifact_sha = canonical_sha({"kind": kind, "payload": public})
     conn.execute(

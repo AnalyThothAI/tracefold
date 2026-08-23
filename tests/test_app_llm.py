@@ -8,19 +8,20 @@ from typing import Any
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news import DecidePolicy, canonical_sha
 from tracefold.news.agents.programs import candidates as candidate_programs
 from tracefold.news.agents.semantic_program import (
     ScriptedPredictorAdapter,
     TriageContext,
     load_stable_program_artifact,
 )
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
 from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest, ProposalReceipt
+from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings
 
 

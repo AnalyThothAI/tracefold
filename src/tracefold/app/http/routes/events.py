@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news import QUOTE_REQUEST_SYMBOL_MAX
+from tracefold.news.market_review.pricing import QUOTE_REQUEST_SYMBOL_MAX
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest

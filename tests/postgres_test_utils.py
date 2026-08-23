@@ -11,8 +11,8 @@ from psycopg.rows import RowMaker
 from psycopg.sql import Composable
 
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
-from tracefold.platform.postgres.postgres_client import connect_postgres
-from tracefold.platform.postgres.postgres_migrations import upgrade_head
+from tracefold.platform.postgres.client import connect_postgres
+from tracefold.platform.postgres.migrations import upgrade_head
 
 DEFAULT_TEST_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 

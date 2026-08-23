@@ -28,7 +28,7 @@ def _read_json_or_yaml(path: str) -> dict[str, Any]:
 
 
 def _canonical_model_document(document: str, model_type: Any, *, code: str) -> Any:
-    from tracefold.news import canonical_json
+    from tracefold.news.artifact_identity import canonical_json
 
     def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         payload: dict[str, Any] = {}
