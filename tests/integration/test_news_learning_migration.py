@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
@@ -70,7 +71,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260824_0303"
+        assert revision["version_num"] == "20260824_0304"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -174,7 +175,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0303"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0304"
     finally:
         if conn is not None:
             conn.close()
@@ -216,7 +217,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0303"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0304"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -539,7 +540,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0303"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0304"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -664,6 +665,163 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
             "trip_reason": "program_v6_hard_cut",
             "tripped_at_ms": program_v6["starts_at_ms"],
         }
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+# #193 replaces the two-file `news_semantic_program_artifact_v2` manifest/state document with the single
+# `news_program_strategy_artifact_v1` document, and `factory_v5` with `factory_v6`. Pinned as literals,
+# like every epoch row above: this is the receipt the migration wrote once, not whatever the module
+# constant says today.
+_HARD_CUT_RECEIPT = {
+    "kind": "program_strategy_artifact_hard_cut",
+    "source_issue": "https://github.com/AnalyThothAI/tracefold/issues/193",
+    "epoch_id": "program_v7",
+    "from_artifact_schema_version": "news_semantic_program_artifact_v2",
+    "to_artifact_schema_version": "news_program_strategy_artifact_v1",
+    "from_program_factory_id": "tracefold.news.program.factory_v5",
+    "to_program_factory_id": "tracefold.news.program.factory_v6",
+    "program_version": "news_semantic_program_v5",
+    "prior_evidence_disposition": "accepted_review_v4_remains_eligible",
+    "activation_disposition": "open_activations_tripped",
+}
+_HARD_CUT_TRIP_REASON = "program_strategy_artifact_v1_hard_cut"
+
+
+def _ledger_artifact_sha(kind: str, payload: dict[str, Any]) -> str:
+    """Re-derive the append-only ledger's content address independently of the migration."""
+
+    encoded = json.dumps({"kind": kind, "payload": payload}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without_reopening_v7() -> None:
+    """#193 changes Program identity, not which evidence is eligible.
+
+    Exactly two things are database facts here. An armed or active canary points at a candidate this
+    image can no longer execute, so it is closed with a durable reason instead of being re-tripped by
+    every worker start. And the migration is recorded once in the append-only learning ledger.
+
+    The `program_v7` epoch must survive byte for byte: re-opening it would discard accepted
+    `news_review_v4` truth that a serialization change never invalidated, and would move the
+    `starts_at_ms` floor that bounds every learning window and release cohort.
+    """
+
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260824_0303")
+        conn = connect_postgres_test(read_only=False)
+        prior_epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        assert set(prior_epochs) >= {"program_v7"}
+        settled_at_ms = int(time.time() * 1000) - 60_000
+        # `ux_news_canary_one_open` permits a single armed-or-active row, so the open activation and the
+        # already-closed one it must not touch are the whole surface of this migration.
+        conn.execute(
+            """
+            INSERT INTO news_canary_activations (
+              activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+              selector_version, exposure_bps, eligibility_profile_sha, rolling_profile_sha,
+              state, revision, trip_reason, tripped_at_ms, created_at_ms
+            ) VALUES (%s, %s, %s, %s, 'news_canary_selector_v1', 1000, %s, %s, 'tripped', 5, %s, %s, %s)
+            """,
+            (
+                "a" * 32,
+                "1" * 64,
+                "2" * 64,
+                "3" * 64,
+                "4" * 64,
+                "5" * 64,
+                "earlier_operator_trip",
+                settled_at_ms,
+                settled_at_ms,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_canary_activations (
+              activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+              selector_version, exposure_bps, eligibility_profile_sha, rolling_profile_sha,
+              state, revision, created_at_ms, activated_at_ms
+            ) VALUES (%s, %s, %s, %s, 'news_canary_selector_v1', 1000, %s, %s, 'active', 2, %s, %s)
+            """,
+            (
+                "b" * 32,
+                "6" * 64,
+                "7" * 64,
+                "8" * 64,
+                "9" * 64,
+                "e" * 64,
+                settled_at_ms,
+                settled_at_ms,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        deployed_after_ms = int(time.time() * 1000) - 5_000
+        _upgrade("head")
+        deployed_before_ms = int(time.time() * 1000) + 5_000
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0304"
+
+        epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        assert epochs == prior_epochs
+        assert epochs["program_v7"]["program_factory_id"] == "tracefold.news.program.factory_v5"
+        assert epochs["program_v7"]["artifact_schema_version"] == "news_semantic_program_artifact_v2"
+        assert epochs["program_v7"]["baseline_program_sha256"] == (
+            "7a460f8d3812c64c6ee38158871eb9f060811e5ffe87f399f7bc2e506b4e28ad"
+        )
+
+        activations = {
+            row["activation_id"]: dict(row)
+            for row in conn.execute(
+                "SELECT activation_id, state, revision, trip_reason, tripped_at_ms FROM news_canary_activations"
+            ).fetchall()
+        }
+        assert activations["a" * 32] == {
+            "activation_id": "a" * 32,
+            "state": "tripped",
+            "revision": 5,
+            "trip_reason": "earlier_operator_trip",
+            "tripped_at_ms": settled_at_ms,
+        }
+        open_activation = activations["b" * 32]
+        assert open_activation["state"] == "tripped"
+        assert open_activation["revision"] == 3
+        assert open_activation["trip_reason"] == _HARD_CUT_TRIP_REASON
+        assert deployed_after_ms <= open_activation["tripped_at_ms"] <= deployed_before_ms
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM news_canary_activations WHERE state IN ('armed', 'active')"
+            ).fetchone()["n"]
+            == 0
+        )
+
+        receipts = conn.execute(
+            "SELECT artifact_sha, parent_sha, payload, created_by, created_at_ms "
+            "FROM news_learning_artifacts WHERE kind = 'epoch_reset'"
+        ).fetchall()
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert receipt["payload"] == _HARD_CUT_RECEIPT
+        assert receipt["artifact_sha"] == _ledger_artifact_sha("epoch_reset", _HARD_CUT_RECEIPT)
+        assert receipt["parent_sha"] is None
+        assert receipt["created_by"] == "migration_20260824_0304"
+        assert deployed_after_ms <= receipt["created_at_ms"] <= deployed_before_ms
     finally:
         if conn is not None:
             conn.close()

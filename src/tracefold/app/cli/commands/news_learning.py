@@ -106,6 +106,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 seal_compile_input,
             )
             from tracefold.news.learning.compiler.source_identity import (
+                COMPILER_DEPENDENCY_LOCK_SHA256,
                 compiler_source_sha256,
                 proxy_source_sha256,
             )
@@ -114,12 +115,16 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 METRIC_JUDGE_TIMEOUT_SECONDS,
                 REFLECTION_MAX_TOKENS,
                 REFLECTION_TIMEOUT_SECONDS,
-                ProgramPatchV2,
+                ProgramStrategyPatchV1,
                 apply_trusted_program_patch,
-                build_eligible_demo_bank,
                 load_exact_stable_program,
                 program_machine_diff,
                 write_program_candidate_artifact,
+            )
+            from tracefold.news.program.runtime import (
+                PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+                PROGRAM_READER_CARD_MAX_TOKENS,
+                PROGRAM_ROUTE_DEADLINE_SECONDS,
             )
             from tracefold.platform.config.models import news_model_availability
 
@@ -127,23 +132,13 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if not availability.program_configured or not availability.triage_model:
                 raise ValueError("news_learning_compile_model_not_configured")
             parent = load_exact_stable_program()
-            if (
-                parent.program_sha256 != stable.program_sha256
-                or parent.parent_program_sha256 is not None
-                or parent.schema_version != "news_semantic_program_artifact_v2"
-                or parent.factory_id != "tracefold.news.program.factory_v5"
-            ):
+            if parent.program_sha256 != stable.program_sha256:
                 raise ValueError("news_learning_compile_stable_program_mismatch")
             # This is the only DB contact in the compile path.  It ends before
             # any container starts, and the runner/sidecar receive no DSN.
             with postgres_connection(settings, role="serve") as conn:
                 evaluator = CandidateEvaluator(conn, stable=stable, judges={})
                 compile_export = evaluator.development_compile_export(str(args.development))
-            eligible_demo_bank = build_eligible_demo_bank(
-                dataset_sha=compile_export.dataset_sha,
-                dataset_payload=compile_export.dataset_payload,
-                episodes=compile_export.episodes,
-            )
             composition = compose_news_program_runtime(settings)
             endpoint = composition.event_semantics_primary
             compiler_image = str(args.compiler_image).strip()
@@ -157,11 +152,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 model=endpoint.model_name,
                 api_key=endpoint.api_key,
                 api_base=endpoint.api_base,
-                timeout=float(parent.execution.route_deadline_seconds),
-                max_tokens=max(
-                    parent.route_spec.event_semantics_max_tokens,
-                    parent.route_spec.reader_card_max_tokens,
-                ),
+                timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
+                max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
                 temperature=0,
                 model_kwargs=endpoint.model_kwargs,
             )
@@ -241,10 +233,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 # under; it never looks one up, so the review plane stays out of its import graph.
                 review_rubric_version=REVIEW_RUBRIC_VERSION,
                 parent_program_sha256=parent.program_sha256,
-                parent_state_sha256=parent.state_sha256,
                 stable_bundle_sha256=stable.bundle_sha,
                 target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
-                eligible_demo_bank_root_sha256=eligible_demo_bank.eligible_demo_bank_root_sha256,
                 task=task_binding,
                 reflection=reflection_binding,
                 metric_judge=metric_judge_binding,
@@ -254,7 +244,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 proxy_tariff=tariff,
                 compiler_source_sha256=source_sha,
                 proxy_source_sha256=proxy_source_sha,
-                compiler_lock_sha256=parent.quality_kernel.dependency_lock_sha256,
+                compiler_lock_sha256=COMPILER_DEPENDENCY_LOCK_SHA256,
                 sandbox_policy_sha256=sandbox_policy.policy_sha256,
                 compiler_image_digest=compiler_image,
                 budget=budget,
@@ -262,7 +252,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             launched = ProgramCompilerLauncher(
                 policy=sandbox_policy,
                 compiler_source_sha256=source_sha,
-                compiler_lock_sha256=parent.quality_kernel.dependency_lock_sha256,
+                compiler_lock_sha256=COMPILER_DEPENDENCY_LOCK_SHA256,
                 compiler_image=compiler_image,
                 proxy_source_sha256=proxy_source_sha,
             ).launch(
@@ -272,7 +262,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             patch = _canonical_model_document(
                 launched.patch_document,
-                ProgramPatchV2,
+                ProgramStrategyPatchV1,
                 code="news_learning_compile_patch_invalid",
             )
             runner = _canonical_model_document(
@@ -292,18 +282,15 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if (
                 runner.input_bundle_sha256 != bundle.bundle_sha256
                 or runner.parent_program_sha256 != parent.program_sha256
-                or runner.parent_state_sha256 != parent.state_sha256
                 or runner.proxy_grant_sha256 != proxy_grant.grant_sha256
                 or runner.compiler_source_sha256 != source_sha
                 or runner.proxy_source_sha256 != proxy_source_sha
-                or runner.compiler_lock_sha256 != parent.quality_kernel.dependency_lock_sha256
+                or runner.compiler_lock_sha256 != COMPILER_DEPENDENCY_LOCK_SHA256
                 or runner.sandbox_policy_sha256 != sandbox_policy.policy_sha256
                 or runner.task_endpoint_identity_sha256 != task_binding.endpoint.binding_sha256
                 or runner.reflection_endpoint_identity_sha256 != reflection_binding.endpoint.binding_sha256
                 or runner.metric_judge_endpoint_identity_sha256 != metric_judge_binding.endpoint.binding_sha256
                 or patch.parent_program_sha256 != parent.program_sha256
-                or patch.parent_state_sha256 != parent.state_sha256
-                or patch.eligible_demo_bank_root_sha256 != eligible_demo_bank.eligible_demo_bank_root_sha256
                 or proxy_execution.grant_sha256 != proxy_grant.grant_sha256
                 or proxy_execution.task_model_calls != runner.task_model_calls
                 or proxy_execution.reflection_model_calls != runner.reflection_model_calls
@@ -374,16 +361,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 trajectory_sha256=canonical_sha(runner.trajectory),
                 checkpoint_sha256=canonical_sha(runner.checkpoint),
                 parent_program_sha256=parent.program_sha256,
-                parent_state_sha256=parent.state_sha256,
-                quality_kernel_sha256=parent.quality_kernel.sha256,
-                rule_pack_root_sha256=parent.rule_pack_root_sha256,
                 development_dataset_payload_sha256=bundle.corpus.development_dataset_payload_sha256,
                 case_root_sha256=bundle.corpus.case_root_sha256,
                 cluster_root_sha256=bundle.corpus.cluster_root_sha256,
                 episode_projection_root_sha256=bundle.corpus.episode_projection_root_sha256,
                 episode_count=bundle.corpus.episode_count,
-                eligible_demo_bank_root_sha256=eligible_demo_bank.eligible_demo_bank_root_sha256,
-                patch_sha256=patch.patch_sha256,
+                patch_sha256=canonical_sha(patch.model_dump(mode="json")),
                 receipt_payload_root_sha256=receipts.receipt_payload_root_sha256,
                 sandbox_launch_receipt_sha256=launched.launch_receipt.launch_receipt_sha256,
                 target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
@@ -391,15 +374,10 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 reflection_endpoint_identity_sha256=reflection_binding.endpoint.binding_sha256,
                 metric_judge_endpoint_identity_sha256=metric_judge_binding.endpoint.binding_sha256,
                 compiler_source_sha256=source_sha,
-                compiler_lock_sha256=parent.quality_kernel.dependency_lock_sha256,
+                compiler_lock_sha256=COMPILER_DEPENDENCY_LOCK_SHA256,
                 sandbox_policy_sha256=sandbox_policy.policy_sha256,
             )
-            candidate_artifact = apply_trusted_program_patch(
-                parent,
-                patch,
-                eligible_demo_bank,
-                provenance,
-            )
+            candidate_artifact = apply_trusted_program_patch(parent, patch)
             artifact_directory = write_program_candidate_artifact(
                 candidate_artifact,
                 artifact_root=Path(str(args.artifact_root)),
@@ -429,10 +407,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     }
                 ),
                 "generator_execution_sha": canonical_sha(provenance.model_dump(mode="json")),
-                "candidate_patch_sha": patch.patch_sha256,
+                "candidate_patch_sha": provenance.patch_sha256,
                 "program_parent_sha256": parent.program_sha256,
                 "program_sha256": candidate_artifact.program_sha256,
-                "program_state_sha256": candidate_artifact.state_sha256,
                 "program_artifact_path": artifact_directory,
                 "program_machine_diff": machine_diff,
                 "program_patch": patch.model_dump(mode="json"),
@@ -445,8 +422,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "data": {
                     "path": args.out,
                     "program_sha256": candidate_artifact.program_sha256,
-                    "program_state_sha256": candidate_artifact.state_sha256,
-                    "candidate_patch_sha": patch.patch_sha256,
+                    "candidate_patch_sha": provenance.patch_sha256,
                     "artifact_directory": artifact_directory,
                     "compile_receipt_root_sha256": receipts.receipt_payload_root_sha256,
                 },
@@ -456,14 +432,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             from tracefold.news.learning.compiler.security import (
                 CompileReceiptChain,
                 OptimizerCompileProvenanceV3,
-                ProgramMachineDiffV3,
+                ProgramMachineDiffV4,
                 validate_compile_receipt_chain_v3,
             )
             from tracefold.news.learning.compiler.trusted import (
-                ProgramPatchV2,
-                build_eligible_demo_bank,
+                ProgramStrategyPatchV1,
                 load_program_artifact,
-                optimizer_provenance_from_artifact,
                 program_machine_diff,
                 reapply_exact_candidate,
             )
@@ -477,32 +451,28 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if target == "program":
                 program_artifact_path = str(spec.get("program_artifact_path") or "")
                 artifact = load_program_artifact(program_artifact_path)
-                if artifact.parent_program_sha256 != stable.program_sha256:
-                    raise ValueError("news_learning_program_parent_mismatch")
                 if str(spec.get("program_sha256") or artifact.program_sha256) != artifact.program_sha256:
                     raise ValueError("news_learning_program_artifact_identity_mismatch")
-                if str(spec.get("program_state_sha256") or "") != artifact.state_sha256:
-                    raise ValueError("news_learning_program_state_identity_mismatch")
                 parent_artifact = load_program_artifact()
-                expected_diff = ProgramMachineDiffV3.model_validate(program_machine_diff(parent_artifact, artifact))
-                provided_diff = ProgramMachineDiffV3.model_validate(spec.get("program_machine_diff"))
+                if parent_artifact.program_sha256 != stable.program_sha256:
+                    raise ValueError("news_learning_program_parent_mismatch")
+                expected_diff = ProgramMachineDiffV4.model_validate(program_machine_diff(parent_artifact, artifact))
+                provided_diff = ProgramMachineDiffV4.model_validate(spec.get("program_machine_diff"))
                 if provided_diff.model_dump(mode="json") != expected_diff.model_dump(mode="json"):
                     raise ValueError("news_learning_program_machine_diff_mismatch")
-                manifest_provenance = optimizer_provenance_from_artifact(artifact)
                 compile_provenance = OptimizerCompileProvenanceV3.model_validate(spec.get("compile_provenance"))
-                if compile_provenance.model_dump(mode="json") != manifest_provenance.model_dump(mode="json"):
+                if compile_provenance.parent_program_sha256 != parent_artifact.program_sha256:
                     raise ValueError("news_learning_program_compile_provenance_mismatch")
                 if str(args.development) != compile_provenance.development_dataset_sha:
                     raise ValueError("news_learning_program_development_dataset_mismatch")
-                patch = ProgramPatchV2.model_validate(spec.get("program_patch"))
+                patch = ProgramStrategyPatchV1.model_validate(spec.get("program_patch"))
+                candidate_patch_sha = canonical_sha(patch.model_dump(mode="json"))
                 chain = CompileReceiptChain.model_validate(spec.get("compile_receipt_chain"))
                 validate_compile_receipt_chain_v3(
                     chain,
                     provenance=compile_provenance,
-                    patch_sha256=patch.patch_sha256,
+                    patch_sha256=candidate_patch_sha,
                     parent_program_sha256=parent_artifact.program_sha256,
-                    parent_state_sha256=parent_artifact.state_sha256,
-                    eligible_demo_bank_root_sha256=patch.eligible_demo_bank_root_sha256,
                     target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
                 )
                 with postgres_connection(settings, role="serve") as export_conn:
@@ -513,30 +483,15 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     ).development_compile_export(str(args.development))
                 if compile_export.dataset_sha != compile_provenance.development_dataset_sha:
                     raise ValueError("news_learning_program_development_reexport_mismatch")
-                eligible_demo_bank = build_eligible_demo_bank(
-                    dataset_sha=compile_export.dataset_sha,
-                    dataset_payload=compile_export.dataset_payload,
-                    episodes=compile_export.episodes,
-                )
-                reapply_exact_candidate(
-                    parent_artifact,
-                    patch,
-                    eligible_demo_bank,
-                    artifact,
-                )
+                reapply_exact_candidate(parent_artifact, patch, artifact)
                 arm_payload = stable.model_dump(mode="json")
-                arm_payload.update(
-                    program_version=artifact.program_version,
-                    program_sha256=artifact.program_sha256,
-                )
+                arm_payload.update(program_sha256=artifact.program_sha256)
                 candidate_arm = type(stable).model_validate(arm_payload)
-                candidate_patch_sha = patch.patch_sha256
                 if str(spec.get("candidate_patch_sha") or "") != candidate_patch_sha:
                     raise ValueError("news_learning_program_patch_sha_mismatch")
                 program_fields = {
                     "program_parent_sha256": stable.program_sha256,
                     "program_candidate_sha256": artifact.program_sha256,
-                    "program_state_sha256": artifact.state_sha256,
                     "program_machine_diff": expected_diff.model_dump(mode="json"),
                     "compile_provenance": compile_provenance.model_dump(mode="json"),
                 }

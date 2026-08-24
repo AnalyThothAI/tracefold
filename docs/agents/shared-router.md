@@ -34,9 +34,10 @@ Two facts worth carrying into every task because they are easy to get wrong:
 - PostgreSQL material facts and durable ledgers are the only business truth.
   Provider frames, broker messages, process caches, projections, model outputs
   and HTTP responses are not an alternate truth.
-- Program identity — prompt, RulePack, DemoBank, model routing, call budgets,
-  `program_sha256`, policy and metric versions — is release evidence. Changing
-  it is an explicit, evidence-gated migration, never a side effect.
+- Program identity — the two advisory instructions and `program_sha256`, the
+  `factory_id` that versions code-owned prompt/RulePack/route/budget behavior,
+  and the policy and metric versions — is release evidence. Changing it is an
+  explicit, evidence-gated migration, never a side effect.
 
 ## Agent skills
 

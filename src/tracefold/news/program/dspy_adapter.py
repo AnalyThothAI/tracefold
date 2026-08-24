@@ -212,10 +212,6 @@ class PredictorRequest(_ExactModel):
     predictor: Literal["event_semantics", "reader_card"]
     route: Literal["primary", "fallback"]
     attempt: int = Field(ge=1, le=2)
-    signature_sha256: str
-    instruction_sha256: str
-    demos_sha256: str
-    adapter_sha256: str
     model_binding: str
     runtime_provider: str = Field(min_length=1)
     runtime_model: str = Field(min_length=1)
@@ -640,9 +636,6 @@ class RecordReplayPredictorAdapter:
             "attempt": request.attempt,
             "route": request.route,
             "request_sha256": request.request_sha256,
-            "signature_sha256": request.signature_sha256,
-            "instruction_sha256": request.instruction_sha256,
-            "demos_sha256": request.demos_sha256,
             "model_binding": request.model_binding,
             "runtime_provider": request.runtime_provider,
             "runtime_model": request.runtime_model,

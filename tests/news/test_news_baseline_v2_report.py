@@ -20,6 +20,7 @@ from tracefold.news.learning.metric import _SEMANTICS_DIMENSIONS, DevelopmentEpi
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 _CARD: dict[str, Any] = {
@@ -364,6 +365,10 @@ def test_report_identity_pins_program_and_corpus_and_names_no_unused_policy() ->
     report = _report([_case(1)])
     identity = report.identity
     assert identity["program_sha256"] == load_stable_program_artifact().program_sha256
+    # Two halves of one identity: the sha addresses the optimizer write-set, the factory id versions the
+    # code-owned behavior it runs under. A receipt naming only the first cannot say what executed.
+    assert identity["factory_id"] == PROGRAM_FACTORY_ID
+    assert identity["program_version"] == PROGRAM_VERSION
     # `recorded` returns before policy replay. Naming today's configured arm here claimed a dependency the
     # number does not have — the same ambient-state confusion #150 removed from the metric itself.
     assert identity["policy_sha256"] is None

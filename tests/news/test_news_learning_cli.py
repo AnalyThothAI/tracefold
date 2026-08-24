@@ -13,6 +13,7 @@ from tracefold.app.cli.commands.news_learning_runtime import _learning_program_j
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
+from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
 
 
 def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
@@ -277,7 +278,7 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
     assert stable_judge is not candidate_judge
     assert stable_judge.primary_adapter is not candidate_judge.primary_adapter
     assert stable_judge.primary_adapter.requests is not candidate_judge.primary_adapter.requests
-    for _ in range(artifact.execution.primary_breaker_failures):
+    for _ in range(PROGRAM_PRIMARY_BREAKER_FAILURES):
         stable_judge._record_primary_failure()
     assert stable_judge._primary_open_until > 0
     assert candidate_judge._primary_open_until == 0
@@ -360,6 +361,56 @@ def test_a_live_baseline_refuses_to_run_without_an_explicit_provider_bound(monke
     # read, which is what the stub above refuses.
     with pytest.raises(AssertionError, match="before the corpus is read"):
         _handle_learning(_baseline_args(mode="recorded"))
+
+
+def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(monkeypatch: Any) -> None:
+    """The route deadline and token ceilings are code, and `compile_live` has to read them from there.
+
+    They used to be artifact fields, so this branch reached through `artifact.execution` and
+    `artifact.route_spec`. #193 deleted both. The parameter is annotated `Any`, so neither mypy nor any
+    existing test noticed — the first `--mode compile_live` run would have raised `AttributeError` after
+    the corpus read and before scoring a single case.
+    """
+
+    from tracefold.app.cli.commands.news_learning_baseline import _baseline_model_route
+    from tracefold.news.program.runtime import (
+        PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+        PROGRAM_READER_CARD_MAX_TOKENS,
+        PROGRAM_ROUTE_DEADLINE_SECONDS,
+    )
+
+    built: dict[str, Any] = {}
+
+    def record_lm(**kwargs: Any) -> object:
+        built.update(kwargs)
+        return object()
+
+    endpoint = SimpleNamespace(
+        model_name="local/qwen-test",
+        api_key="unused",
+        api_base="http://endpoint.invalid/v1",
+        model_kwargs={},
+    )
+    monkeypatch.setattr(
+        learning_runtime,
+        "compose_news_program_runtime",
+        lambda _settings: SimpleNamespace(
+            program_configured=True,
+            event_semantics_primary=endpoint,
+        ),
+    )
+    monkeypatch.setattr("tracefold.news.learning.baseline.build_runtime_lm", record_lm)
+
+    lm, judge, identity = _baseline_model_route(
+        "compile_live",
+        settings=object(),
+        artifact=load_stable_program_artifact(),
+    )
+
+    assert lm is not None and judge is None
+    assert built["timeout"] == float(PROGRAM_ROUTE_DEADLINE_SECONDS)
+    assert built["max_tokens"] == max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS)
+    assert identity["compile_task_model"] == "local/qwen-test"
 
 
 def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monkeypatch: Any) -> None:

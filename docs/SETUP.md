@@ -224,8 +224,8 @@ the code-owned `EventSemantics.v2 -> deterministic SemanticNormalizer ->
 ReaderCard.v2 -> deterministic assembler` Program; `TradeRelevanceV1` is nested
 inside EventSemantics.v2. It remains behind
 `SemanticJudge.judge(TriageContext)`. A normal judgment makes two serial
-provider calls; the Program artifact owns the route deadline and retry/call
-budget, so `deadline_seconds` is not an operator setting.
+provider calls; the Program factory owns the route deadline and retry/call
+budget in code, so `deadline_seconds` is not an operator setting.
 The model-visible projection excludes queue priority, provider score, Gate
 macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
 semantic view and never ToldContext or reader intent. Queue priority remains a
@@ -238,7 +238,7 @@ future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
 The optional `learning compile` workflow seals accepted development, runs
 bounded DSPy GEPA without DB/holdout/application credentials, and accepts only
-a typed patch to the two LearnedStrategy instructions; DemoBank stays empty. It
+a typed patch carrying the two advisory instructions. It
 requires the complete trusted tariff above, an exact local
 `--compiler-image sha256:<64 hex>`, explicit metric/task/reflection/metric-judge
 call limits, total-cost/resource limits and a seed; it cannot accept,
@@ -256,12 +256,17 @@ cohort remains audit-only, and quality evidence restarts from zero at the
 `program_v7` deployment. The hard cut itself does not prove a cross-generation
 quality uplift; v7 evidence starts from zero
 and the normal graph remains exactly two serial Predictor calls.
-The production image has one loader only: artifact v2, factory/executable v5,
+Migration `0304` carries the #193 strategy-artifact cut: it trips every open
+canary activation and receipts itself, but does not re-open the epoch, so
+accepted `news_review_v4` evidence stays eligible.
+The production image has one loader only: the
+`news_program_strategy_artifact_v1` document, factory v6, executable v5,
 epoch v7 and policy v10. Issue #175 reissues that sole stable Program and bundle
 inside v7; Issue #190 reissues it again for fail-closed NaN/Infinity canonical
-identity while leaving valid state bytes unchanged. Rollback uses the recorded
-previous same-schema runtime image, never an alternate registry entry or
-runtime switch.
+identity; Issue #193 reissues it a third time as the one-document artifact whose
+root is the hash of the factory id plus the two instructions. Rollback uses the
+recorded previous same-schema runtime image, never an alternate registry entry
+or runtime switch.
 `tracefold config` prints the effective values. Policy v10 retains policy v7's
 removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes the semantic contract moves
 to delivery; the sent-reader ledger remains only for same-fact suppression.

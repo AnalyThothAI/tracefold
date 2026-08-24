@@ -304,7 +304,6 @@ def test_sealed_replay_rejects_program_v1_artifacts_before_reading_recordings() 
     legacy_artifact: Any = SimpleNamespace(
         schema_version="news_semantic_program_artifact_v1",
         factory_id="tracefold.news.semantic_program.factory_v1",
-        program_version="news_semantic_program_v1",
     )
     conn = _ExactRunConnection([])
 
@@ -436,20 +435,27 @@ def test_sealed_replay_keeps_program_identity_mismatch_fail_closed() -> None:
     assert not isinstance(caught.value, RecordingReplayMiss)
 
 
-def test_sealed_replay_rejects_a_recorded_adapter_identity_not_in_the_signed_request() -> None:
+def test_sealed_replay_rejects_a_recorded_request_the_live_request_does_not_reproduce() -> None:
+    """`context_sha256` is the recorded request field the replay cannot be fed from the recording itself.
+
+    The adapter hands back the recorded runtime identity, and the load pass already refuses a tampered
+    Program, predictor, route or attempt. What is left is the sealed Event identity the call was made under:
+    if the live request signs a different one, replaying it would score this recording against another case.
+    """
+
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
     original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
     rows = _recording_rows(judgment=original, adapters=(primary,))
     rows[0] = {
         **rows[0],
-        "request": {**rows[0]["request"], "adapter_sha256": "f" * 64},
+        "request": {**rows[0]["request"], "context_sha256": "f" * 64},
     }
     capability, _ = _load(rows)
 
     with pytest.raises(
         RecordingReplayError,
-        match="news_learning_recording_replay_request_mismatch:adapter_sha256",
+        match="news_learning_recording_replay_request_mismatch:context_sha256",
     ):
         asyncio.run(
             capability.judge(

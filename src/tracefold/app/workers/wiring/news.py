@@ -41,10 +41,11 @@ from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.program.artifact import (
-    ProgramArtifact,
+    ProgramStrategyArtifactV1,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import SemanticJudge
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.observability import TelemetryRegistry
@@ -59,7 +60,7 @@ class _ProgramArms:
     """What one Workers process may execute this deployment: the stable arm, plus any runnable candidate."""
 
     judge: SemanticJudge | None
-    stable_artifact: ProgramArtifact
+    stable_artifact: ProgramStrategyArtifactV1
     stable_bundle_sha: str
     canary_arms: dict[str, CanaryRuntimeArm]
     runtime_manifest: dict[str, Any]
@@ -137,10 +138,7 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     stable_arm = active_arm_manifest(settings, runtime_composition=runtime_composition)
     compiled_candidates = _compiled_candidate_manifests()
     stable_artifact = load_stable_program_artifact()
-    if (
-        stable_artifact.program_version != stable_arm.program_version
-        or stable_artifact.program_sha256 != stable_arm.program_sha256
-    ):
+    if stable_arm.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable_arm.program_sha256:
         raise RuntimeError("news_stable_program_manifest_mismatch")
     semantic_judge = runtime_composition.semantic_judge(stable_artifact)
     canary_arms: dict[str, CanaryRuntimeArm] = {}
@@ -204,7 +202,7 @@ def _candidate_runtime_arms(
     compiled_candidates: dict[str, CandidateManifest],
     *,
     runtime_composition: NewsProgramRuntimeComposition,
-    stable_artifact: ProgramArtifact,
+    stable_artifact: ProgramStrategyArtifactV1,
     stable_arm: ArmManifest,
 ) -> tuple[dict[str, CanaryRuntimeArm], dict[str, str]]:
     """Executable candidate arms, plus the named reason each rejected candidate cannot run here."""
@@ -285,7 +283,7 @@ def _compose_news_pipeline(
             bus=bus,
             db=news_db,
             judge=arms.judge,
-            program_version=arms.stable_artifact.program_version,
+            program_version=PROGRAM_VERSION,
             program_sha256=arms.stable_artifact.program_sha256,
             watchlist_symbols=watchlist_symbols,
             watchlist=sorted(watchlist_symbols),

@@ -2,8 +2,8 @@
 
 The trusted host seals the ``program_v7`` corpus and launches the runner.  This
 module has no database, artifact-writer, proposal or promotion authority.  It
-can return only ``ProgramPatchV2`` (two LearnedStrategies plus eligible demo
-references) and content-addressable optimizer receipt payloads.
+can return only a ``ProgramStrategyPatchV1`` — the two advisory instructions —
+and content-addressable optimizer receipt payloads.
 """
 
 from __future__ import annotations
@@ -18,9 +18,8 @@ from pydantic import Field, ValidationError, model_validator
 
 from ...artifact_identity import canonical_sha
 from ...program.artifact import (
-    EligibleDemoBank,
-    ProgramArtifact,
-    ProgramPatchV2,
+    ProgramStrategyArtifactV1,
+    ProgramStrategyPatchV1,
     load_stable_program_artifact,
 )
 from ...program.dspy_adapter import (
@@ -111,7 +110,7 @@ class CompileReceiptPayloads(_ExactModel):
 class ProgramCompileResult(_ExactModel):
     """Untrusted runner output; trusted host still validates and applies it."""
 
-    patch: ProgramPatchV2
+    patch: ProgramStrategyPatchV1
     receipt_payloads: CompileReceiptPayloads
     failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
     target_dimensions: tuple[str, ...] = Field(min_length=1)
@@ -252,9 +251,11 @@ class _FeedbackCompileProgram(DspyCompileProgram):
     about why. It then proposed text that tripped the same bound again. Returned as a prediction, the code
     reaches the metric and comes back as a repair instruction.
 
-    It lives here rather than in `semantic_program` on purpose: the factory source is hashed into the shipped
-    Artifact's QualityKernel, so editing that module would force a new `program_sha256` and reset the review
-    corpus — the exact failure mode #143 exists to stop.
+    It lives here rather than in the Program package because it is optimizer-only: nothing in the production
+    graph may learn to answer with `advisory_rejected`, and the module boundary is what keeps that true.
+    (Until #193 the stated reason was that the Program package's source was hashed into the shipped
+    Artifact, so editing it re-issued `program_sha256`. That is no longer so — the root commits to the
+    factory id and the two instructions — but the placement is still right for the reason above.)
     """
 
     def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> dspy.Prediction:
@@ -536,8 +537,7 @@ class ProgramCompiler:
     def __init__(
         self,
         *,
-        base_artifact: ProgramArtifact,
-        eligible_demo_bank: EligibleDemoBank,
+        base_artifact: ProgramStrategyArtifactV1,
         task_lm: dspy.LM,
         reflection_lm: dspy.LM,
         optimizer_factory: OptimizerFactory = dspy.GEPA,
@@ -545,15 +545,9 @@ class ProgramCompiler:
         judge: Any = None,
     ) -> None:
         active = load_stable_program_artifact()
-        if (
-            base_artifact.parent_program_sha256 is not None
-            or base_artifact.compile_receipt.accepted_by != "code_owner"
-            or base_artifact.program_sha256 != active.program_sha256
-            or base_artifact.state_sha256 != active.state_sha256
-        ):
+        if base_artifact.program_sha256 != active.program_sha256:
             raise ValueError("news_program_compile_parent_must_be_exact_stable_root")
         self._base = base_artifact
-        self._eligible_demo_bank = eligible_demo_bank
         self._task_lm = task_lm
         self._reflection_lm = reflection_lm
         self._optimizer_factory = optimizer_factory
@@ -669,17 +663,17 @@ class ProgramCompiler:
                 f"observed={metric_calls},requested={request.budget.max_metric_calls},ceiling={metric_call_ceiling}"
             )
         trajectory_receipt = _trajectory_receipt(details)
-        checkpoint_receipt = _checkpoint_receipt(compiled)
+        # Canonicalize first. The checkpoint receipt is the record of what the run produced, and until
+        # `_restore_empty_advisories` runs, an untouched Predictor still holds DSPy's generated default
+        # ("Given the fields ..., produce the fields ...") rather than the empty advisory it stands for.
+        # Reading it before the restore made the receipt disagree with the patch and the shipped artifact
+        # for exactly the case `_restore_empty_advisories` exists to handle.
         _restore_empty_advisories(compiled)
-        patch = extract_optimizer_patch(
-            compiled,
-            self._base,
-            self._eligible_demo_bank,
-        )
+        checkpoint_receipt = _checkpoint_receipt(compiled)
+        patch = extract_optimizer_patch(compiled, self._base)
         if (
-            tuple(strategy.text for strategy in patch.learned_strategies)
-            == tuple(strategy.text for strategy in self._base.learned_strategies)
-            and patch.demo_refs == self._base.demo_bank.refs
+            patch.event_semantics_instruction == self._base.event_semantics_instruction
+            and patch.reader_card_instruction == self._base.reader_card_instruction
         ):
             raise ValueError("news_program_compile_no_program_change")
         receipt_payloads = CompileReceiptPayloads(
@@ -782,16 +776,15 @@ def _trajectory_receipt(details: Any) -> dict[str, Any]:
 
 
 def _checkpoint_receipt(program: DspyCompileProgram) -> dict[str, Any]:
-    predictors: dict[str, Any] = {}
-    for name, predictor in program.named_predictors():
-        predictors[name] = {
-            "instruction_sha256": canonical_sha(str(predictor.signature.instructions)),
-            "demos_sha256": canonical_sha([_json_safe(demo.toDict()) for demo in predictor.demos]),
-        }
     return {
-        "schema": "tracefold.news.compile_checkpoint_receipt.v1",
+        "schema": "tracefold.news.compile_checkpoint_receipt.v2",
         "factory": program.artifact.factory_id,
-        "predictors": predictors,
+        # The advisory text itself, not a digest of it: this receipt is the record of what the run produced,
+        # and the winner's two instructions are already carried by the patch beside it.
+        "predictors": {
+            name: {"instruction": str(predictor.signature.instructions or "")}
+            for name, predictor in program.named_predictors()
+        },
     }
 
 

@@ -1,8 +1,7 @@
-"""Regenerate the sole packaged ProgramArtifact-v2 stable root.
+"""Regenerate the sole packaged stable Program strategy artifact.
 
-The v6 binary has exactly one executable factory. Cross-generation rollback
-images are deployment artifacts built outside this registry; this tool never
-creates a second runtime-loadable profile.
+The binary has exactly one executable factory. Cross-generation rollback images are deployment artifacts
+built outside this registry; this tool never creates a second runtime-loadable profile.
 """
 
 from __future__ import annotations
@@ -11,14 +10,15 @@ import argparse
 import importlib.resources
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
-from ..artifact_identity import canonical_json, canonical_sha
+from ..artifact_identity import canonical_json
 from ..program.artifact import (
-    ProgramArtifact,
-    ProgramArtifactCodec,
-    build_code_owned_program_artifact_v2,
+    ProgramStrategyArtifactCodec,
+    ProgramStrategyArtifactV1,
+    build_code_owned_program_artifact,
 )
 from ..program.runtime import PROGRAM_SCHEMA_VERSION
 
@@ -62,36 +62,40 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _write_image(root: Path, artifact: ProgramArtifact) -> Path:
-    manifest_document, state_document = ProgramArtifactCodec.encode(artifact)
-    ProgramArtifactCodec.decode(manifest_document, state_document)
-    image = root / artifact.program_sha256
+def _write_image(root: Path, artifact: ProgramStrategyArtifactV1) -> Path:
+    document = ProgramStrategyArtifactCodec.encode(artifact)
+    ProgramStrategyArtifactCodec.decode(document)
+    image = root / f"{artifact.program_sha256}.json"
     if image.exists():
-        if image.is_symlink() or not image.is_dir():
+        if image.is_symlink() or not image.is_file():
             raise ValueError("news_program_artifact_path_invalid")
-        if {path.name for path in image.iterdir()} != {"manifest.json", "state.json"}:
-            raise ValueError("news_program_artifact_files_invalid")
-        if (image / "manifest.json").read_text(encoding="utf-8") != manifest_document or (
-            image / "state.json"
-        ).read_text(encoding="utf-8") != state_document:
+        if image.read_text(encoding="utf-8") != document:
             raise ValueError("news_program_artifact_existing_image_mismatch")
         return image
-    image.mkdir()
+    # Exclusive, no-follow and unique, then unwound on any failure. The two-file predecessor got this from
+    # `mkdir()`, which is atomic and fails closed on collision; a plain `write_text` to a predictable
+    # `.<name>.tmp` in a package directory would follow a planted symlink and survive a failed rename.
+    temporary = image.with_name(f".{image.name}.{uuid.uuid4().hex}.tmp")
     try:
-        (image / "manifest.json").write_text(manifest_document, encoding="utf-8")
-        (image / "state.json").write_text(state_document, encoding="utf-8")
-        ProgramArtifactCodec.decode(
-            (image / "manifest.json").read_text(encoding="utf-8"),
-            (image / "state.json").read_text(encoding="utf-8"),
-        )
+        _write_exclusive(temporary, document)
+        os.replace(temporary, image)
     except Exception:
-        for filename in ("manifest.json", "state.json"):
-            candidate = image / filename
-            if candidate.is_file() and not candidate.is_symlink():
-                candidate.unlink()
-        image.rmdir()
+        temporary.unlink(missing_ok=True)
         raise
+    ProgramStrategyArtifactCodec.decode(image.read_text(encoding="utf-8"))
     return image
+
+
+def _write_exclusive(path: Path, document: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        encoded = document.encode("utf-8")
+        written = 0
+        while written < len(encoded):
+            written += os.write(descriptor, encoded[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> str:
@@ -112,31 +116,23 @@ def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> 
     if [str(value) for value in registry["images"]] != [old_sha]:
         raise ValueError("news_program_regenerate_with_candidates_forbidden")
 
-    artifact = build_code_owned_program_artifact_v2()
+    artifact = build_code_owned_program_artifact()
     new_image = _write_image(root, artifact)
     _atomic_json(registry_path, {"images": [artifact.program_sha256], "stable": artifact.program_sha256})
     registered = _read_canonical_object(registry_path)
     if registered != {"images": [artifact.program_sha256], "stable": artifact.program_sha256}:
         _atomic_json(registry_path, registry)
         raise ValueError("news_program_registry_switch_failed")
-    ProgramArtifactCodec.decode(
-        (new_image / "manifest.json").read_text(encoding="utf-8"),
-        (new_image / "state.json").read_text(encoding="utf-8"),
-    )
+    ProgramStrategyArtifactCodec.decode(new_image.read_text(encoding="utf-8"))
 
     if old_sha != artifact.program_sha256:
-        old_image = root / old_sha
-        if old_image.is_symlink() or not old_image.is_dir():
+        old_image = root / f"{old_sha}.json"
+        if old_image.is_symlink() or not old_image.is_file():
             raise ValueError("news_program_previous_image_invalid")
-        manifest = _read_canonical_object(old_image / "manifest.json")
-        state = _read_canonical_object(old_image / "state.json")
-        if manifest.get("program_sha256") != old_sha or manifest.get("schema_version") != PROGRAM_SCHEMA_VERSION:
+        previous = _read_canonical_object(old_image)
+        if previous.get("program_sha256") != old_sha or previous.get("schema_version") != PROGRAM_SCHEMA_VERSION:
             raise ValueError("news_program_previous_image_identity_invalid")
-        if manifest.get("state_sha256") != canonical_sha(state):
-            raise ValueError("news_program_previous_state_hash_mismatch")
-        for filename in ("manifest.json", "state.json"):
-            (old_image / filename).unlink()
-        old_image.rmdir()
+        old_image.unlink()
     return artifact.program_sha256
 
 

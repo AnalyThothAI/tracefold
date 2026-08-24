@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
@@ -65,9 +66,7 @@ from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.artifact import (
-    CompileReceipt,
-    EligibleDemoBank,
-    apply_program_patch_v2,
+    apply_program_patch,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import (
@@ -87,6 +86,7 @@ from tracefold.news.program.graph import (
     DspyNewsSemanticProgram,
     extract_optimizer_patch,
 )
+from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_VERSION
 from tracefold.news.reader_history import assemble_reader_history
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
@@ -141,22 +141,69 @@ def _epoch_started_at_ms(conn: object) -> int:
 
 
 def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
+    """The evaluator proves the persisted epoch identity — against what the epoch was *opened* with.
+
+    `program_factory_id` and `artifact_schema_version` record what opened the epoch, exactly like
+    `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only ever
+    be history. #193 replaced `factory_v5` with `factory_v6` without re-opening the epoch, because a
+    serialization and identity change does not change which evidence is eligible. Asserting today's
+    runtime values against those columns would therefore fail a correctly migrated database; asserting the
+    historical ones still catches migration drift and a corrupted ledger row, which is what the check is
+    for.
+    """
+
     row = conn.execute(
-        "SELECT program_factory_id, artifact_schema_version, baseline_program_version, "
+        "SELECT starts_at_ms, program_factory_id, artifact_schema_version, baseline_program_version, "
         "prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
         (LEARNING_EPOCH,),
     ).fetchone()
 
     assert LEARNING_EPOCH == "program_v7"
     assert candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == "program_learning_package_split_identity_migration"
-    assert dict(row) == {
-        "program_factory_id": "tracefold.news.program.factory_v5",
-        "artifact_schema_version": "news_semantic_program_artifact_v2",
-        "baseline_program_version": "news_semantic_program_v5",
-        "prior_evidence_disposition": "audit_only",
-        "reset_reason": candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
-    }
-    assert CandidateEvaluator(conn, stable=_arm(), judges={})._learning_epoch_started_at_ms() > 0
+    # The three columns the evaluator validates, and nothing else about identity.
+    assert row["baseline_program_version"] == PROGRAM_VERSION
+    assert row["prior_evidence_disposition"] == "audit_only"
+    assert row["reset_reason"] == candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON
+    # The two that name what #162 opened the epoch with, and are validated against exactly those.
+    assert (
+        (row["program_factory_id"], row["artifact_schema_version"])
+        == (
+            candidate_evaluator_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
+            candidate_evaluator_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+        )
+        == ("tracefold.news.program.factory_v5", "news_semantic_program_artifact_v2")
+    )
+    assert (
+        candidate_evaluator_module.LEARNING_PROGRAM_FACTORY_ID
+        == PROGRAM_FACTORY_ID
+        == ("tracefold.news.program.factory_v6")
+    )
+    evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
+    assert evaluator._learning_epoch_started_at_ms() > 0
+
+    # A drifted or corrupted row must not be treated as an eligible epoch. The table is append-only by
+    # trigger, so the corruption is staged by making the evaluator read a different epoch id.
+    conn.execute(
+        "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, program_factory_id, "
+        "artifact_schema_version, baseline_program_version, baseline_program_sha256, "
+        "prior_evidence_disposition, reset_reason, created_at_ms) "
+        "VALUES ('program_v7_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
+        "'audit_only', %s, %s)",
+        (
+            row["starts_at_ms"],
+            "https://github.com/AnalyThothAI/tracefold/issues/193",
+            candidate_evaluator_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+            PROGRAM_VERSION,
+            "a" * 64,
+            candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
+            row["starts_at_ms"],
+        ),
+    )
+    with (
+        patch.object(candidate_evaluator_module, "LEARNING_EPOCH", "program_v7_corrupted"),
+        pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"),
+    ):
+        CandidateEvaluator(conn, stable=_arm(), judges={})._learning_epoch_started_at_ms()
 
 
 def _arm(
@@ -276,9 +323,6 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
                 }
             ),
             input_sha256=_sha({"context_sha256": context_sha, "predictor": predictor}),
-            signature_sha256=_sha({"signature": predictor}),
-            instruction_sha256=_sha({"instruction": predictor, "program": arm.program_sha256}),
-            demos_sha256=_sha({"demos": predictor, "program": arm.program_sha256}),
             model_binding="news_triage_primary",
             physical_provider_call=True,
             runtime_provider="fixture-provider",
@@ -305,10 +349,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         program_version=arm.program_version,
         program_sha256=arm.program_sha256,
         context_sha256=context_sha,
-        factory_id="tracefold.news.program.factory_v5",
-        topology_sha256=_sha("topology"),
-        adapter_sha256=_sha("adapter"),
-        assembler_sha256=_sha("assembler"),
+        factory_id=PROGRAM_FACTORY_ID,
         event_semantics_sha256=_sha(semantics),
         reader_card_sha256=_sha(card),
         verdict_sha256=_sha(verdict),
@@ -480,26 +521,15 @@ def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
     cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
         "A sealed replay integration candidate instruction"
     )
-    eligible = EligibleDemoBank.issue(())
-    patch = extract_optimizer_patch(cold, base, eligible)
+    patch = extract_optimizer_patch(cold, base)
     patch_payload = patch.model_dump(mode="json")
     provenance, compile_receipt_chain = _optimizer_provenance(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        parent_state_sha256=base.state_sha256,
-        quality_kernel_sha256=base.quality_kernel.sha256,
-        rule_pack_root_sha256=base.rule_pack_root_sha256,
-        eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
         patch_payload=patch_payload,
     )
-    receipt = CompileReceipt(
-        **provenance,
-        compiler="tracefold.news.dspy_gepa_compiler_v3",
-        source="trusted_compiler_launcher_v3",
-        accepted_by="unaccepted_candidate",
-    )
-    artifact = apply_program_patch_v2(base, patch, eligible, receipt)
+    artifact = apply_program_patch(base, patch)
     return artifact, provenance, patch_payload, compile_receipt_chain
 
 
@@ -508,10 +538,6 @@ def _optimizer_provenance(
     *,
     development_sha: str,
     stable: ArmManifest,
-    parent_state_sha256: str = "c" * 64,
-    quality_kernel_sha256: str = "d" * 64,
-    rule_pack_root_sha256: str = "e" * 64,
-    eligible_demo_bank_root_sha256: str = "4" * 64,
     patch_payload: dict[str, object] | None = None,
     metric_calls: int = 12,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -524,14 +550,20 @@ def _optimizer_provenance(
     episodes = list(exported.episodes)
     case_ids = [str(episode["case_id"]) for episode in episodes]
     cluster_ids = [str(episode["cluster_id"]) for episode in episodes]
-    selected_patch = patch_payload or _fixture_program_patch(
-        parent_program_sha256=stable.program_sha256,
-        parent_state_sha256=parent_state_sha256,
-        eligible_demo_bank_root_sha256=eligible_demo_bank_root_sha256,
-    )
+    selected_patch = patch_payload or _fixture_program_patch(parent_program_sha256=stable.program_sha256)
+    # The patch document no longer declares its own digest: its identity is `canonical_sha` of the four
+    # write-set keys, computed by whoever cross-binds the chain.
+    selected_patch_sha = _sha(selected_patch)
     metric = {"metric_id": "accepted_review_feedback_v1"}
     trajectory = {"steps": [], "status": "fixture_complete"}
-    checkpoint = {"iteration": 1, "selected_patch_sha256": selected_patch["patch_sha256"]}
+    checkpoint = {
+        "schema": "tracefold.news.compile_checkpoint_receipt.v2",
+        "factory": PROGRAM_FACTORY_ID,
+        "predictors": {
+            "event_semantics": {"instruction": str(selected_patch["event_semantics_instruction"])},
+            "reader_card": {"instruction": str(selected_patch["reader_card_instruction"])},
+        },
+    }
     tariff = CompilerProxyTariff(
         tariff_id="candidate-evaluator-fixture-v1",
         input_token_overhead=64,
@@ -734,16 +766,12 @@ def _optimizer_provenance(
         "trajectory_sha256": _sha(trajectory),
         "checkpoint_sha256": _sha(checkpoint),
         "parent_program_sha256": stable.program_sha256,
-        "parent_state_sha256": parent_state_sha256,
-        "quality_kernel_sha256": quality_kernel_sha256,
-        "rule_pack_root_sha256": rule_pack_root_sha256,
         "development_dataset_payload_sha256": _sha(exported.dataset_payload),
         "case_root_sha256": _sha(case_ids),
         "cluster_root_sha256": _sha(cluster_ids),
         "episode_projection_root_sha256": _sha(episodes),
         "episode_count": len(episodes),
-        "eligible_demo_bank_root_sha256": eligible_demo_bank_root_sha256,
-        "patch_sha256": selected_patch["patch_sha256"],
+        "patch_sha256": selected_patch_sha,
         "receipt_payload_root_sha256": chain.receipt_payload_root_sha256,
         "sandbox_launch_receipt_sha256": launch.launch_receipt_sha256,
         "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
@@ -757,37 +785,18 @@ def _optimizer_provenance(
     return provenance, chain.model_dump(mode="json")
 
 
-def _fixture_program_patch(
-    *,
-    parent_program_sha256: str,
-    parent_state_sha256: str,
-    eligible_demo_bank_root_sha256: str,
-) -> dict[str, object]:
-    event_text = "A bounded fixture optimizer strategy."
-    reader_text = "Keep reader language direct and evidence-bound."
-    payload: dict[str, object] = {
-        "schema_version": "news_semantic_program_patch_v2",
+def _fixture_program_patch(*, parent_program_sha256: str) -> dict[str, object]:
+    """The whole optimizer write-set: a parent identity and the two advisory instructions.
+
+    Four keys exactly — the receipt chain rejects any other key set — and no self-declared digest.
+    """
+
+    return {
+        "schema_version": "news_program_strategy_patch_v1",
         "parent_program_sha256": parent_program_sha256,
-        "parent_state_sha256": parent_state_sha256,
-        "learning_epoch": LEARNING_EPOCH,
-        "learned_strategies": [
-            {
-                "predictor": "event_semantics",
-                "text": event_text,
-                "text_sha256": _sha(event_text),
-                "source": "optimizer_patch",
-            },
-            {
-                "predictor": "reader_card",
-                "text": reader_text,
-                "text_sha256": _sha(reader_text),
-                "source": "optimizer_patch",
-            },
-        ],
-        "demo_refs": {"event_semantics": [], "reader_card": []},
-        "eligible_demo_bank_root_sha256": eligible_demo_bank_root_sha256,
+        "event_semantics_instruction": "A bounded fixture optimizer strategy.",
+        "reader_card_instruction": "Keep reader language direct and evidence-bound.",
     }
-    return {**payload, "patch_sha256": _sha(payload)}
 
 
 def _program_candidate(
@@ -802,11 +811,10 @@ def _program_candidate(
     generator_kind: str = "model",
     program_version: str | None = None,
     program_sha256: str | None = None,
-    program_state_sha256: str | None = None,
 ) -> CandidateManifest:
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
-        program_version=program_version or "news_semantic_program_v5",
+        program_version=program_version or PROGRAM_VERSION,
         program_sha256=program_sha256 or _sha({"program": "candidate", "cluster_id": cluster_id}),
     )
     candidate_arm = ArmManifest.model_validate(arm_payload)
@@ -820,46 +828,14 @@ def _program_candidate(
     else:
         compile_provenance = compile_provenance_override
         compile_receipt_chain = compile_receipt_chain_override
-    candidate_state_sha = program_state_sha256 or _sha({"state": candidate_arm.program_sha256})
-    diff_payload = {
-        "schema_version": "tracefold.news.program_machine_diff.v3",
+    # `factory_id` is the whole immutable surface, and both roots already commit to the instruction bytes,
+    # so the diff carries no component root and no digest of its own payload.
+    machine_diff = {
+        "schema_version": "tracefold.news.program_machine_diff.v4",
+        "factory_id": PROGRAM_FACTORY_ID,
         "parent_program_sha256": stable.program_sha256,
-        "parent_state_sha256": str(compile_provenance.get("parent_state_sha256") or "c" * 64),
         "candidate_program_sha256": candidate_arm.program_sha256,
-        "candidate_state_sha256": candidate_state_sha,
-        "immutable": {
-            "factory_id": "tracefold.news.program.factory_v5",
-            "quality_kernel_sha256": str(compile_provenance.get("quality_kernel_sha256") or "d" * 64),
-            "rule_pack_root_sha256": str(compile_provenance.get("rule_pack_root_sha256") or "e" * 64),
-            "route_spec_sha256": "1" * 64,
-            "execution_sha256": "2" * 64,
-        },
-        "learned_strategies": [
-            {
-                "predictor": "event_semantics",
-                "before_text_sha256": "3" * 64,
-                "after_text_sha256": "4" * 64,
-                "before_source": "code_owned_baseline",
-                "after_source": "optimizer_patch",
-                "changed": True,
-            },
-            {
-                "predictor": "reader_card",
-                "before_text_sha256": "5" * 64,
-                "after_text_sha256": "5" * 64,
-                "before_source": "code_owned_baseline",
-                "after_source": "optimizer_patch",
-                "changed": False,
-            },
-        ],
-        "demo_refs": {
-            "event_semantics": {"before": [], "after": []},
-            "reader_card": {"before": [], "after": []},
-        },
-        "selected_record_root_sha256": _sha([]),
-        "eligible_demo_bank_root_sha256": str(compile_provenance.get("eligible_demo_bank_root_sha256") or "4" * 64),
     }
-    machine_diff = {**diff_payload, "diff_sha256": _sha(diff_payload)}
     patch_sha = str(compile_provenance.get("patch_sha256") or "0" * 64)
     receipt_values = {
         "development_dataset_sha": development_sha,
@@ -874,7 +850,6 @@ def _program_candidate(
         "guardrails": ("must_push_recall", "reader_load"),
         "program_parent_sha256": stable.program_sha256,
         "program_candidate_sha256": candidate_arm.program_sha256,
-        "program_state_sha256": candidate_state_sha,
         "program_machine_diff": machine_diff,
         "compile_provenance": compile_provenance,
     }
@@ -1060,9 +1035,6 @@ def _open_event(
                     }
                 ),
                 "input_sha256": _sha({"event_id": opened.event_id, "predictor": predictor, "marker": marker}),
-                "signature_sha256": _sha({"signature": predictor}),
-                "instruction_sha256": _sha({"instruction": predictor, "program": effective_program_sha}),
-                "demos_sha256": _sha({"demos": predictor, "program": effective_program_sha}),
                 "model_binding": "news_triage_primary",
                 "physical_provider_call": True,
                 "runtime_provider": "fixture-provider",
@@ -1090,10 +1062,7 @@ def _open_event(
                 "program_version": effective_program_version,
                 "program_sha256": effective_program_sha,
                 "context_sha256": _sha(context),
-                "factory_id": "tracefold.news.program.factory_v5",
-                "topology_sha256": _sha("topology"),
-                "adapter_sha256": _sha("adapter"),
-                "assembler_sha256": _sha("assembler"),
+                "factory_id": PROGRAM_FACTORY_ID,
                 "event_semantics_sha256": _sha(semantics),
                 "reader_card_sha256": _sha(card),
                 "verdict_sha256": _sha(verdict),
@@ -1779,8 +1748,6 @@ def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receip
         provenance=proof,
         patch_sha256=proof.patch_sha256,
         parent_program_sha256=proof.parent_program_sha256,
-        parent_state_sha256=proof.parent_state_sha256,
-        eligible_demo_bank_root_sha256=proof.eligible_demo_bank_root_sha256,
         target_runtime_manifest_sha256=proof.target_runtime_manifest_sha256,
     )
 
@@ -1797,8 +1764,6 @@ def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receip
             provenance=excessive_proof,
             patch_sha256=excessive_proof.patch_sha256,
             parent_program_sha256=excessive_proof.parent_program_sha256,
-            parent_state_sha256=excessive_proof.parent_state_sha256,
-            eligible_demo_bank_root_sha256=excessive_proof.eligible_demo_bank_root_sha256,
             target_runtime_manifest_sha256=excessive_proof.target_runtime_manifest_sha256,
         )
 
@@ -1972,7 +1937,11 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     assert {row["total_tokens"] for row in recordings} == {295}
     assert {row["provider_cost_microusd"] for row in recordings} == {100}
     assert all(row["request"]["runtime_model_bindings_sha256"] for row in recordings)
-    assert {row["request"]["adapter_sha256"] for row in recordings} == {_sha("adapter")}
+    # Every recorded request is bound to the exact Program identity of the arm that produced it.
+    assert {row["request"]["program_sha256"] for row in recordings} == {
+        stable.program_sha256,
+        candidate.candidate_arm.program_sha256,
+    }
     assert all(row["response"]["output"] for row in recordings)
     candidate_artifact = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE kind = 'candidate' AND payload->>'candidate_sha' = %s",
@@ -1987,7 +1956,6 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "candidate_program_version": candidate.candidate_arm.program_version,
         "stable_program_sha256": stable.program_sha256,
         "candidate_program_sha256": candidate.candidate_arm.program_sha256,
-        "candidate_state_sha256": candidate.proposal_receipt.program_state_sha256,
         "machine_diff": candidate.proposal_receipt.program_machine_diff,
         "compile_provenance": candidate.proposal_receipt.compile_provenance,
     }
@@ -1995,10 +1963,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
 
 def test_strict_recording_verification_reexecutes_real_program_graph_without_new_truth(conn) -> None:
     stable_artifact = load_stable_program_artifact()
-    stable = _arm(
-        program_version=stable_artifact.program_version,
-        program_sha256=stable_artifact.program_sha256,
-    )
+    stable = _arm(program_sha256=stable_artifact.program_sha256)
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "record-replay-test"}),
@@ -2028,9 +1993,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
         cluster_id=development.cases[0].cluster_id,
         compile_provenance_override=provenance,
         compile_receipt_chain_override=compile_receipt_chain,
-        program_version=candidate_artifact.program_version,
         program_sha256=candidate_artifact.program_sha256,
-        program_state_sha256=candidate_artifact.state_sha256,
     )
     semantics = {
         key: value
@@ -2129,10 +2092,7 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
     blocker: str,
 ) -> None:
     stable_artifact = load_stable_program_artifact()
-    stable = _arm(
-        program_version=stable_artifact.program_version,
-        program_sha256=stable_artifact.program_sha256,
-    )
+    stable = _arm(program_sha256=stable_artifact.program_sha256)
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "missing-replay-test"}),
@@ -2162,9 +2122,7 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
         cluster_id=development.cases[0].cluster_id,
         compile_provenance_override=provenance,
         compile_receipt_chain_override=compile_receipt_chain,
-        program_version=candidate_artifact.program_version,
         program_sha256=candidate_artifact.program_sha256,
-        program_state_sha256=candidate_artifact.state_sha256,
     )
     judges = _static_judges(stable, candidate.candidate_arm)
     if missing_kind == "corpus":

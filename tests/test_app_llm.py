@@ -19,6 +19,7 @@ from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
 from tracefold.news.program.resources import candidates as candidate_programs
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings
 
@@ -356,10 +357,10 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
 
 
 def test_policy_canary_reuses_stable_artifact_without_becoming_a_program_candidate(monkeypatch: Any) -> None:
-    stable = SimpleNamespace(program_version="program-v1", program_sha256="a" * 64)
+    stable = SimpleNamespace(program_sha256="a" * 64)
     candidate = SimpleNamespace(
         target="policy",
-        candidate_arm=SimpleNamespace(program_version="program-v1", program_sha256="a" * 64),
+        candidate_arm=SimpleNamespace(program_version=PROGRAM_VERSION, program_sha256="a" * 64),
     )
 
     def unexpected_load(_sha: str) -> Any:
@@ -476,9 +477,16 @@ def _startup_settings() -> Settings:
 
 
 def _program_candidate_document() -> CandidateManifest:
+    """One image-carried Program candidate whose lineage lives on its own proposal receipt.
+
+    `program_version` is code-owned now, so a candidate that names anything but the running
+    `PROGRAM_VERSION` is rejected before its artifact is ever looked up — which would hide the
+    artifact-rejection behavior these tests exist to prove.
+    """
+
     policy = DecidePolicy().as_dict()
     candidate_arm = ArmManifest(
-        program_version="program-v2",
+        program_version=PROGRAM_VERSION,
         program_sha256="c" * 64,
         runtime_model_bindings_sha256="d" * 64,
         retrieval_sha256="e" * 64,
@@ -494,8 +502,12 @@ def _program_candidate_document() -> CandidateManifest:
         declared_target_dimensions=("why_support",),
         program_parent_sha256="b" * 64,
         program_candidate_sha256=candidate_arm.program_sha256,
-        program_state_sha256="2" * 64,
-        program_machine_diff={"reader_card": {"instruction": "changed"}},
+        program_machine_diff={
+            "schema_version": "tracefold.news.program_machine_diff.v4",
+            "factory_id": "tracefold.news.program.factory_v6",
+            "parent_program_sha256": "b" * 64,
+            "candidate_program_sha256": candidate_arm.program_sha256,
+        },
         compile_provenance={"mode": "test"},
     )
     return CandidateManifest(
@@ -513,13 +525,10 @@ def test_canary_control_excludes_a_manifest_whose_program_artifact_cannot_load(m
     candidate = _program_candidate_document()
     stable_arm = SimpleNamespace(
         bundle_sha=candidate.parent_stable_sha,
-        program_version="program-v1",
+        program_version=PROGRAM_VERSION,
         program_sha256="b" * 64,
     )
-    stable_artifact = SimpleNamespace(
-        program_version=stable_arm.program_version,
-        program_sha256=stable_arm.program_sha256,
-    )
+    stable_artifact = SimpleNamespace(program_sha256=stable_arm.program_sha256)
     monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: stable_artifact)
 
     def reject_artifact(_program_sha256: str) -> Any:
@@ -544,10 +553,10 @@ def _wire_startup_test(
 ) -> tuple[Any, _StartupNewsRepository]:
     stable_arm = SimpleNamespace(
         bundle_sha="a" * 64,
-        program_version="program-v1",
+        program_version=PROGRAM_VERSION,
         program_sha256="b" * 64,
     )
-    stable_artifact = SimpleNamespace(program_version="program-v1", program_sha256="b" * 64)
+    stable_artifact = SimpleNamespace(program_sha256="b" * 64)
     stable_program = object()
     news = _StartupNewsRepository(
         candidate_manifest_sha=candidate_manifest_sha,

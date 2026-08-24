@@ -67,8 +67,8 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         compiler_source_sha256,
         proxy_source_sha256,
     )
-    from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
     from tracefold.news.program.artifact import load_stable_program_artifact
+    from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_SCHEMA_VERSION
 
     _require_fixed_path(input_path, _INPUT_PATH, kind="input")
     _require_fixed_path(output_path, _OUTPUT_PATH, kind="output")
@@ -91,24 +91,14 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     parent = load_stable_program_artifact()
     if (
         parent.program_sha256 != bundle.parent_program_sha256
-        or parent.state_sha256 != bundle.parent_state_sha256
-        or parent.parent_program_sha256 is not None
-        or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.program.factory_v5"
-        or parent.quality_kernel.dependency_lock_sha256 != bundle.compiler_lock_sha256
+        or parent.schema_version != PROGRAM_SCHEMA_VERSION
+        or parent.factory_id != PROGRAM_FACTORY_ID
         or policy.policy_sha256 != bundle.sandbox_policy_sha256
         or compiler_source_sha256() != bundle.compiler_source_sha256
         or proxy_source_sha256() != bundle.proxy_source_sha256
     ):
         raise ValueError("news_program_compile_runner_parent_identity_mismatch")
     episodes = tuple(bundle.episodes)
-    eligible_demo_bank = build_eligible_demo_bank(
-        dataset_sha=bundle.corpus.development_dataset_sha,
-        dataset_payload=bundle.dataset_payload,
-        episodes=episodes,
-    )
-    if eligible_demo_bank.eligible_demo_bank_root_sha256 != bundle.eligible_demo_bank_root_sha256:
-        raise ValueError("news_program_compile_runner_demo_bank_root_mismatch")
     grant, task_lm, reflection_lm, judge = _build_compiler_proxy_runtime(bundle, proxy_path)
 
     package_root = Path(__file__).resolve().parents[3]
@@ -137,7 +127,6 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     )
     compiler = ProgramCompiler(
         base_artifact=parent,
-        eligible_demo_bank=eligible_demo_bank,
         # Same trusted rates the proxy reserves against. Without it `_BudgetMeter` still fails closed on the
         # `None` cost every endpoint this project uses actually returns.
         tariff=grant.tariff,
@@ -149,7 +138,6 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     receipts = CompilerRunnerReceiptsV3.issue(
         input_bundle_sha256=bundle.bundle_sha256,
         parent_program_sha256=parent.program_sha256,
-        parent_state_sha256=parent.state_sha256,
         proxy_grant_sha256=grant.grant_sha256,
         task_endpoint_identity_sha256=bundle.task.endpoint.binding_sha256,
         reflection_endpoint_identity_sha256=bundle.reflection.endpoint.binding_sha256,

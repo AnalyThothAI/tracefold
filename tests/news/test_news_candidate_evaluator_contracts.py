@@ -9,6 +9,7 @@ import tracefold.news.learning.evaluator as candidate_evaluator_module
 from tracefold.news.learning.evaluator import ArmManifest
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.runtime import PROGRAM_FACTORY_ID
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 
@@ -164,9 +165,6 @@ def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -
         "attempt": 1,
         "request_sha256": "1" * 64,
         "input_sha256": "2" * 64,
-        "signature_sha256": "3" * 64,
-        "instruction_sha256": "4" * 64,
-        "demos_sha256": "5" * 64,
         "model_binding": "news_triage_primary",
         "physical_provider_call": True,
         "runtime_provider": "fixture-provider",
@@ -178,9 +176,18 @@ def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -
         "model_sha256": _sha({"provider": "fixture-provider", "model": "resolved-model"}),
         "validated_output": {"decision": "push"},
     }
+    # The trace-level identity a physical call must carry is the factory id: it is now the whole of the
+    # code-owned surface, so an observation produced by any other factory cannot be scored against this one.
     assert candidate_evaluator_module._program_call_provenance_complete(
         {
-            "trace": {"adapter_sha256": "6" * 64},
+            "trace": {"factory_id": PROGRAM_FACTORY_ID},
+            "calls": [call],
+            "usage": {"physical_call_count": 1},
+        }
+    )
+    assert not candidate_evaluator_module._program_call_provenance_complete(
+        {
+            "trace": {"factory_id": "tracefold.news.program.factory_v5"},
             "calls": [call],
             "usage": {"physical_call_count": 1},
         }
@@ -188,7 +195,7 @@ def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -
     assert not candidate_evaluator_module._program_call_provenance_complete(
         {
             "calls": [{key: value for key, value in call.items() if key != "runtime_binding_sha256"}],
-            "trace": {"adapter_sha256": "6" * 64},
+            "trace": {"factory_id": PROGRAM_FACTORY_ID},
             "usage": {"physical_call_count": 1},
         }
     )
@@ -206,7 +213,7 @@ def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -
         "route": "fallback",
         "provider_cost_microusd": 20,
     }
-    trace = {"adapter_sha256": "6" * 64, "calls": [synthetic, fallback_semantics, fallback_card]}
+    trace = {"factory_id": PROGRAM_FACTORY_ID, "calls": [synthetic, fallback_semantics, fallback_card]}
     usage = candidate_evaluator_module._usage_from_trace(trace)
     observation = {"trace": trace, "calls": trace["calls"], "usage": usage}
 
