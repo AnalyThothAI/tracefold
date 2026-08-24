@@ -30,6 +30,7 @@ from tracefold.news.market_review.pricing import (
     ProviderQuote,
     parse_change_pct,
 )
+from tracefold.platform.observability import TelemetryRegistry
 
 ANCHOR = 1_787_000_100_000
 
@@ -166,6 +167,36 @@ def test_quote_turn_issues_one_batch_per_source_and_writes_one_row_each() -> Non
     assert dict(calls)["binance.perp"] == ("BTCUSDT", "ETHUSDT")  # one request, both symbols
     assert set(price.snapshots) == {"binance.perp", "hl.perp"}
     assert result["sources"] == 2 and result["written"] == 2
+
+
+def test_quote_runtime_emits_bounded_turn_and_provider_telemetry() -> None:
+    async def scenario() -> str:
+        price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+        telemetry = TelemetryRegistry()
+        stop = asyncio.Event()
+
+        def fetcher_for(_source: str):
+            async def fetch(symbols):
+                stop.set()
+                return [ProviderQuote(venue_symbol=symbol, price=Decimal("1")) for symbol in symbols]
+
+            return fetch
+
+        loop = QuoteSnapshotLoop(
+            db=_FakeColdDatabase(price),
+            fetcher_for=fetcher_for,
+            telemetry=telemetry,
+        )
+        await loop.run(stop_event=stop)
+        return telemetry.render_prometheus_text()
+
+    rendered = asyncio.run(scenario())
+    assert 'tracefold_external_data_turn_total{name="quote_snapshot",outcome="success"} 1.0' in rendered
+    assert 'tracefold_external_data_target_count{name="quote_snapshot"} 1.0' in rendered
+    assert (
+        'tracefold_external_data_provider_call_total{name="quote_snapshot",outcome="success",source="binance_perp"}'
+        " 1.0" in rendered
+    )
 
 
 def test_a_hundred_events_naming_one_asset_are_one_target_and_one_provider_result() -> None:

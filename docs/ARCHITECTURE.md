@@ -70,6 +70,150 @@ construction and Compose startup do not become alternate configuration
 sources: `tracefold init` remains the single generated-default authority and
 `~/.tracefold/config.yaml` remains the single live application config.
 
+## External Data runtime contract
+
+External Data is not a third business capability or a shared runtime. It is a
+classification applied before choosing a transport: business semantics decide
+whether work belongs on RabbitMQ, in a latest-state collector, behind a bounded
+PostgreSQL planner, or in the Trading capital ledger. The four canonical
+classes are:
+
+- `durable_event`: every admitted item matters; persist facts, hand off at
+  least once internally, make consumers idempotent, and retain explicit
+  retry/DLQ/outbox/recovery semantics.
+- `latest_state`: only the newest answer matters; coalesce work, skip missed
+  refreshes, never queue stale refresh jobs, and preserve the last good value
+  when a provider fails.
+- `derived_work`: the result remains useful and can be rebuilt from durable
+  facts plus provider history; plan bounded batches from PostgreSQL and catch
+  up idempotently.
+- `capital_truth`: an external write or venue state can be irreversible;
+  prepare durable intent, attempt once, reconcile against provider truth, and
+  fail closed when the result is uncertain.
+
+One runtime may host all four classes without making their lifecycle rules the
+same. In particular, a shared retry policy would erase information: a missed
+quote refresh has no durable value, while an ambiguous order must not simply be
+resent.
+
+The class states the required contract, not proof that every failure path has
+already achieved it. Issue #187 owns the known RabbitMQ settlement, outbox and
+recovery gaps; this inventory neither repairs nor hides them.
+
+<!-- BEGIN EXTERNAL DATA INVENTORY -->
+
+### Canonical inventory
+
+This table is review evidence, not a runtime registry. Production never reads
+it, and adding a flow here cannot enable a provider, task, queue or business
+action. `Worker task` names the stable task interface when the flow has one;
+`-` means the flow runs inside the task named by its parent row.
+
+Business runner classes carry only a typed `work_semantics` review annotation.
+The architecture harness discovers stages independently from the typed
+`NewsPipeline` and `TradingPipeline` production composition: every stage must
+declare its semantics or an explicit internal-maintenance exemption, and each
+non-durable external stage must emit the common telemetry. Durable broker stages
+retain the existing broker/worker measurements. No scheduler, provider selector
+or business branch reads these annotations, so the inventory remains review
+evidence rather than executable configuration.
+
+| Flow | Owner | Semantic class | Source / authority | Transport | Worker task / trigger | Storage owner and consumers |
+| --- | --- | --- | --- | --- | --- | --- |
+| OpenNews live frames | News | `durable_event` | enabled OpenNews Strategies | WebSocket -> RabbitMQ | `news-receiver`; provider frames | `news_items` / `news_events`; Deduper, Triage, feed |
+| OpenNews history recovery | News | `durable_event` | official Strategy hits history | REST -> `raw.recovery.*` | `news-recovery`; startup or closed incident | same Admission path and News facts; never direct delivery |
+| RabbitMQ raw handoff | News | `durable_event` | OpenNews live/recovery envelopes | RabbitMQ quorum queue | `news-deduper`; message delivery | `news_items` / `news_events`; Triage projection |
+| RabbitMQ event handoff | News | `durable_event` | admitted `news_events` | RabbitMQ quorum queue | `news-triage`; message delivery | versioned `news_verdicts`; Delivery decision |
+| RabbitMQ verdict handoff | News | `durable_event` | push/escalate verdicts | RabbitMQ quorum queue | `news-deliverer`; message delivery | `news_deliveries`; reader receipt truth |
+| Binance spot quote/day quote | News Market Review | `latest_state` | Binance public spot REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
+| Binance perpetual quote/day quote | News Market Review | `latest_state` | Binance public USD-M REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
+| Hyperliquid quote | News Market Review | `latest_state` | Hyperliquid public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
+| Binance candles | News Market Review / Trading adapter | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
+| Hyperliquid candles | News Market Review / Trading adapter | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
+| Binance instruments | News Market Review | `latest_state` | Binance spot and USD-M catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
+| Hyperliquid instruments | News Market Review | `latest_state` | main perp, spot and bounded HIP-3 catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
+| US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
+| Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
+| Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
+| Trading intent preparation / entry | Trading | `capital_truth` | accepted frozen case plus execution adapter | PostgreSQL transaction + provider write | `trading-candidate`; after an accepted decision | prepared `trading_orders`, attempt fence and execution receipt; Trading/operator |
+| Trading execution reconciliation | Trading | `capital_truth` | Trading ledger plus execution-provider truth | PostgreSQL planner + provider read/write | `trading-reconcile`; 30 s | `trading_orders`, observations, fills and positions; Trading/operator |
+
+The runtime limits behind that inventory are code-owned safety policy. `shared`
+means one turn-wide cap is divided among the named rows. `adapter-owned` names a
+real boundary that has no second timeout imposed by these loops; it is evidence
+for a future budget issue, not a claim of infinity. A dash means the concept
+does not apply.
+
+| Flow | Cadence / trigger | Freshness SLO | Batching key | Max targets | Max source groups / requests | External concurrency | Turn / provider deadline | Catch up / coalesce / stale-not-blank | Failure semantics |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| OpenNews live frames | provider push; reconnect after 3 s | provider-current | Strategy stream | provider-enabled Strategies; provider-owned | one account / one WSS | one WSS session | receiver idle/provider budgets; broker confirm | history recovery / incident windows / no | disconnect opens a durable incident; a frame is not business truth before Admission persists it |
+| OpenNews history recovery | startup or closed incident; 30 s overlap | recover while provider history exists | Strategy + incident window | 100 Strategies from the bounded list read | 100 hits/page, 60 pages/Strategy | serial Strategies/pages | provider-client budget | yes / requested pass coalesces / no | partial window remains explicit and all hits re-enter `raw.recovery.*` |
+| RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; retry/DLQ/recovery semantics remain explicit (#187) |
+| RabbitMQ event handoff | message delivery | durable backlog | Event ID | configured bounded Triage prefetch | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / no / no | versioned verdict persistence is idempotent; settlement gaps remain owned by #187 |
+| RabbitMQ verdict handoff | message delivery | durable backlog | Event ID + delivery kind | delivery prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | delivery ledger preserves the at-most-once reader contract; outbox/recovery gaps remain owned by #187 |
+| Binance spot quote/day quote | 20 s price; 300 s day reference | fresh through 60 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 groups; 100 requested symbols where supported | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| Binance perpetual quote/day quote | 20 s price; 300 s day reference | fresh through 60 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 groups; 100 requested symbols where supported | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| Hyperliquid quote | 20 s | fresh through 60 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 groups; one group request | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| Binance candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
+| Hyperliquid candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
+| Binance instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | one catalogue snapshot | one family fetch; adapter owns spot/perp subrequests | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
+| Hyperliquid instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family / DEX | main perp, spot and at most 32 builder DEXes | one bounded family fetch | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
+| US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
+| Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
+| Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
+| Trading intent preparation / entry | accepted decision | immediate within decision TTL | case / underlying | one prepared order/case; one active order/underlying | one provider write behind the attempt fence | one | adapter-owned | reconcile only / durable order state / no | exception becomes `AMBIGUOUS`; the write is never blindly repeated |
+| Trading execution reconciliation | 30 s | ledger/provider current truth | order ID | 32 due orders/turn | provider reads/writes serial | one | adapter-owned | yes / durable state machine / no | ambiguous entry/exit is read back; unknown truth fails closed or escalates |
+
+Workers exposes one bounded Prometheus vocabulary at the existing telemetry
+seam. The concrete metric names carry the project prefix:
+
+```text
+tracefold_external_data_turn_duration_seconds{name}
+tracefold_external_data_turn_total{name,outcome}
+tracefold_external_data_target_count{name}
+tracefold_external_data_source_count{name}
+tracefold_external_data_last_success_age_seconds{name}
+tracefold_external_data_provider_call_duration_seconds{name,source}
+tracefold_external_data_provider_call_total{name,source,outcome}
+tracefold_external_data_provider_bytes_total{name,source}
+tracefold_external_data_skipped_or_coalesced_total{name,reason}
+```
+
+The last-success age is evaluated when Prometheus scrapes rather than frozen at
+the end of a turn, so it keeps growing if one collector stops while Workers is
+still alive. `name`, `source`, `outcome` and `reason` accept only code-owned
+finite values; symbols, Event IDs, URLs, Strategy IDs and dynamic Hyperliquid
+DEX names are never labels. Response bytes are recorded only when an adapter
+already exposes an exact byte count.
+
+### Extension and extraction gates
+
+Every new external-data flow must state its semantic class, authoritative
+source, current-versus-historical meaning, freshness target, missed-turn rule,
+failure behavior, batching key, target/source/request bounds, concurrency and
+deadline, storage owner, consumers, and whether it can change a News or Trading
+action. Raw data and an event derived from it are classified independently:
+current OI can be `latest_state`, while a product-level OI jump signal may be
+`derived_work` or `durable_event` depending on its consumer contract.
+
+Direct provider wiring remains the smallest correct seam. A capability registry
+requires at least four production providers, four capabilities and the same
+selection matrix repeated in three wiring locations. A shared latest-state
+runner requires a second production collector to duplicate at least the
+non-overlap, missed-cadence and telemetry envelope with the same failure
+semantics. Until those facts exist, do not add an `ExternalDataService`,
+provider plugin registry, `BaseCollector`, `BaseWorker`, generic task engine or
+new top-level package.
+
+NautilusTrader is an evidence-gated candidate, not a dependency or production
+authority. An isolated shadow evaluation requires a real sub-second freshness,
+REST rate/byte/CPU, event-stream, shared-stream or Trading execution-engine
+need. It must make no capital write or business decision; PostgreSQL remains
+business truth and News, Triage, Review and Learning stay on their present
+runtimes.
+
+<!-- END EXTERNAL DATA INVENTORY -->
+
 ## Truth, control state, and derived state
 
 Material facts include:

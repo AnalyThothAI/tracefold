@@ -19,6 +19,7 @@ from tracefold.integrations.venues import (
 from tracefold.news.market_review.loops import EventReactionLoop, MarketReviewDatabasePort, QuoteSnapshotLoop
 from tracefold.news.pipeline.maintenance import InstrumentSnapshotLoop
 from tracefold.news.pipeline.runtime import NewsDatabasePort
+from tracefold.platform.observability import TelemetryRegistry
 
 
 def _price_venue_enabled(settings: Any, source_key: str) -> bool:
@@ -35,7 +36,11 @@ def _price_venue_enabled(settings: Any, source_key: str) -> bool:
 
 
 def _quote_snapshot_loop(
-    settings: Any, *, db: MarketReviewDatabasePort, watchlist: Sequence[str]
+    settings: Any,
+    *,
+    db: MarketReviewDatabasePort,
+    watchlist: Sequence[str],
+    telemetry: TelemetryRegistry | None = None,
 ) -> QuoteSnapshotLoop | None:
     """One batch quote adapter per source group, resolved by source key so a new HIP-3 dex needs no wiring."""
 
@@ -68,10 +73,21 @@ def _quote_snapshot_loop(
     venues = settings.news.venues
     if not venues.enabled or not (venues.binance or venues.hyperliquid):
         return None
-    return QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for, day_fetcher_for=day_fetcher_for, watchlist=watchlist)
+    return QuoteSnapshotLoop(
+        db=db,
+        fetcher_for=fetcher_for,
+        day_fetcher_for=day_fetcher_for,
+        watchlist=watchlist,
+        telemetry=telemetry,
+    )
 
 
-def _event_reaction_loop(settings: Any, *, db: MarketReviewDatabasePort) -> EventReactionLoop | None:
+def _event_reaction_loop(
+    settings: Any,
+    *,
+    db: MarketReviewDatabasePort,
+    telemetry: TelemetryRegistry | None = None,
+) -> EventReactionLoop | None:
     def fetcher_for(venue: str) -> Any | None:
         if not _price_venue_enabled(settings, venue):
             return None
@@ -92,10 +108,15 @@ def _event_reaction_loop(settings: Any, *, db: MarketReviewDatabasePort) -> Even
     venues = settings.news.venues
     if not venues.enabled or not (venues.binance or venues.hyperliquid):
         return None
-    return EventReactionLoop(db=db, fetcher_for=fetcher_for)
+    return EventReactionLoop(db=db, fetcher_for=fetcher_for, telemetry=telemetry)
 
 
-def _instrument_snapshot_loop(settings: Any, *, db: NewsDatabasePort) -> InstrumentSnapshotLoop | None:
+def _instrument_snapshot_loop(
+    settings: Any,
+    *,
+    db: NewsDatabasePort,
+    telemetry: TelemetryRegistry | None = None,
+) -> InstrumentSnapshotLoop | None:
     """#75: one fetcher per venue family, each independently skippable. No credentials are involved."""
 
     venues = settings.news.venues
@@ -114,4 +135,5 @@ def _instrument_snapshot_loop(settings: Any, *, db: NewsDatabasePort) -> Instrum
         db=db,
         fetchers=fetchers,
         period_seconds=float(venues.snapshot_period_hours) * 3600.0,
+        telemetry=telemetry,
     )

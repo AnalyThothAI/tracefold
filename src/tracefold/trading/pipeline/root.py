@@ -9,6 +9,7 @@ from typing import Any
 
 from ..decision.program import TradingDecisionProgram
 from ..execution.paper import PaperAdapter
+from ..telemetry import TradingExternalDataTelemetryPort
 from .candidate import CandidateRunner
 from .reconcile import ReconcileRunner
 from .runtime import (
@@ -47,6 +48,7 @@ def build_pipeline(
     instrument_projection: InstrumentProjectionReader,
     program: TradingDecisionProgram | None = None,
     adapter: Any | None = None,
+    telemetry: TradingExternalDataTelemetryPort | None = None,
 ) -> TradingPipeline:
     """Compose the two runners. A live mode without a real adapter refuses to start."""
 
@@ -63,8 +65,9 @@ def build_pipeline(
             candidate_projection=candidate_projection,
             instrument_projection=instrument_projection,
             program=program,
+            telemetry=telemetry,
         ),
-        reconcile=ReconcileRunner(db=db, config=config, bars=bars, adapter=adapter),
+        reconcile=ReconcileRunner(db=db, config=config, bars=bars, adapter=adapter, telemetry=telemetry),
     )
 
 

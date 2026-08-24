@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, render_first_card
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
+from ..telemetry import NewsWorkSemantics
 from .runtime import NewsDatabasePort
 
 # The quote read gets its own short session. A price is display-only and must
@@ -23,6 +24,8 @@ _QUOTE_READ_TIMEOUT_SECONDS = 1.5
 
 class DelivererConsumer:
     """SAC consumer: one Feishu attempt per (event, kind); crash between send and ack never resends."""
+
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
 
     def __init__(
         self,

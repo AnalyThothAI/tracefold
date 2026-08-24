@@ -23,6 +23,8 @@ from .order import OrderPolicy, must_close_at, next_state_for
 
 log = logging.getLogger("tracefold.trading")
 
+ExecutionCallObserver = Callable[[Awaitable[ExecutionReceipt]], Awaitable[ExecutionReceipt]]
+
 
 async def attempt_once(
     *,
@@ -31,6 +33,7 @@ async def attempt_once(
     kind: Literal["entry", "exit"],
     call: Callable[[], Awaitable[ExecutionReceipt]],
     now: int,
+    observe_call: ExecutionCallObserver | None = None,
 ) -> tuple[ExecutionReceipt | None, str]:
     """The durable one-attempt contract, shared by the entry and the exit.
 
@@ -56,7 +59,8 @@ async def attempt_once(
         return None, claim
 
     try:
-        return await call(), "claimed"
+        pending = call()
+        return await (observe_call(pending) if observe_call is not None else pending), "claimed"
     except Exception as exc:
         reason = f"provider_exception:{type(exc).__name__}"
         log.warning("trading %s attempt did not answer: %s", kind, type(exc).__name__)
@@ -82,6 +86,7 @@ async def commit_order(
     policy: OrderPolicy,
     count: Callable[[str], None] | None = None,
     now: int,
+    observe_call: ExecutionCallObserver | None = None,
 ) -> bool:
     """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
@@ -91,6 +96,7 @@ async def commit_order(
         kind="entry",
         call=lambda: adapter.submit(order),
         now=now,
+        observe_call=observe_call,
     )
     if receipt is None:
         if claim != "ambiguous":
@@ -144,4 +150,4 @@ async def commit_order(
     return state is not OrderState.REJECTED
 
 
-__all__ = ["attempt_once", "commit_order"]
+__all__ = ["ExecutionCallObserver", "attempt_once", "commit_order"]

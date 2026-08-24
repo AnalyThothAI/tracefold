@@ -15,11 +15,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from ..bus import DeferError, TransientError, now_ms
+from ..telemetry import (
+    NewsExternalDataOutcome,
+    NewsExternalDataSource,
+    NewsExternalDataTelemetryPort,
+    NewsWorkSemantics,
+)
 from .pricing import (
     CANDLE_INTERVAL_MS,
     EXTERNAL_CONCURRENCY,
@@ -99,6 +106,8 @@ class QuoteSnapshotLoop:
     simply means the next one starts late, and the refresh it missed had no durable value anyway.
     """
 
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("latest_state",)
+
     def __init__(
         self,
         *,
@@ -109,6 +118,7 @@ class QuoteSnapshotLoop:
         period_seconds: float = QUOTE_PERIOD_SECONDS,
         day_period_seconds: float = QUOTE_DAY_PERIOD_SECONDS,
         enabled: bool = True,
+        telemetry: NewsExternalDataTelemetryPort | None = None,
     ) -> None:
         self.db = db
         self.fetcher_for = fetcher_for
@@ -117,6 +127,7 @@ class QuoteSnapshotLoop:
         self.period = float(period_seconds)
         self.day_period_ms = max(0.0, float(day_period_seconds)) * 1000.0
         self.enabled = bool(enabled)
+        self.telemetry = telemetry
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         # Per source, from the last *successful* day read: the reference each symbol's day change is measured
@@ -128,11 +139,31 @@ class QuoteSnapshotLoop:
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if not self.enabled:
+            if self.telemetry is not None:
+                self.telemetry.record_external_data_skipped("quote_snapshot", "disabled")
             await stop_event.wait()
             return
         while not stop_event.is_set():
-            with contextlib.suppress(Exception):
-                await self.turn()
+            started = time.perf_counter()
+            result: dict[str, Any] = {}
+            try:
+                result = await self.turn()
+            except Exception:
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_turn(
+                        "quote_snapshot",
+                        "error",
+                        time.perf_counter() - started,
+                    )
+            else:
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_turn(
+                        "quote_snapshot",
+                        _external_data_outcome(self.last_error, progress=int(result.get("written") or 0)),
+                        time.perf_counter() - started,
+                        target_count=int(result.get("targets") or 0),
+                        source_count=int(result.get("sources") or 0),
+                    )
             await _sleep_or_stop(stop_event, self.period)
 
     async def turn(self) -> dict[str, Any]:
@@ -240,9 +271,28 @@ class QuoteSnapshotLoop:
         symbols = [instrument.venue_symbol for instrument in members]
 
         async def _call() -> Sequence[ProviderQuote]:
-            if fetcher is None:
-                raise TransientError(f"quote_source_unavailable:{source}")
-            return await fetcher(symbols)
+            started = time.perf_counter()
+            try:
+                if fetcher is None:
+                    raise TransientError(f"quote_source_unavailable:{source}")
+                result = await fetcher(symbols)
+            except Exception:
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_provider_call(
+                        "quote_snapshot",
+                        _external_data_source(source),
+                        "error",
+                        time.perf_counter() - started,
+                    )
+                raise
+            if self.telemetry is not None:
+                self.telemetry.record_external_data_provider_call(
+                    "quote_snapshot",
+                    _external_data_source(source),
+                    "success",
+                    time.perf_counter() - started,
+                )
+            return result
 
         return _call
 
@@ -351,6 +401,8 @@ class EventReactionLoop:
     still there an hour later.
     """
 
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("derived_work",)
+
     def __init__(
         self,
         *,
@@ -358,25 +410,47 @@ class EventReactionLoop:
         fetcher_for: CandleFetcherFactory,
         period_seconds: float = REACTION_PERIOD_SECONDS,
         enabled: bool = True,
+        telemetry: NewsExternalDataTelemetryPort | None = None,
     ) -> None:
         self.db = db
         self.fetcher_for = fetcher_for
         self.period = float(period_seconds)
         self.enabled = bool(enabled)
+        self.telemetry = telemetry
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
+        self._last_source_count = 0
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if not self.enabled:
+            if self.telemetry is not None:
+                self.telemetry.record_external_data_skipped("event_reaction", "disabled")
             await stop_event.wait()
             return
         while not stop_event.is_set():
             chained = 0
             full = True
             while full and chained < _MAX_CHAINED_TURNS and not stop_event.is_set():
+                started = time.perf_counter()
                 result: dict[str, Any] = {}
-                with contextlib.suppress(Exception):
+                try:
                     result = await self.turn()
+                except Exception:
+                    if self.telemetry is not None:
+                        self.telemetry.record_external_data_turn(
+                            "event_reaction",
+                            "error",
+                            time.perf_counter() - started,
+                        )
+                else:
+                    if self.telemetry is not None:
+                        self.telemetry.record_external_data_turn(
+                            "event_reaction",
+                            _external_data_outcome(self.last_error, progress=int(result.get("written") or 0)),
+                            time.perf_counter() - started,
+                            target_count=int(result.get("due") or 0),
+                            source_count=self._last_source_count,
+                        )
                 full = bool(result.get("full_batch"))
                 chained += 1
                 if full:
@@ -385,6 +459,7 @@ class EventReactionLoop:
 
     async def turn(self) -> dict[str, Any]:
         stamp = now_ms()
+        self._last_source_count = 0
 
         def _due(repos: Any) -> Any:
             rows = repos.price.due_reactions(now_ms=stamp, limit=REACTION_DUE_BATCH)
@@ -433,6 +508,7 @@ class EventReactionLoop:
             pending.append({**row, "instrument": instrument})
 
         requests = _plan_candle_requests(pending, now_ms=stamp)
+        self._last_source_count = len({str(request["venue"]) for request in requests})
         results = await _gather_bounded(
             [self._candle_call(request) for request in requests], limit=EXTERNAL_CONCURRENCY
         )
@@ -492,11 +568,51 @@ class EventReactionLoop:
         fetcher = self.fetcher_for(str(request["venue"]))
 
         async def _call() -> Sequence[Candle]:
-            if fetcher is None:
-                raise TransientError(f"candle_source_unavailable:{request['venue']}")
-            return await fetcher(str(request["venue_symbol"]), int(request["start_ms"]), int(request["end_ms"]))
+            started = time.perf_counter()
+            venue = str(request["venue"])
+            try:
+                if fetcher is None:
+                    raise TransientError(f"candle_source_unavailable:{venue}")
+                result = await fetcher(
+                    str(request["venue_symbol"]),
+                    int(request["start_ms"]),
+                    int(request["end_ms"]),
+                )
+            except Exception:
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_provider_call(
+                        "event_reaction",
+                        _external_data_source(venue),
+                        "error",
+                        time.perf_counter() - started,
+                    )
+                raise
+            if self.telemetry is not None:
+                self.telemetry.record_external_data_provider_call(
+                    "event_reaction",
+                    _external_data_source(venue),
+                    "success",
+                    time.perf_counter() - started,
+                )
+            return result
 
         return _call
+
+
+def _external_data_source(source: str) -> NewsExternalDataSource:
+    if source == "binance.spot":
+        return "binance_spot"
+    if source == "binance.perp":
+        return "binance_perp"
+    if source.startswith("hl."):
+        return "hyperliquid"
+    return "other"
+
+
+def _external_data_outcome(error: str | None, *, progress: int) -> NewsExternalDataOutcome:
+    if error is None:
+        return "success"
+    return "partial" if progress > 0 else "error"
 
 
 def _pinned_instrument(row: Mapping[str, Any]) -> PriceInstrument | None:

@@ -8,7 +8,7 @@ import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from ..bus import (
     Q_RAW,
@@ -28,6 +28,7 @@ from ..events.titles import description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
+from ..telemetry import NewsWorkSemantics
 from .runtime import NewsDatabasePort
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
@@ -515,6 +516,8 @@ async def publish_event(
 
 
 class DeduperConsumer:
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
+
     def __init__(
         self,
         *,

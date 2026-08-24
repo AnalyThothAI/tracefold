@@ -190,6 +190,47 @@ def test_story_projection_diagnostics_are_bounded_labelled_gauges() -> None:
     assert 'tracefold_news_story_projection_value{measure="event_family_general"} 3.0' in rendered
 
 
+def test_external_data_metrics_use_bounded_labels_and_a_live_success_age(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracefold.platform.observability.telemetry.time.time", lambda: 130.0)
+    telemetry = TelemetryRegistry()
+
+    telemetry.record_external_data_turn(
+        "quote_snapshot",
+        "success",
+        0.25,
+        target_count=7,
+        source_count=2,
+        timestamp=123.0,
+    )
+    telemetry.record_external_data_turn("quote_snapshot", "error", 0.5)
+    telemetry.record_external_data_provider_call("quote_snapshot", "binance_spot", "success", 0.1)
+    telemetry.record_external_data_skipped("event_reaction", "coalesced")
+
+    rendered = telemetry.render_prometheus_text()
+    assert 'tracefold_external_data_turn_total{name="quote_snapshot",outcome="success"} 1.0' in rendered
+    assert 'tracefold_external_data_turn_total{name="quote_snapshot",outcome="error"} 1.0' in rendered
+    assert 'tracefold_external_data_target_count{name="quote_snapshot"} 7.0' in rendered
+    assert 'tracefold_external_data_source_count{name="quote_snapshot"} 2.0' in rendered
+    assert 'tracefold_external_data_last_success_age_seconds{name="quote_snapshot"} 7.0' in rendered
+    assert (
+        'tracefold_external_data_provider_call_total{name="quote_snapshot",outcome="success",source="binance_spot"}'
+        " 1.0" in rendered
+    )
+    assert (
+        'tracefold_external_data_skipped_or_coalesced_total{name="event_reaction",reason="coalesced"} 1.0' in rendered
+    )
+
+    with pytest.raises(ValueError, match="external_data_name_invalid"):
+        telemetry.record_external_data_turn("BTCUSDT", "success", 0.1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="external_data_source_invalid"):
+        telemetry.record_external_data_provider_call(
+            "quote_snapshot",
+            "https://provider.example/BTCUSDT",
+            "success",
+            0.1,
+        )  # type: ignore[arg-type]
+
+
 def test_finite_does_not_submit_when_durable_fence_fails() -> None:
     class FenceFailure(RuntimeError):
         pass

@@ -12,6 +12,7 @@ from tracefold.app.workers.wiring.news_to_trading import news_trade_candidates, 
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.candidate.eligibility import EligibilityPolicy
 from tracefold.trading.contracts import Bar as TradingBar
 from tracefold.trading.decision.policy import TradePolicy
@@ -70,7 +71,12 @@ def trading_config_from_settings(settings: Settings) -> TradingConfig:
     )
 
 
-def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> TradingPipeline | None:
+def _wire_trading_pipeline(
+    *,
+    settings: Settings,
+    db: WorkerDatabase,
+    telemetry: TelemetryRegistry | None = None,
+) -> TradingPipeline | None:
     """#104. Disabled by default; a disabled Trading context constructs no program and no adapter.
 
     The runners share the price plane's one-slot cold admission rather than the four News lane slots,
@@ -109,6 +115,7 @@ def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Trading
             candidate_projection=news_trade_candidates,
             instrument_projection=news_trade_instruments,
             program=program,
+            telemetry=telemetry,
         )
     except Exception:
         logger.exception("trading pipeline wiring failed; Trading stays disabled for this process")

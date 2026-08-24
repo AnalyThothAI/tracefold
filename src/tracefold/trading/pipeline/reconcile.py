@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from ..contracts import (
     Bar,
@@ -24,6 +25,12 @@ from ..contracts import (
 from ..execution.order import must_close_at, realized_bps
 from ..execution.paper import evaluate_paper_exit
 from ..execution.submission import attempt_once, commit_order
+from ..telemetry import (
+    TradingExternalDataTelemetryPort,
+    TradingWorkSemantics,
+    external_data_source,
+    observe_provider_call,
+)
 from .runtime import (
     BAR_INTERVAL_MS as _BAR_INTERVAL_MS,
 )
@@ -60,6 +67,8 @@ _PREPARED_TTL_MS = 900_000
 class ReconcileRunner:
     """Read-only truth-seeking plus the two deterministic exits: the protective stop and the clock."""
 
+    work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("capital_truth",)
+
     def __init__(
         self,
         *,
@@ -68,19 +77,38 @@ class ReconcileRunner:
         bars: BarFetcherFactory,
         adapter: Any,
         clock: Callable[[], int] = _now_ms,
+        telemetry: TradingExternalDataTelemetryPort | None = None,
     ) -> None:
         self._db = db
         self._config = config
         self._bars = bars
         self._adapter = adapter
         self._clock = clock
+        self._telemetry = telemetry
+        self._last_failed = 0
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
+            started = time.perf_counter()
             try:
-                await self.turn()
+                result = await self.turn()
             except Exception:
+                if self._telemetry is not None:
+                    self._telemetry.record_external_data_turn(
+                        "trading_reconcile",
+                        "error",
+                        time.perf_counter() - started,
+                    )
                 log.exception("trading reconcile turn failed")
+            else:
+                if self._telemetry is not None:
+                    resolved = int(result.get("resolved") or 0)
+                    self._telemetry.record_external_data_turn(
+                        "trading_reconcile",
+                        "partial" if self._last_failed and resolved else ("error" if self._last_failed else "success"),
+                        time.perf_counter() - started,
+                        target_count=int(result.get("due") or 0),
+                    )
             await _sleep_or_stop(stop_event, _RECONCILE_PERIOD_SECONDS)
 
     async def turn(self) -> dict[str, Any]:
@@ -95,11 +123,13 @@ class ReconcileRunner:
         )
         due, control = scan
         resolved = 0
+        self._last_failed = 0
         for row in due:
             try:
                 if await self._reconcile(row, control=str(control), now=now):
                     resolved += 1
             except Exception:
+                self._last_failed += 1
                 log.exception("trading reconcile failed order=%s", row.get("order_id"))
         return {"due": len(due), "control": control, "resolved": resolved}
 
@@ -208,6 +238,12 @@ class ReconcileRunner:
             order=order,
             policy=self._config.order,
             now=now,
+            observe_call=lambda call: observe_provider_call(
+                self._telemetry,
+                name="trading_reconcile",
+                source=external_data_source(order.instrument.exchange_id),
+                call=call,
+            ),
         )
 
     async def _defer(self, order_id: str, state: str, now: int) -> None:
@@ -233,7 +269,12 @@ class ReconcileRunner:
             await self._escalate(order.order_id, "no_read_capability", now)
             return True
         try:
-            observation = await observe(order)
+            observation = await observe_provider_call(
+                self._telemetry,
+                name="trading_reconcile",
+                source=external_data_source(order.instrument.exchange_id),
+                call=observe(order),
+            )
         except Exception:
             # The row is still AMBIGUOUS; `reschedule_order` matches on the state it actually has, so
             # passing an aspirational one silently updated nothing and defeated the backoff.
@@ -328,7 +369,12 @@ class ReconcileRunner:
         bars: Sequence[Bar] = ()
         if fetcher is not None:
             try:
-                bars = await fetcher(str(row["provider_symbol"]), opened, now + _BAR_INTERVAL_MS)
+                bars = await observe_provider_call(
+                    self._telemetry,
+                    name="trading_reconcile",
+                    source=external_data_source(str(row["exchange_id"])),
+                    call=fetcher(str(row["provider_symbol"]), opened, now + _BAR_INTERVAL_MS),
+                )
             except Exception:
                 log.warning("trading reconcile bar fetch failed order=%s", order_id)
                 bars = ()
@@ -373,6 +419,12 @@ class ReconcileRunner:
             kind="exit",
             call=lambda: self._adapter.close(order, quantity=order.quantity),
             now=now,
+            observe_call=lambda call: observe_provider_call(
+                self._telemetry,
+                name="trading_reconcile",
+                source=external_data_source(order.instrument.exchange_id),
+                call=call,
+            ),
         )
         if receipt is None:
             if claim == "exhausted":
