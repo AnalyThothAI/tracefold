@@ -577,7 +577,20 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert program_v6["program_factory_id"] == "tracefold.news.semantic_program.factory_v4"
         assert program_v6["artifact_schema_version"] == "news_semantic_program_artifact_v2"
         assert program_v6["baseline_program_version"] == "news_semantic_program_v4"
-        assert program_v6["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
+        # The epoch row is immutable audit history, pinned by literal like every epoch above it. It records the
+        # root that was stable when #160 opened the epoch, not whatever ships today, and #173 re-issues the
+        # code-owned root inside the same epoch rather than opening a new one.
+        #
+        # That does *not* mean accepted evidence survives the re-issue: `CandidateEvaluator` selects its cohort
+        # with `source.program_sha256 = self._stable.program_sha256` (plus the bundle sha), so every review
+        # accrued under 648e696d leaves the release-evidence denominators the moment the root changes. What
+        # keeping the epoch preserves is the `starts_at_ms` floor that bounds the learning window and the
+        # release-cohort query — the only column any runtime caller reads from this table.
+        assert program_v6["starts_at_ms"] > 0
+        assert program_v6["baseline_program_sha256"] == (
+            "648e696df5a8f251085a0749795a8d9e9227d05fb7e976fd1b5b538a7b8e87e7"
+        )
+        assert program_v6["baseline_program_sha256"] != load_stable_program_artifact().program_sha256
         assert program_v6["prior_evidence_disposition"] == "audit_only"
         assert program_v6["reset_reason"] == "trade_relevance_editorial_authority_hard_cut"
         assert (

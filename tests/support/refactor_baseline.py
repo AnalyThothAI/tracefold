@@ -14,6 +14,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
@@ -98,6 +99,51 @@ OUTPUT = ROOT / "docs" / "generated" / "refactor-baseline-9441ce99.json"
 BASELINE_REVISION = "9441ce995bea872805b9611b8b7a860f5d1d1385"
 SCHEMA_VERSION = "tracefold_refactor_baseline_v1"
 NOW_MS = 1_787_000_000_000
+
+# Intentional post-#160 drift, declared leaf by leaf *with the value it drifted to*. The baseline is frozen at
+# `BASELINE_REVISION` on purpose: it is epic #162's proof that a refactor changed no behavior, so regenerating
+# it in place would destroy the reference point rather than record the change. A semantic PR that *means* to
+# move a contract declares exactly the leaves it moves and leaves every other leaf guarded.
+#
+# Declaring the *value*, not just the path, is what keeps this a guard. Against a frozen baseline a leaf that
+# has drifted once can never drift back, so exempting a path by name would exempt it forever: the next PR to
+# touch `openapi.json` or the Program root would sail through silently under a note written for #173. Pinning
+# the expected value means the next such PR has to come here and say so — and a leaf that returns to the
+# baseline value fails as a stale entry rather than lingering.
+#
+# #173 added the `product_progress` TradeChannel. It is publicly projected through `news_review_v3`, so both
+# generated contract artefacts move with it, and the code-owned stable Program root is re-issued.
+INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
+    "generated_artifacts_sha256.docs/generated/openapi.json": (
+        "issue_173_product_progress_channel",
+        "b0e424cf22fe9b12a6d5e5e8f59098315bb0c2b7f77e0775b27b014120efa23a",
+    ),
+    "generated_artifacts_sha256.web/src/lib/types/openapi.ts": (
+        "issue_173_product_progress_channel",
+        "1fd00735c168b23be86806c96d4e062a484ff42756e29dc52fcec0fe9211290a",
+    ),
+    "program_learning.program_sha256": (
+        "issue_173_product_recall_baseline_root",
+        "9334eae481e2d0cdcc3b982d25aa8def22538cadb1a57549074b56fb2a96d1ba",
+    ),
+}
+
+
+def _changed_leaves(expected: Any, current: Any, path: str = "") -> Iterator[tuple[str, Any]]:
+    """Every leaf path whose value differs, with the value it now holds."""
+
+    if isinstance(expected, dict) and isinstance(current, dict):
+        for key in sorted(set(expected) | set(current)):
+            child = f"{path}.{key}" if path else key
+            yield from _changed_leaves(expected.get(key, _MISSING), current.get(key, _MISSING), child)
+    elif isinstance(expected, list) and isinstance(current, list) and len(expected) == len(current):
+        for index, (left, right) in enumerate(zip(expected, current, strict=True)):
+            yield from _changed_leaves(left, right, f"{path}[{index}]")
+    elif expected != current:
+        yield path, current
+
+
+_MISSING = object()
 
 
 def _sha_bytes(path: Path) -> str:
@@ -736,10 +782,35 @@ def assert_matches_baseline() -> None:
         expected.get("schema_version") != SCHEMA_VERSION
         or expected.get("baseline_revision") != BASELINE_REVISION
         or not expected.get("historical_structure")
-        or expected.get("behavior_and_runtime_contracts") != current
     ):
+        raise AssertionError("Issue #162 baseline identity is not the frozen one; do not regenerate it in place.")
+
+    changed = dict(_changed_leaves(expected.get("behavior_and_runtime_contracts"), current))
+    undeclared = sorted(path for path in changed if path not in INTENTIONAL_DRIFT)
+    if undeclared:
         raise AssertionError(
-            "Issue #162 behavior/runtime baseline drifted; regenerate deliberately and inspect the JSON diff."
+            "Issue #162 behavior/runtime baseline drifted on leaves nobody declared: "
+            + ", ".join(undeclared)
+            + ". Either the change was unintended, or declare each leaf in INTENTIONAL_DRIFT with its reason "
+            "and the exact value it drifted to."
+        )
+    stale = sorted(path for path in INTENTIONAL_DRIFT if path not in changed)
+    if stale:
+        raise AssertionError(
+            "INTENTIONAL_DRIFT still declares leaves that now match the frozen baseline: "
+            + ", ".join(stale)
+            + ". Remove the stale entries; an exemption that outlives its cause silently widens the guard."
+        )
+    moved_again = sorted(
+        f"{path} is {changed[path]!r}, declared {declared!r} for {reason}"
+        for path, (reason, declared) in INTENTIONAL_DRIFT.items()
+        if changed.get(path) != declared
+    )
+    if moved_again:
+        raise AssertionError(
+            "INTENTIONAL_DRIFT leaves moved past their declared values: "
+            + "; ".join(moved_again)
+            + ". A declared exemption covers one known value, never 'this leaf may now change freely'."
         )
 
 

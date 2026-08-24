@@ -385,7 +385,11 @@ owner: the sibling editorial envelope's `TradeRelevanceV1.reader_value`.
 - `surprise`: `unscheduled|material_vs_expectation|in_line|unknown`;
 - `development_delta`: `state_change|material_detail|color_only|scheduled`;
 - at most four unique `channels`, canonicalized in the code-owned order
-  `rates|liquidity|risk_premium|energy_supply|commodity_supply|commodity_demand|regulation|exchange_access|earnings_cashflow|positioning_flow|security_incident`;
+  `rates|liquidity|risk_premium|energy_supply|commodity_supply|commodity_demand|regulation|exchange_access|product_progress|earnings_cashflow|positioning_flow|security_incident`;
+  `product_progress` (#173) is a first-party confirmed product, protocol, or
+  market capability reaching a verifiable new state, or a first-party
+  active-use/economic adoption metric reaching a new quantified step — never
+  brand marketing, a roadmap, or a cumulative address/account total;
 - at most four unique `affected_markets`, canonicalized in the code-owned order
   `crypto_broad|us_equity_broad|rates|fx|energy|metals|single_asset`;
 - `reader_value`: `escalate|realtime|background|none`.

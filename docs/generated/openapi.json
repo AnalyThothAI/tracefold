@@ -724,6 +724,7 @@
                     "commodity_demand",
                     "regulation",
                     "exchange_access",
+                    "product_progress",
                     "earnings_cashflow",
                     "positioning_flow",
                     "security_incident"

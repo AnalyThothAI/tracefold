@@ -423,7 +423,7 @@ export interface components {
             /** Trade Affected Markets */
             trade_affected_markets?: ("crypto_broad" | "us_equity_broad" | "rates" | "fx" | "energy" | "metals" | "single_asset")[] | null;
             /** Trade Channels */
-            trade_channels?: ("rates" | "liquidity" | "risk_premium" | "energy_supply" | "commodity_supply" | "commodity_demand" | "regulation" | "exchange_access" | "earnings_cashflow" | "positioning_flow" | "security_incident")[] | null;
+            trade_channels?: ("rates" | "liquidity" | "risk_premium" | "energy_supply" | "commodity_supply" | "commodity_demand" | "regulation" | "exchange_access" | "product_progress" | "earnings_cashflow" | "positioning_flow" | "security_incident")[] | null;
             /** Trade Development Delta */
             trade_development_delta?: ("state_change" | "material_detail" | "color_only" | "scheduled") | null;
             /** Trade Impact Breadth */

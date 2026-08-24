@@ -152,21 +152,42 @@ Include only tradable symbols the headline or body clearly concerns. Use role=pr
     ),
     RulePackSpec(
         rule_id="magnitude_actionability",
-        revision=2,
+        revision=3,
         target="event_semantics",
         order=2,
         body="""## Magnitude
 Magnitude measures information value for the trader, not price impact alone.
 - 0: irrelevant, marketing, or template material.
-- 1: a routine update on one name that changes nothing about what it sells, builds, or earns: a user/volume/TVL milestone, partnership recap or milestones post, pilot or integration that ships nothing new to customers, testnet, developer tool, re-announcement of something already live, on-track reaffirmation, or scheduled data.
+- 1: a routine update on one name that changes nothing about what it sells, builds, or earns: a cumulative address/account/lifetime-transaction total, any user/volume/TVL milestone that does not meet every adoption condition below, partnership recap or milestones post, pilot or integration that ships nothing new to customers, testnet, developer tool, re-announcement of something already live, on-track reaffirmation, or scheduled data.
 - 2: clearly tradable: single-stock earnings or guidance; a listed company's or token issuer's own product update such as a new product/model, launch date, production line, plant/capacity commitment, new business line, or pricing change; a leader's or exchange's product/listing/delisting/notice; institutional custody, settlement, or ETF adoption; regulation landing; security incident; notable ETF flow; whale/liquidation anomaly; sector move; or macro data well off consensus. A product update can be magnitude 2 even when its amount looks small beside the company.
 - 3: macro turning point, systemic risk, a leader's landmark event, or geopolitical escalation.
+
+## A product state change is magnitude 2, not a milestone
+Magnitude 2 when the issuer, exchange, protocol, or listed company itself confirms that a product, feature, mainnet, or market went live or is now available; a launch date, price, fee, commercial term, or capacity commitment; a paid and irreversible prerequisite step completed to deploy one named market, such as a ticker or market right already bought; or an existing product cancelled, delayed, taken down, recalled, or repriced. An unknown price implication is never a reason to lower a product state change to magnitude 1: emit neutral or unclear and keep magnitude 2. Neither is a small amount, nor the market not being tradable yet.
+
+Adoption reaches magnitude 2 only when all hold: a first-party or official source; an exact number; a new all-time high, a stated threshold crossed, or a material move against its own prior value; and a metric of active use or economic activity such as active traders, paying users, realized volume, fees, or capacity. Otherwise it stays magnitude 1. A cumulative total of addresses, accounts, or lifetime transactions never qualifies, however large.
+
+A deployment step bought by someone other than the venue is not the venue's own launch, so it carries no direction of its own: keep magnitude 2 and emit neutral.
 
 Examples:
 - "Tesla is finally launching the Cybercab" -> product / TSLA primary / bullish / single_name / magnitude 2 / push / us_equity.
 - "Samsung Electronics to commit 240 billion won toward a new HVAC production line in Gwangju" -> product / no invented ticker / bullish / single_name / magnitude 2 / push / us_equity.
-- "Anuma Crosses 200,000 Users, Powered by ZetaChain" -> product / ZETA mentioned / neutral / single_name / magnitude 1 / drop / crypto: a milestone, not a new product.""",
-        example_refs=("own_product_m2", "milestone_m1", "private_company_not_actionable"),
+- "New spot ticker: the ticker $EQMSFT bought for 500.02 HYPE ($39,771)" -> product / HYPE primary / neutral / single_name / magnitude 2 / push / crypto: a paid, irreversible step toward one named market, bought by a third party. The small amount and the unknown direction do not lower it.
+- "The number of active Perp traders has reached an all-time high of 282,982" -> product / no invented ticker / bullish / single_name / magnitude 2 / push / crypto: first-party, exact, an all-time high, counting active use.
+- "400 million accounts. One network built for what's next." -> product / TRX mentioned / neutral / single_name / magnitude 1 / drop / crypto: a cumulative account total in a marketing post.
+- "Anuma Crosses 200,000 Users, Powered by ZetaChain" -> product / ZETA mentioned / neutral / single_name / magnitude 1 / drop / crypto: a milestone, not a new product.
+- "93% chance SpaceX's Starship Flight Test 14 launches by end of next month" -> rumor / no invented ticker / neutral / single_name / magnitude 0 / drop / none: a prediction-market quote is not a product fact.""",
+        example_refs=(
+            "own_product_m2",
+            "milestone_m1",
+            "private_company_not_actionable",
+            "product_state_change_m2",
+            "paid_irreversible_deployment_step_m2",
+            "first_party_pricing_m2",
+            "active_adoption_ath_m2",
+            "cumulative_account_total_m1",
+            "prediction_market_quote_m0",
+        ),
     ),
     RulePackSpec(
         rule_id="direction_audience_scope",
@@ -281,7 +302,7 @@ Examples:
     ),
     RulePackSpec(
         rule_id="trade_relevance_attention",
-        revision=1,
+        revision=2,
         target="event_semantics",
         order=9,
         body="""## Typed trade relevance and reader attention
@@ -291,11 +312,13 @@ impact_breadth: none / single_instrument / sector / regional / cross_asset / glo
 tradability: direct when the fact changes a named instrument or directly priced market; second_order for a concrete causal transmission; contextual for useful background without a current trade surface; none otherwise.
 surprise: unscheduled / material_vs_expectation / in_line / unknown. Do not call a scheduled release unscheduled merely because its value surprised.
 development_delta: state_change for a new event state or reversal; material_detail for a decision-relevant new term, number, actor or consequence; color_only for repetition, commentary or detail that changes no trade; scheduled for a calendar item not yet realized.
-channels: choose at most four unique codes from rates / liquidity / risk_premium / energy_supply / commodity_supply / commodity_demand / regulation / exchange_access / earnings_cashflow / positioning_flow / security_incident.
+channels: choose at most four unique codes from rates / liquidity / risk_premium / energy_supply / commodity_supply / commodity_demand / regulation / exchange_access / product_progress / earnings_cashflow / positioning_flow / security_incident.
+product_progress: a first-party confirmed product, protocol, or market capability reaching a verifiable new state, or a first-party active-use or economic adoption metric reaching a new quantified step. Add exchange_access when it changes who may trade, hold, or settle; add earnings_cashflow when it changes pricing, commercialization, or capacity. It never covers brand marketing, a roadmap, an unshipped pilot, or a cumulative address/account total.
 affected_markets: choose at most four unique codes from crypto_broad / us_equity_broad / rates / fx / energy / metals / single_asset.
 reader_value: escalate only for an immediate systemic or exceptional interruption; realtime for a material current trade surface; background for useful non-interrupting context; none for noise, templates, schedules or no market value.
 
 Use empty channels and affected_markets only when tradability is contextual/none and reader_value is background/none. A high provider score, queue order, broad macro label or watchlist membership is never relevance evidence and is not supplied to you.
+A confirmed product state change always has a channel, so it is never contextual/none with empty channels. Judge it on the evidence, not on whether its price implication is knowable: an unknown direction stays realtime.
 
 Calibrations:
 - An unexpected Federal Reserve rate cut that changes USD liquidity -> global_systemic / direct / unscheduled / state_change / rates+liquidity / rates+fx+us_equity_broad+crypto_broad / escalate.
@@ -303,7 +326,13 @@ Calibrations:
 - A regional port outage that interrupts a commodity's supply -> regional / second_order / unscheduled / state_change / commodity_supply+risk_premium / energy or metals when exact, otherwise single_asset, plus any evidenced broad market / realtime.
 - A local regulation that directly changes a US-listed company's business, with a material new detail and unknown surprise -> single_instrument / direct / unknown / material_detail / regulation+earnings_cashflow / single_asset / realtime.
 - A scheduled calendar item -> contextual or none / scheduled / empty channels and markets / none.
-- A repeated local official statement, in-line local data, or color-only progression without a current priced transmission -> contextual / in_line or unknown / color_only / background or none.""",
+- A repeated local official statement, in-line local data, or color-only progression without a current priced transmission -> contextual / in_line or unknown / color_only / background or none.
+- An exchange confirms a named ticker, slot, or market right has been bought, a paid and irreversible step toward deploying that market -> single_instrument / second_order / unscheduled / state_change / product_progress+exchange_access / single_asset / realtime. Not tradable yet is why it is second_order, not why it would be background.
+- An exchange opens a new spot or perpetual market for a named instrument -> single_instrument / direct / unscheduled / state_change / product_progress+exchange_access / single_asset / realtime.
+- A protocol's mainnet upgrade or production capability goes live -> single_instrument / direct / unscheduled / state_change / product_progress / single_asset / realtime; add crypto_broad only on evidenced broader transmission.
+- An issuer changes its own product pricing, fees, or business line -> single_instrument / direct / unscheduled or material_vs_expectation / state_change / product_progress+earnings_cashflow / single_asset / realtime.
+- A venue reports an exact all-time high in active traders, paying users, realized volume, or fees -> single_instrument / second_order / unscheduled / state_change / product_progress / single_asset / realtime.
+- A cumulative address or account total, a brand slogan, an unshipped pilot, a roadmap teaser, or a prediction-market probability -> contextual or none / in_line or unknown / color_only / empty channels and markets / background or none: a cumulative count is not an active-use step, and a prediction-market quote is not a product fact.""",
         example_refs=(
             "systemic_rate_surprise",
             "systemic_energy_state_change",
@@ -311,6 +340,12 @@ Calibrations:
             "regional_direct_exception",
             "scheduled_none",
             "local_color_background",
+            "product_progress_paid_deployment_step",
+            "product_market_opens",
+            "product_mainnet_live",
+            "product_pricing_change",
+            "product_active_adoption_ath",
+            "product_vanity_and_odds_hold",
         ),
     ),
 )
@@ -338,6 +373,35 @@ EXPERT_BASELINE_COVERAGE: Final[dict[str, CoverageAnchor]] = {
         "event_semantics", "magnitude_actionability", "a listed company's or token issuer's own product update"
     ),
     "milestone": CoverageAnchor("event_semantics", "magnitude_actionability", "a milestone, not a new product"),
+    "product_state_change_m2": CoverageAnchor(
+        "event_semantics", "magnitude_actionability", "A product state change is magnitude 2, not a milestone"
+    ),
+    "product_paid_deployment_step": CoverageAnchor(
+        "event_semantics",
+        "magnitude_actionability",
+        "a paid and irreversible prerequisite step completed to deploy one named market",
+    ),
+    "product_direction_unknown_keeps_m2": CoverageAnchor(
+        "event_semantics",
+        "magnitude_actionability",
+        "An unknown price implication is never a reason to lower a product state change to magnitude 1",
+    ),
+    "product_adoption_quality": CoverageAnchor(
+        "event_semantics", "magnitude_actionability", "Adoption reaches magnitude 2 only when all hold"
+    ),
+    "product_cumulative_never_m2": CoverageAnchor(
+        "event_semantics",
+        "magnitude_actionability",
+        "A cumulative total of addresses, accounts, or lifetime transactions never qualifies",
+    ),
+    # RulePack 3 makes "a company's own product launch or capacity commitment" bullish. A third party buying a
+    # deployment right is neither, so without this carve-out the two code-owned packs would give opposite
+    # directions for the same fact — and `direction` is both a scored review dimension and a policy input.
+    "product_third_party_step_is_neutral": CoverageAnchor(
+        "event_semantics",
+        "magnitude_actionability",
+        "A deployment step bought by someone other than the venue is not the venue's own launch",
+    ),
     "direction": CoverageAnchor(
         "event_semantics", "direction_audience_scope", "A clear event may have unclear direction."
     ),
@@ -435,6 +499,32 @@ EXPERT_BASELINE_COVERAGE: Final[dict[str, CoverageAnchor]] = {
     ),
     "trade_relevance_scheduled": CoverageAnchor(
         "event_semantics", "trade_relevance_attention", "A scheduled calendar item"
+    ),
+    "trade_relevance_product_channel": CoverageAnchor(
+        "event_semantics", "trade_relevance_attention", "exchange_access / product_progress / earnings_cashflow"
+    ),
+    "trade_relevance_product_definition": CoverageAnchor(
+        "event_semantics",
+        "trade_relevance_attention",
+        "It never covers brand marketing, a roadmap, an unshipped pilot, or a cumulative address/account total.",
+    ),
+    "trade_relevance_product_has_channel": CoverageAnchor(
+        "event_semantics",
+        "trade_relevance_attention",
+        "A confirmed product state change always has a channel",
+    ),
+    "trade_relevance_product_paid_step": CoverageAnchor(
+        "event_semantics",
+        "trade_relevance_attention",
+        "a paid and irreversible step toward deploying that market",
+    ),
+    "trade_relevance_product_adoption": CoverageAnchor(
+        "event_semantics",
+        "trade_relevance_attention",
+        "an exact all-time high in active traders, paying users, realized volume, or fees",
+    ),
+    "trade_relevance_product_hold": CoverageAnchor(
+        "event_semantics", "trade_relevance_attention", "a prediction-market quote is not a product fact"
     ),
 }
 
