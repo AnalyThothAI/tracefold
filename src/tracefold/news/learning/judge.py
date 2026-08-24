@@ -20,7 +20,11 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..program.graph import DspyStrictJSONAdapter, ExactProviderCallCapture, PredictorAdapterError
+from ..program.dspy_adapter import (
+    DspyStrictJSONAdapter,
+    ExactProviderCallCapture,
+    PredictorAdapterError,
+)
 from .compiler.security import METRIC_JUDGE_MAX_TOKENS, CompilerRoleBindingV3
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"

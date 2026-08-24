@@ -14,18 +14,20 @@ from dataclasses import dataclass
 from typing import Any, Literal, NoReturn, cast
 
 from ..artifact_identity import canonical_sha
+from ..program.artifact import ProgramArtifact
 from ..program.contracts import SemanticJudgment, TriageContext
-from ..program.graph import (
-    PROGRAM_FACTORY_ID,
-    PROGRAM_SCHEMA_VERSION,
-    PROGRAM_VERSION,
-    DspyNewsSemanticProgram,
+from ..program.dspy_adapter import (
     PredictorAdapterError,
     PredictorRequest,
     PredictorResponse,
-    ProgramArtifact,
     ProviderCallObservation,
     RuntimeModelIdentity,
+)
+from ..program.graph import DspyNewsSemanticProgram
+from ..program.runtime import (
+    PROGRAM_FACTORY_ID,
+    PROGRAM_SCHEMA_VERSION,
+    PROGRAM_VERSION,
 )
 
 ArmName = Literal["stable", "candidate"]

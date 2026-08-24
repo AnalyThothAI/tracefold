@@ -11,15 +11,17 @@ from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
 from tracefold.news import NEWS_RETRIEVAL_SHA256
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
-from tracefold.news.program.contracts import SemanticJudge
-from tracefold.news.program.graph import (
-    DspyNewsSemanticProgram,
-    DspyPredictorAdapter,
+from tracefold.news.program.artifact import (
     ProgramArtifact,
-    RuntimeModelIdentity,
     load_program_artifact,
     load_stable_program_artifact,
 )
+from tracefold.news.program.contracts import SemanticJudge
+from tracefold.news.program.dspy_adapter import (
+    DspyPredictorAdapter,
+    RuntimeModelIdentity,
+)
+from tracefold.news.program.graph import DspyNewsSemanticProgram
 from tracefold.platform.config.models import news_model_availability
 
 

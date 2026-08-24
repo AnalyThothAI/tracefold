@@ -19,45 +19,53 @@ from pydantic import ValidationError
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.models import TriageAsset, TriageVerdict
 from tracefold.news.program import graph as semantic_program_module
-from tracefold.news.program.contracts import (
-    EditorialEnvelope,
-    ScoredJudgment,
-    SemanticJudgeError,
-    SemanticJudgment,
-    TradeRelevanceV1,
-)
-from tracefold.news.program.graph import (
-    PROGRAM_DEPENDENCY_LOCK_SHA256,
-    PROGRAM_TOPOLOGY_SHA256,
-    READER_CARD_SIGNATURE_SHA256,
+from tracefold.news.program.artifact import (
     CompileReceipt,
     DemoBank,
     DemoRecord,
     DemoRefOrder,
-    DspyCompileProgram,
-    DspyNewsSemanticProgram,
-    DspyPredictorAdapter,
     EligibleDemoBank,
-    EventSemantics,
     LearnedStrategy,
-    PredictorAdapterError,
-    PredictorRequest,
-    PredictorResponse,
     ProgramArtifact,
     ProgramArtifactCodec,
     ProgramPatchV2,
-    ProviderCallObservation,
-    ReaderCard,
-    ReaderCardSemanticView,
-    RecordReplayPredictorAdapter,
-    ScriptedPredictorAdapter,
-    TriageContext,
     apply_program_patch_v2,
     build_code_owned_program_artifact_v2,
-    extract_optimizer_patch,
     load_program_artifact,
     load_stable_program_artifact,
     render_model_evidence_json,
+)
+from tracefold.news.program.contracts import (
+    EditorialEnvelope,
+    ReaderCardSemanticView,
+    ScoredJudgment,
+    SemanticJudgeError,
+    SemanticJudgment,
+    TradeRelevanceV1,
+    TriageContext,
+)
+from tracefold.news.program.dspy_adapter import (
+    DspyPredictorAdapter,
+    PredictorAdapterError,
+    PredictorRequest,
+    PredictorResponse,
+    ProviderCallObservation,
+    RecordReplayPredictorAdapter,
+    ScriptedPredictorAdapter,
+)
+from tracefold.news.program.graph import (
+    DspyCompileProgram,
+    DspyNewsSemanticProgram,
+    extract_optimizer_patch,
+)
+from tracefold.news.program.runtime import (
+    PROGRAM_DEPENDENCY_LOCK_SHA256,
+    PROGRAM_TOPOLOGY_SHA256,
+)
+from tracefold.news.program.signatures import (
+    READER_CARD_SIGNATURE_SHA256,
+    EventSemantics,
+    ReaderCard,
 )
 from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
@@ -200,7 +208,11 @@ def test_quality_kernel_hashes_every_package_owned_behavior_source_and_verdict_s
         "news/artifact_identity.py": ("artifact_identity.py",),
         "news/reader_history.py": ("reader_history.py",),
         "news/told_context.py": ("told_context.py",),
+        "news/program/runtime.py": ("program", "runtime.py"),
+        "news/program/dspy_adapter.py": ("program", "dspy_adapter.py"),
         "news/program/contracts.py": ("program", "contracts.py"),
+        "news/program/signatures.py": ("program", "signatures.py"),
+        "news/program/artifact.py": ("program", "artifact.py"),
         "news/program/quality_baseline.py": ("program", "quality_baseline.py"),
         "news/program/graph.py": ("program", "graph.py"),
     }

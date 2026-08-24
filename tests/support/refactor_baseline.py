@@ -39,6 +39,7 @@ from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
 from tracefold.news.pipeline.root import NewsPipeline
+from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ProgramTrace,
@@ -46,7 +47,7 @@ from tracefold.news.program.contracts import (
     SemanticJudgment,
     TriageContext,
 )
-from tracefold.news.program.graph import (
+from tracefold.news.program.runtime import (
     PROGRAM_ADAPTER_SHA256,
     PROGRAM_ASSEMBLER_SHA256,
     PROGRAM_DEPENDENCY_LOCK_SHA256,
@@ -58,7 +59,6 @@ from tracefold.news.program.graph import (
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_TOPOLOGY_SHA256,
     PROGRAM_VERSION,
-    load_stable_program_artifact,
 )
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
@@ -160,8 +160,13 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "program_v7",
     ),
     "program_learning.program_sha256": (
-        "issue_175_reader_history_hard_cut_program_root",
-        "fcfd949e0ae7ccb40a7b2dfb0729de9b76b7734e371e11ed82b2c0c1bdc99063",
+        # #175 re-issued the root inside the v7 epoch; #162 PR8-C re-issues it again by finishing the
+        # package split the epoch was opened for. The factory closure is addressed by logical file name,
+        # so decomposing `graph.py` into runtime/signatures/artifact/dspy_adapter moves the root with no
+        # prompt, RulePack, policy, model route or call budget changed. No new epoch: v7 already means
+        # "the Program/Learning split", and this is that split completing, not a different Program.
+        "issue_175_reader_history_root_then_issue_162_pr8c_program_decomposition",
+        "8c6dcf5085ba0092655ad8718ae27304f05fd042e43395692de72b8e357857fe",
     ),
     "program_learning.input_contract_sha256": (
         "issue_175_composite_reader_history_retrieval",

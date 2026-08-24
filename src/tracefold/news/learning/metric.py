@@ -26,8 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..artifact_identity import canonical_sha
 from ..events.storyline import final_storyline_key
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
-from ..program.contracts import EditorialEnvelope, ScoredJudgment
-from ..program.graph import TriageContext, render_model_evidence_json
+from ..program.artifact import render_model_evidence_json
+from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 
 # v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global

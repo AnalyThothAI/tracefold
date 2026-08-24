@@ -24,18 +24,20 @@ from tracefold.news.learning.compiler.root import (
 )
 from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.program.artifact import (
+    EligibleDemoBank,
+    load_stable_program_artifact,
+)
 from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ScoredJudgment,
     TradeRelevanceV1,
+    TriageContext,
 )
-from tracefold.news.program.graph import (
+from tracefold.news.program.dspy_adapter import (
     DspyStrictJSONAdapter,
-    EligibleDemoBank,
     ExactProviderCallCapture,
     ExactProviderMetadata,
-    TriageContext,
-    load_stable_program_artifact,
 )
 from tracefold.news.told_context import ToldLedgerEntry
 

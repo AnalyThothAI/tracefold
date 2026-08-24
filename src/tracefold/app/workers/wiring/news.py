@@ -40,8 +40,11 @@ from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.triage import TriageConsumer
+from tracefold.news.program.artifact import (
+    ProgramArtifact,
+    load_stable_program_artifact,
+)
 from tracefold.news.program.contracts import SemanticJudge
-from tracefold.news.program.graph import ProgramArtifact, load_stable_program_artifact
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.runtime_identity import runtime_identity

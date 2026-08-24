@@ -23,7 +23,12 @@ from typing import Any, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from ..program.graph import LearnedStrategy, PredictorName, ProgramArtifact, render_predictor_instruction
+from ..program.artifact import (
+    LearnedStrategy,
+    ProgramArtifact,
+    render_predictor_instruction,
+)
+from ..program.runtime import PredictorName
 
 _BRIEF = """You are amending ONE bounded advisory block inside a larger, code-owned prompt.
 

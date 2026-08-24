@@ -27,6 +27,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.compiler.source_identity",
         "tracefold.news.learning.compiler.trusted",
         "tracefold.news.program.resources.candidates",
+        "tracefold.news.program.artifact",
+        "tracefold.news.program.dspy_adapter",
         "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
@@ -40,6 +42,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.contracts",
     ),
     "app.composition": (
+        "tracefold.news.program.artifact",
+        "tracefold.news.program.dspy_adapter",
         "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
@@ -59,6 +63,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
         "tracefold.news.program.resources.candidates",
+        "tracefold.news.program.artifact",
         "tracefold.news.program.graph",
         # The News transport error vocabulary. The composition root's database adapter is the one place
         # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.

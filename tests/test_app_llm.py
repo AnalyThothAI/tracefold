@@ -15,11 +15,9 @@ from tracefold.news.learning.canary import (
     CANARY_SELECTOR_VERSION,
 )
 from tracefold.news.learning.evaluator import ArmManifest, CandidateManifest, ProposalReceipt
-from tracefold.news.program.graph import (
-    ScriptedPredictorAdapter,
-    TriageContext,
-    load_stable_program_artifact,
-)
+from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings

@@ -27,8 +27,11 @@ from tracefold.news.learning.judge import CardEquivalenceJudge
 from tracefold.news.learning.metric import DevelopmentEpisode
 from tracefold.news.learning.proposer import RulePackAwareProposer
 from tracefold.news.models import TRIAGE_POLICY_VERSION
+from tracefold.news.program.artifact import (
+    EligibleDemoBank,
+    load_stable_program_artifact,
+)
 from tracefold.news.program.contracts import TriageContext
-from tracefold.news.program.graph import EligibleDemoBank, load_stable_program_artifact
 
 
 def _frozen_policy_projection() -> dict[str, object]:
@@ -95,7 +98,10 @@ class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
     def observe_exact_call(self):  # mirrors ExactMetadataDspyLM's seam
         from contextlib import contextmanager
 
-        from tracefold.news.program.graph import ExactProviderCallCapture, ExactProviderMetadata
+        from tracefold.news.program.dspy_adapter import (
+            ExactProviderCallCapture,
+            ExactProviderMetadata,
+        )
 
         @contextmanager
         def _cm():
@@ -335,7 +341,7 @@ def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
 @pytest.mark.parametrize("cost", [None, 7])
 def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) -> None:
     from tracefold.news.learning.compiler.root import _BudgetMeter
-    from tracefold.news.program.graph import ExactProviderMetadata
+    from tracefold.news.program.dspy_adapter import ExactProviderMetadata
 
     budget = CompileBudget(
         max_metric_calls=10,

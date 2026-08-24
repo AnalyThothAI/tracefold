@@ -21,13 +21,13 @@ from tracefold.news.learning.compiler.proxy import (
 )
 from tracefold.news.learning.compiler.security import CompilerEndpointIdentity, CompilerRoleBindingV3
 from tracefold.news.learning.judge import CardEquivalenceJudge
-from tracefold.news.program.graph import (
-    DspyCompileProgram,
+from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.dspy_adapter import (
     DspyStrictJSONAdapter,
     ExactProviderCallCapture,
     ExactProviderMetadata,
-    load_stable_program_artifact,
 )
+from tracefold.news.program.graph import DspyCompileProgram
 
 
 class _ExactFakeLM:
