@@ -36,7 +36,7 @@ COMPILER_RECEIPT_CHAIN_SCHEMA: Literal["tracefold.news.compile_receipt_chain.v3"
 COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipts.v3"] = (
     "tracefold.news.compiler_runner_receipts.v3"
 )
-LEARNING_EPOCH: Literal["program_v6"] = "program_v6"
+LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 # v3 (#150): the projection now carries `policy_values`/`policy_sha256`/`policy_source`, and the metric
 # fails closed without them. A dataset sealed under v2 is content-addressed by its `dataset_sha` and so
 # cannot be regenerated without changing identity — left at v2 it would still validate here and then
@@ -235,7 +235,7 @@ class CompileCorpusReceipt(_ExactModel):
     """Trusted roots proving which accepted development projection was exported."""
 
     schema_version: Literal["tracefold.news.compile_corpus_receipt.v3"] = COMPILER_CORPUS_SCHEMA
-    learning_epoch: Literal["program_v6"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_payload_sha256: str = Field(pattern=_SHA256_PATTERN)
     learning_epoch_started_at_ms: int = Field(ge=0)
@@ -367,7 +367,7 @@ class OptimizerCompileProvenanceV3(_ExactModel):
 
     mode: Literal["optimizer_candidate"] = "optimizer_candidate"
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
-    learning_epoch: Literal["program_v6"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
     learning_epoch_started_at_ms: int = Field(ge=0)
     projection_schema_id: str = Field(min_length=1)
     optimizer: Literal["dspy.GEPA@3.3.0/gepa@0.1.1"] = "dspy.GEPA@3.3.0/gepa@0.1.1"
@@ -465,7 +465,7 @@ class ProgramDemoRefDiffV3(_ExactModel):
 
 
 class ProgramImmutableDiffV3(_ExactModel):
-    factory_id: Literal["tracefold.news.semantic_program.factory_v4"]
+    factory_id: Literal["tracefold.news.program.factory_v5"]
     quality_kernel_sha256: str = Field(pattern=_SHA256_PATTERN)
     rule_pack_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     route_spec_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -1121,7 +1121,7 @@ def seal_compile_input(
         raise ValueError("news_program_compile_dataset_agent_cohort_invalid")
     if (
         cohort.get("bundle_sha") != stable_bundle_sha256
-        or cohort.get("program_version") != "news_semantic_program_v4"
+        or cohort.get("program_version") != "news_semantic_program_v5"
         or cohort.get("program_sha256") != parent_program_sha256
         or cohort.get("runtime_model_bindings_sha256") != target_runtime_manifest_sha256
         or cohort.get("learning_epoch") != LEARNING_EPOCH

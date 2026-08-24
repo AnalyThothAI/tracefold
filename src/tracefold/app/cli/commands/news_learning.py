@@ -20,7 +20,7 @@ from .news_learning_documents import (
 )
 
 if TYPE_CHECKING:
-    from tracefold.news.semantic_contract import SemanticJudge
+    from tracefold.news.program.contracts import SemanticJudge
 
 from .news_learning_runtime import (
     _insert_learning_artifact,
@@ -52,8 +52,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "canary":
             from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
             from tracefold.app.repository_session import repositories
-            from tracefold.news.agents.programs.candidates import compiled_canary_candidates
             from tracefold.news.learning.canary import apply_canary_control, parse_canary_control
+            from tracefold.news.program.resources.candidates import compiled_canary_candidates
 
             subcommand = str(args.canary_command)
             payload = {
@@ -131,7 +131,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 parent.program_sha256 != stable.program_sha256
                 or parent.parent_program_sha256 is not None
                 or parent.schema_version != "news_semantic_program_artifact_v2"
-                or parent.factory_id != "tracefold.news.semantic_program.factory_v4"
+                or parent.factory_id != "tracefold.news.program.factory_v5"
             ):
                 raise ValueError("news_learning_compile_stable_program_mismatch")
             # This is the only DB contact in the compile path.  It ends before
@@ -349,7 +349,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             provenance = OptimizerCompileProvenanceV3(
                 development_dataset_sha=bundle.corpus.development_dataset_sha,
-                learning_epoch="program_v6",
+                learning_epoch="program_v7",
                 learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
                 projection_schema_id=bundle.corpus.projection_schema_id,
                 metric_sha256=canonical_sha(runner.metric),
@@ -407,7 +407,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             machine_diff = program_machine_diff(parent, candidate_artifact)
             payload = {
                 "target": "program",
-                "hypothesis": "Repair the accepted program_v6 failure clusters with bounded DSPy GEPA.",
+                "hypothesis": "Repair the accepted program_v7 failure clusters with bounded DSPy GEPA.",
                 "target_dimensions": list(runner.target_dimensions),
                 "failure_cluster_ids": list(runner.failure_cluster_ids),
                 "guardrails": [

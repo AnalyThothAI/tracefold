@@ -11,8 +11,8 @@ from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
-from tracefold.news.agents.programs import candidates as candidate_programs
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.program.graph import load_stable_program_artifact
+from tracefold.news.program.resources import candidates as candidate_programs
 
 
 def test_learning_compile_requires_all_three_budgets_and_seed() -> None:

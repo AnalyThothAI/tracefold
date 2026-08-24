@@ -299,7 +299,7 @@ def test_contracts_md_lists_the_same_trade_channels_as_the_code() -> None:
     validating a `news_review_v3` payload against the stale list rejects a legitimate channel.
     """
 
-    from tracefold.news.semantic_contract import TRADE_CHANNEL_ORDER
+    from tracefold.news.program.contracts import TRADE_CHANNEL_ORDER
 
     document = (Path(__file__).resolve().parents[2] / "docs" / "CONTRACTS.md").read_text(encoding="utf-8")
     documented = "|".join(TRADE_CHANNEL_ORDER)

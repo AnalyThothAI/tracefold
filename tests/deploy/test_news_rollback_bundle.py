@@ -74,8 +74,11 @@ def test_prepare_context_builds_runnable_v5_with_schema_0301_adapter(tmp_path: P
 
 def test_v6_image_has_no_rollback_registry_loader() -> None:
     profile = _profile()
+    # The *current* registry, which #162 PR8-B moved to `news/program/resources`. The bundle's own
+    # `prepare_context.py` keeps reading `news/agents/programs` on purpose: it reads that path out of the
+    # pinned `source_revision` tree it extracts, where the Program still lived under `agents`.
     runtime_registry = json.loads(
-        (ROOT / "src/tracefold/news/agents/programs/registry.json").read_text(encoding="utf-8")
+        (ROOT / "src/tracefold/news/program/resources/registry.json").read_text(encoding="utf-8")
     )
     assert profile["program_sha256"] not in runtime_registry["images"]
     assert runtime_registry["stable"] != profile["program_sha256"]

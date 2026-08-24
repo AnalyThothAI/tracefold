@@ -26,8 +26,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.compiler.security",
         "tracefold.news.learning.compiler.source_identity",
         "tracefold.news.learning.compiler.trusted",
-        "tracefold.news.agents.programs.candidates",
-        "tracefold.news.agents.semantic_program",
+        "tracefold.news.program.resources.candidates",
+        "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
         "tracefold.news.learning.canary",
@@ -37,16 +37,16 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.eval.why",
         "tracefold.news.learning.replay",
         "tracefold.news.learning.review",
-        "tracefold.news.semantic_contract",
+        "tracefold.news.program.contracts",
     ),
     "app.composition": (
-        "tracefold.news.agents.semantic_program",
+        "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluator",
         "tracefold.news.market_review.storage",
         "tracefold.news.query_specs",
-        "tracefold.news.semantic_contract",
+        "tracefold.news.program.contracts",
         "tracefold.news.storage.root",
         "tracefold.trading.storage.root",
     ),
@@ -58,8 +58,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     ),
     "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
-        "tracefold.news.agents.programs.candidates",
-        "tracefold.news.agents.semantic_program",
+        "tracefold.news.program.resources.candidates",
+        "tracefold.news.program.graph",
         # The News transport error vocabulary. The composition root's database adapter is the one place
         # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
         "tracefold.news.bus",
@@ -69,7 +69,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
-        "tracefold.news.semantic_contract",
+        "tracefold.news.program.contracts",
         # The News-owned row contract for the Trading handoff. Only the composition root's mapper reads
         # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
         "tracefold.news.storage.trade_projection",

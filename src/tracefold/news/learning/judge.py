@@ -19,8 +19,8 @@ from typing import Any, Literal, TypeVar, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..agents.semantic_program import DspyStrictJSONAdapter, ExactProviderCallCapture, PredictorAdapterError
 from ..artifact_identity import canonical_json, canonical_sha
+from ..program.graph import DspyStrictJSONAdapter, ExactProviderCallCapture, PredictorAdapterError
 from .compiler.security import METRIC_JUDGE_MAX_TOKENS, CompilerRoleBindingV3
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"
@@ -230,7 +230,7 @@ class CardEquivalenceJudge:
                 inspect.getsource(inspect.getmodule(CardEquivalenceJudge) or CardEquivalenceJudge)
             ),
             "adapter": {
-                "implementation": "tracefold.news.agents.semantic_program.DspyStrictJSONAdapter",
+                "implementation": "tracefold.news.program.graph.DspyStrictJSONAdapter",
                 "native_function_calling": False,
                 "format_fallback": False,
             },

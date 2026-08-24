@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
 from .models import Decision, TriageVerdict, base_symbol
-from .semantic_contract import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from .program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from .similarity import max_similarity
 
 # One owner for the withhold key: `outcome` renders it, `repository` counts it.

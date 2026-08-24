@@ -294,7 +294,7 @@ def test_metric_receipt_pins_the_judge_identity() -> None:
     assert judged["semantic_judge"]["factual_evidence_output_schema_sha256"]
     assert judged["semantic_judge"]["implementation_source_sha256"]
     assert judged["semantic_judge"]["adapter"] == {
-        "implementation": "tracefold.news.agents.semantic_program.DspyStrictJSONAdapter",
+        "implementation": "tracefold.news.program.graph.DspyStrictJSONAdapter",
         "native_function_calling": False,
         "format_fallback": False,
     }

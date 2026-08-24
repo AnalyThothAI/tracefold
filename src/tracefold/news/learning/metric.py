@@ -23,11 +23,11 @@ from typing import Any, Final
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..agents.semantic_program import TriageContext, render_model_evidence_json
 from ..artifact_identity import canonical_sha
 from ..events.storyline import final_storyline_key
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
-from ..semantic_contract import EditorialEnvelope, ScoredJudgment
+from ..program.contracts import EditorialEnvelope, ScoredJudgment
+from ..program.graph import TriageContext, render_model_evidence_json
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 
 # v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global

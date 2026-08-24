@@ -26,7 +26,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
-from ..semantic_contract import (
+from ..program.contracts import (
     ReaderValue,
     TradeAffectedMarket,
     TradeChannel,

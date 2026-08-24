@@ -9,7 +9,7 @@ import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.models import TriageAsset, TriageVerdict
-from tracefold.news.semantic_contract import ScoredJudgment, TriageContext
+from tracefold.news.program.contracts import ScoredJudgment, TriageContext
 from tracefold.news.triage_rules import DecisionResult, GateFacts, decide
 
 _NO_OBJECTIVE_GUARD = GateFacts(

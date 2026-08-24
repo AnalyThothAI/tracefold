@@ -51,11 +51,20 @@ def test_a_stale_declaration_for_an_unchanged_leaf_fails(monkeypatch: pytest.Mon
         assert_matches_baseline()
 
 
-def test_every_declared_leaf_names_a_reason_and_a_full_sha() -> None:
+def test_every_declared_leaf_names_a_reason_and_an_exact_value() -> None:
+    """A declared exemption covers one exact value — never a prefix, never an ellipsis.
+
+    #162 PR8-B added the first non-hash leaves (a migration head, an epoch id, a program version, a
+    factory id), so the shape check is now conditional: anything hash-shaped must still be written in
+    full, because a prefix would let the leaf keep drifting inside the part nobody wrote down.
+    """
+
     for path, value in refactor_baseline.INTENTIONAL_DRIFT.items():
         reason, expected = value
         assert reason and not reason.startswith("<"), path
-        assert len(expected) == 64 and set(expected) <= set("0123456789abcdef"), path
+        assert expected and "…" not in expected and "..." not in expected, path
+        if set(expected) <= set("0123456789abcdef"):
+            assert len(expected) == 64, path
 
 
 def test_the_baseline_identity_itself_is_never_regenerated_in_place(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,7 +26,7 @@ from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, TriageVerdict, 
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, evaluate_oi, parse_oi_signal, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
-from ..semantic_contract import (
+from ..program.contracts import (
     TOLD_SOURCE_MAX,
     TOLD_WINDOW_MS,
     EditorialEnvelope,

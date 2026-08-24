@@ -793,7 +793,7 @@ def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
 
 
 def _select(rows: Sequence[Mapping[str, Any]], **overrides: Any) -> Any:
-    from tracefold.news.semantic_contract import ToldLedgerSnapshot
+    from tracefold.news.program.contracts import ToldLedgerSnapshot
 
     kwargs: dict[str, Any] = {
         "now_ms": _NOW,
@@ -844,7 +844,7 @@ def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_
     was saturated on 61% of judgments: the model was shown unrelated cards while a same-storyline card it
     needed for novelty stayed outside the window. Tiers are an ordered union, not a quota."""
 
-    from tracefold.news.semantic_contract import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+    from tracefold.news.program.contracts import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
     same = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(10)]
     unrelated = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(10)]
@@ -869,7 +869,7 @@ def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
     an evidence row wanted, a new unrelated card would change the evidence set and force a re-ask.
     """
 
-    from tracefold.news.semantic_contract import TOLD_MAX
+    from tracefold.news.program.contracts import TOLD_MAX
 
     dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
     filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(3)]
@@ -883,7 +883,7 @@ def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
 def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() -> None:
     """The cap yields to other tiers; it does not throw rows away."""
 
-    from tracefold.news.semantic_contract import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+    from tracefold.news.program.contracts import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
     same = [_told_row(f"s{i}", _NOW - i * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
     entries = _select(same).entries
@@ -958,7 +958,7 @@ def test_told_selector_identity_binds_every_behaviour_that_changes_what_the_mode
     """`retrieval_sha256` is this hash. A literal describing the selector could not tell a tier-order or
     projection edit from a no-op, and the arm would have shipped as the same bundle."""
 
-    import tracefold.news.semantic_contract as contract
+    import tracefold.news.program.contracts as contract
     from tracefold.news.artifact_identity import canonical_sha
 
     assert len(contract.TOLD_SELECTOR_SHA256) == 64

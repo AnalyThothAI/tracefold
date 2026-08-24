@@ -44,7 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..models import TriageAsset, TriageVerdict
-from ..semantic_contract import (
+from .contracts import (
     TOLD_MAX,
     TOLD_SELECTOR_ID,
     TOLD_SELECTOR_SHA256,
@@ -85,9 +85,9 @@ PROGRAM_DEMO_BANK_MAX_BYTES: Final[int] = 262_144
 PROGRAM_DEPENDENCY_LOCK_SHA256: Final[str] = "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37"
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v2"
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v4"
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v4"
-PROGRAM_LEARNING_EPOCH: Final[str] = "program_v6"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v5"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
+PROGRAM_LEARNING_EPOCH: Final[str] = "program_v7"
 PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
     {
         "nodes": ["event_semantics", "semantic_normalizer", "reader_card", "verdict_assembler"],
@@ -255,9 +255,9 @@ _MODEL_BINDING_SLOTS: Final[frozenset[str]] = frozenset(
 )
 _FACTORY_SOURCE_RESOURCES: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("news/artifact_identity.py", ("artifact_identity.py",)),
-    ("news/semantic_contract.py", ("semantic_contract.py",)),
-    ("news/agents/quality_baseline.py", ("agents", "quality_baseline.py")),
-    ("news/agents/semantic_program.py", ("agents", "semantic_program.py")),
+    ("news/program/contracts.py", ("program", "contracts.py")),
+    ("news/program/quality_baseline.py", ("program", "quality_baseline.py")),
+    ("news/program/graph.py", ("program", "graph.py")),
 )
 
 
@@ -537,7 +537,7 @@ def _estimated_tokens(value: str) -> int:
 class QualityKernelRef(_ExactModel):
     """References to code-owned behavior; never executable Artifact data."""
 
-    factory_id: Literal["tracefold.news.semantic_program.factory_v4"] = "tracefold.news.semantic_program.factory_v4"
+    factory_id: Literal["tracefold.news.program.factory_v5"] = "tracefold.news.program.factory_v5"
     factory_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     topology_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     input_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -695,7 +695,7 @@ class DemoRecord(_ExactModel):
     cluster_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     review_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evidence_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v6"] = "program_v6"
+    learning_epoch: Literal["program_v7"] = "program_v7"
     model_visible_projection_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     provenance_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -1198,11 +1198,11 @@ class ProgramArtifact(_ExactModel):
     """Immutable v2 root with code-owned and optimizer-owned state separated."""
 
     schema_version: Literal["news_semantic_program_artifact_v2"] = "news_semantic_program_artifact_v2"
-    program_version: Literal["news_semantic_program_v4"] = "news_semantic_program_v4"
+    program_version: Literal["news_semantic_program_v5"] = "news_semantic_program_v5"
     program_sha256: str
     state_sha256: str
     parent_program_sha256: str | None = None
-    factory_id: Literal["tracefold.news.semantic_program.factory_v4"] = "tracefold.news.semantic_program.factory_v4"
+    factory_id: Literal["tracefold.news.program.factory_v5"] = "tracefold.news.program.factory_v5"
     quality_kernel: QualityKernelRef
     route_spec: ModelRouteSpec
     execution: ExecutionContract
@@ -1352,11 +1352,11 @@ class ProgramArtifact(_ExactModel):
 
 class _ProgramManifest(_ExactModel):
     schema_version: Literal["news_semantic_program_artifact_v2"]
-    program_version: Literal["news_semantic_program_v4"]
+    program_version: Literal["news_semantic_program_v5"]
     program_sha256: str
     state_sha256: str
     parent_program_sha256: str | None = None
-    factory_id: Literal["tracefold.news.semantic_program.factory_v4"]
+    factory_id: Literal["tracefold.news.program.factory_v5"]
     quality_kernel: QualityKernelRef
     route_spec: ModelRouteSpec
     execution: ExecutionContract
@@ -1518,7 +1518,7 @@ class ProgramPatchV2(_ExactModel):
     schema_version: Literal["news_semantic_program_patch_v2"] = "news_semantic_program_patch_v2"
     parent_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     parent_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v6"] = "program_v6"
+    learning_epoch: Literal["program_v7"] = "program_v7"
     learned_strategies: tuple[LearnedStrategy, ...] = Field(min_length=2, max_length=2)
     demo_refs: DemoRefOrder
     eligible_demo_bank_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1912,8 +1912,8 @@ def load_stable_program_artifact() -> ProgramArtifact:
 
 
 def _programs_resource_root() -> Any:
-    package_root = importlib.resources.files("tracefold.news.agents")
-    root = package_root.joinpath("programs")
+    package_root = importlib.resources.files("tracefold.news.program")
+    root = package_root.joinpath("resources")
     if not isinstance(root, Path):
         # Zip/importlib Traversables have no filesystem symlink surface.  Their
         # bytes still pass the same strict registry and artifact codec below.

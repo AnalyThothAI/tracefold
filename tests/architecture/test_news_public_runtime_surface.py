@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import tracefold.news.agents as news_agents
+import tracefold.news.program as news_agents
 from tracefold import news
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -187,13 +187,13 @@ def test_analyst_lane_is_retired() -> None:
     for retired in ("analyst_evidence.py", "analyst_rules.py"):
         assert not (NEWS_ROOT / retired).exists()
     for retired in ("analyst.py", "tools.py"):
-        assert not (NEWS_ROOT / "agents" / retired).exists()
-    assert not (NEWS_ROOT / "agents" / "prompts" / "NEWS_ANALYST.md").exists()
+        assert not (NEWS_ROOT / "program" / retired).exists()
+    assert not (NEWS_ROOT / "program" / "prompts" / "NEWS_ANALYST.md").exists()
     pipeline = "\n".join(path.read_text(encoding="utf-8") for path in sorted((NEWS_ROOT / "pipeline").glob("*.py")))
     assert "AnalystConsumer" not in pipeline
     assert "news.deep" not in pipeline and "render_followup_card" not in pipeline
-    assert not (NEWS_ROOT / "agents" / "triage_model.py").exists()
-    program = (NEWS_ROOT / "agents" / "semantic_program.py").read_text(encoding="utf-8")
+    assert not (NEWS_ROOT / "program" / "triage_model.py").exists()
+    program = (NEWS_ROOT / "program" / "graph.py").read_text(encoding="utf-8")
     assert "EventSemantics" in program and "ReaderCard" in program and "_assemble" in program
 
 
@@ -205,7 +205,7 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
     if not workers_root.exists():
         workers_dspy_wiring.add(SRC / "app" / "workers" / "__init__.py")
     allowed = {
-        NEWS_ROOT / "agents" / "semantic_program.py",
+        NEWS_ROOT / "program" / "graph.py",
         NEWS_ROOT / "learning" / "compiler" / "root.py",
         NEWS_ROOT / "learning" / "compiler" / "proxy.py",
         # #143. The metric the optimizer maximizes and the metric an operator reads before a RulePack edit have

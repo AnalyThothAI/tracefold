@@ -32,7 +32,7 @@ from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.semantic_contract import (
+from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ProgramCallTrace,
     ProgramTrace,

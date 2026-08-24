@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-import tracefold.news.agents.programs.candidates as candidate_programs
+import tracefold.news.program.resources.candidates as candidate_programs
 from tracefold.app.learning_runtime import (
     NewsProgramRuntimeComposition,
     active_arm_manifest,
@@ -28,7 +28,6 @@ from tracefold.app.workers.wiring.market_review import (
 )
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
-from tracefold.news.agents.semantic_program import ProgramArtifact, load_stable_program_artifact
 from tracefold.news.learning.canary import CanaryRuntimeArm
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_review.loops import MarketReviewDatabasePort
@@ -41,7 +40,8 @@ from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.semantic_contract import SemanticJudge
+from tracefold.news.program.contracts import SemanticJudge
+from tracefold.news.program.graph import ProgramArtifact, load_stable_program_artifact
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.runtime_identity import runtime_identity

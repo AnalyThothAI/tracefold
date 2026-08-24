@@ -12,9 +12,9 @@ from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .artifact_identity import canonical_sha
-from .models import TriageAsset, TriageVerdict, base_symbol
-from .similarity import similarity
+from ..artifact_identity import canonical_sha
+from ..models import TriageAsset, TriageVerdict, base_symbol
+from ..similarity import similarity
 
 TOLD_WINDOW_MS: Final[int] = 4 * 3_600_000
 # The bounded sent ledger the selector reads, and the bounded slice the model sees.  The gap between them is

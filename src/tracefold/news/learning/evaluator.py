@@ -24,7 +24,7 @@ from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
 from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
-from ..semantic_contract import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
+from ..program.contracts import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from .compiler.security import (
     COMPILE_EPISODE_PROJECTION_SCHEMA,
     OptimizerCompileProvenanceV3,
@@ -50,8 +50,10 @@ from .review import (
 
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-LEARNING_EPOCH_RESET_REASON = "trade_relevance_editorial_authority_hard_cut"
-LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.semantic_program.factory_v4"
+# Must equal the `reset_reason` migration 0302 wrote for `program_v7`. The evaluator validates the
+# epoch row field by field, so a bumped epoch with a stale reason here fails every evaluation.
+LEARNING_EPOCH_RESET_REASON = "program_learning_package_split_identity_migration"
+LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.program.factory_v5"
 LEARNING_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
@@ -109,7 +111,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v6"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -137,7 +139,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v6"]
+    learning_epoch: Literal["program_v7"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int

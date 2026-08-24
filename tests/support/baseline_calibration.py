@@ -160,7 +160,7 @@ def redact_calibration_episode(episode: dict[str, Any]) -> dict[str, Any]:
     """
 
     from tracefold.news.models import TriageVerdict
-    from tracefold.news.semantic_contract import EditorialEnvelope, ScoredJudgment
+    from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment
 
     redacted = _redact(episode)
     raw = redacted.get("production_judgment")
@@ -232,8 +232,8 @@ def write_calibration_corpus(path: Path, payload: dict[str, Any]) -> int:
 def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs the live database
     from tracefold.app.learning_runtime import active_arm_manifest
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.agents.semantic_program import load_stable_program_artifact
     from tracefold.news.learning.evaluator import CandidateEvaluator, ClosedWindow
+    from tracefold.news.program.graph import load_stable_program_artifact
     from tracefold.platform.config.loader import load_settings
 
     settings = load_settings()

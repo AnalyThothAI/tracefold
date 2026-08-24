@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from ..artifact_identity import canonical_json, canonical_sha
 from ..market_review.storage import MarketReviewCohort, PriceRepository
 from ..outcome import decision_zh
-from ..semantic_contract import (
+from ..program.contracts import (
     TRADE_AFFECTED_MARKET_ORDER,
     TRADE_CHANNEL_ORDER,
     ReaderValue,
@@ -2401,7 +2401,7 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         now_ms=int(now_ms),
         cohort=MarketReviewCohort(
             bundle_sha256="0" * 64,
-            program_version="news_semantic_program_v4",
+            program_version="news_semantic_program_v5",
             program_sha256="1" * 64,
             policy_version="news_triage_policy_v10",
             model="audit-model",

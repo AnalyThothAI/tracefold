@@ -16,8 +16,17 @@ import dspy
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news.agents import semantic_program as semantic_program_module
-from tracefold.news.agents.semantic_program import (
+from tracefold.news.artifact_identity import canonical_json, canonical_sha
+from tracefold.news.models import TriageAsset, TriageVerdict
+from tracefold.news.program import graph as semantic_program_module
+from tracefold.news.program.contracts import (
+    EditorialEnvelope,
+    ScoredJudgment,
+    SemanticJudgeError,
+    SemanticJudgment,
+    TradeRelevanceV1,
+)
+from tracefold.news.program.graph import (
     PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_TOPOLOGY_SHA256,
     READER_CARD_SIGNATURE_SHA256,
@@ -51,15 +60,6 @@ from tracefold.news.agents.semantic_program import (
     load_program_artifact,
     load_stable_program_artifact,
     render_model_evidence_json,
-)
-from tracefold.news.artifact_identity import canonical_json, canonical_sha
-from tracefold.news.models import TriageAsset, TriageVerdict
-from tracefold.news.semantic_contract import (
-    EditorialEnvelope,
-    ScoredJudgment,
-    SemanticJudgeError,
-    SemanticJudgment,
-    TradeRelevanceV1,
 )
 
 
@@ -173,8 +173,8 @@ def test_stable_root_is_the_v6_generation_v2_ownership_contract() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_semantic_program_artifact_v2"
-    assert artifact.factory_id == "tracefold.news.semantic_program.factory_v4"
-    assert artifact.program_version == "news_semantic_program_v4"
+    assert artifact.factory_id == "tracefold.news.program.factory_v5"
+    assert artifact.program_version == "news_semantic_program_v5"
     assert artifact.parent_program_sha256 is None
     assert artifact.quality_kernel.factory_id == artifact.factory_id
     assert [pack.order for pack in artifact.rule_packs] == list(range(1, 10))
@@ -199,9 +199,9 @@ def test_quality_kernel_hashes_every_package_owned_behavior_source_and_verdict_s
     news_root = importlib.resources.files("tracefold.news")
     sources = {
         "news/artifact_identity.py": ("artifact_identity.py",),
-        "news/semantic_contract.py": ("semantic_contract.py",),
-        "news/agents/quality_baseline.py": ("agents", "quality_baseline.py"),
-        "news/agents/semantic_program.py": ("agents", "semantic_program.py"),
+        "news/program/contracts.py": ("program", "contracts.py"),
+        "news/program/quality_baseline.py": ("program", "quality_baseline.py"),
+        "news/program/graph.py": ("program", "graph.py"),
     }
     expected_source = canonical_sha(
         {name: hashlib.sha256(news_root.joinpath(*parts).read_bytes()).hexdigest() for name, parts in sources.items()}
@@ -278,7 +278,7 @@ def test_built_wheel_loads_the_image_carried_program_without_a_repository_root(t
             "-c",
             (
                 "from pathlib import Path; "
-                "from tracefold.news.agents import semantic_program as module; "
+                "from tracefold.news.program import graph as module; "
                 "print(Path(module.__file__).resolve()); "
                 "print(module.load_stable_program_artifact().program_sha256)"
             ),
@@ -1821,7 +1821,7 @@ def test_trusted_patch_applier_changes_only_strategies_and_keeps_demo_bank_empty
     receipt = CompileReceipt(
         mode="optimizer_candidate",
         development_dataset_sha=sha("dataset"),
-        learning_epoch="program_v6",
+        learning_epoch="program_v7",
         learning_epoch_started_at_ms=1,
         projection_schema_id="news_program_v4_projection_v1",
         optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
@@ -1914,8 +1914,8 @@ def test_production_registry_and_image_directories_reject_symlinks(
 ) -> None:
     artifact = load_stable_program_artifact()
     manifest, state = ProgramArtifactCodec.encode(artifact)
-    package_root = tmp_path / "agents"
-    programs = package_root / "programs"
+    package_root = tmp_path / "program"
+    programs = package_root / "resources"
     programs.mkdir(parents=True)
     monkeypatch.setattr(importlib.resources, "files", lambda package: package_root)
 
@@ -1942,7 +1942,7 @@ def test_production_registry_and_image_directories_reject_symlinks(
     symlinked_package_root.mkdir()
     external_programs = tmp_path / "external-programs"
     external_programs.mkdir()
-    (symlinked_package_root / "programs").symlink_to(external_programs, target_is_directory=True)
+    (symlinked_package_root / "resources").symlink_to(external_programs, target_is_directory=True)
     monkeypatch.setattr(importlib.resources, "files", lambda package: symlinked_package_root)
     with pytest.raises(ValueError, match="registry_path_invalid"):
         load_program_artifact(artifact.program_sha256)
@@ -1960,7 +1960,7 @@ def test_adapter_error_is_domain_classified() -> None:
 
 
 def test_no_unsafe_serialization_surface_in_production_module() -> None:
-    source = Path(__file__).resolve().parents[2] / "src/tracefold/news/agents/semantic_program.py"
+    source = Path(__file__).resolve().parents[2] / "src/tracefold/news/program/graph.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     imported = {
         alias.name.split(".", maxsplit=1)[0]

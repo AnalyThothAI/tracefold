@@ -54,7 +54,7 @@ from tracefold.trading.pipeline.runtime import TradingConfig
 
 pytestmark = pytest.mark.integration
 
-# Deliberately after the dynamically-created program_v6 epoch in migration 0301.
+# Deliberately after the dynamically-created program_v7 epoch in migration 0302.
 NOW = 1_900_000_000_000
 MINUTE = 60_000
 
@@ -445,7 +445,7 @@ def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int
 def _promote_to_model_projection(conn: Any, *, event_id: str, symbol: str) -> None:
     conn.execute("UPDATE news_events SET admission = 'candidate' WHERE event_id = %s", (event_id,))
     conn.execute(
-        "UPDATE news_verdicts SET program_version = 'news_semantic_program_v4', verdict = %s::jsonb, "
+        "UPDATE news_verdicts SET program_version = 'news_semantic_program_v5', verdict = %s::jsonb, "
         "editorial = jsonb_build_object('editorial_origin', 'model', "
         "'editorial_sha256', repeat('e', 64), 'relevance', '{}'::jsonb) WHERE event_id = %s",
         (
@@ -505,7 +505,7 @@ def _runner(conn: Any, *, adapter: PaperAdapter, now: int, config: TradingConfig
 
 def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
     epoch_start = int(
-        conn.execute("SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v6'").fetchone()[
+        conn.execute("SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v7'").fetchone()[
             "starts_at_ms"
         ]
     )
@@ -524,7 +524,7 @@ def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
     )
 
     assert [row["event_id"] for row in rows] == ["current"]
-    assert rows[0]["learning_epoch"] == "program_v6"
+    assert rows[0]["learning_epoch"] == "program_v7"
     assert rows[0]["policy_version"] == "news_triage_policy_v10"
     assert rows[0]["editorial_origin"] == "telemetry_deterministic"
     assert len(rows[0]["scored_judgment_sha256"]) == 64
@@ -532,9 +532,9 @@ def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
 
 def test_model_projection_requires_v4_model_editorial_in_the_v6_epoch(conn) -> None:
     for event_id, symbol, program_version, origin in (
-        ("current-model", "DOGE", "news_semantic_program_v4", "model"),
+        ("current-model", "DOGE", "news_semantic_program_v5", "model"),
         ("old-model", "SOL", "program_v5", "model"),
-        ("wrong-origin", "XRP", "news_semantic_program_v4", "telemetry_deterministic"),
+        ("wrong-origin", "XRP", "news_semantic_program_v5", "telemetry_deterministic"),
     ):
         _seed_oi_event(conn, event_id=event_id, symbol=symbol, observed_at_ms=NOW - MINUTE)
         relevance = "{}" if origin == "model" else "null"
@@ -564,8 +564,8 @@ def test_model_projection_requires_v4_model_editorial_in_the_v6_epoch(conn) -> N
     )
 
     assert [row["event_id"] for row in rows] == ["current-model"]
-    assert rows[0]["learning_epoch"] == "program_v6"
-    assert rows[0]["program_version"] == "news_semantic_program_v4"
+    assert rows[0]["learning_epoch"] == "program_v7"
+    assert rows[0]["program_version"] == "news_semantic_program_v5"
     assert rows[0]["editorial_origin"] == "model"
     assert len(rows[0]["runtime_manifest_sha"]) == 64
 
@@ -656,11 +656,11 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     assert {
         (row["learning_epoch"], row["program_version"], row["policy_version"], row["editorial_origin"])
         for row in oi_rows
-    } == {("program_v6", "news_oi_signal_v1", "news_triage_policy_v10", "telemetry_deterministic")}
+    } == {("program_v7", "news_oi_signal_v1", "news_triage_policy_v10", "telemetry_deterministic")}
     assert {
         (row["learning_epoch"], row["program_version"], row["policy_version"], row["editorial_origin"])
         for row in news_rows
-    } == {("program_v6", "news_semantic_program_v4", "news_triage_policy_v10", "model")}
+    } == {("program_v7", "news_semantic_program_v5", "news_triage_policy_v10", "model")}
 
     blacklist = Blacklist.from_rows([])
     # Through the App mapper, because that is the only path a projection row takes to the trading lane.
@@ -696,7 +696,9 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
         mark_price=Decimal("102"),
         pre_move_bps=200,
     )
-    assert manifest.digest() == "d41ce17a8f46af1aefeea08a5a750498765fb15960f9d4566a97f6985555ccba"
+    # #162 PR8-B: the manifest binds the exact News generation, so bumping epoch/program moves its
+    # content hash. That is the contract working — a case frozen under v6 must not read as a v7 case.
+    assert manifest.digest() == "0d659c107dbab3d1640da51bfb93f01c3a1154209265a1e2c656cf2e90259540"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
@@ -711,7 +713,7 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     trading = _repos(conn).trading
     case = trading.cases()[0]
     assert case["manifest"]["manifest_version"] == TRADING_MANIFEST_VERSION
-    assert case["manifest"]["oi"]["learning_epoch"] == "program_v6"
+    assert case["manifest"]["oi"]["learning_epoch"] == "program_v7"
     assert case["manifest"]["oi"]["policy_version"] == "news_triage_policy_v10"
     assert case["case_kind"] == "oi_only"
     assert case["state"] == "ORDER_PREPARED"

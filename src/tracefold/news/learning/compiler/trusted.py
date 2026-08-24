@@ -16,7 +16,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...agents.semantic_program import (
+from ...artifact_identity import canonical_json, canonical_sha
+from ...program.contracts import ScoredJudgment, TriageContext
+from ...program.graph import (
     CompileReceipt,
     DemoRecord,
     EligibleDemoBank,
@@ -29,11 +31,9 @@ from ...agents.semantic_program import (
     load_stable_program_artifact,
     render_model_evidence_json,
 )
-from ...agents.semantic_program import (
+from ...program.graph import (
     apply_program_patch_v2 as _apply_program_patch_v2,
 )
-from ...artifact_identity import canonical_json, canonical_sha
-from ...semantic_contract import ScoredJudgment, TriageContext
 from ..metric import production_decision
 from .security import (
     METRIC_JUDGE_MAX_TOKENS,
@@ -43,7 +43,7 @@ from .security import (
     OptimizerCompileProvenanceV3,
 )
 
-LEARNING_EPOCH: Literal["program_v6"] = "program_v6"
+LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 # The reflection endpoint's budget, declared on the trusted seam because the CLI may not import the optimizer
 # module. GEPA's reflection call reads a minibatch of failures and emits a whole replacement instruction, so it
 # is nothing like a Program route: DSPy documents 32k output tokens for it, while the task route's ceiling here
@@ -216,7 +216,7 @@ def load_exact_stable_program() -> ProgramArtifact:
     if (
         parent.parent_program_sha256 is not None
         or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.semantic_program.factory_v4"
+        or parent.factory_id != "tracefold.news.program.factory_v5"
         or parent.compile_receipt.accepted_by != "code_owner"
     ):
         raise ValueError("news_program_compile_parent_must_be_exact_stable_root")

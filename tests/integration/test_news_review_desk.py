@@ -25,7 +25,7 @@ from tracefold.news.learning.review import (
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.semantic_contract import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.platform.config.models import Settings
 
 pytestmark = pytest.mark.integration

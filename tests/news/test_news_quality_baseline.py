@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.news.agents.quality_baseline import (
-    EXPERT_BASELINE_COVERAGE,
-    RULE_PACK_SPECS,
-    validate_expert_baseline_coverage,
-)
-from tracefold.news.agents.semantic_program import (
+from tracefold.news.program.graph import (
     PROGRAM_INSTRUCTION_MAX_BYTES,
     LearnedStrategy,
     RulePack,
     build_code_owned_program_artifact_v2,
     render_predictor_instruction,
+)
+from tracefold.news.program.quality_baseline import (
+    EXPERT_BASELINE_COVERAGE,
+    RULE_PACK_SPECS,
+    validate_expert_baseline_coverage,
 )
 
 

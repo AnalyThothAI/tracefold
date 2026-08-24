@@ -19,7 +19,7 @@ import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.models import TriageAsset, TriageVerdict
-from tracefold.news.semantic_contract import (
+from tracefold.news.program.contracts import (
     TRADE_CHANNEL_ORDER,
     ScoredJudgment,
     TradeChannel,

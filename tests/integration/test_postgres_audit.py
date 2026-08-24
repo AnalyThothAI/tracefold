@@ -186,7 +186,8 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
     assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
     assert payload["trading_schema"]["exact"] is True
     assert all(count >= 0 for count in payload["counts"].values())
-    assert payload["counts"]["news_learning_epochs"] == 6
+    # program_v1..v7: #162 PR8-B appended the package-split epoch.
+    assert payload["counts"]["news_learning_epochs"] == 7
     assert payload["news_schema"] == {
         "expected_tables": list(NEWS_TABLES),
         "actual_tables": sorted(NEWS_TABLES),
