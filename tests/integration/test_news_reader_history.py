@@ -9,11 +9,13 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
+from tracefold.news.reader_history import RECENT_HISTORY_MAX, RECENT_HISTORY_WINDOW_MS
+from tracefold.news.storage.decisions import _READER_HISTORY_PROJECTION
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def conn():
     connection = connect_postgres_test(read_only=False)
     migrate(connection)
@@ -54,7 +56,14 @@ def _admit(repos, *, hit_id: int, text: str, symbol: str, ts: str) -> str:
     return batch.results[0].event_id
 
 
-def _send(repos, *, event_id: str, at_ms: int, symbol: str) -> None:
+def _persist_triage_verdict(
+    repos,
+    *,
+    event_id: str,
+    at_ms: int,
+    symbol: str,
+    policy_version: str = "news_triage_policy_test",
+) -> None:
     evidence = repos.news.latest_evidence_snapshot(event_id)
     assert evidence is not None
     verdict = TriageVerdict(
@@ -74,7 +83,7 @@ def _send(repos, *, event_id: str, at_ms: int, symbol: str) -> None:
     assert repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version="news_triage_policy_test",
+        policy_version=policy_version,
         model_decision="push",
         rule_baseline_decision="push",
         final_decision="push",
@@ -95,6 +104,10 @@ def _send(repos, *, event_id: str, at_ms: int, symbol: str) -> None:
         focus_fact_id=str(evidence["focus_fact_id"]),
         now_ms=at_ms - 1,
     )
+
+
+def _persist_sent_triage_card(repos, *, event_id: str, at_ms: int, symbol: str) -> None:
+    _persist_triage_verdict(repos, event_id=event_id, at_ms=at_ms, symbol=symbol)
     assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=at_ms - 1) == "new"
     assert repos.news.settle_delivery(
         event_id=event_id,
@@ -128,7 +141,16 @@ def test_reader_history_recalls_a_sent_cross_source_alias_after_four_hours(conn)
         )
         current_opened = conn.execute("SELECT opened_at_ms FROM news_events WHERE event_id=%s", (current,)).fetchone()
         assert current_opened is not None
-        _send(repos, event_id=prior, at_ms=int(current_opened["opened_at_ms"]) - 6 * 3_600_000, symbol="9988")
+        _persist_sent_triage_card(
+            repos,
+            event_id=prior,
+            at_ms=int(current_opened["opened_at_ms"]) - 6 * 3_600_000,
+            symbol="9988",
+        )
+        conn.execute(
+            "UPDATE news_events SET grounded_assets='[]'::jsonb WHERE event_id = ANY(%s)",
+            ([prior, current],),
+        )
 
     history = repos.news.reader_history(event_id=current, now_ms=int(current_opened["opened_at_ms"]))
 
@@ -157,6 +179,7 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
             "sent": "Nvidia opens a new chip assembly plant",
             "sending": "Regulator fines Nvidia over an export filing",
             "terminal": "Nvidia chief financial officer announces retirement",
+            "ambiguous": "Nvidia discloses an unresolved customs assessment",
             "decision-only": "Nvidia board approves a larger quarterly dividend",
         }
         for index, (label, text) in enumerate(variants.items(), start=1):
@@ -167,7 +190,12 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
                 symbol="NVDA",
                 ts=f"2026-08-25T0{index}:00:00+08:00",
             )
-            _send(repos, event_id=event_id, at_ms=now_ms - (5 + index) * 3_600_000, symbol="NVDA")
+            _persist_sent_triage_card(
+                repos,
+                event_id=event_id,
+                at_ms=now_ms - (5 + index) * 3_600_000,
+                symbol="NVDA",
+            )
             states[label] = event_id
         conn.execute(
             "UPDATE news_events SET comparison_fingerprint=%s WHERE event_id = ANY(%s)",
@@ -181,7 +209,18 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
             "UPDATE news_deliveries SET state='terminal' WHERE event_id=%s",
             (states["terminal"],),
         )
+        conn.execute(
+            "UPDATE news_deliveries SET state='terminal', error_code='ambiguous_after_crash' WHERE event_id=%s",
+            (states["ambiguous"],),
+        )
         conn.execute("DELETE FROM news_deliveries WHERE event_id=%s", (states["decision-only"],))
+        _persist_triage_verdict(
+            repos,
+            event_id=states["sent"],
+            at_ms=now_ms - 1,
+            symbol="NVDA",
+            policy_version="news_triage_policy_test_second_route",
+        )
 
     history = repos.news.reader_history(event_id=current, now_ms=now_ms)
 
@@ -210,7 +249,7 @@ def test_targeted_history_is_not_displaced_by_more_than_128_recent_cards(conn) -
             symbol="BABA",
             ts="2026-08-28T05:00:00+08:00",
         )
-        _send(repos, event_id=prior, at_ms=now_ms - 6 * 3_600_000, symbol="BABA")
+        _persist_sent_triage_card(repos, event_id=prior, at_ms=now_ms - 6 * 3_600_000, symbol="BABA")
         for index in range(129):
             symbol = f"RH{index:03d}"
             event_id = _admit(
@@ -220,10 +259,43 @@ def test_targeted_history_is_not_displaced_by_more_than_128_recent_cards(conn) -
                 symbol=symbol,
                 ts="2026-08-28T11:00:00+08:00",
             )
-            _send(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
+            _persist_sent_triage_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
+        noise_event = _admit(
+            repos,
+            hit_id=175500,
+            text="Index plan noise owner remains outside the sent reader ledger",
+            symbol="NOISEBASE",
+            ts="2026-08-28T11:30:00+08:00",
+        )
+        noise_opened = conn.execute(
+            "SELECT opened_at_ms FROM news_events WHERE event_id=%s",
+            (noise_event,),
+        ).fetchone()
+        assert noise_opened is not None
+        conn.execute(
+            """
+            INSERT INTO news_event_assets(symbol, event_id, market_type, opened_at_ms)
+            SELECT 'NOISE' || lpad(value::text, 5, '0'), %s, NULL, %s
+              FROM generate_series(1, 7000) value
+            """,
+            (noise_event, noise_opened["opened_at_ms"]),
+        )
+        conn.execute("ANALYZE news_event_assets")
+        plan_rows = conn.execute(
+            "EXPLAIN (ANALYZE, BUFFERS) "
+            + _READER_HISTORY_PROJECTION
+            + """
+             WHERE e.event_id <> %s AND d.settled_at_ms >= %s
+             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+            """,
+            (current, now_ms - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
+        ).fetchall()
+        plan = "\n".join(str(row["QUERY PLAN"]) for row in plan_rows)
 
     history = repos.news.reader_history(event_id=current, now_ms=now_ms)
 
+    assert "ix_news_event_assets_event" in plan
+    assert "Seq Scan on news_event_assets" not in plan
     assert len(history.recent_seen_rows) == 128
     assert prior not in {row.event_id for row in history.recent_seen_rows}
     assert [(row.event_id, row.reason) for row in history.targeted_told_rows] == [(prior, "canonical_asset_overlap")]

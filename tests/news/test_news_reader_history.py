@@ -15,6 +15,9 @@ from tracefold.news.semantic_contract import TOLD_SELECTOR_SHA256
 
 NOW_MS = 2_000_000_000_000
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v1.json"
+DISCOVERY = (
+    Path(__file__).resolve().parents[2] / "docs" / "research" / "news-reader-history-48h-snapshot-2026-08-24.json"
+)
 
 
 def test_reader_history_and_composite_retrieval_identities_are_content_addressed() -> None:
@@ -210,4 +213,55 @@ def test_reader_history_frozen_cases_keep_target_availability_and_semantic_expec
             "expected_novelty": "progression",
         },
         "telemetry_control": {"targeted": [], "reasons": [], "expected_novelty": "new_fact"},
+    }
+
+
+def test_fixed_duplicate_discovery_report_matches_the_frozen_fixture() -> None:
+    cases = [
+        case
+        for case in json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
+        if case["expected_novelty"] == "restatement"
+    ]
+    reasons: dict[str, int] = {}
+    recalled_48h = 0
+    recalled_7d = 0
+    lost_48h_to_7d = []
+    for case in cases:
+        target = case["prior_rows"][0]
+        history = build_reader_history(
+            case["prior_rows"],
+            now_ms=case["now_ms"],
+            comparison_fingerprint=case["current"]["comparison_fingerprint"],
+            canonical_assets=case["current"]["canonical_assets"],
+        )
+        if history.targeted_told_rows:
+            recalled_48h += 1
+            reason = history.targeted_told_rows[0].reason
+            reasons[reason] = reasons.get(reason, 0) + 1
+        age_ms = case["now_ms"] - target["at_ms"]
+        if age_ms <= 7 * 24 * 3_600_000:
+            recalled_7d += 1
+            if age_ms > TARGETED_HISTORY_WINDOW_MS:
+                lost_48h_to_7d.append(case["case_id"])
+
+    report = json.loads(DISCOVERY.read_text(encoding="utf-8"))["fixed_duplicate_discovery"]
+    assert report == {
+        "cases": [case["case_id"] for case in cases],
+        "denominator": len(cases),
+        "current_4h": {"source_recall": "0/2", "selected_recall_at_16": "0/2"},
+        "proposed_48h": {
+            "source_recall": f"{recalled_48h}/{len(cases)}",
+            "selected_recall_at_16": f"{recalled_48h}/{len(cases)}",
+            "reason_counts": reasons,
+        },
+        "exploratory_7d": {
+            "source_recall": f"{recalled_7d}/{len(cases)}",
+            "selected_recall_at_16": f"{recalled_7d}/{len(cases)}",
+        },
+        "targets_only_in_48h_to_7d": lost_48h_to_7d,
+        "targets_only_in_48h_to_7d_count": len(lost_48h_to_7d),
+        "fixture_selection_note": (
+            "each frozen duplicate case has one recalled source row, so source rank equals selected rank under "
+            "the 16-row cap"
+        ),
     }

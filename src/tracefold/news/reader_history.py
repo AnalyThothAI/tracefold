@@ -133,17 +133,16 @@ def build_reader_history(
     """Build the recent policy ledger and the targeted semantic history from bounded receipt rows."""
 
     converted = _deduped_rows(rows)
-    recent_cutoff = int(now_ms) - RECENT_HISTORY_WINDOW_MS
-    target_cutoff = int(now_ms) - TARGETED_HISTORY_WINDOW_MS
+    recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
     current_assets = frozenset(base_symbol(str(symbol)) for symbol in canonical_assets if symbol)
-    targeted = [row for row in converted if target_cutoff <= row.at_ms < recent_cutoff]
+    targeted = [row for row in converted if _is_targeted(row, recent_cutoff, target_cutoff)]
     exact = [row for row in targeted if row.family == family and row.comparison_fingerprint == comparison_fingerprint]
     exact_ids = {row.event_id for row in exact}
     asset = [
         row for row in targeted if row.event_id not in exact_ids and current_assets.intersection(row.canonical_assets)
     ]
     return assemble_reader_history(
-        recent_rows=[row for row in converted if row.at_ms >= recent_cutoff],
+        recent_rows=[row for row in converted if _is_recent(row, recent_cutoff)],
         exact_rows=exact if include_targeted else (),
         asset_rows=asset if include_targeted else (),
         now_ms=now_ms,
@@ -159,11 +158,13 @@ def assemble_reader_history(
 ) -> ReaderHistorySnapshot:
     """Apply the shared boundaries, reason precedence, caps, deduplication, and stable order to query results."""
 
-    recent_cutoff = int(now_ms) - RECENT_HISTORY_WINDOW_MS
-    target_cutoff = int(now_ms) - TARGETED_HISTORY_WINDOW_MS
-    recent = sorted((row for row in _deduped_rows(recent_rows) if row.at_ms >= recent_cutoff), key=_newest_first)
+    recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
+    recent = sorted(
+        (row for row in _deduped_rows(recent_rows) if _is_recent(row, recent_cutoff)),
+        key=_newest_first,
+    )
     exact = sorted(
-        (row for row in _deduped_rows(exact_rows) if target_cutoff <= row.at_ms < recent_cutoff),
+        (row for row in _deduped_rows(exact_rows) if _is_targeted(row, recent_cutoff, target_cutoff)),
         key=_newest_first,
     )
     exact_ids = {row.event_id for row in exact}
@@ -171,7 +172,7 @@ def assemble_reader_history(
         (
             row
             for row in _deduped_rows(asset_rows)
-            if target_cutoff <= row.at_ms < recent_cutoff and row.event_id not in exact_ids
+            if _is_targeted(row, recent_cutoff, target_cutoff) and row.event_id not in exact_ids
         ),
         key=_newest_first,
     )
@@ -192,6 +193,18 @@ def _deduped_rows(rows: Sequence[Mapping[str, Any] | ReaderHistoryRow]) -> tuple
         if row.event_id and (prior is None or _newest_first(row) < _newest_first(prior)):
             by_event[row.event_id] = row
     return tuple(by_event.values())
+
+
+def _history_cutoffs(now_ms: int) -> tuple[int, int]:
+    return int(now_ms) - RECENT_HISTORY_WINDOW_MS, int(now_ms) - TARGETED_HISTORY_WINDOW_MS
+
+
+def _is_recent(row: ReaderHistoryRow, recent_cutoff: int) -> bool:
+    return row.at_ms >= recent_cutoff
+
+
+def _is_targeted(row: ReaderHistoryRow, recent_cutoff: int, target_cutoff: int) -> bool:
+    return target_cutoff <= row.at_ms < recent_cutoff
 
 
 def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:

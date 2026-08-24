@@ -116,6 +116,10 @@ NOW_MS = 1_787_000_000_000
 # #173 added the `product_progress` TradeChannel. It is publicly projected through `news_review_v3`, so both
 # generated contract artefacts move with it, and the code-owned stable Program root is re-issued.
 INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
+    "migration_head": (
+        "issue_175_reader_history_event_asset_index",
+        "20260824_0302",
+    ),
     "generated_artifacts_sha256.docs/generated/openapi.json": (
         "issue_173_product_progress_channel",
         "b0e424cf22fe9b12a6d5e5e8f59098315bb0c2b7f77e0775b27b014120efa23a",

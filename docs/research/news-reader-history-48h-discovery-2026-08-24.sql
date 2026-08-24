@@ -106,14 +106,14 @@ SELECT count(*) AS sample_n,
 -- sent-time bounds, stable order, and LIMIT 24; do not turn this into a 48 h Python scan.
 EXPLAIN (ANALYZE, BUFFERS)
 WITH current_event AS (
-  SELECT event_id, opened_at_ms, grounded_assets
+  SELECT event_id, opened_at_ms
     FROM news_events
    WHERE event_id = 'd621ac8ee02b8cf7b80be3124a4d98ec0d1bab51627de21028ea5ca6baeec4a6'
 ), current_bases AS (
-  SELECT DISTINCT COALESCE(a.base_symbol, replace(replace(tag.symbol, 'XYZ-', ''), 'XYZ:', '')) AS base
+  SELECT DISTINCT COALESCE(a.base_symbol, current_asset.symbol) AS base
     FROM current_event
-    CROSS JOIN LATERAL jsonb_array_elements_text(current_event.grounded_assets) tag(symbol)
-    LEFT JOIN news_symbol_aliases a ON a.alias = tag.symbol
+    JOIN news_event_assets current_asset ON current_asset.event_id = current_event.event_id
+    LEFT JOIN news_symbol_aliases a ON a.alias = current_asset.symbol
 ), equivalent_symbols AS (
   SELECT base AS symbol FROM current_bases
   UNION
@@ -141,5 +141,33 @@ SELECT e.event_id, d.settled_at_ms
    AND d.settled_at_ms < current_event.opened_at_ms - 4 * 3_600_000
  ORDER BY d.settled_at_ms DESC, e.event_id
  LIMIT 24;
+
+-- The reverse Event-owned projection that justified migration 0302. On schema 0301 the canonical-assets
+-- SubPlan scanned all news_event_assets 128 times (48.959 ms, 13,466 buffer hits on this snapshot). After
+-- 0302, every SubPlan is an event-led ix_news_event_assets_event lookup.
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT e.event_id,
+       COALESCE(
+         (SELECT jsonb_agg(base_symbol ORDER BY base_symbol)
+            FROM (SELECT DISTINCT COALESCE(alias.base_symbol, asset.symbol) AS base_symbol
+                    FROM news_event_assets asset
+                    LEFT JOIN news_symbol_aliases alias ON alias.alias = asset.symbol
+                   WHERE asset.event_id = e.event_id) bases),
+         '[]'::jsonb
+       ) AS canonical_assets
+  FROM news_deliveries d
+  JOIN news_events e ON e.event_id = d.event_id
+  JOIN LATERAL (
+    SELECT 1 FROM news_verdicts verdict
+     WHERE verdict.event_id = e.event_id
+       AND verdict.stage = 'triage'
+       AND verdict.final_decision IN ('push', 'escalate')
+     ORDER BY verdict.created_at_ms DESC, verdict.policy_version DESC
+     LIMIT 1
+  ) accepted ON true
+ WHERE d.kind = 'first' AND d.state = 'sent'
+   AND d.settled_at_ms >= 1787476637000
+ ORDER BY d.settled_at_ms DESC, e.event_id
+ LIMIT 128;
 
 ROLLBACK;

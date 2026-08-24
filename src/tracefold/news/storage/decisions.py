@@ -28,18 +28,28 @@ _READER_HISTORY_PROJECTION = """
            COALESCE(v.verdict -> 'assets', '[]'::jsonb) AS assets,
            COALESCE(
              (SELECT jsonb_agg(base_symbol ORDER BY base_symbol)
-                FROM (
-                  SELECT DISTINCT COALESCE(
-                    (SELECT a.base_symbol FROM news_symbol_aliases a WHERE a.alias = tag.symbol),
-                    replace(replace(tag.symbol, 'XYZ-', ''), 'XYZ:', '')
-                  ) AS base_symbol
-                    FROM jsonb_array_elements_text(COALESCE(e.grounded_assets, '[]'::jsonb)) tag(symbol)
-                ) bases),
+                FROM (SELECT DISTINCT COALESCE(a.base_symbol, ea.symbol) AS base_symbol
+                        FROM news_event_assets ea
+                        LEFT JOIN news_symbol_aliases a ON a.alias = ea.symbol
+                       WHERE ea.event_id = e.event_id) bases),
              '[]'::jsonb
            ) AS canonical_assets
-      FROM news_verdicts v
-      JOIN news_events e ON e.event_id = v.event_id
-      JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first' AND d.state = 'sent'
+      FROM news_events e
+      JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
+      JOIN LATERAL (
+        SELECT candidate.*
+          FROM (
+            -- Keep the Event-led primary-key lookup separate from the newest-route sort. Otherwise PostgreSQL
+            -- can walk the stage/time index once per Event and filter every other Event on each walk.
+            SELECT scoped.* FROM news_verdicts scoped
+             WHERE scoped.event_id = e.event_id
+               AND scoped.stage = 'triage'
+               AND scoped.final_decision IN ('push', 'escalate')
+             OFFSET 0
+          ) candidate
+         ORDER BY candidate.created_at_ms DESC, candidate.policy_version DESC
+         LIMIT 1
+      ) v ON true
 """
 
 
@@ -52,8 +62,7 @@ class DecisionStorage:
         recent = self.conn.execute(
             _READER_HISTORY_PROJECTION
             + """
-             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
-               AND e.event_id <> %s
+             WHERE e.event_id <> %s
                AND d.settled_at_ms >= %s
              ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
             """,
@@ -69,8 +78,7 @@ class DecisionStorage:
             + _READER_HISTORY_PROJECTION
             + """
              CROSS JOIN current_event current
-             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
-               AND e.event_id <> %s
+             WHERE e.event_id <> %s
                AND e.family = current.family
                AND e.comparison_fingerprint = current.comparison_fingerprint
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
@@ -87,13 +95,13 @@ class DecisionStorage:
         asset = self.conn.execute(
             """
             WITH current_event AS (
-              SELECT event_id, family, comparison_fingerprint, grounded_assets
+              SELECT event_id, family, comparison_fingerprint
                 FROM news_events WHERE event_id = %s
             ), current_bases AS (
-              SELECT DISTINCT COALESCE(a.base_symbol, replace(replace(tag.symbol, 'XYZ-', ''), 'XYZ:', '')) AS base
+              SELECT DISTINCT COALESCE(a.base_symbol, current_asset.symbol) AS base
                 FROM current_event current
-                CROSS JOIN LATERAL jsonb_array_elements_text(current.grounded_assets) tag(symbol)
-                LEFT JOIN news_symbol_aliases a ON a.alias = tag.symbol
+                JOIN news_event_assets current_asset ON current_asset.event_id = current.event_id
+                LEFT JOIN news_symbol_aliases a ON a.alias = current_asset.symbol
             ), equivalent_symbols AS (
               SELECT base AS symbol FROM current_bases
               UNION
@@ -114,8 +122,7 @@ class DecisionStorage:
             + """
              JOIN candidate_events candidate ON candidate.event_id = e.event_id
              CROSS JOIN current_event current
-             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
-               AND e.event_id <> current.event_id
+             WHERE e.event_id <> current.event_id
                AND NOT (
                  e.family = current.family
                  AND e.comparison_fingerprint = current.comparison_fingerprint

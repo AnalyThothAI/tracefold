@@ -22,6 +22,20 @@
     "candidate_count_48h": {"p50": 3.0, "p95": 147.0, "max": 164},
     "candidate_count_7d": {"p50": 11.0, "p95": 472.0, "max": 520}
   },
+  "fixed_duplicate_discovery": {
+    "cases": ["alibaba_overnight_restatement", "ordinary_24h_restatement"],
+    "denominator": 2,
+    "current_4h": {"source_recall": "0/2", "selected_recall_at_16": "0/2"},
+    "proposed_48h": {
+      "source_recall": "2/2",
+      "selected_recall_at_16": "2/2",
+      "reason_counts": {"exact_fingerprint": 1, "canonical_asset_overlap": 1}
+    },
+    "exploratory_7d": {"source_recall": "2/2", "selected_recall_at_16": "2/2"},
+    "targets_only_in_48h_to_7d": [],
+    "targets_only_in_48h_to_7d_count": 0,
+    "fixture_selection_note": "each frozen duplicate case has one recalled source row, so source rank equals selected rank under the 16-row cap"
+  },
   "alibaba_fixed_case": {
     "prior_event_id": "b821c941776a00a56146894714f4511cc0c8cd2d2d91013124ef134a6121e904",
     "current_event_id": "d621ac8ee02b8cf7b80be3124a4d98ec0d1bab51627de21028ea5ca6baeec4a6",
@@ -29,6 +43,15 @@
     "same_family": true,
     "same_comparison_fingerprint": false,
     "canonical_asset_overlap": ["BABA"],
+    "targeted_source_rank": 1,
+    "retrieval_reason": "canonical_asset_overlap",
+    "selected_preview": {
+      "source_count": 129,
+      "selected_count": 16,
+      "target_rank": 10,
+      "selection_tier": "asset_overlap",
+      "method": "existing selector tiers over ReaderHistory source with the obsolete global 4h cutoff and 128-row recut disabled; PR-B contract tests must reproduce this"
+    },
     "prior": {
       "comparison_title_md5": "8aed2142aa03b1fd2dc47847189cac5a",
       "grounded_assets": ["BABA", "XYZ-BABA"],
@@ -53,16 +76,26 @@
     }
   },
   "query_plan": {
-    "representative_canonical_asset_execution_ms": 1.419,
-    "representative_shared_buffers_hit": 236,
-    "existing_indexes_observed": [
+    "targeted_candidate_execution_ms_pre_index": 1.419,
+    "targeted_candidate_shared_buffers_hit_pre_index": 236,
+    "canonical_projection_execution_ms_pre_index": 48.959,
+    "canonical_projection_shared_buffers_hit_pre_index": 13466,
+    "canonical_projection_pre_index_shape": "news_event_assets sequential scan repeated 128 times",
+    "reader_history_three_read_elapsed_ms_pre_index": 133.204,
+    "existing_indexes_observed_before_pr_a": [
       "news_events_pkey",
       "ix_news_deliveries_sent",
       "news_event_assets_pkey",
       "news_symbol_aliases_pkey"
     ],
-    "decision": "no_additive_index_in_pr_a",
-    "caveat": "single warm representative plan; target candidate ids came from three symbol-led primary-key searches; PR-B must retain bounded limits and production plan checks"
+    "decision": "add ix_news_event_assets_event(event_id,symbol) in migration 20260824_0302",
+    "post_migration_plan_source": "migrated local PostgreSQL with the 129-card cap fixture plus 7000 noise asset rows",
+    "post_migration_plan": {
+      "execution_ms": 3.749,
+      "shared_buffers_hit": 4517,
+      "asset_node": "Bitmap Index Scan on ix_news_event_assets_event, 128 index searches, 384 asset-index buffer hits"
+    },
+    "caveat": "production figures are one warm snapshot; PR-B must retain bounded limits and re-run the checked SQL after migration 0302"
   },
   "pr_a_identity_guard": {
     "program_version": "news_semantic_program_v4",
