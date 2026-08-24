@@ -119,6 +119,7 @@ async def run_workers(settings: Settings) -> None:
     phase = "startup"
     signal_loop = asyncio.get_running_loop()
     fatal_watchdog: asyncio.TimerHandle | None = None
+    fatal_deadline: float | None = None
 
     def request_shutdown() -> None:
         probe_state.ready = False
@@ -128,7 +129,7 @@ async def run_workers(settings: Settings) -> None:
         shutdown_requested.set()
 
     def enter_fatal(_exc: BaseException) -> None:
-        nonlocal fatal_watchdog
+        nonlocal fatal_deadline, fatal_watchdog
         if fatal_watchdog is not None:
             return
         probe_state.ready = False
@@ -142,6 +143,7 @@ async def run_workers(settings: Settings) -> None:
         finite.close_admission()
         if db is not None:
             db.close_business_admission()
+        fatal_deadline = signal_loop.time() + FATAL_EXIT_TIMEOUT_SECONDS
         fatal_watchdog = signal_loop.call_later(
             FATAL_EXIT_TIMEOUT_SECONDS,
             os._exit,
@@ -345,6 +347,7 @@ async def run_workers(settings: Settings) -> None:
             runtime_id=runtime_id,
             finite=finite,
             phase=phase,
+            deadline_at=fatal_deadline,
         )
     finally:
         _remove_signal_handlers(signal_loop, installed_signals)
@@ -531,6 +534,7 @@ async def _fatal_exit(
     runtime_id: str,
     finite: FiniteOperations,
     phase: str,
+    deadline_at: float | None,
 ) -> None:
     logger.opt(exception=exc).critical("Workers runtime fatal exit")
     finite.close_admission()
@@ -538,20 +542,52 @@ async def _fatal_exit(
     if db is not None:
         db.close_business_admission()
         try:
-            async with asyncio.timeout(max(0.001, FATAL_EXIT_TIMEOUT_SECONDS - 0.5)):
-                await db.run_control(
-                    "workers_runtime_failed",
-                    _runtime_transition,
-                    db,
-                    runtime_id,
-                    "failed",
-                    fatal_code,
-                    operation_timeout_seconds=1.0,
-                    allow_shutdown=True,
+            loop = asyncio.get_running_loop()
+            effective_deadline = deadline_at or (loop.time() + FATAL_EXIT_TIMEOUT_SECONDS)
+            async with asyncio.timeout(max(0.001, effective_deadline - loop.time() - 0.5)):
+                await _persist_fatal_transition(
+                    db=db,
+                    runtime_id=runtime_id,
+                    fatal_code=fatal_code,
+                    deadline_at=effective_deadline,
                 )
         except BaseException:
             os._exit(1)
     os._exit(1)
+
+
+async def _persist_fatal_transition(
+    *,
+    db: WorkerDatabase,
+    runtime_id: str,
+    fatal_code: str,
+    deadline_at: float,
+) -> None:
+    while True:
+        try:
+            await db.run_control(
+                "workers_runtime_failed",
+                _runtime_transition,
+                db,
+                runtime_id,
+                "failed",
+                fatal_code,
+                operation_timeout_seconds=1.0,
+                allow_shutdown=True,
+            )
+            return
+        except (
+            LockNotAvailable,
+            QueryCanceled,
+            TransactionTimeout,
+            IdleInTransactionSessionTimeout,
+            PoolTimeout,
+            OperationalError,
+        ):
+            remaining = deadline_at - asyncio.get_running_loop().time() - 0.5
+            if remaining <= 0.001:
+                raise
+            await asyncio.sleep(min(_CONTROL_RETRY_SECONDS, remaining))
 
 
 def _fatal_code(exc: BaseException, *, phase: str) -> str:

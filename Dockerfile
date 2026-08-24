@@ -49,7 +49,6 @@ RUN python -m pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY src ./src
-COPY --from=web-builder /app/web/dist ./src/tracefold/web/dist
 
 RUN --mount=type=secret,id=github_token \
     --mount=type=cache,target=/root/.cache/uv \
@@ -74,6 +73,18 @@ RUN --mount=type=secret,id=github_token \
 RUN /app/.venv/bin/python -c \
     'from tracefold.news.program.graph import load_stable_program_artifact; load_stable_program_artifact()'
 
+FROM python-deps AS compiler
+
+ARG TRACEFOLD_BUILD_REVISION
+ENV PATH="/app/.venv/bin:${PATH}" \
+    TRACEFOLD_RUNTIME_REVISION=${TRACEFOLD_BUILD_REVISION}
+
+LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION} \
+      io.tracefold.image.role=compiler
+
+RUN python -c \
+    'from tracefold.news.learning.compiler.launcher import PROXY_MODULE, RUNNER_MODULE; from tracefold.news.learning.compiler.source_identity import compiler_source_sha256, proxy_source_sha256; assert RUNNER_MODULE and PROXY_MODULE and compiler_source_sha256() != proxy_source_sha256()'
+
 FROM python:3.13-slim-bookworm
 
 ARG TRACEFOLD_BUILD_REVISION
@@ -86,6 +97,7 @@ LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION}
 WORKDIR /app
 
 COPY --from=python-deps /app /app
+COPY --from=web-builder /app/web/dist /app/src/tracefold/web/dist
 
 ENV PATH="/app/.venv/bin:${PATH}"
 

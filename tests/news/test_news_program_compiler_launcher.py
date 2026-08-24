@@ -301,15 +301,28 @@ def test_missing_cidfile_cleanup_uses_the_random_exact_container_name(monkeypatc
 def test_docker_desktop_named_volume_unix_socket_network_none_and_cleanup(tmp_path: Path) -> None:
     docker = shutil.which("docker")
     if docker is None:
-        pytest.skip("docker unavailable")
+        message = "compiler launcher integration requires Docker"
+        if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message + " (local convenience skip; not verification evidence)")
+    revision = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    compiler_image = f"tracefold-compiler-smoke:{revision[:12]}"
     image = subprocess.run(
-        (docker, "image", "inspect", "python:3.13-slim", "--format", "{{.Id}}"),
+        (docker, "image", "inspect", compiler_image, "--format", "{{.Id}}"),
         capture_output=True,
         text=True,
         check=False,
     ).stdout.strip()
     if not image.startswith("sha256:"):
-        pytest.skip("local python:3.13-slim image unavailable")
+        message = f"verified compiler smoke image unavailable: {compiler_image}"
+        if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message + " (run make test-compiler-smoke first)")
     suffix = uuid.uuid4().hex[:20]
     volume = f"tracefold-compiler-it-{suffix}-socket"
     network = f"tracefold-compiler-it-{suffix}-egress"
@@ -417,6 +430,7 @@ def test_docker_desktop_named_volume_unix_socket_network_none_and_cleanup(tmp_pa
         )
         assert proxy_boundary["readonly_rootfs"] is True
         assert proxy_boundary["pids_limit"] == 32
+        assert proxy_boundary["network_sha256"] == canonical_sha({"name": network})
         client = (
             "import socket;"
             "s=socket.socket(socket.AF_UNIX);s.connect('/v/compiler.sock');s.sendall(b'ping');"

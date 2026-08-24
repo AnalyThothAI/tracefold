@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -28,6 +29,8 @@ RK_VERDICT_PUSH: Final = "verdict.push"
 
 RETRY_TTL_MS: Final = 30_000
 MAX_TRANSIENT_ATTEMPTS: Final = 3
+_BODY_FIELDS: Final = frozenset({"schema_version", "kind", "message_id", "trace_id", "occurred_at_ms", "payload"})
+_IDENTIFIER_MAX_BYTES: Final = 128
 
 MessageKind = Literal["raw", "event", "verdict"]
 
@@ -57,6 +60,7 @@ class BusMessage:
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
+            allow_nan=False,
         ).encode("utf-8")
 
 
@@ -71,25 +75,50 @@ def decode_body(body: bytes, *, routing_key: str, priority: int, headers: Mappin
         raise BusDecodeError("news_bus_body_invalid") from exc
     if not isinstance(raw, dict) or raw.get("schema_version") != NEWS_BUS_SCHEMA_VERSION:
         raise BusDecodeError("news_bus_schema_invalid")
+    if set(raw) != _BODY_FIELDS:
+        raise BusDecodeError("news_bus_fields_invalid")
     kind = raw.get("kind")
     if kind not in {"raw", "event", "verdict"}:
         raise BusDecodeError("news_bus_kind_invalid")
     payload = raw.get("payload")
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or _has_nonfinite(payload):
         raise BusDecodeError("news_bus_payload_invalid")
+    message_id = _identifier(raw.get("message_id"), field="message_id")
+    trace_id = _identifier(raw.get("trace_id"), field="trace_id")
+    occurred_at_ms = raw.get("occurred_at_ms")
+    if type(occurred_at_ms) is not int or occurred_at_ms <= 0:
+        raise BusDecodeError("news_bus_timestamp_invalid")
     hdr = dict(headers or {})
-    attempt = int(hdr.get("x-news-attempt") or 1)
+    attempt = hdr.get("x-news-attempt", 1)
+    if type(attempt) is not int or attempt <= 0:
+        raise BusDecodeError("news_bus_attempt_invalid")
     return BusMessage(
         kind=kind,
-        message_id=str(raw.get("message_id") or ""),
+        message_id=message_id,
         routing_key=routing_key,
         payload=payload,
-        trace_id=str(raw.get("trace_id") or ""),
-        occurred_at_ms=int(raw.get("occurred_at_ms") or 0),
+        trace_id=trace_id,
+        occurred_at_ms=occurred_at_ms,
         priority=int(priority or 0),
         attempt=attempt,
         headers=hdr,
     )
+
+
+def _identifier(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > _IDENTIFIER_MAX_BYTES:
+        raise BusDecodeError(f"news_bus_{field}_invalid")
+    return value
+
+
+def _has_nonfinite(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, Mapping):
+        return any(_has_nonfinite(key) or _has_nonfinite(item) for key, item in value.items())
+    if isinstance(value, list | tuple):
+        return any(_has_nonfinite(item) for item in value)
+    return False
 
 
 def new_trace_id() -> str:

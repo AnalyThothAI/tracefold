@@ -609,6 +609,23 @@ def test_real_workers_absolute_graceful_deadline_covers_never_returning_future()
         _ensure_process_stopped(process)
 
 
+def test_fatal_transition_retries_one_transient_control_write_within_the_watchdog() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("finite_never_returns_failed_transition_once", port)
+    try:
+        _wait_ready(process, port)
+        _wait_for_output(process, "FINITE_STARTED")
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=4.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "graceful_deadline_exceeded"
+    finally:
+        _ensure_process_stopped(process)
+
+
 def test_shutdown_never_returning_control_write_obeys_absolute_graceful_deadline() -> None:
     prepare_postgres_database()
     port = _free_port()

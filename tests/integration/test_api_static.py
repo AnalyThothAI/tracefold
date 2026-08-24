@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
+from tests.postgres_test_utils import postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
 
@@ -9,7 +9,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 
 def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
-    prepare_postgres_database()
     settings = Settings(
         ws_token="secret",
         storage=postgres_settings_storage(),

@@ -258,8 +258,10 @@ quality uplift; v7 evidence starts from zero
 and the normal graph remains exactly two serial Predictor calls.
 The production image has one loader only: artifact v2, factory/executable v5,
 epoch v7 and policy v10. Issue #175 reissues that sole stable Program and bundle
-inside v7; rollback uses the recorded previous same-schema runtime image, never
-an alternate registry entry or runtime switch.
+inside v7; Issue #190 reissues it again for fail-closed NaN/Infinity canonical
+identity while leaving valid state bytes unchanged. Rollback uses the recorded
+previous same-schema runtime image, never an alternate registry entry or
+runtime switch.
 `tracefold config` prints the effective values. Policy v10 retains policy v7's
 removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes the semantic contract moves
 to delivery; the sent-reader ledger remains only for same-fact suppression.
@@ -425,7 +427,7 @@ it does not bootstrap a blank cluster. Then use separate terminals:
 
 ```bash
 # one-time dependency/schema preparation
-uv sync
+make sync
 cd web && npm ci && cd ..
 uv run tracefold db migrate
 

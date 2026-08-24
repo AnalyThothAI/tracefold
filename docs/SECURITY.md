@@ -163,7 +163,10 @@ and D-generation `program_v2`–`program_v4` epochs. `0298` appends `program_v5`
 for factory v3 and candidate-conditioned ToldContext. `0301` preserves all
 history and appends `program_v6` for factory/executable v4, policy v10, review
 v4 and metric/compiler protocol v3. `0303` appends the current `program_v7` for
-factory/executable v5 after the Program/Learning package split. Every earlier
+factory/executable v5 after the Program/Learning package split. Issue #190
+reissues the sole v7 root when canonical identity starts rejecting
+NaN/Infinity; valid state bytes remain identical, but the old source-sealed
+root is not executable by the new image. Every earlier
 review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v4, DemoBank,
 validation, holdout or promotion evidence for the current Program factory.

@@ -121,11 +121,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "issue_175_reader_history_index_then_issue_162_pr8b_program_v7_epoch",
         "20260824_0303",
     ),
-    # PR8-B moved the Program, so the Dockerfile's build-time import probe moved with it. That probe is
-    # how a broken module path is caught before a container starts, which is exactly what happened here.
+    # #190 adds the dedicated real-package compiler target and moves the web-dist copy to the final
+    # runtime stage. Program source, dependency lock, prompts, routes and call budgets stay unchanged;
+    # the container boundary is intentionally strengthened and is exercised by compiler-smoke.
     "infrastructure_and_dependency_sha256.Dockerfile": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "181084445b3ffd928da7b316fbda597630fc5b6819603af994ad583c37e5b977",
+        "issue_190_compiler_container_verification",
+        "387d0d8713f9e87d228d78684e188d571c1a25ab0f800370977cf14e20bb85b1",
     ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
@@ -160,13 +161,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "program_v7",
     ),
     "program_learning.program_sha256": (
-        # #175 re-issued the root inside the v7 epoch; #162 PR8-C re-issues it again by finishing the
-        # package split the epoch was opened for. The factory closure is addressed by logical file name,
-        # so decomposing `graph.py` into runtime/signatures/artifact/dspy_adapter moves the root with no
-        # prompt, RulePack, policy, model route or call budget changed. No new epoch: v7 already means
-        # "the Program/Learning split", and this is that split completing, not a different Program.
-        "issue_175_reader_history_root_then_issue_162_pr8c_program_decomposition",
-        "8c6dcf5085ba0092655ad8718ae27304f05fd042e43395692de72b8e357857fe",
+        # #190 makes the canonical identity primitive reject NaN/Infinity. Valid JSON state, prompts,
+        # RulePacks, policy, routes, call budgets and the state hash stay byte-identical; the sealed factory
+        # source and therefore the sole stable root move explicitly. Like #175's same-schema hard cut, this
+        # reissues the one runtime bundle inside v7 rather than inventing a parallel executable generation.
+        "issue_190_canonical_nonfinite_fail_closed_root_reissue",
+        "cff8fdfbb5f8c101bcc9145103e79fd5265a6550c85aa5e83aeaf25536c31b03",
     ),
     "program_learning.input_contract_sha256": (
         "issue_175_composite_reader_history_retrieval",

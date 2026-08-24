@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.postgres_test_utils import prepare_postgres_database
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -18,7 +17,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 
 def test_make_docs_generated_clean_diff() -> None:
-    prepare_postgres_database()
     before = _generated_snapshot()
     env = os.environ.copy()
     env["GMGN_TEST_POSTGRES_DSN"] = _test_postgres_dsn()

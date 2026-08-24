@@ -45,6 +45,28 @@ def test_default_test_target_selects_only_hermetic_lanes() -> None:
     assert all(tool not in commands for tool in ("docker", "testcontainers", "uvicorn", "npx", "npm "))
 
 
+def test_evidence_target_selects_every_deterministic_lane_and_excludes_live_explicitly() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "test-evidence"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    commands = result.stdout
+
+    assert "TRACEFOLD_TEST_EVIDENCE=1" in commands
+    assert "-p tests.support.evidence" in commands
+    assert '-m "not live"' in commands
+    assert "--evidence-manifest=" in commands
+    assert "--junitxml=" in commands
+    assert "npm run typecheck" in commands
+    assert "npm run lint" in commands
+    assert "npm run test:unit" in commands
+    assert "npm run format:check" in commands
+    assert "npm run build" in commands
+
+
 def test_current_documentation_links_resolve() -> None:
     sources = [
         ROOT / "README.md",

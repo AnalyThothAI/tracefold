@@ -564,7 +564,10 @@ Issue #175's following code hard cut keeps factory/executable v5, epoch
 `program_v7`, and policy v10, but replaces the sole stable Program artifact and
 bundle because the composite reader-history/selector retrieval identity and
 RulePack text changed. Earlier bundles remain immutable audit history and are
-not executable by the new image.
+not executable by the new image. Issue #190 reissues that sole bundle again,
+still inside v7, because the package-owned canonical identity primitive now
+rejects NaN/Infinity. Every valid JSON state byte and the state hash remain
+unchanged; the sealed factory-source hash and Program SHA change explicitly.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

@@ -870,7 +870,7 @@ def _bounded_command(
         if termination is not None:
             if on_abort is not None:
                 on_abort()
-            with suppress(ProcessLookupError):
+            with suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
             with suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=10)
@@ -881,7 +881,7 @@ def _bounded_command(
                 termination = "timed_out"
                 if on_abort is not None:
                     on_abort()
-                with suppress(ProcessLookupError):
+                with suppress(ProcessLookupError, PermissionError):
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=10)
         exit_code = int(process.returncode if process.returncode is not None else -1)
@@ -1133,7 +1133,9 @@ def _docker_container_boundary_payload(
         "container_id_sha256": canonical_sha({"id": container_id}),
         "name_sha256": canonical_sha({"name": expected_name}),
         "image": expected_image,
-        "network_sha256": canonical_sha({"network": expected_network}),
+        "network_sha256": canonical_sha(
+            {"network": "none"} if expected_network == "none" else {"name": expected_network}
+        ),
         "readonly_rootfs": True,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],

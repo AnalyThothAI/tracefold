@@ -10,7 +10,14 @@ from typing import Any
 def canonical_json(value: Any) -> str:
     """Serialize one News artifact exactly the same way in every adapter."""
 
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+        allow_nan=False,
+    )
 
 
 def canonical_sha(value: Any) -> str:

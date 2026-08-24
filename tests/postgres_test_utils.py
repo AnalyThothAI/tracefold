@@ -21,11 +21,22 @@ def test_postgres_dsn() -> str:
     return os.environ.get("GMGN_TEST_POSTGRES_DSN", DEFAULT_TEST_DSN)
 
 
+def ensure_migrated_postgres_resource(dsn: str, *, resource_name: str) -> None:
+    """Migrate one explicitly requested test database or fail its owning gate."""
+
+    try:
+        upgrade_head(dsn)
+    except Exception as exc:
+        pytest.fail(f"alembic upgrade head failed for the declared {resource_name}: {exc}", pytrace=False)
+
+
 def connect_postgres_test(*_: Any, read_only: bool = False, **__: Any):
     try:
         conn = connect_postgres(test_postgres_dsn())
         conn.row_factory = _compat_row
     except OperationalError as exc:
+        if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
+            pytest.fail(f"PostgreSQL test database is required in evidence mode: {exc}", pytrace=False)
         pytest.skip(f"PostgreSQL test database is not available: {exc}")
     if read_only:
         conn.execute("SET default_transaction_read_only = on")

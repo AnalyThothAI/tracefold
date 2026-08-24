@@ -46,6 +46,7 @@ def _arguments() -> argparse.Namespace:
             "child_failure",
             "finite_overrun",
             "finite_never_returns",
+            "finite_never_returns_failed_transition_once",
             "control_overrun",
             "control_native_timeout",
             "control_transient_startup",
@@ -138,6 +139,29 @@ async def _main() -> None:
 
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
+
+    if arguments.mode == "finite_never_returns_failed_transition_once":
+        from psycopg import OperationalError
+
+        original_runtime_transition = workers._runtime_transition
+        workers.GRACEFUL_DRAIN_TIMEOUT_SECONDS = 1.0
+        workers._CONTROL_RETRY_SECONDS = 0.05
+        failed_transition_attempts = 0
+
+        def transient_failed_transition(
+            db: Any,
+            runtime_id: str,
+            lifecycle_state: Any,
+            fatal_code: Any,
+        ) -> None:
+            nonlocal failed_transition_attempts
+            if lifecycle_state == "failed" and failed_transition_attempts == 0:
+                failed_transition_attempts += 1
+                print("FAILED_TRANSITION_TRANSIENT", flush=True)
+                raise OperationalError("test transient fatal transition")
+            original_runtime_transition(db, runtime_id, lifecycle_state, fatal_code)
+
+        workers._runtime_transition = transient_failed_transition
 
     if arguments.mode in {
         "control_transient_startup",
@@ -272,7 +296,11 @@ async def _main() -> None:
             return _components(workers, due_turns=((fail, 1.0),))
 
         finite = kwargs["finite"]
-        if arguments.mode in {"finite_overrun", "finite_never_returns"}:
+        if arguments.mode in {
+            "finite_overrun",
+            "finite_never_returns",
+            "finite_never_returns_failed_transition_once",
+        }:
             never_release = threading.Event()
 
             def never_returns() -> None:

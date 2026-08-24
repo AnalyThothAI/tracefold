@@ -22,15 +22,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 
 
-_SCHEMA_STATE = {"prepared": False}
+def make_settings(tmp_path) -> Settings:
+    """Build settings against the session fixture's already migrated schema."""
 
-
-def make_settings(tmp_path, *, reset: bool = True) -> Settings:
-    """Reset the schema unless the test only exercises validation/auth paths (reset=False reuses head)."""
-
-    if reset or not _SCHEMA_STATE["prepared"]:
-        prepare_postgres_database()
-        _SCHEMA_STATE["prepared"] = True
     settings = Settings(
         ws_token="secret",
         news=NewsSettings(),
@@ -62,7 +56,7 @@ def test_api_bootstrap_exposes_frontend_runtime_config_without_token(tmp_path):
 
 
 def test_api_rejects_protected_reads_without_token(tmp_path):
-    app = create_app(settings=make_settings(tmp_path, reset=False))
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get("/api/news/feed")
@@ -101,6 +95,7 @@ def _seed_news_v3_events(*, now_ms: int) -> list[str]:
 
 
 def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
+    prepare_postgres_database()
     settings = make_settings(tmp_path)
     app = create_app(settings=settings)
     now_ms = int(time.time() * 1000)
@@ -195,7 +190,7 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
 
 
 def test_api_notification_routes_are_not_registered(tmp_path):
-    app = create_app(settings=make_settings(tmp_path, reset=False))
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -210,7 +205,7 @@ def test_api_notification_routes_are_not_registered(tmp_path):
 
 
 def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
-    app = create_app(settings=make_settings(tmp_path, reset=False))
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -230,7 +225,7 @@ def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
 def test_api_retired_market_routes_and_websocket_are_absent(tmp_path):
     """The GMGN lane (Search, Token Case, recent events, live market, WS live journal) is gone (#50)."""
 
-    app = create_app(settings=make_settings(tmp_path, reset=False))
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}

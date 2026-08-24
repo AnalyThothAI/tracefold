@@ -41,13 +41,16 @@ def _docker_available() -> bool:
         return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_golden_postgres_dsn() -> Iterator[None]:
+@pytest.fixture(scope="session")
+def golden_postgres_dsn() -> Iterator[str]:
     existing = os.environ.get("GMGN_TEST_POSTGRES_DSN", DEFAULT_DSN)
 
     if _dsn_reachable(existing):
+        from tests.postgres_test_utils import ensure_migrated_postgres_resource
+
+        ensure_migrated_postgres_resource(existing, resource_name="PostgreSQL golden resource")
         os.environ["GMGN_TEST_POSTGRES_DSN"] = existing
-        yield
+        yield existing
         return
 
     if not _docker_available():
@@ -62,17 +65,11 @@ def _ensure_golden_postgres_dsn() -> Iterator[None]:
 
     from testcontainers.postgres import PostgresContainer
 
+    from tests.postgres_test_utils import ensure_migrated_postgres_resource
     from tests.tracefold_postgres_container import tracefold_postgres_container
-    from tracefold.platform.postgres.migrations import upgrade_head
 
     with tracefold_postgres_container(PostgresContainer) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
-        try:
-            upgrade_head(dsn)
-        except Exception as exc:
-            pytest.fail(
-                f"alembic upgrade head failed against golden testcontainers PG ({dsn}): {exc}",
-                pytrace=False,
-            )
+        ensure_migrated_postgres_resource(dsn, resource_name="testcontainers PostgreSQL golden resource")
         os.environ["GMGN_TEST_POSTGRES_DSN"] = dsn
-        yield
+        yield dsn
