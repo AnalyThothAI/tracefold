@@ -41,6 +41,13 @@ Two facts worth carrying into every task because they are easy to get wrong:
 
 ## Agent skills
 
+## Completion evidence
+
+Completion evidence is bound to the exact tested HEAD. Results from an earlier
+commit, a skipped resource lane, or a modified acceptance contract are not
+merge or release evidence. Follow the Verification Evidence Contract in
+`docs/DEVELOPMENT.md`.
+
 ### Issue tracker
 
 GitHub Issues in `AnalyThothAI/tracefold` are the project request and PRD
@@ -112,7 +119,7 @@ sessions) can proceed at the same time:
 ```bash
 git fetch origin main
 git worktree add -b claude/<issue-or-slug> .claude/worktrees/<slug> origin/main
-cd .claude/worktrees/<slug> && uv sync && (cd web && npm ci)   # per-worktree venv/node_modules
+cd .claude/worktrees/<slug> && make sync && (cd web && npm ci) # per-worktree venv/node_modules
 ```
 
 - `EnterWorktree` (Claude Code tool) is the same thing: it creates

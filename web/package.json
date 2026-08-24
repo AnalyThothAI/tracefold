@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "test": "vitest run",
+    "test:unit": "vitest run tests/unit tests/component tests/routes",
     "test:architecture": "vitest run --run tests/architecture",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",

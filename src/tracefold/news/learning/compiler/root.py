@@ -498,8 +498,11 @@ def _optimizer_config_receipt(
         # The proposer is code, not a scalar. It is named below rather than serialized, so the receipt still
         # says exactly which one ran without trying to JSON-encode an object.
         "constructor_scalar_arguments": _json_safe(
-            {key: value for key, value in constructor.items() if key != "instruction_proposer"}
+            {key: value for key, value in constructor.items() if key not in {"instruction_proposer", "wandb_api_key"}}
         ),
+        # GEPA requires the named kwarg even when telemetry is disabled. A secret-shaped key is forbidden in
+        # retained receipts, so record its exact absence as a scalar name instead of serializing the key.
+        "omitted_unset_arguments": ["wandb_api_key"],
         "instruction_proposer": {
             "implementation": f"{type(constructor['instruction_proposer']).__module__}."
             f"{type(constructor['instruction_proposer']).__qualname__}"

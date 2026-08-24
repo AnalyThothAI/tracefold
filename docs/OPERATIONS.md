@@ -97,6 +97,9 @@ manually review every newly held `restatement` whose trace reports
 the prior sent time, headline, and retrieval reason. If any such hold is really
 a `progression` or `new_fact`, replace the runtime with the recorded previous
 image digest immediately and retain the verdict/trace as regression evidence.
+The #190 canonical-number hard cut follows the same one-image rule: rollback is
+the recorded previous same-schema image, never the removed Program registry
+root, and any attempted NaN/Infinity identity must remain a hard failure.
 
 For the #160 drill and rollback, use the full image ID printed by
 `build-news-rollback-image` directly. After both sides of a later deployment

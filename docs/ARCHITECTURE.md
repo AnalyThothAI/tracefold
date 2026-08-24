@@ -778,6 +778,10 @@ it does not add a second product stage or a second card.
 
 The only executable generation is `news_semantic_program_v5` from
 `tracefold.news.program.factory_v5` in learning epoch `program_v7`.
+Issue #190's canonical-number hardening reissues the sole v7 root because the
+factory source is sealed: NaN/Infinity now fail before identity or hashing,
+while valid state bytes, prompts, RulePacks, routes, budgets, and policy remain
+unchanged. The old root is not a second runtime option.
 It is a code-owned `ProgramArtifact v2`: canonical `manifest.json` plus
 `state.json`, content-addressed by the whole reviewed identity. The manifest
 binds the fixed factory/topology, DSPy/dependency lock, and the input, Adapter,

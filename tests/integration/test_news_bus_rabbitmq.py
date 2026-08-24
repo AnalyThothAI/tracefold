@@ -1,7 +1,8 @@
 """RabbitMQ adapter tests: topology, bounded-concurrency consume, retry/defer lanes, DLQ tooling, teardown.
 
 Requires a broker at TRACEFOLD_TEST_AMQP_URL (default amqp://tracefold:tracefold@127.0.0.1:5672/,
-the compose broker); skips otherwise. Every test declares its own prefixed topology and deletes it.
+the compose broker). The explicit fixture fails closed in evidence mode. Every test declares its own
+prefixed topology and deletes it.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ import asyncio
 import base64
 import json
 import os
-import socket
 import time
 import urllib.request
 import uuid
@@ -34,7 +34,7 @@ from tracefold.news.bus import (
     new_trace_id,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
 AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
 _AMQP = urlsplit(AMQP_URL)
@@ -42,18 +42,6 @@ MANAGEMENT_URL = os.environ.get(
     "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
     f"http://{_AMQP.hostname or '127.0.0.1'}:15672",
 ).rstrip("/")
-
-
-def _broker_reachable() -> bool:
-    parsed = urlsplit(AMQP_URL)
-    try:
-        with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 5672), timeout=1.5):
-            return True
-    except OSError:
-        return False
-
-
-skip_without_broker = pytest.mark.skipif(not _broker_reachable(), reason="RabbitMQ test broker not reachable")
 
 
 @asynccontextmanager
@@ -110,7 +98,6 @@ def _management_vhost() -> str:
     return raw or "/"
 
 
-@skip_without_broker
 def test_topology_is_three_queues_one_dlq_one_retry_lane() -> None:
     async def scenario() -> None:
         async with _bus() as bus:
@@ -123,7 +110,6 @@ def test_topology_is_three_queues_one_dlq_one_retry_lane() -> None:
     asyncio.run(scenario())
 
 
-@skip_without_broker
 def test_declarations_confirms_and_publisher_properties_match_the_runtime_contract() -> None:
     async def scenario() -> None:
         async with _bus(retry_ttl_ms=RETRY_TTL_MS) as bus:
@@ -214,7 +200,6 @@ def test_declarations_confirms_and_publisher_properties_match_the_runtime_contra
     asyncio.run(scenario())
 
 
-@skip_without_broker
 def test_consume_handles_up_to_prefetch_messages_concurrently() -> None:
     async def scenario() -> None:
         async with _bus() as bus:
@@ -243,7 +228,6 @@ def test_consume_handles_up_to_prefetch_messages_concurrently() -> None:
     asyncio.run(scenario())
 
 
-@skip_without_broker
 def test_transient_is_counted_defer_is_not_and_permanent_dead_letters() -> None:
     async def scenario() -> None:
         async with _bus() as bus:

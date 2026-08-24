@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
-import socket
 import tempfile
 import uuid
 from pathlib import Path
@@ -14,8 +12,6 @@ import pytest
 import yaml
 
 from tests.contract.test_cli import write_runtime_config
-from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.cli import main
 
@@ -27,11 +23,6 @@ def test_db_audit_query_audit_and_validate_projections_use_postgres_only() -> No
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
         write_runtime_config(home, postgres_dsn=_test_postgres_dsn())
-        conn = connect_postgres_test(read_only=False)
-        try:
-            migrate(conn)
-        finally:
-            conn.close()
         stdout = io.StringIO()
         with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
             exit_codes = [
@@ -48,17 +39,6 @@ def test_db_audit_query_audit_and_validate_projections_use_postgres_only() -> No
     assert lines[2]["data"]["mismatch_count"] == 0
 
 
-def _amqp_reachable(url: str) -> bool:
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(url)
-    try:
-        with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 5672), timeout=1.0):
-            return True
-    except OSError:
-        return False
-
-
 def _delete_test_topology(url: str, name_prefix: str) -> None:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
@@ -73,8 +53,8 @@ def _delete_test_topology(url: str, name_prefix: str) -> None:
     asyncio.run(run())
 
 
-def test_news_bus_check_reports_topology_or_fails_closed_without_broker() -> None:
-    amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
+def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq_url: str) -> None:
+    amqp_url = rabbitmq_url
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
         config_path = write_runtime_config(home)
@@ -85,8 +65,6 @@ def test_news_bus_check_reports_topology_or_fails_closed_without_broker() -> Non
         assert missing_code == 1
         assert missing_payload["detail"].startswith("news_broker_url_missing")
 
-        if not _amqp_reachable(amqp_url):
-            pytest.fail("integration RabbitMQ is not reachable")
         payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         name_prefix = f"tf_test_{uuid.uuid4().hex[:8]}"
         payload["news"] = {**(payload.get("news") or {}), "broker": {"url": amqp_url, "name_prefix": name_prefix}}

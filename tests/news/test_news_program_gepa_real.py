@@ -219,7 +219,7 @@ def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool
     )
 
 
-def _corpus() -> tuple[DevelopmentEpisode, ...]:
+def compiler_development_corpus() -> tuple[DevelopmentEpisode, ...]:
     """Enough coverage that the honest split can find every required stratum on both sides."""
 
     return tuple(
@@ -248,7 +248,7 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
         CompileRequest(
             development_dataset_sha="0" * 64,
             review_rubric_version="news_review_v4",
-            episodes=_corpus(),
+            episodes=compiler_development_corpus(),
             # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
             # `max_cost / max_call_cost`. Sizing those two independently is how a run silently starves.
             budget=CompileBudget(
@@ -282,6 +282,8 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
 
     receipt = result.receipt_payloads.optimizer_config
     assert receipt["instruction_proposer"]["implementation"].endswith("RulePackAwareProposer")
+    assert receipt["omitted_unset_arguments"] == ["wandb_api_key"]
+    assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
     split = result.receipt_payloads.split
     assert split["disjointness"]["shared_case_ids"] == 0
@@ -427,7 +429,7 @@ def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
             CompileRequest(
                 development_dataset_sha="0" * 64,
                 review_rubric_version="news_review_v4",
-                episodes=_corpus(),
+                episodes=compiler_development_corpus(),
                 budget=CompileBudget(
                     max_metric_calls=40,
                     max_task_model_calls=400,

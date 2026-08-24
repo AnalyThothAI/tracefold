@@ -9,15 +9,17 @@ TRACEFOLD_WORKERS_PORT ?= 8766
 TRACEFOLD_API_URL ?= http://127.0.0.1:$(TRACEFOLD_API_PORT)
 TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
+PROPERTY_REQUIREMENTS := requirements/property.lock
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-compiler-smoke test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 sync: ## install dependencies
 	@uv sync
+	@uv pip install --require-hashes --requirement "$(PROPERTY_REQUIREMENTS)"
 
 install: ## install or update the global CLI with uv tool
 	@uv tool install --force --reinstall .
@@ -33,14 +35,29 @@ test: test-fast ## hermetic default regression (alias for test-fast)
 test-fast: ## unit + hermetic contract + semantic architecture; no external resources
 	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not slow and not external_codegen"
 
-test-all: test-frontend ## every Python lane plus frontend and external codegen release evidence
+test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest
+
+TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
+
+test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (explicitly excludes live)
+	@uv run python -m tests.support.evidence --assert-clean
+	@mkdir -p "$(TRACEFOLD_TEST_ARTIFACT_DIR)"
+	@TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pytest -p tests.support.evidence -m "not live" \
+		--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit.xml" \
+		--durations=50 \
+		--evidence-manifest="$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json"
+	@$(MAKE) --no-print-directory test-frontend
+	@uv run python -m tests.support.evidence --assert-clean
+
+test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
+	@uv run python -m pytest -m property
 
 test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
 	@uv run python -m pytest tests/integration -m slow
 
-test-frontend: ## frontend type, architecture, lint, and format checks
-	@cd web && npm run typecheck && npm run lint && npm run format:check
+test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
+	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
 
 lint: ## run ruff
 	@uv run python -m ruff check .
@@ -69,6 +86,9 @@ test-e2e: ## run only tests/e2e/ (running service boundary)
 
 test-golden: ## run only tests/golden/ (real Postgres golden corpus)
 	@uv run python -m pytest tests/golden -m golden
+
+test-compiler-smoke: ## build and exercise the real compiler image with no runtime network
+	@uv run python -m pytest tests/compiler_smoke -m compiler_smoke
 
 test-architecture: ## run only tests/architecture/ (AST/grep checks)
 	@uv run python -m pytest tests/architecture -m architecture

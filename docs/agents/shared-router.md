@@ -40,6 +40,13 @@ Two facts worth carrying into every task because they are easy to get wrong:
 
 ## Agent skills
 
+## Completion evidence
+
+Completion evidence is bound to the exact tested HEAD. Results from an earlier
+commit, a skipped resource lane, or a modified acceptance contract are not
+merge or release evidence. Follow the Verification Evidence Contract in
+`docs/DEVELOPMENT.md`.
+
 ### Issue tracker
 
 GitHub Issues in `AnalyThothAI/tracefold` are the project request and PRD

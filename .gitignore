@@ -6,6 +6,8 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+artifacts/
+.hypothesis/
 *.log
 _run_*.py
 browser_data/

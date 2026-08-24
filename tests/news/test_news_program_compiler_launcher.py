@@ -417,6 +417,7 @@ def test_docker_desktop_named_volume_unix_socket_network_none_and_cleanup(tmp_pa
         )
         assert proxy_boundary["readonly_rootfs"] is True
         assert proxy_boundary["pids_limit"] == 32
+        assert proxy_boundary["network_sha256"] == canonical_sha({"name": network})
         client = (
             "import socket;"
             "s=socket.socket(socket.AF_UNIX);s.connect('/v/compiler.sock');s.sendall(b'ping');"

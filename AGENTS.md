@@ -41,6 +41,13 @@ Two facts worth carrying into every task because they are easy to get wrong:
 
 ## Agent skills
 
+## Completion evidence
+
+Completion evidence is bound to the exact tested HEAD. Results from an earlier
+commit, a skipped resource lane, or a modified acceptance contract are not
+merge or release evidence. Follow the Verification Evidence Contract in
+`docs/DEVELOPMENT.md`.
+
 ### Issue tracker
 
 GitHub Issues in `AnalyThothAI/tracefold` are the project request and PRD
@@ -122,7 +129,7 @@ At the start of every change task, before editing:
 ```bash
 git fetch origin main
 git worktree add -b codex/<issue-or-slug> ../tracefold-<slug> origin/main
-cd ../tracefold-<slug> && uv sync && (cd web && npm ci)   # per-worktree venv/node_modules
+cd ../tracefold-<slug> && make sync && (cd web && npm ci) # per-worktree venv/node_modules
 ```
 
 - In the Codex desktop app, starting the chat with **Worktree** selected is the

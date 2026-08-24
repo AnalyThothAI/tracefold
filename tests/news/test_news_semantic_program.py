@@ -321,10 +321,10 @@ def test_codec_rejects_noncanonical_documents_and_nonfinite_numbers() -> None:
 
     manifest["route_spec"]["event_semantics_max_tokens"] = float("nan")
     with pytest.raises(ValueError, match="manifest_json_invalid"):
-        ProgramArtifactCodec.decode(canonical_json(manifest), state_document)
+        ProgramArtifactCodec.decode(json.dumps(manifest, separators=(",", ":"), sort_keys=True), state_document)
     manifest["route_spec"]["event_semantics_max_tokens"] = float("inf")
     with pytest.raises(ValueError, match="manifest_json_invalid"):
-        ProgramArtifactCodec.decode(canonical_json(manifest), state_document)
+        ProgramArtifactCodec.decode(json.dumps(manifest, separators=(",", ":"), sort_keys=True), state_document)
 
 
 def test_codec_rejects_coercive_state_that_cannot_round_trip_exactly() -> None:
