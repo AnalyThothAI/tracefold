@@ -631,6 +631,7 @@ class _LiveLifecycleAdapter(_ReadOnlyLiveAdapter):
         self.observe_fault = observe_fault
         self.close_quantities: list[Decimal] = []
         self.observed_close_ids: list[str | None] = []
+        self.close_faults: list[str] = []
 
     async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
         self.preflight_calls += 1
@@ -663,6 +664,8 @@ class _LiveLifecycleAdapter(_ReadOnlyLiveAdapter):
     async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
         del order
         self.close_quantities.append(quantity)
+        if self.close_faults and self.close_faults.pop(0) == "timeout":
+            raise TimeoutError("lost close answer")
         return ExecutionReceipt(state="ACKNOWLEDGED", remote_order_id=f"close-{len(self.close_quantities)}")
 
 
@@ -1917,6 +1920,57 @@ def test_live_exit_rearms_only_after_the_exact_close_is_terminal_without_fill(
     assert current["state"] == expected_state
     assert adapter.close_quantities == expected_closes
     assert (int(current["exit_attempt_count"]), int(current["exit_attempt_total"])) == expected_attempts
+
+
+def test_an_ambiguous_new_close_never_reuses_an_older_attempts_terminal_identity(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+
+    terminal = _live_position_observation(row, protected=False)
+    adapter.observations = [
+        terminal.model_copy(update={"evidence": {**terminal.evidence, "close_terminal_without_fill": True}})
+    ]
+    adapter.close_faults = ["timeout"]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+
+    adapter.observations = [
+        terminal.model_copy(update={"evidence": {**terminal.evidence, "close_terminal_without_fill": True}})
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 61_002,
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert adapter.observed_close_ids[-1] is None
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert (int(current["exit_attempt_count"]), int(current["exit_attempt_total"])) == (1, 2)
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
 
 
 def test_slow_live_observation_that_crosses_max_holding_closes_in_the_same_turn(conn) -> None:

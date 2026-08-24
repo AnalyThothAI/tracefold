@@ -686,7 +686,9 @@ class ReconcileRunner:
         ):
             await self._record_and_escalate(order.order_id, observation, "live_position_evidence_incomplete", now)
             return True
-        if exiting and observation.evidence.get("close_terminal_without_fill") is not True:
+        if exiting and (
+            order.remote_close_order_id is None or observation.evidence.get("close_terminal_without_fill") is not True
+        ):
             await self._record_and_escalate(
                 order.order_id,
                 observation,
@@ -814,9 +816,12 @@ class ReconcileRunner:
             if claim == "exhausted":
                 await self._escalate(order.order_id, "exit_attempts_exhausted", now)
             return True
-        content = receipt.model_dump(mode="json")
+        receipt_content = receipt.model_dump(mode="json")
 
         def _write(repos: Any) -> None:
+            current = repos.trading.order(order_id=order.order_id)
+            attempt_ordinal = 0 if current is None else int(current.get("exit_attempt_total") or 0)
+            content = {**receipt_content, "exit_attempt_ordinal": attempt_ordinal}
             repos.trading.record_observation(
                 order_id=order.order_id,
                 observation_kind="close",

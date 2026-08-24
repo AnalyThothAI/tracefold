@@ -390,6 +390,7 @@ class OrderStorage:
                  WHERE order_id = o.order_id
                    AND observation_kind = 'close'
                    AND content->>'remote_order_id' IS NOT NULL
+                   AND content->>'exit_attempt_ordinal' = o.exit_attempt_total::text
                  ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
                  LIMIT 1
               ) latest_close ON true
