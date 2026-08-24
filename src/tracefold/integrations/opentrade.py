@@ -173,7 +173,7 @@ class OpenTradeAdapter:
             requested_account_ref=account_ref,
             # The pinned example has neither field, so normal public output remains fail-closed. An
             # exact provider identity is accepted when the real capability response supplies one.
-            observed_account_ref=_optional_text(account.get("accountId") or account.get("accountRef")),
+            observed_account_ref=_optional_identifier(account.get("accountId") or account.get("accountRef")),
             available_balance=_optional_decimal(account.get("available")),
             available_currency=available_currency,
             hedged=hedged,
@@ -210,7 +210,7 @@ class OpenTradeAdapter:
         data = payload.get("data")
         if not isinstance(data, Mapping):
             raise OpenTradeContractError("opentrade_payload_invalid")
-        remote_order_id = _optional_text(data.get("orderId"))
+        remote_order_id = _optional_identifier(data.get("orderId"))
         if remote_order_id is None:
             raise OpenTradeContractError("opentrade_order_identity_missing")
         return ExecutionReceipt(
@@ -256,7 +256,7 @@ class OpenTradeAdapter:
         trade_rows = self._matching(trades, order=order)
         history_rows = self._matching(position_history, order=order)
         remote_id = self._remote_id(order)
-        account_ref = _optional_text(account.get("accountId") or account.get("accountRef"))
+        account_ref = _optional_identifier(account.get("accountId") or account.get("accountRef"))
         entry_open = _remote_rows(open_rows, remote_id)
         entry_closed = _remote_rows(closed_rows, remote_id)
         entry_trades = _remote_rows(trade_rows, remote_id)
@@ -276,7 +276,7 @@ class OpenTradeAdapter:
                 lifecycle_started_at_ms=order.instrument.observed_at_ms,
                 server_time=server_time,
             )
-            and _optional_text(row.get("orderId")) != remote_id
+            and _optional_identifier(row.get("orderId")) != remote_id
         ]
         unmatched_closing_trades = [
             row
@@ -287,7 +287,7 @@ class OpenTradeAdapter:
                 lifecycle_started_at_ms=order.instrument.observed_at_ms,
                 server_time=server_time,
             )
-            and _optional_text(row.get("orderId")) != remote_id
+            and _optional_identifier(row.get("orderId")) != remote_id
         ]
         evidence = {
             "schema": "tracefold.trading.execution_observation.v2",
@@ -338,12 +338,12 @@ class OpenTradeAdapter:
                 row
                 for row in open_rows
                 if str(row.get("type") or "").lower() in _STOP_ORDER_TYPES
-                and _optional_text(row.get("parentOrderId") or row.get("sourceOrderId")) == remote_id
+                and _optional_identifier(row.get("parentOrderId") or row.get("sourceOrderId")) == remote_id
             ]
             expected_open_rows = [
                 row
                 for row in open_rows
-                if _optional_text(row.get("orderId")) == remote_id or row in entry_protection_rows
+                if _optional_identifier(row.get("orderId")) == remote_id or row in entry_protection_rows
             ]
             evidence["protection_candidate_count"] = len(entry_protection_rows)
             evidence["unexpected_open_order_count"] = len(open_rows) - len(expected_open_rows)
@@ -550,9 +550,9 @@ class OpenTradeAdapter:
             if isinstance(row, Mapping)
             and str(_optional_text(row.get("exchangeId")) or "").lower() == exchange_id
             and _text(row.get("baseCurrency")).upper() == base
-            and bool(row.get("active", True))
-            and bool(row.get("swap"))
-            and bool(row.get("contract"))
+            and row.get("active") is True
+            and row.get("swap") is True
+            and row.get("contract") is True
             and (not quote or _text(row.get("quoteCurrency")).upper() == quote)
         ]
         if len(matches) != 1:
@@ -586,7 +586,7 @@ class OpenTradeAdapter:
                 provider_symbol=_text(row.get("symbol")),
                 side=_text(row.get("side")),
                 quantity=_positive_decimal(row.get("amount"), "opentrade_order_quantity_invalid"),
-                remote_id=_optional_text(row.get("orderId")),
+                remote_id=_optional_identifier(row.get("orderId")),
             )
             for row in rows
         ]
@@ -609,7 +609,7 @@ class OpenTradeAdapter:
 def _remote_rows(rows: Sequence[Mapping[str, Any]], remote_id: str | None) -> list[Mapping[str, Any]]:
     if remote_id is None:
         return []
-    return [row for row in rows if _optional_text(row.get("orderId")) == remote_id]
+    return [row for row in rows if _optional_identifier(row.get("orderId")) == remote_id]
 
 
 def _definitive_write_rejection(payload: Mapping[str, Any]) -> bool:
@@ -642,7 +642,8 @@ def _correlated_history_rows(rows: Sequence[Mapping[str, Any]], remote_id: str |
         for row in rows
         if isinstance(row.get("trades"), list)
         and any(
-            isinstance(trade, Mapping) and _optional_text(trade.get("orderId")) == remote_id for trade in row["trades"]
+            isinstance(trade, Mapping) and _optional_identifier(trade.get("orderId")) == remote_id
+            for trade in row["trades"]
         )
     ]
 
@@ -665,11 +666,13 @@ def _attributed_history_rows(
             and closing
             and len(opening) + len(closing) == len(trades)
             and all(
-                _optional_text(trade.get("orderId")) == remote_id and _optional_text(trade.get("side")) == entry_side
+                _optional_identifier(trade.get("orderId")) == remote_id
+                and _optional_text(trade.get("side")) == entry_side
                 for trade in opening
             )
             and all(
-                _optional_text(trade.get("orderId")) is not None and _optional_text(trade.get("side")) == close_side
+                _optional_identifier(trade.get("orderId")) is not None
+                and _optional_text(trade.get("side")) == close_side
                 for trade in closing
             )
         ):
@@ -683,8 +686,8 @@ def _native_protection(row: Mapping[str, Any], *, account_ref: str) -> NativePro
     side = str(row.get("side") or "").lower()
     if side not in {"buy", "sell"}:
         return None
-    parent_id = _optional_text(row.get("parentOrderId") or row.get("sourceOrderId"))
-    remote_id = _optional_text(row.get("orderId"))
+    parent_id = _optional_identifier(row.get("parentOrderId") or row.get("sourceOrderId"))
+    remote_id = _optional_identifier(row.get("orderId"))
     exchange_id = _optional_text(row.get("exchange") or row.get("exchangeId"))
     symbol = _optional_text(row.get("symbol"))
     quantity = _optional_decimal(row.get("amount"))
@@ -858,15 +861,26 @@ def _live_exchange(value: object) -> LiveExchangeId:
 
 
 def _text(value: object) -> str:
-    normalized = str(value or "").strip()
-    if not normalized:
+    normalized = _optional_text(value)
+    if normalized is None:
         raise OpenTradeContractError("opentrade_field_missing")
     return normalized
 
 
 def _optional_text(value: object) -> str | None:
-    normalized = str(value or "").strip()
-    return normalized or None
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or None
+    return None
+
+
+def _optional_identifier(value: object) -> str | None:
+    normalized = _optional_text(value)
+    if normalized is not None:
+        return normalized
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return str(value)
+    return None
 
 
 def _optional_decimal(value: object) -> Decimal | None:
@@ -911,7 +925,7 @@ def _positive_int(value: object, code: str) -> int:
 
 
 def _ids(rows: Sequence[Mapping[str, Any]], key: str) -> list[str]:
-    return sorted({value for row in rows if (value := _optional_text(row.get(key))) is not None})
+    return sorted({value for row in rows if (value := _optional_identifier(row.get(key))) is not None})
 
 
 __all__ = ["OpenTradeAdapter", "OpenTradeContractError"]

@@ -347,6 +347,47 @@ def test_preflight_requires_a_positive_provider_contract_size_before_any_write(c
     assert all(request.method == "GET" for request in requests)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("active", "true"),
+        ("active", "false"),
+        ("active", 1),
+        ("swap", "true"),
+        ("swap", "false"),
+        ("swap", 1),
+        ("contract", "true"),
+        ("contract", "false"),
+        ("contract", 1),
+    ],
+)
+def test_preflight_requires_literal_true_market_flags_before_any_write(field: str, value: object) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = _response(request)
+        if request.url.path.endswith("/market/metadata"):
+            body = response.json()
+            body["data"]["markets"][0][field] = value
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_exact_market_unavailable"):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert requests
+    assert all(request.method == "GET" for request in requests)
+
+
 @pytest.mark.parametrize("contracts", [None, "not-a-number", "-1", "NaN"])
 def test_preflight_rejects_malformed_position_quantity_before_any_write(contracts: object) -> None:
     requests: list[httpx.Request] = []
@@ -984,6 +1025,47 @@ def test_write_ack_requires_a_2xx_explicit_success(status: int, payload: dict[st
             asyncio.run(adapter.submit(_order(remote_order_id=None)))
     finally:
         asyncio.run(adapter.aclose())
+
+
+@pytest.mark.parametrize("order_id", [{}, [], False, 0, -1, 1.5])
+def test_write_ack_rejects_malformed_remote_order_identity(order_id: object) -> None:
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"success": True, "data": {"orderId": order_id}},
+                request=request,
+            )
+        ),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_order_identity_missing"):
+            asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
+def test_write_ack_normalizes_a_positive_integer_remote_order_identity() -> None:
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"success": True, "data": {"orderId": 123}},
+                request=request,
+            )
+        ),
+        clock=lambda: NOW,
+    )
+    try:
+        receipt = asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert receipt.remote_order_id == "123"
 
 
 @pytest.mark.parametrize(
