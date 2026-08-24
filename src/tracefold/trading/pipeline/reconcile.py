@@ -824,7 +824,7 @@ class ReconcileRunner:
             content = {
                 **receipt_content,
                 "exit_attempt_ordinal": attempt_ordinal,
-                "operator_generation_sha256": repos.trading.latest_open_resolution_sha256(order_id=order.order_id),
+                "operator_generation": repos.trading.latest_open_resolution_generation(order_id=order.order_id),
             }
             repos.trading.record_observation(
                 order_id=order.order_id,

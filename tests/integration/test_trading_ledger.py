@@ -2003,7 +2003,6 @@ def test_manual_rearm_fences_off_old_close_identity_when_the_new_attempt_is_ambi
     )
     conn.commit()
 
-    adapter.close_faults = ["timeout"]
     adapter.observations = [_live_position_observation(row, protected=False)]
     asyncio.run(
         ReconcileRunner(
@@ -2016,6 +2015,41 @@ def test_manual_rearm_fences_off_old_close_identity_when_the_new_attempt_is_ambi
     )
     assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
 
+    trading.update_order(
+        order_id=str(row["order_id"]),
+        state="MANUAL_REVIEW_REQUIRED",
+        state_reason="operator_check_required_again",
+        next_reconcile_at_ms=NOW + 32_000,
+        now_ms=NOW + 32_000,
+    )
+    assert trading.resolve_manual_review(
+        order_id=str(row["order_id"]),
+        outcome="open",
+        reason="position_still_open",
+        # The same timestamp and reason as the first resolution must still allocate a new generation.
+        now_ms=NOW + 3_000,
+    )
+    conn.commit()
+    resolutions = [
+        item["content"]["generation"]
+        for item in trading.observations(order_id=str(row["order_id"]))
+        if item["observation_kind"] == "operator_resolution" and item["content"]["outcome"] == "open"
+    ]
+    assert sorted(resolutions) == [1, 2]
+
+    adapter.close_faults = ["timeout"]
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 61_002,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1"), Decimal("1")]
+
     stale_terminal = _live_position_observation(row, protected=False)
     adapter.observations = [
         stale_terminal.model_copy(update={"evidence": {**stale_terminal.evidence, "close_terminal_without_fill": True}})
@@ -2026,14 +2060,14 @@ def test_manual_rearm_fences_off_old_close_identity_when_the_new_attempt_is_ambi
             config=config,
             bars=lambda _venue: None,
             adapter=adapter,
-            clock=lambda: NOW + 61_002,
+            clock=lambda: NOW + 91_003,
         ).turn()
     )
 
     current = _order_row(conn, str(row["order_id"]))
     assert adapter.observed_close_ids[-1] is None
     assert current["state"] == "MANUAL_REVIEW_REQUIRED"
-    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1"), Decimal("1")]
 
 
 def test_slow_live_observation_that_crosses_max_holding_closes_in_the_same_turn(conn) -> None:

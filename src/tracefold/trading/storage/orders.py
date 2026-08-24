@@ -252,11 +252,25 @@ class OrderStorage:
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
         resolved = int(getattr(cursor, "rowcount", 0) or 0) > 0
         if resolved:
+            generation: int | None = None
+            if outcome == "open":
+                row = self.conn.execute(
+                    """
+                    SELECT coalesce(max((content->>'generation')::bigint), 0) + 1 AS generation
+                      FROM trading_order_observations
+                     WHERE order_id = %s
+                       AND observation_kind = 'operator_resolution'
+                       AND content->>'outcome' = 'open'
+                    """,
+                    (order_id,),
+                ).fetchone()
+                generation = int(row["generation"])
             content = {
                 "outcome": outcome,
                 "reason": reason,
                 "remote_order_id": remote_order_id,
                 "resolved_at_ms": int(now_ms),
+                "generation": generation,
             }
             self.conn.execute(
                 """
@@ -408,20 +422,18 @@ class OrderStorage:
         row = self.conn.execute("SELECT * FROM trading_orders WHERE case_id = %s", (case_id,)).fetchone()
         return dict(row) if row is not None else None
 
-    def latest_open_resolution_sha256(self, *, order_id: str) -> str | None:
+    def latest_open_resolution_generation(self, *, order_id: str) -> int:
         row = self.conn.execute(
             """
-            SELECT content_sha256
+            SELECT coalesce(max((content->>'generation')::bigint), 0) AS generation
               FROM trading_order_observations
              WHERE order_id = %s
                AND observation_kind = 'operator_resolution'
                AND content->>'outcome' = 'open'
-             ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
-             LIMIT 1
             """,
             (order_id,),
         ).fetchone()
-        return None if row is None else str(row["content_sha256"])
+        return 0 if row is None else int(row["generation"])
 
     def due_orders(self, *, now_ms: int, limit: int = 32) -> list[dict[str, Any]]:
         """Live orders whose next reconcile is due, oldest first."""
@@ -437,15 +449,12 @@ class OrderStorage:
                    AND observation_kind = 'close'
                    AND content->>'remote_order_id' IS NOT NULL
                    AND content->>'exit_attempt_ordinal' = o.exit_attempt_total::text
-                   AND content->>'operator_generation_sha256' IS NOT DISTINCT FROM (
-                     SELECT reset.content_sha256
+                   AND content->>'operator_generation' = (
+                     SELECT coalesce(max((reset.content->>'generation')::bigint), 0)::text
                        FROM trading_order_observations reset
                       WHERE reset.order_id = o.order_id
                         AND reset.observation_kind = 'operator_resolution'
                         AND reset.content->>'outcome' = 'open'
-                      ORDER BY reset.last_seen_at_ms DESC, reset.first_seen_at_ms DESC,
-                               reset.content_sha256 DESC
-                      LIMIT 1
                    )
                  ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
                  LIMIT 1
