@@ -5,13 +5,133 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ..reader_history import (
+    RECENT_HISTORY_MAX,
+    RECENT_HISTORY_WINDOW_MS,
+    TARGETED_ASSET_MAX,
+    TARGETED_EXACT_MAX,
+    TARGETED_HISTORY_WINDOW_MS,
+    ReaderHistorySnapshot,
+    assemble_reader_history,
+)
 from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
+_READER_HISTORY_PROJECTION = """
+    SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key, e.comparison_title,
+           e.comparison_fingerprint, e.family,
+           v.verdict ->> 'event_type' AS event_type,
+           (v.verdict ->> 'magnitude')::int AS magnitude,
+           v.verdict ->> 'direction' AS direction,
+           COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh') AS headline_zh,
+           COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
+           COALESCE(v.verdict -> 'assets', '[]'::jsonb) AS assets,
+           COALESCE(
+             (SELECT jsonb_agg(base_symbol ORDER BY base_symbol)
+                FROM (SELECT DISTINCT COALESCE(a.base_symbol, ea.symbol) AS base_symbol
+                        FROM news_event_assets ea
+                        LEFT JOIN news_symbol_aliases a ON a.alias = ea.symbol
+                       WHERE ea.event_id = e.event_id) bases),
+             '[]'::jsonb
+           ) AS canonical_assets
+      FROM news_events e
+      JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
+      JOIN LATERAL (
+        SELECT candidate.*
+          FROM (
+            -- Keep the Event-led primary-key lookup separate from the newest-route sort. Otherwise PostgreSQL
+            -- can walk the stage/time index once per Event and filter every other Event on each walk.
+            SELECT scoped.* FROM news_verdicts scoped
+             WHERE scoped.event_id = e.event_id
+               AND scoped.stage = 'triage'
+               AND scoped.final_decision IN ('push', 'escalate')
+             OFFSET 0
+          ) candidate
+         ORDER BY candidate.created_at_ms DESC, candidate.policy_version DESC
+         LIMIT 1
+      ) v ON true
+"""
 
 
 class DecisionStorage:
     conn: Any
+
+    def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
+        """Reader receipt truth split into the 4 h policy ledger and bounded 48 h semantic candidates."""
+
+        recent = self.conn.execute(
+            _READER_HISTORY_PROJECTION
+            + """
+             WHERE e.event_id <> %s
+               AND d.settled_at_ms >= %s
+             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+            """,
+            (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
+        ).fetchall()
+        if not include_targeted:
+            return assemble_reader_history(recent_rows=recent, now_ms=now_ms)
+
+        exact = self.conn.execute(
+            "WITH current_event AS ("
+            " SELECT family, comparison_fingerprint FROM news_events WHERE event_id = %s"
+            ") "
+            + _READER_HISTORY_PROJECTION
+            + """
+             CROSS JOIN current_event current
+             WHERE e.event_id <> %s
+               AND e.family = current.family
+               AND e.comparison_fingerprint = current.comparison_fingerprint
+               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+            """,
+            (
+                event_id,
+                event_id,
+                int(now_ms) - TARGETED_HISTORY_WINDOW_MS,
+                int(now_ms) - RECENT_HISTORY_WINDOW_MS,
+                TARGETED_EXACT_MAX,
+            ),
+        ).fetchall()
+        asset = self.conn.execute(
+            """
+            WITH current_event AS (
+              SELECT event_id, family, comparison_fingerprint
+                FROM news_events WHERE event_id = %s
+            ), current_bases AS (
+              SELECT DISTINCT COALESCE(a.base_symbol, current_asset.symbol) AS base
+                FROM current_event current
+                JOIN news_event_assets current_asset ON current_asset.event_id = current.event_id
+                LEFT JOIN news_symbol_aliases a ON a.alias = current_asset.symbol
+            ), equivalent_symbols AS (
+              SELECT base AS symbol FROM current_bases
+              UNION
+              SELECT a.alias FROM news_symbol_aliases a JOIN current_bases b ON b.base = a.base_symbol
+            )
+            """
+            + _READER_HISTORY_PROJECTION
+            + """
+             CROSS JOIN current_event current
+             WHERE e.event_id <> current.event_id
+               AND NOT (
+                 e.family = current.family
+                 AND e.comparison_fingerprint = current.comparison_fingerprint
+               )
+               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+               AND EXISTS (
+                 SELECT 1 FROM news_event_assets candidate_asset
+                  WHERE candidate_asset.event_id = e.event_id
+                    AND candidate_asset.symbol IN (SELECT symbol FROM equivalent_symbols)
+               )
+             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+            """,
+            (
+                event_id,
+                int(now_ms) - TARGETED_HISTORY_WINDOW_MS,
+                int(now_ms) - RECENT_HISTORY_WINDOW_MS,
+                TARGETED_ASSET_MAX,
+            ),
+        ).fetchall()
+        return assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms)
 
     def told_ledger(self, *, now_ms: int, window_ms: int, limit: int) -> list[dict[str, Any]]:
         """Cards proven to have reached the reader in the window: the newest ``limit``, newest first, one row per

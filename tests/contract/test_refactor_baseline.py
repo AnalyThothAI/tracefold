@@ -1,5 +1,6 @@
 """Issue #162 refactor baseline remains an exact behavior/runtime contract."""
 
+import re
 from typing import Any
 
 import pytest
@@ -51,11 +52,14 @@ def test_a_stale_declaration_for_an_unchanged_leaf_fails(monkeypatch: pytest.Mon
         assert_matches_baseline()
 
 
-def test_every_declared_leaf_names_a_reason_and_a_full_sha() -> None:
+def test_every_declared_leaf_names_a_reason_and_an_exact_value() -> None:
     for path, value in refactor_baseline.INTENTIONAL_DRIFT.items():
         reason, expected = value
         assert reason and not reason.startswith("<"), path
-        assert len(expected) == 64 and set(expected) <= set("0123456789abcdef"), path
+        if path == "migration_head":
+            assert re.fullmatch(r"\d{8}_\d{4}", expected), path
+        else:
+            assert len(expected) == 64 and set(expected) <= set("0123456789abcdef"), path
 
 
 def test_the_baseline_identity_itself_is_never_regenerated_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
