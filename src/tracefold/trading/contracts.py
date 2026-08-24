@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,6 +35,86 @@ TRADING_RECONCILE_BACKOFF_MS = 30_000
 # Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
 # a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
 NewsLearningEpoch = Literal["program_v6"]
+
+# ---------------------------------------------------------------------------- upstream input rows
+# What the composition root must hand this context to produce candidates. Trading owns these because
+# they are *its* requirements, not News's SELECT lists: News may add a column, rename one, or publish a
+# second projection without this file moving, and the App-side mapper is where the two meet.
+#
+# They are `TypedDict`s rather than validating models on purpose. Eligibility fails closed on a named
+# rejection for every value it cannot use — an unparseable rank, an unknown direction, a verdict that is
+# not a mapping — and a model that raised on the same row would turn a counted funnel entry into an
+# exception the funnel never sees. Deliberately loose where the source is loose: `verdict` is a jsonb
+# document and `venue` is provider text that may be absent.
+
+
+class OiCandidateRow(TypedDict):
+    """One deterministic OI telemetry frame offered to the candidate scanner."""
+
+    event_id: str
+    verdict_created_at_ms: int
+    final_decision: str
+    learning_epoch: str
+    program_version: str
+    program_sha256: str
+    policy_version: str
+    editorial_origin: str
+    editorial_sha256: str
+    scored_judgment_sha256: str
+    runtime_manifest_sha: str
+    metric_version: str
+    symbol: str
+    direction: str
+    oi_change_bps: int
+    oi_value_usd: int
+    whale_long_profit_bps: int
+    whale_oi_ratio_bps: int
+    rank_in_window: int
+    observed_at_ms: int
+    ingest_mode: str
+    venue: str | None
+
+
+class NewsCandidateRow(TypedDict):
+    """One editorial Triage verdict offered to the candidate scanner."""
+
+    event_id: str
+    verdict_created_at_ms: int
+    final_decision: str
+    # Optional upstream, so optional here: the eligibility rules already read all three through their
+    # fail-closed accessors, and a contract that promised `int` would make the next reader trust it.
+    evidence_version: int | None
+    evidence_sha256: str | None
+    focus_fact_id: str | None
+    verdict: Any
+    learning_epoch: str
+    program_version: str
+    program_sha256: str
+    policy_version: str
+    editorial_origin: str
+    editorial_sha256: str
+    scored_judgment_sha256: str
+    runtime_manifest_sha: str
+    opened_at_ms: int
+    comparison_fingerprint: str
+    asset_class: str
+    grounded_assets: Any
+    ingest_mode: str
+    source_artifact_id: str | None
+    source_published_at_ms: int | None
+
+
+class InstrumentCandidateRow(TypedDict):
+    """One catalogue row offered to the venue resolver."""
+
+    venue: str
+    venue_symbol: str
+    base_symbol: str
+    instrument_class: str
+    quote_asset: str | None
+    status: str
+    last_seen_ms: int
+
 
 TradingMode = Literal["paper", "live_reviewed", "live_bounded"]
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
@@ -384,9 +464,12 @@ __all__ = [
     "ControlState",
     "ExchangeId",
     "ExecutionReceipt",
+    "InstrumentCandidateRow",
     "InstrumentRef",
     "MarketContext",
+    "NewsCandidateRow",
     "NewsTradeCandidate",
+    "OiCandidateRow",
     "OiRegime",
     "OiTradeCandidate",
     "OrderSide",

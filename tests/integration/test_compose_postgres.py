@@ -222,6 +222,8 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
         "regen_cli_help.py",
         "regen_db_schema.py",
         "regen_openapi.py",
+        # #162 PR7-B4: the one generator for the shared `AGENTS.md` / `CLAUDE.md` block.
+        "sync_agent_router.py",
         "with_deployment_lock.py",
     }
     assert not Path("docker/postgres-provision-review-role.sh").exists()

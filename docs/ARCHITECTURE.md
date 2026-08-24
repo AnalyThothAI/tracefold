@@ -167,9 +167,10 @@ tracefold.news
     admission.py      the atomic Deduper transaction and raw-queue consumer
     receiver.py / recovery.py  live OpenNews ingest and official-history recovery
     triage.py / triage_audit.py  SemanticJudge route, policy persistence, execution audit
+    triage_route.py   the route's typed vocabulary: arm selection, inputs, attempts, outcome
     delivery.py       one-attempt reader-card delivery consumer
     maintenance.py    instrument snapshot, retention, broker snapshot, outbox catch-up
-    root.py / runtime.py  Workers composition and shared database/stop mechanics
+    root.py / runtime.py  Workers composition and the NewsDatabasePort/stop mechanics
   storage/
     events.py / decisions.py  material facts/evidence and verdict/delivery ledgers
     feed.py / operations.py   bounded public reads and ingest/retention operations
@@ -196,6 +197,8 @@ tracefold.platform
 tracefold.app
   Serve/Workers database composition, `repository_session.py`, HTTP, CLI,
   and the Workers lifecycle root plus capability wiring (`app/workers/`).
+  `workers/wiring/database.py` satisfies each capability's own database port;
+  `workers/wiring/news_to_trading.py` is the single News -> Trading mapper.
   News CLI commands are owned by their bus/instrument/review/learning/diagnostic
   modules; HTTP routes and exact schemas are owned by feed/event/review/status
   resource modules under `app/http/`.
@@ -230,6 +233,22 @@ platform -> Python / third-party libraries only
 public News projection row becomes a Trading candidate, and it is the reason
 Trading can consume News truth without a cross-domain import or a reach-through
 read.
+
+That seam is typed on both sides. Each business package declares the narrow
+port it needs from the process — `NewsDatabasePort`, `MarketReviewDatabasePort`,
+`TradingDatabasePort`, each just a bounded read and a bounded transaction — and
+`app/workers/wiring/database.py` implements them over `WorkerDatabase`, choosing
+the lane, the deadline default and the error vocabulary. A business module never
+names `worker_session`, `run_news` or `heavy_business`: no import edge was never
+the same thing as no dependency. The handoff itself is two independent frozen
+row contracts, News's `news_trade_projection_v1` and Trading's own candidate
+input rows, translated field by field in `news_to_trading.py`, so a rename on
+either side fails at the seam rather than inside a runner.
+
+`tracefold.app` decides how capabilities are assembled and run, never what a
+business fact means. It reads business projections; it does not write business
+tables. Every `news_*` / `trading_*` `INSERT`, `UPDATE` and `DELETE` lives in
+the owning package's storage behind a named repository method.
 
 Business packages never import `tracefold.app`, provider integrations, or each
 other. Transport adapters do not own business rules. `app/workers/root.py` owns

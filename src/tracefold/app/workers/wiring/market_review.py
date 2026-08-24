@@ -16,8 +16,9 @@ from tracefold.integrations.venues import (
     fetch_hyperliquid_quotes,
     fetch_us_reference_instruments,
 )
-from tracefold.news.market_review.loops import EventReactionLoop, QuoteSnapshotLoop
+from tracefold.news.market_review.loops import EventReactionLoop, MarketReviewDatabasePort, QuoteSnapshotLoop
 from tracefold.news.pipeline.maintenance import InstrumentSnapshotLoop
+from tracefold.news.pipeline.runtime import NewsDatabasePort
 
 
 def _price_venue_enabled(settings: Any, source_key: str) -> bool:
@@ -33,7 +34,9 @@ def _price_venue_enabled(settings: Any, source_key: str) -> bool:
     return False
 
 
-def _quote_snapshot_loop(settings: Any, *, db: Any, watchlist: Sequence[str]) -> QuoteSnapshotLoop | None:
+def _quote_snapshot_loop(
+    settings: Any, *, db: MarketReviewDatabasePort, watchlist: Sequence[str]
+) -> QuoteSnapshotLoop | None:
     """One batch quote adapter per source group, resolved by source key so a new HIP-3 dex needs no wiring."""
 
     def fetcher_for(source_key: str) -> Any | None:
@@ -68,7 +71,7 @@ def _quote_snapshot_loop(settings: Any, *, db: Any, watchlist: Sequence[str]) ->
     return QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for, day_fetcher_for=day_fetcher_for, watchlist=watchlist)
 
 
-def _event_reaction_loop(settings: Any, *, db: Any) -> EventReactionLoop | None:
+def _event_reaction_loop(settings: Any, *, db: MarketReviewDatabasePort) -> EventReactionLoop | None:
     def fetcher_for(venue: str) -> Any | None:
         if not _price_venue_enabled(settings, venue):
             return None
@@ -92,7 +95,7 @@ def _event_reaction_loop(settings: Any, *, db: Any) -> EventReactionLoop | None:
     return EventReactionLoop(db=db, fetcher_for=fetcher_for)
 
 
-def _instrument_snapshot_loop(settings: Any, *, db: Any) -> InstrumentSnapshotLoop | None:
+def _instrument_snapshot_loop(settings: Any, *, db: NewsDatabasePort) -> InstrumentSnapshotLoop | None:
     """#75: one fetcher per venue family, each independently skippable. No credentials are involved."""
 
     venues = settings.news.venues

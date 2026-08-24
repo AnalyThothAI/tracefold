@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from tracefold.platform.config.loader import load_settings, write_default_config
 from tracefold.platform.config.models import (
@@ -10,6 +10,9 @@ from tracefold.platform.config.models import (
     news_push_availability,
 )
 from tracefold.platform.paths import config_path
+
+# The closed role vocabulary the Settings accessors are keyed by.
+_POSTGRES_ROLES: tuple[Literal["serve", "workers", "migrate"], ...] = ("serve", "workers", "migrate")
 
 
 def handle_init(args: object) -> tuple[int, dict[str, Any]]:
@@ -61,7 +64,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                                 else None
                             ),
                         }
-                        for role in ("serve", "workers", "migrate")
+                        for role in _POSTGRES_ROLES
                     },
                     "serve_pool_max_size": 7,
                     "workers_pool_max_size": 8,
@@ -132,6 +135,8 @@ def _redacted_postgres_dsn(dsn: str) -> str:
         parts = conninfo.conninfo_to_dict(dsn)
         if parts.get("password"):
             parts["password"] = "********"
-        return conninfo.make_conninfo(**parts)
+        # `conninfo_to_dict` is typed as returning ints for numeric keywords, which `make_conninfo`'s
+        # own stub does not accept back. Round-tripping is exactly what this redaction does.
+        return conninfo.make_conninfo(**cast(dict[str, str], parts))
     except Exception:
         return "<invalid>"

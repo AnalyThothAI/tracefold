@@ -17,9 +17,7 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from decimal import Decimal
-from typing import Any
-
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from typing import Any, Protocol
 
 from ..bus import DeferError, TransientError, now_ms
 from .pricing import (
@@ -61,34 +59,18 @@ _COLD_WRITE_TIMEOUT_SECONDS = 10.0
 _MAX_MERGED_SPAN_MS = 1000 * CANDLE_INTERVAL_MS
 
 
-class _ColdDb:
-    """The price plane's own database admission: one slot, on the heavy-business lane, never the News lane."""
+class MarketReviewDatabasePort(Protocol):
+    """The Price Review plane's whole view of the process database, and its own admission.
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
-        self._lane = db.heavy_business()
+    Deliberately separate from the News pipeline's port (#88): these loops must land on the one-slot cold
+    lane, never the four News hot slots, and neither of them holds a connection across a provider call.
+    The lane is the composition root's decision — this side only states that every operation is bounded
+    and carries an explicit deadline, which is why `timeout_seconds` has no default here.
+    """
 
-    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
-        def _run() -> Any:
-            with self._db.worker_session(name, timeout_seconds) as repos, repos.transaction():
-                return fn(repos)
+    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
 
-        return await self._run(name, _run, timeout_seconds)
-
-    async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
-        def _run() -> Any:
-            with self._db.worker_session(name, timeout_seconds) as repos:
-                return fn(repos)
-
-        return await self._run(name, _run, timeout_seconds)
-
-    async def _run(self, name: str, fn: Callable[[], Any], timeout_seconds: float) -> Any:
-        try:
-            return await self._lane.run_business(name, fn, operation_timeout_seconds=timeout_seconds)
-        except ResourceAdmissionTimeout as exc:
-            raise DeferError(f"cold_db_admission_timeout:{name}") from exc
-        except ResourceOperationOverrun as exc:
-            raise TransientError(f"cold_db_overrun:{name}") from exc
+    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
 
 
 async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
@@ -120,7 +102,7 @@ class QuoteSnapshotLoop:
     def __init__(
         self,
         *,
-        db: Any,
+        db: MarketReviewDatabasePort,
         fetcher_for: QuoteFetcherFactory,
         day_fetcher_for: QuoteFetcherFactory | None = None,
         watchlist: Sequence[str] = (),
@@ -128,7 +110,7 @@ class QuoteSnapshotLoop:
         day_period_seconds: float = QUOTE_DAY_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
-        self.db = _ColdDb(db)
+        self.db = db
         self.fetcher_for = fetcher_for
         self.day_fetcher_for = day_fetcher_for
         self.watchlist = tuple(watchlist)
@@ -372,12 +354,12 @@ class EventReactionLoop:
     def __init__(
         self,
         *,
-        db: Any,
+        db: MarketReviewDatabasePort,
         fetcher_for: CandleFetcherFactory,
         period_seconds: float = REACTION_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
-        self.db = _ColdDb(db)
+        self.db = db
         self.fetcher_for = fetcher_for
         self.period = float(period_seconds)
         self.enabled = bool(enabled)

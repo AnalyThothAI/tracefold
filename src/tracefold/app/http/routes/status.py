@@ -128,6 +128,8 @@ def _news_workers_observation(conn: Any, *, now_ms: int) -> tuple[str | None, st
 
 
 def _status_etag_basis(data: dict[str, Any]) -> dict[str, Any]:
+    """The status payload minus the fields that move every read, so a poll does not churn the ETag."""
+
     def stable(value: Any) -> Any:
         if isinstance(value, dict):
             return {key: stable(item) for key, item in value.items() if key not in {"measured_at_ms"}}
@@ -135,7 +137,7 @@ def _status_etag_basis(data: dict[str, Any]) -> dict[str, Any]:
             return [stable(item) for item in value]
         return value
 
-    return stable(data)
+    return {key: stable(item) for key, item in data.items() if key != "measured_at_ms"}
 
 
 __all__ = ["router"]

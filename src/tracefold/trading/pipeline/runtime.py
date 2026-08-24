@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from ..candidate.eligibility import EligibilityPolicy
 from ..contracts import (
     TRADING_COLD_WRITE_TIMEOUT_SECONDS,
     TRADING_RECONCILE_BACKOFF_MS,
     Bar,
+    InstrumentCandidateRow,
+    NewsCandidateRow,
+    OiCandidateRow,
     TradingMode,
 )
 from ..decision.policy import DEFAULT_TRADE_POLICY, TradePolicy
@@ -25,13 +28,30 @@ COLD_WRITE_TIMEOUT_SECONDS = TRADING_COLD_WRITE_TIMEOUT_SECONDS
 BAR_INTERVAL_MS = 300_000
 RECONCILE_BACKOFF_MS = TRADING_RECONCILE_BACKOFF_MS
 
+
+class TradingDatabasePort(Protocol):
+    """The two runners' whole view of the process database: one bounded read, one bounded transaction.
+
+    Capital safety is why this is a port and not a shared client. A runner may not open a session, pick a
+    pool, choose a lane, or hold a connection across a provider call; it names an operation and a deadline
+    and gets a repository session back. The composition root satisfies it on the price plane's one-slot
+    cold admission (#88, #104) so a trading backlog can never compete for the four News lane slots.
+    """
+
+    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+
+    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+
+
 BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
 BarFetcherFactory = Callable[[str], BarFetcher | None]
+# `(repos, metric_version, after_ms, until_ms, max_rank, min_oi_value_usd) -> (oi rows, news rows)`.
+# The repository session stays opaque: this context never learns which repositories it carries.
 CandidateProjectionReader = Callable[
     [Any, str, int, int, int, int],
-    tuple[Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]]],
+    tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow]],
 ]
-InstrumentProjectionReader = Callable[[Any, str, Sequence[str]], Sequence[Mapping[str, Any]]]
+InstrumentProjectionReader = Callable[[Any, str, Sequence[str]], Sequence[InstrumentCandidateRow]]
 
 
 def now_ms() -> int:
@@ -69,6 +89,7 @@ __all__ = [
     "CandidateProjectionReader",
     "InstrumentProjectionReader",
     "TradingConfig",
+    "TradingDatabasePort",
     "now_ms",
     "sleep_or_stop",
 ]

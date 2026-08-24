@@ -391,6 +391,7 @@ class WorkerDatabase:
         statement_timeout_seconds: float | None = None,
         transaction_timeout_seconds: float | None = None,
     ) -> Iterator[RepositorySession]:
+        telemetry = self.telemetry
         started = time.perf_counter()
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         self._record_pool_wait("worker", (time.perf_counter() - started) * 1000)
@@ -406,8 +407,8 @@ class WorkerDatabase:
                     conn,
                     transaction_observer=(
                         None
-                        if self.telemetry is None
-                        else lambda seconds: self.telemetry.record_transaction_seconds(
+                        if telemetry is None
+                        else lambda seconds: telemetry.record_transaction_seconds(
                             name,
                             seconds,
                         )

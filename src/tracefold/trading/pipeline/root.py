@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +16,7 @@ from .runtime import (
     CandidateProjectionReader,
     InstrumentProjectionReader,
     TradingConfig,
+    TradingDatabasePort,
 )
 
 
@@ -26,10 +27,11 @@ class TradingPipeline:
     candidate: CandidateRunner
     reconcile: ReconcileRunner
 
-    def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Any]]]:
+    def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]]:
+        candidate, reconcile = self.candidate, self.reconcile
         return [
-            ("trading-candidate", lambda stop: self.candidate.run(stop_event=stop)),
-            ("trading-reconcile", lambda stop: self.reconcile.run(stop_event=stop)),
+            ("trading-candidate", lambda stop: candidate.run(stop_event=stop)),
+            ("trading-reconcile", lambda stop: reconcile.run(stop_event=stop)),
         ]
 
     async def close(self) -> None:
@@ -38,7 +40,7 @@ class TradingPipeline:
 
 def build_pipeline(
     *,
-    db: Any,
+    db: TradingDatabasePort,
     config: TradingConfig,
     bars: BarFetcherFactory,
     candidate_projection: CandidateProjectionReader,
@@ -66,4 +68,4 @@ def build_pipeline(
     )
 
 
-__all__ = ["TradingConfig", "TradingPipeline", "build_pipeline"]
+__all__ = ["TradingConfig", "TradingDatabasePort", "TradingPipeline", "build_pipeline"]

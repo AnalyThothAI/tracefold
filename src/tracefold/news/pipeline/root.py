@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from ..market_review.loops import EventReactionLoop, QuoteSnapshotLoop
 from .admission import DeduperConsumer
@@ -31,31 +30,36 @@ class NewsPipeline:
     # and every one of them may be absent without the pipeline changing shape.
     quotes: QuoteSnapshotLoop | None = None
     reactions: EventReactionLoop | None = None
-    tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
 
     async def register_runtime_manifest(self) -> None:
         await self.triage.register_runtime_manifest()
 
-    def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Any]]]:
-        out: list[tuple[str, Callable[[asyncio.Event], Any]]] = []
-        if self.receiver is not None:
-            out.append(("news-receiver", lambda stop: self.receiver.run(stop_event=stop)))  # type: ignore[union-attr]
-        if self.recovery is not None:
-            out.append(("news-recovery", lambda stop: self.recovery.run(stop_event=stop)))  # type: ignore[union-attr]
+    def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]]:
+        """Ordered task declarations. The optional stages are bound to a local so the absent ones are
+        absent by construction rather than by a suppressed `union-attr`."""
+
+        out: list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]] = []
+        receiver, recovery = self.receiver, self.recovery
+        if receiver is not None:
+            out.append(("news-receiver", lambda stop: receiver.run(stop_event=stop)))
+        if recovery is not None:
+            out.append(("news-recovery", lambda stop: recovery.run(stop_event=stop)))
+        deduper, triage, deliverer, janitor = self.deduper, self.triage, self.deliverer, self.janitor
         out.extend(
             [
-                ("news-deduper", lambda stop: self.deduper.run(stop_event=stop)),
-                ("news-triage", lambda stop: self.triage.run(stop_event=stop)),
-                ("news-deliverer", lambda stop: self.deliverer.run(stop_event=stop)),
-                ("news-janitor", lambda stop: self.janitor.run(stop_event=stop)),
+                ("news-deduper", lambda stop: deduper.run(stop_event=stop)),
+                ("news-triage", lambda stop: triage.run(stop_event=stop)),
+                ("news-deliverer", lambda stop: deliverer.run(stop_event=stop)),
+                ("news-janitor", lambda stop: janitor.run(stop_event=stop)),
             ]
         )
-        if self.instruments is not None:
-            out.append(("news-instruments", lambda stop: self.instruments.run(stop_event=stop)))  # type: ignore[union-attr]
-        if self.quotes is not None:
-            out.append(("news-quotes", lambda stop: self.quotes.run(stop_event=stop)))  # type: ignore[union-attr]
-        if self.reactions is not None:
-            out.append(("news-reactions", lambda stop: self.reactions.run(stop_event=stop)))  # type: ignore[union-attr]
+        instruments, quotes, reactions = self.instruments, self.quotes, self.reactions
+        if instruments is not None:
+            out.append(("news-instruments", lambda stop: instruments.run(stop_event=stop)))
+        if quotes is not None:
+            out.append(("news-quotes", lambda stop: quotes.run(stop_event=stop)))
+        if reactions is not None:
+            out.append(("news-reactions", lambda stop: reactions.run(stop_event=stop)))
         return out
 
     async def close(self) -> None:

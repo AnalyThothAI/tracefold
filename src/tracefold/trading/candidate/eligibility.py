@@ -17,7 +17,9 @@ from typing import Any
 
 from ..contracts import (
     TRADING_MANIFEST_VERSION,
+    NewsCandidateRow,
     NewsTradeCandidate,
+    OiCandidateRow,
     OiTradeCandidate,
     canonical_base_symbol,
 )
@@ -78,7 +80,7 @@ def _int(value: Any, default: int | None = None) -> int | None:
 
 # ---------------------------------------------------------------------------- OI
 def oi_candidate(
-    row: Mapping[str, Any],
+    row: OiCandidateRow,
     *,
     now_ms: int,
     blacklist: Blacklist,
@@ -164,7 +166,7 @@ def _primary_symbol(verdict: Mapping[str, Any]) -> tuple[str, int]:
 
 
 def news_candidate(
-    row: Mapping[str, Any],
+    row: NewsCandidateRow,
     *,
     now_ms: int,
     blacklist: Blacklist,

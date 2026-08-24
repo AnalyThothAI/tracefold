@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 import tracefold.news.agents.programs.candidates as candidate_programs
 from tracefold.app.learning_runtime import (
+    NewsProgramRuntimeComposition,
     active_arm_manifest,
     candidate_program_artifact,
     compose_news_program_runtime,
@@ -14,6 +16,11 @@ from tracefold.app.learning_runtime import (
 )
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
+from tracefold.app.workers.wiring.database import (
+    WorkerMarketReviewDatabase,
+    WorkerNewsColdDatabase,
+    WorkerNewsDatabase,
+)
 from tracefold.app.workers.wiring.market_review import (
     _event_reaction_loop,
     _instrument_snapshot_loop,
@@ -21,9 +28,10 @@ from tracefold.app.workers.wiring.market_review import (
 )
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.agents.semantic_program import ProgramArtifact, load_stable_program_artifact
 from tracefold.news.canary import CanaryRuntimeArm
-from tracefold.news.candidate_evaluator import CandidateManifest
+from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest
+from tracefold.news.market_review.loops import MarketReviewDatabasePort
 from tracefold.news.oi_signals import OiPolicy
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
@@ -31,17 +39,71 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.root import NewsPipeline
+from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.triage import TriageConsumer
+from tracefold.news.semantic_contract import SemanticJudge
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.runtime_identity import runtime_identity
 
+if TYPE_CHECKING:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgramArms:
+    """What one Workers process may execute this deployment: the stable arm, plus any runnable candidate."""
+
+    judge: SemanticJudge | None
+    stable_artifact: ProgramArtifact
+    stable_bundle_sha: str
+    canary_arms: dict[str, CanaryRuntimeArm]
+    runtime_manifest: dict[str, Any]
+
 
 async def _wire_news_pipeline(
     *, settings: Settings, db: WorkerDatabase, finite: FiniteOperations
-) -> tuple[Any, NewsPipeline]:
+) -> tuple[RabbitMQBus, NewsPipeline]:
     """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities."""
 
+    bus = await _connect_news_bus(settings)
+    news_db = WorkerNewsDatabase(db)
+    cold_db = WorkerNewsColdDatabase(db)
+    market_review_db = WorkerMarketReviewDatabase(db)
+
+    ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+    history_client = (
+        OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+    )
+    recovery = RecoveryRunner(bus=bus, db=news_db, history_client=history_client) if ws_client else None
+    receiver = (
+        OpenNewsReceiver(
+            bus=bus,
+            db=news_db,
+            ws_client=ws_client,
+            history_client=history_client,
+            recovery=recovery,
+        )
+        if ws_client
+        else None
+    )
+
+    arms = await _compose_program_arms(settings, db=db)
+    pipeline = _compose_news_pipeline(
+        settings,
+        bus=bus,
+        news_db=news_db,
+        cold_db=cold_db,
+        market_review_db=market_review_db,
+        finite=finite,
+        arms=arms,
+        receiver=receiver,
+        recovery=recovery,
+    )
+    return bus, pipeline
+
+
+async def _connect_news_bus(settings: Settings) -> RabbitMQBus:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
     broker_url = settings.news.broker.url
@@ -53,31 +115,66 @@ async def _wire_news_pipeline(
         connect_timeout_seconds=settings.news.broker.connect_timeout_seconds,
     )
     await bus.connect()
+    return bus
 
-    watchlist_symbols = settings.news.watchlist_symbols
-    ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
-    history_client = (
-        OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
-    )
 
-    recovery = RecoveryRunner(bus=bus, db=db, history_client=history_client) if ws_client else None
-    receiver = (
-        OpenNewsReceiver(
-            bus=bus,
-            db=db,
-            ws_client=ws_client,
-            history_client=history_client,
-            recovery=recovery,
-        )
-        if ws_client
-        else None
-    )
+async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _ProgramArms:
+    """Resolve every Program this image can actually run, then fail closed on any armed candidate it cannot."""
 
     runtime_composition = compose_news_program_runtime(settings)
     identity = runtime_identity()
     stable_arm = active_arm_manifest(settings, runtime_composition=runtime_composition)
-    compiled_candidates: dict[str, CandidateManifest] = {}
+    compiled_candidates = _compiled_candidate_manifests()
+    stable_artifact = load_stable_program_artifact()
+    if (
+        stable_artifact.program_version != stable_arm.program_version
+        or stable_artifact.program_sha256 != stable_arm.program_sha256
+    ):
+        raise RuntimeError("news_stable_program_manifest_mismatch")
+    semantic_judge = runtime_composition.semantic_judge(stable_artifact)
+    canary_arms: dict[str, CanaryRuntimeArm] = {}
     candidate_failures: dict[str, str] = {}
+    if semantic_judge is not None:
+        canary_arms, candidate_failures = _candidate_runtime_arms(
+            compiled_candidates,
+            runtime_composition=runtime_composition,
+            stable_artifact=stable_artifact,
+            stable_arm=stable_arm,
+        )
+    await db.run_news(
+        "news_canary_startup_validation",
+        _trip_unavailable_active_canary,
+        db,
+        {candidate_sha: candidate.candidate_arm.bundle_sha for candidate_sha, candidate in compiled_candidates.items()},
+        frozenset(canary_arms),
+        dict(candidate_failures),
+        operation_timeout_seconds=3.0,
+    )
+    return _ProgramArms(
+        judge=semantic_judge,
+        stable_artifact=stable_artifact,
+        stable_bundle_sha=stable_arm.bundle_sha,
+        canary_arms=canary_arms,
+        runtime_manifest={
+            "manifest_sha": runtime_manifest_sha(
+                stable_bundle_sha=stable_arm.bundle_sha,
+                candidate_shas=sorted(compiled_candidates),
+                image_digest=identity.image_digest,
+                runtime_revision=identity.runtime_revision,
+            ),
+            "stable_bundle_sha": stable_arm.bundle_sha,
+            "candidate_shas": sorted(compiled_candidates),
+            "image_digest": identity.image_digest,
+            "runtime_revision": identity.runtime_revision,
+            "now_ms": int(time.time() * 1000),
+        },
+    )
+
+
+def _compiled_candidate_manifests() -> dict[str, CandidateManifest]:
+    """Image-carried candidate documents, keyed by candidate SHA. A malformed one is logged, never fatal."""
+
+    compiled: dict[str, CandidateManifest] = {}
     for index, document in enumerate(candidate_programs.COMPILED_CANDIDATE_DOCUMENTS):
         try:
             candidate = CandidateManifest.model_validate(document)
@@ -88,85 +185,96 @@ async def _wire_news_pipeline(
                 type(exc).__name__,
             )
             continue
-        compiled_candidates[candidate.candidate_sha] = candidate
+        compiled[candidate.candidate_sha] = candidate
+    return compiled
+
+
+def _candidate_runtime_arms(
+    compiled_candidates: dict[str, CandidateManifest],
+    *,
+    runtime_composition: NewsProgramRuntimeComposition,
+    stable_artifact: ProgramArtifact,
+    stable_arm: ArmManifest,
+) -> tuple[dict[str, CanaryRuntimeArm], dict[str, str]]:
+    """Executable candidate arms, plus the named reason each rejected candidate cannot run here."""
+
     canary_arms: dict[str, CanaryRuntimeArm] = {}
-    stable_artifact = load_stable_program_artifact()
-    if (
-        stable_artifact.program_version != stable_arm.program_version
-        or stable_artifact.program_sha256 != stable_arm.program_sha256
-    ):
-        raise RuntimeError("news_stable_program_manifest_mismatch")
-    semantic_judge = runtime_composition.semantic_judge(stable_artifact)
-    if semantic_judge is not None:
-        for candidate in compiled_candidates.values():
-            if candidate.parent_stable_sha != stable_arm.bundle_sha:
-                candidate_failures[candidate.candidate_sha] = "candidate_parent_stale"
-                logger.warning(
-                    "ignoring canary candidate with stale parent candidate={} parent={} active={}",
-                    candidate.candidate_sha,
-                    candidate.parent_stable_sha,
-                    stable_arm.bundle_sha,
-                )
-                continue
-            arm = candidate.candidate_arm
-            try:
-                candidate_artifact = candidate_program_artifact(candidate, stable_artifact)
-            except (OSError, ValueError) as exc:
-                candidate_failures[candidate.candidate_sha] = "candidate_artifact_invalid"
-                logger.error("candidate Program artifact rejected program={} error={}", arm.program_sha256, exc)
-                continue
-            try:
-                candidate_program = runtime_composition.semantic_judge(candidate_artifact)
-            except (TypeError, ValueError) as exc:
-                candidate_failures[candidate.candidate_sha] = "candidate_runtime_invalid"
-                logger.error("candidate Program composition rejected program={} error={}", arm.program_sha256, exc)
-                continue
-            if candidate_program is None:
-                candidate_failures[candidate.candidate_sha] = "candidate_runtime_unavailable"
-                continue
-            canary_arms[arm.bundle_sha] = CanaryRuntimeArm(
-                bundle_sha=arm.bundle_sha,
-                program=candidate_program,
-                policy=DecidePolicy(**arm.policy),
-                program_version=arm.program_version,
-                program_sha256=arm.program_sha256,
+    candidate_failures: dict[str, str] = {}
+    for candidate in compiled_candidates.values():
+        if candidate.parent_stable_sha != stable_arm.bundle_sha:
+            candidate_failures[candidate.candidate_sha] = "candidate_parent_stale"
+            logger.warning(
+                "ignoring canary candidate with stale parent candidate={} parent={} active={}",
+                candidate.candidate_sha,
+                candidate.parent_stable_sha,
+                stable_arm.bundle_sha,
             )
-
-    await db.run_news(
-        "news_canary_startup_validation",
-        _trip_unavailable_active_canary,
-        db,
-        {candidate_sha: candidate.candidate_arm.bundle_sha for candidate_sha, candidate in compiled_candidates.items()},
-        frozenset(canary_arms),
-        dict(candidate_failures),
-        operation_timeout_seconds=3.0,
-    )
-
-    push = news_push_availability(settings)
-    sender = (
-        FeishuNewsPushSender(
-            webhook_url=str(settings.news.push.feishu_webhook_url),
-            signing_secret=settings.news.push.feishu_signing_secret,
+            continue
+        arm = candidate.candidate_arm
+        try:
+            candidate_artifact = candidate_program_artifact(candidate, stable_artifact)
+        except (OSError, ValueError) as exc:
+            candidate_failures[candidate.candidate_sha] = "candidate_artifact_invalid"
+            logger.error("candidate Program artifact rejected program={} error={}", arm.program_sha256, exc)
+            continue
+        try:
+            candidate_program = runtime_composition.semantic_judge(candidate_artifact)
+        except (TypeError, ValueError) as exc:
+            candidate_failures[candidate.candidate_sha] = "candidate_runtime_invalid"
+            logger.error("candidate Program composition rejected program={} error={}", arm.program_sha256, exc)
+            continue
+        if candidate_program is None:
+            candidate_failures[candidate.candidate_sha] = "candidate_runtime_unavailable"
+            continue
+        canary_arms[arm.bundle_sha] = CanaryRuntimeArm(
+            bundle_sha=arm.bundle_sha,
+            program=candidate_program,
+            policy=DecidePolicy(**arm.policy),
+            program_version=arm.program_version,
+            program_sha256=arm.program_sha256,
         )
-        if push.delivery_available
-        else None
+    return canary_arms, candidate_failures
+
+
+def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | None:
+    push = news_push_availability(settings)
+    if not push.delivery_available:
+        return None
+    return FeishuNewsPushSender(
+        webhook_url=str(settings.news.push.feishu_webhook_url),
+        signing_secret=settings.news.push.feishu_signing_secret,
     )
+
+
+def _compose_news_pipeline(
+    settings: Settings,
+    *,
+    bus: RabbitMQBus,
+    news_db: NewsDatabasePort,
+    cold_db: NewsDatabasePort,
+    market_review_db: MarketReviewDatabasePort,
+    finite: FiniteOperations,
+    arms: _ProgramArms,
+    receiver: OpenNewsReceiver | None,
+    recovery: RecoveryRunner | None,
+) -> NewsPipeline:
+    watchlist_symbols = settings.news.watchlist_symbols
     oi_policy = OiPolicy(**settings.news.oi.model_dump())
-    pipeline = NewsPipeline(
+    return NewsPipeline(
         receiver=receiver,
         recovery=recovery,
         deduper=DeduperConsumer(
             bus=bus,
-            db=db,
+            db=news_db,
             watchlist_symbols=watchlist_symbols,
             suppress_low_signal=settings.news.gate.suppress_low_signal,
         ),
         triage=TriageConsumer(
             bus=bus,
-            db=db,
-            judge=semantic_judge,
-            program_version=stable_artifact.program_version,
-            program_sha256=stable_artifact.program_sha256,
+            db=news_db,
+            judge=arms.judge,
+            program_version=arms.stable_artifact.program_version,
+            program_sha256=arms.stable_artifact.program_sha256,
             watchlist_symbols=watchlist_symbols,
             watchlist=sorted(watchlist_symbols),
             concurrency=settings.news.triage.concurrency,
@@ -174,41 +282,29 @@ async def _wire_news_pipeline(
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
             policy=DecidePolicy(**settings.news.policy.model_dump()),
             oi_policy=oi_policy,
-            stable_bundle_sha=stable_arm.bundle_sha,
-            canary_arms=canary_arms,
-            runtime_manifest={
-                "manifest_sha": runtime_manifest_sha(
-                    stable_bundle_sha=stable_arm.bundle_sha,
-                    candidate_shas=sorted(compiled_candidates),
-                    image_digest=identity.image_digest,
-                    runtime_revision=identity.runtime_revision,
-                ),
-                "stable_bundle_sha": stable_arm.bundle_sha,
-                "candidate_shas": sorted(compiled_candidates),
-                "image_digest": identity.image_digest,
-                "runtime_revision": identity.runtime_revision,
-                "now_ms": int(time.time() * 1000),
-            },
+            stable_bundle_sha=arms.stable_bundle_sha,
+            canary_arms=arms.canary_arms,
+            runtime_manifest=arms.runtime_manifest,
         ),
         deliverer=DelivererConsumer(
             bus=bus,
-            db=db,
-            sender=sender,
+            db=news_db,
+            sender=_news_push_sender(settings),
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
             oi_policy=oi_policy,
         ),
         janitor=JanitorLoop(
-            db=db,
+            db=news_db,
+            cold_db=cold_db,
             bus=bus,
             retention_raw_days=settings.news.retention.raw_days,
             retention_judged_days=settings.news.retention.judged_days,
         ),
-        instruments=_instrument_snapshot_loop(settings, db=db),
-        quotes=_quote_snapshot_loop(settings, db=db, watchlist=sorted(watchlist_symbols)),
-        reactions=_event_reaction_loop(settings, db=db),
+        instruments=_instrument_snapshot_loop(settings, db=news_db),
+        quotes=_quote_snapshot_loop(settings, db=market_review_db, watchlist=sorted(watchlist_symbols)),
+        reactions=_event_reaction_loop(settings, db=market_review_db),
     )
-    return bus, pipeline
 
 
 def _trip_unavailable_active_canary(

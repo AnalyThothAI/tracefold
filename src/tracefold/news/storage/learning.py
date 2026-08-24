@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..artifact_identity import canonical_sha
 from .sql_values import _dumps
 
 
@@ -516,6 +518,40 @@ class LearningStorage:
             created_by="worker_startup",
             now_ms=now_ms,
         )
+
+    def append_proposal_artifact(
+        self,
+        *,
+        kind: str,
+        payload: Mapping[str, Any],
+        parent_sha: str | None,
+        created_at_ms: int,
+    ) -> str:
+        """The `learning_propose` writer: content-addressed, then read back before it counts.
+
+        Deliberately not `_append_learning_artifact`. A proposal document is arbitrary operator or
+        optimizer JSON, so it is normalized through `json` with `default=str` and addressed with
+        `canonical_sha`; and the row is re-read, because two different documents landing on one
+        `artifact_sha` would otherwise make the second silently invisible instead of failing the
+        registration that a receipt chain later verifies.
+        """
+
+        public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
+        artifact_sha = canonical_sha({"kind": kind, "payload": public})
+        self.conn.execute(
+            "INSERT INTO news_learning_artifacts "
+            "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+            "VALUES (%s, %s, %s, %s::jsonb, 'learning_propose', %s) "
+            "ON CONFLICT (artifact_sha) DO NOTHING",
+            (artifact_sha, kind, parent_sha, json.dumps(public, ensure_ascii=False, sort_keys=True), created_at_ms),
+        )
+        row = self.conn.execute(
+            "SELECT kind, payload FROM news_learning_artifacts WHERE artifact_sha = %s",
+            (artifact_sha,),
+        ).fetchone()
+        if row is None or str(row["kind"]) != kind or dict(row["payload"] or {}) != public:
+            raise ValueError("news_learning_artifact_collision")
+        return artifact_sha
 
     def _append_learning_artifact(
         self,

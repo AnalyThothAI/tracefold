@@ -54,10 +54,11 @@ def test_make_check_runs_database_free_generated_drift_checks() -> None:
     assert {
         line.strip()
         for line in result.stdout.splitlines()
-        if "regen_cli_help" in line or "tests.support.refactor_baseline" in line
+        if "regen_cli_help" in line or "tests.support.refactor_baseline" in line or "sync_agent_router" in line
     } == {
         "uv run python scripts/regen_cli_help.py --check",
         "uv run python -m tests.support.refactor_baseline --check",
+        "uv run python scripts/sync_agent_router.py --check",
     }
 
 
@@ -82,7 +83,13 @@ def test_current_documentation_links_resolve() -> None:
     assert missing == []
 
 
-def test_agent_router_shared_blocks_match() -> None:
+def test_agent_router_shared_blocks_come_from_the_canonical_source() -> None:
+    """#162 PR7-B4: each router is compared with `docs/agents/shared-router.md`, not with the other one.
+
+    Comparing them with each other only ever proved they had drifted together — which is exactly what
+    happened: both carried a copy of the architecture that `docs/ARCHITECTURE.md` already owned.
+    """
+
     def shared_block(path: Path) -> str:
         text = path.read_text(encoding="utf-8")
         return text.split("<!-- BEGIN SHARED AGENT ROUTER -->", 1)[1].split(
@@ -90,4 +97,15 @@ def test_agent_router_shared_blocks_match() -> None:
             1,
         )[0]
 
-    assert shared_block(ROOT / "AGENTS.md") == shared_block(ROOT / "CLAUDE.md")
+    canonical = shared_block(DOCS / "agents" / "shared-router.md")
+    assert shared_block(ROOT / "AGENTS.md") == canonical
+    assert shared_block(ROOT / "CLAUDE.md") == canonical
+
+
+def test_the_routers_keep_only_routing_and_their_own_tool_protocol() -> None:
+    """A router that restates the system becomes a second, stale description of it."""
+
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        router = ROOT / name
+        lines = len(router.read_text(encoding="utf-8").splitlines())
+        assert lines <= 200, f"{name} is {lines} lines; substantive detail belongs under docs/"

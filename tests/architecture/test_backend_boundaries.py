@@ -58,11 +58,18 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     "app.workers": (
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
+        # The News transport error vocabulary. The composition root's database adapter is the one place
+        # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
+        "tracefold.news.bus",
         "tracefold.news.canary",
         "tracefold.news.candidate_evaluator",
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
+        "tracefold.news.semantic_contract",
+        # The News-owned row contract for the Trading handoff. Only the composition root's mapper reads
+        # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
+        "tracefold.news.storage.trade_projection",
         "tracefold.news.triage_rules",
         "tracefold.trading.candidate.eligibility",
         "tracefold.trading.contracts",

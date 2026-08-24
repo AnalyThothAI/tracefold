@@ -29,7 +29,7 @@ from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..oi_signals import parse_oi_signal
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
-from .runtime import _Db
+from .runtime import NewsDatabasePort
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
 # How far back an exact *artifact* match may reach (#154). The family windows bound how long two texts stay
@@ -490,7 +490,9 @@ def _reconstruct_text(event: OpenNewsEvent) -> str:
     return "<br/>".join(p for p in parts if p)
 
 
-async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, queue_priority: str, trace_id: str) -> None:
+async def publish_event(
+    bus: Any, db: NewsDatabasePort, *, event_id: str, family: str, queue_priority: str, trace_id: str
+) -> None:
     """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
 
     stamp = now_ms()
@@ -518,12 +520,12 @@ class DeduperConsumer:
         self,
         *,
         bus: Any,
-        db: Any,
+        db: NewsDatabasePort,
         watchlist_symbols: frozenset[str],
         suppress_low_signal: bool = False,
     ) -> None:
         self.bus = bus
-        self.db = _Db(db)
+        self.db = db
         self.watchlist_symbols = watchlist_symbols
         self.suppress_low_signal = bool(suppress_low_signal)
         # #89: symbol -> instrument_class, which is how the Gate tells a stock headline from a coin headline. The

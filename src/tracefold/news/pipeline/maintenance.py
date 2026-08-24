@@ -11,7 +11,7 @@ from typing import Any
 from ..bus import DeferError, TransientError, new_trace_id, now_ms
 from ..models import OUTBOX_MAX_AGE_MS
 from .admission import publish_event
-from .runtime import _Db, _sleep_or_stop
+from .runtime import NewsDatabasePort, _sleep_or_stop
 
 log = logging.getLogger("tracefold.news")
 
@@ -36,12 +36,12 @@ class InstrumentSnapshotLoop:
     def __init__(
         self,
         *,
-        db: Any,
+        db: NewsDatabasePort,
         fetchers: Sequence[tuple[str, Callable[[], Any]]],
         period_seconds: float = _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
-        self.db = _Db(db)
+        self.db = db
         self.fetchers = tuple(fetchers)
         self.period = float(period_seconds)
         self.enabled = bool(enabled)
@@ -105,14 +105,17 @@ class JanitorLoop:
     def __init__(
         self,
         *,
-        db: Any,
+        db: NewsDatabasePort,
+        cold_db: NewsDatabasePort,
         bus: Any | None = None,
         period_seconds: float = _JANITOR_PERIOD_SECONDS,
         retention_raw_days: int = 30,
         retention_judged_days: int = 365,
     ) -> None:
-        self.db = _Db(db)
-        self.cold_db = _Db(db, cold=True)
+        # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
+        # not. Which physical lane each one lands on is the composition root's answer, never the Janitor's.
+        self.db = db
+        self.cold_db = cold_db
         self.bus = bus
         self.period = float(period_seconds)
         # Two tiers (#81): a raw Item nobody judged is storage, an Item behind a judged or labelled Event is the

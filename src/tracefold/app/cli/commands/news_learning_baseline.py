@@ -2,57 +2,42 @@ from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tracefold.news.artifact_identity import canonical_json
 
 from .news_learning_documents import _write_json
 
+if TYPE_CHECKING:
+    # Annotation-only. A module-level import would pull DSPy (and litellm) into every
+    # `tracefold news learning ...` invocation, including the ones that never call a model.
+    from tracefold.news.agents.program_baseline import BaselineMode
 
-def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
+_BASELINE_MODES: tuple[BaselineMode, ...] = ("recorded", "compile_live", "runtime_live")
 
-    DSPy lives behind `program_baseline`; this layer only reads the corpus and prints the receipt, so the
-    architecture boundary that keeps DSPy out of the CLI still holds.
+
+def _baseline_mode(raw: object) -> BaselineMode:
+    """#150 split one ambiguous `live` into three modes. An unknown one is refused, never defaulted."""
+
+    mode = str(raw)
+    for known in _BASELINE_MODES:
+        if mode == known:
+            return known
+    raise ValueError("news_program_baseline_mode_unknown")
+
+
+def _baseline_model_route(
+    mode: BaselineMode, *, settings: Any, artifact: Any
+) -> tuple[Any | None, Any | None, dict[str, Any]]:
+    """The model route a live mode runs on: its LM or its Judge, plus the identity the report records.
+
+    `recorded` spends no provider call and gets neither. The two live modes answer different questions
+    and therefore build different things — see the comments in each branch.
     """
 
     from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
-    from tracefold.app.llm import configured_lm_endpoint
-    from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.agents.program_baseline import (
-        build_baseline_cases,
-        build_judge,
-        build_runtime_lm,
-        compile_program_factory,
-        run_baseline,
-    )
-    from tracefold.news.agents.semantic_program import load_program_artifact
-    from tracefold.news.candidate_evaluator import CandidateEvaluator, ClosedWindow
+    from tracefold.news.agents.program_baseline import build_runtime_lm
 
-    mode = str(args.mode)
-    action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
-    if mode == "recorded" and action_source != "recorded":
-        # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
-        raise ValueError("news_program_baseline_recorded_mode_requires_recorded_decision")
-    if mode != "recorded" and action_source == "recorded":
-        # A live mode must score the fresh judgment through the frozen policy. Reusing a recorded decision
-        # would compare outputs that never coexisted and invalidate the 45% final-action component.
-        raise ValueError("news_program_baseline_live_mode_requires_policy_action")
-    # Every other model-spending command in this plane makes its budget `required=True`; before #150 this one
-    # defaulted to 500 cases, which in `runtime_live` is 1,000-3,000 sequential provider calls against the
-    # single-slot box that is simultaneously serving live Triage. A sentence in OPERATIONS.md is not a bound.
-    max_model_cases = int(getattr(args, "max_model_cases", 0) or 0)
-    if mode != "recorded" and max_model_cases <= 0:
-        raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
-    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
-    with postgres_connection(settings, role="serve") as conn:
-        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-        limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
-        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
-    if not episodes:
-        return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
-    artifact = load_program_artifact(stable.program_sha256)
-    composition = compose_news_program_runtime(settings) if mode != "recorded" else None
     lm = None
     semantic_judge = None
     runtime_identity: dict[str, Any] = {}
@@ -64,6 +49,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         # model name "unconfigured" with an empty key and base, `configured_lm_endpoint` never raises, and the
         # resulting object is not None — so on an unconfigured host every case ran, swallowed the same
         # connection error, and the run ended reporting a total Program failure instead of a missing config.
+        composition = compose_news_program_runtime(settings)
         if not composition.program_configured:
             raise ValueError("news_program_baseline_compile_route_not_configured")
         endpoint = composition.event_semantics_primary
@@ -86,6 +72,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         # The configured four-slot Program with its own retry, fallback, deadline and circuit — built by the
         # same seam the Workers use, so a dedicated ReaderCard binding is honoured rather than silently
         # aliased to the EventSemantics primary.
+        composition = compose_news_program_runtime(settings)
         semantic_judge = composition.semantic_judge(artifact)
         if semantic_judge is None:
             raise ValueError("news_program_baseline_runtime_route_not_configured")
@@ -94,6 +81,51 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             "aliases": composition.slot_aliases(),
             "runtime_model_bindings_sha256": composition.runtime_model_bindings_sha256,
         }
+    return lm, semantic_judge, runtime_identity
+
+
+def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
+
+    DSPy lives behind `program_baseline`; this layer only reads the corpus and prints the receipt, so the
+    architecture boundary that keeps DSPy out of the CLI still holds.
+    """
+
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news.agents.program_baseline import (
+        build_baseline_cases,
+        build_judge,
+        compile_program_factory,
+        run_baseline,
+    )
+    from tracefold.news.agents.semantic_program import load_program_artifact
+    from tracefold.news.candidate_evaluator import CandidateEvaluator, ClosedWindow
+
+    mode = _baseline_mode(args.mode)
+    action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
+    if mode == "recorded" and action_source != "recorded":
+        # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
+        raise ValueError("news_program_baseline_recorded_mode_requires_recorded_decision")
+    if mode != "recorded" and action_source == "recorded":
+        # A live mode must score the fresh judgment through the frozen policy. Reusing a recorded decision
+        # would compare outputs that never coexisted and invalidate the 45% final-action component.
+        raise ValueError("news_program_baseline_live_mode_requires_policy_action")
+    # Every other model-spending command in this plane makes its budget `required=True`; before #150 this one
+    # defaulted to 500 cases, which in `runtime_live` is 1,000-3,000 sequential provider calls against the
+    # single-slot box that is simultaneously serving live Triage. A sentence in OPERATIONS.md is not a bound.
+    max_model_cases = int(getattr(args, "max_model_cases", 0) or 0)
+    if mode != "recorded" and max_model_cases <= 0:
+        raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
+    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
+    with postgres_connection(settings, role="serve") as conn:
+        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
+        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
+    if not episodes:
+        return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
+    artifact = load_program_artifact(stable.program_sha256)
+    lm, semantic_judge, runtime_identity = _baseline_model_route(mode, settings=settings, artifact=artifact)
     judge_model = str(args.semantic_judge).strip()
     judge = None
     if judge_model:

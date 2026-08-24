@@ -482,7 +482,8 @@ def _probe_server(
         lifespan="off",
     )
     server = uvicorn.Server(config)
-    server.capture_signals = nullcontext
+    # The Workers root installs its own handlers; uvicorn must not also claim SIGINT/SIGTERM.
+    server.capture_signals = nullcontext  # type: ignore[method-assign, assignment]
     return server
 
 

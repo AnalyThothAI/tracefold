@@ -13,7 +13,7 @@ from ..delivery import reader_assets, render_first_card
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
-from .runtime import _Db
+from .runtime import NewsDatabasePort
 
 # The quote read gets its own short session. A price is display-only and must
 # never delay, retry, or suppress a delivery; every failure degrades to no
@@ -28,14 +28,14 @@ class DelivererConsumer:
         self,
         *,
         bus: Any,
-        db: Any,
+        db: NewsDatabasePort,
         sender: Any | None,
         finite_operations: Any,
         min_interval_seconds: float,
         oi_policy: OiPolicy = DEFAULT_OI_POLICY,
     ) -> None:
         self.bus = bus
-        self.db = _Db(db)
+        self.db = db
         self.sender = sender
         self.finite = finite_operations
         self.min_interval = float(min_interval_seconds)

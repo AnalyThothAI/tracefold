@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .news_learning_documents import _read_json_or_yaml
 
+if TYPE_CHECKING:
+    from tracefold.news.candidate_evaluator import CandidateManifest
+    from tracefold.news.semantic_contract import SemanticJudge
 
-def _load_candidate_bundle(path: str) -> tuple[Any | None, dict[str, str]]:
+
+def _load_candidate_bundle(path: str) -> tuple[CandidateManifest | None, dict[str, str]]:
     if not path:
         return None, {}
     from tracefold.news.candidate_evaluator import CandidateManifest
@@ -26,7 +29,7 @@ def _learning_program_judges(
     candidate: Any,
     artifact_paths: Mapping[str, str],
     live: bool,
-) -> dict[tuple[str, str], Any]:
+) -> dict[tuple[Literal["stable", "candidate"], str], SemanticJudge]:
     from tracefold.news.agents.semantic_program import (
         DspyNewsSemanticProgram,
         RecordReplayPredictorAdapter,
@@ -58,7 +61,7 @@ def _learning_program_judges(
             "request": recorded_request,
             "response": row["response"],
         }
-    judges: dict[tuple[str, str], Any] = {}
+    judges: dict[tuple[Literal["stable", "candidate"], str], SemanticJudge] = {}
     for arm_name, arm, artifact in arm_artifacts:
         replay = RecordReplayPredictorAdapter(recordings_by_program.get(arm.program_sha256, {}))
         judges[(arm_name, arm.bundle_sha)] = DspyNewsSemanticProgram(
@@ -140,21 +143,13 @@ def _insert_learning_artifact(
     parent_sha: str | None,
     created_at_ms: int,
 ) -> str:
-    public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
-    from tracefold.news.artifact_identity import canonical_sha
+    """Register one proposal document. The SQL belongs to News; this is only the call into it."""
 
-    artifact_sha = canonical_sha({"kind": kind, "payload": public})
-    conn.execute(
-        "INSERT INTO news_learning_artifacts "
-        "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
-        "VALUES (%s, %s, %s, %s::jsonb, 'learning_propose', %s) "
-        "ON CONFLICT (artifact_sha) DO NOTHING",
-        (artifact_sha, kind, parent_sha, json.dumps(public, ensure_ascii=False, sort_keys=True), created_at_ms),
+    from tracefold.app.repository_session import repositories_for_connection
+
+    return repositories_for_connection(conn).news.append_proposal_artifact(
+        kind=kind,
+        payload=payload,
+        parent_sha=parent_sha,
+        created_at_ms=created_at_ms,
     )
-    row = conn.execute(
-        "SELECT kind, payload FROM news_learning_artifacts WHERE artifact_sha = %s",
-        (artifact_sha,),
-    ).fetchone()
-    if row is None or str(row["kind"]) != kind or dict(row["payload"] or {}) != public:
-        raise ValueError("news_learning_artifact_collision")
-    return artifact_sha

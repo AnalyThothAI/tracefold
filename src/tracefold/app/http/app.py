@@ -3,13 +3,15 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.types import ExceptionHandler
 
 from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
 from tracefold.platform.config.loader import load_settings
@@ -73,7 +75,7 @@ def create_app(
     app.add_middleware(GZipMiddleware, minimum_size=1_024, compresslevel=5)
 
     @app.middleware("http")
-    async def review_mutation_envelope_guard(request: Request, call_next: Any) -> Response:
+    async def review_mutation_envelope_guard(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Bound the two ReviewDesk writes before FastAPI reads JSON.
 
         Review bodies are tiny operator judgments, so requiring a truthful
@@ -104,10 +106,16 @@ def create_app(
                 return api_bad_request_response(request, ApiBadRequest("news_review_body_too_large"))
         return await call_next(request)
 
-    app.add_exception_handler(ApiUnauthorized, api_unauthorized_response)
-    app.add_exception_handler(ApiBadRequest, api_bad_request_response)
-    app.add_exception_handler(ApiConflict, api_conflict_response)
-    app.add_exception_handler(ApiUnavailable, api_unavailable_response)
+    # Starlette types the registry as `(Request, Exception) -> Response` for every key, so a handler that
+    # narrows to the exception class it was registered under can only be attached through a cast. The
+    # narrowing is the point: each of these renders that error's own envelope.
+    for exception_type, handler in (
+        (ApiUnauthorized, api_unauthorized_response),
+        (ApiBadRequest, api_bad_request_response),
+        (ApiConflict, api_conflict_response),
+        (ApiUnavailable, api_unavailable_response),
+    ):
+        app.add_exception_handler(exception_type, cast(ExceptionHandler, handler))
     app.include_router(create_api_router(_status_payload))
 
     @app.get("/healthz", response_class=PlainTextResponse)
