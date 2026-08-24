@@ -603,7 +603,13 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert program_v7["program_factory_id"] == "tracefold.news.program.factory_v5"
         assert program_v7["artifact_schema_version"] == "news_semantic_program_artifact_v2"
         assert program_v7["baseline_program_version"] == "news_semantic_program_v5"
-        assert program_v7["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
+        # The v7 row is the immutable baseline recorded when #162 opened the epoch. #175 re-issues the
+        # sole stable Program inside v7 because retrieval evidence changed; it must not rewrite migration
+        # history or open another learning epoch.
+        assert program_v7["baseline_program_sha256"] == (
+            "7a460f8d3812c64c6ee38158871eb9f060811e5ffe87f399f7bc2e506b4e28ad"
+        )
+        assert program_v7["baseline_program_sha256"] != load_stable_program_artifact().program_sha256
         assert program_v7["prior_evidence_disposition"] == "audit_only"
         assert program_v7["reset_reason"] == "program_learning_package_split_identity_migration"
         assert (

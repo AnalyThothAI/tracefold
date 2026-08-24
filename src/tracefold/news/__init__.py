@@ -25,8 +25,10 @@ from .program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
+from .told_context import NEWS_RETRIEVAL_SHA256
 
 __all__ = [
+    "NEWS_RETRIEVAL_SHA256",
     "EditorialEnvelope",
     "NewsFeedEntry",
     "OpenNewsEvent",

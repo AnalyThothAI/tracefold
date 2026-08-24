@@ -33,11 +33,9 @@ _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
 _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
-# This address moved twice in #162 PR8, both times for identity rather than for arithmetic: PR8-A because
-# the receipt records the metric's implementing module by name, PR8-B because it records the Program that
-# ran. Both are by design — a content address must name what measured and under what. Every *score* above
-# is unchanged, and `test_recorded_calibration_is_reproducible_from_the_typed_v2_corpus` proves it.
-_EXPECTED_REPORT_SHA256 = "f654d1f2bdcc151bfbf04c5a7952be91b0cb1d7c9fc7b0f82828f4ff379b76f5"
+# #175 rebinds the report to the new shipped Program identity. The audit corpus remains byte-for-byte
+# evidence from program_v6; every score and execution budget remains unchanged.
+_EXPECTED_REPORT_SHA256 = "a91b408a80c4981c761e3b4ff4bab137834e35750ea64e4f04a281e06547f82a"
 
 
 @pytest.fixture(scope="module")

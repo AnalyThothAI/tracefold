@@ -26,8 +26,6 @@ from ..events.storyline import final_storyline_key
 from ..learning.canary import CanaryRuntimeArm
 from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, TriageVerdict, json_ready
 from ..program.contracts import (
-    TOLD_SOURCE_MAX,
-    TOLD_WINDOW_MS,
     EditorialEnvelope,
     ScoredJudgment,
     SemanticJudge,
@@ -35,6 +33,7 @@ from ..program.contracts import (
     SemanticJudgment,
     TriageContext,
 )
+from ..reader_history import ReaderHistorySnapshot
 from ..triage_rules import (
     DEFAULT_POLICY,
     DecidePolicy,
@@ -46,11 +45,13 @@ from ..triage_rules import (
 from .runtime import NewsDatabasePort
 from .triage_audit import (
     _program_execution,
+    _reader_history_trace,
     _sync_program_audit,
     _told_from_context,
     _told_trace,
     _usage_from_partial_trace,
 )
+from .triage_history import _novelty_context_sha, _read_history, _recent_seen
 from .triage_route import (
     _ArmSelection,
     _Circuit,
@@ -67,12 +68,6 @@ from .triage_route import (
 
 log = logging.getLogger("tracefold.news")
 
-# The Program sees the TOLD_MAX rows the selector ranked for this candidate; decide() measures a duplicate
-# candidate against the whole bounded sent ledger the selector read from. Replaying the stored corpus, widening
-# the comparison set from the 12-entry status bar caught 14 more duplicate pairs and 11 more facts the reader
-# never received (#81). This is a memory bound, not a reader quota: a ledger filled with distinct facts never
-# blocks the next distinct fact.
-_SEEN_LEDGER_MAX = TOLD_SOURCE_MAX
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
 
 
@@ -184,7 +179,7 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, ledger_rows = bundle
+        card, history = bundle
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
             raise PermanentError("news_event_evidence_v2_required")
         facts = _gate_facts(card, self.watchlist_symbols)
@@ -197,7 +192,7 @@ class TriageConsumer:
                 event_id=event_id,
                 card=card,
                 facts=facts,
-                ledger_rows=ledger_rows,
+                history=history,
                 stamp=stamp,
                 message=message,
             )
@@ -205,7 +200,7 @@ class TriageConsumer:
         arm = await self._select_arm(card, event_id=event_id, stamp=stamp)
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         route = self._route_inputs(
-            card, ledger_rows, event_id=event_id, facts=facts, stamp=stamp, queue_lag_ms=queue_lag_ms
+            card, history, event_id=event_id, facts=facts, stamp=stamp, queue_lag_ms=queue_lag_ms
         )
         trace = _initial_trace(
             route,
@@ -270,7 +265,7 @@ class TriageConsumer:
     def _route_inputs(
         self,
         card: Mapping[str, Any],
-        ledger_rows: Sequence[Mapping[str, Any]],
+        history: ReaderHistorySnapshot,
         *,
         event_id: str,
         facts: GateFacts,
@@ -279,23 +274,24 @@ class TriageConsumer:
     ) -> _RouteInputs:
         """The Event as the Program will see it, plus the hashes the persist step compares against.
 
-        The told context is the <= TOLD_MAX cards the selector ranked against *this* candidate out of the
-        bounded sent ledger. The model judges novelty against it, and its SHA — not the raw ledger's
+        The told context is the <= TOLD_MAX cards the selector ranked against *this* candidate out of bounded
+        recent plus targeted history. The model judges novelty against it, and its SHA — not the source rows'
         event-id set — is what the persist step compares, so only a change to what the model saw can make
         the judgment stale.
         """
 
+        told_rows = [row.as_told_row() for row in history.told_source_rows]
         context = TriageContext.from_card(
             card,
             watchlist=tuple(self.watchlist),
-            told_rows=ledger_rows,
+            told_rows=told_rows,
             now_ms=stamp,
             queue_lag_ms=queue_lag_ms,
         )
         return _RouteInputs(
             event_id=event_id,
             card=card,
-            ledger_rows=ledger_rows,
+            history=history,
             facts=facts,
             context=context,
             told=_told_from_context(context),
@@ -539,7 +535,7 @@ class TriageConsumer:
                 degraded=judged.degraded,
             ),
             told=route.told,
-            seen=route.ledger_rows,
+            history=route.history,
             selected_context_sha=route.selected_context_sha,
             novelty_context_sha=route.novelty_context_sha,
             prelim_key=route.prelim_key,
@@ -585,10 +581,10 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, ledger_rows = bundle
+        card, history = bundle
         refreshed = self._route_inputs(
             card,
-            ledger_rows,
+            history,
             event_id=event_id,
             facts=_gate_facts(card, self.watchlist_symbols),
             stamp=stamp,
@@ -607,6 +603,7 @@ class TriageConsumer:
         }
         trace["told"] = _told_trace(refreshed.told)
         trace["told_count"] = len(refreshed.told)
+        trace["reader_history"] = _reader_history_trace(refreshed.history, refreshed.told)
         return refreshed
 
     async def _judge_telemetry(
@@ -615,7 +612,7 @@ class TriageConsumer:
         event_id: str,
         card: Mapping[str, Any],
         facts: GateFacts,
-        ledger_rows: Sequence[Mapping[str, Any]],
+        history: ReaderHistorySnapshot,
         stamp: int,
         message: BusMessage,
     ) -> None:
@@ -671,7 +668,7 @@ class TriageConsumer:
                 card=card,
                 facts=facts,
                 verdict=verdict,
-                ledger_rows=ledger_rows,
+                history=history,
                 trace=trace,
                 stamp=stamp,
                 error_code="oi_parse_failed",
@@ -718,7 +715,7 @@ class TriageConsumer:
                         card=card,
                         facts=facts,
                         verdict=judgment.verdict,
-                        ledger_rows=ledger_rows,
+                        history=history,
                         trace=trace,
                         stamp=stamp,
                     ),
@@ -737,7 +734,7 @@ class TriageConsumer:
         card: Mapping[str, Any],
         facts: GateFacts,
         verdict: TriageVerdict,
-        ledger_rows: Sequence[Mapping[str, Any]],
+        history: ReaderHistorySnapshot,
         trace: dict[str, Any],
         stamp: int,
         error_code: str | None = None,
@@ -763,9 +760,9 @@ class TriageConsumer:
                 degraded=False,
             ),
             told=[],
-            seen=ledger_rows,
-            # An arithmetic judgment reads no ledger, so there is no selected context to go stale. The wide
-            # ledger is still refreshed inside the lock, because `decide()` measures duplicates against it.
+            history=history,
+            # An arithmetic judgment reads no semantic history, so there is no selected context to go stale.
+            # Recent reader history is still refreshed inside the lock because `decide()` measures duplicates.
             selected_context_sha="",
             novelty_context_sha="",
             prelim_key=str(card.get("storyline_key") or ""),
@@ -803,15 +800,10 @@ class TriageConsumer:
             # already-produced verdict.  Reconsume after the durable retry lane
             # rather than publishing a judgment over evidence it did not read.
             raise TransientError("news_event_evidence_changed")
-        # The wide ledger is always re-read: `decide()` must measure this card against every card the reader
-        # received, including one that landed while the model was thinking.  Only the *selected* context — the
-        # bounded set of rows the model actually saw — decides whether the judgment is stale, so an unrelated new card
-        # costs a cheap query instead of a second paid two-Predictor execution.
-        seen = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=_SEEN_LEDGER_MAX)
-        if s.allow_stale:
-            refreshed = TriageContext.from_card(s.card, watchlist=(), told_rows=seen, now_ms=s.stamp, queue_lag_ms=0)
-            if refreshed.novelty_context_sha256() != s.novelty_context_sha:
-                return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
+        history = _read_history(repos.news, event_id=s.event_id, card=s.card, now_ms=s.stamp)
+        seen = _recent_seen(history)
+        if s.allow_stale and _novelty_context_sha(s.card, history, now_ms=s.stamp) != s.novelty_context_sha:
+            return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
         status = storyline_status(s.final_key, told=s.told, seen=seen)
         trace = s.trace
         decision = decide(
@@ -898,19 +890,18 @@ class TriageConsumer:
 
     def _load_with_aliases(
         self, repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    ) -> tuple[dict[str, Any], ReaderHistorySnapshot] | None:
         """The Triage bundle plus a refreshed alias table, both from the one session (#75)."""
 
         self._refresh_aliases(repos, now=stamp)
         return self._load(repos, event_id, stamp)
 
     @staticmethod
-    def _load(repos: Any, event_id: str, stamp: int) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    def _load(repos: Any, event_id: str, stamp: int) -> tuple[dict[str, Any], ReaderHistorySnapshot] | None:
         card = repos.news.event_card(event_id)
         if card is None:
             return None
-        ledger = repos.news.told_ledger(now_ms=stamp, window_ms=TOLD_WINDOW_MS, limit=_SEEN_LEDGER_MAX)
-        return card, ledger
+        return card, _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp)
 
     async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:
         stamp = now_ms()

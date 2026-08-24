@@ -30,8 +30,6 @@ from tracefold.news.program.graph import (
     PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_TOPOLOGY_SHA256,
     READER_CARD_SIGNATURE_SHA256,
-    TOLD_MAX,
-    TOLD_STORYLINE_TIER_MAX,
     CompileReceipt,
     DemoBank,
     DemoRecord,
@@ -61,6 +59,7 @@ from tracefold.news.program.graph import (
     load_stable_program_artifact,
     render_model_evidence_json,
 )
+from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
@@ -169,7 +168,7 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert artifact.state_sha256 == artifact.computed_state_sha256()
 
 
-def test_stable_root_is_the_v6_generation_v2_ownership_contract() -> None:
+def test_stable_root_is_the_v7_generation_v2_ownership_contract() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_semantic_program_artifact_v2"
@@ -199,6 +198,8 @@ def test_quality_kernel_hashes_every_package_owned_behavior_source_and_verdict_s
     news_root = importlib.resources.files("tracefold.news")
     sources = {
         "news/artifact_identity.py": ("artifact_identity.py",),
+        "news/reader_history.py": ("reader_history.py",),
+        "news/told_context.py": ("told_context.py",),
         "news/program/contracts.py": ("program", "contracts.py"),
         "news/program/quality_baseline.py": ("program", "quality_baseline.py"),
         "news/program/graph.py": ("program", "graph.py"),

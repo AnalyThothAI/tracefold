@@ -173,8 +173,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "program_v7",
     ),
     "program_learning.program_sha256": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "7a460f8d3812c64c6ee38158871eb9f060811e5ffe87f399f7bc2e506b4e28ad",
+        "issue_175_reader_history_hard_cut_program_root",
+        "fcfd949e0ae7ccb40a7b2dfb0729de9b76b7734e371e11ed82b2c0c1bdc99063",
+    ),
+    "program_learning.input_contract_sha256": (
+        "issue_175_composite_reader_history_retrieval",
+        "59f235bb4026820efb43d1931520aeadea64a08673e6b71a67bc50c089dd5d2e",
     ),
     "program_learning.program_version": (
         "issue_162_pr8b_program_learning_identity_migration",

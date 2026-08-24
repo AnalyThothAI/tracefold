@@ -85,10 +85,18 @@ reproducing v5 behaviour, then checks its source revision, exact behavior-
 profile identity and image label. It does not deploy or mutate PostgreSQL.
 Record the full `sha256:` image ID it prints; that ID, not its local tag, is the
 only accepted rollback input. The artifact is deployment safety only: it is not
-in the v6 factory registry, artifact loader or normal runtime image and cannot
+in the v7 factory registry, artifact loader or normal runtime image and cannot
 be used for canary or daily execution. The production image contains exactly
-factory/executable v4; there is no runtime flag or dual loader. A failed build
+factory/executable v5; there is no runtime flag or dual loader. A failed build
 or drill fails the release gate.
+
+The #175 reader-history rollout uses the same-schema previous runtime image as
+its rollback target; it never downgrades migrations `0302`/`0303`. During the first 24 h,
+manually review every newly held `restatement` whose trace reports
+`reader_history.targeted_count > 0`. `tracefold news why <event_id>` must name
+the prior sent time, headline, and retrieval reason. If any such hold is really
+a `progression` or `new_fact`, replace the runtime with the recorded previous
+image digest immediately and retain the verdict/trace as regression evidence.
 
 For the #160 drill and rollback, use the full image ID printed by
 `build-news-rollback-image` directly. After both sides of a later deployment
@@ -554,8 +562,8 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-Issue #160 starts current evidence eligibility from zero at the deployment
-timestamp stored in `news_learning_epochs(program_v6)`. Only accepted
+The current evidence eligibility window starts at the deployment timestamp
+stored in `news_learning_epochs(program_v7)`. Only accepted
 `news_review_v4` rows from this epoch enter metric v4, GEPA or release evidence. Every earlier
 Prompt/Program baseline remains readable audit history but cannot enter a
 dataset, DemoBank or release stage. Do not
@@ -706,12 +714,15 @@ hardening the restatement sentinel, making `program_v1` evidence audit-only as
 well. `0294` preserves both prior Program epochs and appends `program_v3` for
 the expert quality baseline and semantic normalization, making `program_v2`
 evidence audit-only for its release decisions. `0295` preserves v1-v3 and
-appends `program_v5` for the candidate-conditioned ToldContext factory and
-ownership hard cut, making every earlier cohort audit-only for current release
-decisions. `0301` hard-renames persisted `priority` to `queue_priority`, adds
+appends `program_v4` for the D-generation ownership hard cut; `0298` preserves
+v1-v4 and appends `program_v5` for candidate-conditioned ToldContext, making
+every earlier cohort audit-only for current release decisions. `0301`
+hard-renames persisted `priority` to `queue_priority`, adds
 atomic editorial/scored/runtime-manifest judgment identity, trips old canaries,
 and starts `program_v6` for factory/executable v4 and policy v10. None of these migrations
 deletes history or claims a release PASS.
+`0303` preserves that history and appends `program_v7` for factory/executable
+v5 after the #162 Program/Learning package split; v6 evidence remains audit-only.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
@@ -752,7 +763,7 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v6` reset changes eligibility, not retention: all earlier evidence
+  `program_v7` reset changes eligibility, not retention: all earlier evidence
   remains auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;

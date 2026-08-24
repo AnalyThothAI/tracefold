@@ -259,10 +259,12 @@ the initial `program_v1` epoch start from the database deployment clock;
 semantic fast-retry state bug was found in production proof. `0294` preserves
 both prior rows and appends `program_v3` after the expert quality baseline and
 semantic normalization change Program identity. `0295` preserves v1-v3 and
-appends `program_v5` for the candidate-conditioned ToldContext factory and its
-ownership hard cut. `0301` preserves history and starts `program_v6` for
+appends `program_v4` for the D-generation ownership hard cut; `0298` preserves
+v1-v4 and appends `program_v5` for candidate-conditioned ToldContext. `0301`
+preserves history and starts `program_v6` for
 factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
-protocol/receipt v3. Every earlier review, dataset, recording and release receipt
+protocol/receipt v3. `0303` preserves history and starts the current
+`program_v7` for factory/executable v5. Every earlier review, dataset, recording and release receipt
 remains immutable audit history but is not compiler, DemoBank, validation,
 holdout or promotion evidence. New datasets require post-epoch reviews and
 acceptance receipts bound to the exact stable Program bundle, so quality

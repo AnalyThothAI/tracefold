@@ -14,6 +14,7 @@ NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
     "EditorialEnvelope",
+    "NEWS_RETRIEVAL_SHA256",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",

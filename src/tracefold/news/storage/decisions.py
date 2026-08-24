@@ -133,43 +133,6 @@ class DecisionStorage:
         ).fetchall()
         return assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms)
 
-    def told_ledger(self, *, now_ms: int, window_ms: int, limit: int) -> list[dict[str, Any]]:
-        """Cards proven to have reached the reader in the window: the newest ``limit``, newest first, one row per
-        event.
-
-        Only ``news_deliveries(kind='first', state='sent')`` is reader truth. A decision, missing row, sending
-        row, terminal failure, or ambiguous settle is not.
-
-        This is one bounded ledger with two readers: ``decide()`` measures duplicate evidence against all of it,
-        and the told-context selector ranks it against the candidate and shows the model the top rows. There is
-        no ``prefer_key`` any more — reserving same-storyline rows in the query was the old selector's job, and
-        the selector now does it against the candidate's own facts instead of its preliminary key alone.
-
-        The projection is the selector's input contract: whatever it can rank on has to be here, and
-        ``TOLD_SELECTOR_SHA256`` pins this exact column list."""
-
-        rows = self.conn.execute(
-            """
-            SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key, e.comparison_title,
-                   v.verdict ->> 'event_type' AS event_type,
-                   (v.verdict ->> 'magnitude')::int AS magnitude, v.verdict ->> 'direction' AS direction,
-                   COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh')
-                     AS headline_zh,
-                   -- The instruments the card was about. `headline_zh` is Chinese reader prose with
-                   -- parenthesised tickers stripped by contract, so it cannot answer "same asset?".
-                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
-                   COALESCE(v.verdict -> 'assets', '[]'::jsonb) AS assets
-              FROM news_verdicts v
-              JOIN news_events e ON e.event_id = v.event_id
-              JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first' AND d.state = 'sent'
-             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
-               AND d.settled_at_ms >= %s
-             ORDER BY d.settled_at_ms DESC LIMIT %s
-            """,
-            (int(now_ms) - int(window_ms), int(limit)),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
     def lock_storyline(self, storyline_key: str) -> None:
         """Transaction-scoped advisory lock on one storyline key so "read reader evidence -> decide -> insert verdict"
         is serialised per key across concurrent Triage handlers (and processes). Released at commit/rollback. The

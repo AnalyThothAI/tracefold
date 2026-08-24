@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..program.contracts import ProgramTrace, ProgramUsage, TriageContext
+from ..reader_history import ReaderHistorySnapshot
 
 
 def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -22,6 +23,8 @@ def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "headline_zh": str(t.get("headline_zh") or ""),
             "tier": str(t.get("tier") or ""),
             "similarity": float(t.get("similarity") or 0.0),
+            "history_scope": str(t.get("history_scope") or "recent"),
+            "retrieval_reason": str(t.get("retrieval_reason") or "recent"),
         }
         for i, t in enumerate(told)
     ]
@@ -46,9 +49,23 @@ def _told_from_context(context: TriageContext) -> list[dict[str, Any]]:
             "grounded_assets": list(entry.symbols),
             "tier": entry.tier,
             "similarity": entry.similarity,
+            "history_scope": entry.history_scope,
+            "retrieval_reason": entry.retrieval_reason,
         }
         for entry in context.told.entries
     ]
+
+
+def _reader_history_trace(history: ReaderHistorySnapshot, told: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Audit the bounded sources and the retrieval reasons selected for the Program."""
+
+    return {
+        "recent_count": len(history.recent_seen_rows),
+        "targeted_count": len(history.targeted_told_rows),
+        "source_count": len(history.told_source_rows),
+        "selected_count": len(told),
+        "selected_reasons": [str(row.get("retrieval_reason") or "recent") for row in told],
+    }
 
 
 def _usage_from_partial_trace(program_trace: ProgramTrace | None, *, attempts: int) -> dict[str, Any]:

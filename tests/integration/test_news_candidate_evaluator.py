@@ -85,6 +85,7 @@ from tracefold.news.program.graph import (
     extract_optimizer_patch,
     load_stable_program_artifact,
 )
+from tracefold.news.reader_history import assemble_reader_history
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 pytestmark = pytest.mark.integration
@@ -1662,6 +1663,89 @@ def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None
     assert prior_event_id not in {case.event_id for case in development.cases}
     assert development.counts["eligible_event_n"] == 1
     assert development.counts["eligibility"]["bundle_sha"] == stable.bundle_sha
+
+
+def test_seed_receipts_match_production_latest_delivered_verdict_with_multiple_routes(conn) -> None:
+    stable = _arm()
+    event_id = _open_event(
+        conn,
+        bundle_sha=stable.bundle_sha,
+        program_version=stable.program_version,
+        program_sha256=stable.program_sha256,
+    )
+    repos = repositories_for_connection(conn)
+    source = dict(
+        conn.execute(
+            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = 'triage' ORDER BY created_at_ms DESC",
+            (event_id,),
+        ).fetchone()
+    )
+
+    def add_route(*, suffix: str, final: str, event_type: str, direction: str, at_ms: int) -> None:
+        verdict = dict(source["verdict"])
+        verdict.update(
+            {
+                "event_type": event_type,
+                "direction": direction,
+                "assets": [{"symbol": "BABA", "role": "primary"}],
+            }
+        )
+        assert repos.news.insert_verdict(
+            event_id=event_id,
+            stage="triage",
+            policy_version=f"news_triage_policy_v10_{suffix}",
+            model_decision=final,
+            rule_baseline_decision=final,
+            final_decision=final,
+            override_rule=source["override_rule"],
+            throttled_by=source["throttled_by"],
+            verdict=verdict,
+            editorial=dict(source["editorial"]),
+            scored_judgment_sha256=str(source["scored_judgment_sha256"]),
+            runtime_manifest_sha=str(source["runtime_manifest_sha"]),
+            model=str(source["model"]),
+            program_version=str(source["program_version"]),
+            program_sha256=str(source["program_sha256"]),
+            degraded=bool(source["degraded"]),
+            error_code=source["error_code"],
+            trace=dict(source["trace"]),
+            evidence_version=int(source["evidence_version"]),
+            evidence_sha256=str(source["evidence_sha256"]),
+            focus_fact_id=str(source["focus_fact_id"]),
+            now_ms=at_ms,
+        )
+
+    with repos.transaction():
+        add_route(
+            suffix="latest_delivered",
+            final="push",
+            event_type="regulation",
+            direction="bearish",
+            at_ms=NOW - 3_200_000,
+        )
+        add_route(
+            suffix="later_drop",
+            final="drop",
+            event_type="hack",
+            direction="bullish",
+            at_ms=NOW - 3_100_000,
+        )
+
+    production = repos.news.reader_history(
+        event_id="candidate-event",
+        now_ms=NOW,
+        include_targeted=False,
+    )
+    seed_rows = CandidateEvaluator(conn, stable=stable, judges={})._seed_receipts(
+        NOW,
+        epoch_started_at_ms=_epoch_started_at_ms(conn),
+    )
+    evaluation = assemble_reader_history(recent_rows=seed_rows, now_ms=NOW)
+
+    assert len(seed_rows) == 1
+    assert evaluation.recent_seen_rows == production.recent_seen_rows
+    assert evaluation.recent_seen_rows[0].event_type == "regulation"
+    assert evaluation.recent_seen_rows[0].direction == "bearish"
 
 
 def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(conn) -> None:

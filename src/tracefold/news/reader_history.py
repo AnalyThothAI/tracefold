@@ -218,9 +218,8 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
         if value and (not isinstance(value, Mapping) or value.get("symbol"))
     )
     grounded = tuple(str(value) for value in row.get("grounded_assets") or () if value)
-    canonical = tuple(
-        sorted({base_symbol(str(value)) for value in row.get("canonical_assets") or (*grounded, *assets) if value})
-    )
+    canonical_values = row.get("canonical_assets") if "canonical_assets" in row else (*grounded, *assets)
+    canonical = tuple(sorted({base_symbol(str(value)) for value in canonical_values or () if value}))
     return ReaderHistoryRow(
         event_id=str(row.get("event_id") or ""),
         at_ms=int(row.get("at_ms") or 0),

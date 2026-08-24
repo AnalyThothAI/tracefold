@@ -246,18 +246,20 @@ deploy or promote. Migration
 `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality
-`program_v3` epoch; migration `0295` preserves v1-v3 and starts
-`program_v5`; migration `0301` preserves history and starts `program_v6` for
+`program_v3` epoch; migration `0295` preserves v1-v3 and starts `program_v4`;
+migration `0298` preserves v1-v4 and starts `program_v5`; migration `0301`
+preserves history and starts `program_v6` for
 factory/executable v4, policy v10, review/metric v4 and compiler protocol v3.
-Every earlier cohort remains audit-only, and quality evidence
-restarts from zero at the `program_v6`
-deployment. The hard cut itself
-does not prove a cross-generation quality uplift; v6 evidence starts from zero
+Migration `0303` preserves history and starts `program_v7` for
+factory/executable v5 after the Program/Learning package split. Every earlier
+cohort remains audit-only, and quality evidence restarts from zero at the
+`program_v7` deployment. The hard cut itself does not prove a cross-generation
+quality uplift; v7 evidence starts from zero
 and the normal graph remains exactly two serial Predictor calls.
-The production image has one loader only: artifact v2, factory/executable v4,
-epoch v6 and policy v10. The separately built new-schema/v5-behaviour rollback
-image is a deployment-safety artifact, not an alternate registry entry or
-runtime switch.
+The production image has one loader only: artifact v2, factory/executable v5,
+epoch v7 and policy v10. Issue #175 reissues that sole stable Program and bundle
+inside v7; rollback uses the recorded previous same-schema runtime image, never
+an alternate registry entry or runtime switch.
 `tracefold config` prints the effective values. Policy v10 retains policy v7's
 removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes the semantic contract moves
 to delivery; the sent-reader ledger remains only for same-fact suppression.

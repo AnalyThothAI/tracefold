@@ -27,7 +27,6 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ScoredJudgment,
-    ToldLedgerEntry,
     TradeRelevanceV1,
 )
 from tracefold.news.program.graph import (
@@ -38,6 +37,7 @@ from tracefold.news.program.graph import (
     TriageContext,
     load_stable_program_artifact,
 )
+from tracefold.news.told_context import ToldLedgerEntry
 
 
 def _frozen_policy_projection() -> dict[str, object]:

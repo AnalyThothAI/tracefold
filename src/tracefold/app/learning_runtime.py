@@ -8,9 +8,10 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
+from tracefold.news import NEWS_RETRIEVAL_SHA256
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
-from tracefold.news.program.contracts import TOLD_SELECTOR_SHA256, SemanticJudge
+from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.graph import (
     DspyNewsSemanticProgram,
     DspyPredictorAdapter,
@@ -179,9 +180,8 @@ def active_arm_manifest(
         program_version=artifact.program_version,
         program_sha256=artifact.program_sha256,
         runtime_model_bindings_sha256=composition.runtime_model_bindings_sha256,
-        # The selector's own identity, not a label describing it: a hand-written literal could not tell a
-        # tier-order or projection edit from a no-op, and the arm would have shipped as the same bundle.
-        retrieval_sha256=TOLD_SELECTOR_SHA256,
+        # Composite identity for both bounded source assembly and candidate-conditioned selection.
+        retrieval_sha256=NEWS_RETRIEVAL_SHA256,
         policy=policy,
         policy_sha256=canonical_sha(policy),
     )
