@@ -1,11 +1,39 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Final, Literal, get_args
 
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
 PROMETHEUS_CONTENT_TYPE = CONTENT_TYPE_LATEST
+
+ExternalDataName = Literal[
+    "event_reaction",
+    "instrument_snapshot",
+    "opennews_recovery",
+    "quote_snapshot",
+    "trading_candidate",
+    "trading_reconcile",
+]
+ExternalDataSource = Literal[
+    "binance",
+    "binance_perp",
+    "binance_spot",
+    "hyperliquid",
+    "model",
+    "opennews",
+    "other",
+    "us_reference",
+]
+ExternalDataOutcome = Literal["error", "partial", "success"]
+ExternalDataProviderOutcome = Literal["error", "success"]
+ExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
+
+_EXTERNAL_DATA_NAMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataName))
+_EXTERNAL_DATA_SOURCES: Final[frozenset[str]] = frozenset(get_args(ExternalDataSource))
+_EXTERNAL_DATA_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataOutcome))
+_EXTERNAL_DATA_PROVIDER_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataProviderOutcome))
+_EXTERNAL_DATA_SKIP_REASONS: Final[frozenset[str]] = frozenset(get_args(ExternalDataSkipReason))
 
 
 class TelemetryRegistry:
@@ -102,6 +130,63 @@ class TelemetryRegistry:
             ("capability",),
             registry=self.registry,
         )
+        self.external_data_turn_duration_seconds = Histogram(
+            "tracefold_external_data_turn_duration_seconds",
+            "External-data turn duration in seconds.",
+            ("name",),
+            buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+            registry=self.registry,
+        )
+        self.external_data_turn_total = Counter(
+            "tracefold_external_data_turn_total",
+            "External-data turns by bounded outcome.",
+            ("name", "outcome"),
+            registry=self.registry,
+        )
+        self.external_data_target_count = Gauge(
+            "tracefold_external_data_target_count",
+            "Targets observed by the latest external-data turn.",
+            ("name",),
+            registry=self.registry,
+        )
+        self.external_data_source_count = Gauge(
+            "tracefold_external_data_source_count",
+            "Source groups observed by the latest external-data turn.",
+            ("name",),
+            registry=self.registry,
+        )
+        self.external_data_last_success_age_seconds = Gauge(
+            "tracefold_external_data_last_success_age_seconds",
+            "Age of the last fully successful external-data turn in seconds.",
+            ("name",),
+            registry=self.registry,
+        )
+        self._external_data_last_success_timestamps: dict[str, float] = {}
+        self.external_data_provider_call_duration_seconds = Histogram(
+            "tracefold_external_data_provider_call_duration_seconds",
+            "External provider call duration in seconds.",
+            ("name", "source"),
+            buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 8.0, 20.0, 30.0),
+            registry=self.registry,
+        )
+        self.external_data_provider_call_total = Counter(
+            "tracefold_external_data_provider_call_total",
+            "External provider calls by bounded outcome.",
+            ("name", "source", "outcome"),
+            registry=self.registry,
+        )
+        self.external_data_provider_bytes_total = Counter(
+            "tracefold_external_data_provider_bytes_total",
+            "Provider response bytes where an adapter exposes that value.",
+            ("name", "source"),
+            registry=self.registry,
+        )
+        self.external_data_skipped_or_coalesced_total = Counter(
+            "tracefold_external_data_skipped_or_coalesced_total",
+            "External-data work deliberately skipped or coalesced.",
+            ("name", "reason"),
+            registry=self.registry,
+        )
         for capability in (
             "database_business",
             "database_control",
@@ -193,9 +278,81 @@ class TelemetryRegistry:
     def change_resource_active(self, capability: str, delta: int) -> None:
         self.resource_active.labels(capability=_label(capability)).inc(int(delta))
 
+    def record_external_data_turn(
+        self,
+        name: ExternalDataName,
+        outcome: ExternalDataOutcome,
+        seconds: float,
+        *,
+        target_count: int | None = None,
+        source_count: int | None = None,
+        timestamp: float | None = None,
+    ) -> None:
+        name_label = _bounded_label(name, allowed=_EXTERNAL_DATA_NAMES, field="external_data_name")
+        outcome_label = _bounded_label(outcome, allowed=_EXTERNAL_DATA_OUTCOMES, field="external_data_outcome")
+        self.external_data_turn_duration_seconds.labels(name=name_label).observe(max(0.0, float(seconds)))
+        self.external_data_turn_total.labels(name=name_label, outcome=outcome_label).inc()
+        if target_count is not None:
+            self.external_data_target_count.labels(name=name_label).set(max(0, int(target_count)))
+        if source_count is not None:
+            self.external_data_source_count.labels(name=name_label).set(max(0, int(source_count)))
+        if outcome == "success":
+            resolved_timestamp = float(timestamp if timestamp is not None else time.time())
+            self._external_data_last_success_timestamps[name_label] = resolved_timestamp
+
+            def _success_age(label: str = name_label) -> float:
+                return max(0.0, time.time() - self._external_data_last_success_timestamps[label])
+
+            self.external_data_last_success_age_seconds.labels(name=name_label).set_function(_success_age)
+
+    def record_external_data_provider_call(
+        self,
+        name: ExternalDataName,
+        source: ExternalDataSource,
+        outcome: ExternalDataProviderOutcome,
+        seconds: float,
+        *,
+        byte_count: int | None = None,
+    ) -> None:
+        name_label = _bounded_label(name, allowed=_EXTERNAL_DATA_NAMES, field="external_data_name")
+        source_label = _bounded_label(source, allowed=_EXTERNAL_DATA_SOURCES, field="external_data_source")
+        outcome_label = _bounded_label(
+            outcome,
+            allowed=_EXTERNAL_DATA_PROVIDER_OUTCOMES,
+            field="external_data_provider_outcome",
+        )
+        self.external_data_provider_call_duration_seconds.labels(name=name_label, source=source_label).observe(
+            max(0.0, float(seconds))
+        )
+        self.external_data_provider_call_total.labels(
+            name=name_label,
+            source=source_label,
+            outcome=outcome_label,
+        ).inc()
+        if byte_count is not None:
+            self.external_data_provider_bytes_total.labels(name=name_label, source=source_label).inc(
+                max(0, int(byte_count))
+            )
+
+    def record_external_data_skipped(
+        self,
+        name: ExternalDataName,
+        reason: ExternalDataSkipReason,
+    ) -> None:
+        name_label = _bounded_label(name, allowed=_EXTERNAL_DATA_NAMES, field="external_data_name")
+        reason_label = _bounded_label(reason, allowed=_EXTERNAL_DATA_SKIP_REASONS, field="external_data_skip_reason")
+        self.external_data_skipped_or_coalesced_total.labels(name=name_label, reason=reason_label).inc()
+
     def render_prometheus_text(self) -> str:
         return generate_latest(self.registry).decode("utf-8")
 
 
 def _label(value: Any) -> str:
     return str(value).strip() or "unknown"
+
+
+def _bounded_label(value: Any, *, allowed: frozenset[str], field: str) -> str:
+    label = _label(value)
+    if label not in allowed:
+        raise ValueError(f"{field}_invalid:{label}")
+    return label

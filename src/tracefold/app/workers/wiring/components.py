@@ -9,6 +9,7 @@ from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.pipeline.root import TradingPipeline
 
 if TYPE_CHECKING:
@@ -27,11 +28,17 @@ async def _wire_components(
     settings: Settings,
     db: WorkerDatabase,
     finite: FiniteOperations,
+    telemetry: TelemetryRegistry,
 ) -> _Components:
     news_pipeline: NewsPipeline | None = None
     news_bus: RabbitMQBus | None = None
     if settings.news.enabled:
-        news_bus, news_pipeline = await _wire_news_pipeline(settings=settings, db=db, finite=finite)
+        news_bus, news_pipeline = await _wire_news_pipeline(
+            settings=settings,
+            db=db,
+            finite=finite,
+            telemetry=telemetry,
+        )
         await news_pipeline.register_runtime_manifest()
-    trading_pipeline = _wire_trading_pipeline(settings=settings, db=db)
+    trading_pipeline = _wire_trading_pipeline(settings=settings, db=db, telemetry=telemetry)
     return _Components(news_pipeline=news_pipeline, news_bus=news_bus, trading_pipeline=trading_pipeline)

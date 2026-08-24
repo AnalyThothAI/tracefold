@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 from ..bus import DeferError, TransientError, new_trace_id, now_ms
 from ..models import OUTBOX_MAX_AGE_MS
+from ..telemetry import NewsExternalDataSource, NewsExternalDataTelemetryPort, NewsWorkSemantics
 from .admission import publish_event
 from .runtime import NewsDatabasePort, _sleep_or_stop
 
@@ -33,6 +35,8 @@ class InstrumentSnapshotLoop:
     an unreachable Binance cannot read as a mass delisting.
     """
 
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("latest_state",)
+
     def __init__(
         self,
         *,
@@ -40,20 +44,44 @@ class InstrumentSnapshotLoop:
         fetchers: Sequence[tuple[str, Callable[[], Any]]],
         period_seconds: float = _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS,
         enabled: bool = True,
+        telemetry: NewsExternalDataTelemetryPort | None = None,
     ) -> None:
         self.db = db
         self.fetchers = tuple(fetchers)
         self.period = float(period_seconds)
         self.enabled = bool(enabled)
+        self.telemetry = telemetry
         self.last_result: Any | None = None
         self.last_error: str | None = None
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if not self.enabled or not self.fetchers:
+            if self.telemetry is not None:
+                self.telemetry.record_external_data_skipped("instrument_snapshot", "disabled")
             await stop_event.wait()
             return
         while not stop_event.is_set():
-            ok = await self.turn()
+            started = time.perf_counter()
+            try:
+                ok = await self.turn()
+            except Exception:
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_turn(
+                        "instrument_snapshot",
+                        "error",
+                        time.perf_counter() - started,
+                        source_count=len(self.fetchers),
+                    )
+                raise
+            if self.telemetry is not None:
+                result = self.last_result if ok else None
+                self.telemetry.record_external_data_turn(
+                    "instrument_snapshot",
+                    "partial" if ok and self.last_error else ("success" if ok else "error"),
+                    time.perf_counter() - started,
+                    target_count=int(getattr(result, "total", 0) or 0),
+                    source_count=len(self.fetchers),
+                )
             await _sleep_or_stop(stop_event, self.period if ok else _INSTRUMENT_RETRY_SECONDS)
 
     async def turn(self) -> bool:
@@ -62,12 +90,29 @@ class InstrumentSnapshotLoop:
         instruments: list[Any] = []
         errors: list[str] = []
         for venue, fetch in self.fetchers:
+            started = time.perf_counter()
             try:
-                instruments.extend(await fetch())
+                fetched = await fetch()
             except Exception as exc:  # adapters raise VenueExpectedError; anything else is equally non-fatal here
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_provider_call(
+                        "instrument_snapshot",
+                        _instrument_source(venue),
+                        "error",
+                        time.perf_counter() - started,
+                    )
                 code = getattr(exc, "code", None) or type(exc).__name__
                 errors.append(f"{venue}:{code}")
                 log.warning("news instrument snapshot venue failed venue=%s code=%s", venue, code)
+            else:
+                instruments.extend(fetched)
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_provider_call(
+                        "instrument_snapshot",
+                        _instrument_source(venue),
+                        "success",
+                        time.perf_counter() - started,
+                    )
         self.last_error = ",".join(errors) or None
         if not instruments:
             return False
@@ -99,8 +144,20 @@ class InstrumentSnapshotLoop:
         return True
 
 
+def _instrument_source(venue: str) -> NewsExternalDataSource:
+    if venue == "binance":
+        return "binance"
+    if venue == "hyperliquid":
+        return "hyperliquid"
+    if venue == "us_reference":
+        return "us_reference"
+    return "other"
+
+
 class JanitorLoop:
     """Outbox catch-up, band expiry, retention, broker snapshot — one bounded turn per period."""
+
+    external_data_exempt_reason: ClassVar[Literal["internal_maintenance"]] = "internal_maintenance"
 
     def __init__(
         self,

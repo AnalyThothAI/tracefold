@@ -10,7 +10,7 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 from .. import oi_signals
 from ..bus import (
@@ -34,6 +34,7 @@ from ..program.contracts import (
     TriageContext,
 )
 from ..reader_history import ReaderHistorySnapshot
+from ..telemetry import NewsWorkSemantics
 from ..triage_rules import (
     DEFAULT_POLICY,
     DecidePolicy,
@@ -84,6 +85,8 @@ def _evaluate_canary_rolling_slo(repos: Any, *, activation_id: str, now_ms: int)
 
 
 class TriageConsumer:
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
+
     def __init__(
         self,
         *,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from typing import Any
+import time
+from collections.abc import Awaitable, Mapping
+from typing import Any, ClassVar
 
 from ..bus import RK_RAW_RECOVERY, BusMessage, DeferError, TransientError, new_trace_id, now_ms
 from ..opennews import OpenNewsHistoryError, enabled_strategy_ids, parse_opennews_strategy_hits
+from ..telemetry import NewsExternalDataTelemetryPort, NewsWorkSemantics
 from .runtime import NewsDatabasePort, _sleep_or_stop
 
 _HISTORY_PAGE_SIZE = 100
@@ -18,10 +20,20 @@ _RECOVERY_OVERLAP_MS = 30_000
 class RecoveryRunner:
     """Closed incidents -> official Strategy hits -> raw.recovery.* messages (never delivered)."""
 
-    def __init__(self, *, bus: Any, db: NewsDatabasePort, history_client: Any | None) -> None:
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
+
+    def __init__(
+        self,
+        *,
+        bus: Any,
+        db: NewsDatabasePort,
+        history_client: Any | None,
+        telemetry: NewsExternalDataTelemetryPort | None = None,
+    ) -> None:
         self.bus = bus
         self.db = db
         self.history_client = history_client
+        self.telemetry = telemetry
         self._requested = asyncio.Event()
 
     def request(self) -> None:
@@ -41,11 +53,27 @@ class RecoveryRunner:
             if stop_event.is_set():
                 return
             self._requested.clear()
+            started = time.perf_counter()
             try:
                 await self._recover_pending()
             except (TransientError, DeferError):
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_turn(
+                        "opennews_recovery",
+                        "error",
+                        time.perf_counter() - started,
+                        source_count=1 if self.history_client is not None else 0,
+                    )
                 await _sleep_or_stop(stop_event, 5.0)
                 self._requested.set()
+            else:
+                if self.telemetry is not None:
+                    self.telemetry.record_external_data_turn(
+                        "opennews_recovery",
+                        "success",
+                        time.perf_counter() - started,
+                        source_count=1 if self.history_client is not None else 0,
+                    )
 
     async def _provider_strategy_ids(self) -> tuple[str, ...]:
         """Which Strategies to pull history for: the provider's own enabled list, read fresh.
@@ -64,7 +92,7 @@ class RecoveryRunner:
         if self.history_client is None:
             return ()
         try:
-            payload = await self.history_client.get_strategy_list(limit=100, page=1)
+            payload = await self._provider_call(self.history_client.get_strategy_list(limit=100, page=1))
         except Exception as exc:
             raise TransientError(f"opennews_strategy_list_unavailable:{type(exc).__name__}") from exc
         return tuple(sorted(enabled_strategy_ids(payload)))
@@ -137,8 +165,8 @@ class RecoveryRunner:
             raise OpenNewsHistoryError("opennews_history_unavailable")
         recovered = 0
         for page_number in range(1, _HISTORY_PAGE_CAP + 1):
-            payload = await client.get_strategy_hits(
-                strategy_id=strategy_id, limit=_HISTORY_PAGE_SIZE, page=page_number
+            payload = await self._provider_call(
+                client.get_strategy_hits(strategy_id=strategy_id, limit=_HISTORY_PAGE_SIZE, page=page_number)
             )
             page = parse_opennews_strategy_hits(payload)
             for event in page.events:
@@ -173,6 +201,28 @@ class RecoveryRunner:
             if not page.has_more:
                 return page.total == 0 or (oldest is not None and oldest <= from_ms), recovered
         return False, recovered
+
+    async def _provider_call[T](self, call: Awaitable[T]) -> T:
+        started = time.perf_counter()
+        try:
+            result = await call
+        except Exception:
+            if self.telemetry is not None:
+                self.telemetry.record_external_data_provider_call(
+                    "opennews_recovery",
+                    "opennews",
+                    "error",
+                    time.perf_counter() - started,
+                )
+            raise
+        if self.telemetry is not None:
+            self.telemetry.record_external_data_provider_call(
+                "opennews_recovery",
+                "opennews",
+                "success",
+                time.perf_counter() - started,
+            )
+        return result
 
 
 def _raw_params_from_history(payload: Mapping[str, Any], provider_record_id: str) -> dict[str, Any] | None:

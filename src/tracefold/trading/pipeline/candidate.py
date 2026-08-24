@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import ValidationError
 
@@ -47,6 +48,12 @@ from ..decision.regime import assess, pre_move_bps, select_bar
 from ..execution.order import build_payload, size_order
 from ..execution.submission import commit_order
 from ..storage.root import TradingRepository
+from ..telemetry import (
+    TradingExternalDataTelemetryPort,
+    TradingWorkSemantics,
+    external_data_source,
+    observe_provider_call,
+)
 from .runtime import (
     BAR_INTERVAL_MS as _BAR_INTERVAL_MS,
 )
@@ -93,6 +100,8 @@ _NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_ban
 class CandidateRunner:
     """Scan, freeze, decide, prepare, commit. One case at a time; provider concurrency is one."""
 
+    work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("derived_work", "capital_truth")
+
     def __init__(
         self,
         *,
@@ -104,6 +113,7 @@ class CandidateRunner:
         instrument_projection: _InstrumentProjectionReader,
         program: TradingDecisionProgram | None = None,
         clock: Callable[[], int] = _now_ms,
+        telemetry: TradingExternalDataTelemetryPort | None = None,
     ) -> None:
         self._db = db
         self._config = config
@@ -113,14 +123,29 @@ class CandidateRunner:
         self._instrument_projection = instrument_projection
         self._program = program
         self._clock = clock
+        self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
+            started = time.perf_counter()
             try:
-                await self.turn()
+                result = await self.turn()
             except Exception:
+                if self._telemetry is not None:
+                    self._telemetry.record_external_data_turn(
+                        "trading_candidate",
+                        "error",
+                        time.perf_counter() - started,
+                    )
                 log.exception("trading candidate turn failed")
+            else:
+                if self._telemetry is not None:
+                    self._telemetry.record_external_data_turn(
+                        "trading_candidate",
+                        "error" if result.get("skipped") == "state_unavailable" else "success",
+                        time.perf_counter() - started,
+                    )
             await _sleep_or_stop(stop_event, self._config.poll_seconds)
 
     # ------------------------------------------------------------------ turn
@@ -374,7 +399,12 @@ class CandidateRunner:
             return []
         start = anchor_at_ms - self._config.regime.lookback_ms - _BAR_INTERVAL_MS
         try:
-            bars = await fetcher(instrument.provider_symbol, start, anchor_at_ms + _BAR_INTERVAL_MS)
+            bars = await observe_provider_call(
+                self._telemetry,
+                name="trading_candidate",
+                source=external_data_source(instrument.exchange_id),
+                call=fetcher(instrument.provider_symbol, start, anchor_at_ms + _BAR_INTERVAL_MS),
+            )
         except Exception:
             log.warning(
                 "trading bar fetch failed venue=%s symbol=%s",
@@ -478,7 +508,12 @@ class CandidateRunner:
                 lambda repos: repos.trading.bump_dspy_calls(day_key=_day_key(now), now_ms=now),
                 timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
             )
-            result = await self._program.decide(manifest)
+            result = await observe_provider_call(
+                self._telemetry,
+                name="trading_candidate",
+                source="model",
+                call=self._program.decide(manifest),
+            )
             decision = result.decision
             program_output = {"decision": decision.model_dump(mode="json"), "trace": result.trace}
             if result.identity is not None:
@@ -686,6 +721,12 @@ class CandidateRunner:
             policy=self._config.order,
             count=funnel.count,
             now=now,
+            observe_call=lambda call: observe_provider_call(
+                self._telemetry,
+                name="trading_candidate",
+                source=external_data_source(prepared.instrument.exchange_id),
+                call=call,
+            ),
         )
 
 

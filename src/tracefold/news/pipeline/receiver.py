@@ -6,10 +6,11 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 
 from ..bus import RK_RAW_LIVE, BusMessage, DeferError, TransientError, new_trace_id, now_ms
 from ..opennews import OpenNewsExpectedError, parse_opennews_message
+from ..telemetry import NewsWorkSemantics
 from .recovery import RecoveryRunner
 from .runtime import NewsDatabasePort, _receive_or_stop, _sleep_or_stop
 
@@ -36,6 +37,8 @@ def _cause_for(code: str | None) -> str:
 
 class OpenNewsReceiver:
     """WSS -> broker. Publishes each accepted frame with confirms; overflow/unavailability become incidents."""
+
+    work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
 
     def __init__(
         self,

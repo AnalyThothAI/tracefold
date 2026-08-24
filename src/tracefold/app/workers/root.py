@@ -174,7 +174,7 @@ async def run_workers(settings: Settings) -> None:
             db.close_executors()
             raise _FreshRuntimeRowExists("workers_runtime_fresh_row_exists")
 
-        components = await _wire_components(settings=settings, db=db, finite=finite)
+        components = await _wire_components(settings=settings, db=db, finite=finite, telemetry=telemetry)
         server = _probe_server(probe_state=probe_state, telemetry=telemetry)
 
         async with asyncio.TaskGroup() as group:

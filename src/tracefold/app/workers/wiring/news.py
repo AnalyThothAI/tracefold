@@ -47,6 +47,7 @@ from tracefold.news.program.artifact import (
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
 
 if TYPE_CHECKING:
@@ -65,7 +66,11 @@ class _ProgramArms:
 
 
 async def _wire_news_pipeline(
-    *, settings: Settings, db: WorkerDatabase, finite: FiniteOperations
+    *,
+    settings: Settings,
+    db: WorkerDatabase,
+    finite: FiniteOperations,
+    telemetry: TelemetryRegistry | None = None,
 ) -> tuple[RabbitMQBus, NewsPipeline]:
     """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities."""
 
@@ -78,7 +83,9 @@ async def _wire_news_pipeline(
     history_client = (
         OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     )
-    recovery = RecoveryRunner(bus=bus, db=news_db, history_client=history_client) if ws_client else None
+    recovery = (
+        RecoveryRunner(bus=bus, db=news_db, history_client=history_client, telemetry=telemetry) if ws_client else None
+    )
     receiver = (
         OpenNewsReceiver(
             bus=bus,
@@ -102,6 +109,7 @@ async def _wire_news_pipeline(
         arms=arms,
         receiver=receiver,
         recovery=recovery,
+        telemetry=telemetry,
     )
     return bus, pipeline
 
@@ -260,6 +268,7 @@ def _compose_news_pipeline(
     arms: _ProgramArms,
     receiver: OpenNewsReceiver | None,
     recovery: RecoveryRunner | None,
+    telemetry: TelemetryRegistry | None,
 ) -> NewsPipeline:
     watchlist_symbols = settings.news.watchlist_symbols
     oi_policy = OiPolicy(**settings.news.oi.model_dump())
@@ -304,9 +313,14 @@ def _compose_news_pipeline(
             retention_raw_days=settings.news.retention.raw_days,
             retention_judged_days=settings.news.retention.judged_days,
         ),
-        instruments=_instrument_snapshot_loop(settings, db=news_db),
-        quotes=_quote_snapshot_loop(settings, db=market_review_db, watchlist=sorted(watchlist_symbols)),
-        reactions=_event_reaction_loop(settings, db=market_review_db),
+        instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),
+        quotes=_quote_snapshot_loop(
+            settings,
+            db=market_review_db,
+            watchlist=sorted(watchlist_symbols),
+            telemetry=telemetry,
+        ),
+        reactions=_event_reaction_loop(settings, db=market_review_db, telemetry=telemetry),
     )
 
 
