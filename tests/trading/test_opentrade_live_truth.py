@@ -201,6 +201,45 @@ def test_preflight_requires_ticker_identity_before_any_write(field: str, value: 
     assert all(request.method == "GET" for request in requests)
 
 
+@pytest.mark.parametrize(
+    ("path_suffix", "alias", "conflict", "error_code"),
+    [
+        ("/market/ticker", "exchange", "hyperliquid", "opentrade_ticker_scope_mismatch"),
+        ("/account/summary", "accountRef", "different-account", "opentrade_account_identity_invalid"),
+    ],
+)
+def test_preflight_rejects_conflicting_provider_identity_aliases(
+    path_suffix: str,
+    alias: str,
+    conflict: str,
+    error_code: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = _response(request, account_identity=True)
+        if request.url.path.endswith(path_suffix):
+            body = response.json()
+            body["data"][alias] = conflict
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match=error_code):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert requests
+    assert all(request.method == "GET" for request in requests)
+
+
 @pytest.mark.parametrize("timestamp", [None, NOW // 1_000, NOW - 10_001, NOW + 1, NOW + 9_999, NOW + 10_001])
 def test_preflight_requires_a_fresh_millisecond_ticker_timestamp_before_any_write(timestamp: object) -> None:
     requests: list[httpx.Request] = []
@@ -317,6 +356,41 @@ def test_amount_min_is_not_guessed_to_be_the_quantity_step() -> None:
         asyncio.run(adapter.aclose())
     assert preflight.min_quantity == Decimal("1")
     assert preflight.quantity_step is None
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alias", "conflict", "error_code"),
+    [
+        ("quantityStep", "amountStep", "0.2", "opentrade_quantity_step_invalid"),
+        ("priceStep", "tickSize", "0.02", "opentrade_price_tick_invalid"),
+    ],
+)
+def test_preflight_rejects_conflicting_precision_aliases(
+    canonical: str,
+    alias: str,
+    conflict: str,
+    error_code: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = _response(request)
+        if request.url.path.endswith("/market/metadata"):
+            body = response.json()
+            assert canonical in body["data"]["markets"][0]
+            body["data"]["markets"][0][alias] = conflict
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match=error_code):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
 
 
 @pytest.mark.parametrize("contract_size", [None, "0", "not-a-number", "Infinity"])
@@ -1102,6 +1176,7 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("partial_working", "UNKNOWN"),
         ("partially_reduced", "OPEN_PROTECTED"),
         ("protected", "OPEN_PROTECTED"),
+        ("protected_conflicting_parent", "UNKNOWN"),
         ("protected_external_order", "UNKNOWN"),
         ("unprotected", "OPEN_UNPROTECTED"),
         ("future_fill", "UNKNOWN"),
@@ -1157,6 +1232,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     "partial_working",
                     "partially_reduced",
                     "protected",
+                    "protected_conflicting_parent",
                     "protected_external_order",
                     "unprotected",
                     "future_fill",
@@ -1219,12 +1295,19 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                         "reduceOnly": False,
                     }
                 )
-            if scenario in {"partial", "partially_reduced", "protected", "protected_external_order"}:
+            if scenario in {
+                "partial",
+                "partially_reduced",
+                "protected",
+                "protected_conflicting_parent",
+                "protected_external_order",
+            }:
                 rows.append(
                     {
                         "exchange": "binance",
                         "orderId": "stop-1",
                         "parentOrderId": "remote-1",
+                        **({"sourceOrderId": "different-order"} if scenario == "protected_conflicting_parent" else {}),
                         "symbol": "DOGE/USDT:USDT",
                         "side": "sell",
                         "type": "stop_market",
@@ -1286,6 +1369,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "partial_working",
             "partially_reduced",
             "protected",
+            "protected_conflicting_parent",
             "protected_external_order",
             "unprotected",
             "future_fill",

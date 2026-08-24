@@ -102,7 +102,12 @@ class OpenTradeAdapter:
         params = {"exchangeId": exchange_id, "symbol": provider_symbol}
         ticker = await self._object("/market/ticker", params=params)
         server_time = await self._server_time()
-        ticker_exchange = _optional_text(ticker.get("exchangeId") or ticker.get("exchange"))
+        ticker_exchange = _aliased_text(
+            ticker,
+            "exchangeId",
+            "exchange",
+            code="opentrade_ticker_scope_mismatch",
+        )
         ticker_symbol = _optional_text(ticker.get("symbol"))
         if ticker_exchange is None or ticker_exchange.lower() != exchange_id or ticker_symbol != provider_symbol:
             raise OpenTradeContractError("opentrade_ticker_scope_mismatch")
@@ -132,7 +137,9 @@ class OpenTradeAdapter:
         orders = await self._list("/orders/open", params={"exchangeId": exchange_id})
         positions = await self._list("/positions", params={"exchangeId": exchange_id})
 
-        mark = _positive_decimal(ticker.get("last") or ticker.get("markPrice"), "opentrade_mark_invalid")
+        mark = _aliased_decimal(ticker, "last", "markPrice", code="opentrade_mark_invalid")
+        if mark is None:
+            raise OpenTradeContractError("opentrade_mark_invalid")
         bid = _positive_decimal(ticker.get("bid"), "opentrade_bid_invalid")
         ask = _positive_decimal(ticker.get("ask"), "opentrade_ask_invalid")
         if ask < bid:
@@ -165,15 +172,32 @@ class OpenTradeAdapter:
             bid_price=bid,
             ask_price=ask,
             spread_bps=spread,
-            quantity_step=_first_decimal(market, "quantityStep", "amountStep", "stepSize"),
-            price_tick=_first_decimal(market, "priceStep", "tickSize"),
+            quantity_step=_aliased_decimal(
+                market,
+                "quantityStep",
+                "amountStep",
+                "stepSize",
+                code="opentrade_quantity_step_invalid",
+            ),
+            price_tick=_aliased_decimal(
+                market,
+                "priceStep",
+                "tickSize",
+                code="opentrade_price_tick_invalid",
+            ),
             min_quantity=_optional_decimal(market.get("amountMin")),
             min_notional=_optional_decimal(market.get("costMin")),
             contract_size=_positive_decimal(market.get("contractSize"), "opentrade_contract_size_invalid"),
             requested_account_ref=account_ref,
             # The pinned example has neither field, so normal public output remains fail-closed. An
             # exact provider identity is accepted when the real capability response supplies one.
-            observed_account_ref=_optional_identifier(account.get("accountId") or account.get("accountRef")),
+            observed_account_ref=_aliased_text(
+                account,
+                "accountId",
+                "accountRef",
+                identifier=True,
+                code="opentrade_account_identity_invalid",
+            ),
             available_balance=_optional_decimal(account.get("available")),
             available_currency=available_currency,
             hedged=hedged,
@@ -256,7 +280,13 @@ class OpenTradeAdapter:
         trade_rows = self._matching(trades, order=order)
         history_rows = self._matching(position_history, order=order)
         remote_id = self._remote_id(order)
-        account_ref = _optional_identifier(account.get("accountId") or account.get("accountRef"))
+        account_ref = _aliased_text(
+            account,
+            "accountId",
+            "accountRef",
+            identifier=True,
+            code="opentrade_account_identity_invalid",
+        )
         entry_open = _remote_rows(open_rows, remote_id)
         entry_closed = _remote_rows(closed_rows, remote_id)
         entry_trades = _remote_rows(trade_rows, remote_id)
@@ -338,7 +368,14 @@ class OpenTradeAdapter:
                 row
                 for row in open_rows
                 if str(row.get("type") or "").lower() in _STOP_ORDER_TYPES
-                and _optional_identifier(row.get("parentOrderId") or row.get("sourceOrderId")) == remote_id
+                and _aliased_text(
+                    row,
+                    "parentOrderId",
+                    "sourceOrderId",
+                    identifier=True,
+                    code="opentrade_protection_identity_invalid",
+                )
+                == remote_id
             ]
             expected_open_rows = [
                 row
@@ -596,7 +633,14 @@ class OpenTradeAdapter:
         matches: list[Mapping[str, Any]] = []
         for row in rows:
             symbol = _text(row.get("symbol"))
-            exchange_id = _text(row.get("exchange") or row.get("exchangeId")).lower()
+            exchange_id = _text(
+                _aliased_text(
+                    row,
+                    "exchange",
+                    "exchangeId",
+                    code="opentrade_exchange_identity_invalid",
+                )
+            ).lower()
             if symbol == order.instrument.provider_symbol and exchange_id == order.instrument.exchange_id:
                 matches.append(row)
         return matches
@@ -686,9 +730,20 @@ def _native_protection(row: Mapping[str, Any], *, account_ref: str) -> NativePro
     side = str(row.get("side") or "").lower()
     if side not in {"buy", "sell"}:
         return None
-    parent_id = _optional_identifier(row.get("parentOrderId") or row.get("sourceOrderId"))
+    parent_id = _aliased_text(
+        row,
+        "parentOrderId",
+        "sourceOrderId",
+        identifier=True,
+        code="opentrade_protection_identity_invalid",
+    )
     remote_id = _optional_identifier(row.get("orderId"))
-    exchange_id = _optional_text(row.get("exchange") or row.get("exchangeId"))
+    exchange_id = _aliased_text(
+        row,
+        "exchange",
+        "exchangeId",
+        code="opentrade_exchange_identity_invalid",
+    )
     symbol = _optional_text(row.get("symbol"))
     quantity = _optional_decimal(row.get("amount"))
     trigger = _optional_decimal(row.get("triggerPrice"))
@@ -910,8 +965,42 @@ def _nonnegative_decimal(value: object, code: str) -> Decimal:
     return parsed
 
 
-def _first_decimal(row: Mapping[str, Any], *keys: str) -> Decimal | None:
-    return next((value for key in keys if (value := _optional_decimal(row.get(key))) is not None), None)
+def _aliased_text(
+    row: Mapping[str, Any],
+    *keys: str,
+    identifier: bool = False,
+    code: str,
+) -> str | None:
+    values: list[str] = []
+    parser = _optional_identifier if identifier else _optional_text
+    for key in keys:
+        if key not in row:
+            continue
+        value = parser(row[key])
+        if value is None:
+            raise OpenTradeContractError(code)
+        values.append(value)
+    if not values:
+        return None
+    if any(value != values[0] for value in values[1:]):
+        raise OpenTradeContractError(code)
+    return values[0]
+
+
+def _aliased_decimal(row: Mapping[str, Any], *keys: str, code: str) -> Decimal | None:
+    values: list[Decimal] = []
+    for key in keys:
+        if key not in row:
+            continue
+        value = _optional_decimal(row[key])
+        if value is None:
+            raise OpenTradeContractError(code)
+        values.append(value)
+    if not values:
+        return None
+    if any(value != values[0] for value in values[1:]):
+        raise OpenTradeContractError(code)
+    return values[0]
 
 
 def _positive_int(value: object, code: str) -> int:
