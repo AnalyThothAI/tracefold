@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING, Any, Literal
 from .news_learning_documents import _read_json_or_yaml
 
 if TYPE_CHECKING:
-    from tracefold.news.candidate_evaluator import CandidateManifest
+    from tracefold.news.learning.contracts import CandidateManifest
     from tracefold.news.semantic_contract import SemanticJudge
 
 
 def _load_candidate_bundle(path: str) -> tuple[CandidateManifest | None, dict[str, str]]:
     if not path:
         return None, {}
-    from tracefold.news.candidate_evaluator import CandidateManifest
+    from tracefold.news.learning.contracts import CandidateManifest
 
     document = _read_json_or_yaml(path)
     candidate = CandidateManifest.model_validate(document.get("candidate") or document)
@@ -80,7 +80,7 @@ def _learning_recording_replay_capability(
     artifact_paths: Mapping[str, str],
     run_sha: str,
 ) -> Any:
-    from tracefold.news.recording_replay import ReplayArmSpec, load_recording_replay_capability
+    from tracefold.news.learning.replay import ReplayArmSpec, load_recording_replay_capability
 
     arm_artifacts = _learning_program_arm_artifacts(
         stable=stable,

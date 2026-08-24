@@ -12,25 +12,25 @@ from typing import Any
 import pytest
 
 from tracefold.app.cli.parser import build_parser
-from tracefold.news.agents import program_compiler_launcher as launcher_module
-from tracefold.news.agents.program_compiler_launcher import (
+from tracefold.news.artifact_identity import canonical_json, canonical_sha
+from tracefold.news.learning.compiler import launcher as launcher_module
+from tracefold.news.learning.compiler.launcher import (
     PROXY_MODULE,
     RUNNER_MODULE,
     ProgramCompilerLauncher,
 )
-from tracefold.news.agents.program_compiler_proxy import (
+from tracefold.news.learning.compiler.proxy import (
     CompilerModelProxyGrant,
     CompilerProviderEndpointSecret,
     CompilerProxySecretConfig,
 )
-from tracefold.news.agents.program_compiler_runner import _build_compiler_proxy_runtime
-from tracefold.news.agents.program_compiler_sandbox import CompilerSandboxPolicy
-from tracefold.news.agents.program_compiler_security import (
+from tracefold.news.learning.compiler.runner import _build_compiler_proxy_runtime
+from tracefold.news.learning.compiler.sandbox import CompilerSandboxPolicy
+from tracefold.news.learning.compiler.security import (
     CompileBudgetV3,
     CompilerProxyTariff,
     seal_compile_input,
 )
-from tracefold.news.artifact_identity import canonical_json, canonical_sha
 
 
 def _secret_config() -> CompilerProxySecretConfig:

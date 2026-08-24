@@ -8,16 +8,16 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment
-from tracefold.news.agents.program_baseline import (
+from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.baseline import (
     BASELINE_SCHEMA,
     BaselineCase,
     _failed_case,
     run_baseline,
 )
-from tracefold.news.agents.program_judge import CardEquivalenceJudge
-from tracefold.news.agents.program_metric import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.judge import CardEquivalenceJudge
+from tracefold.news.learning.metric import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY
@@ -167,7 +167,7 @@ def test_failures_are_published_as_a_second_score_not_dropped_from_the_first() -
     assert answered.score == pytest.approx(1.0)
 
     # Splice in one unanswered case exactly as a live run would record it.
-    from tracefold.news.agents.program_baseline import _build_report
+    from tracefold.news.learning.baseline import _build_report
 
     spliced = _build_report(
         [answered, _failed_case(_case(2), "provider_timeout")],
@@ -200,7 +200,7 @@ def test_a_run_that_answered_nothing_still_publishes_its_receipt() -> None:
     requested population and the lower bound.
     """
 
-    from tracefold.news.agents.program_baseline import _build_report
+    from tracefold.news.learning.baseline import _build_report
 
     report = _build_report(
         [_failed_case(_case(1), "provider_timeout")],
@@ -380,7 +380,7 @@ def test_a_report_cannot_cover_two_policies() -> None:
     `decide()`, and `recorded` never does.
     """
 
-    from tracefold.news.agents.program_baseline import _policy_identity
+    from tracefold.news.learning.baseline import _policy_identity
 
     other = _case(2)
     drifted = dict(other.episode.policy_metric)
@@ -438,7 +438,7 @@ def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
     started returning typed outcomes. A label that stays put while the definition moves is a label that lies.
     """
 
-    from tracefold.news.agents.program_metric import METRIC_ID
+    from tracefold.news.learning.metric import METRIC_ID
 
     assert METRIC_ID.endswith("_v4")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
@@ -466,7 +466,7 @@ def test_the_published_policy_hash_is_recomputed_not_forwarded() -> None:
     """A backstop behind the pre-flight check, and reachable only from here: the pre-flight refuses a tampered
     corpus before `_build_report` runs, so this pins the second line of defence directly."""
 
-    from tracefold.news.agents.program_baseline import _policy_identity
+    from tracefold.news.learning.baseline import _policy_identity
 
     drifted = dict(_case(1).episode.policy_metric)
     drifted["policy_values"] = {**drifted["policy_values"], "similarity_max": 0.9}

@@ -19,9 +19,9 @@ from typing import Any, Literal, TypeVar, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..agents.semantic_program import DspyStrictJSONAdapter, ExactProviderCallCapture, PredictorAdapterError
 from ..artifact_identity import canonical_json, canonical_sha
-from .program_compiler_security import METRIC_JUDGE_MAX_TOKENS, CompilerRoleBindingV3
-from .semantic_program import DspyStrictJSONAdapter, ExactProviderCallCapture, PredictorAdapterError
+from .compiler.security import METRIC_JUDGE_MAX_TOKENS, CompilerRoleBindingV3
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"
 

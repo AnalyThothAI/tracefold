@@ -13,13 +13,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..artifact_identity import canonical_json, canonical_sha
-from .semantic_program import (
+from ..agents.semantic_program import (
     PROGRAM_SCHEMA_VERSION,
     ProgramArtifact,
     ProgramArtifactCodec,
     build_code_owned_program_artifact_v2,
 )
+from ..artifact_identity import canonical_json, canonical_sha
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

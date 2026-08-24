@@ -206,22 +206,22 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         workers_dspy_wiring.add(SRC / "app" / "workers" / "__init__.py")
     allowed = {
         NEWS_ROOT / "agents" / "semantic_program.py",
-        NEWS_ROOT / "agents" / "program_compiler.py",
-        NEWS_ROOT / "agents" / "program_compiler_proxy.py",
+        NEWS_ROOT / "learning" / "compiler" / "root.py",
+        NEWS_ROOT / "learning" / "compiler" / "proxy.py",
         # #143. The metric the optimizer maximizes and the metric an operator reads before a RulePack edit have
         # to be the same bytes, and the compiler module may be imported by exactly one runner — so the shared
         # scoring truth and the offline `dspy.Evaluate` harness live beside the Program instead.
-        NEWS_ROOT / "agents" / "program_metric.py",
-        NEWS_ROOT / "agents" / "program_baseline.py",
+        NEWS_ROOT / "learning" / "metric.py",
+        NEWS_ROOT / "learning" / "baseline.py",
         # The code-owned GEPA instruction proposer. It travels with the compiler image and is the reason the
         # reflection model can see the RulePacks it is amending.
-        NEWS_ROOT / "agents" / "program_proposer.py",
+        NEWS_ROOT / "learning" / "proposer.py",
         # #148. The semantic-equivalence judge is part of the *metric*, not the Program: it never renders into
         # a prompt, never enters the QualityKernel, and cannot change `program_sha256`.
-        NEWS_ROOT / "agents" / "program_judge.py",
+        NEWS_ROOT / "learning" / "judge.py",
         # The review drafter. Also metric-side: it proposes rubrics for a human to accept and has no write
         # authority anywhere — see `test_the_drafter_writes_nothing_to_the_review_plane`.
-        NEWS_ROOT / "agents" / "program_review_drafter.py",
+        NEWS_ROOT / "learning" / "review_drafter.py",
         # #104: the Trading lane's single `dspy.Predict`. It is the one online decision outside News
         # that calls a model, and it lives in its own capability rather than being smuggled into a
         # News module. DeepAgents/LangGraph/ReAct stay absent tree-wide, which the next assertion keeps.
@@ -278,7 +278,7 @@ def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:
             NEWS_ROOT / "triage_rules.py",
             *(sorted((NEWS_ROOT / "storage").glob("*.py"))),
             *(sorted((NEWS_ROOT / "pipeline").glob("*.py"))),
-            NEWS_ROOT / "candidate_evaluator.py",
+            NEWS_ROOT / "learning" / "evaluator.py",
             SRC / "platform" / "config" / "models.py",
         )
     )

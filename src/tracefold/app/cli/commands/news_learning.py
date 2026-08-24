@@ -33,7 +33,7 @@ from .news_learning_runtime import (
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.artifact_identity import canonical_json, canonical_sha
-    from tracefold.news.candidate_evaluator import (
+    from tracefold.news.learning.evaluator import (
         LEARNING_EPOCH,
         CandidateEvaluator,
         CandidateManifest,
@@ -42,7 +42,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         EvaluationRequest,
         ProposalReceipt,
     )
-    from tracefold.news.review import REVIEW_RUBRIC_VERSION
+    from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
 
     settings = load_settings(require_ws_token=False)
     action = str(args.learning_command)
@@ -53,7 +53,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
             from tracefold.app.repository_session import repositories
             from tracefold.news.agents.programs.candidates import compiled_canary_candidates
-            from tracefold.news.canary import apply_canary_control, parse_canary_control
+            from tracefold.news.learning.canary import apply_canary_control, parse_canary_control
 
             subcommand = str(args.canary_command)
             payload = {
@@ -88,14 +88,14 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "compile":
             from tracefold.app.learning_runtime import compose_news_program_runtime
             from tracefold.app.llm import configured_lm_endpoint
-            from tracefold.news.agents.program_compiler_launcher import ProgramCompilerLauncher
-            from tracefold.news.agents.program_compiler_proxy import (
+            from tracefold.news.learning.compiler.launcher import ProgramCompilerLauncher
+            from tracefold.news.learning.compiler.proxy import (
                 CompilerModelProxyGrant,
                 CompilerProviderEndpointSecret,
                 CompilerProxySecretConfig,
             )
-            from tracefold.news.agents.program_compiler_sandbox import CompilerSandboxPolicy
-            from tracefold.news.agents.program_compiler_security import (
+            from tracefold.news.learning.compiler.sandbox import CompilerSandboxPolicy
+            from tracefold.news.learning.compiler.security import (
                 CompileBudgetV3,
                 CompileReceiptChain,
                 CompilerProxyTariff,
@@ -105,11 +105,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 gepa_metric_call_ceiling,
                 seal_compile_input,
             )
-            from tracefold.news.agents.program_compiler_source import (
+            from tracefold.news.learning.compiler.source_identity import (
                 compiler_source_sha256,
                 proxy_source_sha256,
             )
-            from tracefold.news.agents.program_compiler_trusted import (
+            from tracefold.news.learning.compiler.trusted import (
                 METRIC_JUDGE_MAX_TOKENS,
                 METRIC_JUDGE_TIMEOUT_SECONDS,
                 REFLECTION_MAX_TOKENS,
@@ -453,13 +453,13 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             }
 
         if action == "propose":
-            from tracefold.news.agents.program_compiler_security import (
+            from tracefold.news.learning.compiler.security import (
                 CompileReceiptChain,
                 OptimizerCompileProvenanceV3,
                 ProgramMachineDiffV3,
                 validate_compile_receipt_chain_v3,
             )
-            from tracefold.news.agents.program_compiler_trusted import (
+            from tracefold.news.learning.compiler.trusted import (
                 ProgramPatchV2,
                 build_eligible_demo_bank,
                 load_program_artifact,
@@ -684,7 +684,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             recording_replay = None
             if verify_recordings:
-                from tracefold.news.candidate_evaluator import evaluation_run_sha
+                from tracefold.news.learning.evaluator import evaluation_run_sha
 
                 run_sha = evaluation_run_sha(
                     request,

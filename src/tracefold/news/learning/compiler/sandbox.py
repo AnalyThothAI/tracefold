@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..artifact_identity import canonical_sha
+from ...artifact_identity import canonical_sha
 
 SANDBOX_POLICY_SCHEMA: Literal["tracefold.news.compiler_sandbox_policy.v2"] = (
     "tracefold.news.compiler_sandbox_policy.v2"

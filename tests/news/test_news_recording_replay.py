@@ -14,7 +14,7 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.recording_replay import (
+from tracefold.news.learning.replay import (
     RecordingReplayError,
     RecordingReplayMiss,
     ReplayArmSpec,

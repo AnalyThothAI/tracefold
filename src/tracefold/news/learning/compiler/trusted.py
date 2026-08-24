@@ -16,17 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..artifact_identity import canonical_json, canonical_sha
-from ..semantic_contract import ScoredJudgment, TriageContext
-from .program_compiler_security import (
-    METRIC_JUDGE_MAX_TOKENS,
-    METRIC_JUDGE_TIMEOUT_SECONDS,
-    REFLECTION_MAX_TOKENS,
-    REFLECTION_TIMEOUT_SECONDS,
-    OptimizerCompileProvenanceV3,
-)
-from .program_metric import production_decision
-from .semantic_program import (
+from ...agents.semantic_program import (
     CompileReceipt,
     DemoRecord,
     EligibleDemoBank,
@@ -39,8 +29,18 @@ from .semantic_program import (
     load_stable_program_artifact,
     render_model_evidence_json,
 )
-from .semantic_program import (
+from ...agents.semantic_program import (
     apply_program_patch_v2 as _apply_program_patch_v2,
+)
+from ...artifact_identity import canonical_json, canonical_sha
+from ...semantic_contract import ScoredJudgment, TriageContext
+from ..metric import production_decision
+from .security import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
+    REFLECTION_MAX_TOKENS,
+    REFLECTION_TIMEOUT_SECONDS,
+    OptimizerCompileProvenanceV3,
 )
 
 LEARNING_EPOCH: Literal["program_v6"] = "program_v6"

@@ -24,18 +24,18 @@ from typing import Any, Literal, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..artifact_identity import canonical_json, canonical_sha
-from .program_compiler_security import (
-    CompilerEndpointIdentity,
-    CompilerProxyTariff,
-    CompilerRole,
-    CompilerRoleBindingV3,
-)
-from .semantic_program import (
+from ...agents.semantic_program import (
     ExactMetadataDspyLM,
     ExactProviderCallCapture,
     ExactProviderMetadata,
     PredictorAdapterError,
+)
+from ...artifact_identity import canonical_json, canonical_sha
+from .security import (
+    CompilerEndpointIdentity,
+    CompilerProxyTariff,
+    CompilerRole,
+    CompilerRoleBindingV3,
 )
 
 PROXY_GRANT_SCHEMA: Literal["tracefold.news.compiler_proxy_grant.v3"] = "tracefold.news.compiler_proxy_grant.v3"

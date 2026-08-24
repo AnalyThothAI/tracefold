@@ -8,11 +8,16 @@ the host, optimizer runner and proxy sidecar.
 
 from __future__ import annotations
 
+import importlib.resources
 from pathlib import Path
 
-from ..artifact_identity import canonical_sha
+from ...artifact_identity import canonical_sha
 
-_NEWS_ROOT = Path(__file__).resolve().parents[1]
+# Resolved from the package, not by counting `__file__` parents: this module has moved once already
+# (`news/agents/` -> `news/learning/compiler/`), and a depth-coupled root silently became the wrong
+# directory rather than failing at import. `test_the_compile_source_seal_is_computable_from_the_package`
+# is what keeps that honest.
+_NEWS_ROOT = Path(str(importlib.resources.files("tracefold.news")))
 _TRACEFOLD_ROOT = _NEWS_ROOT.parent
 
 

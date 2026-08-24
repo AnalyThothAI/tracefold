@@ -22,7 +22,7 @@ from tracefold.news.bus import (
     PermanentError,
     TransientError,
 )
-from tracefold.news.canary import CanaryRuntimeArm
+from tracefold.news.learning.canary import CanaryRuntimeArm
 from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION
 from tracefold.news.oi_signals import DEFAULT_OI_POLICY, program_sha256
 from tracefold.news.pipeline import admission as admission_module

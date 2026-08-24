@@ -18,30 +18,32 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # named composition families and concrete adapter families may reach the named private contracts.
 PRIVATE_BUSINESS_IMPORT_RULES = {
     "app.news_cli": (
-        "tracefold.news.agents.program_baseline",
-        "tracefold.news.agents.program_review_drafter",
-        "tracefold.news.agents.program_compiler_launcher",
-        "tracefold.news.agents.program_compiler_proxy",
-        "tracefold.news.agents.program_compiler_sandbox",
-        "tracefold.news.agents.program_compiler_security",
-        "tracefold.news.agents.program_compiler_source",
-        "tracefold.news.agents.program_compiler_trusted",
+        "tracefold.news.learning.baseline",
+        "tracefold.news.learning.review_drafter",
+        "tracefold.news.learning.compiler.launcher",
+        "tracefold.news.learning.compiler.proxy",
+        "tracefold.news.learning.compiler.sandbox",
+        "tracefold.news.learning.compiler.security",
+        "tracefold.news.learning.compiler.source_identity",
+        "tracefold.news.learning.compiler.trusted",
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
-        "tracefold.news.canary",
-        "tracefold.news.candidate_evaluator",
+        "tracefold.news.learning.canary",
+        "tracefold.news.learning.contracts",
+        "tracefold.news.learning.evaluator",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
-        "tracefold.news.recording_replay",
-        "tracefold.news.review",
+        "tracefold.news.learning.replay",
+        "tracefold.news.learning.review",
         "tracefold.news.semantic_contract",
     ),
     "app.composition": (
         "tracefold.news.agents.semantic_program",
         "tracefold.news.artifact_identity",
-        "tracefold.news.candidate_evaluator",
+        "tracefold.news.learning.contracts",
+        "tracefold.news.learning.evaluator",
         "tracefold.news.market_review.storage",
         "tracefold.news.query_specs",
         "tracefold.news.semantic_contract",
@@ -52,7 +54,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.health",
         "tracefold.news.market_review.instruments",
         "tracefold.news.market_review.pricing",
-        "tracefold.news.review",
+        "tracefold.news.learning.review",
     ),
     "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
@@ -61,8 +63,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # The News transport error vocabulary. The composition root's database adapter is the one place
         # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
         "tracefold.news.bus",
-        "tracefold.news.canary",
-        "tracefold.news.candidate_evaluator",
+        "tracefold.news.learning.canary",
+        "tracefold.news.learning.contracts",
+        "tracefold.news.learning.evaluator",
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
@@ -254,10 +257,10 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
 def test_private_business_import_rules_follow_consumer_families() -> None:
     assert _private_import_allowed(
         "tracefold.app.cli.commands.news_learning",
-        "tracefold.news.agents.program_baseline",
+        "tracefold.news.learning.baseline",
     )
     assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.storage.root")
-    assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.review")
+    assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.learning.review")
     assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.storage.root")
 
 
@@ -511,7 +514,7 @@ def test_public_news_has_no_personalization_or_parallel_product_infrastructure()
         for imported in _imports(path)
         if imported.split(".")[0] in forbidden_import_roots
         and not (
-            imported.split(".")[0] == "subprocess" and path == SRC / "news" / "agents" / "program_compiler_launcher.py"
+            imported.split(".")[0] == "subprocess" and path == SRC / "news" / "learning" / "compiler" / "launcher.py"
         )
     ]
     assert import_violations == []

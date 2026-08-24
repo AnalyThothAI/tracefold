@@ -382,7 +382,7 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.candidate_evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
 
     _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", limit=500, max_model_cases=12))
     assert seen["limit"] == 12, "the smaller of the two bounds wins, so --limit cannot widen it"
@@ -417,7 +417,7 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.candidate_evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
 
     code, payload = _handle_learning(
         _baseline_args(mode="runtime_live", action_source="policy", max_model_cases=5, all_cohorts=True)

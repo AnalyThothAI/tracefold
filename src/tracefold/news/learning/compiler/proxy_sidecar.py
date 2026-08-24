@@ -48,15 +48,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run(grant_path: Path, secret_path: Path, socket_path: Path, output_path: Path) -> None:
-    from tracefold.news.agents.program_compiler_proxy import (
+    from tracefold.news.artifact_identity import canonical_json
+    from tracefold.news.learning.compiler.proxy import (
         CompilerModelProxyGrant,
         CompilerProxyReadyReceipt,
         CompilerProxySecretConfig,
         TrustedCompilerModelProxy,
         build_proxy_provider_lm,
     )
-    from tracefold.news.agents.program_compiler_source import proxy_source_sha256
-    from tracefold.news.artifact_identity import canonical_json
+    from tracefold.news.learning.compiler.source_identity import proxy_source_sha256
 
     _require_fixed_path(grant_path, _GRANT_PATH, kind="grant")
     _require_fixed_path(secret_path, _SECRET_PATH, kind="secret")

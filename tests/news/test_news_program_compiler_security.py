@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news.agents.program_compiler_security import (
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.security import (
     CompileBudgetV3,
     CompileInputBundle,
     CompileReceiptChain,
@@ -16,7 +17,6 @@ from tracefold.news.agents.program_compiler_security import (
     gepa_metric_call_ceiling,
     seal_compile_input,
 )
-from tracefold.news.artifact_identity import canonical_sha
 
 
 def _dataset_payload() -> dict[str, Any]:

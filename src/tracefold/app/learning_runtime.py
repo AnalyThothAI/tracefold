@@ -17,7 +17,7 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest
+from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.semantic_contract import TOLD_SELECTOR_SHA256, SemanticJudge
 from tracefold.platform.config.models import news_model_availability
 

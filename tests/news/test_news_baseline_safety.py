@@ -12,10 +12,10 @@ import pathlib
 
 import pytest
 
-import tracefold.news.agents.program_baseline as baseline_module
+import tracefold.news.learning.baseline as baseline_module
 from tests.support.baseline_calibration import load_calibration_corpus
-from tracefold.news.agents.program_baseline import build_baseline_cases, run_baseline
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 
 # Anything that would turn a measurement into an action. `submit` appends an acceptance row, `promote`/
 # `accept` move a candidate through the release gate, `deliver`/`publish` reach the reader.
