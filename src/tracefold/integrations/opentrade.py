@@ -187,10 +187,12 @@ class OpenTradeAdapter:
             return ExecutionReceipt(state="REJECTED", reason="opentrade_rate_limited")
         if status >= 500:
             raise OpenTradeContractError("opentrade_http_error")
-        if 400 <= status < 500 or payload.get("success") is False:
+        if 400 <= status < 500:
             return ExecutionReceipt(state="REJECTED", reason="opentrade_rejected")
         if not 200 <= status < 300:
             raise OpenTradeContractError("opentrade_http_error")
+        if payload.get("success") is False:
+            return ExecutionReceipt(state="REJECTED", reason="opentrade_rejected")
         if payload.get("success") is not True:
             raise OpenTradeContractError("opentrade_payload_invalid")
         data = payload.get("data")
@@ -228,8 +230,10 @@ class OpenTradeAdapter:
         exchange_id = _live_exchange(order.instrument.exchange_id)
         params = {"exchangeId": exchange_id, "symbol": order.instrument.provider_symbol}
         account = await self._object("/account/summary", params={**params, "accountType": "swap"})
-        positions = await self._list("/positions", params=params)
+        # As in preflight, open orders precede positions so an order-to-position transition cannot
+        # disappear between the two account snapshots.
         open_orders = await self._list("/orders/open", params=params)
+        positions = await self._list("/positions", params=params)
         closed_orders = await self._list("/orders/closed", params={**params, "days": 7})
         trades = await self._list("/trades/history", params={**params, "days": 7})
         position_history = await self._list("/positions/history", params={**params, "days": 7})

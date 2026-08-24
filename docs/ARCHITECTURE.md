@@ -1308,7 +1308,8 @@ spread, explicit quantity step and minimums, contract size, account balance,
 position mode, leverage and margin mode, then account-wide open orders followed
 by positions. That order makes an external order transitioning into a position
 between reads visible in at least one snapshot. Missing or conflicting truth
-fails closed. The exact fresh payload and a balance-redacted
+fails closed. Composite reconciliation uses the same open-orders-before-positions
+order for the tracked entry. The exact fresh payload and a balance-redacted
 preflight observation are frozen together. OpenTrade's published `amountMin`
 is a minimum, not a quantity step, so it is never guessed into precision.
 
@@ -1350,7 +1351,7 @@ attempts, so a stale scan cannot overwrite a concurrent approval or attempt clai
 **The current live adapter owns the narrow reviewed lifecycle.** It performs
 startup inventory, fresh prepare/re-preflight, one allowlisted OpenTrade market
 entry, composite provider observation, and one full-position close. HTTP/business
-4xx is a proven rejection; timeout, transport failure, 5xx, malformed success or
+4xx is a proven rejection; timeout, transport failure, 3xx, 5xx, malformed success or
 a missing remote ID is ambiguous and never retried as an entry. The pinned
 public OpenTrade examples still do not themselves prove stable account identity,
 quantity step or price tick. The concrete adapter therefore remains fail-closed

@@ -475,6 +475,90 @@ def test_composite_snapshot_time_is_captured_after_the_provider_reads() -> None:
     assert observation.closed_at_ms == NOW + 50
 
 
+def test_reconciliation_sees_an_entry_that_becomes_a_position_between_account_reads() -> None:
+    reads = {"orders": False, "positions": False}
+    request_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        request_paths.append(path)
+        if path.endswith("/orders/open"):
+            payload = {
+                "success": True,
+                "data": (
+                    []
+                    if reads["positions"]
+                    else [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "side": "buy",
+                            "type": "market",
+                            "amount": "1",
+                            "filledQty": "1",
+                            "orderId": "remote-1",
+                        }
+                    ]
+                ),
+            }
+            reads["orders"] = True
+            return httpx.Response(200, json=payload, request=request)
+        if path.endswith("/positions"):
+            payload = {
+                "success": True,
+                "data": (
+                    [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "side": "long",
+                            "contracts": "1",
+                            "entryPrice": "10",
+                        }
+                    ]
+                    if reads["orders"]
+                    else []
+                ),
+            }
+            reads["positions"] = True
+            return httpx.Response(200, json=payload, request=request)
+        if path.endswith("/trades/history"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "orderId": "remote-1",
+                            "tradeId": "trade-1",
+                            "amount": "1",
+                            "timestamp": NOW - 500,
+                        }
+                    ],
+                },
+                request=request,
+            )
+        return _response(request, account_identity=True)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        observation = asyncio.run(adapter.observe(_order()))
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert observation.state == "OPEN_UNPROTECTED"
+    orders_index = next(index for index, path in enumerate(request_paths) if path.endswith("/orders/open"))
+    positions_index = next(index for index, path in enumerate(request_paths) if path.endswith("/positions"))
+    assert orders_index < positions_index
+
+
 def test_missing_identity_or_malformed_provider_output_is_unknown_not_absent() -> None:
     adapter_without_identity = OpenTradeAdapter(
         base_url="https://example.invalid",
@@ -679,6 +763,7 @@ def test_explicit_write_rejection_is_not_ambiguous_but_server_failure_is() -> No
     ("status", "payload"),
     [
         (302, {"success": True, "data": {"orderId": "redirected"}}),
+        (302, {"success": False}),
         (200, {"data": {"orderId": "missing-success"}}),
     ],
 )

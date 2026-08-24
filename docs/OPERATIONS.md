@@ -50,6 +50,8 @@ appears in provider open orders, reconciliation enters manual review and sends
 no position close: the remaining entry could otherwise fill after the filled
 slice was closed. Cancel or otherwise settle the entry at the venue, then let a
 fresh provider read prove it terminal before resolving the manual row.
+Provider redirects are ambiguous writes even when their body says rejection;
+they never release the daily attempt charge or active-underlying slot.
 
 ## Operator lifecycle
 
