@@ -622,6 +622,11 @@ class CompileRecordV1(_ExactModel):
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
     episode_count: int = Field(gt=0)
+    # The episodes are sealed into the input bundle and never persisted, so nothing downstream can read
+    # them back: `CandidateEvaluator` re-projects them from live tables and compares this root. Without
+    # it the only corpus binding is a count, and a review edited between compile and evaluate would go
+    # unnoticed.
+    episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     task_model: ModelExecutionIdentity
     reflection_model: ModelExecutionIdentity
@@ -630,6 +635,11 @@ class CompileRecordV1(_ExactModel):
     metric: dict[str, Any]
     split: dict[str, Any]
     retrieval: dict[str, Any]
+    # The search path that produced the patch. Carried whole rather than as a blob digest: nothing stores
+    # them separately, so a digest here would address nothing and the record would commit to no evidence
+    # about how the winner was found.
+    trajectory: dict[str, Any]
+    checkpoint: dict[str, Any]
     budget: CompileBudgetV3
     tariff: CompilerProxyTariff
     usage: CompilerProxyExecution
@@ -640,16 +650,8 @@ class CompileRecordV1(_ExactModel):
     patch: dict[str, Any]
     failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
     target_dimensions: tuple[str, ...] = Field(min_length=1)
-    trajectory_blob_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    checkpoint_blob_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     created_at_ms: int = Field(ge=0)
     compile_record_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-    @property
-    def sandbox_profile(self) -> str:
-        """The policy generation this compile ran under, read from the policy the record embeds."""
-
-        return str(self.sandbox.policy.get("schema_version") or "")
 
     @classmethod
     def issue(cls, **values: Any) -> CompileRecordV1:

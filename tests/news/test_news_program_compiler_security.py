@@ -413,6 +413,7 @@ def _record_values(**overrides: Any) -> dict[str, Any]:
         "learning_epoch_started_at_ms": 1_800_000_000_000,
         "review_rubric_version": "news_review_v4",
         "episode_count": 2,
+        "episode_projection_root_sha256": "e" * 64,
         "target_runtime_manifest_sha256": _RUNTIME_MANIFEST_SHA256,
         "task_model": _identity("task"),
         "reflection_model": _identity("reflection"),
@@ -436,6 +437,12 @@ def _record_values(**overrides: Any) -> dict[str, Any]:
             "episodes": 3,
             "target_visible": 3,
         },
+        # The search path that produced the patch, and the root that binds the corpus by content.
+        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 1},
+        "checkpoint": {
+            "schema": "tracefold.news.compile_checkpoint_receipt.v2",
+            "factory": "tracefold.news.program.factory_v6",
+        },
         "budget": _budget(),
         "tariff": _tariff(),
         "usage": _usage(_proxy_call("task"), _proxy_call("reflection"), _proxy_call("metric_judge")),
@@ -446,8 +453,6 @@ def _record_values(**overrides: Any) -> dict[str, Any]:
         "patch": _patch_payload(),
         "failure_cluster_ids": ("cluster-a",),
         "target_dimensions": ("recall",),
-        "trajectory_blob_sha256": "7" * 64,
-        "checkpoint_blob_sha256": "8" * 64,
         "created_at_ms": 1_800_000_000_500,
     }
     values.update(overrides)
@@ -495,9 +500,12 @@ def test_compile_record_retains_every_payload_the_receipt_chain_used_to_carry() 
     assert record.metric["metric_version"] == "news_compile_metric_v3"
     assert record.optimizer == _optimizer_payload()
     assert record.patch == _patch_payload()
-    assert (record.trajectory_blob_sha256, record.checkpoint_blob_sha256) == ("7" * 64, "8" * 64)
+    # The search path is carried whole, not as a digest of bytes nothing stores.
+    assert record.trajectory["schema"] == "tracefold.news.compile_trajectory_receipt.v1"
+    assert record.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert record.episode_projection_root_sha256 == "e" * 64
     assert record.sandbox.boundary_command["schema"] == "tracefold.news.compiler_boundary_commands.v2"
-    assert record.sandbox_profile == "tracefold.news.compiler_sandbox_policy.v2"
+    assert record.sandbox.policy["schema_version"] == "tracefold.news.compiler_sandbox_policy.v2"
     assert [call.role for call in record.usage.calls] == ["task", "reflection", "metric_judge"]
     assert record.compile_record_sha256 == canonical_sha(
         record.model_dump(mode="json", exclude={"compile_record_sha256"})
@@ -552,7 +560,7 @@ def test_compile_record_cannot_omit_a_payload_the_chain_used_to_require(field: s
         # was `tariff_sha256`, restated in four documents
         (("tariff", "task_output_microusd_per_million"), 1),
         (("budget", "seed"), 18),
-        (("trajectory_blob_sha256",), "0" * 64),
+        (("trajectory", "best_idx"), 99),
         (("created_at_ms",), 1_800_000_000_600),
         (("compile_record_sha256",), "0" * 64),
     ],

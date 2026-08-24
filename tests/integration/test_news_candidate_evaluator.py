@@ -669,6 +669,9 @@ def _compile_record(
         "learning_epoch_started_at_ms": int(epoch["starts_at_ms"]),
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "episode_count": episode_count,
+        # The corpus by content: `development_compile_export` re-projects episodes from live reviews, so
+        # a count alone would not notice a review edited between compile and evaluate.
+        "episode_projection_root_sha256": _sha(list(exported.episodes)),
         "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
         "task_model": models["task"],
         "reflection_model": models["reflection"],
@@ -714,8 +717,8 @@ def _compile_record(
         "patch": patch,
         "failure_cluster_ids": ["cluster-fixture"],
         "target_dimensions": ["why_support"],
-        "trajectory_blob_sha256": None,
-        "checkpoint_blob_sha256": None,
+        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 0},
+        "checkpoint": {"schema": "tracefold.news.compile_checkpoint_receipt.v2", "factory": PROGRAM_FACTORY_ID},
         "created_at_ms": NOW,
     }
     values.update(overrides)
@@ -750,13 +753,17 @@ def _program_candidate(
         program_sha256=candidate_arm.program_sha256,
     )
     payload = compile_record.model_dump(mode="json") if record_payload is None else record_payload
-    artifact_sha = compile_record.compile_record_sha256
+    # What the receipt names is the record's own root; where the ledger stores it is a different address.
+    record_root = compile_record.compile_record_sha256
     if persist_record:
         _persist_compile_record(
             conn,
             development_sha=record_parent_sha or development_sha,
             payload=payload,
-            artifact_sha=artifact_sha,
+            # The address the receipt names. For an honest record this is the payload's own root; the
+            # tamper cases deliberately store something else there, which is what the evaluator has to
+            # catch rather than trusting the key.
+            artifact_sha=record_root,
         )
     receipt_values = {
         "development_dataset_sha": development_sha,
@@ -764,13 +771,13 @@ def _program_candidate(
         "generator_kind": generator_kind,
         # For a Program candidate the compile record is the generator execution identity: the receipt
         # used to carry a prompt digest and a model digest that re-hashed the same compile twice more.
-        "generator_execution_sha": artifact_sha,
+        "generator_execution_sha": record_root,
         "registered_at_ms": NOW,
         "declared_target_dimensions": ("why_support",),
         "guardrails": ("must_push_recall", "reader_load"),
         "program_parent_sha256": stable.program_sha256,
         "program_candidate_sha256": candidate_arm.program_sha256,
-        "compile_record_sha256": artifact_sha,
+        "compile_record_sha256": record_root,
     }
     proposal_receipt = _proposal(conn, **receipt_values) if persist_receipt else ProposalReceipt.issue(**receipt_values)
     return CandidateManifest(
@@ -789,18 +796,27 @@ def _persist_compile_record(
     *,
     development_sha: str,
     payload: dict[str, object],
-    artifact_sha: str,
+    artifact_sha: str | None = None,
 ) -> str:
-    """Store one record under its own root, parented by the development dataset it compiled against."""
+    """Store one record the way `learning propose` does, parented by the dataset it compiled against.
 
+    The ledger addresses every row as `sha({kind, payload})`, which is deliberately not the record's own
+    root. Writing the record's root into `artifact_sha` here — as this fixture first did — made the
+    evaluator's lookup pass in tests while failing against every real candidate.
+    """
+
+    # `append_proposal_artifact` stores this kind under the record's own root: the document already has
+    # an identity, and giving it a second address would force every reader to know both. Callers may
+    # override the address to stage a row that does not answer to the identity it carries.
+    address = artifact_sha or str(payload["compile_record_sha256"])
     conn.execute(
         "INSERT INTO news_learning_artifacts "
         "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
         "VALUES (%s, 'compile_record', %s, %s::jsonb, 'test', %s) "
         "ON CONFLICT (artifact_sha) DO NOTHING",
-        (artifact_sha, development_sha, json.dumps(payload, sort_keys=True), NOW),
+        (address, development_sha, json.dumps(payload, sort_keys=True), NOW),
     )
-    return artifact_sha
+    return address
 
 
 def _insert_validation_dataset(conn, *, development, candidate: CandidateManifest) -> str:

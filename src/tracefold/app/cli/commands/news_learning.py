@@ -132,8 +132,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             parent = load_exact_stable_program()
             if parent.program_sha256 != stable.program_sha256:
                 raise ValueError("news_learning_compile_stable_program_mismatch")
-            # This is the only DB contact in the compile path.  It ends before
-            # any container starts, and the runner/sidecar receive no DSN.
+            # Both DB reads in this path happen here, before any container starts, and the runner and
+            # sidecar receive no DSN.
             with postgres_connection(settings, role="serve") as conn:
                 evaluator = CandidateEvaluator(conn, stable=stable, judges={})
                 compile_export = evaluator.development_compile_export(str(args.development))
@@ -296,13 +296,15 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 < runner.task_model_calls + runner.reflection_model_calls + runner.metric_judge_model_calls
             ):
                 raise ValueError("news_learning_compile_receipt_cross_binding_mismatch")
+            candidate_artifact = apply_trusted_program_patch(parent, patch)
             record = CompileRecordV1.issue(
                 parent_program_sha256=parent.program_sha256,
-                program_sha256=apply_trusted_program_patch(parent, patch).program_sha256,
+                program_sha256=candidate_artifact.program_sha256,
                 development_dataset_sha256=bundle.corpus.development_dataset_sha,
                 learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
                 review_rubric_version=bundle.corpus.review_rubric_version,
                 episode_count=bundle.corpus.episode_count,
+                episode_projection_root_sha256=bundle.corpus.episode_projection_root_sha256,
                 target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
                 task_model=task_binding,
                 reflection_model=reflection_binding,
@@ -311,6 +313,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 metric=runner.metric,
                 split=runner.split,
                 retrieval=runner.retrieval,
+                trajectory=runner.trajectory,
+                checkpoint=runner.checkpoint,
                 budget=budget,
                 tariff=tariff,
                 usage=proxy_execution,
@@ -332,17 +336,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 patch=patch.model_dump(mode="json"),
                 failure_cluster_ids=runner.failure_cluster_ids,
                 target_dimensions=runner.target_dimensions,
-                trajectory_blob_sha256=None,
-                checkpoint_blob_sha256=None,
                 created_at_ms=compiled_at_ms,
             )
-            candidate_artifact = apply_trusted_program_patch(parent, patch)
             artifact_directory = write_program_candidate_artifact(
                 candidate_artifact,
                 artifact_root=Path(str(args.artifact_root)),
             )
-            if record.program_sha256 != candidate_artifact.program_sha256:
-                raise ValueError("news_learning_compile_receipt_cross_binding_mismatch")
             payload = {
                 "target": "program",
                 "hypothesis": "Repair the accepted program_v7 failure clusters with bounded DSPy GEPA.",

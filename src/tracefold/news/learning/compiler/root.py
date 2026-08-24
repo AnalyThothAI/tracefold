@@ -446,8 +446,11 @@ def build_compile_lm(
         str(model_name),
         api_key=str(api_key),
         api_base=str(api_base),
-        timeout=max(float(timeout), REFLECTION_TIMEOUT_SECONDS) if reflection else float(timeout),
-        max_tokens=max(int(max_tokens), REFLECTION_MAX_TOKENS) if reflection else int(max_tokens),
+        # The reflection role's budget is exact, not a floor. `ModelExecutionIdentity` holds the role to
+        # these values, so a `max()` here would silently accept a caller's larger timeout or token ceiling
+        # and then fail the identity contract that is supposed to attest them.
+        timeout=REFLECTION_TIMEOUT_SECONDS if reflection else float(timeout),
+        max_tokens=REFLECTION_MAX_TOKENS if reflection else int(max_tokens),
         temperature=_REFLECTION_TEMPERATURE if reflection else _TASK_TEMPERATURE,
         cache=False,
         # Stays zero. `_BudgetedLM` counts every physical attempt against the operator's budget, and a retry

@@ -846,7 +846,12 @@ class CandidateEvaluator:
             if record.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
                 raise ValueError("news_learning_program_compile_epoch_mismatch")
             compile_export = self.development_compile_export(candidate.development_dataset_sha)
-            if record.episode_count != len(compile_export.episodes):
+            episodes = list(compile_export.episodes)
+            # Not the count: the episodes themselves. `development_compile_export` re-projects them from
+            # live reviews and recorded decisions, so a review edited between compile and evaluate leaves
+            # the count identical and the corpus different — and the candidate would then be judged
+            # against evidence it never compiled on.
+            if record.episode_count != len(episodes) or record.episode_projection_root_sha256 != _sha(episodes):
                 raise ValueError("news_learning_program_compile_corpus_mismatch")
             if receipt.generator_execution_sha != record.compile_record_sha256:
                 raise ValueError("news_learning_program_generator_execution_mismatch")
@@ -2631,8 +2636,8 @@ class CandidateEvaluator:
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("news_learning_program_compile_record_invalid") from exc
-        # The ledger is content-addressed on the record, so a byte changed in the stored payload changes
-        # the key it is stored under and this row stops resolving at all.
+        # The record is stored under its own root, so a byte changed in the payload either stops the
+        # document validating or stops it answering to the key the receipt points at.
         if record.compile_record_sha256 != str(row["artifact_sha"]):
             raise ValueError("news_learning_program_compile_record_identity_mismatch")
         if record.model_dump(mode="json") != payload:
