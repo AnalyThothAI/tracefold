@@ -134,6 +134,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "issue_175_reader_history_index_then_issue_162_pr8b_program_v7_epoch",
         "20260824_0303",
     ),
+    # PR8-B moved the Program, so the Dockerfile's build-time import probe moved with it. That probe is
+    # how a broken module path is caught before a container starts, which is exactly what happened here.
+    "infrastructure_and_dependency_sha256.Dockerfile": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "181084445b3ffd928da7b316fbda597630fc5b6819603af994ad583c37e5b977",
+    ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
         "program_v7",

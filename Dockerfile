@@ -72,7 +72,7 @@ RUN --mount=type=secret,id=github_token \
     exit 1
 
 RUN /app/.venv/bin/python -c \
-    'from tracefold.news.agents.semantic_program import load_stable_program_artifact; load_stable_program_artifact()'
+    'from tracefold.news.program.graph import load_stable_program_artifact; load_stable_program_artifact()'
 
 FROM python:3.13-slim-bookworm
 

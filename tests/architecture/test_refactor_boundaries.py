@@ -794,3 +794,22 @@ def test_business_packages_never_reach_for_an_app_database_method() -> None:
     assert [n for n in ast.walk(quoted) if isinstance(n, ast.Attribute)] == []
     reached = ast.parse("db.heavy_business()\n")
     assert [n.attr for n in ast.walk(reached) if isinstance(n, ast.Attribute)] == ["heavy_business"]
+
+
+def test_build_time_python_probes_name_modules_that_exist() -> None:
+    """The `Dockerfile` smoke check is not covered by any source grep, and #162 PR8-B proved it.
+
+    Moving the Program left `Dockerfile` importing `tracefold.news.agents.semantic_program`. `make check`
+    was green, the whole test suite was green, and `make up` failed at image build — safely, because the
+    probe is a build stage, but only after a full rebuild. A module name embedded in a non-Python file is
+    still a dependency; this resolves every one of them against the tree.
+
+    `Makefile` is deliberately excluded: its image probes run `python` *inside an arbitrary image*, which
+    may be a pinned pre-refactor rollback build, so they name historical modules on purpose.
+    """
+
+    import re as _re
+
+    probed = _re.findall(r"from (tracefold\.[\w.]+) import", (ROOT / "Dockerfile").read_text(encoding="utf-8"))
+    assert probed, "expected at least one build-time import probe in the Dockerfile"
+    assert [module for module in probed if not _module_exists(module)] == []
