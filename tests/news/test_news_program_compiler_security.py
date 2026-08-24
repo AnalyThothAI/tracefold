@@ -100,10 +100,8 @@ def _sealed_bundle() -> CompileInputBundle:
         episodes=_episodes(),
         review_rubric_version="news_review_v4",
         parent_program_sha256="a" * 64,
-        parent_state_sha256="b" * 64,
         stable_bundle_sha256="e" * 64,
         target_runtime_manifest_sha256="c" * 64,
-        eligible_demo_bank_root_sha256="d" * 64,
         task=task,
         reflection=reflection,
         metric_judge=metric_judge,
@@ -204,10 +202,8 @@ def test_sealed_compile_input_rejects_forged_dataset_and_episode_membership() ->
         "dataset_payload": payload,
         "episodes": _episodes(),
         "parent_program_sha256": "a" * 64,
-        "parent_state_sha256": "b" * 64,
         "stable_bundle_sha256": "e" * 64,
         "target_runtime_manifest_sha256": "c" * 64,
-        "eligible_demo_bank_root_sha256": "d" * 64,
         "task": task,
         "reflection": reflection,
         "metric_judge": metric_judge,
@@ -253,6 +249,22 @@ def test_sealed_compile_input_rejects_tampered_projection_root_and_bundle_hash()
         CompileInputBundle.model_validate(payload)
 
 
+def _patch_payload() -> dict[str, Any]:
+    """The exact patch document the runner retains: the write-set itself, never a digest of it.
+
+    A patch carries no `patch_sha256` field. Its identity is `canonical_sha` of these four keys, computed by
+    whoever cross-binds the chain, so a fixture shaped like a self-declared digest would be the one shape the
+    chain must never accept.
+    """
+
+    return {
+        "schema_version": "news_program_strategy_patch_v1",
+        "parent_program_sha256": "a" * 64,
+        "event_semantics_instruction": "Prefer the concrete magnitude the source states.",
+        "reader_card_instruction": "Lead with what changed for the reader.",
+    }
+
+
 def _receipt_chain() -> CompileReceiptChain:
     return CompileReceiptChain.issue(
         [
@@ -269,7 +281,7 @@ def _receipt_chain() -> CompileReceiptChain:
                     "ambient_credentials_present": False,
                 },
             ),
-            ContentAddressedCompileReceipt.issue("patch", {"patch_sha256": "5" * 64}),
+            ContentAddressedCompileReceipt.issue("patch", _patch_payload()),
         ]
     )
 
@@ -278,7 +290,7 @@ def test_compile_receipt_chain_retains_and_rehashes_every_required_payload() -> 
     chain = _receipt_chain()
 
     assert len(chain.receipts) == 7
-    assert chain.payload("patch") == {"patch_sha256": "5" * 64}
+    assert chain.payload("patch") == _patch_payload()
     assert CompileReceiptChain.model_validate(chain.model_dump(mode="json")) == chain
 
 

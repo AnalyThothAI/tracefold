@@ -21,6 +21,7 @@ from tracefold.news.learning.canary import (
     apply_canary_control,
     parse_canary_control,
 )
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.platform.postgres.client import create_pool
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
@@ -182,20 +183,24 @@ def test_canary_arm_rejects_an_invalid_program_artifact_before_writing_activatio
     candidate_sha = "7" * 64
     stable = SimpleNamespace(
         bundle_sha="8" * 64,
-        program_version="program-v1",
+        program_version=PROGRAM_VERSION,
         program_sha256="9" * 64,
     )
-    stable_artifact = SimpleNamespace(
-        program_version=stable.program_version,
-        program_sha256=stable.program_sha256,
-    )
+    stable_artifact = SimpleNamespace(program_sha256=stable.program_sha256)
+    # Lineage lives on the candidate's own proposal receipt now, so the candidate has to name this exact
+    # stable parent to reach the artifact load at all — otherwise it would be rejected one step earlier
+    # and the artifact rejection this test exists for would never be exercised.
     candidate = SimpleNamespace(
         target="program",
         parent_stable_sha=stable.bundle_sha,
         candidate_arm=SimpleNamespace(
             bundle_sha="a" * 64,
-            program_version="program-v2",
+            program_version=PROGRAM_VERSION,
             program_sha256="b" * 64,
+        ),
+        proposal_receipt=SimpleNamespace(
+            program_parent_sha256=stable.program_sha256,
+            program_candidate_sha256="b" * 64,
         ),
     )
     monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: stable_artifact)

@@ -22,10 +22,9 @@ from tracefold.news.learning.compiler.root import (
     _retrieval_receipt,
     accepted_review_metric,
 )
-from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.artifact import (
-    EligibleDemoBank,
+    ProgramStrategyArtifactV1,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import (
@@ -186,8 +185,12 @@ class _FakeGEPA:
         assert trainset and valset
         assert {example.case_id for example in trainset}.isdisjoint({example.case_id for example in valset})
         assert {example.cluster_id for example in trainset}.isdisjoint({example.cluster_id for example in valset})
-        assert trainset[0].evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
-        assert trainset[0].evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
+        # Both Predictors' evidence is visibly delimited before the optimizer ever sees it: the model is told
+        # where untrusted Event bytes begin and end, on the compile path as much as in production.
+        for example in trainset + valset:
+            for field in ("evidence_json", "card_evidence_json"):
+                assert getattr(example, field).startswith("<tracefold-untrusted-event-json-v1>\n")
+                assert getattr(example, field).endswith("\n</tracefold-untrusted-event-json-v1>")
         assert isinstance(dspy.settings.adapter, DspyStrictJSONAdapter)
         assert dspy.settings.disable_history is True
         dspy.settings.lm(prompt="task budget probe")
@@ -285,7 +288,6 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
 def _compiler(base: Any | None = None) -> ProgramCompiler:
     return ProgramCompiler(
         base_artifact=base or load_stable_program_artifact(),
-        eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
@@ -348,13 +350,10 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.patch.learning_epoch == "program_v7"
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
-    assert result.patch.patch_sha256 == result.patch.computed_sha256()
-    assert [strategy.predictor for strategy in result.patch.learned_strategies] == [
-        "event_semantics",
-        "reader_card",
-    ]
+    # The whole write-set: one bounded advisory per Predictor, carrying exactly what the optimizer wrote.
+    assert result.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
+    assert result.patch.reader_card_instruction == ""
     assert result.metric_calls == 2
     assert result.task_model_calls == 1
     assert result.reflection_model_calls == 1
@@ -369,54 +368,14 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert "proposal_input" not in type(result).model_fields
 
 
-def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_examples() -> None:
-    episode = _request().episodes[0].model_dump(mode="json")
-    episode["accepted_review"] = {
-        "review_id": "review-1",
-        "should_push": "should_push",
-        "dimensions": {
-            "factual_fidelity": "pass",
-            "headline_fidelity": "pass",
-            "why_support": "pass",
-            "why_value": "pass",
-        },
-        "novelty": {"judgment": "new_fact", "duplicate_of": ""},
-        "expected_correction": "",
-    }
-    episode["production_judgment"] = _judgment(
-        assets=[],
-        direction="neutral",
-        magnitude=1,
-        headline_zh="发行人提交重大更新",
-        why_zh="时间表发生变化。",
-    ).model_dump(mode="json")
-    case = {
-        "case_id": episode["case_id"],
-        "cluster_id": episode["cluster_id"],
-        "evidence_sha256": "e" * 64,
-    }
-    payload = {
-        "role": "development",
-        "learning_epoch": "program_v7",
-        "cases": [case],
-    }
-    dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})
-
-    bank = build_eligible_demo_bank(
-        dataset_sha=dataset_sha,
-        dataset_payload=payload,
-        episodes=(episode,),
-    )
-
-    assert len(bank.records) == 2
-    for record in bank.records:
-        evidence_json = record.signature_inputs["evidence_json"]
-        assert evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
-        assert evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
-
-
 def test_non_root_program_cannot_be_a_compiler_parent() -> None:
-    non_root = load_stable_program_artifact().model_copy(update={"parent_program_sha256": "f" * 64})
+    """A compile may only ever descend from the exact active stable root, never from a learned descendant."""
+
+    non_root = ProgramStrategyArtifactV1.issue(
+        event_semantics_instruction="A previously learned advisory.",
+        reader_card_instruction="",
+    )
+    assert non_root.program_sha256 != load_stable_program_artifact().program_sha256
     with pytest.raises(ValueError, match="parent_must_be_exact_stable_root"):
         _compiler(non_root)
 
@@ -437,7 +396,6 @@ def test_non_json_trajectory_value_fails_closed() -> None:
 
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
-        eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
         optimizer_factory=_UnsafeGEPA,
@@ -457,7 +415,6 @@ def test_nonfinite_trajectory_value_fails_closed() -> None:
 
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
-        eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
         optimizer_factory=_NonfiniteGEPA,

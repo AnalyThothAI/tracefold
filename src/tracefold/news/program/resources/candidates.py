@@ -2,7 +2,7 @@
 
 An evaluated ``CandidateManifest`` must be reviewed into this tuple before a
 canary can be armed. Production resolves only registered, image-carried
-``ProgramArtifact`` identities; database payloads never become executable
+``ProgramStrategyArtifactV1`` identities; database payloads never become executable
 instructions or Python control flow.
 """
 

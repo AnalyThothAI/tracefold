@@ -90,7 +90,6 @@ class ProposalReceipt(BaseModel):
     guardrails: tuple[str, ...] = ()
     program_parent_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     program_candidate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    program_state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     program_machine_diff: dict[str, Any] | None = None
     compile_provenance: dict[str, Any] | None = None
 
@@ -117,7 +116,6 @@ class ProposalReceipt(BaseModel):
         program_fields = (
             self.program_parent_sha256,
             self.program_candidate_sha256,
-            self.program_state_sha256,
             self.program_machine_diff,
             self.compile_provenance,
         )

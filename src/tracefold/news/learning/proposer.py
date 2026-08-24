@@ -18,15 +18,14 @@ the compiler image; the optimizer cannot supply or modify it.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import Any
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import ValidationError
 
 from ..program.artifact import (
-    LearnedStrategy,
-    ProgramArtifact,
+    ProgramStrategyArtifactV1,
     render_predictor_instruction,
+    validate_learned_instruction,
 )
 from ..program.runtime import PredictorName
 
@@ -56,11 +55,11 @@ Rules for what you write:
 class RulePackAwareProposer:
     """A `ProposalFn` that prefixes GEPA's own proposal prompt with the rendered, read-only context."""
 
-    def __init__(self, artifact: ProgramArtifact) -> None:
+    def __init__(self, artifact: ProgramStrategyArtifactV1) -> None:
         self._artifact = artifact
         predictor_names: tuple[PredictorName, ...] = ("event_semantics", "reader_card")
         self._rendered: dict[str, str] = {
-            name: render_predictor_instruction(artifact, name) for name in predictor_names
+            name: render_predictor_instruction(name, artifact.instruction_for(name)) for name in predictor_names
         }
         self.calls = 0
         self.components_seen: list[str] = []
@@ -144,18 +143,17 @@ def _advisory_rejection(component: str, text: str) -> str | None:
     if not text:
         return None
     try:
-        LearnedStrategy.issue(predictor=cast("PredictorName", component), text=text, source="optimizer_patch")
-    except ValidationError as exc:
-        for error in exc.errors():
-            message = str(error.get("msg") or "")
-            for marker in (
-                "news_program_learned_strategy_too_large",
-                "news_program_learned_strategy_unsafe",
-                "news_program_learned_strategy_secret",
-                "news_program_learned_strategy_unicode_noncanonical",
-            ):
-                if marker in message:
-                    return marker
+        validate_learned_instruction(text)
+    except ValueError as exc:
+        message = str(exc)
+        for marker in (
+            "news_program_learned_strategy_too_large",
+            "news_program_learned_strategy_unsafe",
+            "news_program_learned_strategy_secret",
+            "news_program_learned_strategy_unicode_noncanonical",
+        ):
+            if marker in message:
+                return marker
         return "news_program_learned_strategy_rejected"
     return None
 

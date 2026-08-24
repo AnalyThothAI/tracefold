@@ -18,7 +18,7 @@ results; never secret values.
 
 Before deploying #129, remove the retired
 `news.triage.deadline_seconds` key from the operator config. The typed schema
-rejects it; the content-addressed Program artifact now owns each route deadline.
+rejects it; each route deadline is code-owned by the Program factory.
 
 Before deploying #160, remove every retired policy-v9 action/priority key from
 `news.policy`: `escalate_magnitude`, `min_push_magnitude`,
@@ -134,7 +134,7 @@ Record the full `sha256:` image ID it prints; that ID, not its local tag, is the
 only accepted rollback input. The artifact is deployment safety only: it is not
 in the v7 factory registry, artifact loader or normal runtime image and cannot
 be used for canary or daily execution. The production image contains exactly
-factory/executable v5; there is no runtime flag or dual loader. A failed build
+factory v6 / executable v5; there is no runtime flag or dual loader. A failed build
 or drill fails the release gate.
 
 The #175 reader-history rollout uses the same-schema previous runtime image as
@@ -147,6 +147,13 @@ image digest immediately and retain the verdict/trace as regression evidence.
 The #190 canonical-number hard cut follows the same one-image rule: rollback is
 the recorded previous same-schema image, never the removed Program registry
 root, and any attempted NaN/Infinity identity must remain a hard failure.
+The #193 strategy-artifact cut follows it too, with one extra operator step:
+migration `0304` trips every armed or active canary, because its candidate is a
+two-file artifact the new image cannot load. Expect `canary status` to report
+`tripped` with reason `program_strategy_artifact_v1_hard_cut` after the
+upgrade; a candidate has to be recompiled against the new root and re-armed
+from the start of the promotion ladder. Rolling back to the previous
+same-schema image does not un-trip it, and `0304` has no downgrade.
 
 For the #160 drill and rollback, use the full image ID printed by
 `build-news-rollback-image` directly. After both sides of a later deployment
@@ -435,7 +442,7 @@ provider score, Gate macro lexicon, queue lag and watchlist; ReaderCard receives
 only its reduced semantic view and never ToldContext or delivery intent. A successful primary route normally makes two serial
 provider calls. One fast retry is
 shared across both Predictors, so one route makes at most three calls; the
-artifact's current 20-second deadline covers the whole route. If primary
+code-owned 20-second deadline covers the whole route. If primary
 fails, a configured `llm.news_triage_fallback` restarts the full graph with its
 own retry/deadline budget. Its ReaderCard slot explicitly aliases the same
 endpoint unless a complete `llm.news_reader_card_fallback` endpoint is present;
@@ -450,7 +457,7 @@ normally four calls total for that Event, with the same per-execution six-call
 ceiling and all superseded/failed work included in telemetry.
 
 By default both Predictors use the Triage endpoint, but each has its own
-Adapter and artifact-owned token cap. A complete `llm.news_reader_card`
+Adapter and code-owned token cap. A complete `llm.news_reader_card`
 endpoint moves only ReaderCard's primary slot. A complete
 `llm.news_reader_card_fallback` independently moves the ReaderCard fallback
 slot; otherwise that slot is an explicit alias of the EventSemantics fallback
@@ -461,7 +468,7 @@ credentials.
 A fast-retryable timeout, rate limit, connection error, or non-truncated
 schema/output failure can spend the route's one retry. A `max_tokens`
 truncation (`news_program_output_truncated`, `finish_reason=length`) does not
-retry. The artifact's primary-route breaker defaults to three retryable
+retry. The code-owned primary-route breaker defaults to three retryable
 transport failures and 60 seconds; while open it routes directly to fallback.
 Separately, the consumer's configured circuit opens a
 `triage_circuit_open` incident after the whole primary+fallback chain fails
@@ -541,7 +548,11 @@ Diagnose News in this order:
    `review external-miss`. Do not infer precision/recall from unlabeled rows or
    infer causality from the market tab.
    Before and after a Prompt, RulePack or policy edit, run
-   `news learning baseline` and name the mode you mean. `--mode recorded` costs
+   `news learning baseline` and name the mode you mean. A RulePack body is code
+   under `factory_id`, not artifact state: editing one changes the prompt bytes
+   every call is billed for while leaving `program_sha256` untouched, so the
+   edit is finished only when the factory is bumped and the stable root
+   reissued in the same change. `--mode recorded` costs
    nothing and answers "is the metric still wired the way it was"; it makes no
    provider call, so it cannot see a Prompt change. `--mode compile_live` is the
    graph GEPA optimizes and has no fallback, retry, deadline or breaker.
@@ -586,8 +597,9 @@ Diagnose News in this order:
    failures separately before summing them. The trusted
    exporter seals accepted development only; the isolated compiler runner has
    no DB/holdout/application credentials and can emit only a bounded
-   `ProgramPatchV2`; the trusted applier verifies all receipts before creating
-   an unaccepted candidate. Production promotion additionally requires a
+   `ProgramStrategyPatchV1` of the two advisory instructions; the trusted
+   applier verifies all receipts before creating an unaccepted candidate.
+   Production promotion additionally requires a
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
    observation, and then `learning canary arm`; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
@@ -616,7 +628,7 @@ The current evidence eligibility window starts at the deployment timestamp
 stored in `news_learning_epochs(program_v7)`. Only accepted
 `news_review_v4` rows from this epoch enter metric v4, GEPA or release evidence. Every earlier
 Prompt/Program baseline remains readable audit history but cannot enter a
-dataset, DemoBank or release stage. Do not
+dataset or release stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality; that claim begins only after
 post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
@@ -773,6 +785,12 @@ and starts `program_v6` for factory/executable v4 and policy v10. None of these 
 deletes history or claims a release PASS.
 `0303` preserves that history and appends `program_v7` for factory/executable
 v5 after the #162 Program/Learning package split; v6 evidence remains audit-only.
+`0304` is the #193 strategy-artifact hard cut: it adds no column, trips every
+armed or active canary whose candidate the new image cannot load, and appends
+one migration receipt to `news_learning_artifacts`. It leaves `program_v7`
+open on purpose — the artifact serialization and the Program root changed, the
+evidence did not — so accepted `news_review_v4` rows stay eligible and the
+epoch row goes on naming what the epoch was opened with. It is irreversible.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

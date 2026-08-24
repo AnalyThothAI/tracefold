@@ -53,8 +53,8 @@ Issue #160 also retires every policy-v9 action/priority knob:
 `noise_veto_respects_gate_priority`, and `contested_push_min_magnitude`.
 Remove them before deployment; the strict settings schema provides no alias.
 
-Issue #129 also retires `news.triage.deadline_seconds`; the content-addressed
-Program artifact owns the route deadline. Existing configs must remove the key
+Issue #129 also retires `news.triage.deadline_seconds`; the route deadline is
+code-owned by the Program factory. Existing configs must remove the key
 before startup.
 
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
@@ -67,8 +67,9 @@ otherwise spends the Triage token budget on reasoning before the tool call.
 valid next to a complete primary triple) optionally binds ReaderCard to a
 different direct endpoint. When absent, ReaderCard inherits the Triage endpoint.
 EventSemantics and ReaderCard still receive separate Adapters and their own
-artifact-owned `max_tokens`; changing this endpoint changes only the secret-free
-`reader_card.primary` runtime binding identity, not Program identity.
+code-owned `max_tokens` (1,200 and 600); changing this endpoint changes only the
+secret-free `reader_card.primary` runtime binding identity, not Program
+identity.
 `llm.news_compiler_tariff` is an optional, secret-free contract used only by
 the manual cold compiler. Its `tariff_id`, positive `input_token_overhead`, and
 positive task/reflection/metric-judge input/output micro-USD-per-million-token rates are all
@@ -85,13 +86,13 @@ failures are receipted separately.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
-error, truncated or invalid output — or while the Program artifact's primary-
-route breaker is open. `llm.news_reader_card_fallback` is an optional complete
+error, truncated or invalid output — or while the code-owned primary-route
+breaker is open. `llm.news_reader_card_fallback` is an optional complete
 ReaderCard endpoint for that same fallback route and is valid only when
 `news_triage_fallback` is complete. When it is absent, the Reader fallback slot
 is an explicit alias of the EventSemantics fallback slot; when it is present but
 invalid, the whole fallback route is unavailable rather than silently using a
-different backend. The shipped artifact owns that breaker plus each
+different backend. The Program factory owns that breaker plus each
 route's deadline and retry/call budget; `deadline_seconds` is not a
 configuration field. The separate `news.triage.circuit_failures` /
 `circuit_open_seconds` settings govern the consumer's whole-chain breaker after
@@ -445,34 +446,42 @@ NULL-editorial rows remain audit-only.
 The trace binds `verdict_sha256`, `editorial_sha256`, Program version/SHA,
 runtime manifest/provider/model identity, every frozen `DecidePolicy` value,
 input/told/seen/storyline hashes and snapshots, every initial/re-ask execution,
-and per-Predictor request/input/signature/instruction/demo/upstream/output,
-finish reason, latency, token and cost identity. A told-only re-ask may restore
+and per-Predictor request/input/upstream/output,
+finish reason, latency, token and cost identity. The rendered instruction is
+derived from `factory_id` plus the artifact's advisory, so the Program SHA
+already commits to it and the call trace no longer repeats a signature,
+instruction or demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
 `news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic telemetry),
-`news_triage_policy_v10`, `news_delivery_card_v10`, artifact envelope v2,
-factory `tracefold.news.program.factory_v5`, and epoch `program_v7`.
+`news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
+`news_program_strategy_artifact_v1`, factory
+`tracefold.news.program.factory_v6`, and epoch `program_v7`.
 The exact Program identity is its content SHA, not the display version alone.
 
-`ProgramArtifact v2` is the only executable semantic configuration. It is a
-canonical, content-addressed, state-only JSON pair (`manifest.json` and
-`state.json`) carried in the application image and selected by the code-owned
-registry. Its `QualityKernelRef` binds the factory/topology, Signatures,
-renderer, validator/normalizer/assembler, Adapter, execution and dependency
-identities. Ordered code-owned RulePacks are authoritative; per-Predictor
-LearnedStrategy is bounded advisory text; the typed DemoBank separates
-model-visible input/output from provenance; and four logical model slots plus
-token caps are explicit. Rendered instructions are derived bytes, never a
-second editable truth. Loading fails closed on an
-unknown hash/version/factory/lock, a path or symlink violation, extra file, or
-unsafe or secret-bearing state. The lock digest is carried by the package and must match the
-source `uv.lock`; it is not discovered by walking outside an installed wheel.
-Demo evidence is accepted only in the exact model-visible input schema, which
-excludes Event/fact audit ids, provenance, endpoints and credentials. The
-optimizer can emit only a typed patch to the two LearnedStrategy instructions;
-GEPA writes no demos, so DemoBank records and references remain empty. The
-trusted side reconstructs the final Artifact from the exact
+`ProgramStrategyArtifactV1` is the only executable semantic configuration, and
+it is one canonical JSON document — `schema_version`, `factory_id`, the
+`event_semantics_instruction` and `reader_card_instruction` advisories, and the
+`program_sha256` over exactly those four values — carried in the application
+image as `<program_sha256>.json` and selected by the code-owned registry. The
+stable root is
+`e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`.
+That SHA is behavior identity only: it holds no parent lineage, compile cost,
+trajectory, teacher endpoint or compile receipt, so two compiles that reach the
+same two instructions produce the same Program. Lineage belongs to the
+candidate's `ProposalReceipt`, compile provenance to the compile receipt chain.
+The graph, schemas, ordered code-owned RulePacks, renderer, normalizer,
+assembler, model route and execution budget are code, versioned by `factory_id`;
+a semantic change to any of them is an explicit factory bump, not a cascade of
+component hashes. Rendered instructions are derived bytes, never a
+second editable truth, and they contain no identity hash and no demo section.
+Loading fails closed on an unknown hash/version/factory, non-canonical or
+duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
+name that is not its own root, or unsafe or secret-bearing state.
+The optimizer can emit only a typed patch carrying the two advisory
+instructions; there is no DemoBank to write to, and a demo on a Predictor is
+refused. The trusted side reconstructs the final Artifact from the exact
 active stable root. Pickle, cloudpickle,
 DSPy Flex state, dynamic Python/classes,
 endpoints and credentials are not artifact formats. DSPy cache and hidden
@@ -485,7 +494,7 @@ SemanticNormalizer -> ReaderCard.v2 -> deterministic assembler`: normally two
 serial calls because the normalizer and assembler make no provider request;
 one fast retry is shared by the whole route, so at most three calls per route;
 fallback restarts the full
-graph, so primary plus fallback is at most six. The artifact's 20-second
+graph, so primary plus fallback is at most six. The code-owned 20-second
 deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
 ledger re-ask is a separate execution with the same ceiling (normally another
@@ -587,8 +596,16 @@ bundle because the composite reader-history/selector retrieval identity and
 RulePack text changed. Earlier bundles remain immutable audit history and are
 not executable by the new image. Issue #190 reissues that sole bundle again,
 still inside v7, because the package-owned canonical identity primitive now
-rejects NaN/Infinity. Every valid JSON state byte and the state hash remain
-unchanged; the sealed factory-source hash and Program SHA change explicitly.
+rejects NaN/Infinity.
+`20260824_0304` carries Issue #193's strategy-artifact hard cut into the
+database. It adds and drops no column — the artifact is image-carried JSON, not
+a table — and does exactly two things: it trips every armed or active canary,
+whose candidate the new image cannot load, and records one migration receipt in
+the append-only learning ledger. `program_v7` is deliberately not re-opened:
+accepted `news_review_v4` truth stays eligible, and the epoch row keeps naming
+the factory, schema and baseline root it was opened with. The sole stable root
+re-issues a third time inside v7, now as the 262-byte
+`news_program_strategy_artifact_v1` document under factory v6.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -878,7 +895,7 @@ component is actually scored.
 development or future temporal validation dataset. Every current dataset is in
 the deployment-time `program_v7` epoch and accepts only `news_review_v4`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
-dataset, metric-v4 denominator or DemoBank.
+dataset or metric-v4 denominator.
 `learning compile --development SHA --artifact-root DIR --out FILE
 --max-metric-calls N --max-task-model-calls N --max-reflection-model-calls N
 --max-metric-judge-model-calls N --max-cost-microusd N [--seed N]` is the
@@ -886,8 +903,8 @@ manual cold DSPy GEPA workflow. A trusted exporter recomputes the
 development dataset and ordered episode roots, then launches an isolated runner
 without DB/holdout/application credentials. The runner is bounded by the
 declared per-role calls, combined cost, seed and resource policy and can emit
-only a typed `ProgramPatchV2` for the two LearnedStrategy instructions; DemoBank
-stays empty under GEPA. A trusted
+only a typed `ProgramStrategyPatchV1` carrying the two advisory instructions.
+A trusted
 applier validates the complete receipt chain and builds an unaccepted
 content-addressed Artifact from the exact stable root. The runner cannot read
 holdout, register, accept, deploy or promote its output.

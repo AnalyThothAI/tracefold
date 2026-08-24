@@ -29,8 +29,8 @@ from tracefold.news.learning.compiler.security import (
     seal_compile_input,
 )
 from tracefold.news.learning.compiler.source_identity import compiler_source_sha256, proxy_source_sha256
-from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
-from tracefold.news.program.artifact import ProgramPatchV2, load_stable_program_artifact
+from tracefold.news.program.artifact import ProgramStrategyPatchV1, load_stable_program_artifact
+from tracefold.news.program.runtime import PROGRAM_VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 PROVIDER_SCRIPT = Path(__file__).with_name("scripted_openai_provider.py")
@@ -221,18 +221,13 @@ def _sealed_input(
         "agent_cohort": {
             "bundle_sha": stable_bundle,
             "learning_epoch": "program_v7",
-            "program_version": parent.program_version,
+            "program_version": PROGRAM_VERSION,
             "program_sha256": parent.program_sha256,
             "runtime_model_bindings_sha256": runtime_manifest,
         },
         "cases": cases,
     }
     dataset_sha = canonical_sha({"kind": "dataset", "payload": dataset_payload})
-    eligible = build_eligible_demo_bank(
-        dataset_sha=dataset_sha,
-        dataset_payload=dataset_payload,
-        episodes=episodes,
-    )
     task = secrets.task.binding("task")
     reflection = secrets.reflection.binding("reflection")
     judge = secrets.metric_judge.binding("metric_judge")
@@ -263,10 +258,8 @@ def _sealed_input(
         episodes=episodes,
         review_rubric_version="news_review_v4",
         parent_program_sha256=parent.program_sha256,
-        parent_state_sha256=parent.state_sha256,
         stable_bundle_sha256=stable_bundle,
         target_runtime_manifest_sha256=runtime_manifest,
-        eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
         task=task,
         reflection=reflection,
         metric_judge=judge,
@@ -324,12 +317,13 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
         input_bundle_sha256=input_sha,
         proxy_secret_config=secrets,
     )
-    patch = ProgramPatchV2.model_validate_json(result.patch_document)
+    patch = ProgramStrategyPatchV1.model_validate_json(result.patch_document)
     runner = CompilerRunnerReceiptsV3.model_validate_json(result.runner_receipts_document)
     proxy = result.proxy_execution_receipt
 
     assert patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
-    assert any(strategy.text.strip() for strategy in patch.learned_strategies)
+    # The optimizer's whole write-set is these two advisories; a run that changed neither compiled nothing.
+    assert patch.event_semantics_instruction.strip() or patch.reader_card_instruction.strip()
     assert result.launch_receipt.termination == "succeeded"
     assert result.launch_receipt.compiler_container_removed
     assert result.launch_receipt.proxy_container_removed

@@ -39,7 +39,7 @@ from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_artifact, render_predictor_instruction
 from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ProgramTrace,
@@ -48,16 +48,14 @@ from tracefold.news.program.contracts import (
     TriageContext,
 )
 from tracefold.news.program.runtime import (
-    PROGRAM_ADAPTER_SHA256,
-    PROGRAM_ASSEMBLER_SHA256,
-    PROGRAM_DEPENDENCY_LOCK_SHA256,
+    PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
     PROGRAM_FACTORY_ID,
-    PROGRAM_INPUT_CONTRACT_SHA256,
     PROGRAM_LEARNING_EPOCH,
-    PROGRAM_NORMALIZER_SHA256,
-    PROGRAM_RENDERER_SHA256,
+    PROGRAM_PRIMARY_BREAKER_FAILURES,
+    PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
+    PROGRAM_READER_CARD_MAX_TOKENS,
+    PROGRAM_ROUTE_DEADLINE_SECONDS,
     PROGRAM_SCHEMA_VERSION,
-    PROGRAM_TOPOLOGY_SHA256,
     PROGRAM_VERSION,
 )
 from tracefold.news.triage_rules import GateFacts
@@ -111,6 +109,13 @@ NOW_MS = 1_787_000_000_000
 # expected value means the next such PR has to come here and say so — and a leaf that returns to the baseline
 # value fails as a stale entry rather than lingering. Generated artifacts have their own canonical drift
 # checkers and are intentionally not duplicated in this baseline.
+# A leaf the change removes outright drifts to this sentinel, which is what `_changed_leaves` yields for
+# a key present in the frozen baseline and absent now.
+_MISSING = object()
+
+# The rendered Predictor bytes this branch ships. Pinned by value, like every other declaration below.
+_RENDERED_PROMPT_SHA256 = "3fe3cb009977e316e10a094e7115b0889529e53d9213602f37e625920b09f779"
+
 INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # #162 PR8-B moved the Program into its own package and split the learning plane away from it. The
     # factory source closure is addressed by logical file name, so the move re-issues the Program root
@@ -119,8 +124,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # Two migrations moved the head: #175's reader-history index (0302) and PR8-B's epoch (0303). A dict
     # has one key, so the reason names both rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_175_reader_history_index_then_issue_162_pr8b_program_v7_epoch",
-        "20260824_0303",
+        "issue_175_reader_history_index_then_issue_193_program_strategy_artifact_hard_cut",
+        "20260824_0304",
     ),
     # #190 adds the dedicated real-package compiler target and moves the web-dist copy to the final
     # runtime stage. Program source, dependency lock, prompts, routes and call budgets stay unchanged;
@@ -153,26 +158,50 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_162_pr8b_program_learning_identity_migration",
         "051c5c06fbda7e2764bb5959c3fecd286ea90c1e4e1bc33bfa113fe7539f03a6",
     ),
+    # #193 hard-cuts the two-file Artifact v2 (QualityKernel, route spec, execution contract, RulePacks,
+    # DemoBank, embedded compile receipt) down to one document holding a factory id and the two advisory
+    # instructions. Every component SHA below has no independent consumer left: the behavior they named is
+    # code, versioned by `factory_id`, and the numbers that used to be hashed are now recorded as numbers.
+    # Prompt bytes change too — the RulePack and LearnedStrategy digests are gone from the rendered
+    # instruction — so the sole stable root re-issues inside `program_v7` without reopening the epoch.
     "program_learning.factory_id": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "tracefold.news.program.factory_v5",
+        "issue_193_program_strategy_artifact_hard_cut",
+        "tracefold.news.program.factory_v6",
     ),
+    "program_learning.schema_version": (
+        "issue_193_program_strategy_artifact_hard_cut",
+        "news_program_strategy_artifact_v1",
+    ),
+    "program_learning.adapter_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
+    "program_learning.assembler_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
+    "program_learning.dependency_lock_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
+    "program_learning.normalizer_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
+    "program_learning.renderer_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
+    "program_learning.topology_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
+    # The rendered prompt bytes: identical RulePacks and identical advisories, minus the RulePack and
+    # LearnedStrategy digests and the empty demo section the renderer used to emit.
+    "program_learning.rendered_prompt_sha256": (
+        "issue_193_program_strategy_artifact_hard_cut",
+        _RENDERED_PROMPT_SHA256,
+    ),
+    "program_learning.event_semantics_max_tokens": ("issue_193_program_strategy_artifact_hard_cut", 1200),
+    "program_learning.reader_card_max_tokens": ("issue_193_program_strategy_artifact_hard_cut", 600),
+    "program_learning.route_deadline_seconds": ("issue_193_program_strategy_artifact_hard_cut", 20),
+    "program_learning.primary_breaker_failures": ("issue_193_program_strategy_artifact_hard_cut", 3),
+    "program_learning.primary_breaker_open_seconds": ("issue_193_program_strategy_artifact_hard_cut", 60),
     "program_learning.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
         "program_v7",
     ),
     "program_learning.program_sha256": (
-        # #190 makes the canonical identity primitive reject NaN/Infinity. Valid JSON state, prompts,
-        # RulePacks, policy, routes, call budgets and the state hash stay byte-identical; the sealed factory
-        # source and therefore the sole stable root move explicitly. Like #175's same-schema hard cut, this
-        # reissues the one runtime bundle inside v7 rather than inventing a parallel executable generation.
-        "issue_190_canonical_nonfinite_fail_closed_root_reissue",
-        "cff8fdfbb5f8c101bcc9145103e79fd5265a6550c85aa5e83aeaf25536c31b03",
+        # #193 makes the Program root the hash of exactly the factory id plus the two advisory
+        # instructions, so the baseline root is now a 262-byte document instead of a 28 KB manifest/state
+        # pair. Like #175's and #190's re-issues this replaces the one runtime bundle inside `program_v7`
+        # rather than inventing a parallel executable generation.
+        "issue_193_program_strategy_artifact_hard_cut",
+        "e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06",
     ),
-    "program_learning.input_contract_sha256": (
-        "issue_175_composite_reader_history_retrieval",
-        "59f235bb4026820efb43d1931520aeadea64a08673e6b71a67bc50c089dd5d2e",
-    ),
+    "program_learning.input_contract_sha256": ("issue_193_program_strategy_artifact_hard_cut", _MISSING),
     "program_learning.program_version": (
         "issue_162_pr8b_program_learning_identity_migration",
         "news_semantic_program_v5",
@@ -252,9 +281,6 @@ def _changed_leaves(expected: Any, current: Any, path: str = "") -> Iterator[tup
             yield from _changed_leaves(left, right, f"{path}[{index}]")
     elif expected != current:
         yield path, current
-
-
-_MISSING = object()
 
 
 def _sha_bytes(path: Path) -> str:
@@ -365,18 +391,30 @@ def _runner_declarations() -> dict[str, Any]:
 def _program_contract() -> dict[str, Any]:
     artifact = load_stable_program_artifact()
     return {
+        # What the two Predictors actually read, as one digest. #193 deleted the Artifact's
+        # `factory_source_sha256`, which used to make a RulePack or renderer edit cascade into a new
+        # `program_sha256` automatically. Deliberately: that cascade churned identity on edits that changed
+        # no behavior. The property worth keeping is the other half — you cannot silently change what the
+        # model reads — so it lives here, where changing it means declaring it in INTENTIONAL_DRIFT and
+        # deciding whether the factory should be bumped, rather than in a hash the Artifact carried around.
+        "rendered_prompt_sha256": _canonical_sha(
+            {
+                predictor: render_predictor_instruction(predictor, artifact.instruction_for(predictor))
+                for predictor in ("event_semantics", "reader_card")
+            }
+        ),
         "schema_version": PROGRAM_SCHEMA_VERSION,
         "factory_id": PROGRAM_FACTORY_ID,
         "program_version": PROGRAM_VERSION,
         "learning_epoch": PROGRAM_LEARNING_EPOCH,
         "program_sha256": artifact.program_sha256,
-        "dependency_lock_sha256": PROGRAM_DEPENDENCY_LOCK_SHA256,
-        "topology_sha256": PROGRAM_TOPOLOGY_SHA256,
-        "adapter_sha256": PROGRAM_ADAPTER_SHA256,
-        "normalizer_sha256": PROGRAM_NORMALIZER_SHA256,
-        "assembler_sha256": PROGRAM_ASSEMBLER_SHA256,
-        "input_contract_sha256": PROGRAM_INPUT_CONTRACT_SHA256,
-        "renderer_sha256": PROGRAM_RENDERER_SHA256,
+        # The execution budget the factory versions. It used to be copied into every artifact and hashed
+        # there; it is code, so the generated contract records the numbers themselves.
+        "event_semantics_max_tokens": PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+        "reader_card_max_tokens": PROGRAM_READER_CARD_MAX_TOKENS,
+        "route_deadline_seconds": PROGRAM_ROUTE_DEADLINE_SECONDS,
+        "primary_breaker_failures": PROGRAM_PRIMARY_BREAKER_FAILURES,
+        "primary_breaker_open_seconds": PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
         "policy_version": TRIAGE_POLICY_VERSION,
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "metric_id": METRIC_ID,
@@ -519,9 +557,6 @@ def _news_flow_snapshot() -> dict[str, Any]:
         program_sha256=artifact.program_sha256,
         context_sha256=context.selected_context_sha256(),
         factory_id=PROGRAM_FACTORY_ID,
-        topology_sha256=PROGRAM_TOPOLOGY_SHA256,
-        adapter_sha256=PROGRAM_ADAPTER_SHA256,
-        assembler_sha256=PROGRAM_ASSEMBLER_SHA256,
         verdict_sha256=canonical_sha(verdict.model_dump(mode="json")),
         editorial_sha256=editorial.editorial_sha256,
         answering_route="primary",

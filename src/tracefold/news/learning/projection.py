@@ -82,9 +82,6 @@ def _program_call_identity_complete(raw_call: Mapping[str, Any]) -> bool:
     for field_name in (
         "request_sha256",
         "input_sha256",
-        "signature_sha256",
-        "instruction_sha256",
-        "demos_sha256",
         "runtime_model_sha256",
         "runtime_binding_sha256",
     ):
@@ -483,7 +480,6 @@ def _arm_exact_diff(
             "candidate_program_version": candidate.program_version,
             "stable_program_sha256": stable.program_sha256,
             "candidate_program_sha256": candidate.program_sha256,
-            "candidate_state_sha256": proposal.program_state_sha256,
             "machine_diff": dict(proposal.program_machine_diff or {}),
             "compile_provenance": dict(proposal.compile_provenance or {}),
         }

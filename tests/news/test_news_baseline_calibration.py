@@ -33,9 +33,12 @@ _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
 _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
-# #190 rebinds the report to the explicit canonical-number-hardening Program identity. The audit corpus
-# remains byte-for-byte evidence from program_v6; every score and execution budget remains unchanged.
-_EXPECTED_REPORT_SHA256 = "b234ba2fd4a3f0297e1e59b7a76b3a6ad58fb8f78de8929e73212106b68eccd3"
+# #193 rebinds the report to the strategy-artifact Program identity: the receipt now names `factory_id`
+# where it named `state_sha256`, and the stable root moved with the hard cut. The corpus, every score and
+# every case result are byte-for-byte what the previous pin covered — re-hashing this report with the old
+# identity block still yields b234ba2fd4a3f0297e1e59b7a76b3a6ad58fb8f78de8929e73212106b68eccd3. Nothing about
+# the measurement moved, so `_EXPECTED_CASE_MACRO` and friends below are deliberately untouched.
+_EXPECTED_REPORT_SHA256 = "34f8d3bf5278b812c276166f6d5f2f8834614ca32f0145959e02e22c2d106d94"
 
 
 @pytest.fixture(scope="module")

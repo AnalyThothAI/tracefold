@@ -24,30 +24,20 @@ from pydantic import BaseModel, ValidationError
 from ..artifact_identity import canonical_json, canonical_sha
 from ..models import TriageVerdict
 from .artifact import (
-    CompileProvenance,
-    CompileReceipt,
-    DemoBank,
-    DemoRecord,
-    DemoRefOrder,
-    EligibleDemoBank,
-    ExecutionContract,
-    LearnedStrategy,
-    ModelRouteSpec,
-    ModelSlotSpec,
     PredictorModelBindings,
     PredictorState,
-    ProgramArtifact,
-    ProgramArtifactCodec,
-    ProgramPatchV2,
-    QualityKernelRef,
-    RulePack,
-    _validate_predictor_demos,
-    apply_program_patch_v2,
-    build_code_owned_program_artifact_v2,
+    ProgramStrategyArtifactCodec,
+    ProgramStrategyArtifactV1,
+    ProgramStrategyPatchV1,
+    apply_program_patch,
+    build_code_owned_program_artifact,
+    build_predictor_state,
+    code_owned_rule_packs,
     load_program_artifact,
     load_stable_program_artifact,
     render_model_evidence_json,
     render_predictor_instruction,
+    validate_learned_instruction,
 )
 from .contracts import (
     EditorialEnvelope,
@@ -85,13 +75,15 @@ from .dspy_adapter import (
     _is_retryable_exception,
 )
 from .runtime import (
-    PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_FACTORY_ID,
     PROGRAM_LEARNING_EPOCH,
+    PROGRAM_PREDICTOR_MAX_TOKENS,
+    PROGRAM_PRIMARY_BREAKER_FAILURES,
+    PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
+    PROGRAM_ROUTE_DEADLINE_SECONDS,
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
     PredictorName,
-    _safe_json_state,
 )
 from .signatures import (
     EventSemantics,
@@ -113,10 +105,7 @@ class _ReaderCardSignature(dspy.Signature):  # type: ignore[misc]
 def _predictor(state: PredictorState, base_signature: type[dspy.Signature]) -> dspy.Predict:
     signature = base_signature.with_instructions(state.instruction)
     predictor = dspy.Predict(signature, temperature=0, max_tokens=state.max_tokens)
-    input_names = tuple(
-        name for name, field in signature.fields.items() if field.json_schema_extra["__dspy_field_type"] == "input"
-    )
-    predictor.demos = [dspy.Example(**demo).with_inputs(*input_names) for demo in state.demos]
+    predictor.demos = []
     return predictor
 
 
@@ -135,64 +124,40 @@ def _signature_shape(signature: type[dspy.Signature]) -> str:
 
 
 class _OptimizerOwnedPredictor(dspy.Predict):  # type: ignore[misc]
-    """Expose only LearnedStrategy/demos as GEPA-mutable Predictor state."""
+    """Expose only the bounded advisory instruction as GEPA-mutable Predictor state."""
 
-    def __init__(self, artifact: ProgramArtifact, predictor: PredictorName) -> None:
+    def __init__(self, artifact: ProgramStrategyArtifactV1, predictor: PredictorName) -> None:
         self._artifact = artifact
         self._predictor_name = predictor
         self._base_signature = _EventSemanticsSignature if predictor == "event_semantics" else _ReaderCardSignature
-        state = artifact.predictor_state(predictor)
-        strategy = artifact.strategy_for(predictor)
         super().__init__(
             # DSPy replaces a literal empty string with its generated default
             # instruction.  One blank character canonicalizes back to an empty
-            # instruction, preserving the Artifact's genuinely empty baseline.
-            self._base_signature.with_instructions(strategy.text or " "),
+            # instruction, preserving the artifact's genuinely empty baseline.
+            self._base_signature.with_instructions(artifact.instruction_for(predictor) or " "),
             temperature=0,
-            max_tokens=state.max_tokens,
+            max_tokens=PROGRAM_PREDICTOR_MAX_TOKENS[predictor],
         )
-        input_names = tuple(
-            name
-            for name, field in self.signature.fields.items()
-            if field.json_schema_extra["__dspy_field_type"] == "input"
-        )
-        self.demos = [dspy.Example(**demo).with_inputs(*input_names) for demo in state.demos]
+        self.demos: list[dspy.Example] = []
 
     def _validate_mutable_surface(self) -> None:
         if _signature_shape(self.signature) != _signature_shape(self._base_signature):
             raise ValueError("news_program_optimizer_signature_mutation_forbidden")
-        expected_max_tokens = (
-            self._artifact.route_spec.event_semantics_max_tokens
-            if self._predictor_name == "event_semantics"
-            else self._artifact.route_spec.reader_card_max_tokens
-        )
+        expected_max_tokens = PROGRAM_PREDICTOR_MAX_TOKENS[self._predictor_name]
         if self.config != {"temperature": 0, "max_tokens": expected_max_tokens} or self.lm is not None:
             raise ValueError("news_program_optimizer_config_mutation_forbidden")
+        # A demo is not part of the write-set and there is no bank to draw one from. Refuse here rather than
+        # carrying an unreachable DemoBank contract to say the same thing.
+        if list(self.demos):
+            raise ValueError("news_program_optimizer_demos_forbidden")
 
     def _runtime_predictor(self) -> dspy.Predict:
         self._validate_mutable_surface()
-        learned = LearnedStrategy.issue(
-            predictor=self._predictor_name,
-            text=str(self.signature.instructions or ""),
-            source="optimizer_patch",
-        )
-        strategies = tuple(
-            learned if strategy.predictor == self._predictor_name else strategy
-            for strategy in self._artifact.learned_strategies
-        )
-        derived = self._artifact.model_copy(update={"learned_strategies": strategies})
-        state = derived.predictor_state(self._predictor_name)
-        demos = tuple(cast(dict[str, Any], _safe_json_state(demo.toDict())) for demo in self.demos)
-        _validate_predictor_demos(self._predictor_name, demos)
-        runtime_state = state.model_copy(update={"demos": (), "demos_sha256": canonical_sha([])})
-        runtime = _predictor(runtime_state, self._base_signature)
-        input_names = tuple(
-            name
-            for name, field in runtime.signature.fields.items()
-            if field.json_schema_extra["__dspy_field_type"] == "input"
-        )
-        runtime.demos = [dspy.Example(**demo).with_inputs(*input_names) for demo in demos]
-        return runtime
+        # The advisory bounds are applied here, on the optimizer's live proposal, so a rejection surfaces from
+        # `forward` where `_FeedbackCompileProgram` can score it and tell the reflection model which bound it
+        # hit — rather than only at patch extraction, after the whole run.
+        learned = validate_learned_instruction(str(self.signature.instructions or ""))
+        return _predictor(build_predictor_state(self._predictor_name, learned), self._base_signature)
 
     def forward(self, **kwargs: Any) -> dspy.Prediction:
         return cast(dspy.Prediction, self._runtime_predictor()(**kwargs))
@@ -349,7 +314,7 @@ AdapterPool = PredictorAdapter | Mapping[str, PredictorAdapter]
 class DspyCompileProgram(dspy.Module):  # type: ignore[misc]
     """Cold-only optimizer Module; never used by the production hot path."""
 
-    def __init__(self, artifact: ProgramArtifact) -> None:
+    def __init__(self, artifact: ProgramStrategyArtifactV1) -> None:
         super().__init__()
         if artifact.program_sha256 != artifact.computed_sha256():
             raise ValueError("news_program_artifact_hash_mismatch")
@@ -374,48 +339,27 @@ class DspyCompileProgram(dspy.Module):  # type: ignore[misc]
 
 def extract_optimizer_patch(
     compiled: DspyCompileProgram,
-    parent: ProgramArtifact,
-    eligible_demo_bank: EligibleDemoBank,
-) -> ProgramPatchV2:
-    """Freeze only the two strategies and exact eligible demo references."""
+    parent: ProgramStrategyArtifactV1,
+) -> ProgramStrategyPatchV1:
+    """Freeze the two advisory instructions, which is the whole optimizer write-set."""
 
     if not isinstance(compiled, DspyCompileProgram):
         raise TypeError("news_program_compiled_module_type_invalid")
-    if (
-        compiled.artifact.program_sha256 != parent.program_sha256
-        or compiled.artifact.state_sha256 != parent.state_sha256
-        or parent.parent_program_sha256 is not None
-    ):
+    if compiled.artifact.program_sha256 != parent.program_sha256:
         raise ValueError("news_program_optimizer_parent_identity_mismatch")
 
-    strategies: list[LearnedStrategy] = []
-    refs: dict[PredictorName, tuple[str, ...]] = {}
+    instructions: dict[PredictorName, str] = {}
     for predictor_name in ("event_semantics", "reader_card"):
         predictor = getattr(compiled, predictor_name)
         if not isinstance(predictor, _OptimizerOwnedPredictor):
             raise ValueError("news_program_optimizer_predictor_type_invalid")
         predictor._validate_mutable_surface()
-        strategies.append(
-            LearnedStrategy.issue(
-                predictor=predictor_name,
-                text=str(predictor.signature.instructions or ""),
-                source="optimizer_patch",
-            )
-        )
-        raw_demos = tuple(cast(dict[str, Any], _safe_json_state(demo.toDict())) for demo in predictor.demos)
-        _validate_predictor_demos(predictor_name, raw_demos)
-        if raw_demos:
-            raise ValueError("news_program_optimizer_demos_forbidden")
-        refs[predictor_name] = ()
+        instructions[predictor_name] = str(predictor.signature.instructions or "")
 
-    return ProgramPatchV2.issue(
+    return ProgramStrategyPatchV1.issue(
         parent=parent,
-        learned_strategies=strategies,
-        demo_refs=DemoRefOrder(
-            event_semantics=refs["event_semantics"],
-            reader_card=refs["reader_card"],
-        ),
-        eligible_demo_bank_root_sha256=eligible_demo_bank.eligible_demo_bank_root_sha256,
+        event_semantics_instruction=instructions["event_semantics"],
+        reader_card_instruction=instructions["reader_card"],
     )
 
 
@@ -424,7 +368,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
 
     def __init__(
         self,
-        artifact: ProgramArtifact,
+        artifact: ProgramStrategyArtifactV1,
         *,
         primary_adapter: AdapterPool,
         fallback_adapter: AdapterPool | None = None,
@@ -532,7 +476,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         return SemanticJudgment(
             verdict=verdict,
             editorial=editorial,
-            program_version=self.artifact.program_version,
+            program_version=PROGRAM_VERSION,
             program_sha256=self.artifact.program_sha256,
             trace=trace,
             usage=usage,
@@ -545,9 +489,9 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
 
     def _record_primary_failure(self) -> None:
         self._primary_failures += 1
-        if self._primary_failures >= self.artifact.execution.primary_breaker_failures:
+        if self._primary_failures >= PROGRAM_PRIMARY_BREAKER_FAILURES:
             self._primary_failures = 0
-            self._primary_open_until = time.monotonic() + self.artifact.execution.primary_breaker_open_seconds
+            self._primary_open_until = time.monotonic() + PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS
 
     def _circuit_open_failure(self, context_sha: str) -> _CallFailure:
         trace = ProgramCallTrace(
@@ -563,9 +507,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 }
             ),
             input_sha256=canonical_sha({"context_sha256": context_sha}),
-            signature_sha256=self.artifact.event_semantics.signature_sha256,
-            instruction_sha256=self.artifact.event_semantics.instruction_sha256,
-            demos_sha256=self.artifact.event_semantics.demos_sha256,
             model_binding=self.artifact.event_semantics.model_bindings.primary,
             error_code="primary_circuit_open",
         )
@@ -598,7 +539,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
     ]:
         route_call_start = len(calls)
         try:
-            async with asyncio.timeout(self.artifact.execution.route_deadline_seconds):
+            async with asyncio.timeout(PROGRAM_ROUTE_DEADLINE_SECONDS):
                 return await self._run_route(
                     route=route,
                     adapter_pool=adapter_pool,
@@ -621,9 +562,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                         {"program_sha256": self.artifact.program_sha256, "context_sha256": context_sha, "route": route}
                     ),
                     input_sha256=canonical_sha({"evidence_json": semantics_evidence_json}),
-                    signature_sha256=state.signature_sha256,
-                    instruction_sha256=state.instruction_sha256,
-                    demos_sha256=state.demos_sha256,
                     model_binding=getattr(state.model_bindings, route),
                     error_code="news_program_route_deadline",
                 )
@@ -809,16 +747,12 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             input_sha = canonical_sha(inputs)
             request_sha = canonical_sha(
                 {
-                    "program_version": self.artifact.program_version,
+                    "program_version": PROGRAM_VERSION,
                     "program_sha256": self.artifact.program_sha256,
                     "context_sha256": context_sha,
                     "predictor": state.name,
                     "route": route,
                     "attempt": attempt,
-                    "signature_sha256": state.signature_sha256,
-                    "instruction_sha256": state.instruction_sha256,
-                    "demos_sha256": state.demos_sha256,
-                    "adapter_sha256": self.artifact.adapter_sha256,
                     "model_binding": model_binding,
                     "runtime_identity": "unavailable",
                     "upstream_sha256": upstream_sha,
@@ -831,9 +765,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 attempt=attempt,
                 request_sha256=request_sha,
                 input_sha256=input_sha,
-                signature_sha256=state.signature_sha256,
-                instruction_sha256=state.instruction_sha256,
-                demos_sha256=state.demos_sha256,
                 model_binding=model_binding,
                 upstream_sha256=upstream_sha,
                 error_code=exc.code,
@@ -847,16 +778,12 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 trace=call,
             ) from exc
         request = PredictorRequest(
-            program_version=self.artifact.program_version,
+            program_version=PROGRAM_VERSION,
             program_sha256=self.artifact.program_sha256,
             context_sha256=context_sha,
             predictor=state.name,
             route=route,
             attempt=attempt,
-            signature_sha256=state.signature_sha256,
-            instruction_sha256=state.instruction_sha256,
-            demos_sha256=state.demos_sha256,
-            adapter_sha256=self.artifact.adapter_sha256,
             model_binding=model_binding,
             runtime_provider=runtime_identity.provider,
             runtime_model=runtime_identity.model,
@@ -877,9 +804,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 attempt=attempt,
                 request_sha256=request.request_sha256,
                 input_sha256=input_sha,
-                signature_sha256=state.signature_sha256,
-                instruction_sha256=state.instruction_sha256,
-                demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
@@ -906,9 +830,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 attempt=attempt,
                 request_sha256=request.request_sha256,
                 input_sha256=input_sha,
-                signature_sha256=state.signature_sha256,
-                instruction_sha256=state.instruction_sha256,
-                demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
@@ -954,9 +875,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 attempt=attempt,
                 request_sha256=request.request_sha256,
                 input_sha256=input_sha,
-                signature_sha256=state.signature_sha256,
-                instruction_sha256=state.instruction_sha256,
-                demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
@@ -983,9 +901,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 attempt=attempt,
                 request_sha256=request.request_sha256,
                 input_sha256=input_sha,
-                signature_sha256=state.signature_sha256,
-                instruction_sha256=state.instruction_sha256,
-                demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
@@ -1022,9 +937,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             attempt=attempt,
             request_sha256=request.request_sha256,
             input_sha256=input_sha,
-            signature_sha256=state.signature_sha256,
-            instruction_sha256=state.instruction_sha256,
-            demos_sha256=state.demos_sha256,
             model_binding=request.model_binding,
             physical_provider_call=True,
             runtime_provider=request.runtime_provider,
@@ -1106,13 +1018,10 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         novelty_defaulted: bool = False,
     ) -> ProgramTrace:
         return ProgramTrace(
-            program_version=self.artifact.program_version,
+            program_version=PROGRAM_VERSION,
             program_sha256=self.artifact.program_sha256,
             context_sha256=context_sha,
             factory_id=self.artifact.factory_id,
-            topology_sha256=self.artifact.topology_sha256,
-            adapter_sha256=self.artifact.adapter_sha256,
-            assembler_sha256=self.artifact.assembler_sha256,
             event_semantics_sha256=event_semantics_sha256,
             reader_card_sha256=reader_card_sha256,
             verdict_sha256=verdict_sha256,
@@ -1156,31 +1065,20 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
 
 
 __all__ = [
-    "PROGRAM_DEPENDENCY_LOCK_SHA256",
     "PROGRAM_FACTORY_ID",
     "PROGRAM_LEARNING_EPOCH",
     "PROGRAM_SCHEMA_VERSION",
     "PROGRAM_VERSION",
-    "CompileProvenance",
-    "CompileReceipt",
-    "DemoBank",
-    "DemoRecord",
-    "DemoRefOrder",
     "DspyCompileProgram",
     "DspyNewsSemanticProgram",
     "DspyPredictorAdapter",
     "DspyStrictJSONAdapter",
     "EditorialEnvelope",
-    "EligibleDemoBank",
     "EventSemantics",
     "ExactMetadataDspyLM",
     "ExactProviderCallCapture",
     "ExactProviderMetadata",
-    "ExecutionContract",
     "FrozenEventEvidence",
-    "LearnedStrategy",
-    "ModelRouteSpec",
-    "ModelSlotSpec",
     "PredictorAdapter",
     "PredictorAdapterError",
     "PredictorModelBindings",
@@ -1188,19 +1086,17 @@ __all__ = [
     "PredictorRequest",
     "PredictorResponse",
     "PredictorState",
-    "ProgramArtifact",
-    "ProgramArtifactCodec",
     "ProgramCallTrace",
     "ProgramNormalizationTrace",
-    "ProgramPatchV2",
+    "ProgramStrategyArtifactCodec",
+    "ProgramStrategyArtifactV1",
+    "ProgramStrategyPatchV1",
     "ProgramTrace",
     "ProgramUsage",
     "ProviderCallObservation",
-    "QualityKernelRef",
     "ReaderCard",
     "ReaderCardSemanticView",
     "RecordReplayPredictorAdapter",
-    "RulePack",
     "RuntimeModelIdentity",
     "ScoredJudgment",
     "ScriptedPredictorAdapter",
@@ -1210,11 +1106,14 @@ __all__ = [
     "SemanticJudgment",
     "TradeRelevanceV1",
     "TriageContext",
-    "apply_program_patch_v2",
-    "build_code_owned_program_artifact_v2",
+    "apply_program_patch",
+    "build_code_owned_program_artifact",
+    "build_predictor_state",
+    "code_owned_rule_packs",
     "extract_optimizer_patch",
     "load_program_artifact",
     "load_stable_program_artifact",
     "render_model_evidence_json",
     "render_predictor_instruction",
+    "validate_learned_instruction",
 ]

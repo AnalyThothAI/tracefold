@@ -26,8 +26,8 @@
   tautology for a key-based redactor. Anything richer than that — raw evidence,
   prompts, cards, reviewer prose — stays out of the repository. The database
   copies are content-addressed audit evidence and append-only. Program artifact exports are canonical JSON
-  but can contain proprietary instructions, demonstrations and reviewed News
-  examples, so “no credentials” does not make them public. Automated
+  but carry proprietary optimizer-written instructions, so “no credentials”
+  does not make them public. Automated
   proposal/optimizer paths may never
   write accepted reviews, holdout membership, reader contracts, release
   thresholds, stable pointers, or canary assignments.
@@ -96,16 +96,16 @@ deterministic VerdictAssembler`; callers
 cannot supply instructions, demonstrations, topology, routes, retry policy or
 artifact paths. A normal judgment uses two serial provider calls. One fast
 retry is shared by a route (at most three calls); fallback restarts the full
-graph (at most six across the chain). The artifact owns the route deadline and
-call/token budgets. DSPy cache and hidden provider retries are disabled so the
-audit trace contains every provider attempt.
+graph (at most six across the chain). The Program factory owns the route
+deadline and call/token budgets. DSPy cache and hidden provider retries are
+disabled so the audit trace contains every provider attempt.
 
 EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
 endpoint unless the operator supplies the complete `llm.news_reader_card`
 triple. The fallback route likewise aliases both Predictor slots only when
 `llm.news_reader_card_fallback` is absent; a requested dedicated Reader fallback
 must validate or the entire fallback route is disabled. The two Predictors
-always receive separate Adapters and artifact-owned
+always receive separate Adapters and code-owned
 token caps; endpoint credentials remain application configuration and never
 enter the content-addressed Program artifact or secret-free runtime identity.
 The identity includes only a one-way endpoint fingerprint beside provider and
@@ -123,20 +123,23 @@ Analyst stage removed in #57. The card's Chinese text is the Triage verdict's
 provider exists. Item identity, Event identity, Gate admission, storyline keys,
 `decide()` and feed ordering remain deterministic.
 
-The only loadable semantic image is a canonical, content-addressed, state-only
-`ProgramArtifact v2` JSON manifest/state pair carried in the application image and
-selected by its code-owned registry. The loader verifies schema, Program/state
-hashes, the QualityKernelRef, ordered code-owned RulePacks, bounded
-LearnedStrategy, typed DemoBank, four model slots, fixed factory/topology/
-Signatures, source and dependency-lock identity, Adapter/assembler/input
-contracts, exact files and safe path shape before use.
-The dependency-lock digest is a package-owned generated identity checked
-against `uv.lock` in development, so wheel loading never trusts or searches an
-ambient repository. Parsed demonstration JSON is recursively scanned and must
-match the exact model-visible input schema; provenance is stored separately and
-audit ids, endpoints and secret keys cannot be smuggled into model-visible
-bytes. It fails closed on
-unknown or mismatched state. Pickle, cloudpickle, DSPy Flex,
+The only loadable semantic image is one canonical, content-addressed
+`news_program_strategy_artifact_v1` JSON document carried in the application
+image as `<program_sha256>.json` and selected by its code-owned registry. It
+holds a schema version, `factory_id` `tracefold.news.program.factory_v6`, and
+the two bounded advisory instructions; `program_sha256` is the canonical hash
+of exactly those four values. The loader re-verifies that hash, the schema and
+the factory, applies the advisory bounds — NFC, size, forbidden authority and
+template markers, secret patterns — and rejects non-canonical or duplicate-keyed
+JSON, non-finite numbers, unsafe or secret-bearing keys, a symlinked or
+traversing path, and a file whose name is not its own root.
+Everything the loader used to re-verify component by component — RulePacks, the
+graph, Signatures, the Adapter, the normalizer/assembler contracts, the model
+route, the token and deadline budgets — is code, versioned by `factory_id`, so
+it is proved by shipping the image rather than by the package hashing itself.
+An optimizer's write set is those two instructions and nothing else; there is
+no DemoBank to write to, and a Predictor carrying a demo is refused.
+Pickle, cloudpickle, DSPy Flex,
 dynamic Python/classes, arbitrary callbacks/history, endpoints, credentials and
 secret-bearing headers are forbidden artifact state; a database candidate is
 not executable merely because it was persisted. Production candidate images
@@ -153,7 +156,13 @@ access only through a metered proxy sidecar over a fresh named-volume Unix
 socket. The runner uses `--network none`; only the sidecar has provider egress
 and the short-lived provider secret. Before that secret is mounted, the trusted
 host verifies the exact local Docker image ID and independently hashes the
-image's News source tree and dependency lock without executing image code.
+image's News source tree and dependency lock without executing image code. The
+expected lock identity is
+`tracefold.news.learning.compiler.source_identity.COMPILER_DEPENDENCY_LOCK_SHA256`,
+which lives next to the attestation that reads it instead of in the Program
+artifact: it crosses a real trust boundary — host to container — and says
+nothing about how the Program behaves. A drift test keeps it equal to the
+source `uv.lock`, and a wheel that has no `uv.lock` still runs the Program.
 Tags and registry manifest references are rejected. The sidecar reserves each
 call from the complete positive `llm.news_compiler_tariff`. Task, reflection
 and `metric_judge` each have a typed sealed role configuration from which the
@@ -166,10 +175,10 @@ Judge failure is explicit unavailable and scores the affected free-text
 dimension as failure-as-zero; it never falls back to byte equality, hidden
 retry, or a cached failure. Missing actual provider cost or any mismatch fails
 before candidate construction. The optimizer can emit only a typed
-`ProgramPatchV2` containing the two LearnedStrategy instructions. DSPy GEPA
-writes no demos, so DemoBank records and references remain empty. It cannot
-modify Kernel, RulePacks, topology, Signatures, execution, routes, policy or
-stable identity. The trusted side rehashes every receipt payload, applies the
+`ProgramStrategyPatchV1` containing the two advisory instructions. It cannot
+modify RulePacks, the graph, Signatures, execution, routes, policy or
+stable identity, and it has no demo surface to write to at all. The trusted
+side rehashes every receipt payload, applies the
 patch to the exact active stable root, and emits an unaccepted candidate.
 Timeout, denied access, missing cost, quota breach, invalid patch or extra
 output produces no Artifact. Bounded stdout/stderr capture and exact-name
@@ -184,10 +193,14 @@ history and appends `program_v6` for factory/executable v4, policy v10, review
 v4 and metric/compiler protocol v3. `0303` appends the current `program_v7` for
 factory/executable v5 after the Program/Learning package split. Issue #190
 reissues the sole v7 root when canonical identity starts rejecting
-NaN/Infinity; valid state bytes remain identical, but the old source-sealed
-root is not executable by the new image. Every earlier
+NaN/Infinity, and Issue #193 reissues it again as the single-document strategy
+artifact under factory v6; in both cases the earlier root is not executable by
+the new image. `0304` carries that last cut into the database by tripping every
+armed or active canary and writing one migration receipt. It does not re-open
+the epoch — identity changed, evidence did not — so accepted `news_review_v4`
+truth stays eligible. Every earlier
 review, dataset, recording and release receipt is
-retained as audit history but is never training, metric-v4, DemoBank,
+retained as audit history but is never training, metric-v4,
 validation, holdout or promotion evidence for the current Program factory.
 The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
@@ -270,8 +283,10 @@ retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
 News Triage receives the Event title/content excerpt (wrapped as untrusted
 material), Gate facts, the storyline status bar, and the watchlist symbols. It
 never receives credentials, webhook material, or unrelated corpus context.
-Each Predictor instruction and demonstration set is hash-bound in the Program
-artifact and every request is bound to the resolved runtime provider/model
+Each Predictor instruction is rendered from `factory_id` plus the artifact's
+advisory, so the Program root commits to the exact bytes without a second
+per-Predictor digest, and there is no demonstration set. Every request is bound
+to the resolved runtime provider/model
 identity. The trace persists only validated semantic/card output plus bounded
 finish/usage/cost metadata; raw provider responses and hidden reasoning are not
 persisted. Exact record/replay refuses an unrecorded request or runtime-model

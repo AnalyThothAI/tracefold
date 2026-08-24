@@ -37,6 +37,11 @@ def _baseline_model_route(
 
     from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
     from tracefold.news.learning.baseline import build_runtime_lm
+    from tracefold.news.program.runtime import (
+        PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+        PROGRAM_READER_CARD_MAX_TOKENS,
+        PROGRAM_ROUTE_DEADLINE_SECONDS,
+    )
 
     lm = None
     semantic_judge = None
@@ -57,8 +62,8 @@ def _baseline_model_route(
             model_name=endpoint.model_name,
             api_key=endpoint.api_key,
             api_base=endpoint.api_base,
-            timeout=float(artifact.execution.route_deadline_seconds),
-            max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
+            timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
+            max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
             model_kwargs=endpoint.model_kwargs,
         )
         # The model name alone cannot tell two endpoints apart: the local box and a hosted gateway can serve

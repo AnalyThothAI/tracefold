@@ -42,7 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..artifact_identity import canonical_sha
 from ..models import TriageVerdict
 from ..program.artifact import (
-    ProgramArtifact,
+    ProgramStrategyArtifactV1,
     render_model_evidence_json,
 )
 from ..program.contracts import TriageContext
@@ -523,8 +523,8 @@ def run_baseline(
     cases: Sequence[BaselineCase],
     *,
     mode: BaselineMode,
-    artifact: ProgramArtifact,
-    program_factory: Callable[[ProgramArtifact], dspy.Module] | None = None,
+    artifact: ProgramStrategyArtifactV1,
+    program_factory: Callable[[ProgramStrategyArtifactV1], dspy.Module] | None = None,
     lm: dspy.LM | None = None,
     judge: CardEquivalenceJudge | None = None,
     semantic_judge: Any = None,
@@ -765,7 +765,7 @@ def _build_report(
     *,
     cases: Sequence[BaselineCase],
     mode: BaselineMode,
-    artifact: ProgramArtifact,
+    artifact: ProgramStrategyArtifactV1,
     judge: CardEquivalenceJudge | None,
     strict_scores: Mapping[str, float],
     latency: Mapping[str, Any],
@@ -834,7 +834,7 @@ def _build_report(
         identity={
             "program_version": PROGRAM_VERSION,
             "program_sha256": artifact.program_sha256,
-            "state_sha256": artifact.state_sha256,
+            "factory_id": artifact.factory_id,
             "policy_version": policy["policy_version"],
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
@@ -1012,7 +1012,7 @@ def _case_result(
     )
 
 
-def compile_program_factory(artifact: ProgramArtifact) -> dspy.Module:
+def compile_program_factory(artifact: ProgramStrategyArtifactV1) -> dspy.Module:
     """The exact graph GEPA optimizes, so a baseline and a candidate score the same object."""
 
     return DspyCompileProgram(artifact)

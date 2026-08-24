@@ -475,9 +475,6 @@ class ProgramCallTrace(_ExactContractModel):
     attempt: int
     request_sha256: str
     input_sha256: str
-    signature_sha256: str
-    instruction_sha256: str
-    demos_sha256: str
     model_binding: str
     physical_provider_call: bool = False
     runtime_provider: str | None = None
@@ -530,9 +527,6 @@ class ProgramTrace(_ExactContractModel):
     program_sha256: str
     context_sha256: str
     factory_id: str
-    topology_sha256: str
-    adapter_sha256: str
-    assembler_sha256: str
     event_semantics_sha256: str | None = None
     reader_card_sha256: str | None = None
     verdict_sha256: str | None = None

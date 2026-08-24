@@ -395,15 +395,11 @@ class OptimizerCompileProvenanceV3(_ExactModel):
     trajectory_sha256: str = Field(pattern=_SHA256_PATTERN)
     checkpoint_sha256: str = Field(pattern=_SHA256_PATTERN)
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    parent_state_sha256: str = Field(pattern=_SHA256_PATTERN)
-    quality_kernel_sha256: str = Field(pattern=_SHA256_PATTERN)
-    rule_pack_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_payload_sha256: str = Field(pattern=_SHA256_PATTERN)
     case_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     cluster_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    eligible_demo_bank_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     patch_sha256: str = Field(pattern=_SHA256_PATTERN)
     receipt_payload_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     sandbox_launch_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -432,80 +428,26 @@ class OptimizerCompileProvenanceV3(_ExactModel):
         return self
 
 
-class ProgramStrategyDiffV3(_ExactModel):
-    predictor: Literal["event_semantics", "reader_card"]
-    before_text_sha256: str = Field(pattern=_SHA256_PATTERN)
-    after_text_sha256: str = Field(pattern=_SHA256_PATTERN)
-    before_source: Literal["code_owned_baseline", "optimizer_patch"]
-    after_source: Literal["optimizer_patch"] = "optimizer_patch"
-    changed: bool
+class ProgramMachineDiffV4(_ExactModel):
+    """What the compile changed about the immutable surface: by construction, nothing.
 
-    @model_validator(mode="after")
-    def _changed_matches_hashes(self) -> ProgramStrategyDiffV3:
-        if self.changed != (self.before_text_sha256 != self.after_text_sha256):
-            raise ValueError("news_program_compile_machine_diff_strategy_flag_invalid")
-        return self
+    The predecessor also carried a per-Predictor `changed` flag. Nothing that reads a persisted candidate
+    could falsify it — `CandidateEvaluator` has the two Program roots, not the two instructions — so a
+    receipt claiming the wrong Predictor moved would have been accepted and published as release
+    evidence. A claim no verifier can check is not evidence, so it is not stored; the CLI still derives
+    it for the operator from the artifacts themselves.
+    """
 
-
-class ProgramDemoRefChangeV3(_ExactModel):
-    before: tuple[str, ...] = ()
-    after: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def _refs_are_sha256s(self) -> ProgramDemoRefChangeV3:
-        for value in (*self.before, *self.after):
-            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-                raise ValueError("news_program_compile_machine_diff_demo_ref_invalid")
-        return self
-
-
-class ProgramDemoRefDiffV3(_ExactModel):
-    event_semantics: ProgramDemoRefChangeV3
-    reader_card: ProgramDemoRefChangeV3
-
-
-class ProgramImmutableDiffV3(_ExactModel):
-    factory_id: Literal["tracefold.news.program.factory_v5"]
-    quality_kernel_sha256: str = Field(pattern=_SHA256_PATTERN)
-    rule_pack_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    route_spec_sha256: str = Field(pattern=_SHA256_PATTERN)
-    execution_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-
-class ProgramMachineDiffV3(_ExactModel):
-    """Hash/ID-only proposal diff; prompts and demo payloads are forbidden."""
-
-    schema_version: Literal["tracefold.news.program_machine_diff.v3"]
+    schema_version: Literal["tracefold.news.program_machine_diff.v4"]
+    factory_id: Literal["tracefold.news.program.factory_v6"]
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    parent_state_sha256: str = Field(pattern=_SHA256_PATTERN)
     candidate_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    candidate_state_sha256: str = Field(pattern=_SHA256_PATTERN)
-    immutable: ProgramImmutableDiffV3
-    learned_strategies: tuple[ProgramStrategyDiffV3, ProgramStrategyDiffV3] = Field(
-        min_length=2,
-        max_length=2,
-    )
-    demo_refs: ProgramDemoRefDiffV3
-    selected_record_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    eligible_demo_bank_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    diff_sha256: str = Field(pattern=_SHA256_PATTERN)
 
     @model_validator(mode="after")
-    def _diff_is_exact(self) -> ProgramMachineDiffV3:
-        if tuple(item.predictor for item in self.learned_strategies) != (
-            "event_semantics",
-            "reader_card",
-        ):
-            raise ValueError("news_program_compile_machine_diff_strategy_order_invalid")
-        changed_demo = any(
-            item.before != item.after for item in (self.demo_refs.event_semantics, self.demo_refs.reader_card)
-        )
-        if not any(item.changed for item in self.learned_strategies) and not changed_demo:
+    def _diff_is_exact(self) -> ProgramMachineDiffV4:
+        if self.parent_program_sha256 == self.candidate_program_sha256:
             raise ValueError("news_program_compile_machine_diff_empty")
-        values = self.model_dump(mode="json", exclude={"diff_sha256"})
-        if self.diff_sha256 != canonical_sha(values):
-            raise ValueError("news_program_compile_machine_diff_hash_mismatch")
-        _reject_secret_material(values, path="program_machine_diff")
+        _reject_secret_material(self.model_dump(mode="json"), path="program_machine_diff")
         return self
 
 
@@ -514,10 +456,8 @@ class CompileInputBundle(_ExactModel):
 
     schema_version: Literal["tracefold.news.compile_input_bundle.v3"] = COMPILER_INPUT_SCHEMA
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    parent_state_sha256: str = Field(pattern=_SHA256_PATTERN)
     stable_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
     target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    eligible_demo_bank_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     task: CompilerRoleBindingV3
     reflection: CompilerRoleBindingV3
     metric_judge: CompilerRoleBindingV3
@@ -541,10 +481,8 @@ class CompileInputBundle(_ExactModel):
         cls,
         *,
         parent_program_sha256: str,
-        parent_state_sha256: str,
         stable_bundle_sha256: str,
         target_runtime_manifest_sha256: str,
-        eligible_demo_bank_root_sha256: str,
         task: CompilerRoleBindingV3,
         reflection: CompilerRoleBindingV3,
         metric_judge: CompilerRoleBindingV3,
@@ -566,10 +504,8 @@ class CompileInputBundle(_ExactModel):
         values: dict[str, Any] = {
             "schema_version": COMPILER_INPUT_SCHEMA,
             "parent_program_sha256": parent_program_sha256,
-            "parent_state_sha256": parent_state_sha256,
             "stable_bundle_sha256": stable_bundle_sha256,
             "target_runtime_manifest_sha256": target_runtime_manifest_sha256,
-            "eligible_demo_bank_root_sha256": eligible_demo_bank_root_sha256,
             "task": task.model_dump(mode="json"),
             "reflection": reflection.model_dump(mode="json"),
             "metric_judge": metric_judge.model_dump(mode="json"),
@@ -693,7 +629,6 @@ class CompilerRunnerReceiptsV3(_ExactModel):
     schema_version: Literal["tracefold.news.compiler_runner_receipts.v3"] = COMPILER_RUNNER_RECEIPTS_SCHEMA
     input_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    parent_state_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_grant_sha256: str = Field(pattern=_SHA256_PATTERN)
     task_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
     reflection_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -747,8 +682,6 @@ def validate_compile_receipt_chain_v3(
     provenance: OptimizerCompileProvenanceV3 | Mapping[str, Any],
     patch_sha256: str,
     parent_program_sha256: str,
-    parent_state_sha256: str,
-    eligible_demo_bank_root_sha256: str,
     target_runtime_manifest_sha256: str,
 ) -> CompileReceiptChain:
     """Cross-bind the retained v3 chain without importing DSPy or Program code."""
@@ -763,8 +696,6 @@ def validate_compile_receipt_chain_v3(
         parsed.receipt_payload_root_sha256 != proof.receipt_payload_root_sha256
         or proof.patch_sha256 != patch_sha256
         or proof.parent_program_sha256 != parent_program_sha256
-        or proof.parent_state_sha256 != parent_state_sha256
-        or proof.eligible_demo_bank_root_sha256 != eligible_demo_bank_root_sha256
         or proof.target_runtime_manifest_sha256 != target_runtime_manifest_sha256
     ):
         raise ValueError("news_program_compile_receipt_chain_identity_mismatch")
@@ -792,42 +723,19 @@ def validate_compile_receipt_chain_v3(
     expected_patch_keys = {
         "schema_version",
         "parent_program_sha256",
-        "parent_state_sha256",
-        "learning_epoch",
-        "learned_strategies",
-        "demo_refs",
-        "eligible_demo_bank_root_sha256",
-        "patch_sha256",
+        "event_semantics_instruction",
+        "reader_card_instruction",
     }
     if (
         set(patch) != expected_patch_keys
-        or patch.get("schema_version") != "news_semantic_program_patch_v2"
-        or patch.get("learning_epoch") != LEARNING_EPOCH
+        or patch.get("schema_version") != "news_program_strategy_patch_v1"
         or patch.get("parent_program_sha256") != parent_program_sha256
-        or patch.get("parent_state_sha256") != parent_state_sha256
-        or patch.get("eligible_demo_bank_root_sha256") != eligible_demo_bank_root_sha256
-        or patch.get("patch_sha256") != patch_sha256
-        or canonical_sha({key: value for key, value in patch.items() if key != "patch_sha256"}) != patch_sha256
+        or canonical_sha(patch) != patch_sha256
+        or not all(
+            isinstance(patch.get(key), str) for key in ("event_semantics_instruction", "reader_card_instruction")
+        )
     ):
         raise ValueError("news_program_compile_receipt_chain_patch_mismatch")
-    strategies = patch.get("learned_strategies")
-    refs = patch.get("demo_refs")
-    if (
-        not isinstance(strategies, list)
-        or len(strategies) != 2
-        or [item.get("predictor") if isinstance(item, Mapping) else None for item in strategies]
-        != ["event_semantics", "reader_card"]
-        or any(
-            not isinstance(item, Mapping)
-            or set(item) != {"predictor", "text", "text_sha256", "source"}
-            or item.get("source") != "optimizer_patch"
-            or canonical_sha(item.get("text")) != item.get("text_sha256")
-            for item in strategies
-        )
-        or not isinstance(refs, Mapping)
-        or set(refs) != {"event_semantics", "reader_card"}
-    ):
-        raise ValueError("news_program_compile_receipt_chain_patch_write_set_invalid")
 
     from .sandbox import CompilerSandboxLaunchReceipt
 
@@ -1087,10 +995,8 @@ def seal_compile_input(
     dataset_payload: Mapping[str, Any],
     episodes: Sequence[BaseModel | Mapping[str, Any]],
     parent_program_sha256: str,
-    parent_state_sha256: str,
     stable_bundle_sha256: str,
     target_runtime_manifest_sha256: str,
-    eligible_demo_bank_root_sha256: str,
     task: CompilerRoleBindingV3,
     reflection: CompilerRoleBindingV3,
     metric_judge: CompilerRoleBindingV3,
@@ -1157,10 +1063,8 @@ def seal_compile_input(
     )
     return CompileInputBundle.issue(
         parent_program_sha256=parent_program_sha256,
-        parent_state_sha256=parent_state_sha256,
         stable_bundle_sha256=stable_bundle_sha256,
         target_runtime_manifest_sha256=target_runtime_manifest_sha256,
-        eligible_demo_bank_root_sha256=eligible_demo_bank_root_sha256,
         task=task,
         reflection=reflection,
         metric_judge=metric_judge,
@@ -1296,11 +1200,7 @@ __all__ = [
     "CompilerRunnerReceiptsV3",
     "ContentAddressedCompileReceipt",
     "OptimizerCompileProvenanceV3",
-    "ProgramDemoRefChangeV3",
-    "ProgramDemoRefDiffV3",
-    "ProgramImmutableDiffV3",
-    "ProgramMachineDiffV3",
-    "ProgramStrategyDiffV3",
+    "ProgramMachineDiffV4",
     "gepa_metric_call_ceiling",
     "seal_compile_input",
     "validate_compile_receipt_chain_v3",

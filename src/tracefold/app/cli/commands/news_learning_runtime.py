@@ -102,7 +102,7 @@ def _learning_program_arm_artifacts(
     artifact_paths: Mapping[str, str],
 ) -> tuple[tuple[Literal["stable", "candidate"], Any, Any], ...]:
     from tracefold.news.program.artifact import (
-        ProgramArtifactCodec,
+        ProgramStrategyArtifactCodec,
         load_program_artifact,
         load_stable_program_artifact,
     )
@@ -115,7 +115,7 @@ def _learning_program_arm_artifacts(
     candidate_artifact = stable_artifact
     if candidate_sha != stable_artifact.program_sha256:
         path = artifact_paths.get(candidate_sha)
-        candidate_artifact = ProgramArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
+        candidate_artifact = ProgramStrategyArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
     if candidate_artifact.program_sha256 != candidate_sha:
         raise ValueError("news_learning_candidate_program_mismatch")
     return (

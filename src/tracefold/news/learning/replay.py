@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, NoReturn, cast
 
 from ..artifact_identity import canonical_sha
-from ..program.artifact import ProgramArtifact
+from ..program.artifact import ProgramStrategyArtifactV1
 from ..program.contracts import SemanticJudgment, TriageContext
 from ..program.dspy_adapter import (
     PredictorAdapterError,
@@ -47,7 +47,7 @@ class RecordingReplayMiss(RecordingReplayError):
 class ReplayArmSpec:
     arm: ArmName
     bundle_sha: str
-    artifact: ProgramArtifact
+    artifact: ProgramStrategyArtifactV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,10 +160,6 @@ class _ScopedRecordingAdapter:
             "predictor",
             "attempt",
             "route",
-            "signature_sha256",
-            "instruction_sha256",
-            "demos_sha256",
-            "adapter_sha256",
             "model_binding",
             "runtime_provider",
             "runtime_model",
@@ -300,9 +296,7 @@ def load_recording_replay_capability(
     if set(specs) != {"stable", "candidate"} or len(specs) != len(arms):
         raise RecordingReplayError("news_learning_recording_replay_arms_invalid")
     if any(
-        spec.artifact.schema_version != PROGRAM_SCHEMA_VERSION
-        or spec.artifact.factory_id != PROGRAM_FACTORY_ID
-        or spec.artifact.program_version != PROGRAM_VERSION
+        spec.artifact.schema_version != PROGRAM_SCHEMA_VERSION or spec.artifact.factory_id != PROGRAM_FACTORY_ID
         for spec in specs.values()
     ):
         raise RecordingReplayError("news_learning_recording_replay_program_v1_unsupported")
@@ -341,7 +335,7 @@ def load_recording_replay_capability(
         if (
             str(row["run_sha"]) != run_sha
             or str(request.get("program_sha256") or "") != spec.artifact.program_sha256
-            or str(request.get("program_version") or "") != spec.artifact.program_version
+            or str(request.get("program_version") or "") != PROGRAM_VERSION
             or str(request.get("request_sha256") or "") != str(row["request_sha256"])
             or str(request.get("predictor") or "") != str(row["predictor_name"])
             or request.get("call_index") != int(row["call_index"])
