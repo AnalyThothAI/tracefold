@@ -15,12 +15,12 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.canary import (
+from tracefold.news.learning.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
-from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest, ProposalReceipt
+from tracefold.news.learning.evaluator import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings
 

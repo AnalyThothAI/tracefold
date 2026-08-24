@@ -9,30 +9,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-import tracefold.news.candidate_evaluator as candidate_evaluator_module
+import tracefold.news.learning.evaluator as candidate_evaluator_module
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.news.test_news_program_compiler_sandbox import _valid_sandbox_launch_receipt
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.agents.program_compiler_proxy import (
-    CompilerModelProxyGrant,
-    CompilerProxyCallLeaf,
-    CompilerProxyExecutionReceipt,
-)
-from tracefold.news.agents.program_compiler_sandbox import (
-    CompilerSandboxLaunchReceipt,
-)
-from tracefold.news.agents.program_compiler_security import (
-    CompileCorpusReceipt,
-    CompileReceiptChain,
-    CompilerEndpointIdentity,
-    CompilerProxyTariff,
-    CompilerRoleBindingV3,
-    ContentAddressedCompileReceipt,
-    OptimizerCompileProvenanceV3,
-    validate_compile_receipt_chain_v3,
-)
 from tracefold.news.agents.semantic_program import (
     CompileReceipt,
     DspyCompileProgram,
@@ -44,12 +26,30 @@ from tracefold.news.agents.semantic_program import (
     extract_optimizer_patch,
     load_stable_program_artifact,
 )
-from tracefold.news.canary import (
+from tracefold.news.learning.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
-from tracefold.news.candidate_evaluator import (
+from tracefold.news.learning.compiler.proxy import (
+    CompilerModelProxyGrant,
+    CompilerProxyCallLeaf,
+    CompilerProxyExecutionReceipt,
+)
+from tracefold.news.learning.compiler.sandbox import (
+    CompilerSandboxLaunchReceipt,
+)
+from tracefold.news.learning.compiler.security import (
+    CompileCorpusReceipt,
+    CompileReceiptChain,
+    CompilerEndpointIdentity,
+    CompilerProxyTariff,
+    CompilerRoleBindingV3,
+    ContentAddressedCompileReceipt,
+    OptimizerCompileProvenanceV3,
+    validate_compile_receipt_chain_v3,
+)
+from tracefold.news.learning.evaluator import (
     LEARNING_EPOCH,
     ArmManifest,
     CandidateManifest,
@@ -58,23 +58,23 @@ from tracefold.news.candidate_evaluator import (
     EvaluationRequest,
     ProposalReceipt,
 )
-from tracefold.news.candidate_evaluator import (
+from tracefold.news.learning.evaluator import (
     CandidateEvaluator as _CandidateEvaluator,
 )
-from tracefold.news.models import TriageVerdict
-from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.recording_replay import ReplayArmSpec, load_recording_replay_capability
-from tracefold.news.review import (
+from tracefold.news.learning.replay import ReplayArmSpec, load_recording_replay_capability
+from tracefold.news.learning.review import (
     REVIEW_RUBRIC_VERSION,
     BlindPairwiseSubmission,
     DeskQuery,
     ExternalMissSubmission,
     TaskRef,
 )
-from tracefold.news.review import (
+from tracefold.news.learning.review import (
     ReviewDesk as _ReviewDesk,
 )
+from tracefold.news.models import TriageVerdict
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.semantic_contract import (
     EditorialEnvelope,
     ProgramTrace,

@@ -8,7 +8,16 @@ from typing import Any, ClassVar
 import dspy
 import pytest
 
-from tracefold.news.agents.program_compiler import (
+from tracefold.news.agents.semantic_program import (
+    DspyStrictJSONAdapter,
+    EligibleDemoBank,
+    ExactProviderCallCapture,
+    ExactProviderMetadata,
+    TriageContext,
+    load_stable_program_artifact,
+)
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.root import (
     CompileBudget,
     CompileRequest,
     DevelopmentEpisode,
@@ -21,16 +30,7 @@ from tracefold.news.agents.program_compiler import (
     _retrieval_receipt,
     accepted_review_metric,
 )
-from tracefold.news.agents.program_compiler_trusted import build_eligible_demo_bank
-from tracefold.news.agents.semantic_program import (
-    DspyStrictJSONAdapter,
-    EligibleDemoBank,
-    ExactProviderCallCapture,
-    ExactProviderMetadata,
-    TriageContext,
-    load_stable_program_artifact,
-)
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.semantic_contract import (
     EditorialEnvelope,
@@ -797,7 +797,7 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
     assert receipt["review_rubric_version"]
     source_units = receipt["implementation"]["source_unit_sha256"]
     assert set(source_units) == {
-        "tracefold.news.agents.program_metric",
+        "tracefold.news.learning.metric",
         "tracefold.news.models.base_symbol",
         "tracefold.news.events.storyline",
         "tracefold.news.triage_rules",

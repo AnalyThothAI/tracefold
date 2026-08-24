@@ -10,13 +10,13 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
-from tracefold.news.agents.program_judge import (
+from tracefold.news.learning.judge import (
     JUDGE_ID,
     CardEquivalence,
     CardEquivalenceAssessment,
     CardEquivalenceJudge,
 )
-from tracefold.news.agents.program_metric import _component, bind_metric, metric_receipt
+from tracefold.news.learning.metric import _component, bind_metric, metric_receipt
 
 _ACCEPTED = {
     "headline_zh": "BounceBit Chain 授权漏洞转移 2.865 亿枚 BB，决定永久停止运营",

@@ -30,26 +30,24 @@ from typing import Any, BinaryIO, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..artifact_identity import canonical_json, canonical_sha
-from .program_compiler_proxy import (
+from ...artifact_identity import canonical_json, canonical_sha
+from .proxy import (
     CompilerModelProxyGrant,
     CompilerProxyExecutionReceipt,
     CompilerProxyReadyReceipt,
     CompilerProxySecretConfig,
 )
-from .program_compiler_sandbox import (
+from .sandbox import (
     CompilerSandboxLaunchReceipt,
     CompilerSandboxPolicy,
     verify_sandbox_output_directory,
 )
-from .program_compiler_security import CompileInputBundle
-from .program_compiler_source import compiler_source_sha256, proxy_source_sha256
+from .security import CompileInputBundle
+from .source_identity import compiler_source_sha256, proxy_source_sha256
 
-RUNNER_MODULE: Literal["tracefold.news.agents.program_compiler_runner"] = (
-    "tracefold.news.agents.program_compiler_runner"
-)
-PROXY_MODULE: Literal["tracefold.news.agents.program_compiler_proxy_sidecar"] = (
-    "tracefold.news.agents.program_compiler_proxy_sidecar"
+RUNNER_MODULE: Literal["tracefold.news.learning.compiler.runner"] = "tracefold.news.learning.compiler.runner"
+PROXY_MODULE: Literal["tracefold.news.learning.compiler.proxy_sidecar"] = (
+    "tracefold.news.learning.compiler.proxy_sidecar"
 )
 _RUNNER_BOOTSTRAP = (
     "import os,runpy;os.environ.clear();"

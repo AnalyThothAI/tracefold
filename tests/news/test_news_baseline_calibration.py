@@ -22,8 +22,8 @@ from tests.support.baseline_calibration import (
     load_historical_calibration_corpus,
     prose_offenders,
 )
-from tracefold.news.agents.program_baseline import build_baseline_cases, run_baseline
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 
 _EXPECTED_N = 4
@@ -33,7 +33,11 @@ _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
 _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
-_EXPECTED_REPORT_SHA256 = "bbfa0fbed14c19a4f2a7d04776ade81f5e82d7a391495ea5c01548ef06b45d1d"
+# PR8-A moved the metric implementation to `tracefold.news.learning.metric`. The receipt records the
+# implementing module by name (`metric_receipt(...)["implementation"]["module"]`), so the content address
+# moves with the move — by design: the address must name which code measured. Every *score* above is
+# unchanged, and `test_recorded_calibration_is_reproducible_from_the_typed_v2_corpus` is what proves it.
+_EXPECTED_REPORT_SHA256 = "0464b8b644aa8e5628378308910d0ec960dc0ffd4120ad53b01108655e8ccb36"
 
 
 @pytest.fixture(scope="module")

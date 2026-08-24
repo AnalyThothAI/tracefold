@@ -5,13 +5,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from tracefold.news.agents.program_compiler_source import compiler_source_sha256, proxy_source_sha256
+from tracefold.news.learning.compiler.source_identity import compiler_source_sha256, proxy_source_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
 CLI_NEWS = tuple(sorted((SRC / "app" / "cli" / "commands").glob("news_*.py")))
-AGENTS = SRC / "news" / "agents"
-OPTIMIZER_MODULE = "tracefold.news.agents.program_compiler"
+COMPILER = SRC / "news" / "learning" / "compiler"
+OPTIMIZER_MODULE = "tracefold.news.learning.compiler.root"
 
 
 def _imports(path: Path) -> set[str]:
@@ -27,11 +27,11 @@ def _imports(path: Path) -> set[str]:
 
 def test_optimizer_is_imported_only_by_the_fixed_container_runner() -> None:
     importers = {path.relative_to(ROOT).as_posix() for path in SRC.rglob("*.py") if OPTIMIZER_MODULE in _imports(path)}
-    assert importers == {"src/tracefold/news/agents/program_compiler_runner.py"}
+    assert importers == {"src/tracefold/news/learning/compiler/runner.py"}
 
 
 def test_host_cli_and_trusted_seam_do_not_import_optimizer_or_gepa() -> None:
-    for path in (*CLI_NEWS, AGENTS / "program_compiler_trusted.py", AGENTS / "program_compiler_launcher.py"):
+    for path in (*CLI_NEWS, COMPILER / "trusted.py", COMPILER / "launcher.py"):
         modules = _imports(path)
         assert OPTIMIZER_MODULE not in modules, path
         assert "gepa" not in modules, path

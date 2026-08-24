@@ -8,16 +8,17 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment
-from tracefold.news.agents import program_compiler, program_metric
-from tracefold.news.agents.program_baseline import (
+from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.learning import metric as program_metric
+from tracefold.news.learning.baseline import (
     BaselineCase,
     build_baseline_cases,
     run_baseline,
 )
-from tracefold.news.agents.program_metric import DevelopmentEpisode, accepted_review_metric
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.learning.compiler import root as program_compiler
+from tracefold.news.learning.metric import DevelopmentEpisode, accepted_review_metric
+from tracefold.news.learning.review import EventRubricSubmission
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.review import EventRubricSubmission
 
 
 def _frozen_policy_projection() -> dict[str, object]:
@@ -145,7 +146,7 @@ def test_optimizer_and_baseline_share_one_metric_object() -> None:
     """Two implementations would let the number an operator reads drift from the number GEPA maximizes."""
 
     assert program_compiler.accepted_review_metric is accepted_review_metric
-    assert accepted_review_metric.__module__ == "tracefold.news.agents.program_metric"
+    assert accepted_review_metric.__module__ == "tracefold.news.learning.metric"
 
 
 def test_failed_dimension_without_gold_is_visible_but_not_scored() -> None:

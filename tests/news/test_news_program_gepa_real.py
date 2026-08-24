@@ -14,7 +14,8 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
-from tracefold.news.agents.program_compiler import (
+from tracefold.news.agents.semantic_program import EligibleDemoBank, load_stable_program_artifact
+from tracefold.news.learning.compiler.root import (
     REFLECTION_MAX_TOKENS,
     CompileBudget,
     CompileRequest,
@@ -22,11 +23,10 @@ from tracefold.news.agents.program_compiler import (
     _FeedbackCompileProgram,
     build_compile_lm,
 )
-from tracefold.news.agents.program_compiler_security import CompilerProxyTariff
-from tracefold.news.agents.program_judge import CardEquivalenceJudge
-from tracefold.news.agents.program_metric import DevelopmentEpisode
-from tracefold.news.agents.program_proposer import RulePackAwareProposer
-from tracefold.news.agents.semantic_program import EligibleDemoBank, load_stable_program_artifact
+from tracefold.news.learning.compiler.security import CompilerProxyTariff
+from tracefold.news.learning.judge import CardEquivalenceJudge
+from tracefold.news.learning.metric import DevelopmentEpisode
+from tracefold.news.learning.proposer import RulePackAwareProposer
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 
@@ -299,7 +299,7 @@ def test_reflection_prompt_carries_every_rulepack() -> None:
 def test_advisory_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:
     """An LM told only "you scored zero" proposes the same rejected text again."""
 
-    from tracefold.news.agents.program_metric import accepted_review_metric
+    from tracefold.news.learning.metric import accepted_review_metric
 
     artifact = load_stable_program_artifact()
     program = _FeedbackCompileProgram(artifact)
@@ -334,8 +334,8 @@ def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
 
 @pytest.mark.parametrize("cost", [None, 7])
 def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) -> None:
-    from tracefold.news.agents.program_compiler import _BudgetMeter
     from tracefold.news.agents.semantic_program import ExactProviderMetadata
+    from tracefold.news.learning.compiler.root import _BudgetMeter
 
     budget = CompileBudget(
         max_metric_calls=10,
@@ -372,7 +372,7 @@ def test_empty_advisory_survives_a_gepa_round_trip() -> None:
     the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
     """
 
-    from tracefold.news.agents.program_compiler import _generated_default_instruction, _restore_empty_advisories
+    from tracefold.news.learning.compiler.root import _generated_default_instruction, _restore_empty_advisories
 
     artifact = load_stable_program_artifact()
     program = _FeedbackCompileProgram(artifact)

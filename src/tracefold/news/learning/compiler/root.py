@@ -16,29 +16,7 @@ from typing import Any, Literal, Protocol, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, model_validator
 
-from ..artifact_identity import canonical_sha
-from .program_compiler_security import (
-    CompileBudgetV3,
-    CompilerEndpointIdentity,
-    CompilerProxyTariff,
-    gepa_metric_call_ceiling,
-)
-from .program_compiler_trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
-from .program_metric import (
-    METRIC_ID,
-    DevelopmentEpisode,
-    _compile_example,
-    _ExactModel,
-    _honest_split,
-    _json_safe,
-    _metric_receipt,
-    _retrieval_receipt,
-    accepted_review_metric,
-    bind_metric,
-    production_decision,
-)
-from .program_proposer import RulePackAwareProposer
-from .semantic_program import (
+from ...agents.semantic_program import (
     DspyCompileProgram,
     DspyStrictJSONAdapter,
     EligibleDemoBank,
@@ -52,6 +30,28 @@ from .semantic_program import (
     extract_optimizer_patch,
     load_stable_program_artifact,
 )
+from ...artifact_identity import canonical_sha
+from ..metric import (
+    METRIC_ID,
+    DevelopmentEpisode,
+    _compile_example,
+    _ExactModel,
+    _honest_split,
+    _json_safe,
+    _metric_receipt,
+    _retrieval_receipt,
+    accepted_review_metric,
+    bind_metric,
+    production_decision,
+)
+from ..proposer import RulePackAwareProposer
+from .security import (
+    CompileBudgetV3,
+    CompilerEndpointIdentity,
+    CompilerProxyTariff,
+    gepa_metric_call_ceiling,
+)
+from .trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 
 LEARNING_EPOCH = "program_v6"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v3"

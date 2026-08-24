@@ -23,12 +23,12 @@ from typing import Any, Final
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..agents.semantic_program import TriageContext, render_model_evidence_json
 from ..artifact_identity import canonical_sha
 from ..events.storyline import final_storyline_key
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
 from ..semantic_contract import EditorialEnvelope, ScoredJudgment
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
-from .semantic_program import TriageContext, render_model_evidence_json
 
 # v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global
 # `DEFAULT_POLICY` to the exact frozen values carried by each example, and the metric now returns typed
@@ -853,7 +853,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
     metric = metric.func if isinstance(metric, functools.partial) else metric
     try:
         source_objects: dict[str, Any] = {
-            "tracefold.news.agents.program_metric": inspect.getmodule(accepted_review_metric),
+            "tracefold.news.learning.metric": inspect.getmodule(accepted_review_metric),
             "tracefold.news.models.base_symbol": base_symbol,
             "tracefold.news.events.storyline": inspect.getmodule(final_storyline_key),
             "tracefold.news.triage_rules": inspect.getmodule(decide),

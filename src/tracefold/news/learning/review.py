@@ -19,10 +19,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from .artifact_identity import canonical_json, canonical_sha
-from .market_review.storage import MarketReviewCohort, PriceRepository
-from .outcome import decision_zh
-from .semantic_contract import (
+from ..artifact_identity import canonical_json, canonical_sha
+from ..market_review.storage import MarketReviewCohort, PriceRepository
+from ..outcome import decision_zh
+from ..semantic_contract import (
     TRADE_AFFECTED_MARKET_ORDER,
     TRADE_CHANNEL_ORDER,
     ReaderValue,
@@ -502,7 +502,7 @@ def _coverage_statement(*, lower_ms: int, upper_ms: int, learning_epoch: str) ->
 def _current_learning_epoch() -> str:
     # CandidateEvaluator imports the reader/rubric contract from this module,
     # so resolve its epoch lazily rather than creating an import cycle.
-    from .candidate_evaluator import LEARNING_EPOCH
+    from .contracts import LEARNING_EPOCH
 
     return LEARNING_EPOCH
 

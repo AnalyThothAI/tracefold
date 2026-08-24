@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from tracefold.news.review import _selection
+from tracefold.news.learning.review import _selection
 
 
 def _relevance(

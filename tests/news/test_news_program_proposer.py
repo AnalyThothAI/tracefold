@@ -6,8 +6,8 @@ from typing import Any
 
 import dspy  # type: ignore[import-untyped]
 
-from tracefold.news.agents.program_proposer import RulePackAwareProposer
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.learning.proposer import RulePackAwareProposer
 
 _EXAMPLES = [{"Inputs": {}, "Generated Outputs": {}, "Feedback": "magnitude was wrong"}]
 

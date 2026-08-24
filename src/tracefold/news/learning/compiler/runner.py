@@ -47,28 +47,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Path) -> None:
-    from tracefold.news.agents.program_compiler import (
+    from tracefold.news.agents.semantic_program import load_stable_program_artifact
+    from tracefold.news.artifact_identity import canonical_json
+    from tracefold.news.learning.compiler.root import (
         CompileBudget,
         CompileRequest,
         ProgramCompiler,
     )
-    from tracefold.news.agents.program_compiler_sandbox import (
+    from tracefold.news.learning.compiler.sandbox import (
         CompilerSandboxPolicy,
         apply_compiler_resource_limits,
         install_compiler_sandbox_guards,
         validate_compiler_environment,
     )
-    from tracefold.news.agents.program_compiler_security import (
+    from tracefold.news.learning.compiler.security import (
         CompileInputBundle,
         CompilerRunnerReceiptsV3,
     )
-    from tracefold.news.agents.program_compiler_source import (
+    from tracefold.news.learning.compiler.source_identity import (
         compiler_source_sha256,
         proxy_source_sha256,
     )
-    from tracefold.news.agents.program_compiler_trusted import build_eligible_demo_bank
-    from tracefold.news.agents.semantic_program import load_stable_program_artifact
-    from tracefold.news.artifact_identity import canonical_json
+    from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
 
     _require_fixed_path(input_path, _INPUT_PATH, kind="input")
     _require_fixed_path(output_path, _OUTPUT_PATH, kind="output")
@@ -188,9 +188,9 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
 def _build_compiler_proxy_runtime(bundle: Any, proxy_path: Path) -> tuple[Any, Any, Any, Any]:
     """Rebuild the sealed three-role grant and clients used by the container runner."""
 
-    from tracefold.news.agents.program_compiler_proxy import CompilerModelProxyGrant, CompilerProxyLM
-    from tracefold.news.agents.program_compiler_security import CompileInputBundle
-    from tracefold.news.agents.program_judge import CardEquivalenceJudge
+    from tracefold.news.learning.compiler.proxy import CompilerModelProxyGrant, CompilerProxyLM
+    from tracefold.news.learning.compiler.security import CompileInputBundle
+    from tracefold.news.learning.judge import CardEquivalenceJudge
 
     parsed = bundle if isinstance(bundle, CompileInputBundle) else CompileInputBundle.model_validate(bundle)
     grant = CompilerModelProxyGrant.issue(

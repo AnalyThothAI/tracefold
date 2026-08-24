@@ -8,10 +8,10 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment, trade_relevance
-from tracefold.news.agents.program_baseline import BaselineCase, run_baseline
-from tracefold.news.agents.program_metric import DevelopmentEpisode, accepted_review_metric, build_compile_example
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.baseline import BaselineCase, run_baseline
+from tracefold.news.learning.metric import DevelopmentEpisode, accepted_review_metric, build_compile_example
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.semantic_contract import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY

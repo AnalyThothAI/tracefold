@@ -11,7 +11,7 @@ from .news_learning_documents import _read_json_or_yaml
 
 def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.review import (
+    from tracefold.news.learning.review import (
         BlindPairwiseSubmission,
         DeskQuery,
         EventRubricSubmission,
@@ -95,8 +95,8 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     """
 
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.agents.program_review_drafter import DRAFT_SCHEMA, ReviewDraft, submission_payload
-    from tracefold.news.review import EventRubricSubmission, Principal, ReviewDesk, TaskRef
+    from tracefold.news.learning.review import EventRubricSubmission, Principal, ReviewDesk, TaskRef
+    from tracefold.news.learning.review_drafter import DRAFT_SCHEMA, ReviewDraft, submission_payload
     from tracefold.platform.postgres.client import transaction
 
     # A distinguishable author, on purpose. Measured against 25 Events a human had already judged, the drafter

@@ -12,11 +12,8 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.candidate_evaluator import LEARNING_EPOCH
-from tracefold.news.models import TriageVerdict
-from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.review import (
+from tracefold.news.learning.evaluator import LEARNING_EPOCH
+from tracefold.news.learning.review import (
     BlindPairwiseSubmission,
     DeskQuery,
     EventRubricSubmission,
@@ -25,6 +22,9 @@ from tracefold.news.review import (
     ReviewDesk,
     TaskRef,
 )
+from tracefold.news.models import TriageVerdict
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.semantic_contract import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.platform.config.models import Settings
 

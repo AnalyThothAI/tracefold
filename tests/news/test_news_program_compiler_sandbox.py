@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news.agents.program_compiler_sandbox import (
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.sandbox import (
     CompilerSandboxLaunchReceipt,
     CompilerSandboxPolicy,
     environment_manifest_sha256,
@@ -17,7 +18,6 @@ from tracefold.news.agents.program_compiler_sandbox import (
     validate_compiler_environment,
     verify_sandbox_output_directory,
 )
-from tracefold.news.artifact_identity import canonical_sha
 
 
 def _valid_sandbox_launch_receipt() -> tuple[CompilerSandboxPolicy, CompilerSandboxLaunchReceipt]:
@@ -402,7 +402,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
-from tracefold.news.agents.program_compiler_sandbox import install_compiler_sandbox_guards
+from tracefold.news.learning.compiler.sandbox import install_compiler_sandbox_guards
 
 input_root = Path({str(input_root)!r})
 output_root = Path({str(output_root)!r})
@@ -477,3 +477,24 @@ def test_sandbox_output_requires_exact_files_and_budget(tmp_path: Path) -> None:
     (output / "unexpected.json").write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="output_files_invalid"):
         verify_sandbox_output_directory(output, policy=policy)
+
+
+def test_the_compile_source_seal_is_computable_from_the_package() -> None:
+    """PR8-A regression: the seal resolved its roots by counting `__file__` parents.
+
+    Moving `program_compiler_source.py` to `learning/compiler/source_identity.py` changed that depth, so
+    `_NEWS_ROOT` became `news/learning` and every call raised `news_program_compile_source_tree_invalid`
+    — the launcher, the runner and the sidecar all compute this before a compile may start. Nothing in
+    the suite called it, so the whole compiler boundary went dark without a single red test.
+    """
+
+    from tracefold.news.learning.compiler.source_identity import compiler_source_sha256, proxy_source_sha256
+
+    compiler = compiler_source_sha256()
+    proxy = proxy_source_sha256()
+    assert len(compiler) == 64 and len(proxy) == 64
+    # Two schemas over the same tree: equal inputs, deliberately different addresses.
+    assert compiler != proxy
+    # Deterministic — the host and the container must agree on it across processes.
+    assert compiler_source_sha256() == compiler
+    assert proxy_source_sha256() == proxy

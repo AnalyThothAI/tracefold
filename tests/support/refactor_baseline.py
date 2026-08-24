@@ -23,17 +23,6 @@ from typing import Any
 from tests.support.news_judgment import trade_relevance
 from tracefold.app.workers.task_contract import worker_task_names
 from tracefold.integrations import rabbitmq as rabbitmq_module
-from tracefold.news.agents.program_compiler import COMPILER_ID
-from tracefold.news.agents.program_compiler_security import (
-    COMPILER_CORPUS_SCHEMA,
-    COMPILER_ENDPOINT_IDENTITY_SCHEMA,
-    COMPILER_INPUT_SCHEMA,
-    COMPILER_RECEIPT_CHAIN_SCHEMA,
-    COMPILER_RECEIPT_SCHEMA,
-    COMPILER_ROLE_BINDING_SCHEMA,
-    COMPILER_RUNNER_RECEIPTS_SCHEMA,
-)
-from tracefold.news.agents.program_metric import METRIC_ID
 from tracefold.news.agents.semantic_program import (
     PROGRAM_ADAPTER_SHA256,
     PROGRAM_ASSEMBLER_SHA256,
@@ -52,9 +41,20 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import MAX_TRANSIENT_ATTEMPTS, RETRY_TTL_MS
 from tracefold.news.delivery import render_first_card
 from tracefold.news.eval.replay import replay_hits
+from tracefold.news.learning.compiler.root import COMPILER_ID
+from tracefold.news.learning.compiler.security import (
+    COMPILER_CORPUS_SCHEMA,
+    COMPILER_ENDPOINT_IDENTITY_SCHEMA,
+    COMPILER_INPUT_SCHEMA,
+    COMPILER_RECEIPT_CHAIN_SCHEMA,
+    COMPILER_RECEIPT_SCHEMA,
+    COMPILER_ROLE_BINDING_SCHEMA,
+    COMPILER_RUNNER_RECEIPTS_SCHEMA,
+)
+from tracefold.news.learning.metric import METRIC_ID
+from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.news.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.semantic_contract import (
     EditorialEnvelope,
     ProgramTrace,

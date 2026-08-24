@@ -17,7 +17,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..artifact_identity import canonical_sha
+from ...artifact_identity import canonical_sha
 
 COMPILER_INPUT_SCHEMA: Literal["tracefold.news.compile_input_bundle.v3"] = "tracefold.news.compile_input_bundle.v3"
 COMPILER_CORPUS_SCHEMA: Literal["tracefold.news.compile_corpus_receipt.v3"] = "tracefold.news.compile_corpus_receipt.v3"
@@ -829,7 +829,7 @@ def validate_compile_receipt_chain_v3(
     ):
         raise ValueError("news_program_compile_receipt_chain_patch_write_set_invalid")
 
-    from .program_compiler_sandbox import CompilerSandboxLaunchReceipt
+    from .sandbox import CompilerSandboxLaunchReceipt
 
     launch = CompilerSandboxLaunchReceipt.model_validate(parsed.payload("sandbox_launch"))
     optimizer = parsed.payload("optimizer_config")
