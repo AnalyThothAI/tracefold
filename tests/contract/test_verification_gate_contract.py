@@ -135,6 +135,10 @@ def _run_evidence_case(
         (tmp_path / "conftest.py").write_text(conftest, encoding="utf-8")
     uv = shutil.which("uv")
     assert uv is not None
+    process_env = os.environ.copy()
+    # A nested evidence-session test is not the outer GitHub job. The positive case must not inherit the
+    # pull_request event's synthetic merge SHA; mismatch behavior is exercised explicitly below.
+    process_env.pop("GITHUB_SHA", None)
     result = subprocess.run(
         [
             uv,
@@ -153,7 +157,7 @@ def _run_evidence_case(
         ],
         cwd=ROOT,
         env={
-            **os.environ,
+            **process_env,
             "PATH": str(executable_dir),
             "TRACEFOLD_TEST_EVIDENCE": "1",
             **(env or {}),
@@ -270,3 +274,14 @@ def test_evidence_mode_fails_when_node_is_unavailable(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert manifest["node_version"] == "unavailable"
     assert "evidence_node_unavailable" in manifest["errors"]
+
+
+def test_evidence_mode_fails_when_github_sha_does_not_match_the_tested_head(tmp_path: Path) -> None:
+    result, manifest = _run_evidence_case(
+        tmp_path,
+        "def test_green(): assert True\n",
+        env={"GITHUB_SHA": "0" * 40},
+    )
+
+    assert result.returncode != 0
+    assert "evidence_github_sha_mismatch" in manifest["errors"]

@@ -628,8 +628,13 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
     monkeypatch.setattr(review_routes, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, _FakeNewsRepository())
 
-    with TestClient(app) as http:
+    # This is a route contract over the injected fake runtime. Entering TestClient's lifespan would
+    # bootstrap the production PostgreSQL runtime and make a hermetic test depend on the operator HOME.
+    http = TestClient(app)
+    try:
         response = http.get("/api/news/status", params={"token": TOKEN})
+    finally:
+        http.close()
 
     assert response.status_code == 200
     data = response.json()["data"]
