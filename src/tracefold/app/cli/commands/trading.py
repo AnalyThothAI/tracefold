@@ -50,11 +50,10 @@ def _execution_capability(settings: Any) -> dict[str, Any]:
     token_file = settings.trading_opentrade_token_file()
     token_configured = secret_file_configured(token_file)
     return {
-        "execution_backend": "opentrade_read_only",
+        "execution_backend": "opentrade_reviewed",
         "execution_configured": bool(trading.opentrade.base_url and token_configured),
-        # C1 proves read capability only. A separate runtime process/canary cannot be inferred by this
-        # CLI, and provider writes are deliberately disabled until PR-C2.
-        "live_mode_supported": False,
+        # This read-only CLI cannot infer a separate Workers process's startup/canary result.
+        "live_mode_supported": True,
         "live_ready": False,
         "live_readiness": "not_proven",
     }
@@ -84,7 +83,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     "dspy_calls_today": int(runtime.get("dspy_calls_today") or 0),
                     "venues": list(settings.trading.venues.enabled),
                     "live_symbol": settings.trading.live_symbol,
-                    "worst_case_daily_loss_usd": str(order.worst_case_daily_loss_usd),
+                    "nominal_daily_stop_loss_usd": str(order.nominal_daily_stop_loss_usd),
                     **_execution_capability(settings),
                     "funnel_24h": runtime.get("funnel") or {},
                     **counts,

@@ -1,14 +1,15 @@
-"""OpenTrade's read-only execution truth seam for #185 PR-C1."""
+"""OpenTrade's reviewed execution-truth seam for #185 PR-C2."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 
 import httpx
 import pytest
 
-from tracefold.integrations.opentrade import OpenTradeContractError, OpenTradeReadAdapter
+from tracefold.integrations.opentrade import OpenTradeAdapter, OpenTradeContractError
 from tracefold.trading.contracts import InstrumentRef, PreparedOrder
 
 NOW = 1_787_000_000_000
@@ -26,7 +27,12 @@ def _instrument() -> InstrumentRef:
     )
 
 
-def _response(request: httpx.Request, *, external_position: bool = False) -> httpx.Response:
+def _response(
+    request: httpx.Request,
+    *,
+    external_position: bool = False,
+    account_identity: bool = False,
+) -> httpx.Response:
     path = request.url.path
     if path.endswith("/market/time"):
         payload: object = {"timestamp": NOW}
@@ -49,6 +55,7 @@ def _response(request: httpx.Request, *, external_position: bool = False) -> htt
                         "amountMin": "1",
                         "costMin": "5",
                         "quantityStep": "0.1",
+                        "priceStep": "0.01",
                         "contractSize": "1",
                         "spot": False,
                         "swap": True,
@@ -76,6 +83,7 @@ def _response(request: httpx.Request, *, external_position: bool = False) -> htt
                 "accountType": "swap",
                 "available": "100",
                 "currency": "USDT",
+                **({"accountId": "canary"} if account_identity else {}),
                 # This must never enter the persisted audit snapshot.
                 "totals": {"USDT": "123.45"},
             },
@@ -122,7 +130,7 @@ def test_fresh_preflight_replaces_the_research_symbol_price_and_position_mode() 
         requests.append(request)
         return _response(request)
 
-    adapter = OpenTradeReadAdapter(
+    adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(handler),
@@ -162,7 +170,7 @@ def test_amount_min_is_not_guessed_to_be_the_quantity_step() -> None:
             return httpx.Response(200, json=body, request=request)
         return response
 
-    adapter = OpenTradeReadAdapter(
+    adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(handler),
@@ -176,6 +184,84 @@ def test_amount_min_is_not_guessed_to_be_the_quantity_step() -> None:
     assert preflight.quantity_step is None
 
 
+@pytest.mark.parametrize("contract_size", [None, "0", "not-a-number", "Infinity"])
+def test_preflight_requires_a_positive_provider_contract_size_before_any_write(contract_size: object) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = _response(request)
+        if request.url.path.endswith("/market/metadata"):
+            body = response.json()
+            body["data"]["markets"][0]["contractSize"] = contract_size
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_contract_size_invalid"):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert requests
+    assert all(request.method == "GET" for request in requests)
+
+
+@pytest.mark.parametrize("contracts", [None, "not-a-number", "-1", "NaN"])
+def test_preflight_rejects_malformed_position_quantity_before_any_write(contracts: object) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = _response(request, external_position=request.url.path.endswith("/positions"))
+        if request.url.path.endswith("/positions"):
+            body = response.json()
+            body["data"][0]["contracts"] = contracts
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_position_quantity_invalid"):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert requests
+    assert all(request.method == "GET" for request in requests)
+
+
+def test_preflight_ignores_an_explicit_zero_position() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = _response(request, external_position=request.url.path.endswith("/positions"))
+        if request.url.path.endswith("/positions"):
+            body = response.json()
+            body["data"][0]["contracts"] = "0"
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        preflight = asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert preflight.positions == ()
+
+
 def test_preflight_reads_account_wide_exposure_not_only_the_candidate_symbol() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         response = _response(request, external_position=request.url.path.endswith("/positions"))
@@ -185,7 +271,7 @@ def test_preflight_reads_account_wide_exposure_not_only_the_candidate_symbol() -
             return httpx.Response(200, json=body, request=request)
         return response
 
-    adapter = OpenTradeReadAdapter(
+    adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(handler),
@@ -199,7 +285,7 @@ def test_preflight_reads_account_wide_exposure_not_only_the_candidate_symbol() -
 
 
 def test_startup_inventory_makes_external_exposure_visible_before_any_entry() -> None:
-    adapter = OpenTradeReadAdapter(
+    adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(lambda request: _response(request, external_position=True)),
@@ -215,7 +301,7 @@ def test_startup_inventory_makes_external_exposure_visible_before_any_entry() ->
     assert [(item.kind, item.exchange_id, item.provider_symbol) for item in inventory.exposures] == [
         ("position", "binance", "DOGE/USDT:USDT")
     ]
-    assert adapter.writes_enabled is False
+    assert adapter.writes_enabled is True
 
 
 def _order(*, remote_order_id: str | None = "remote-1") -> PreparedOrder:
@@ -236,15 +322,25 @@ def _order(*, remote_order_id: str | None = "remote-1") -> PreparedOrder:
         stop_price=Decimal("9.8"),
         take_profit_price=None,
         must_close_after_ms=1_800_000,
-        payload={"symbol": "DOGE/USDT:USDT"},
+        payload={
+            "exchangeId": "binance",
+            "symbol": "DOGE/USDT:USDT",
+            "side": "buy",
+            "type": "market",
+            "quantity": "1",
+            "hedged": False,
+            "stopLossPrice": "9.8",
+            "_tracefoldExecutionContractSha256": "a" * 64,
+            "_tracefoldPriceTick": "0.01",
+        },
     )
 
 
 def test_composite_negative_read_is_the_only_path_to_absent_confirmed() -> None:
-    adapter = OpenTradeReadAdapter(
+    adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
-        transport=httpx.MockTransport(_response),
+        transport=httpx.MockTransport(lambda request: _response(request, account_identity=True)),
         clock=lambda: NOW,
     )
     try:
@@ -257,8 +353,66 @@ def test_composite_negative_read_is_the_only_path_to_absent_confirmed() -> None:
     assert observation.evidence["open_order_ids"] == []
 
 
+def test_composite_snapshot_time_is_captured_after_the_provider_reads() -> None:
+    composite_paths = {
+        "/account/summary",
+        "/positions",
+        "/orders/open",
+        "/orders/closed",
+        "/trades/history",
+        "/positions/history",
+    }
+    seen: set[str] = set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/market/time"):
+            timestamp = NOW + 100 if composite_paths <= seen else NOW
+            return httpx.Response(200, json={"timestamp": timestamp}, request=request)
+        seen.add(next((suffix for suffix in composite_paths if path.endswith(suffix)), path))
+        if path.endswith("/positions/history"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "fullyClosed": True,
+                            "entryPrice": "10",
+                            "closePrice": "10.2",
+                            "openTimestamp": NOW - 1_000,
+                            "closeTimestamp": NOW + 50,
+                            "trades": [
+                                {"orderId": "remote-1", "side": "buy", "reduceOnly": False},
+                                {"orderId": "close-1", "side": "sell", "reduceOnly": True},
+                            ],
+                        }
+                    ],
+                },
+                request=request,
+            )
+        return _response(request, account_identity=True)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        observation = asyncio.run(adapter.observe(_order()))
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert observation.state == "CLOSED"
+    assert observation.observed_at_ms == NOW + 100
+    assert observation.closed_at_ms == NOW + 50
+
+
 def test_missing_identity_or_malformed_provider_output_is_unknown_not_absent() -> None:
-    adapter_without_identity = OpenTradeReadAdapter(
+    adapter_without_identity = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(_response),
@@ -274,7 +428,7 @@ def test_missing_identity_or_malformed_provider_output_is_unknown_not_absent() -
             return httpx.Response(200, json={"success": True, "data": None}, request=request)
         return _response(request)
 
-    adapter_malformed = OpenTradeReadAdapter(
+    adapter_malformed = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(malformed),
@@ -288,11 +442,37 @@ def test_missing_identity_or_malformed_provider_output_is_unknown_not_absent() -
     assert observation.evidence["error_code"] == "opentrade_payload_invalid"
 
 
+@pytest.mark.parametrize(
+    ("status", "payload", "error"),
+    [
+        (302, {"success": True, "data": {}}, "opentrade_http_error"),
+        (200, {"data": {}}, "opentrade_payload_invalid"),
+    ],
+)
+def test_preflight_requires_a_2xx_explicit_success(status: int, payload: dict[str, object], error: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/public/metadata/status"):
+            return httpx.Response(status, json=payload, request=request)
+        return _response(request, account_identity=True)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match=error):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
 def test_provider_response_is_streamed_into_a_hard_size_limit() -> None:
     def oversized(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"x" * (2 * 1024 * 1024 + 1), request=request)
 
-    adapter = OpenTradeReadAdapter(
+    adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
         transport=httpx.MockTransport(oversized),
@@ -303,3 +483,461 @@ def test_provider_response_is_streamed_into_a_hard_size_limit() -> None:
             asyncio.run(adapter.startup(instrument=_instrument(), account_ref="canary"))
     finally:
         asyncio.run(adapter.aclose())
+
+
+def test_reviewed_entry_and_actual_quantity_close_send_only_the_pinned_contract() -> None:
+    writes: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        writes.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"orderId": f"write-{len(writes)}", "filledQty": 0, "avgPrice": 0}},
+            request=request,
+        )
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        entry = asyncio.run(adapter.submit(_order(remote_order_id=None)))
+        close = asyncio.run(adapter.close(_order(), quantity=Decimal("0.4")))
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert entry.state == close.state == "ACKNOWLEDGED"
+    assert writes == [
+        (
+            "/open/trader/newsliquid/v1/orders",
+            {
+                "exchangeId": "binance",
+                "symbol": "DOGE/USDT:USDT",
+                "side": "buy",
+                "type": "market",
+                "quantity": 1,
+                "hedged": False,
+                "stopLossPrice": 9.8,
+            },
+        ),
+        (
+            "/open/trader/newsliquid/v1/positions/close",
+            {
+                "exchangeId": "binance",
+                "symbol": "DOGE/USDT:USDT",
+                "side": "long",
+                "quantity": 0.4,
+                "hedged": False,
+            },
+        ),
+    ]
+
+
+def test_provider_write_refuses_a_decimal_that_json_cannot_represent_exactly() -> None:
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"success": True, "data": {"orderId": "never"}},
+                request=request,
+            )
+        ),
+        clock=lambda: NOW,
+    )
+    order = _order(remote_order_id=None).model_copy(update={"quantity": Decimal("0.123456789123456789")})
+    order = order.model_copy(update={"payload": {**order.payload, "quantity": str(order.quantity)}})
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_number_precision_loss"):
+            asyncio.run(adapter.submit(order))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
+def test_provider_write_refuses_take_profit_outside_the_reviewed_contract() -> None:
+    writes = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal writes
+        writes += 1
+        return httpx.Response(500, json={}, request=request)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    order = _order(remote_order_id=None).model_copy(update={"take_profit_price": Decimal("10.4")})
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_order_payload_invalid"):
+            asyncio.run(adapter.submit(order))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert writes == 0
+
+
+def test_explicit_write_rejection_is_not_ambiguous_but_server_failure_is() -> None:
+    def rejected(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"success": False}, request=request)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(rejected),
+        clock=lambda: NOW,
+    )
+    try:
+        receipt = asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert receipt.state == "REJECTED"
+    assert receipt.reason == "opentrade_rejected"
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(503, json={"success": False}, request=request)),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_http_error"):
+            asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
+@pytest.mark.parametrize(
+    ("status", "payload"),
+    [
+        (302, {"success": True, "data": {"orderId": "redirected"}}),
+        (200, {"data": {"orderId": "missing-success"}}),
+    ],
+)
+def test_write_ack_requires_a_2xx_explicit_success(status: int, payload: dict[str, object]) -> None:
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(status, json=payload, request=request)),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match=r"opentrade_(http_error|payload_invalid)"):
+            asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (400, "opentrade_rejected"),
+        (401, "opentrade_authentication_failed"),
+        (403, "opentrade_authentication_failed"),
+        (429, "opentrade_rate_limited"),
+    ],
+)
+def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -> None:
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, text="provider rejected request", request=request)
+        ),
+        clock=lambda: NOW,
+    )
+    try:
+        receipt = asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert receipt.state == "REJECTED"
+    assert receipt.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("working", "WORKING"),
+        ("partial", "PARTIAL"),
+        ("partial_working", "UNKNOWN"),
+        ("partially_reduced", "OPEN_PROTECTED"),
+        ("protected", "OPEN_PROTECTED"),
+        ("protected_external_order", "UNKNOWN"),
+        ("unprotected", "OPEN_UNPROTECTED"),
+        ("future_fill", "UNKNOWN"),
+        ("closed", "CLOSED"),
+        ("mixed_order_history", "UNKNOWN"),
+        ("mixed_order_history_with_position", "UNKNOWN"),
+        ("closed_with_open_order", "UNKNOWN"),
+        ("closed_then_external_position", "UNKNOWN"),
+        ("external_position_only", "UNKNOWN"),
+        ("missing_close_price", "UNKNOWN"),
+        ("missing_close_timestamp", "UNKNOWN"),
+        ("missing_open_timestamp", "CLOSED"),
+        ("reversed_close", "UNKNOWN"),
+        ("rejected", "REJECTED"),
+    ],
+)
+def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        response = _response(request, account_identity=True)
+        if path.endswith("/positions"):
+            quantity = (
+                "0.5"
+                if scenario in {"partial", "partial_working"}
+                else ("0.4" if scenario == "partially_reduced" else "1")
+            )
+            rows = (
+                [
+                    {
+                        "exchange": "binance",
+                        "symbol": "DOGE/USDT:USDT",
+                        "side": "long",
+                        "contracts": quantity,
+                        "entryPrice": "10",
+                    }
+                ]
+                if scenario
+                in {
+                    "partial",
+                    "partial_working",
+                    "partially_reduced",
+                    "protected",
+                    "protected_external_order",
+                    "unprotected",
+                    "future_fill",
+                    "mixed_order_history_with_position",
+                    "closed_then_external_position",
+                    "external_position_only",
+                }
+                else []
+            )
+            return httpx.Response(200, json={"success": True, "data": rows}, request=request)
+        if path.endswith("/orders/open"):
+            rows: list[dict[str, object]] = []
+            if scenario == "working":
+                rows.append(
+                    {
+                        "exchange": "binance",
+                        "orderId": "remote-1",
+                        "symbol": "DOGE/USDT:USDT",
+                        "side": "buy",
+                        "type": "market",
+                        "amount": "1",
+                        "status": "open",
+                        "filledQty": 0,
+                        "reduceOnly": False,
+                    }
+                )
+            if scenario == "partial_working":
+                rows.append(
+                    {
+                        "exchange": "binance",
+                        "orderId": "remote-1",
+                        "symbol": "DOGE/USDT:USDT",
+                        "side": "buy",
+                        "type": "market",
+                        "amount": "1",
+                        "status": "open",
+                        "filledQty": "0.5",
+                        "reduceOnly": False,
+                    }
+                )
+            if scenario == "closed_with_open_order":
+                rows.append(
+                    {
+                        "exchange": "binance",
+                        "orderId": "external-1",
+                        "symbol": "DOGE/USDT:USDT",
+                        "side": "buy",
+                        "type": "limit",
+                        "amount": "0.2",
+                        "status": "open",
+                        "reduceOnly": False,
+                    }
+                )
+            if scenario in {"partial", "partially_reduced", "protected", "protected_external_order"}:
+                rows.append(
+                    {
+                        "exchange": "binance",
+                        "orderId": "stop-1",
+                        "parentOrderId": "remote-1",
+                        "symbol": "DOGE/USDT:USDT",
+                        "side": "sell",
+                        "type": "stop_market",
+                        "amount": "1",
+                        "triggerPrice": "9.8",
+                        "status": "open",
+                        "reduceOnly": True,
+                    }
+                )
+            if scenario == "protected_external_order":
+                rows.append(
+                    {
+                        "exchange": "binance",
+                        "orderId": "external-1",
+                        "symbol": "DOGE/USDT:USDT",
+                        "side": "buy",
+                        "type": "limit",
+                        "amount": "0.2",
+                        "status": "open",
+                        "reduceOnly": False,
+                    }
+                )
+            return httpx.Response(200, json={"success": True, "data": rows}, request=request)
+        if path.endswith("/orders/closed") and scenario == "rejected":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "orderId": "remote-1",
+                            "symbol": "DOGE/USDT:USDT",
+                            "status": "rejected",
+                            "filledQty": 0,
+                        }
+                    ],
+                },
+                request=request,
+            )
+        if path.endswith("/trades/history") and scenario in {
+            "partial",
+            "partial_working",
+            "partially_reduced",
+            "protected",
+            "protected_external_order",
+            "unprotected",
+            "future_fill",
+            "mixed_order_history_with_position",
+        }:
+            amount = "0.5" if scenario in {"partial", "partial_working"} else "1"
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "tradeId": "trade-1",
+                            "orderId": "remote-1",
+                            "symbol": "DOGE/USDT:USDT",
+                            "amount": amount,
+                            "timestamp": NOW + 1 if scenario == "future_fill" else NOW - 500,
+                        }
+                    ],
+                },
+                request=request,
+            )
+        if path.endswith("/positions/history") and scenario in {
+            "closed",
+            "mixed_order_history",
+            "mixed_order_history_with_position",
+            "closed_with_open_order",
+            "closed_then_external_position",
+            "missing_close_price",
+            "missing_close_timestamp",
+            "missing_open_timestamp",
+            "reversed_close",
+        }:
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "fullyClosed": True,
+                            "entryPrice": "10",
+                            **(
+                                {}
+                                if scenario == "missing_open_timestamp"
+                                else {"openTimestamp": NOW - 500 if scenario == "reversed_close" else NOW - 10_000}
+                            ),
+                            **({} if scenario == "missing_close_price" else {"closePrice": "10.2"}),
+                            **({} if scenario == "missing_close_timestamp" else {"closeTimestamp": NOW - 1_000}),
+                            "trades": [
+                                {"orderId": "remote-1", "side": "buy", "reduceOnly": False},
+                                *(
+                                    [{"orderId": "external-1", "side": "buy", "reduceOnly": False}]
+                                    if scenario in {"mixed_order_history", "mixed_order_history_with_position"}
+                                    else []
+                                ),
+                                {"orderId": "close-1", "side": "sell", "reduceOnly": True},
+                            ],
+                        }
+                    ],
+                },
+                request=request,
+            )
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        observation = asyncio.run(adapter.observe(_order()))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert observation.state == expected
+    if scenario in {"partial", "partially_reduced", "protected"}:
+        assert observation.protection is not None
+        assert observation.protection.parent_remote_order_id == "remote-1"
+    if scenario == "partial_working":
+        assert observation.evidence["entry_remainder_working"] is True
+    if scenario == "closed":
+        assert observation.closed_at_ms == NOW - 1_000
+        assert observation.exit_price == Decimal("10.2")
+    if scenario == "missing_open_timestamp":
+        assert observation.first_fill_at_ms is None
+        assert observation.closed_at_ms == NOW - 1_000
+    if scenario in {"future_fill", "missing_close_timestamp", "reversed_close"}:
+        assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
+    if scenario == "missing_close_price":
+        assert observation.evidence["error_code"] == "opentrade_exit_price_invalid"
+
+
+def test_provider_snapshot_identity_is_stable_across_collection_order() -> None:
+    def observe(rows: list[dict[str, object]]):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/orders/open"):
+                return httpx.Response(200, json={"success": True, "data": rows}, request=request)
+            return _response(request, account_identity=True)
+
+        adapter = OpenTradeAdapter(
+            base_url="https://example.invalid",
+            token="secret-token",
+            transport=httpx.MockTransport(handler),
+            clock=lambda: NOW,
+        )
+        try:
+            return asyncio.run(adapter.observe(_order()))
+        finally:
+            asyncio.run(adapter.aclose())
+
+    def row(remote_id: str) -> dict[str, object]:
+        return {
+            "exchange": "binance",
+            "orderId": remote_id,
+            "symbol": "DOGE/USDT:USDT",
+            "side": "buy",
+            "type": "limit",
+            "amount": "1",
+            "status": "open",
+            "reduceOnly": False,
+        }
+
+    first = observe([row("external-b"), row("external-a")])
+    second = observe([row("external-a"), row("external-b")])
+    assert first.evidence["open_order_ids"] == ["external-a", "external-b"]
+    assert first.snapshot_sha256 == second.snapshot_sha256

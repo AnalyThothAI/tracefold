@@ -162,5 +162,19 @@ class ControlStorage:
             return 0
         return int(row["orders_today"])
 
+    def release_order_day_charge(self, *, day_key: str, now_ms: int) -> int:
+        """Release a claimed entry only after a definitive provider rejection."""
+
+        row = self.conn.execute(
+            """
+            UPDATE trading_runtime_state
+               SET orders_today = greatest(orders_today - 1, 0), updated_at_ms = %(now)s
+             WHERE id = 1 AND day_key = %(day)s
+         RETURNING orders_today
+            """,
+            {"day": day_key, "now": int(now_ms)},
+        ).fetchone()
+        return int(row["orders_today"]) if row is not None else 0
+
 
 __all__ = ["ControlStorage"]

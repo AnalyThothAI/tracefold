@@ -113,6 +113,15 @@ class OrderStorage:
                  WHERE order_id = %s
                    AND provider_attempt_count = 0
                    AND state IN ('PREPARED', 'APPROVED')
+                   AND EXISTS (
+                       SELECT 1 FROM trading_runtime_state
+                        WHERE id = 1 AND control = 'RUNNING'
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM trading_symbol_blacklist b
+                        WHERE b.base_symbol = split_part(trading_orders.underlying_key, ':', 2)
+                          AND (b.expires_at_ms IS NULL OR b.expires_at_ms > %s)
+                   )
             """
         elif kind == "exit":
             sql = """
@@ -124,17 +133,21 @@ class OrderStorage:
                  WHERE order_id = %s
                    AND exit_attempt_count = 0
                    AND exit_attempt_total < 3
-                   AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL')
+                   AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL', 'UNPROTECTED')
             """
         else:  # pragma: no cover - the caller passes a literal
             raise ValueError(f"trading_attempt_kind_invalid:{kind}")
-        cursor = self.conn.execute(sql, (int(now_ms), order_id))
+        params = (int(now_ms), order_id, int(now_ms)) if kind == "entry" else (int(now_ms), order_id)
+        cursor = self.conn.execute(sql, params)
         if int(getattr(cursor, "rowcount", 0) or 0) > 0:
             return "claimed"
         row = self.conn.execute(
-            "SELECT state, provider_attempt_count, exit_attempt_count, exit_attempt_total "
-            "FROM trading_orders WHERE order_id = %s",
-            (order_id,),
+            "SELECT o.state, o.provider_attempt_count, o.exit_attempt_count, o.exit_attempt_total, r.control, "
+            "EXISTS (SELECT 1 FROM trading_symbol_blacklist b "
+            "WHERE b.base_symbol = split_part(o.underlying_key, ':', 2) "
+            "AND (b.expires_at_ms IS NULL OR b.expires_at_ms > %s)) AS blacklisted "
+            "FROM trading_orders o CROSS JOIN trading_runtime_state r WHERE o.order_id = %s AND r.id = 1",
+            (int(now_ms), order_id),
         ).fetchone()
         if row is None:
             return "missing"
@@ -142,6 +155,10 @@ class OrderStorage:
             return "exhausted"
         if kind == "entry" and int(row["provider_attempt_count"]) > 0:
             return "already_spent"
+        if kind == "entry" and str(row["control"]) != "RUNNING":
+            return "control_blocked"
+        if kind == "entry" and bool(row["blacklisted"]):
+            return "blacklisted"
         if kind == "exit" and int(row["exit_attempt_count"]) > 0:
             return "already_spent"
         # The counter is free but the row is not in a state this leg may be claimed from.

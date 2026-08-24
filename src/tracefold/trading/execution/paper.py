@@ -115,6 +115,7 @@ class PaperAdapter:
             first_fill_at_ms=None,
             protection=NativeProtection(
                 remote_order_id=f"paper-stop-{order.order_id}",
+                parent_remote_order_id=f"paper-{order.order_id}",
                 account_ref=order.account_ref,
                 exchange_id=order.instrument.exchange_id,
                 provider_symbol=order.instrument.provider_symbol,

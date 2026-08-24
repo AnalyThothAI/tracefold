@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any, ClassVar
 
 from pydantic import ValidationError
@@ -22,6 +23,7 @@ from ..candidate.eligibility import (
 from ..candidate.fusion import _fuse, _Plan
 from ..candidate.routing import resolve_instrument
 from ..contracts import (
+    TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
     Bar,
     CaseKind,
     CaseState,
@@ -94,7 +96,7 @@ _MAX_CASES_PER_TURN = 4
 # How long a frozen case may wait to be decided. Its own budget, separate from the freshness the
 # candidate rules already spent, so queueing behind another case's model call cannot discard a signal.
 _CASE_DECISION_TTL_MS = 300_000
-_LIVE_PREFLIGHT_MAX_AGE_MS = 10_000
+_LIVE_PREFLIGHT_MAX_AGE_MS = TRADING_LIVE_PREFLIGHT_MAX_AGE_MS
 # What still stops a News-only case even though it has no quadrant: no price to enter at, and the
 # measured chasing bucket above the pre-move ceiling.
 _NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_band_chasing"})
@@ -670,6 +672,8 @@ class CandidateRunner:
             return False
 
         preflight_audit: dict[str, Any] | None = None
+        execution_contract_sha256: str | None = None
+        price_tick: Decimal | None = None
         hedged = False
         instrument = manifest.instrument
         if mode == "paper":
@@ -731,8 +735,13 @@ class CandidateRunner:
             if preflight.available_balance < self._config.order.fixed_notional_usd:
                 funnel.count("risk_reject:balance_insufficient")
                 return False
+            if preflight.price_tick is None:
+                funnel.count("risk_reject:price_tick_unknown")
+                return False
             instrument = preflight.instrument
             hedged = preflight.hedged
+            execution_contract_sha256 = preflight.execution_contract_sha256
+            price_tick = preflight.price_tick
             preflight_audit = preflight.audit_payload()
             market = MarketContext(
                 instrument=instrument,
@@ -743,6 +752,7 @@ class CandidateRunner:
                 spread_bps=preflight.spread_bps,
                 spread_available=True,
                 quantity_step=preflight.quantity_step,
+                price_tick=preflight.price_tick,
                 min_quantity=preflight.min_quantity,
                 min_notional=preflight.min_notional,
                 contract_size=preflight.contract_size,
@@ -761,6 +771,8 @@ class CandidateRunner:
             stop_price=sized.stop_price,
             take_profit_price=sized.take_profit_price,
             hedged=hedged,
+            execution_contract_sha256=execution_contract_sha256,
+            price_tick=price_tick,
         )
         state = OrderState.AWAITING_APPROVAL if mode == "live_reviewed" else OrderState.PREPARED
 

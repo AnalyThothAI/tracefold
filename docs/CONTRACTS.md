@@ -153,21 +153,26 @@ ceiling is rejected at startup); `trading.policy.*` gates the pure mapping
 (`fixed_notional_usd`, `leverage` fixed at 1, `fixed_stop_bps`,
 `take_profit_bps`, `max_holding_seconds`, `max_spread_bps`,
 `max_open_underlyings`, `max_orders_per_day`), so
-the current worst-case daily envelope is the multiplication
+the nominal planned-stop daily envelope is the multiplication
 `fixed_notional x fixed_stop_bps x max_orders_per_day`;
 `trading.opentrade.*` is the provider contract (`base_url`, `token_file`,
 `request_timeout_seconds`); `base_url` must be credential-free HTTPS. A live
 mode without a configured OpenTrade contract
-or an enabled venue fails at startup, not at the first order. Issue #185 PR-C1
-supports only a read-only `live_reviewed` canary: exactly one enabled venue,
+or an enabled venue fails at startup, not at the first order. Issue #185 PR-C2
+supports only the narrow `live_reviewed` lifecycle: exactly one enabled venue,
 one uppercase base symbol in `trading.live_symbol`,
 `fixed_notional_usd <= 10`, `max_open_underlyings = 1`,
-`max_orders_per_day = 1`, and leverage 1. The token file is resolved relative
+`max_orders_per_day = 1`, `take_profit_bps = 0`, and leverage 1. The token file is resolved relative
 to the operator config directory (or as an absolute path), must be a non-empty
 regular non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`), and is read only by App composition. `live_bounded` fails
-configuration closed. OpenTrade submit/close are code-disabled until the
-separate reviewed-write release.
+configuration and composition closed. A reviewed approval binds the exact
+payload digest for 60 seconds from order creation. Submission repeats preflight
+and terminally rejects before any write if the account, external inventory,
+execution-contract fingerprint, hedged mode, 1x leverage, margin mode, spread,
+balance or 25 bps mark-drift bound no longer holds. The only provider writes are
+one allowlisted market entry and bounded full-position closes using the latest
+authoritative quantity; ACK never means fill or closed.
 `llm.trading_decision_model` selects the single `dspy.Predict` endpoint; without
 it a News-bearing case settles as `no_trade / program_unconfigured` and an
 open-interest case still decides, because that lane calls no model at all.
@@ -906,11 +911,14 @@ peeks, republishes, or purges `news.dead`.
 
 The `trading` family is read-mostly, and deliberately has no command that
 places, amends or cancels an order. `trading status` reports mode, control
-state, the day's counters and funnel, `worst_case_daily_loss_usd`,
+state, the day's counters and funnel, `nominal_daily_stop_loss_usd`,
 the configured `live_symbol`,
 `execution_backend`, `execution_configured`, `live_mode_supported`,
-`live_ready`, and `live_readiness`; C1 reports `opentrade_read_only` and never
-derives runtime readiness from configuration alone. `trading cases [--state]
+`live_ready`, and `live_readiness`; `live_reviewed` reports
+`opentrade_reviewed` support but still `live_ready=false/not_proven`, because a
+separate CLI process cannot prove the Workers capability receipt. A
+`live_bounded` configuration is rejected before the CLI can report status.
+`trading cases [--state]
 [--limit]` and `trading show <case-id>` read
 the case, its order and its deduplicated remote observations. The three writes
 are narrow: `trading blacklist list|add|remove` owns the canonical deny-list

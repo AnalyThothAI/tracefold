@@ -50,9 +50,17 @@ async def attempt_once(
     untouched and the same close was re-issued every thirty seconds forever.
     """
 
+    def _claim(repos: Any) -> str:
+        result = str(repos.trading.claim_attempt(order_id=order.order_id, kind=kind, now_ms=now))
+        if result == "claimed" and kind == "entry":
+            # This is an attempt/write ceiling, not a receipt counter. Charge it in the same commit as
+            # SUBMITTING so process death after the provider call cannot make another entry admissible.
+            repos.trading.bump_orders_today(day_key=utc_day_key(now), now_ms=now)
+        return result
+
     claim = await db.tx(
         "trading_attempt_claim",
-        lambda repos: repos.trading.claim_attempt(order_id=order.order_id, kind=kind, now_ms=now),
+        _claim,
         timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
     )
     if claim != "claimed":
@@ -105,13 +113,6 @@ async def commit_order(
             if count is not None:
                 count("commit_reject:already_attempted")
             return False
-        # It raised and is now recorded AMBIGUOUS. That does count: an order that may exist at the
-        # venue is exposure.
-        await db.tx(
-            "trading_order_day_count",
-            lambda repos: repos.trading.bump_orders_today(day_key=utc_day_key(now), now_ms=now),
-            timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
-        )
         if count is not None:
             count("order_ambiguous")
         return True
@@ -141,8 +142,11 @@ async def commit_order(
             content=receipt.model_dump(mode="json"),
             now_ms=now,
         )
-        if state is not OrderState.REJECTED:
-            repos.trading.bump_orders_today(day_key=utc_day_key(now), now_ms=now)
+        if state is OrderState.REJECTED:
+            # A definitive rejection proves no exposure. Releasing the conservative claim in the
+            # receipt transaction preserves the nominal loss-envelope semantics. A crash before this
+            # proof stays charged, which is the safe side of the uncertainty.
+            repos.trading.release_order_day_charge(day_key=utc_day_key(now), now_ms=now)
 
     await db.tx("trading_order_receipt", _apply, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
     if count is not None:

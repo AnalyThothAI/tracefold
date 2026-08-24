@@ -120,6 +120,10 @@ class _Ledger:
         del values
         self.orders_today += 1
 
+    def release_order_day_charge(self, **values: Any) -> None:
+        del values
+        self.orders_today = max(self.orders_today - 1, 0)
+
 
 @dataclass
 class _Db:
@@ -169,6 +173,7 @@ class OrderSubmissionStateMachine(RuleBasedStateMachine):
             spread_bps=1,
             spread_available=True,
             quantity_step=Decimal("0.001"),
+            price_tick=Decimal("0.001"),
         )
 
     @rule(outcome=st.sampled_from(["ack", "reject", "ambiguous", "exception"]))
@@ -201,6 +206,7 @@ class OrderSubmissionStateMachine(RuleBasedStateMachine):
             spread_bps=spread_bps,
             spread_available=spread_available,
             quantity_step=Decimal("0.001") if known_step else None,
+            price_tick=Decimal("0.001") if known_step else None,
         )
 
     @rule()
@@ -304,6 +310,7 @@ _market_contexts = st.builds(
     spread_bps=st.one_of(st.none(), st.integers(min_value=0, max_value=100)),
     spread_available=st.booleans(),
     quantity_step=st.one_of(st.none(), _positive_decimal),
+    price_tick=st.one_of(st.none(), _positive_decimal),
     min_quantity=st.one_of(st.none(), _positive_decimal),
     contract_size=_positive_decimal,
 )
@@ -326,6 +333,14 @@ def test_sizing_never_exceeds_the_cap_and_fails_closed_on_missing_live_facts(
         assert isinstance(result, RiskRejection)
         assert result.rule == "spread_unknown_fail_closed"
         return
+    if market.spread_bps is not None and market.spread_bps > DEFAULT_ORDER_POLICY.max_spread_bps:
+        assert isinstance(result, RiskRejection)
+        assert result.rule == "spread_above_max"
+        return
+    if mode != "paper" and market.price_tick is None:
+        assert isinstance(result, RiskRejection)
+        assert result.rule == "price_tick_unknown"
+        return
     if isinstance(result, SizedOrder):
         assert Decimal("0") < result.notional_usd <= DEFAULT_ORDER_POLICY.fixed_notional_usd
         assert result.quantity > 0
@@ -346,6 +361,7 @@ def test_sizing_rejects_nonpositive_market_prices(mark_price: Decimal) -> None:
         spread_bps=1,
         spread_available=True,
         quantity_step=Decimal("0.001"),
+        price_tick=Decimal("0.001"),
     )
     result = size_order(side="buy", market=market, mode="live_bounded")
     assert isinstance(result, RiskRejection)

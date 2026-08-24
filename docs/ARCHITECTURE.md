@@ -35,9 +35,10 @@ polling loops in the same Workers root read persisted Triage verdicts through
 two **public News projections**, freeze one content-addressed case, decide it —
 arithmetic for an open-interest case, one `dspy.Predict` call for a News one —
 and, when the pure policy says so, write one durable order through the paper
-adapter. Issue #185 PR-C1 wires a typed, read-only OpenTrade adapter for fresh
-preflight and provider truth; capital writes remain code-disabled until the
-separate reviewed-entry proof lands. It shares the price plane's one-slot cold database
+adapter. Issue #185 PR-C2 wires the same typed OpenTrade seam through the
+reviewed entry, provider observation, native-protection verification and
+full-close lifecycle. Every live write remains behind a fresh provider proof,
+an exact operator-approved digest and a durable one-attempt fence. It shares the price plane's one-slot cold database
 admission rather than the four News lane slots, holds no agent framework, and
 its failure is local the same way the price plane's is.
 
@@ -334,7 +335,7 @@ tracefold.trading
   pipeline/           candidate and reconcile runners plus their two-runner composition root
 
 tracefold.integrations
-  provider and external-system adapters: OpenNews, RabbitMQ, Feishu
+  provider and external-system adapters: OpenNews, OpenTrade, RabbitMQ, Feishu
 
 tracefold.platform
   config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
@@ -407,8 +408,9 @@ in `tests/architecture/test_backend_boundaries.py`.
 A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
-Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
-(`aio-pika`), and Feishu (the custom-bot webhook). No provider owns a durable
+Strategy WSS plus the official Strategy list/hits endpoints), OpenTrade (the
+reviewed REST execution seam), RabbitMQ (`aio-pika`), and Feishu (the custom-bot
+webhook). No provider owns a durable
 queue. Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -1257,8 +1259,9 @@ persisted Triage verdict (model, or deterministic OI)
   -> one dspy.Predict                   News-bearing cases only
   -> pure policy                        no_trade | long | short, always a named rule
   -> fixed notional / 1x / fixed stop / max holding
-  -> durable order: PREPARED -> SUBMITTING -> one write -> ACK | AMBIGUOUS
-  -> read-only reconciliation -> OPEN -> CLOSED
+  -> reviewed order: AWAITING_APPROVAL -> re-preflight -> SUBMITTING -> one write
+  -> ACK | AMBIGUOUS -> read-only provider reconciliation
+  -> WORKING | PARTIAL | OPEN | UNPROTECTED | CLOSED | MANUAL_REVIEW_REQUIRED
 ```
 
 **The trigger is the persisted verdict, not delivery.** Feishu `sent` is
@@ -1310,8 +1313,10 @@ is a minimum, not a quantity step, so it is never guessed into precision.
 **Sizing is notional-first.** `quantity = floor_to_step(fixed_notional /
 fresh_mark / contract_size)`, stop at a fixed distance, no take-profit (a measured
 stop/TP grid found every fixed take-profit negative because the return
-distribution is right-tailed). The worst case is a multiplication the operator
-can read off the config: `fixed_notional x fixed_stop_bps x max_orders_per_day`.
+distribution is right-tailed). The nominal planned-stop envelope is a
+multiplication the operator can read off the config:
+`fixed_notional x fixed_stop_bps x max_orders_per_day`. It is not a worst-case
+claim under gaps, slippage, stop failure or provider outage.
 Stop-distance sizing is deliberately absent: it makes the notional cap and the
 stop bounds silently unreachable in combination.
 
@@ -1323,22 +1328,45 @@ CLOSED | REJECTED | UNKNOWN`; Python `None`, malformed output, or a partial read
 cannot free the underlying. When exact fill time is unavailable, submission
 time is the conservative lower bound, never the later reconcile time.
 
-**The current live adapter is read-only.** The C1 contracts and runner can
-perform startup inventory, fresh preflight, freeze an approval digest, and
-reconcile provider reads. Its `submit` and `close` capabilities are
-hard-disabled and an approved row is deferred without claiming a provider
-attempt. The pinned public OpenTrade response cannot prove a stable account
-identity, so the concrete adapter keeps startup fail-closed and cannot prepare
-an approval until that evidence exists. `live_bounded`
-is rejected by configuration. One operator-owned `trading.live_symbol` also
-hard-bounds the canary before any provider call. This is deliberate release state, not runtime
-readiness inferred from `enabled: true`.
+**Reviewed approval is short-lived execution authority.** The operator approves
+the exact immutable payload digest, not a symbol or a general permission. At
+submission the row must be no older than the code-owned 60 s TTL and a second
+preflight must still prove the same account, exact execution contract,
+position mode, 1x leverage and margin mode, no remote exposure, acceptable
+spread and balance, and at most 25 bps mark drift. Any mismatch terminally
+rejects the old payload before the attempt fence, with zero provider writes.
+
+**The current live adapter owns the narrow reviewed lifecycle.** It performs
+startup inventory, fresh prepare/re-preflight, one allowlisted OpenTrade market
+entry, composite provider observation, and one full-position close. HTTP/business
+4xx is a proven rejection; timeout, transport failure, 5xx, malformed success or
+a missing remote ID is ambiguous and never retried as an entry. The pinned
+public OpenTrade examples still do not themselves prove stable account identity,
+quantity step or price tick. The concrete adapter therefore remains fail-closed
+unless the real configured response supplies every required fact; configuration
+alone never makes `live_ready=true`. `live_bounded` is rejected by both settings
+validation and the composition root. One operator-owned `trading.live_symbol`
+hard-bounds the reviewed canary before any provider call.
+
+**OPEN proves both position and protection.** A native stop is matching only
+when its parent order, account, exchange, exact provider symbol, opposite side,
+active state, reduce-only semantics, quantity coverage and trigger within one
+price tick all match this position. A partial or full position without that
+proof becomes `UNPROTECTED` and immediately claims one bounded full-position
+safety close; it does not wait for the ordinary reconcile interval. The one
+exception is a partial fill whose tracked entry still appears in the provider's
+open-order inventory: closing only the filled slice could leave the working
+remainder to fill afterward, so that composite observation is `UNKNOWN`/manual
+and issues no close. A later read must first prove the entry terminal.
 
 **One provider attempt, ever.** OpenTrade publishes no client idempotency key,
 so nothing downstream can deduplicate a resend. The ledger row moves to
 `SUBMITTING` and the transaction **commits before** the network call;
 `provider_attempt_count` is CHECKed at one, so a second attempt cannot even be
-recorded; a timeout, reset, malformed answer or restart terminalises as
+recorded. The same transaction charges `orders_today`, so process death cannot
+make a second same-day entry admissible; only a definitive provider rejection
+releases that conservative charge in its receipt transaction. A timeout,
+reset, malformed answer or restart terminalises as
 `AMBIGUOUS`, whose only legal successor is a read. Never a resend, and never a
 resend routed at the other venue.
 
@@ -1350,10 +1378,21 @@ yet turn out to carry — exposure. The predicate deliberately includes
 not know whether Binance filled it" is exactly when a Hyperliquid entry must be
 blocked.
 
+The single `trading_orders` row is an intentional V1 compression: one intent,
+one market entry, one logical position, one native stop and one full close. If
+the first requirement appears for multiple active orders per intent, multiple
+intents per position, scale-in/partial scale-out attribution, order amendment,
+trailing lifecycle or multiple strategy books, stop patching this row and open
+a separate mature execution-engine evaluation.
+
 **Two deterministic exits, and the exit is a capital write like any other.** The
 venue-side protective stop rides with the entry so it survives this process
 dying; `max_holding_seconds` closes the lifecycle without another News event and
-without a model. The close goes through the *same* durable one-attempt contract
+without a model. Before either safety or max-holding close, a provider read must
+prove the current position and its absolute actual quantity; prepared quantity
+is never used as a substitute. A close acknowledgement is not `CLOSED` — only a
+later provider position/order/trade observation may settle it. The close goes
+through the *same* durable one-attempt contract
 as the entry — `claim_attempt("exit")` before the network call, its own
 `exit_attempt_count` CHECKed at one (the entry has already spent its counter by
 the time a position can close), and any exception terminalising as `AMBIGUOUS`.

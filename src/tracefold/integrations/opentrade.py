@@ -1,8 +1,8 @@
-"""Pinned OpenTrade read adapter for #185 PR-C1.
+"""Pinned OpenTrade reviewed-execution adapter for #185.
 
 This module owns HTTP and token-bearing headers. Trading receives typed, sanitized facts only. The
-adapter deliberately contains no capital write in C1: approval can be exercised, but cannot reach a
-provider until the separate PR-C2 review gate lands.
+only writes are the pinned market-entry and full-position-close contracts; the durable Trading kernel
+claims either attempt before it calls this adapter and never retries an ambiguous answer.
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from tracefold.trading import (
     InstrumentRef,
     LiveExchangeId,
     LivePreflight,
+    NativeProtection,
+    OrderSide,
     PreparedOrder,
     RemoteExposure,
     StartupReconciliation,
@@ -31,6 +33,7 @@ from tracefold.trading import (
 _API = "/open/trader/newsliquid/v1"
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _ABSENCE_WINDOW_MS = 7 * 86_400_000
+_STOP_ORDER_TYPES = frozenset({"stop", "stop_market", "stop_loss", "stop_loss_market"})
 
 
 def _now_ms() -> int:
@@ -41,11 +44,11 @@ class OpenTradeContractError(RuntimeError):
     """Sanitized provider-contract failure. Never carries a response body or credential."""
 
 
-class OpenTradeReadAdapter:
+class OpenTradeAdapter:
     """One concrete provider adapter; no registry and no generic HTTP execution framework."""
 
     name = "opentrade"
-    writes_enabled = False
+    writes_enabled = True
 
     def __init__(
         self,
@@ -152,13 +155,14 @@ class OpenTradeReadAdapter:
             ask_price=ask,
             spread_bps=spread,
             quantity_step=_first_decimal(market, "quantityStep", "amountStep", "stepSize"),
+            price_tick=_first_decimal(market, "priceStep", "tickSize"),
             min_quantity=_optional_decimal(market.get("amountMin")),
             min_notional=_optional_decimal(market.get("costMin")),
-            contract_size=_optional_decimal(market.get("contractSize")) or Decimal("1"),
+            contract_size=_positive_decimal(market.get("contractSize"), "opentrade_contract_size_invalid"),
             requested_account_ref=account_ref,
-            # The pinned public OpenTrade account response exposes exchange/type/currency, but no
-            # stable account identity. Echoing the configured label here would fabricate proof.
-            observed_account_ref=None,
+            # The pinned example has neither field, so normal public output remains fail-closed. An
+            # exact provider identity is accepted when the real capability response supplies one.
+            observed_account_ref=_optional_text(account.get("accountId") or account.get("accountRef")),
             available_balance=_optional_decimal(account.get("available")),
             available_currency=available_currency,
             hedged=hedged,
@@ -169,12 +173,38 @@ class OpenTradeReadAdapter:
         )
 
     async def submit(self, order: PreparedOrder) -> ExecutionReceipt:
-        del order
-        raise OpenTradeContractError("opentrade_writes_disabled_pr_c1")
+        return await self._write("/orders", body=_entry_body(order))
 
     async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
-        del order, quantity
-        raise OpenTradeContractError("opentrade_writes_disabled_pr_c1")
+        return await self._write("/positions/close", body=_close_body(order, quantity=quantity))
+
+    async def _write(self, path: str, *, body: Mapping[str, Any]) -> ExecutionReceipt:
+        status, payload = await self._request("POST", path, json_body=body)
+        if status in {401, 403}:
+            return ExecutionReceipt(state="REJECTED", reason="opentrade_authentication_failed")
+        if status == 429:
+            return ExecutionReceipt(state="REJECTED", reason="opentrade_rate_limited")
+        if status >= 500:
+            raise OpenTradeContractError("opentrade_http_error")
+        if 400 <= status < 500 or payload.get("success") is False:
+            return ExecutionReceipt(state="REJECTED", reason="opentrade_rejected")
+        if not 200 <= status < 300:
+            raise OpenTradeContractError("opentrade_http_error")
+        if payload.get("success") is not True:
+            raise OpenTradeContractError("opentrade_payload_invalid")
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            raise OpenTradeContractError("opentrade_payload_invalid")
+        remote_order_id = _optional_text(data.get("orderId"))
+        if remote_order_id is None:
+            raise OpenTradeContractError("opentrade_order_identity_missing")
+        return ExecutionReceipt(
+            state="ACKNOWLEDGED",
+            remote_order_id=remote_order_id,
+            filled_quantity=_optional_decimal(data.get("filledQty")),
+            average_price=_optional_decimal(data.get("avgPrice")),
+            reason="opentrade_ack",
+        )
 
     async def observe(self, order: PreparedOrder) -> ExecutionObservation:
         try:
@@ -186,7 +216,7 @@ class OpenTradeReadAdapter:
                 observed_at_ms=self._clock(),
                 remote_order_id=order.remote_order_id,
                 evidence={
-                    "schema": "tracefold.trading.execution_observation.v1",
+                    "schema": "tracefold.trading.execution_observation.v2",
                     "error_code": error_code,
                 },
             )
@@ -196,42 +226,149 @@ class OpenTradeReadAdapter:
 
         exchange_id = _live_exchange(order.instrument.exchange_id)
         params = {"exchangeId": exchange_id, "symbol": order.instrument.provider_symbol}
-        server_time = await self._server_time()
+        account = await self._object("/account/summary", params={**params, "accountType": "swap"})
         positions = await self._list("/positions", params=params)
         open_orders = await self._list("/orders/open", params=params)
         closed_orders = await self._list("/orders/closed", params={**params, "days": 7})
         trades = await self._list("/trades/history", params={**params, "days": 7})
         position_history = await self._list("/positions/history", params={**params, "days": 7})
+        server_time = await self._server_time()
         position_rows = self._matching(positions, order=order)
         open_rows = self._matching(open_orders, order=order)
         closed_rows = self._matching(closed_orders, order=order)
         trade_rows = self._matching(trades, order=order)
         history_rows = self._matching(position_history, order=order)
         remote_id = self._remote_id(order)
+        account_ref = _optional_text(account.get("accountId") or account.get("accountRef"))
+        entry_open = _remote_rows(open_rows, remote_id)
+        entry_closed = _remote_rows(closed_rows, remote_id)
+        entry_trades = _remote_rows(trade_rows, remote_id)
+        correlated_history = _correlated_history_rows(history_rows, remote_id)
+        entry_history = _attributed_history_rows(correlated_history, remote_id, entry_side=order.side)
+        expected_position_side = "long" if order.side == "buy" else "short"
+        expected_positions = [row for row in position_rows if _optional_text(row.get("side")) == expected_position_side]
         evidence = {
-            "schema": "tracefold.trading.execution_observation.v1",
+            "schema": "tracefold.trading.execution_observation.v2",
             "position_count": len(position_rows),
+            "open_order_count": len(open_rows),
             "open_order_ids": _ids(open_rows, "orderId"),
+            "closed_order_count": len(closed_rows),
             "closed_order_ids": _ids(closed_rows, "orderId"),
+            "trade_count": len(trade_rows),
             "trade_ids": _ids(trade_rows, "tradeId"),
             "position_history_count": len(history_rows),
+            "entry_open_count": len(entry_open),
+            "entry_closed_count": len(entry_closed),
+            "entry_trade_count": len(entry_trades),
+            "entry_history_correlated_count": len(correlated_history),
+            "entry_history_count": len(entry_history),
+            "account_identity_proven": account_ref is not None,
         }
         if remote_id is None:
             return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
-        if len(position_rows) > 1:
+        if account_ref != order.account_ref or len(position_rows) > 1 or len(expected_positions) != len(position_rows):
             return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
-        if position_rows:
-            # PR-C1 captures the composite read but never adopts live exposure. Exact entry/fill and
-            # native-protection correlation belongs to C2's reviewed lifecycle evidence.
-            position = position_rows[0]
+        if expected_positions:
+            if correlated_history:
+                return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
+            position = expected_positions[0]
             quantity = _positive_decimal(position.get("contracts"), "opentrade_position_quantity_invalid")
+            if quantity > order.quantity:
+                return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
+            average_price = _positive_decimal(position.get("entryPrice"), "opentrade_entry_price_invalid")
+            entry_protection_rows = [
+                row
+                for row in open_rows
+                if str(row.get("type") or "").lower() in _STOP_ORDER_TYPES
+                and _optional_text(row.get("parentOrderId") or row.get("sourceOrderId")) == remote_id
+            ]
+            expected_open_rows = [
+                row
+                for row in open_rows
+                if _optional_text(row.get("orderId")) == remote_id or row in entry_protection_rows
+            ]
+            evidence["protection_candidate_count"] = len(entry_protection_rows)
+            evidence["unexpected_open_order_count"] = len(open_rows) - len(expected_open_rows)
+            if len(expected_open_rows) != len(open_rows) or len(entry_protection_rows) > 1:
+                return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
+            protection = (
+                _native_protection(entry_protection_rows[0], account_ref=account_ref) if entry_protection_rows else None
+            )
+            filled = _filled_quantity(entry_open, entry_closed, entry_trades)
+            if (
+                filled is None
+                or filled < quantity
+                or filled > order.quantity
+                or filled not in {quantity, order.quantity}
+            ):
+                return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
+            if entry_open and filled < order.quantity:
+                evidence["entry_remainder_working"] = True
+                return ExecutionObservation(
+                    state="UNKNOWN",
+                    observed_at_ms=server_time,
+                    remote_order_id=remote_id,
+                    evidence=evidence,
+                )
+            return ExecutionObservation(
+                state=(
+                    "PARTIAL"
+                    if filled < order.quantity
+                    else ("OPEN_PROTECTED" if protection is not None else "OPEN_UNPROTECTED")
+                ),
+                observed_at_ms=server_time,
+                remote_order_id=remote_id,
+                actual_position_quantity=quantity,
+                filled_quantity=filled,
+                average_price=average_price,
+                first_fill_at_ms=_first_timestamp(entry_trades, server_time=server_time),
+                protection=protection,
+                evidence=evidence,
+            )
+        if entry_history:
+            if open_rows or len(correlated_history) != 1 or len(entry_history) != 1:
+                return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
+            history = entry_history[-1]
+            if history.get("fullyClosed") is not True:
+                return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
+            first_fill_at_ms = _bounded_optional_timestamp(history.get("openTimestamp"), server_time=server_time)
+            closed_at_ms = _bounded_optional_timestamp(history.get("closeTimestamp"), server_time=server_time)
+            if closed_at_ms is None:
+                raise OpenTradeContractError("opentrade_timestamp_invalid")
+            if first_fill_at_ms is not None and closed_at_ms is not None and first_fill_at_ms > closed_at_ms:
+                raise OpenTradeContractError("opentrade_timestamp_invalid")
+            return ExecutionObservation(
+                state="CLOSED",
+                observed_at_ms=server_time,
+                remote_order_id=remote_id,
+                first_fill_at_ms=first_fill_at_ms,
+                closed_at_ms=closed_at_ms,
+                average_price=_positive_decimal(history.get("entryPrice"), "opentrade_entry_price_invalid"),
+                exit_price=_positive_decimal(history.get("closePrice"), "opentrade_exit_price_invalid"),
+                evidence=evidence,
+            )
+        filled = _filled_quantity(entry_open, entry_closed, entry_trades)
+        if filled is not None or entry_trades:
             return ExecutionObservation(
                 state="UNKNOWN",
                 observed_at_ms=server_time,
                 remote_order_id=remote_id,
-                actual_position_quantity=quantity,
-                filled_quantity=quantity,
-                average_price=_optional_decimal(position.get("entryPrice")),
+                evidence=evidence,
+            )
+        if entry_open:
+            return ExecutionObservation(
+                state="WORKING",
+                observed_at_ms=server_time,
+                remote_order_id=remote_id,
+                evidence=evidence,
+            )
+        if entry_closed and all(
+            str(row.get("status") or "").lower() in {"canceled", "cancelled", "rejected"} for row in entry_closed
+        ):
+            return ExecutionObservation(
+                state="REJECTED",
+                observed_at_ms=server_time,
+                remote_order_id=remote_id,
                 evidence=evidence,
             )
         if open_rows or closed_rows or trade_rows or history_rows:
@@ -250,7 +387,15 @@ class OpenTradeReadAdapter:
         )
 
     async def _server_time(self) -> int:
-        payload = await self._mapping("/market/time")
+        status, payload = await self._request("GET", "/market/time")
+        if status in {401, 403}:
+            raise OpenTradeContractError("opentrade_authentication_failed")
+        if status == 429:
+            raise OpenTradeContractError("opentrade_rate_limited")
+        if not 200 <= status < 300:
+            raise OpenTradeContractError("opentrade_http_error")
+        if "success" in payload and payload.get("success") is not True:
+            raise OpenTradeContractError("opentrade_payload_invalid")
         value = payload.get("timestamp")
         if value is None and isinstance(payload.get("data"), Mapping):
             value = cast(Mapping[str, Any], payload["data"]).get("timestamp")
@@ -262,15 +407,23 @@ class OpenTradeReadAdapter:
             raise OpenTradeContractError("opentrade_server_time_stale")
         return timestamp
 
-    async def _mapping(self, path: str, *, params: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+    ) -> tuple[int, Mapping[str, Any]]:
         try:
-            async with self._client.stream("GET", f"{_API}{path}", params=dict(params or {})) as response:
-                if response.status_code in {401, 403}:
-                    raise OpenTradeContractError("opentrade_authentication_failed")
-                if response.status_code == 429:
-                    raise OpenTradeContractError("opentrade_rate_limited")
+            async with self._client.stream(
+                method,
+                f"{_API}{path}",
+                params=dict(params or {}),
+                json=None if json_body is None else dict(json_body),
+            ) as response:
                 if response.status_code >= 400:
-                    raise OpenTradeContractError("opentrade_http_error")
+                    return response.status_code, {}
                 content = bytearray()
                 async for chunk in response.aiter_bytes():
                     content.extend(chunk)
@@ -284,9 +437,21 @@ class OpenTradeReadAdapter:
             payload = json.loads(content)
         except (UnicodeDecodeError, ValueError):
             raise OpenTradeContractError("opentrade_payload_invalid") from None
-        if not isinstance(payload, Mapping) or payload.get("success") is False:
+        if not isinstance(payload, Mapping):
             raise OpenTradeContractError("opentrade_payload_invalid")
-        return cast(Mapping[str, Any], payload)
+        return response.status_code, cast(Mapping[str, Any], payload)
+
+    async def _mapping(self, path: str, *, params: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        status, payload = await self._request("GET", path, params=params)
+        if status in {401, 403}:
+            raise OpenTradeContractError("opentrade_authentication_failed")
+        if status == 429:
+            raise OpenTradeContractError("opentrade_rate_limited")
+        if not 200 <= status < 300:
+            raise OpenTradeContractError("opentrade_http_error")
+        if payload.get("success") is not True:
+            raise OpenTradeContractError("opentrade_payload_invalid")
+        return payload
 
     async def _object(self, path: str, *, params: Mapping[str, Any]) -> Mapping[str, Any]:
         payload = await self._mapping(path, params=params)
@@ -331,17 +496,21 @@ class OpenTradeReadAdapter:
 
     @staticmethod
     def _position_exposures(rows: Sequence[Mapping[str, Any]], *, exchange_id: LiveExchangeId) -> list[RemoteExposure]:
-        return [
-            RemoteExposure(
-                kind="position",
-                exchange_id=exchange_id,
-                provider_symbol=_text(row.get("symbol")),
-                side=_text(row.get("side")),
-                quantity=_positive_decimal(row.get("contracts"), "opentrade_position_quantity_invalid"),
+        exposures: list[RemoteExposure] = []
+        for row in rows:
+            quantity = _nonnegative_decimal(row.get("contracts"), "opentrade_position_quantity_invalid")
+            if quantity == 0:
+                continue
+            exposures.append(
+                RemoteExposure(
+                    kind="position",
+                    exchange_id=exchange_id,
+                    provider_symbol=_text(row.get("symbol")),
+                    side=_text(row.get("side")),
+                    quantity=quantity,
+                )
             )
-            for row in rows
-            if _decimal_or_zero(row.get("contracts")) > 0
-        ]
+        return exposures
 
     @staticmethod
     def _order_exposures(rows: Sequence[Mapping[str, Any]], *, exchange_id: LiveExchangeId) -> list[RemoteExposure]:
@@ -372,6 +541,195 @@ class OpenTradeReadAdapter:
         return order.remote_order_id
 
 
+def _remote_rows(rows: Sequence[Mapping[str, Any]], remote_id: str | None) -> list[Mapping[str, Any]]:
+    if remote_id is None:
+        return []
+    return [row for row in rows if _optional_text(row.get("orderId")) == remote_id]
+
+
+def _correlated_history_rows(rows: Sequence[Mapping[str, Any]], remote_id: str | None) -> list[Mapping[str, Any]]:
+    if remote_id is None:
+        return []
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("trades"), list)
+        and any(
+            isinstance(trade, Mapping) and _optional_text(trade.get("orderId")) == remote_id for trade in row["trades"]
+        )
+    ]
+
+
+def _attributed_history_rows(
+    rows: Sequence[Mapping[str, Any]], remote_id: str | None, *, entry_side: OrderSide
+) -> list[Mapping[str, Any]]:
+    if remote_id is None:
+        return []
+    close_side = "sell" if entry_side == "buy" else "buy"
+    matched: list[Mapping[str, Any]] = []
+    for row in rows:
+        trades = row.get("trades")
+        if not isinstance(trades, list) or not trades or not all(isinstance(trade, Mapping) for trade in trades):
+            continue
+        opening = [trade for trade in trades if trade.get("reduceOnly") is False]
+        closing = [trade for trade in trades if trade.get("reduceOnly") is True]
+        if (
+            opening
+            and closing
+            and len(opening) + len(closing) == len(trades)
+            and all(
+                _optional_text(trade.get("orderId")) == remote_id and _optional_text(trade.get("side")) == entry_side
+                for trade in opening
+            )
+            and all(
+                _optional_text(trade.get("orderId")) is not None and _optional_text(trade.get("side")) == close_side
+                for trade in closing
+            )
+        ):
+            matched.append(row)
+    return matched
+
+
+def _native_protection(row: Mapping[str, Any], *, account_ref: str) -> NativeProtection | None:
+    if str(row.get("type") or "").lower() not in _STOP_ORDER_TYPES:
+        return None
+    side = str(row.get("side") or "").lower()
+    if side not in {"buy", "sell"}:
+        return None
+    parent_id = _optional_text(row.get("parentOrderId") or row.get("sourceOrderId"))
+    remote_id = _optional_text(row.get("orderId"))
+    exchange_id = _optional_text(row.get("exchange") or row.get("exchangeId"))
+    symbol = _optional_text(row.get("symbol"))
+    quantity = _optional_decimal(row.get("amount"))
+    trigger = _optional_decimal(row.get("triggerPrice"))
+    status = _optional_text(row.get("status"))
+    reduce_only = row.get("reduceOnly")
+    if (
+        parent_id is None
+        or remote_id is None
+        or exchange_id is None
+        or symbol is None
+        or quantity is None
+        or trigger is None
+        or status is None
+        or not isinstance(reduce_only, bool)
+    ):
+        return None
+    return NativeProtection(
+        remote_order_id=remote_id,
+        parent_remote_order_id=parent_id,
+        account_ref=account_ref,
+        exchange_id=_live_exchange(exchange_id.lower()),
+        provider_symbol=symbol,
+        side=cast(OrderSide, side),
+        quantity=quantity,
+        trigger_price=trigger,
+        reduce_only=reduce_only,
+        status=status,
+    )
+
+
+def _filled_quantity(*groups: Sequence[Mapping[str, Any]]) -> Decimal | None:
+    reported = [
+        value for rows in groups[:2] for row in rows if (value := _optional_decimal(row.get("filledQty"))) is not None
+    ]
+    traded = sum(
+        (value for row in groups[2] if (value := _optional_decimal(row.get("amount"))) is not None),
+        start=Decimal(0),
+    )
+    candidates = [*reported, *([traded] if traded > 0 else [])]
+    return max(candidates) if candidates else None
+
+
+def _first_timestamp(rows: Sequence[Mapping[str, Any]], *, server_time: int) -> int | None:
+    timestamps = [
+        value
+        for row in rows
+        if (value := _bounded_optional_timestamp(row.get("timestamp"), server_time=server_time)) is not None
+    ]
+    return min(timestamps) if timestamps else None
+
+
+def _optional_timestamp(value: object) -> int | None:
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _bounded_optional_timestamp(value: object, *, server_time: int) -> int | None:
+    if value is None or value == "":
+        return None
+    parsed = _optional_timestamp(value)
+    if parsed is None or not 0 <= server_time - parsed <= _ABSENCE_WINDOW_MS:
+        raise OpenTradeContractError("opentrade_timestamp_invalid")
+    return parsed
+
+
+def _entry_body(order: PreparedOrder) -> dict[str, Any]:
+    payload = order.payload
+    allowed = {
+        "exchangeId",
+        "symbol",
+        "side",
+        "type",
+        "quantity",
+        "hedged",
+        "stopLossPrice",
+        "_tracefoldExecutionContractSha256",
+        "_tracefoldPriceTick",
+    }
+    if set(payload) - allowed:
+        raise OpenTradeContractError("opentrade_order_payload_invalid")
+    hedged = payload.get("hedged")
+    if (
+        payload.get("exchangeId") != order.instrument.exchange_id
+        or payload.get("symbol") != order.instrument.provider_symbol
+        or payload.get("side") != order.side
+        or payload.get("type") != "market"
+        or not isinstance(hedged, bool)
+        or order.take_profit_price is not None
+        or _positive_decimal(payload.get("quantity"), "opentrade_order_payload_invalid") != order.quantity
+        or _positive_decimal(payload.get("stopLossPrice"), "opentrade_order_payload_invalid") != order.stop_price
+    ):
+        raise OpenTradeContractError("opentrade_order_payload_invalid")
+    body: dict[str, Any] = {
+        "exchangeId": order.instrument.exchange_id,
+        "symbol": order.instrument.provider_symbol,
+        "side": order.side,
+        "type": "market",
+        "quantity": _json_number(order.quantity),
+        "hedged": hedged,
+        "stopLossPrice": _json_number(order.stop_price),
+    }
+    return body
+
+
+def _close_body(order: PreparedOrder, *, quantity: Decimal) -> dict[str, Any]:
+    hedged = order.payload.get("hedged")
+    if not isinstance(hedged, bool) or quantity <= 0:
+        raise OpenTradeContractError("opentrade_close_payload_invalid")
+    return {
+        "exchangeId": order.instrument.exchange_id,
+        "symbol": order.instrument.provider_symbol,
+        "side": "long" if order.side == "buy" else "short",
+        "quantity": _json_number(quantity),
+        "hedged": hedged,
+    }
+
+
+def _json_number(value: Decimal) -> int | float:
+    if not value.is_finite() or value <= 0:
+        raise OpenTradeContractError("opentrade_number_invalid")
+    if value == value.to_integral_value():
+        return int(value)
+    encoded = float(value)
+    if Decimal(str(encoded)) != value:
+        raise OpenTradeContractError("opentrade_number_precision_loss")
+    return encoded
+
+
 def _live_exchange(value: object) -> LiveExchangeId:
     normalized = str(value)
     if normalized not in {"binance", "hyperliquid"}:
@@ -398,7 +756,7 @@ def _optional_decimal(value: object) -> Decimal | None:
         parsed = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
-    return parsed if parsed > 0 else None
+    return parsed if parsed.is_finite() and parsed > 0 else None
 
 
 def _positive_decimal(value: object, code: str) -> Decimal:
@@ -408,8 +766,14 @@ def _positive_decimal(value: object, code: str) -> Decimal:
     return parsed
 
 
-def _decimal_or_zero(value: object) -> Decimal:
-    return _optional_decimal(value) or Decimal(0)
+def _nonnegative_decimal(value: object, code: str) -> Decimal:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise OpenTradeContractError(code) from None
+    if not parsed.is_finite() or parsed < 0:
+        raise OpenTradeContractError(code)
+    return parsed
 
 
 def _first_decimal(row: Mapping[str, Any], *keys: str) -> Decimal | None:
@@ -427,7 +791,7 @@ def _positive_int(value: object, code: str) -> int:
 
 
 def _ids(rows: Sequence[Mapping[str, Any]], key: str) -> list[str]:
-    return [value for row in rows if (value := _optional_text(row.get(key))) is not None]
+    return sorted({value for row in rows if (value := _optional_text(row.get(key))) is not None})
 
 
-__all__ = ["OpenTradeContractError", "OpenTradeReadAdapter"]
+__all__ = ["OpenTradeAdapter", "OpenTradeContractError"]

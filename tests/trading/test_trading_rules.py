@@ -15,9 +15,12 @@ from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     Bar,
+    ExecutionObservation,
     InstrumentRef,
     MarketContext,
+    NativeProtection,
     OiRegime,
+    PreparedOrder,
     RiskRejection,
     TradeDecision,
     canonical_base_symbol,
@@ -29,6 +32,7 @@ from tracefold.trading.execution.order import (
     OrderPolicy,
     build_payload,
     must_close_at,
+    protection_matches,
     realized_bps,
     size_order,
     stop_price_for,
@@ -345,6 +349,53 @@ def test_live_refuses_to_size_without_exact_precision_or_a_spread() -> None:
     assert isinstance(unknown_spread, RiskRejection)
     assert unknown_spread.rule == "spread_unknown_fail_closed"
 
+    unknown_tick = size_order(
+        side="buy",
+        market=_market(
+            "100",
+            quantity_step=Decimal("0.001"),
+            spread_bps=5,
+            spread_available=True,
+        ),
+        mode="live_bounded",
+    )
+    assert isinstance(unknown_tick, RiskRejection)
+    assert unknown_tick.rule == "price_tick_unknown"
+
+
+@pytest.mark.parametrize(("side", "expected"), [("buy", "9.83"), ("sell", "10.23")])
+def test_live_stop_is_rounded_to_the_provider_tick_toward_the_entry(side: str, expected: str) -> None:
+    sized = size_order(
+        side=side,  # type: ignore[arg-type]
+        market=_market(
+            "10.03",
+            quantity_step=Decimal("0.1"),
+            price_tick=Decimal("0.01"),
+            spread_bps=5,
+            spread_available=True,
+        ),
+        mode="live_reviewed",
+    )
+    assert not isinstance(sized, RiskRejection)
+    assert sized.stop_price == Decimal(expected)
+
+
+def test_live_stop_fails_closed_when_the_tick_would_round_it_to_the_entry() -> None:
+    sized = size_order(
+        side="buy",
+        market=_market(
+            "1",
+            quantity_step=Decimal("0.1"),
+            price_tick=Decimal("0.01"),
+            spread_bps=5,
+            spread_available=True,
+        ),
+        mode="live_reviewed",
+        policy=OrderPolicy(fixed_stop_bps=20),
+    )
+    assert isinstance(sized, RiskRejection)
+    assert sized.rule == "stop_price_precision_invalid"
+
 
 def test_a_wide_spread_and_a_sub_minimum_quantity_both_fail_closed() -> None:
     wide = size_order(
@@ -364,7 +415,7 @@ def test_a_wide_spread_and_a_sub_minimum_quantity_both_fail_closed() -> None:
 
 def test_the_worst_case_daily_envelope_is_a_multiplication_the_operator_can_read() -> None:
     policy = OrderPolicy(fixed_notional_usd=Decimal("50"), fixed_stop_bps=200, max_orders_per_day=4)
-    assert policy.worst_case_daily_loss_usd == Decimal("4.00")
+    assert policy.nominal_daily_stop_loss_usd == Decimal("4.00")
 
 
 def test_stop_direction_follows_the_side() -> None:
@@ -387,6 +438,74 @@ def test_the_frozen_payload_always_carries_hedged_and_the_venue_side_stop() -> N
     assert "takeProfitPrice" not in payload
     # The exact provider symbol, never a display symbol.
     assert payload["symbol"] == "DOGEUSDT"
+
+
+def _protected_live_order() -> PreparedOrder:
+    return PreparedOrder(
+        order_id="o1",
+        case_id="c1",
+        underlying_key="crypto:DOGE",
+        account_ref="canary",
+        remote_order_id="entry-1",
+        instrument=_instrument(symbol="DOGE/USDT:USDT"),
+        mode="live_reviewed",
+        side="buy",
+        notional_usd=Decimal("10"),
+        quantity=Decimal("1"),
+        entry_reference=Decimal("10"),
+        stop_price=Decimal("9.8"),
+        take_profit_price=None,
+        must_close_after_ms=900_000,
+        payload={},
+    )
+
+
+def _protection_observation(**updates: object) -> ExecutionObservation:
+    protection = NativeProtection(
+        remote_order_id="stop-1",
+        parent_remote_order_id="entry-1",
+        account_ref="canary",
+        exchange_id="binance",
+        provider_symbol="DOGE/USDT:USDT",
+        side="sell",
+        quantity=Decimal("1"),
+        trigger_price=Decimal("9.8"),
+        reduce_only=True,
+        status="open",
+    ).model_copy(update=updates)
+    return ExecutionObservation(
+        state="OPEN_PROTECTED",
+        observed_at_ms=NOW,
+        remote_order_id="entry-1",
+        actual_position_quantity=Decimal("1"),
+        filled_quantity=Decimal("1"),
+        average_price=Decimal("10"),
+        protection=protection,
+    )
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        {"parent_remote_order_id": "another-entry"},
+        {"account_ref": "another-account"},
+        {"exchange_id": "hyperliquid"},
+        {"provider_symbol": "SOL/USDT:USDT"},
+        {"side": "buy"},
+        {"quantity": Decimal("0.9")},
+        {"trigger_price": Decimal("9.82")},
+        {"reduce_only": False},
+        {"status": "cancelled"},
+    ],
+)
+def test_native_stop_protection_requires_every_exact_provider_fact(mismatch: dict[str, object]) -> None:
+    order = _protected_live_order()
+    assert protection_matches(order=order, observation=_protection_observation(), price_tick=Decimal("0.01"))
+    assert not protection_matches(
+        order=order,
+        observation=_protection_observation(**mismatch),
+        price_tick=Decimal("0.01"),
+    )
 
 
 # ---------------------------------------------------------------------------- paper exit

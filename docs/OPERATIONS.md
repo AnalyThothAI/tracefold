@@ -29,15 +29,23 @@ Before deploying #160, remove every retired policy-v9 action/priority key from
 `~/.tracefold/config.yaml` and report only its redacted result. There is no
 compatibility alias.
 
-Issue #185 PR-C1 keeps OpenTrade capital writes disabled. A configured
+Issue #185 PR-C2 implements the reviewed OpenTrade write lifecycle but does not
+make configuration equivalent to provider readiness. A configured
 `live_reviewed` lane must use one venue, a non-empty owner-private regular
 non-symlink token file (normally mode `0600`, at most 16 KiB),
 one explicit `trading.live_symbol`, notional at most 10 USD, one open
-underlying and one order per day. `trading status` must still show
-`execution_backend=opentrade_read_only`,
-`live_mode_supported=false`, `live_ready=false`, and
-`live_readiness=not_proven`. That is healthy read-only capability, not a failed
-attempt to live trade. `live_bounded` is rejected at config validation.
+underlying and one order per day. `trading status` shows
+`execution_backend=opentrade_reviewed`, `live_mode_supported=true`,
+`live_ready=false`, and `live_readiness=not_proven`: the CLI cannot infer the
+Workers process's account/metadata/position-mode/inventory receipt. Before a
+reviewed submit, the runner independently enforces the 60 s approval TTL and a
+fresh no-drift preflight; rejection there is expected fail-closed behavior and
+must record zero provider attempts. `live_bounded` is rejected at settings
+validation and again at composition. If a partially filled tracked entry still
+appears in provider open orders, reconciliation enters manual review and sends
+no position close: the remaining entry could otherwise fill after the filled
+slice was closed. Cancel or otherwise settle the entry at the venue, then let a
+fresh provider read prove it terminal before resolving the manual row.
 
 ## Operator lifecycle
 
