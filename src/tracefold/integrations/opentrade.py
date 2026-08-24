@@ -620,7 +620,7 @@ def _definitive_write_rejection(payload: Mapping[str, Any]) -> bool:
         return True
     if not isinstance(data, Mapping):
         return False
-    if any(_optional_text(data.get(key)) is not None for key in ("orderId", "tradeId", "positionId")):
+    if any(key in data for key in ("orderId", "tradeId", "positionId")):
         return False
     for key in ("filledQty", "avgPrice"):
         value = data.get(key)
