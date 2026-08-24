@@ -308,6 +308,9 @@ class ReconcileRunner:
 
             await self._db.tx("trading_reconcile_absent", _absent, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
             return True
+        if exiting and observed_state == "UNKNOWN":
+            await self._escalate(order.order_id, "exit_ambiguous_position_unknown", now)
+            return True
         if order.mode != "paper":
             # C1 records live read truth but does not adopt, protect, close, or release exposure.
             # Those mappings require C2's exact remote-order/fill/protection evidence.

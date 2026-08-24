@@ -840,6 +840,28 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert adapter.attempts == 1
 
 
+def test_an_acknowledged_paper_order_is_reconstructed_after_restart(conn) -> None:
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+
+    restarted_adapter = PaperAdapter()
+    reconcile = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=_config(),
+        bars=lambda _venue: None,
+        adapter=restarted_adapter,
+        clock=lambda: NOW + MINUTE,
+    )
+    asyncio.run(reconcile.turn())
+
+    order = conn.execute("SELECT * FROM trading_orders").fetchone()
+    assert order["state"] == "OPEN"
+    assert order["remote_order_id"] == f"paper-{order['order_id']}"
+    assert order["filled_quantity"] == order["quantity"]
+    assert order["average_price"] == order["entry_reference"]
+    assert restarted_adapter.attempts == 0
+
+
 def test_live_prepare_uses_fresh_provider_truth_and_the_existing_observation_ledger(conn) -> None:
     _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE)
     _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE)
@@ -1437,14 +1459,14 @@ def test_an_ambiguous_exit_is_never_read_as_the_entry_never_landing(conn) -> Non
     conn.execute("UPDATE trading_orders SET state_reason = 'exit_close_ambiguous' WHERE order_id = 'o1'")
     conn.commit()
 
-    # The in-memory paper book is gone after a restart, so `observe` returns None.
+    # The process-local paper book is gone after restart, so absence cannot be proven.
     reconcile = ReconcileRunner(
         db=_DirectDb(conn), config=_config(), bars=lambda _v: None, adapter=PaperAdapter(), clock=lambda: NOW
     )
     asyncio.run(reconcile.turn())
     order = conn.execute("SELECT * FROM trading_orders").fetchone()
     assert order["state"] == "MANUAL_REVIEW_REQUIRED"
-    assert order["state_reason"] == "exit_ambiguous_position_absent"
+    assert order["state_reason"] == "exit_ambiguous_position_unknown"
 
 
 def test_an_observation_that_is_not_a_live_order_is_not_adopted_as_open(conn) -> None:

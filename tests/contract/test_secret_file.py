@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,21 @@ def test_secret_file_never_follows_a_symlink(tmp_path: Path) -> None:
     assert secret_file_configured(link) is False
     with pytest.raises(SecretFileError, match="invalid"):
         read_secure_secret_text(link)
+
+
+def test_secret_file_rejects_a_fifo_without_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "token"
+    os.mkfifo(path, mode=0o600)
+    real_open = os.open
+
+    def nonblocking_open(candidate: Path, flags: int) -> int:
+        assert flags & os.O_NONBLOCK
+        return real_open(candidate, flags)
+
+    monkeypatch.setattr(os, "open", nonblocking_open)
+    assert secret_file_configured(path) is False
+    with pytest.raises(SecretFileError, match="invalid"):
+        read_secure_secret_text(path)
 
 
 def test_secret_file_is_bounded_before_its_contents_are_read(tmp_path: Path) -> None:
