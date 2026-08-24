@@ -340,7 +340,8 @@ options:
   --development DEVELOPMENT
                         development dataset artifact SHA
   --artifact-root ARTIFACT_ROOT
-                        write <program-sha>/manifest.json and state.json
+                        write the candidate <program-sha>.json artifact
+                        document
   --out OUT             write compile receipt and proposal input JSON
   --compiler-image COMPILER_IMAGE
                         exact local compiler image ID (sha256:<64 hex>)

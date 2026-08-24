@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_compile.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_compile.add_argument(
-        "--artifact-root", required=True, help="write <program-sha>/manifest.json and state.json"
+        "--artifact-root", required=True, help="write the candidate <program-sha>.json artifact document"
     )
     learning_compile.add_argument("--out", required=True, help="write compile receipt and proposal input JSON")
     learning_compile.add_argument(

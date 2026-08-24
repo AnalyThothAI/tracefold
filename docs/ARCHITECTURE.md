@@ -272,10 +272,10 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v7` epoch hard-cuts to
-`tracefold.news.program.factory_v5` / `news_semantic_program_v5` on
-the artifact-v2 envelope: structured code-owned quality contracts are separate
-from optimizer-owned strategy/demo state, and every earlier Prompt/Program row
+current `program_v7` epoch was opened for `news_semantic_program_v5`, and its
+row keeps naming the factory, artifact schema and baseline root it was *opened*
+with; the running image is `tracefold.news.program.factory_v6` on the
+`news_program_strategy_artifact_v1` document. Every earlier Prompt/Program row
 remains append-only audit history. Only accepted `news_review_v4` evidence
 created in the v7 epoch is eligible for metric v4, compiler, replay or release
 gates.
@@ -779,30 +779,53 @@ per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
 The only executable generation is `news_semantic_program_v5` from
-`tracefold.news.program.factory_v5` in learning epoch `program_v7`.
-Issue #190's canonical-number hardening reissues the sole v7 root because the
-factory source is sealed: NaN/Infinity now fail before identity or hashing,
-while valid state bytes, prompts, RulePacks, routes, budgets, and policy remain
-unchanged. The old root is not a second runtime option.
-It is a code-owned `ProgramArtifact v2`: canonical `manifest.json` plus
-`state.json`, content-addressed by the whole reviewed identity. The manifest
-binds the fixed factory/topology, DSPy/dependency lock, and the input, Adapter,
-normalizer and assembler contracts, execution budgets, Predictor state hashes
-and compile provenance. The code-owned pack set is capped at nine; the active
-reader-memory wording is `novelty_told_ledger` revision 3;
-state is limited to the two validated Predictor records: signature identity,
-instructions, demonstrations, model-binding slots, token caps and their
-hashes. The dependency-lock digest is package-owned and drift-tested against
-the source `uv.lock`, so an installed wheel does not depend on a repository
-root. Demonstration `evidence_json` must validate as the exact model-visible
-input contract; audit ids, endpoints and secret-bearing keys are rejected even
-when nested inside that JSON string. The production registry resolves an image-carried SHA,
-never arbitrary database instructions. Loading fails closed on an unknown
-version/hash/factory/lock, unsafe path or extra state. Pickle, cloudpickle,
-DSPy Flex, dynamic code/classes, endpoints and credentials are not supported
-formats. This is the executable-state Seam: Program evolution can change
-reviewed state without allowing a data row to become Python control flow.
-There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
+`tracefold.news.program.factory_v6` in learning epoch `program_v7`.
+Issue #193 hard-cuts the artifact to one canonical JSON document holding
+`schema_version` `news_program_strategy_artifact_v1`, `factory_id`
+`tracefold.news.program.factory_v6`, and the two advisory instructions an
+optimizer may write, one per Predictor. `program_sha256` is the canonical hash
+of exactly those four values, and the stable root is
+`e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`. Like #175
+and #190 this re-issues the sole v7 root rather than opening a generation; the
+old manifest/state root is not a second runtime option.
+
+`program_sha256` is behavior identity and nothing else. It no longer contains
+parent lineage, compile cost, trajectory, teacher endpoint or a compile
+receipt, so two compiles that reach the same two instructions are the same
+running Program however much they cost and whoever launched them. Lineage is a
+property of the candidate (`ProposalReceipt.program_parent_sha256` and
+`program_candidate_sha256`); compile provenance is a property of the compile
+receipt chain. Folding them into the runtime root let "who compiled this"
+change what "this Program" meant.
+
+Everything else the Program needs — the two-Predictor graph, the typed
+schemas, the ordered code-owned RulePacks, the renderer, the normalizer, the
+assembler, the model route and the execution budget — is code, versioned by
+`factory_id`. A semantic change to any of them bumps the factory explicitly
+instead of cascading twenty-odd component hashes that the same package
+generated and verified in the same process; that is a self-proof, not an
+attestation, and it never replaced exact image/CI evidence. The code-owned pack
+set is capped at nine and the active reader-memory wording is
+`novelty_told_ledger` revision 3.
+
+Rendered instructions are derived bytes, never a second editable truth, and
+they now carry no identity hash: a RulePack digest cannot help a model judge
+news, it was billed on every call, and carrying one meant a pure identity
+change rewrote the prompt. There is no demo section either. The DemoBank family
+is deleted rather than left empty — the contract already forbade demos, so the
+unreachable state space went with it instead of surviving as a YAGNI frame. The
+runtime Predictors hold no demos, and the optimizer-owned Predictor refuses one
+rather than restating the ban through a bank that has nothing in it.
+
+The production registry resolves an image-carried SHA, never arbitrary database
+instructions, and the document is one `<program_sha256>.json` file. Loading
+fails closed on an unknown version, hash or factory, non-canonical or
+duplicate-keyed JSON, a non-finite number, an unsafe or secret-bearing key, a
+symlink or traversal path, or a file whose name is not its own root. Pickle,
+cloudpickle, DSPy Flex, dynamic code/classes, endpoints and credentials are not
+supported formats. This is the executable-state Seam: Program evolution can
+change reviewed state without allowing a data row to become Python control
+flow. There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
 compatibility fallback; Prompt-era columns/rows are read-only audit history.
 
 The Module never retrieves from a network; it ranks bounded local reader
@@ -922,14 +945,14 @@ v5/v6 (catching same-fact repeats such as a cross-key provider batch) while
 removing their second, count-based editor. Every path names its rule; nothing
 drops silently.
 
-The Program artifact owns the execution contract. A successful primary route
+The Program factory owns the execution contract. A successful primary route
 normally makes two serial provider calls: EventSemantics, then ReaderCard.v2.
 The in-process normalizer and assembler make no provider request, and the
 non-restatement normalization spends no fast retry. One
 fast retry is shared by the entire route, so a retry consumed by the first
 Predictor is unavailable to the second and a route makes at most three calls.
 A retryable transport failure or a non-truncated unusable answer can spend that
-retry; `max_tokens` truncation cannot. The artifact's 20-second deadline
+retry; `max_tokens` truncation cannot. The code-owned 20-second deadline
 applies to the whole route, not to each call. If primary still fails, fallback
 restarts the full graph with its own shared retry and route deadline; the
 complete chain therefore makes at most six visible provider attempts. DSPy
@@ -1106,7 +1129,7 @@ Issue #160 migration `0301` hard-renames persisted `priority` to
 `queue_priority`, adds atomic editorial/runtime-manifest judgment identity, and
 appends `program_v6` for factory v4/executable v4/policy v10. All earlier reviews, datasets, recordings,
 reports and release receipts remain readable audit evidence, but they are
-promotion-ineligible and cannot seed the current Program or DemoBank. Evidence
+promotion-ineligible and cannot seed the current Program. Evidence
 accumulation starts from zero: Event reviews and acceptance receipts must be
 created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
@@ -1132,10 +1155,11 @@ correctly recognizing many distinct facts cannot fail a release by count alone.
 The optional DSPy GEPA compiler is a cold, manual development tool, never a
 Workers loop. A trusted exporter seals current-epoch accepted development into
 an ordered corpus root; an untrusted, resource-bounded runner receives no DB,
-holdout or application credentials and can emit only `ProgramPatchV2`. That
-patch may change the two LearnedStrategy instructions; DSPy GEPA writes no
-demos, so DemoBank records/references remain empty. It can never change the QualityKernel, RulePacks, topology, Signatures,
-execution contract, model slots or policy. The trusted side revalidates every
+holdout or application credentials and can emit only `ProgramStrategyPatchV1`.
+That patch carries the two advisory instructions and nothing else: RulePacks,
+the graph, the Signatures, the execution budget, the model slots and the policy
+are code under `factory_id` and are outside the write set, and a demo is
+refused rather than banked. The trusted side revalidates every
 receipt payload and applies the patch to the exact active stable root. GEPA
 cannot accept a review, register/deploy its output, move a stable pointer, or
 promote a candidate.
@@ -1230,7 +1254,14 @@ manifest identity; `program_v6` binds factory v4, executable v4, policy v10,
 review v4 and metric/compiler protocol v3; and older evidence becomes audit-only.
 `0303` preserves that history and appends the #162 `program_v7` epoch for
 factory v5/executable v5 after the Program/Learning package split; the v6
-baseline remains immutable audit evidence.
+baseline remains immutable audit evidence. `0304` carries the #193
+strategy-artifact hard cut into the database: it trips every armed or active
+canary, because the candidate it points at is unloadable in the new image, and
+records one migration receipt in the append-only learning ledger. It
+deliberately does not re-open `program_v7`. A serialization and identity change
+is not an evidence reset, so accepted `news_review_v4` truth stays eligible and
+the epoch row goes on naming the factory, schema and baseline root the epoch was
+opened with — the same way it already did across the #175 and #190 re-issues.
 Because the physical rename makes the old exact image incompatible, release
 requires a separately built and drilled new-schema/v5-behaviour rollback image;
 it is never part of the production registry or a second runtime loader. No

@@ -18,6 +18,10 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # named composition families and concrete adapter families may reach the named private contracts.
 PRIVATE_BUSINESS_IMPORT_RULES = {
     "app.news_cli": (
+        # The code-owned Program contract: the version every verdict row is stamped with, and the route
+        # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,
+        # where they were optimizer-shaped state they never were, and into the factory that versions them.
+        "tracefold.news.program.runtime",
         "tracefold.news.learning.baseline",
         "tracefold.news.learning.review_drafter",
         "tracefold.news.learning.compiler.launcher",
@@ -42,6 +46,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.contracts",
     ),
     "app.composition": (
+        # The code-owned Program contract: the version every verdict row is stamped with, and the route
+        # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,
+        # where they were optimizer-shaped state they never were, and into the factory that versions them.
+        "tracefold.news.program.runtime",
         "tracefold.news.program.artifact",
         "tracefold.news.program.dspy_adapter",
         "tracefold.news.program.graph",
@@ -62,6 +70,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     ),
     "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
+        # The code-owned Program contract: the version every verdict row is stamped with, and the route
+        # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,
+        # where they were optimizer-shaped state they never were, and into the factory that versions them.
+        "tracefold.news.program.runtime",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
         "tracefold.news.program.graph",

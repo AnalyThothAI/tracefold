@@ -1,14 +1,17 @@
-"""Runtime primitives and frozen identity constants shared across `tracefold.news.program`.
+"""Runtime primitives and the code-owned execution contract of `tracefold.news.program`.
 
-Exact-by-default Pydantic configuration, and the JSON-state safety rules that keep a loadable artifact
-free of duplicate keys, non-finite numbers, JSON constants and credential-shaped state. Nothing here
-knows what a Program is; it is the floor every other `tracefold.news.program` module stands on.
+Exact-by-default Pydantic configuration, the JSON-state safety rules that keep a loadable artifact free of
+duplicate keys, non-finite numbers, JSON constants and credential-shaped state, and the numbers the graph
+runs on: model route ceilings, the route deadline and the primary breaker.
+
+Those numbers are code, not artifact state. `factory_id` is the one behavior-compatibility version they move
+under: change the graph, the schemas, the rules, the renderer, the normalizer, the route or the execution
+budget and bump the factory, rather than cascading a component hash per file. Nothing here knows what a
+Program is; it is the floor every other `tracefold.news.program` module stands on.
 """
 
 from __future__ import annotations
 
-import hashlib
-import importlib.resources
 import math
 import re
 import unicodedata
@@ -17,8 +20,6 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from ..artifact_identity import canonical_sha
-from ..told_context import NEWS_RETRIEVAL_SHA256
 from .contracts import ModelVisibleCardInput, ModelVisibleSemanticsInput
 
 _FORBIDDEN_STATE_KEY_PARTS: Final[frozenset[tuple[str, ...]]] = frozenset(
@@ -139,12 +140,6 @@ def _safe_json_state(value: Any) -> Any:
     raise TypeError(f"news_program_compiled_state_type_invalid:{type(value).__name__}")
 
 
-PROGRAM_DEMOS_MAX: Final[int] = 32
-
-PROGRAM_DEMOS_MAX_ESTIMATED_TOKENS: Final[int] = 32_768
-
-PROGRAM_DEMO_JSON_MAX_BYTES: Final[int] = 32_768
-
 PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
 
 PROGRAM_RULE_PACK_MAX: Final[int] = 9
@@ -155,114 +150,26 @@ PROGRAM_LEARNED_STRATEGY_MAX_BYTES: Final[int] = 8_192
 
 PROGRAM_LEARNED_STRATEGY_MAX_ESTIMATED_TOKENS: Final[int] = 2_048
 
-PROGRAM_DEMO_BANK_MAX: Final[int] = 64
+PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 
-PROGRAM_DEMO_BANK_MAX_BYTES: Final[int] = 262_144
-
-PROGRAM_DEPENDENCY_LOCK_SHA256: Final[str] = "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37"
-
-PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v2"
-
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v5"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v6"
 
 PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
 
 PROGRAM_LEARNING_EPOCH: Final[str] = "program_v7"
 
-PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
-    {
-        "nodes": ["event_semantics", "semantic_normalizer", "reader_card", "verdict_assembler"],
-        "edges": [[0, 1], [1, 2], [2, 3]],
-    }
-)
+# The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
+# Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.
+# Only `factory_id` versions them now.
+PROGRAM_EVENT_SEMANTICS_MAX_TOKENS: Final[int] = 1_200
 
-PROGRAM_ADAPTER_SHA256: Final[str] = canonical_sha(
-    {
-        "adapter": "predictor_adapter_v3",
-        "cache": False,
-        "history": False,
-        "hidden_retry": False,
-        "metadata": "exact_provider_response",
-        "request_identity": "runtime_model_binding",
-    }
-)
+PROGRAM_READER_CARD_MAX_TOKENS: Final[int] = 600
 
-PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
-    {
-        "assembler": "verdict_editorial_assembler_v3",
-        "semantic_normalizer": "semantic_normalizer_v2",
-        "model_intent": "trade_relevance.reader_value",
-        "decision_projection": {
-            "escalate": "escalate",
-            "realtime": "push",
-            "background": "drop",
-            "none": "drop",
-        },
-        "actionable_projection": "direct_or_second_order_with_nonempty_channels_and_markets",
-        "reader_card_semantics": "ReaderCardSemanticView",
-        "non_restatement_index": "normalize_to_minus_one",
-        "restatement_index": "strict",
-        "title_sentinel": "always_empty",
-    }
-)
+PROGRAM_ROUTE_DEADLINE_SECONDS: Final[int] = 20
 
-PROGRAM_INPUT_CONTRACT_SHA256: Final[str] = canonical_sha(
-    {
-        "context": "tracefold.news.TriageContext.v4",
-        # EventSemantics sees the selected history; ReaderCard sees only the Event.
-        "event_semantics_payload": "bounded_with_selected_told_context.v2",
-        "reader_card_payload": "bounded_evidence_only.v2",
-        "reader_card_semantic_view": "ReaderCardSemanticView.v1",
-        "news_retrieval": NEWS_RETRIEVAL_SHA256,
-        "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
-    }
-)
+PROGRAM_PRIMARY_BREAKER_FAILURES: Final[int] = 3
 
-PROGRAM_RENDERER_SHA256: Final[str] = canonical_sha(
-    {
-        "renderer": "d_generation_instruction_renderer_v2",
-        "order": [
-            "quality_kernel",
-            "rule_packs",
-            "learned_strategy",
-            "canonical_demos",
-            "final_authority_seal",
-            "untrusted_input",
-        ],
-        "unicode": "NFC",
-    }
-)
-
-PROGRAM_CONTEXT_RENDERER_SHA256: Final[str] = canonical_sha(
-    {
-        "renderer": "triage_context_per_predictor_payload_v2",
-        "event_semantics": "TriageContext.event_semantics_payload",
-        "reader_card": "TriageContext.reader_card_payload",
-        "canonical_json": True,
-        "audit_and_queue_hints": "excluded",
-        "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
-    }
-)
-
-PROGRAM_UNTRUSTED_DELIMITER_SHA256: Final[str] = canonical_sha(
-    {"open": "<tracefold-untrusted-event-json-v1>", "close": "</tracefold-untrusted-event-json-v1>"}
-)
-
-PROGRAM_SEMANTIC_VALIDATOR_SHA256: Final[str] = canonical_sha(
-    {
-        "validator": "event_semantics_context_v2",
-        "restatement_index": "visible_told_only",
-        "trade_relevance": "typed_and_consistent",
-    }
-)
-
-PROGRAM_NORMALIZER_SHA256: Final[str] = canonical_sha(
-    {
-        "normalizer": "semantic_normalizer_v2",
-        "non_restatement_restates": -1,
-        "trade_code_sets": "deduplicate_then_code_owned_order",
-    }
-)
+PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS: Final[int] = 60
 
 _UNTRUSTED_EVENT_OPEN: Final[str] = "<tracefold-untrusted-event-json-v1>"
 
@@ -287,11 +194,6 @@ _LEARNED_STRATEGY_AUTHORITY_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     ),
 )
 
-_DEMO_FIELDS: Final[dict[str, frozenset[str]]] = {
-    "event_semantics": frozenset({"evidence_json", "semantics"}),
-    "reader_card": frozenset({"evidence_json", "semantics_json", "card"}),
-}
-
 _MODEL_BINDING_SLOTS: Final[frozenset[str]] = frozenset(
     {
         "event_semantics.primary",
@@ -300,45 +202,6 @@ _MODEL_BINDING_SLOTS: Final[frozenset[str]] = frozenset(
         "reader_card.fallback",
     }
 )
-
-_FACTORY_SOURCE_RESOURCES: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
-    ("news/artifact_identity.py", ("artifact_identity.py",)),
-    ("news/reader_history.py", ("reader_history.py",)),
-    ("news/told_context.py", ("told_context.py",)),
-    ("news/program/runtime.py", ("program", "runtime.py")),
-    ("news/program/dspy_adapter.py", ("program", "dspy_adapter.py")),
-    ("news/program/contracts.py", ("program", "contracts.py")),
-    ("news/program/signatures.py", ("program", "signatures.py")),
-    ("news/program/artifact.py", ("program", "artifact.py")),
-    ("news/program/quality_baseline.py", ("program", "quality_baseline.py")),
-    ("news/program/graph.py", ("program", "graph.py")),
-)
-
-
-def _runtime_factory_source_sha256() -> str:
-    """Digest every package-owned source that can change Program behavior.
-
-    The resources are read from the installed ``tracefold.news`` package, so a
-    wheel never searches upward for a repository checkout.
-    """
-
-    package_root = importlib.resources.files("tracefold.news")
-    identities = {
-        logical_name: hashlib.sha256(package_root.joinpath(*parts).read_bytes()).hexdigest()
-        for logical_name, parts in _FACTORY_SOURCE_RESOURCES
-    }
-    return canonical_sha(identities)
-
-
-def _runtime_dependency_lock_sha256() -> str:
-    """Return the lock identity carried by every installed package.
-
-    A wheel has no repository root or ``uv.lock``.  The generated constant is
-    therefore part of the trusted application package, while a drift test and
-    the artifact maintenance tool require it to match the source lock exactly.
-    """
-
-    return PROGRAM_DEPENDENCY_LOCK_SHA256
 
 
 PredictorName = Literal["event_semantics", "reader_card"]
@@ -349,6 +212,11 @@ ModelSlotName = Literal[
     "reader_card.primary",
     "reader_card.fallback",
 ]
+
+PROGRAM_PREDICTOR_MAX_TOKENS: Final[dict[PredictorName, int]] = {
+    "event_semantics": PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+    "reader_card": PROGRAM_READER_CARD_MAX_TOKENS,
+}
 
 _VISIBLE_INPUT: Final[dict[str, type[BaseModel]]] = {
     "event_semantics": ModelVisibleSemanticsInput,

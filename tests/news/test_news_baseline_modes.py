@@ -20,10 +20,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, compile_program_factory, run_baseline
 from tracefold.news.learning.metric import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import (
-    ProgramArtifact,
-    load_stable_program_artifact,
-)
+from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.dspy_adapter import (
     PredictorAdapterError,
@@ -31,6 +28,7 @@ from tracefold.news.program.dspy_adapter import (
     ScriptedPredictorAdapter,
 )
 from tracefold.news.program.graph import DspyNewsSemanticProgram
+from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 _SEMANTICS: dict[str, Any] = {
@@ -123,12 +121,6 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
         },
     )
     return BaselineCase(episode=episode)
-
-
-def _artifact_with_execution(**updates: Any) -> ProgramArtifact:
-    base = load_stable_program_artifact()
-    artifact = base.model_copy(update={"execution": base.execution.model_copy(update=updates)})
-    return artifact.model_copy(update={"program_sha256": artifact.computed_sha256()})
 
 
 def _runtime(cases: list[BaselineCase], program: DspyNewsSemanticProgram, **kwargs: Any) -> Any:
@@ -265,14 +257,18 @@ def test_a_normal_runtime_case_is_exactly_two_physical_calls() -> None:
 
 
 def test_one_fast_retry_stays_inside_the_three_call_route_ceiling() -> None:
-    """`max_calls_per_route` is 3: two calls plus the single shared fast retry."""
+    """A route spends at most 3 calls: two Predictors plus the single shared fast retry.
+
+    The ceiling is code owned by the factory now, not a number copied into the Artifact and hashed there, so
+    this asserts the executed budget directly instead of comparing it against a published field.
+    """
 
     primary = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, _CARD])
     program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
     report = _runtime([_case(1)], program)
 
     assert report.route["answered_by"] == {"primary": 1}
-    assert report.route["physical_call_count"] == 3 == load_stable_program_artifact().execution.max_calls_per_route
+    assert report.route["physical_call_count"] == 3
     assert len(primary.requests) == 3
 
 
@@ -280,7 +276,6 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
     """Six physical calls is the whole chain budget. A case that spends it answered nothing, and a baseline
     that scored it 0 would be indistinguishable from a card the reader disliked."""
 
-    execution = load_stable_program_artifact().execution
     primary = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, {"nonsense": True}])
     fallback = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, {"nonsense": True}])
     program = DspyNewsSemanticProgram(
@@ -292,7 +287,7 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
     assert report.population["failure_n"] == 1
     assert report.scores["case_macro_answered"] is None, "nothing answered, so there is nothing to average"
     assert report.scores["case_macro_failure_as_zero"] == 0.0
-    assert len(primary.requests) + len(fallback.requests) == 6 == execution.max_calls_per_chain
+    assert len(primary.requests) + len(fallback.requests) == 6
     # Every one of those six calls is published, not silently dropped with the case.
     assert report.route["physical_call_count"] == 6
     assert report.cases[0].physical_calls == 6
@@ -349,29 +344,30 @@ def test_runtime_cases_run_sequentially_in_one_deterministic_order() -> None:
 
 def test_the_primary_breaker_carries_across_cases_within_one_run() -> None:
     """The breaker is what makes the order matter: once transport opens it, later cases go to fallback
-    without a primary attempt, and the report shows both routes rather than one."""
+    without a primary attempt, and the report shows both routes rather than one.
 
-    artifact = _artifact_with_execution(primary_breaker_failures=1)
+    The threshold is `PROGRAM_PRIMARY_BREAKER_FAILURES`, code owned by the factory. It used to be an Artifact
+    field a test could lower to 1, so this drives the shipped number instead: N failing cases open it, and the
+    case after that never reaches the primary transport at all.
+    """
+
+    assert PROGRAM_PRIMARY_BREAKER_FAILURES == 3
+    artifact = load_stable_program_artifact()
+    cases = [_case(index) for index in range(1, PROGRAM_PRIMARY_BREAKER_FAILURES + 2)]
+    # Two attempts per failing case: the first call plus the single shared fast retry.
     primary = ScriptedPredictorAdapter(
-        [
-            PredictorAdapterError("provider_busy", retryable=True),
-            PredictorAdapterError("provider_busy", retryable=True),
-        ]
+        [PredictorAdapterError("provider_busy", retryable=True)] * (2 * PROGRAM_PRIMARY_BREAKER_FAILURES)
     )
-    fallback = ScriptedPredictorAdapter([_SEMANTICS, _CARD] * 3)
+    fallback = ScriptedPredictorAdapter([_SEMANTICS, _CARD] * len(cases))
     program = DspyNewsSemanticProgram(artifact, primary_adapter=primary, fallback_adapter=fallback)
 
-    report = run_baseline(
-        [_case(1), _case(2), _case(3)],
-        mode="runtime_live",
-        artifact=artifact,
-        semantic_judge=program,
-    )
+    report = run_baseline(cases, mode="runtime_live", artifact=artifact, semantic_judge=program)
 
-    assert report.route["answered_by"] == {"fallback": 3}
-    # The primary was tried once (two attempts) and then left alone: the breaker is real state, not a label.
-    assert len(primary.requests) == 2
-    assert len(fallback.requests) == 6
+    assert report.route["answered_by"] == {"fallback": len(cases)}
+    # The primary was tried for the first three cases and then left alone: the breaker is real state, not a
+    # label. The fourth case spends nothing on a transport that is already known to be down.
+    assert len(primary.requests) == 2 * PROGRAM_PRIMARY_BREAKER_FAILURES
+    assert len(fallback.requests) == 2 * len(cases)
 
 
 def test_a_runtime_receipt_names_no_endpoint_credential_or_url() -> None:

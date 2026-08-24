@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -498,3 +499,19 @@ def test_the_compile_source_seal_is_computable_from_the_package() -> None:
     # Deterministic — the host and the container must agree on it across processes.
     assert compiler_source_sha256() == compiler
     assert proxy_source_sha256() == proxy
+
+
+def test_the_compiler_dependency_lock_identity_matches_the_source_lock() -> None:
+    """#193: the lock attestation moved off the Program artifact onto the compiler boundary.
+
+    `_verify_image_payload_before_secrets` compares this constant against the `uv.lock` copied out of the
+    compiler image before any secret is staged, so a repository lock bump that does not update it fails
+    every compile at image preflight. The Program artifact no longer carries a dependency lock at all —
+    a wheel has no `uv.lock`, and the Program's behavior never depended on it — so this drift test lives
+    beside the source seal that the same preflight computes.
+    """
+
+    from tracefold.news.learning.compiler.source_identity import COMPILER_DEPENDENCY_LOCK_SHA256
+
+    repository_root = Path(__file__).resolve().parents[2]
+    assert hashlib.sha256((repository_root / "uv.lock").read_bytes()).hexdigest() == COMPILER_DEPENDENCY_LOCK_SHA256

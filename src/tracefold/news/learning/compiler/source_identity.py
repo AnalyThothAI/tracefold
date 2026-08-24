@@ -20,6 +20,13 @@ from ...artifact_identity import canonical_sha
 _NEWS_ROOT = Path(str(importlib.resources.files("tracefold.news")))
 _TRACEFOLD_ROOT = _NEWS_ROOT.parent
 
+# The dependency identity the host expects to find inside the compiler image. It lives here, with the
+# host/container attestation that consumes it, rather than in the Program artifact: a wheel has no
+# `uv.lock`, the Program's running behavior does not depend on this file, and the only party that reads
+# it is `_verify_image_payload_before_secrets`, which compares it against the lock copied out of the
+# image before any secret is staged. A drift test keeps it equal to the source lock.
+COMPILER_DEPENDENCY_LOCK_SHA256 = "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37"
+
 
 def compiler_source_sha256(*, tracefold_root: Path | None = None) -> str:
     return _source_root("tracefold.news.compiler_source.v2", tracefold_root=tracefold_root)
@@ -49,4 +56,4 @@ def _source_root(schema: str, *, tracefold_root: Path | None) -> str:
     return canonical_sha({"schema": schema, "files": payload})
 
 
-__all__ = ["compiler_source_sha256", "proxy_source_sha256"]
+__all__ = ["COMPILER_DEPENDENCY_LOCK_SHA256", "compiler_source_sha256", "proxy_source_sha256"]

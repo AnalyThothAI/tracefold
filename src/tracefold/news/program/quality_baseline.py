@@ -2,16 +2,24 @@
 
 """Reviewed, code-owned quality rules for the News semantic Program.
 
-The nine coarse packs below are the sole editable expert-rule truth. The
-runtime renderer turns them into Predictor instructions in a fixed order; an
-Artifact can reference their literal identities but neither an Artifact nor an
-optimizer may create or modify a pack.
+The nine coarse packs below are the sole editable expert-rule truth, and the renderer reads them from
+here directly: no artifact carries a copy, and neither an artifact nor an optimizer may create or modify
+a pack. `validate_expert_baseline_coverage` is the one gate they pass before any of them reaches a
+prompt, so a pack that loses its reviewed anchor, drifts out of NFC, grows past its budget or carries
+credential-shaped bytes fails closed here rather than in whichever copy happened to be validated.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Final, Literal
+
+from .runtime import (
+    _HIGH_CONFIDENCE_SECRET_PATTERNS,
+    PROGRAM_RULE_PACK_BODY_MAX_BYTES,
+    PROGRAM_RULE_PACK_MAX,
+)
 
 PredictorTarget = Literal["event_semantics", "reader_card", "both"]
 
@@ -530,7 +538,13 @@ EXPERT_BASELINE_COVERAGE: Final[dict[str, CoverageAnchor]] = {
 
 
 def validate_expert_baseline_coverage() -> None:
-    """Fail closed unless every reviewed anchor resolves to one exact pack."""
+    """Fail closed unless every reviewed anchor resolves to one exact pack, within its bounds.
+
+    The per-pack bounds used to live on the Artifact's ``RulePack`` model, which validated a copy of
+    these specs on every load. The copy is gone; the checks are not, because they are about the packs
+    themselves — a pack that is not NFC, carries credential-shaped bytes, or grows past its budget is a
+    problem here, once, rather than in whichever serialized copy happened to be validated.
+    """
 
     packs = {pack.rule_id: pack for pack in RULE_PACK_SPECS}
     expected_ids = (
@@ -550,11 +564,22 @@ def validate_expert_baseline_coverage() -> None:
         raise ValueError("news_program_expert_rule_pack_order_invalid")
     if len(packs) != len(RULE_PACK_SPECS):
         raise ValueError("news_program_expert_rule_pack_duplicate")
+    if len(RULE_PACK_SPECS) > PROGRAM_RULE_PACK_MAX:
+        raise ValueError("news_program_rule_pack_count_too_large")
+    for pack in RULE_PACK_SPECS:
+        if unicodedata.normalize("NFC", pack.body) != pack.body:
+            raise ValueError(f"news_program_rule_pack_unicode_noncanonical:{pack.rule_id}")
+        if not pack.body or len(pack.body.encode("utf-8")) > PROGRAM_RULE_PACK_BODY_MAX_BYTES:
+            raise ValueError(f"news_program_rule_pack_body_too_large:{pack.rule_id}")
+        if any(pattern.search(pack.body) for pattern in _HIGH_CONFIDENCE_SECRET_PATTERNS):
+            raise ValueError(f"news_program_rule_pack_secret:{pack.rule_id}")
+        if len(set(pack.example_refs)) != len(pack.example_refs):
+            raise ValueError(f"news_program_rule_pack_example_ref_duplicate:{pack.rule_id}")
     for name, anchor in EXPERT_BASELINE_COVERAGE.items():
-        pack = packs.get(anchor.rule_id)
-        if pack is None or anchor.marker not in pack.body:
+        anchored = packs.get(anchor.rule_id)
+        if anchored is None or anchor.marker not in anchored.body:
             raise ValueError(f"news_program_expert_baseline_rule_missing:{anchor.predictor}:{name}")
-        if pack.target not in {anchor.predictor, "both"}:
+        if anchored.target not in {anchor.predictor, "both"}:
             raise ValueError(f"news_program_expert_baseline_target_mismatch:{anchor.predictor}:{name}")
 
 

@@ -24,10 +24,11 @@ from ..events.storyline import final_storyline_key
 from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
+from ..program.runtime import PROGRAM_FACTORY_ID
 from .compiler.security import (
     COMPILE_EPISODE_PROJECTION_SCHEMA,
     OptimizerCompileProvenanceV3,
-    ProgramMachineDiffV3,
+    ProgramMachineDiffV4,
     validate_compile_receipt_chain_v3,
 )
 from .contracts import (
@@ -66,8 +67,9 @@ EVALUATOR_VERSION = "news_candidate_evaluator_v1"
 # Must equal the `reset_reason` migration 0302 wrote for `program_v7`. The evaluator validates the
 # epoch row field by field, so a bumped epoch with a stale reason here fails every evaluation.
 LEARNING_EPOCH_RESET_REASON = "program_learning_package_split_identity_migration"
-LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.program.factory_v5"
-LEARNING_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
+# Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
+# stop duplicating, and it would drift silently the first time the factory is bumped.
+LEARNING_PROGRAM_FACTORY_ID = PROGRAM_FACTORY_ID
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
@@ -836,7 +838,7 @@ class CandidateEvaluator:
                 raise ValueError("news_learning_program_machine_diff_required")
             machine_diff = dict(receipt.program_machine_diff)
             try:
-                parsed_diff = ProgramMachineDiffV3.model_validate(machine_diff)
+                parsed_diff = ProgramMachineDiffV4.model_validate(machine_diff)
             except (TypeError, ValueError) as exc:
                 raise ValueError("news_learning_program_machine_diff_invalid") from exc
             if parsed_diff.model_dump(mode="json") != machine_diff:
@@ -870,12 +872,7 @@ class CandidateEvaluator:
                 raise ValueError("news_learning_program_compile_parent_mismatch")
             if (
                 parsed_diff.parent_program_sha256 != receipt.program_parent_sha256
-                or parsed_diff.parent_state_sha256 != parsed_provenance.parent_state_sha256
                 or parsed_diff.candidate_program_sha256 != receipt.program_candidate_sha256
-                or parsed_diff.candidate_state_sha256 != receipt.program_state_sha256
-                or parsed_diff.immutable.quality_kernel_sha256 != parsed_provenance.quality_kernel_sha256
-                or parsed_diff.immutable.rule_pack_root_sha256 != parsed_provenance.rule_pack_root_sha256
-                or parsed_diff.eligible_demo_bank_root_sha256 != parsed_provenance.eligible_demo_bank_root_sha256
             ):
                 raise ValueError("news_learning_program_machine_diff_identity_mismatch")
             if (
@@ -896,7 +893,6 @@ class CandidateEvaluator:
             for value in (
                 receipt.program_parent_sha256,
                 receipt.program_candidate_sha256,
-                receipt.program_state_sha256,
                 receipt.program_machine_diff,
                 receipt.compile_provenance,
             )
@@ -1859,9 +1855,6 @@ class CandidateEvaluator:
         provider = response_provider or "unobserved"
         request_sha = str(call.get("request_sha256") or "")
         input_sha = str(call.get("input_sha256") or "")
-        signature_sha = str(call.get("signature_sha256") or "")
-        instruction_sha = str(call.get("instruction_sha256") or "")
-        demos_sha = str(call.get("demos_sha256") or "")
         model = response_model or "unobserved"
         model_sha = response_model_sha or _sha({"provider": provider, "model": model})
         expected_runtime_binding_sha = _sha(
@@ -1876,12 +1869,6 @@ class CandidateEvaluator:
                 "program_sha256": arm.program_sha256,
                 "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
                 "factory_id": trace.get("factory_id"),
-                "topology_sha256": trace.get("topology_sha256"),
-                "adapter_sha256": trace.get("adapter_sha256"),
-                "assembler_sha256": trace.get("assembler_sha256"),
-                "signature_sha256": signature_sha,
-                "instruction_sha256": instruction_sha,
-                "demos_sha256": demos_sha,
                 "runtime_binding_sha256": runtime_binding_sha,
                 "provider": provider,
             }
@@ -1899,10 +1886,6 @@ class CandidateEvaluator:
             "route": route,
             "request_sha256": request_sha,
             "input_sha256": input_sha,
-            "signature_sha256": signature_sha,
-            "instruction_sha256": instruction_sha,
-            "demos_sha256": demos_sha,
-            "adapter_sha256": trace.get("adapter_sha256"),
             "model_binding": model_binding,
             "runtime_provider": runtime_provider,
             "runtime_model": runtime_model,
@@ -2692,8 +2675,6 @@ class CandidateEvaluator:
                 provenance=provenance,
                 patch_sha256=receipt.candidate_patch_sha,
                 parent_program_sha256=str(receipt.program_parent_sha256),
-                parent_state_sha256=provenance.parent_state_sha256,
-                eligible_demo_bank_root_sha256=provenance.eligible_demo_bank_root_sha256,
                 target_runtime_manifest_sha256=candidate.candidate_arm.runtime_model_bindings_sha256,
             )
         except (TypeError, ValueError) as exc:
@@ -2943,17 +2924,19 @@ class CandidateEvaluator:
 
     def _learning_epoch_started_at_ms(self) -> int:
         row = self._conn.execute(
-            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
-            "baseline_program_version, prior_evidence_disposition, reset_reason "
+            "SELECT starts_at_ms, baseline_program_version, prior_evidence_disposition, reset_reason "
             "FROM news_learning_epochs WHERE epoch_id = %s",
             (LEARNING_EPOCH,),
         ).fetchone()
         if row is None:
             raise ValueError("news_learning_epoch_not_deployed")
+        # `program_factory_id` and `artifact_schema_version` name what the epoch was *opened* with, the
+        # same way `baseline_program_sha256` does. The Program root is re-issued inside an epoch whenever
+        # its serialization or factory changes without changing which evidence is eligible (#173/#174,
+        # #190, #193), so asserting today's runtime values against them would fail a correctly migrated
+        # database. What the epoch actually gates is the eligible window and the evidence disposition.
         if (
-            str(row["program_factory_id"]) != LEARNING_PROGRAM_FACTORY_ID
-            or str(row["artifact_schema_version"]) != LEARNING_ARTIFACT_SCHEMA_VERSION
-            or str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
+            str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
             or str(row["prior_evidence_disposition"]) != "audit_only"
             or str(row["reset_reason"]) != LEARNING_EPOCH_RESET_REASON
         ):
@@ -3015,11 +2998,11 @@ def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
     physical_calls = [call for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
-    adapter_sha = str(trace.get("adapter_sha256") or "") if isinstance(trace, Mapping) else ""
+    factory_id = str(trace.get("factory_id") or "") if isinstance(trace, Mapping) else ""
     return (
         usage.get("physical_call_count") is not None
         and int(usage["physical_call_count"]) == len(physical_calls)
-        and (not physical_calls or (len(adapter_sha) == 64 and all(char in "0123456789abcdef" for char in adapter_sha)))
+        and (not physical_calls or factory_id == LEARNING_PROGRAM_FACTORY_ID)
         and all(_program_call_identity_complete(call) for call in physical_calls)
     )
 

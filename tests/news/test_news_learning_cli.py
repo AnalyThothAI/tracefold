@@ -13,6 +13,7 @@ from tracefold.app.cli.commands.news_learning_runtime import _learning_program_j
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
+from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
 
 
 def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
@@ -277,7 +278,7 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
     assert stable_judge is not candidate_judge
     assert stable_judge.primary_adapter is not candidate_judge.primary_adapter
     assert stable_judge.primary_adapter.requests is not candidate_judge.primary_adapter.requests
-    for _ in range(artifact.execution.primary_breaker_failures):
+    for _ in range(PROGRAM_PRIMARY_BREAKER_FAILURES):
         stable_judge._record_primary_failure()
     assert stable_judge._primary_open_until > 0
     assert candidate_judge._primary_open_until == 0

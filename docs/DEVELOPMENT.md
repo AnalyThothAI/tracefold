@@ -100,19 +100,25 @@ not the phases themselves. Use code review and static typing to improve
 cohesion; do not turn exact line counts, `Any` occurrences, suppression counts,
 or historical file inventories into permanent architecture contracts.
 
-**Program identity.** Prompt, RulePack, DemoBank, model routing, call budgets,
-`program_sha256`, the policy version and the metric identity are release
-evidence, not implementation details. A structural change must leave every one
+**Program identity.** The two advisory instructions and `program_sha256`, the
+`factory_id` that versions code-owned prompt/RulePack/route/budget behavior,
+the policy version and the metric identity are release evidence, not
+implementation details. A structural change must leave every one
 of them byte-identical, and the Issue #162 refactor baseline
-(`python -m tests.support.refactor_baseline --check`) is what proves it. Moving
-a factory source resource changes the content-addressed Program and belongs to
-an explicit, evidence-gated identity migration.
+(`python -m tests.support.refactor_baseline --check`) is what proves it. A
+change to code-owned behavior — a RulePack body, the renderer, the normalizer
+or assembler, the route or the call budget — is a factory bump you declare, not
+a component hash that cascades on its own; both belong to an explicit,
+evidence-gated identity migration.
 
-Issue #190 is one such explicit hard cut: `canonical_json` now rejects
-NaN/Infinity instead of emitting non-standard JSON. Valid state bytes, prompts,
-RulePacks, policy, routes, call budgets, and the state hash are unchanged, but
-the sealed factory source changes, so the sole stable v7 artifact is reissued
-as `cff8fdfbb5f8c101bcc9145103e79fd5265a6550c85aa5e83aeaf25536c31b03`.
+Issue #193 is one such explicit hard cut. The artifact becomes one canonical
+document holding `schema_version` `news_program_strategy_artifact_v1`,
+`factory_id` `tracefold.news.program.factory_v6` and the two instructions, with
+`program_sha256` over exactly those four values, so the sole stable v7 root is
+reissued as
+`e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`. Prompt
+bytes move with it: the RulePack and advisory digests left the rendered
+instruction, and the empty demo section left with the DemoBank family.
 
 ## Tests
 
@@ -201,8 +207,10 @@ non-passing outcome counts; and the explicit `live` deselection. A successful
 evidence run has zero failed, skipped, xfailed, xpassed, and rerun outcomes.
 Hypothesis is a test-only development dependency pinned with hashes in
 `property.lock` and installed by `make sync`; it stays outside root `uv.lock`
-because that file is byte-bound into the stable Program quality kernel. A
-test-tool addition must not silently migrate Program identity.
+because that file is byte-bound into the compiler image's
+`COMPILER_DEPENDENCY_LOCK_SHA256` host-to-container attestation. A test-tool
+addition must not silently move an identity the host verifies before staging a
+provider secret.
 
 Required CI has four jobs: hermetic `quality` (`make check`), hermetic `fast`
 (`make test-fast`), resource-backed `deterministic-full` (`make
@@ -364,12 +372,15 @@ preserves history and starts `program_v6` for
 factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
 protocol/receipt v3. `0303` preserves history and starts the current
 `program_v7` for factory/executable v5. Every earlier review, dataset, recording and release receipt
-remains immutable audit history but is not compiler, DemoBank, validation,
+remains immutable audit history but is not compiler, validation,
 holdout or promotion evidence. New datasets require post-epoch reviews and
 acceptance receipts bound to the exact stable Program bundle, so quality
 evidence begins at zero. Issue #190 later reissues the sole bundle inside v7
-for canonical non-finite-number rejection; it does not change the epoch or make
-an older bundle executable in the new image.
+for canonical non-finite-number rejection, and Issue #193 reissues it again as
+the single-document strategy artifact under factory v6; `0304` trips open
+canaries and receipts that cut. Neither re-issue changes the epoch or makes an
+older bundle executable in the new image, and accepted `news_review_v4` truth
+stays eligible across both.
 
 Review v4 uses exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
@@ -383,7 +394,7 @@ truth.
 `learning compile` is a cold, operator-invoked DSPy GEPA workflow, not a Worker
 and not a release gate. The trusted side seals the exact current development
 corpus; an isolated runner sees neither DB nor holdout and can write only a
-bounded `ProgramPatchV2` for LearnedStrategy and eligible Demo references.
+bounded `ProgramStrategyPatchV1` carrying the two advisory instructions.
 
 `learning baseline` (#143) is the step that has to come first and did not exist
 until then: a cold, read-only `dspy.Evaluate` over the same graph, the same
@@ -395,11 +406,11 @@ worth stating plainly, because both were invisible while the compiler's only
 tests drove a fake GEPA:
 
 - **`dspy.GEPA` never writes demos.** Its `build_program` only assigns
-  `pred.signature = pred.signature.with_instructions(...)`. `DemoBank`,
-  `EligibleDemoBank` and `demo_refs` are therefore always empty under this
-  optimizer — a recorded property, not a defect to chase. Demos would need a
-  `BootstrapFewShot` pass after GEPA, and only then would the metric need the
-  tutorial's `if trace is not None: return score >= 1.0` branch.
+  `pred.signature = pred.signature.with_instructions(...)`, which is why the
+  write set is exactly two instructions and why #193 deleted the demo models
+  outright instead of shipping a bank that is required to stay empty. Demos
+  would need a `BootstrapFewShot` pass after GEPA, and only then would the
+  metric need the tutorial's `if trace is not None: return score >= 1.0` branch.
 - **GEPA matches traces to components by signature equality**
   (`t[0].signature.equals(module.signature)`). `_OptimizerOwnedPredictor` renders
   RulePacks plus the advisory into a fresh inner `dspy.Predict` and delegates, so
@@ -411,8 +422,8 @@ tests drove a fake GEPA:
 The reflection endpoint is configured separately from the task endpoint
 (`llm.news_compiler_reflection`) with its own 32k-token, 300 s, temperature-1.0
 budget. Passing one endpoint for both made the local student its own teacher,
-capped a proposed instruction at the task route's 1,200 tokens — below what
-`LearnedStrategy` itself accepts — and pointed a multi-hour run at the same
+capped a proposed instruction at the task route's 1,200 tokens — below the
+2,048 the advisory bound itself accepts — and pointed a multi-hour run at the same
 single-slot GPU that serves production Triage. A code-owned
 `RulePackAwareProposer` puts the full rendered instruction in front of the
 reflection model as read-only context; before it, `<curr_param>` was one space
@@ -524,10 +535,10 @@ fixes.
 The operator config must contain one complete, positive
 `llm.news_compiler_tariff`; every invocation pins the exact local compiler
 image ID and states metric/model/total-cost and resource limits plus a seed. The
-trusted applier revalidates the complete receipt chain and constructs canonical
-state-only JSON from the exact stable root. The runner cannot write accepted
-truth, register a candidate, alter trusted Program state, accept, deploy or
-promote.
+trusted applier revalidates the complete receipt chain and reissues the
+canonical artifact document from the exact stable root. The runner cannot write
+accepted truth, register a candidate, alter trusted Program state, accept,
+deploy or promote.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,

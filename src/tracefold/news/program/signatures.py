@@ -1,22 +1,18 @@
-"""The two Predictor output shapes, and their frozen signature identities.
+"""The two Predictor output shapes.
 
-`EventSemantics` is what the interpreting Predictor must return; `ReaderCard` is what the writing one
-must. They sit below both `artifact.py` and `graph.py` because the artifact validates stored demos
-against them while the graph validates live answers against them — a shared floor, not a layer.
-
-These are Pydantic models, not `dspy.Signature` classes. The DSPy signature objects bound to them live
-in `dspy_adapter.py`, which is the only module allowed to import DSPy.
+`EventSemantics` is what the interpreting Predictor must return; `ReaderCard` is what the writing one must.
+They are code-owned schemas, versioned by `factory_id` along with the rest of the graph, and the DSPy
+signature objects bound to them live in `dspy_adapter.py` — the only module allowed to import DSPy.
 """
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Literal
 
 from pydantic import Field, model_validator
 
-from ..artifact_identity import canonical_sha
 from ..models import TriageAsset
-from .contracts import ReaderCardSemanticView, TradeRelevanceV1
+from .contracts import TradeRelevanceV1
 from .runtime import _ExactModel
 
 
@@ -66,23 +62,3 @@ class ReaderCard(_ExactModel):
         if not self.headline_zh.strip():
             raise ValueError("news_program_reader_headline_empty")
         return self
-
-
-EVENT_SEMANTICS_SIGNATURE_SHA256: Final[str] = canonical_sha(
-    {
-        "signature": "EventSemantics.v2",
-        "inputs": {"evidence_json": "delimited canonical ModelVisibleSemanticsInput"},
-        "outputs": {"semantics": EventSemantics.model_json_schema()},
-    }
-)
-
-READER_CARD_SIGNATURE_SHA256: Final[str] = canonical_sha(
-    {
-        "signature": "ReaderCard.v2",
-        "inputs": {
-            "evidence_json": "delimited canonical ModelVisibleCardInput",
-            "semantics_json": ReaderCardSemanticView.model_json_schema(),
-        },
-        "outputs": {"card": ReaderCard.model_json_schema()},
-    }
-)

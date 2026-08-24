@@ -12,7 +12,7 @@ from tracefold.news import NEWS_RETRIEVAL_SHA256
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.program.artifact import (
-    ProgramArtifact,
+    ProgramStrategyArtifactV1,
     load_program_artifact,
     load_stable_program_artifact,
 )
@@ -22,6 +22,7 @@ from tracefold.news.program.dspy_adapter import (
     RuntimeModelIdentity,
 )
 from tracefold.news.program.graph import DspyNewsSemanticProgram
+from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
 from tracefold.platform.config.models import news_model_availability
 
 
@@ -67,7 +68,7 @@ class NewsProgramRuntimeComposition:
 
     def semantic_judge(
         self,
-        artifact: ProgramArtifact,
+        artifact: ProgramStrategyArtifactV1,
         *,
         adapter_type: Any = DspyPredictorAdapter,
     ) -> SemanticJudge | None:
@@ -75,7 +76,7 @@ class NewsProgramRuntimeComposition:
 
         if not self.program_configured:
             return None
-        timeout = float(artifact.execution.route_deadline_seconds)
+        timeout = float(PROGRAM_ROUTE_DEADLINE_SECONDS)
 
         def adapter(endpoint: ConfiguredLMEndpoint, *, max_tokens: int) -> Any:
             return adapter_type.from_runtime(
@@ -179,7 +180,7 @@ def active_arm_manifest(
     composition = runtime_composition or compose_news_program_runtime(settings)
     policy = settings.news.policy.model_dump(mode="json")
     return ArmManifest(
-        program_version=artifact.program_version,
+        program_version=PROGRAM_VERSION,
         program_sha256=artifact.program_sha256,
         runtime_model_bindings_sha256=composition.runtime_model_bindings_sha256,
         # Composite identity for both bounded source assembly and candidate-conditioned selection.
@@ -189,30 +190,31 @@ def active_arm_manifest(
     )
 
 
-def candidate_program_artifact(candidate: CandidateManifest, stable_artifact: ProgramArtifact) -> ProgramArtifact:
+def candidate_program_artifact(
+    candidate: CandidateManifest,
+    stable_artifact: ProgramStrategyArtifactV1,
+) -> ProgramStrategyArtifactV1:
     """Resolve and validate the Program executable carried by one candidate.
 
-    Policy candidates reuse the stable artifact identity. Program candidates
-    must resolve to an image-carried child of that exact stable Program. This
-    resolver is shared by worker composition and the canary control CLI so an
-    artifact rejected at startup cannot later be armed from its manifest alone.
+    Policy candidates reuse the stable artifact identity. Program candidates must resolve to an
+    image-carried artifact whose parent, recorded on the candidate's own proposal receipt, is that exact
+    stable Program — lineage belongs to the candidate, not to the running behavior. This resolver is
+    shared by worker composition and the canary control CLI so an artifact rejected at startup cannot
+    later be armed from its manifest alone.
     """
 
     arm = candidate.candidate_arm
     if candidate.target == "policy":
-        if (
-            arm.program_version != stable_artifact.program_version
-            or arm.program_sha256 != stable_artifact.program_sha256
-        ):
+        if arm.program_version != PROGRAM_VERSION or arm.program_sha256 != stable_artifact.program_sha256:
             raise ValueError("news_policy_candidate_program_identity_changed")
         return stable_artifact
-    artifact = load_program_artifact(arm.program_sha256)
     if (
-        artifact.program_version != arm.program_version
-        or artifact.parent_program_sha256 != stable_artifact.program_sha256
+        arm.program_version != PROGRAM_VERSION
+        or candidate.proposal_receipt.program_parent_sha256 != stable_artifact.program_sha256
+        or candidate.proposal_receipt.program_candidate_sha256 != arm.program_sha256
     ):
         raise ValueError("news_candidate_program_parent_mismatch")
-    return artifact
+    return load_program_artifact(arm.program_sha256)
 
 
 def artifact_valid_candidate_bundles(
@@ -222,10 +224,7 @@ def artifact_valid_candidate_bundles(
     """Return only same-parent candidates whose executable artifact validates."""
 
     stable_artifact = load_stable_program_artifact()
-    if (
-        stable_artifact.program_version != stable.program_version
-        or stable_artifact.program_sha256 != stable.program_sha256
-    ):
+    if stable.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable.program_sha256:
         raise ValueError("news_stable_program_manifest_mismatch")
     shipped: dict[str, str] = {}
     for candidate_sha, candidate in candidates.items():
