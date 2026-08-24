@@ -544,7 +544,10 @@ then-current release chain. `20260822_0295` preserves v1-v3 and appends the
 hard-renames `news_events.priority` to `queue_priority`, appends atomic
 editorial/scored/runtime-manifest identity to verdicts, trips prior canaries,
 and starts `program_v6` with factory/executable v4 and policy v10. Every earlier
-row and review version is audit-only for the current compiler and release chain. A database
+row and review version is audit-only for the current compiler and release chain.
+`20260824_0302` adds the reverse `(event_id, symbol)` read index for bounded
+reader-history asset projection; it changes no fact, table, Program, or policy.
+A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
 News base-table set plus four security-barrier review views is asserted by
@@ -636,7 +639,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260823_0301`). Since
+append without rewrite access (current at migration `20260824_0302`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

@@ -128,9 +128,11 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
     # factory source closure is addressed by logical file name, so the move re-issues the Program root
     # with no prompt, RulePack, policy, model route or call budget changed — and the epoch, program and
     # factory identities are bumped explicitly to say so. Every leaf below is that one migration.
+    # Two migrations moved the head: #175's reader-history index (0302) and PR8-B's epoch (0303). A dict
+    # has one key, so the reason names both rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "20260824_0302",
+        "issue_175_reader_history_index_then_issue_162_pr8b_program_v7_epoch",
+        "20260824_0303",
     ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",

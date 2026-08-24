@@ -1,0 +1,103 @@
+{
+  "schema": "tracefold.news.reader_history_fixture.v1",
+  "cases": [
+    {
+      "case_id": "alibaba_overnight_restatement",
+      "now_ms": 2000000000000,
+      "current": {"comparison_fingerprint": "alibaba-current", "canonical_assets": ["BABA"]},
+      "prior_rows": [
+        {
+          "event_id": "alibaba-prior",
+          "at_ms": 1999978400000,
+          "comparison_fingerprint": "alibaba-prior-fingerprint",
+          "canonical_assets": ["BABA"],
+          "grounded_assets": ["9988"],
+          "headline_zh": "阿里巴巴宣布香港配股融资",
+          "direction": "bearish"
+        }
+      ],
+      "expected_novelty": "restatement"
+    },
+    {
+      "case_id": "ordinary_24h_restatement",
+      "now_ms": 2000000000000,
+      "current": {"comparison_fingerprint": "same-normalized-fact", "canonical_assets": []},
+      "prior_rows": [
+        {
+          "event_id": "ordinary-prior",
+          "at_ms": 1999913600000,
+          "comparison_fingerprint": "same-normalized-fact",
+          "canonical_assets": [],
+          "headline_zh": "监管机构公布同一项决定",
+          "direction": "neutral"
+        }
+      ],
+      "expected_novelty": "restatement"
+    },
+    {
+      "case_id": "material_progression",
+      "now_ms": 2000000000000,
+      "current": {"comparison_fingerprint": "progression-current", "canonical_assets": ["ETH"]},
+      "prior_rows": [
+        {
+          "event_id": "progression-prior",
+          "at_ms": 1999978400000,
+          "comparison_fingerprint": "progression-prior",
+          "canonical_assets": ["ETH"],
+          "headline_zh": "协议宣布升级计划",
+          "direction": "bullish"
+        }
+      ],
+      "expected_novelty": "progression"
+    },
+    {
+      "case_id": "same_asset_new_fact",
+      "now_ms": 2000000000000,
+      "current": {"comparison_fingerprint": "new-fact-current", "canonical_assets": ["BABA"]},
+      "prior_rows": [
+        {
+          "event_id": "same-asset-prior",
+          "at_ms": 1999978400000,
+          "comparison_fingerprint": "earnings-prior",
+          "canonical_assets": ["BABA"],
+          "headline_zh": "阿里巴巴公布季度业绩",
+          "direction": "bullish"
+        }
+      ],
+      "expected_novelty": "new_fact"
+    },
+    {
+      "case_id": "direction_reversal",
+      "now_ms": 2000000000000,
+      "current": {"comparison_fingerprint": "reversal-current", "canonical_assets": ["BTC"]},
+      "prior_rows": [
+        {
+          "event_id": "reversal-prior",
+          "at_ms": 1999978400000,
+          "comparison_fingerprint": "reversal-prior",
+          "canonical_assets": ["BTC"],
+          "headline_zh": "比特币 ETF 录得净流入",
+          "direction": "bullish"
+        }
+      ],
+      "expected_novelty": "progression"
+    },
+    {
+      "case_id": "telemetry_control",
+      "now_ms": 2000000000000,
+      "current": {"comparison_fingerprint": "oi-current", "canonical_assets": ["SOL"]},
+      "include_targeted": false,
+      "prior_rows": [
+        {
+          "event_id": "telemetry-prior",
+          "at_ms": 1999978400000,
+          "comparison_fingerprint": "oi-current",
+          "canonical_assets": ["SOL"],
+          "headline_zh": "SOL 持仓量异动",
+          "direction": "bullish"
+        }
+      ],
+      "expected_novelty": "new_fact"
+    }
+  ]
+}

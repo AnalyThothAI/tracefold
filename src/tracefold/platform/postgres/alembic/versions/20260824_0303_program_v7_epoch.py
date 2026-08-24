@@ -10,16 +10,16 @@ under ``program_v7``.  That cost is nil in practice: the v6 epoch closed with ze
 ``news_review_v4`` reviews, zero canary activations and zero Trading cases, which is exactly why this
 migration was scheduled now rather than after a corpus had been built and then invalidated.
 
-Revision ID: 20260824_0302
-Revises: 20260823_0301
+Revision ID: 20260824_0303
+Revises: 20260824_0302
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260824_0302"
-down_revision = "20260823_0301"
+revision = "20260824_0303"
+down_revision = "20260824_0302"
 branch_labels = None
 depends_on = None
 
@@ -82,4 +82,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260824_0302 is an irreversible append-only Program evidence epoch")
+    raise RuntimeError("20260824_0303 is an irreversible append-only Program evidence epoch")

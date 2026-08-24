@@ -1,5 +1,6 @@
 """Issue #162 refactor baseline remains an exact behavior/runtime contract."""
 
+import re
 from typing import Any
 
 import pytest
@@ -54,17 +55,22 @@ def test_a_stale_declaration_for_an_unchanged_leaf_fails(monkeypatch: pytest.Mon
 def test_every_declared_leaf_names_a_reason_and_an_exact_value() -> None:
     """A declared exemption covers one exact value — never a prefix, never an ellipsis.
 
-    #162 PR8-B added the first non-hash leaves (a migration head, an epoch id, a program version, a
-    factory id), so the shape check is now conditional: anything hash-shaped must still be written in
-    full, because a prefix would let the leaf keep drifting inside the part nobody wrote down.
+    Three shapes are legal, and every one of them is exact. #175 added the Alembic head; #162 PR8-B
+    added identity strings (an epoch id, a program version, a factory id). Everything else is a hash and
+    must still be written in full, because a prefix would let the leaf keep drifting inside the part
+    nobody wrote down.
     """
 
     for path, value in refactor_baseline.INTENTIONAL_DRIFT.items():
         reason, expected = value
         assert reason and not reason.startswith("<"), path
         assert expected and "…" not in expected and "..." not in expected, path
-        if set(expected) <= set("0123456789abcdef"):
-            assert len(expected) == 64, path
+        if path == "migration_head":
+            assert re.fullmatch(r"\d{8}_\d{4}", expected), path
+        elif path.endswith((".learning_epoch", ".program_version", ".factory_id")):
+            assert re.fullmatch(r"[a-z0-9_.]+", expected), path
+        else:
+            assert len(expected) == 64 and set(expected) <= set("0123456789abcdef"), path
 
 
 def test_the_baseline_identity_itself_is_never_regenerated_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
