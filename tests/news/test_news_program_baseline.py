@@ -18,7 +18,7 @@ from tracefold.news.learning.compiler import root as program_compiler
 from tracefold.news.learning.metric import DevelopmentEpisode, accepted_review_metric
 from tracefold.news.learning.review import EventRubricSubmission
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.graph import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_artifact
 
 
 def _frozen_policy_projection() -> dict[str, object]:

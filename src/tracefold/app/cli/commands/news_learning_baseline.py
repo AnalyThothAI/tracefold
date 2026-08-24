@@ -100,7 +100,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         run_baseline,
     )
     from tracefold.news.learning.evaluator import CandidateEvaluator, ClosedWindow
-    from tracefold.news.program.graph import load_program_artifact
+    from tracefold.news.program.artifact import load_program_artifact
 
     mode = _baseline_mode(args.mode)
     action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
@@ -207,7 +207,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     from tracefold.news.learning.baseline import build_metric_lm
     from tracefold.news.learning.review import DeskQuery, Principal, ReviewDesk, TaskRef
     from tracefold.news.learning.review_drafter import ReviewDrafter, build_draft_batch
-    from tracefold.news.program.graph import render_model_evidence_json
+    from tracefold.news.program.artifact import render_model_evidence_json
 
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback

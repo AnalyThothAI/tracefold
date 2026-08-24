@@ -64,8 +64,15 @@ from tracefold.news.learning.review import (
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
+from tracefold.news.program.artifact import (
+    CompileReceipt,
+    EligibleDemoBank,
+    apply_program_patch_v2,
+    load_stable_program_artifact,
+)
 from tracefold.news.program.contracts import (
     EditorialEnvelope,
+    ProgramCallTrace,
     ProgramTrace,
     ProgramUsage,
     ScoredJudgment,
@@ -74,16 +81,11 @@ from tracefold.news.program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
+from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
 from tracefold.news.program.graph import (
-    CompileReceipt,
     DspyCompileProgram,
     DspyNewsSemanticProgram,
-    EligibleDemoBank,
-    ProgramCallTrace,
-    ScriptedPredictorAdapter,
-    apply_program_patch_v2,
     extract_optimizer_patch,
-    load_stable_program_artifact,
 )
 from tracefold.news.reader_history import assemble_reader_history
 from tracefold.news.triage_rules import DEFAULT_POLICY

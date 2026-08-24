@@ -12,8 +12,8 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, run_baseline
 from tracefold.news.learning.metric import DevelopmentEpisode, accepted_review_metric, build_compile_example
 from tracefold.news.models import TRIAGE_POLICY_VERSION
+from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
-from tracefold.news.program.graph import load_stable_program_artifact
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 _CARD: dict[str, Any] = {

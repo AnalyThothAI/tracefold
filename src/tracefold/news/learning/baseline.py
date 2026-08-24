@@ -41,14 +41,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
 from ..models import TriageVerdict
-from ..program.contracts import TriageContext
-from ..program.graph import (
-    PROGRAM_VERSION,
-    DspyCompileProgram,
-    DspyStrictJSONAdapter,
+from ..program.artifact import (
     ProgramArtifact,
     render_model_evidence_json,
 )
+from ..program.contracts import TriageContext
+from ..program.dspy_adapter import DspyStrictJSONAdapter
+from ..program.graph import DspyCompileProgram
+from ..program.runtime import PROGRAM_VERSION
 from .judge import CardEquivalenceJudge
 from .metric import (
     COMPONENT_FIELDS,

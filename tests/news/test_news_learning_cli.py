@@ -11,7 +11,7 @@ from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
-from tracefold.news.program.graph import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
 
 

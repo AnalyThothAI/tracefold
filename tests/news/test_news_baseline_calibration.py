@@ -24,7 +24,7 @@ from tests.support.baseline_calibration import (
 )
 from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.graph import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_artifact
 
 _EXPECTED_N = 4
 _EXPECTED_CASE_MACRO = 0.6625
@@ -35,7 +35,7 @@ _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3
 _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
 # #175 rebinds the report to the new shipped Program identity. The audit corpus remains byte-for-byte
 # evidence from program_v6; every score and execution budget remains unchanged.
-_EXPECTED_REPORT_SHA256 = "a91b408a80c4981c761e3b4ff4bab137834e35750ea64e4f04a281e06547f82a"
+_EXPECTED_REPORT_SHA256 = "c811328292cdf6d74f290e5dda63c3cdd4a56b712d3e332ab1e5fc51437470a8"
 
 
 @pytest.fixture(scope="module")

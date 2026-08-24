@@ -155,6 +155,23 @@ class CandidateManifest(BaseModel):
         return _sha(self.model_dump(mode="json"))
 
 
+class DatasetCaseRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    case_id: str
+    subject_kind: Literal["event", "external_miss"]
+    event_id: str | None = None
+    evidence_version: int | None = None
+    external_snapshot_id: str | None = None
+    evidence_sha256: str
+    review_id: str
+    cluster_id: str
+    stratum: str
+    should_push: str
+    opened_at_ms: int
+    delivery_truth: Literal["observed_sent", "observed_not_sent", "unknown"] = "unknown"
+
+
 __all__ = [
     "LEARNING_EPOCH",
     "LEARNING_PROFILE_ID",
@@ -162,5 +179,6 @@ __all__ = [
     "ArmManifest",
     "CandidateManifest",
     "ClosedWindow",
+    "DatasetCaseRef",
     "ProposalReceipt",
 ]

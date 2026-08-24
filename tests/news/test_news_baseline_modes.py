@@ -20,15 +20,17 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, compile_program_factory, run_baseline
 from tracefold.news.learning.metric import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.contracts import TriageContext
-from tracefold.news.program.graph import (
-    DspyNewsSemanticProgram,
-    PredictorAdapterError,
-    PredictorResponse,
+from tracefold.news.program.artifact import (
     ProgramArtifact,
-    ScriptedPredictorAdapter,
     load_stable_program_artifact,
 )
+from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.dspy_adapter import (
+    PredictorAdapterError,
+    PredictorResponse,
+    ScriptedPredictorAdapter,
+)
+from tracefold.news.program.graph import DspyNewsSemanticProgram
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 _SEMANTICS: dict[str, Any] = {

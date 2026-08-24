@@ -17,22 +17,22 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...artifact_identity import canonical_json, canonical_sha
-from ...program.contracts import ScoredJudgment, TriageContext
-from ...program.graph import (
+from ...program.artifact import (
     CompileReceipt,
     DemoRecord,
     EligibleDemoBank,
-    EventSemantics,
     ProgramArtifact,
     ProgramArtifactCodec,
     ProgramPatchV2,
-    ReaderCard,
-    _reader_card_semantic_view,
     load_stable_program_artifact,
     render_model_evidence_json,
 )
-from ...program.graph import (
-    apply_program_patch_v2 as _apply_program_patch_v2,
+from ...program.artifact import apply_program_patch_v2 as _apply_program_patch_v2
+from ...program.contracts import ScoredJudgment, TriageContext
+from ...program.graph import _reader_card_semantic_view
+from ...program.signatures import (
+    EventSemantics,
+    ReaderCard,
 )
 from ..metric import production_decision
 from .security import (

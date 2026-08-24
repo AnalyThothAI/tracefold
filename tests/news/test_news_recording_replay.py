@@ -14,13 +14,10 @@ from tracefold.news.learning.replay import (
     ReplayArmSpec,
     load_recording_replay_capability,
 )
-from tracefold.news.program.contracts import TriageContext
-from tracefold.news.program.graph import (
-    DspyNewsSemanticProgram,
-    ProgramCallTrace,
-    ScriptedPredictorAdapter,
-    load_stable_program_artifact,
-)
+from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.contracts import ProgramCallTrace, TriageContext
+from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
+from tracefold.news.program.graph import DspyNewsSemanticProgram
 
 RUN_SHA = "a" * 64
 STABLE_BUNDLE_SHA = "1" * 64

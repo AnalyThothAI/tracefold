@@ -68,7 +68,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         proxy_source_sha256,
     )
     from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
-    from tracefold.news.program.graph import load_stable_program_artifact
+    from tracefold.news.program.artifact import load_stable_program_artifact
 
     _require_fixed_path(input_path, _INPUT_PATH, kind="input")
     _require_fixed_path(output_path, _OUTPUT_PATH, kind="output")

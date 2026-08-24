@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.news.program.graph import (
-    PROGRAM_INSTRUCTION_MAX_BYTES,
+from tracefold.news.program.artifact import (
     LearnedStrategy,
     RulePack,
     build_code_owned_program_artifact_v2,
@@ -14,6 +13,7 @@ from tracefold.news.program.quality_baseline import (
     RULE_PACK_SPECS,
     validate_expert_baseline_coverage,
 )
+from tracefold.news.program.runtime import PROGRAM_INSTRUCTION_MAX_BYTES
 
 
 def test_expert_baseline_is_exactly_nine_ordered_code_owned_packs() -> None:

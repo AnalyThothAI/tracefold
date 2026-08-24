@@ -17,19 +17,23 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, model_validator
 
 from ...artifact_identity import canonical_sha
-from ...program.graph import (
-    DspyCompileProgram,
-    DspyStrictJSONAdapter,
+from ...program.artifact import (
     EligibleDemoBank,
+    ProgramArtifact,
+    ProgramPatchV2,
+    load_stable_program_artifact,
+)
+from ...program.dspy_adapter import (
+    DspyStrictJSONAdapter,
     ExactMetadataDspyLM,
     ExactProviderCallCapture,
     ExactProviderMetadata,
     PredictorAdapterError,
-    ProgramArtifact,
-    ProgramPatchV2,
     _is_retryable_exception,
+)
+from ...program.graph import (
+    DspyCompileProgram,
     extract_optimizer_patch,
-    load_stable_program_artifact,
 )
 from ..metric import (
     METRIC_ID,
