@@ -910,6 +910,55 @@ def test_explicit_write_rejection_is_not_ambiguous_but_server_failure_is() -> No
 
 
 @pytest.mark.parametrize(
+    "data",
+    [
+        {"orderId": "accepted-despite-false"},
+        {"tradeId": "trade-despite-false"},
+        {"positionId": "position-despite-false"},
+        {"filledQty": "0.1"},
+        {"avgPrice": "10"},
+        {"filledQty": "NaN"},
+    ],
+)
+def test_business_rejection_with_execution_evidence_is_ambiguous(data: dict[str, object]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": False, "data": data}, request=request)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_write_outcome_conflict"):
+            asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
+def test_business_rejection_with_explicit_zero_execution_fields_is_definitive() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"success": False, "data": {"filledQty": 0, "avgPrice": 0}},
+            request=request,
+        )
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        receipt = asyncio.run(adapter.submit(_order(remote_order_id=None)))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert receipt.state == "REJECTED"
+
+
+@pytest.mark.parametrize(
     ("status", "payload"),
     [
         (302, {"success": True, "data": {"orderId": "redirected"}}),

@@ -1799,6 +1799,9 @@ def test_process_death_after_attempt_claim_keeps_the_daily_cap_charged(conn) -> 
         order_id=str(row["order_id"]), outcome="closed", reason="flat_at_venue", now_ms=NOW + 31_001
     )
     conn.commit()
+    resolved = _order_row(conn, str(row["order_id"]))
+    assert resolved["position_closed_at_ms"] is None
+    assert _repos(conn).trading.last_close_at_ms(underlying_key=str(row["underlying_key"])) is None
     assert _repos(conn).trading.orders_today(day_key=_day_key_for(NOW + 31_001)) == 1
     assert adapter.submit_calls == 1
 
@@ -3170,7 +3173,12 @@ def test_an_operator_resolved_close_cools_the_symbol_but_is_not_a_measured_resul
     trading = _repos(conn).trading
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
-    trading.update_order(order_id="o1", state="MANUAL_REVIEW_REQUIRED", now_ms=NOW)
+    trading.update_order(
+        order_id="o1",
+        state="MANUAL_REVIEW_REQUIRED",
+        position_opened_at_ms=NOW - MINUTE,
+        now_ms=NOW,
+    )
     trading.resolve_manual_review(order_id="o1", outcome="closed", reason="flat", now_ms=NOW)
     conn.commit()
 

@@ -205,7 +205,11 @@ class OrderStorage:
                 UPDATE trading_orders
                    SET state = 'CLOSED',
                        state_reason = %s,
-                       position_closed_at_ms = coalesce(position_closed_at_ms, %s),
+                       position_closed_at_ms = CASE
+                         WHEN position_opened_at_ms IS NOT NULL
+                         THEN coalesce(position_closed_at_ms, %s)
+                         ELSE position_closed_at_ms
+                       END,
                        closed_at_ms = coalesce(closed_at_ms, %s),
                        next_reconcile_at_ms = NULL,
                        updated_at_ms = %s

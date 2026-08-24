@@ -1454,7 +1454,11 @@ provider identity, `open` additionally requires `--remote-order-id`; that exact
 ID is persisted before the row returns to automated protection and max-holding
 reconciliation. Once known, that provider identity is immutable, and a
 conflicting operator-supplied ID fails closed in manual review. Without one,
-escalating correctly would still halt the lane.
+escalating correctly would still halt the lane. An operator `closed` resolution
+always terminalises the row, but records a material `position_closed_at_ms` —
+and therefore a symbol cooldown — only when `position_opened_at_ms` had already
+established that a position existed. Confirming a timed-out entry never filled
+does not fabricate an exit.
 
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the

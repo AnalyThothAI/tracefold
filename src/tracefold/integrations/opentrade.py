@@ -202,6 +202,8 @@ class OpenTradeAdapter:
         if not 200 <= status < 300:
             raise OpenTradeContractError("opentrade_http_error")
         if payload.get("success") is False:
+            if not _definitive_write_rejection(payload):
+                raise OpenTradeContractError("opentrade_write_outcome_conflict")
             return ExecutionReceipt(state="REJECTED", reason="opentrade_rejected")
         if payload.get("success") is not True:
             raise OpenTradeContractError("opentrade_payload_invalid")
@@ -608,6 +610,28 @@ def _remote_rows(rows: Sequence[Mapping[str, Any]], remote_id: str | None) -> li
     if remote_id is None:
         return []
     return [row for row in rows if _optional_text(row.get("orderId")) == remote_id]
+
+
+def _definitive_write_rejection(payload: Mapping[str, Any]) -> bool:
+    """A business rejection is definitive only when it carries no execution evidence."""
+
+    data = payload.get("data")
+    if data is None:
+        return True
+    if not isinstance(data, Mapping):
+        return False
+    if any(_optional_text(data.get(key)) is not None for key in ("orderId", "tradeId", "positionId")):
+        return False
+    for key in ("filledQty", "avgPrice"):
+        value = data.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            if _nonnegative_decimal(value, "opentrade_write_outcome_conflict") != 0:
+                return False
+        except OpenTradeContractError:
+            return False
+    return True
 
 
 def _correlated_history_rows(rows: Sequence[Mapping[str, Any]], remote_id: str | None) -> list[Mapping[str, Any]]:
