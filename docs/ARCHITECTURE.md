@@ -1360,6 +1360,12 @@ alone never makes `live_ready=true`. `live_bounded` is rejected by both settings
 validation and the composition root. One operator-owned `trading.live_symbol`
 hard-bounds the reviewed canary before any provider call.
 
+The execution ticker is not accepted by price shape alone: its response must
+self-identify the exact exchange and provider symbol selected from metadata, and
+its millisecond timestamp must fall within the same 10-second live-preflight
+freshness window. Missing, cross-market, stale, seconds-unit or future ticker
+facts fail closed before sizing or submission.
+
 **OPEN proves both position and protection.** A native stop is matching only
 when its parent order, account, exchange, exact provider symbol, opposite side,
 active state, reduce-only semantics, quantity coverage and trigger within one

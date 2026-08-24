@@ -52,6 +52,10 @@ slice was closed. Cancel or otherwise settle the entry at the venue, then let a
 fresh provider read prove it terminal before resolving the manual row.
 Provider redirects are ambiguous writes even when their body says rejection;
 they never release the daily attempt charge or active-underlying slot.
+A live ticker must identify the exact exchange and provider symbol selected by
+metadata and carry a millisecond timestamp within the 10-second preflight
+freshness window. Missing, cross-market, stale, seconds-unit or future ticker
+facts disable that attempt before sizing or any provider write.
 A provider rejection with explicit zero fill also remains ambiguous when the
 same snapshot contains any current open order or correlated position history
 that cannot be fully attributed to the tracked lifecycle.

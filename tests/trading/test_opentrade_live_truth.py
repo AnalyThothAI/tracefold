@@ -68,6 +68,7 @@ def _response(
         payload = {
             "success": True,
             "data": {
+                "exchangeId": "binance",
                 "symbol": "DOGE/USDT:USDT",
                 "last": "10",
                 "bid": "9.99",
@@ -159,6 +160,76 @@ def test_fresh_preflight_replaces_the_research_symbol_price_and_position_mode() 
     assert all(request.headers["Authorization"] == "Bearer secret-token" for request in requests)
     assert "totals" not in str(preflight.audit_payload())
     assert "123.45" not in str(preflight.audit_payload())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("exchangeId", None),
+        ("exchangeId", "hyperliquid"),
+        ("symbol", None),
+        ("symbol", "BTC/USDT:USDT"),
+    ],
+)
+def test_preflight_requires_ticker_identity_before_any_write(field: str, value: object) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = _response(request)
+        if request.url.path.endswith("/market/ticker"):
+            body = response.json()
+            if value is None:
+                del body["data"][field]
+            else:
+                body["data"][field] = value
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_ticker_scope_mismatch"):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert requests
+    assert all(request.method == "GET" for request in requests)
+
+
+@pytest.mark.parametrize("timestamp", [None, NOW // 1_000, NOW - 10_001, NOW + 1, NOW + 9_999, NOW + 10_001])
+def test_preflight_requires_a_fresh_millisecond_ticker_timestamp_before_any_write(timestamp: object) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = _response(request)
+        if request.url.path.endswith("/market/ticker"):
+            body = response.json()
+            if timestamp is None:
+                del body["data"]["timestamp"]
+            else:
+                body["data"]["timestamp"] = timestamp
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_ticker_timestamp_invalid"):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert requests
+    assert all(request.method == "GET" for request in requests)
 
 
 def test_preflight_sees_an_external_order_that_becomes_a_position_between_account_reads() -> None:

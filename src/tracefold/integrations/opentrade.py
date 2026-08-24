@@ -34,6 +34,7 @@ _API = "/open/trader/newsliquid/v1"
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _ABSENCE_WINDOW_MS = 7 * 86_400_000
 _MAX_SERVER_CLOCK_SKEW_MS = 30_000
+_MAX_TICKER_AGE_MS = 10_000
 _STOP_ORDER_TYPES = frozenset({"stop", "stop_market", "stop_loss", "stop_loss_market"})
 
 
@@ -94,11 +95,21 @@ class OpenTradeAdapter:
 
     async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
         exchange_id = _live_exchange(instrument.exchange_id)
-        server_time = await self._server_time()
         status = await self._object("/public/metadata/status", params={"exchangeId": exchange_id})
         metadata = await self._object("/market/metadata", params={"ticker": instrument.base_symbol})
         market = self._select_market(metadata, instrument=instrument, exchange_id=exchange_id)
         provider_symbol = _text(market.get("symbol"))
+        params = {"exchangeId": exchange_id, "symbol": provider_symbol}
+        ticker = await self._object("/market/ticker", params=params)
+        server_time = await self._server_time()
+        ticker_exchange = _optional_text(ticker.get("exchangeId") or ticker.get("exchange"))
+        ticker_symbol = _optional_text(ticker.get("symbol"))
+        if ticker_exchange is None or ticker_exchange.lower() != exchange_id or ticker_symbol != provider_symbol:
+            raise OpenTradeContractError("opentrade_ticker_scope_mismatch")
+        ticker_timestamp = _optional_timestamp(ticker.get("timestamp"))
+        ticker_age_ms = server_time - ticker_timestamp if ticker_timestamp is not None else -1
+        if ticker_age_ms < 0 or ticker_age_ms > _MAX_TICKER_AGE_MS:
+            raise OpenTradeContractError("opentrade_ticker_timestamp_invalid")
         exact = InstrumentRef(
             exchange_id=exchange_id,
             venue=instrument.venue,
@@ -108,8 +119,6 @@ class OpenTradeAdapter:
             quote_asset=_optional_text(market.get("quoteCurrency")) or instrument.quote_asset,
             observed_at_ms=server_time,
         )
-        params = {"exchangeId": exchange_id, "symbol": provider_symbol}
-        ticker = await self._object("/market/ticker", params=params)
         account = await self._object(
             "/account/summary",
             params={**params, "accountType": "swap"},
