@@ -1431,7 +1431,9 @@ therefore needs a drain, and `tracefold trading resolve <order-id> closed|open`
 is it. If an accepted entry lost its response and therefore has no durable
 provider identity, `open` additionally requires `--remote-order-id`; that exact
 ID is persisted before the row returns to automated protection and max-holding
-reconciliation. Without one, escalating correctly would still halt the lane.
+reconciliation. Once known, that provider identity is immutable, and a
+conflicting operator-supplied ID fails closed in manual review. Without one,
+escalating correctly would still halt the lane.
 
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the

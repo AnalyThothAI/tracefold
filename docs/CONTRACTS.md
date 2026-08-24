@@ -675,7 +675,8 @@ persisted facts and stable target keys. A rebuild does not create an alternate
 generation/run identity or make a provider response the source of truth.
 `trading resolve <order-id> open` accepts `--remote-order-id`; it is required
 when the manual row has no durable provider entry identity and is persisted
-before automated live reconciliation resumes.
+before automated live reconciliation resumes. It can fill a missing identity,
+but cannot replace one; a supplied mismatch leaves the row in manual review.
 
 `validate-projections` is a strict Serve-role read. It does not acquire the
 maintenance lock, so operators can inspect the running singleton without

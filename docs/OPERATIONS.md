@@ -55,7 +55,9 @@ they never release the daily attempt charge or active-underlying slot.
 When a lost entry response reaches manual review with no remote identity, use
 `tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
 after confirming that exact order and position at the venue. The command
-persists the identity before protection/max-holding reconciliation resumes.
+persists the identity before protection/max-holding reconciliation resumes. A
+known provider identity is immutable: supplying a different ID rejects the
+resolution and leaves the order in manual review.
 
 ## Operator lifecycle
 

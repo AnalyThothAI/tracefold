@@ -1976,6 +1976,47 @@ def test_manual_open_recovery_requires_and_persists_the_provider_entry_identity(
     assert adapter.submit_calls == 1
 
 
+def test_manual_open_recovery_never_replaces_a_known_provider_entry_identity(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    _, row = _prepare_live_reviewed(conn, adapter=adapter)
+    trading = _repos(conn).trading
+    order_id = str(row["order_id"])
+    remote_id = f"remote-{order_id}"
+    trading.update_order(
+        order_id=order_id,
+        state="MANUAL_REVIEW_REQUIRED",
+        remote_order_id=remote_id,
+        now_ms=NOW,
+    )
+    conn.commit()
+
+    assert (
+        trading.resolve_manual_review(
+            order_id=order_id,
+            outcome="open",
+            reason="position_confirmed",
+            remote_order_id="different-provider-order",
+            now_ms=NOW + 1,
+        )
+        is False
+    )
+    unchanged = _order_row(conn, order_id)
+    assert unchanged["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert unchanged["remote_order_id"] == remote_id
+
+    assert trading.resolve_manual_review(
+        order_id=order_id,
+        outcome="open",
+        reason="position_confirmed",
+        remote_order_id=remote_id,
+        now_ms=NOW + 2,
+    )
+    conn.commit()
+    recovered = _order_row(conn, order_id)
+    assert recovered["state"] == "OPEN"
+    assert recovered["remote_order_id"] == remote_id
+
+
 @pytest.mark.parametrize("missing_field", ["closed_at_ms", "average_price", "exit_price"])
 def test_incomplete_live_close_evidence_never_fabricates_a_terminal_position(conn, missing_field: str) -> None:
     adapter = _LiveLifecycleAdapter()

@@ -217,12 +217,13 @@ class OrderStorage:
             # the row straight back into MANUAL_REVIEW_REQUIRED on the next turn with no explanation,
             # and the only escape left was asserting `closed` about a position that is still open.
             remote_id = None if remote_order_id is None else str(remote_order_id).strip() or None
+            has_remote_id = remote_id is not None
             cursor = self.conn.execute(
                 """
                 UPDATE trading_orders
                    SET state = 'OPEN',
                        state_reason = %s,
-                       remote_order_id = coalesce(%s, remote_order_id),
+                       remote_order_id = coalesce(remote_order_id, %s),
                        exit_attempt_count = 0,
                        exit_attempt_total = 0,
                        next_reconcile_at_ms = %s,
@@ -230,8 +231,18 @@ class OrderStorage:
                  WHERE order_id = %s
                    AND state = 'MANUAL_REVIEW_REQUIRED'
                    AND (mode = 'paper' OR remote_order_id IS NOT NULL OR %s)
+                   AND (NOT %s OR remote_order_id IS NULL OR remote_order_id = %s)
                 """,
-                (f"operator_resolved:{reason}", remote_id, int(now_ms), int(now_ms), order_id, remote_id is not None),
+                (
+                    f"operator_resolved:{reason}",
+                    remote_id,
+                    int(now_ms),
+                    int(now_ms),
+                    order_id,
+                    has_remote_id,
+                    has_remote_id,
+                    remote_id,
+                ),
             )
         else:  # pragma: no cover - the CLI constrains the choices
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
