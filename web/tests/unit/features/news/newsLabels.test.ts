@@ -7,25 +7,22 @@ import { describe, expect, it } from "vitest";
  * thing they must not do is let two different days wear the same heading.
  */
 describe("hour buckets", () => {
-  const at = (iso: string) => new Date(iso).getTime();
+  const at = (day: number, hour: number, minute: number) =>
+    new Date(2026, 7, day, hour, minute).getTime();
 
   it("buckets by the local hour, and the same hour on two days is two buckets", () => {
-    expect(hourBucketKey(at("2026-08-21T03:05:00+08:00"))).toBe(
-      hourBucketKey(at("2026-08-21T03:59:00+08:00")),
-    );
-    expect(hourBucketKey(at("2026-08-21T03:05:00+08:00"))).not.toBe(
-      hourBucketKey(at("2026-08-20T03:05:00+08:00")),
-    );
+    expect(hourBucketKey(at(21, 3, 5))).toBe(hourBucketKey(at(21, 3, 59)));
+    expect(hourBucketKey(at(21, 3, 5))).not.toBe(hourBucketKey(at(20, 3, 5)));
   });
 
   it("labels the span, and carries the date when the caller says the day changed", () => {
-    expect(hourBucketLabel(at("2026-08-21T03:05:00+08:00"))).toBe("03:00 — 04:00");
-    expect(hourBucketLabel(at("2026-08-21T03:05:00+08:00"), true)).toBe("08-21 03:00 — 04:00");
+    expect(hourBucketLabel(at(21, 3, 5))).toBe("03:00 — 04:00");
+    expect(hourBucketLabel(at(21, 3, 5), true)).toBe("08-21 03:00 — 04:00");
     // Midnight wraps rather than reading `23:00 — 24:00`.
-    expect(hourBucketLabel(at("2026-08-21T23:30:00+08:00"))).toBe("23:00 — 00:00");
+    expect(hourBucketLabel(at(21, 23, 30))).toBe("23:00 — 00:00");
   });
 
   it("names the day the same way the review queue does", () => {
-    expect(dayBucketLabel(at("2026-08-21T03:05:00+08:00"))).toBe("08-21");
+    expect(dayBucketLabel(at(21, 3, 5))).toBe("08-21");
   });
 });
