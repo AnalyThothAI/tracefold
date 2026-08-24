@@ -9,13 +9,6 @@ from typing import Any
 import dspy
 import pytest
 
-from tracefold.news.agents.semantic_program import (
-    DspyCompileProgram,
-    DspyStrictJSONAdapter,
-    ExactProviderCallCapture,
-    ExactProviderMetadata,
-    load_stable_program_artifact,
-)
 from tracefold.news.learning.compiler.proxy import (
     CompilerModelProxyGrant,
     CompilerProviderEndpointSecret,
@@ -28,6 +21,13 @@ from tracefold.news.learning.compiler.proxy import (
 )
 from tracefold.news.learning.compiler.security import CompilerEndpointIdentity, CompilerRoleBindingV3
 from tracefold.news.learning.judge import CardEquivalenceJudge
+from tracefold.news.program.graph import (
+    DspyCompileProgram,
+    DspyStrictJSONAdapter,
+    ExactProviderCallCapture,
+    ExactProviderMetadata,
+    load_stable_program_artifact,
+)
 
 
 class _ExactFakeLM:

@@ -1,6 +1,6 @@
 """Untrusted, bounded GEPA logic executed only by the compiler container.
 
-The trusted host seals the ``program_v6`` corpus and launches the runner.  This
+The trusted host seals the ``program_v7`` corpus and launches the runner.  This
 module has no database, artifact-writer, proposal or promotion authority.  It
 can return only ``ProgramPatchV2`` (two LearnedStrategies plus eligible demo
 references) and content-addressable optimizer receipt payloads.
@@ -16,7 +16,8 @@ from typing import Any, Literal, Protocol, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, model_validator
 
-from ...agents.semantic_program import (
+from ...artifact_identity import canonical_sha
+from ...program.graph import (
     DspyCompileProgram,
     DspyStrictJSONAdapter,
     EligibleDemoBank,
@@ -30,7 +31,6 @@ from ...agents.semantic_program import (
     extract_optimizer_patch,
     load_stable_program_artifact,
 )
-from ...artifact_identity import canonical_sha
 from ..metric import (
     METRIC_ID,
     DevelopmentEpisode,
@@ -53,7 +53,7 @@ from .security import (
 )
 from .trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 
-LEARNING_EPOCH = "program_v6"
+LEARNING_EPOCH = "program_v7"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v3"
 _PROPOSAL_GUARDRAILS = (
     "fixed_factory_v4",
@@ -70,7 +70,7 @@ class CompileBudget(CompileBudgetV3):
 
 class CompileRequest(_ExactModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v6"] = "program_v6"
+    learning_epoch: Literal["program_v7"] = "program_v7"
     # Declared by the trusted host in the sealed corpus receipt. The compiler records it; it never looks it up,
     # so the untrusted side does not import the review plane to obtain one string.
     review_rubric_version: str = Field(min_length=1, max_length=64)

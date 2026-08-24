@@ -34,7 +34,7 @@ TRADING_RECONCILE_BACKOFF_MS = 30_000
 
 # Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
 # a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
-NewsLearningEpoch = Literal["program_v6"]
+NewsLearningEpoch = Literal["program_v7"]
 
 # ---------------------------------------------------------------------------- upstream input rows
 # What the composition root must hand this context to produce candidates. Trading owns these because
@@ -315,7 +315,7 @@ class NewsTradeCandidate(_Frozen):
     why_zh: str
 
     learning_epoch: NewsLearningEpoch
-    program_version: Literal["news_semantic_program_v4"]
+    program_version: Literal["news_semantic_program_v5"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: Literal["news_triage_policy_v10"]
     editorial_origin: Literal["model"]

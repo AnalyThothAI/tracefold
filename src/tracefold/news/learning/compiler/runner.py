@@ -47,7 +47,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Path) -> None:
-    from tracefold.news.agents.semantic_program import load_stable_program_artifact
     from tracefold.news.artifact_identity import canonical_json
     from tracefold.news.learning.compiler.root import (
         CompileBudget,
@@ -69,6 +68,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         proxy_source_sha256,
     )
     from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
+    from tracefold.news.program.graph import load_stable_program_artifact
 
     _require_fixed_path(input_path, _INPUT_PATH, kind="input")
     _require_fixed_path(output_path, _OUTPUT_PATH, kind="output")
@@ -94,7 +94,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         or parent.state_sha256 != bundle.parent_state_sha256
         or parent.parent_program_sha256 is not None
         or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.semantic_program.factory_v4"
+        or parent.factory_id != "tracefold.news.program.factory_v5"
         or parent.quality_kernel.dependency_lock_sha256 != bundle.compiler_lock_sha256
         or policy.policy_sha256 != bundle.sandbox_policy_sha256
         or compiler_source_sha256() != bundle.compiler_source_sha256

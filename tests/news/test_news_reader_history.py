@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tracefold.news.program.contracts import TOLD_SELECTOR_SHA256
 from tracefold.news.reader_history import (
     READER_HISTORY_SHA256,
     RECENT_HISTORY_WINDOW_MS,
@@ -11,7 +12,6 @@ from tracefold.news.reader_history import (
     build_reader_history,
     news_retrieval_sha256,
 )
-from tracefold.news.semantic_contract import TOLD_SELECTOR_SHA256
 
 NOW_MS = 2_000_000_000_000
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v1.json"

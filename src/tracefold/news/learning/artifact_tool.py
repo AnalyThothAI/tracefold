@@ -8,18 +8,19 @@ creates a second runtime-loadable profile.
 from __future__ import annotations
 
 import argparse
+import importlib.resources
 import json
 import os
 from pathlib import Path
 from typing import Any
 
-from ..agents.semantic_program import (
+from ..artifact_identity import canonical_json, canonical_sha
+from ..program.graph import (
     PROGRAM_SCHEMA_VERSION,
     ProgramArtifact,
     ProgramArtifactCodec,
     build_code_owned_program_artifact_v2,
 )
-from ..artifact_identity import canonical_json, canonical_sha
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -94,10 +95,13 @@ def _write_image(root: Path, artifact: ProgramArtifact) -> Path:
 
 
 def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> str:
-    """Atomically replace the one-entry registry with the reviewed v6 root."""
+    """Atomically replace the one-entry registry with the reviewed root."""
 
-    module_dir = Path(__file__).resolve().parent
-    root = (programs_root or module_dir / "programs").resolve()
+    # Resolved from the owning package, not from this module's own location: the registry lives with the
+    # Program (`news/program/resources`), while this tool lives with the learning plane, and PR8 moved
+    # both. A `Path(__file__).parent / "programs"` here silently pointed at a directory that no longer
+    # existed — the same failure mode the compile source seal hit in PR8-A.
+    root = (programs_root or Path(str(importlib.resources.files("tracefold.news.program"))) / "resources").resolve()
     if root.is_symlink() or not root.is_dir():
         raise ValueError("news_program_registry_path_invalid")
     registry_path = root / "registry.json"

@@ -93,7 +93,6 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
 
     from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.agents.semantic_program import load_program_artifact
     from tracefold.news.learning.baseline import (
         build_baseline_cases,
         build_judge,
@@ -101,6 +100,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         run_baseline,
     )
     from tracefold.news.learning.evaluator import CandidateEvaluator, ClosedWindow
+    from tracefold.news.program.graph import load_program_artifact
 
     mode = _baseline_mode(args.mode)
     action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
@@ -171,7 +171,7 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
     and the card carries the Gate facts.
     """
 
-    from tracefold.news.semantic_contract import TriageContext
+    from tracefold.news.program.contracts import TriageContext
 
     evidence = dict(view.get("evidence") or {})
     card = dict(evidence.get("card") or {})
@@ -204,10 +204,10 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     del stable
     from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.agents.semantic_program import render_model_evidence_json
     from tracefold.news.learning.baseline import build_metric_lm
     from tracefold.news.learning.review import DeskQuery, Principal, ReviewDesk, TaskRef
     from tracefold.news.learning.review_drafter import ReviewDrafter, build_draft_batch
+    from tracefold.news.program.graph import render_model_evidence_json
 
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback

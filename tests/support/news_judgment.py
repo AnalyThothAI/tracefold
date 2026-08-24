@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from tracefold.news.models import TriageVerdict
-from tracefold.news.semantic_contract import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 
 
 def trade_relevance(**overrides: Any) -> TradeRelevanceV1:

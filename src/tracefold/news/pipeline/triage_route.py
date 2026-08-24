@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..models import GATE_POLICY_VERSION, TriageVerdict
-from ..semantic_contract import ScoredJudgment, SemanticJudge, TriageContext
+from ..program.contracts import ScoredJudgment, SemanticJudge, TriageContext
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, fallback_verdict
 from .triage_audit import _told_trace
 

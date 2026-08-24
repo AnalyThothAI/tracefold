@@ -8,7 +8,10 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news.agents.semantic_program import (
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
+from tracefold.news.program.contracts import TOLD_SELECTOR_SHA256, SemanticJudge
+from tracefold.news.program.graph import (
     DspyNewsSemanticProgram,
     DspyPredictorAdapter,
     ProgramArtifact,
@@ -16,9 +19,6 @@ from tracefold.news.agents.semantic_program import (
     load_program_artifact,
     load_stable_program_artifact,
 )
-from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
-from tracefold.news.semantic_contract import TOLD_SELECTOR_SHA256, SemanticJudge
 from tracefold.platform.config.models import news_model_availability
 
 

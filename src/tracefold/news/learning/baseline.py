@@ -39,16 +39,16 @@ from typing import Any, Literal, NamedTuple
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..agents.semantic_program import (
+from ..artifact_identity import canonical_sha
+from ..models import TriageVerdict
+from ..program.contracts import TriageContext
+from ..program.graph import (
     PROGRAM_VERSION,
     DspyCompileProgram,
     DspyStrictJSONAdapter,
     ProgramArtifact,
     render_model_evidence_json,
 )
-from ..artifact_identity import canonical_sha
-from ..models import TriageVerdict
-from ..semantic_contract import TriageContext
 from .judge import CardEquivalenceJudge
 from .metric import (
     COMPONENT_FIELDS,

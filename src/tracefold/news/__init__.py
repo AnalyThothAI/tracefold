@@ -13,7 +13,7 @@ from .opennews import (
     OpenNewsHistoryError,
     OpenNewsStrategyHistory,
 )
-from .semantic_contract import (
+from .program.contracts import (
     EditorialEnvelope,
     ProgramTrace,
     ProgramUsage,

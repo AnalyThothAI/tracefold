@@ -24,13 +24,13 @@ from typing import Any, Literal, cast
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ...agents.semantic_program import (
+from ...artifact_identity import canonical_json, canonical_sha
+from ...program.graph import (
     ExactMetadataDspyLM,
     ExactProviderCallCapture,
     ExactProviderMetadata,
     PredictorAdapterError,
 )
-from ...artifact_identity import canonical_json, canonical_sha
 from .security import (
     CompilerEndpointIdentity,
     CompilerProxyTariff,

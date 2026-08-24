@@ -257,7 +257,7 @@ def _uses_current_news_generation(raw: object) -> bool:
 
     if not isinstance(raw, Mapping) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
         return False
-    sources = (("oi", "news_oi_signal_v1"), ("news", "news_semantic_program_v4"))
+    sources = (("oi", "news_oi_signal_v1"), ("news", "news_semantic_program_v5"))
     found = False
     for source_field, expected_program in sources:
         source = raw.get(source_field)
@@ -266,7 +266,7 @@ def _uses_current_news_generation(raw: object) -> bool:
         found = True
         if (
             not isinstance(source, Mapping)
-            or source.get("learning_epoch") != "program_v6"
+            or source.get("learning_epoch") != "program_v7"
             or source.get("policy_version") != "news_triage_policy_v10"
             or source.get("program_version") != expected_program
         ):

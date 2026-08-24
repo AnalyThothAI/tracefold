@@ -7,7 +7,7 @@ from .news_learning_documents import _read_json_or_yaml
 
 if TYPE_CHECKING:
     from tracefold.news.learning.contracts import CandidateManifest
-    from tracefold.news.semantic_contract import SemanticJudge
+    from tracefold.news.program.contracts import SemanticJudge
 
 
 def _load_candidate_bundle(path: str) -> tuple[CandidateManifest | None, dict[str, str]]:
@@ -30,7 +30,7 @@ def _learning_program_judges(
     artifact_paths: Mapping[str, str],
     live: bool,
 ) -> dict[tuple[Literal["stable", "candidate"], str], SemanticJudge]:
-    from tracefold.news.agents.semantic_program import (
+    from tracefold.news.program.graph import (
         DspyNewsSemanticProgram,
         RecordReplayPredictorAdapter,
     )
@@ -103,7 +103,7 @@ def _learning_program_arm_artifacts(
     candidate: Any,
     artifact_paths: Mapping[str, str],
 ) -> tuple[tuple[Literal["stable", "candidate"], Any, Any], ...]:
-    from tracefold.news.agents.semantic_program import (
+    from tracefold.news.program.graph import (
         ProgramArtifactCodec,
         load_program_artifact,
         load_stable_program_artifact,

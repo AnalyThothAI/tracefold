@@ -14,7 +14,7 @@ from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.program.graph import load_stable_program_artifact
 from tracefold.platform.postgres.migrations import alembic_config
 
 
@@ -67,7 +67,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260824_0302"
+        assert revision["version_num"] == "20260824_0303"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -171,7 +171,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0302"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0303"
     finally:
         if conn is not None:
             conn.close()
@@ -213,7 +213,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0302"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0303"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -536,7 +536,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0302"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260824_0303"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -567,7 +567,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert view_columns[-3:] == ["editorial", "scored_judgment_sha256", "runtime_manifest_sha"]
 
         epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
-        assert len(epochs) == 6
+        assert len(epochs) == 7
         for epoch_id, prior in prior_epochs.items():
             assert dict(next(row for row in epochs if row["epoch_id"] == epoch_id)) == prior
         program_v6 = next(row for row in epochs if row["epoch_id"] == "program_v6")
@@ -593,6 +593,19 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert program_v6["baseline_program_sha256"] != load_stable_program_artifact().program_sha256
         assert program_v6["prior_evidence_disposition"] == "audit_only"
         assert program_v6["reset_reason"] == "trade_relevance_editorial_authority_hard_cut"
+
+        # #162 PR8-B: the package split re-issued the Program root, so the epoch after v6 is v7. Its
+        # guard reads v6's *recorded* baseline (648e696d), not today's runtime root — the two diverged
+        # when #173 re-issued inside the v6 epoch, and asserting the wrong one fails the migration.
+        program_v7 = next(row for row in epochs if row["epoch_id"] == "program_v7")
+        assert program_v7["starts_at_ms"] > program_v6["starts_at_ms"]
+        assert program_v7["source_issue"] == "https://github.com/AnalyThothAI/tracefold/issues/162"
+        assert program_v7["program_factory_id"] == "tracefold.news.program.factory_v5"
+        assert program_v7["artifact_schema_version"] == "news_semantic_program_artifact_v2"
+        assert program_v7["baseline_program_version"] == "news_semantic_program_v5"
+        assert program_v7["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
+        assert program_v7["prior_evidence_disposition"] == "audit_only"
+        assert program_v7["reset_reason"] == "program_learning_package_split_identity_migration"
         assert (
             conn.execute("SELECT expires_at_ms FROM news_events WHERE event_id = 'old-event'").fetchone()[
                 "expires_at_ms"

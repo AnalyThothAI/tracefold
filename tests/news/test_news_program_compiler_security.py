@@ -23,12 +23,12 @@ def _dataset_payload() -> dict[str, Any]:
     return {
         "dataset_version": "news_learning_dataset_v1",
         "role": "development",
-        "learning_epoch": "program_v6",
+        "learning_epoch": "program_v7",
         "learning_epoch_started_at_ms": 1_800_000_000_000,
         "agent_cohort": {
             "bundle_sha": "e" * 64,
-            "learning_epoch": "program_v6",
-            "program_version": "news_semantic_program_v4",
+            "learning_epoch": "program_v7",
+            "program_version": "news_semantic_program_v5",
             "program_sha256": "a" * 64,
             "runtime_model_bindings_sha256": "c" * 64,
         },

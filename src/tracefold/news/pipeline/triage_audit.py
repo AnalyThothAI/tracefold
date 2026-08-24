@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..semantic_contract import ProgramTrace, ProgramUsage, TriageContext
+from ..program.contracts import ProgramTrace, ProgramUsage, TriageContext
 
 
 def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

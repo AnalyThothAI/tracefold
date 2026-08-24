@@ -8,14 +8,6 @@ from typing import Any, ClassVar
 import dspy
 import pytest
 
-from tracefold.news.agents.semantic_program import (
-    DspyStrictJSONAdapter,
-    EligibleDemoBank,
-    ExactProviderCallCapture,
-    ExactProviderMetadata,
-    TriageContext,
-    load_stable_program_artifact,
-)
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.compiler.root import (
     CompileBudget,
@@ -32,11 +24,19 @@ from tracefold.news.learning.compiler.root import (
 )
 from tracefold.news.learning.compiler.trusted import build_eligible_demo_bank
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
-from tracefold.news.semantic_contract import (
+from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ScoredJudgment,
     ToldLedgerEntry,
     TradeRelevanceV1,
+)
+from tracefold.news.program.graph import (
+    DspyStrictJSONAdapter,
+    EligibleDemoBank,
+    ExactProviderCallCapture,
+    ExactProviderMetadata,
+    TriageContext,
+    load_stable_program_artifact,
 )
 
 
@@ -346,7 +346,7 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.patch.learning_epoch == "program_v6"
+    assert result.patch.learning_epoch == "program_v7"
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     assert result.patch.patch_sha256 == result.patch.computed_sha256()
     assert [strategy.predictor for strategy in result.patch.learned_strategies] == [
@@ -395,7 +395,7 @@ def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_ex
     }
     payload = {
         "role": "development",
-        "learning_epoch": "program_v6",
+        "learning_epoch": "program_v7",
         "cases": [case],
     }
     dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})

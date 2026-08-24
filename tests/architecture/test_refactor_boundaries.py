@@ -28,14 +28,14 @@ GRANDFATHERED_MODULE_LINES = {
     # it exactly meant a 5-line bug fix read as a ratchet violation. The 800-line default now covers it.
     "news/learning/compiler/trusted.py": 408,
     "news/learning/metric.py": 1120,
-    "news/agents/semantic_program.py": 3645,
-    "news/learning/evaluator.py": 3671,
+    "news/program/graph.py": 3645,
+    "news/learning/evaluator.py": 3673,
     # PR4 moved the 823-line TriageConsumer atomically; PR7-B3 split `handle` into named phases and
     # moved the route's typed vocabulary to `triage_route.py`. Still over budget, still only shrinking.
     "news/pipeline/triage.py": 937,
     "news/learning/review.py": 2456,
     # #173 added the `product_progress` TradeChannel and its rationale: +2 enum lines, +4 comment lines.
-    "news/semantic_contract.py": 908,
+    "news/program/contracts.py": 908,
 }
 
 # Function debt is identified by exact source path and qualified name. A structural PR that purely
@@ -58,8 +58,8 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/learning/compiler/security.py", "validate_compile_receipt_chain_v3"): 338,
     ("news/learning/compiler/trusted.py", "build_eligible_demo_bank"): 107,
     ("news/learning/metric.py", "accepted_review_metric"): 367,
-    ("news/agents/semantic_program.py", "DspyNewsSemanticProgram._run_route"): 136,
-    ("news/agents/semantic_program.py", "DspyNewsSemanticProgram._call_predictor"): 304,
+    ("news/program/graph.py", "DspyNewsSemanticProgram._run_route"): 136,
+    ("news/program/graph.py", "DspyNewsSemanticProgram._call_predictor"): 304,
     ("news/learning/evaluator.py", "CandidateEvaluator.evaluate"): 198,
     ("news/learning/evaluator.py", "CandidateEvaluator._validate_candidate_static"): 115,
     ("news/learning/evaluator.py", "CandidateEvaluator._accepted_cases"): 139,
@@ -123,9 +123,9 @@ LEGACY_INTERNAL_ABSOLUTE_IMPORTS = {
     ("news/learning/compiler/runner.py", "tracefold.news.learning.compiler.source_identity"),
     ("news/learning/compiler/runner.py", "tracefold.news.learning.compiler.trusted"),
     ("news/learning/compiler/runner.py", "tracefold.news.learning.judge"),
-    ("news/learning/compiler/runner.py", "tracefold.news.agents.semantic_program"),
+    ("news/learning/compiler/runner.py", "tracefold.news.program.graph"),
     ("news/learning/compiler/runner.py", "tracefold.news.artifact_identity"),
-    ("news/agents/programs/candidates.py", "tracefold.news.learning.contracts"),
+    ("news/program/resources/candidates.py", "tracefold.news.learning.contracts"),
 }
 
 
@@ -445,7 +445,11 @@ def test_package_exports_remain_at_the_intentional_public_seam() -> None:
         "TriageVerdict",
     ]
     expected["tracefold.trading"] = ["Bar", "ExecutionReceipt", "InstrumentRef", "PreparedOrder", "TradingMode"]
-    actual = {module: _declared_exports(_package_path(module)) for module in expected}
+    # #162 PR8-B renamed the package the Program lives in. The frozen baseline is a record of revision
+    # 9441ce99 and is never regenerated, so the rename is declared here: the *export surface* it names
+    # (an empty `__all__`) still has to hold, at the new path.
+    renamed = {"tracefold.news.agents": "tracefold.news.program"}
+    actual = {module: _declared_exports(_package_path(renamed.get(module, module))) for module in expected}
     assert actual == expected
     for module in ("tracefold.news", "tracefold.trading"):
         tree = ast.parse(_package_path(module).read_text(encoding="utf-8"))

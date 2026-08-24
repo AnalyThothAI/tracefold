@@ -8,7 +8,6 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.learning import metric as program_metric
 from tracefold.news.learning.baseline import (
     BaselineCase,
@@ -19,6 +18,7 @@ from tracefold.news.learning.compiler import root as program_compiler
 from tracefold.news.learning.metric import DevelopmentEpisode, accepted_review_metric
 from tracefold.news.learning.review import EventRubricSubmission
 from tracefold.news.models import TRIAGE_POLICY_VERSION
+from tracefold.news.program.graph import load_stable_program_artifact
 
 
 def _frozen_policy_projection() -> dict[str, object]:
@@ -94,7 +94,7 @@ _CONTEXT: dict[str, Any] = {
 
 
 def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = None) -> DevelopmentEpisode:
-    from tracefold.news.semantic_contract import TriageContext
+    from tracefold.news.program.contracts import TriageContext
 
     context = TriageContext.from_card(
         _CONTEXT["card"] | {"leader_title": "Tesla launches the Cybercab"},

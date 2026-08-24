@@ -20,8 +20,8 @@ from ..artifact_identity import canonical_json, canonical_sha
 from ..triage_rules import DecidePolicy
 
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
-LEARNING_EPOCH: Literal["program_v6"] = "program_v6"
-LEARNING_PROGRAM_VERSION = "news_semantic_program_v4"
+LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 
 
 def _sha(value: Any) -> str:

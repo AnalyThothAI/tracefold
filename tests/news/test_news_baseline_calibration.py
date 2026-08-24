@@ -22,9 +22,9 @@ from tests.support.baseline_calibration import (
     load_historical_calibration_corpus,
     prose_offenders,
 )
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 from tracefold.news.models import TRIAGE_POLICY_VERSION
+from tracefold.news.program.graph import load_stable_program_artifact
 
 _EXPECTED_N = 4
 _EXPECTED_CASE_MACRO = 0.6625
@@ -33,11 +33,11 @@ _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
 _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
-# PR8-A moved the metric implementation to `tracefold.news.learning.metric`. The receipt records the
-# implementing module by name (`metric_receipt(...)["implementation"]["module"]`), so the content address
-# moves with the move — by design: the address must name which code measured. Every *score* above is
-# unchanged, and `test_recorded_calibration_is_reproducible_from_the_typed_v2_corpus` is what proves it.
-_EXPECTED_REPORT_SHA256 = "0464b8b644aa8e5628378308910d0ec960dc0ffd4120ad53b01108655e8ccb36"
+# This address moved twice in #162 PR8, both times for identity rather than for arithmetic: PR8-A because
+# the receipt records the metric's implementing module by name, PR8-B because it records the Program that
+# ran. Both are by design — a content address must name what measured and under what. Every *score* above
+# is unchanged, and `test_recorded_calibration_is_reproducible_from_the_typed_v2_corpus` proves it.
+_EXPECTED_REPORT_SHA256 = "f654d1f2bdcc151bfbf04c5a7952be91b0cb1d7c9fc7b0f82828f4ff379b76f5"
 
 
 @pytest.fixture(scope="module")
@@ -129,10 +129,22 @@ def test_the_redactor_defaults_to_redacting_a_key_nobody_listed() -> None:
     assert _redact({"direction": "bullish"}) == {"direction": "bullish"}
 
 
+# The corpus was recorded under the `program_v6` root. #162 PR8-B re-issued the Program root when the
+# package moved, so — like every other piece of v6 evidence — this corpus is now audit-only history. It
+# is deliberately NOT re-stamped with the new sha: it was not produced by the new Program, and a fixture
+# that claims otherwise is a forged record. Its job here is unaffected, because that job is to prove the
+# *metric wiring* is unchanged, and `recorded` mode scores persisted verdicts without executing the
+# Program at all. Re-record it against `program_v7` once that epoch has accepted reviews.
+_V6_AUDIT_CORPUS_PROGRAM_SHA256 = "9334eae481e2d0cdcc3b982d25aa8def22538cadb1a57549074b56fb2a96d1ba"
+
+
 def test_the_active_corpus_is_the_shipped_program_and_names_no_policy(report: Any) -> None:
     corpus = load_calibration_corpus()
     shipped = load_stable_program_artifact().program_sha256
-    assert report.identity["program_sha256"] == corpus["program_sha256"] == shipped
+    # The report names the Program it ran under; the corpus names the one that produced it.
+    assert report.identity["program_sha256"] == shipped
+    assert corpus["program_sha256"] == _V6_AUDIT_CORPUS_PROGRAM_SHA256
+    assert shipped != corpus["program_sha256"], "re-point this test once a program_v7 corpus is recorded"
     assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v4"
     # Recorded mode uses the persisted complete DecisionResult and never replays today's policy.
     assert report.identity["policy_sha256"] is None

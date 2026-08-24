@@ -23,20 +23,6 @@ from typing import Any
 from tests.support.news_judgment import trade_relevance
 from tracefold.app.workers.task_contract import worker_task_names
 from tracefold.integrations import rabbitmq as rabbitmq_module
-from tracefold.news.agents.semantic_program import (
-    PROGRAM_ADAPTER_SHA256,
-    PROGRAM_ASSEMBLER_SHA256,
-    PROGRAM_DEPENDENCY_LOCK_SHA256,
-    PROGRAM_FACTORY_ID,
-    PROGRAM_INPUT_CONTRACT_SHA256,
-    PROGRAM_LEARNING_EPOCH,
-    PROGRAM_NORMALIZER_SHA256,
-    PROGRAM_RENDERER_SHA256,
-    PROGRAM_SCHEMA_VERSION,
-    PROGRAM_TOPOLOGY_SHA256,
-    PROGRAM_VERSION,
-    load_stable_program_artifact,
-)
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import MAX_TRANSIENT_ATTEMPTS, RETRY_TTL_MS
 from tracefold.news.delivery import render_first_card
@@ -55,12 +41,26 @@ from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.news.semantic_contract import (
+from tracefold.news.program.contracts import (
     EditorialEnvelope,
     ProgramTrace,
     ProgramUsage,
     SemanticJudgment,
     TriageContext,
+)
+from tracefold.news.program.graph import (
+    PROGRAM_ADAPTER_SHA256,
+    PROGRAM_ASSEMBLER_SHA256,
+    PROGRAM_DEPENDENCY_LOCK_SHA256,
+    PROGRAM_FACTORY_ID,
+    PROGRAM_INPUT_CONTRACT_SHA256,
+    PROGRAM_LEARNING_EPOCH,
+    PROGRAM_NORMALIZER_SHA256,
+    PROGRAM_RENDERER_SHA256,
+    PROGRAM_SCHEMA_VERSION,
+    PROGRAM_TOPOLOGY_SHA256,
+    PROGRAM_VERSION,
+    load_stable_program_artifact,
 )
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
@@ -116,10 +116,6 @@ NOW_MS = 1_787_000_000_000
 # #173 added the `product_progress` TradeChannel. It is publicly projected through `news_review_v3`, so both
 # generated contract artefacts move with it, and the code-owned stable Program root is re-issued.
 INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
-    "migration_head": (
-        "issue_175_reader_history_event_asset_index",
-        "20260824_0302",
-    ),
     "generated_artifacts_sha256.docs/generated/openapi.json": (
         "issue_173_product_progress_channel",
         "b0e424cf22fe9b12a6d5e5e8f59098315bb0c2b7f77e0775b27b014120efa23a",
@@ -128,9 +124,87 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "issue_173_product_progress_channel",
         "1fd00735c168b23be86806c96d4e062a484ff42756e29dc52fcec0fe9211290a",
     ),
+    # #162 PR8-B moved the Program into its own package and split the learning plane away from it. The
+    # factory source closure is addressed by logical file name, so the move re-issues the Program root
+    # with no prompt, RulePack, policy, model route or call budget changed — and the epoch, program and
+    # factory identities are bumped explicitly to say so. Every leaf below is that one migration.
+    # Two migrations moved the head: #175's reader-history index (0302) and PR8-B's epoch (0303). A dict
+    # has one key, so the reason names both rather than letting the later declaration silently win.
+    "migration_head": (
+        "issue_175_reader_history_index_then_issue_162_pr8b_program_v7_epoch",
+        "20260824_0303",
+    ),
+    "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
+    "news_to_trading.point_in_time_reads.news.generation.program_version": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "news_semantic_program_v5",
+    ),
+    "news_to_trading.point_in_time_reads.oi.generation.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
+    "news_to_trading.schema_sha256.manifest": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "710184d6508043d747a4b5ac6afb5a80e592475ead2058a40d7c5c984ccfeebe",
+    ),
+    "news_to_trading.schema_sha256.news": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "9cb007bf545af72e2ed847fc524101f57b1db06ea5a74554d53f18c4707e2a51",
+    ),
+    "news_to_trading.schema_sha256.oi": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "051c5c06fbda7e2764bb5959c3fecd286ea90c1e4e1bc33bfa113fe7539f03a6",
+    ),
+    "program_learning.factory_id": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "tracefold.news.program.factory_v5",
+    ),
+    "program_learning.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
     "program_learning.program_sha256": (
-        "issue_173_product_recall_baseline_root",
-        "9334eae481e2d0cdcc3b982d25aa8def22538cadb1a57549074b56fb2a96d1ba",
+        "issue_162_pr8b_program_learning_identity_migration",
+        "7a460f8d3812c64c6ee38158871eb9f060811e5ffe87f399f7bc2e506b4e28ad",
+    ),
+    "program_learning.program_version": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "news_semantic_program_v5",
+    ),
+    "representative_trading_flow.flow.manifest.news.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
+    "representative_trading_flow.flow.manifest.news.program_version": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "news_semantic_program_v5",
+    ),
+    "representative_trading_flow.flow.manifest.oi.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
+    "representative_trading_flow.flow.manifest_sha256": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "21e27e7865d4b8698e63582d9ce9f3741b7e446a409fe6c507b847ffdfb6fb75",
+    ),
+    "representative_trading_flow.flow.news_projection.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
+    "representative_trading_flow.flow.news_projection.program_version": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "news_semantic_program_v5",
+    ),
+    "representative_trading_flow.flow.oi_projection.learning_epoch": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "program_v7",
+    ),
+    "representative_trading_flow.snapshot_sha256": (
+        "issue_162_pr8b_program_learning_identity_migration",
+        "913e320ca78ba6e027867a2f3e3a42682a47a7aa4f76f7eaf8fee253056348b0",
     ),
 }
 
@@ -308,7 +382,7 @@ def _projection_contract() -> dict[str, Any]:
                 "until_created_at_ms": "inclusive",
                 "order": ["verdict_created_at_ms", "event_id"],
                 "generation": {
-                    "learning_epoch": "program_v6",
+                    "learning_epoch": "program_v7",
                     "program_version": "news_oi_signal_v1",
                     "policy_version": "news_triage_policy_v10",
                     "editorial_origin": "telemetry_deterministic",
@@ -320,8 +394,8 @@ def _projection_contract() -> dict[str, Any]:
                 "until_created_at_ms": "inclusive",
                 "order": ["verdict_created_at_ms", "event_id"],
                 "generation": {
-                    "learning_epoch": "program_v6",
-                    "program_version": "news_semantic_program_v4",
+                    "learning_epoch": "program_v7",
+                    "program_version": "news_semantic_program_v5",
                     "policy_version": "news_triage_policy_v10",
                     "editorial_origin": "model",
                 },
@@ -482,7 +556,7 @@ def _oi_row() -> dict[str, Any]:
         "whale_oi_ratio_bps": 21_097,
         "rank_in_window": 1,
         "metric_version": "oi_signal_v1",
-        "learning_epoch": "program_v6",
+        "learning_epoch": "program_v7",
         "program_version": "news_oi_signal_v1",
         "program_sha256": "a" * 64,
         "policy_version": "news_triage_policy_v10",
@@ -519,8 +593,8 @@ def _news_row() -> dict[str, Any]:
         },
         "grounded_assets": ["DOGE"],
         "asset_class": "crypto",
-        "learning_epoch": "program_v6",
-        "program_version": "news_semantic_program_v4",
+        "learning_epoch": "program_v7",
+        "program_version": "news_semantic_program_v5",
         "program_sha256": "1" * 64,
         "policy_version": "news_triage_policy_v10",
         "editorial_origin": "model",
