@@ -28,14 +28,15 @@ GRANDFATHERED_MODULE_LINES = {
     # it exactly meant a 5-line bug fix read as a ratchet violation. The 800-line default now covers it.
     "news/learning/compiler/trusted.py": 408,
     "news/learning/metric.py": 1120,
-    "news/program/graph.py": 3645,
-    "news/learning/evaluator.py": 3673,
+    "news/program/graph.py": 3631,
+    # #175 moved arm-local receipt/history assembly to `evaluation_history.py`.
+    "news/learning/evaluator.py": 3584,
     # PR4 moved the 823-line TriageConsumer atomically; PR7-B3 split `handle` into named phases and
     # moved the route's typed vocabulary to `triage_route.py`. Still over budget, still only shrinking.
-    "news/pipeline/triage.py": 935,
+    # #175 moved history read/projection mechanics to `triage_history.py`.
+    "news/pipeline/triage.py": 926,
     "news/learning/review.py": 2456,
-    # #173 added the `product_progress` TradeChannel and its rationale: +2 enum lines, +4 comment lines.
-    "news/program/contracts.py": 908,
+    # #175 moved ToldContext selection to `told_context.py`; program/contracts.py is below the default cap.
 }
 
 # Function debt is identified by exact source path and qualified name. A structural PR that purely
@@ -63,8 +64,8 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/learning/evaluator.py", "CandidateEvaluator.evaluate"): 198,
     ("news/learning/evaluator.py", "CandidateEvaluator._validate_candidate_static"): 115,
     ("news/learning/evaluator.py", "CandidateEvaluator._accepted_cases"): 139,
-    ("news/learning/evaluator.py", "CandidateEvaluator._run_sequential"): 184,
-    ("news/learning/evaluator.py", "CandidateEvaluator._run_shadow"): 138,
+    ("news/learning/evaluator.py", "CandidateEvaluator._run_sequential"): 174,
+    ("news/learning/evaluator.py", "CandidateEvaluator._run_shadow"): 128,
     ("news/learning/evaluator.py", "CandidateEvaluator._collect_canary_observations"): 140,
     ("news/learning/evaluator.py", "CandidateEvaluator._persist_program_call"): 212,
     ("news/learning/evaluator.py", "CandidateEvaluator._evaluate_evidence"): 311,
@@ -83,7 +84,7 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/learning/review.py", "ReviewDesk._proposals"): 101,
     ("news/learning/review.py", "ReviewDesk._coverage"): 142,
     ("news/learning/review.py", "ReviewDesk._submit_external"): 132,
-    ("news/timeline.py", "event_timeline"): 194,
+    ("news/timeline.py", "event_timeline"): 192,
     ("news/triage_rules.py", "decide"): 103,
     ("platform/postgres/runtime_roles.py", "runtime_role_contract"): 154,
     ("trading/pipeline/candidate.py", "CandidateRunner._freeze"): 103,
@@ -427,6 +428,7 @@ def test_package_exports_remain_at_the_intentional_public_seam() -> None:
     expected = baseline["historical_structure"]["package_exports"]
     expected["tracefold.news"] = [
         "EditorialEnvelope",
+        "NEWS_RETRIEVAL_SHA256",
         "NewsFeedEntry",
         "OpenNewsEvent",
         "OpenNewsExpectedError",

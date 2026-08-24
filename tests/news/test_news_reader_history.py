@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from tracefold.news.program.contracts import TOLD_SELECTOR_SHA256
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.contracts import ArmManifest
+from tracefold.news.learning.evaluation_history import ArmState, Receipt
+from tracefold.news.learning.evaluator import CandidateEvaluator
+from tracefold.news.program.contracts import TriageContext
 from tracefold.news.reader_history import (
     READER_HISTORY_SHA256,
     RECENT_HISTORY_WINDOW_MS,
@@ -12,6 +17,8 @@ from tracefold.news.reader_history import (
     build_reader_history,
     news_retrieval_sha256,
 )
+from tracefold.news.told_context import TOLD_SELECTOR_SHA256
+from tracefold.news.triage_rules import DEFAULT_POLICY
 
 NOW_MS = 2_000_000_000_000
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v1.json"
@@ -27,6 +34,95 @@ def test_reader_history_and_composite_retrieval_identities_are_content_addressed
     assert composite != READER_HISTORY_SHA256
     assert composite != TOLD_SELECTOR_SHA256
     assert composite != news_retrieval_sha256(told_selector_sha256="f" * 64)
+
+
+def test_evaluator_and_production_contexts_share_targeted_history_while_policy_seen_stays_recent() -> None:
+    class _Connection:
+        def execute(self, sql: str) -> SimpleNamespace:
+            assert sql == "SELECT alias, base_symbol FROM news_symbol_aliases"
+            return SimpleNamespace(fetchall=lambda: [{"alias": "9988", "base_symbol": "BABA"}])
+
+    policy = DEFAULT_POLICY.as_dict()
+    evaluator = CandidateEvaluator(
+        _Connection(),
+        stable=ArmManifest(
+            program_version="news_semantic_program_v5",
+            program_sha256="a" * 64,
+            runtime_model_bindings_sha256="b" * 64,
+            retrieval_sha256="c" * 64,
+            policy=policy,
+            policy_sha256=canonical_sha(policy),
+        ),
+        judges={},
+    )
+    receipts = (
+        Receipt(
+            event_id="recent",
+            at_ms=NOW_MS - 60_000,
+            storyline_key="asset:BABA",
+            magnitude=2,
+            direction="bearish",
+            headline_zh="recent",
+            comparison_fingerprint="recent",
+            family="general",
+            grounded_assets=("9988",),
+            canonical_assets=("BABA",),
+        ),
+        Receipt(
+            event_id="targeted",
+            at_ms=NOW_MS - 24 * 3_600_000,
+            storyline_key="asset:BABA",
+            magnitude=2,
+            direction="bearish",
+            headline_zh="targeted",
+            comparison_fingerprint="same",
+            family="general",
+            grounded_assets=("9988",),
+            canonical_assets=("BABA",),
+        ),
+    )
+    event = {
+        "event_id": "current",
+        "evidence_version": 1,
+        "evidence_sha256": "e" * 64,
+        "focus_fact_id": "fact",
+        "leader_title": "same fact",
+        "leader_description": "",
+        "leader_published_at_ms": NOW_MS,
+        "family": "general",
+        "comparison_title": "same fact",
+        "comparison_fingerprint": "same",
+        "storyline_key": "asset:BABA",
+        "grounded_assets": ["9988"],
+    }
+    case = {
+        "snapshot": {"card": event, "focus_fact": {"fact_id": "fact", "text": "same fact", "context": ""}},
+        "opened_at_ms": NOW_MS,
+        "watchlist": (),
+    }
+    state = ArmState()
+    state.receipts.extend(receipts)
+
+    offline = evaluator._build_context(case, state)
+    online_history = build_reader_history(
+        [receipt.as_told_row() for receipt in receipts],
+        now_ms=NOW_MS,
+        family="general",
+        comparison_fingerprint="same",
+        canonical_assets=("BABA",),
+    )
+    online = TriageContext.from_card(
+        event,
+        watchlist=(),
+        told_rows=[row.as_told_row() for row in online_history.told_source_rows],
+        now_ms=NOW_MS,
+        queue_lag_ms=0,
+    )
+
+    assert offline.model_dump(mode="json") == online.model_dump(mode="json")
+    assert [entry.event_id for entry in offline.told.entries] == ["targeted", "recent"]
+    metric = evaluator._policy_metric_projection(case, state, context=offline)
+    assert [row["event_id"] for row in metric["seen"]] == ["recent"]
 
 
 def _row(
@@ -149,6 +245,22 @@ def test_reader_history_matches_frozen_canonical_assets_not_raw_aliases() -> Non
     assert [(row.event_id, row.grounded_assets, row.canonical_assets) for row in history.targeted_told_rows] == [
         ("same-issuer", ("9988",), ("BABA",))
     ]
+
+
+def test_reader_history_preserves_an_explicit_empty_canonical_asset_projection() -> None:
+    prior = _row("verdict-only", NOW_MS - RECENT_HISTORY_WINDOW_MS - 1)
+    prior["grounded_assets"] = ["BABA"]
+    prior["assets"] = ["BABA"]
+    prior["canonical_assets"] = []
+
+    history = build_reader_history(
+        (prior,),
+        now_ms=NOW_MS,
+        comparison_fingerprint="current-fingerprint",
+        canonical_assets=("BABA",),
+    )
+
+    assert history.targeted_told_rows == ()
 
 
 def test_reader_history_exact_fingerprint_uses_the_same_family_as_postgres() -> None:

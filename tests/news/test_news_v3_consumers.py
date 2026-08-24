@@ -41,6 +41,7 @@ from tracefold.news.program.contracts import (
     SemanticJudgment,
     TriageContext,
 )
+from tracefold.news.reader_history import ReaderHistorySnapshot, assemble_reader_history
 from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -78,8 +79,8 @@ class RecordingNews:
 
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
-            if name == "told_ledger" and name not in self.responses:
-                return []  # nothing pushed yet: an empty told ledger
+            if name == "reader_history" and name not in self.responses:
+                return ReaderHistorySnapshot()  # nothing pushed yet
             if name == "latest_evidence_snapshot" and name not in self.responses:
                 card = self.responses.get("event_card") or {}
                 return {
@@ -1411,6 +1412,10 @@ def _ledger_row(
     }
 
 
+def _recent_history(*rows: dict[str, Any], now_ms: int = NOW_MS) -> ReaderHistorySnapshot:
+    return assemble_reader_history(recent_rows=rows, now_ms=now_ms)
+
+
 def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fire() -> None:
     """A listing frame whose closest told entry is about a *different* instrument still reaches the reader.
 
@@ -1437,7 +1442,7 @@ def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fir
             leader_title="Upbit will list BICO",
         ),
         insert_verdict=True,
-        told_ledger=ledger,
+        reader_history=_recent_history(*ledger),
     )
     bus = FakeBus()
     model = _ScriptedSemanticJudge(
@@ -1462,7 +1467,7 @@ def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fir
     assert inserted["override_rule"] != "restatement"
 
 
-def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restatement() -> None:
+def test_triage_reader_history_reaches_the_model_and_the_trace_and_grounds_a_restatement() -> None:
     """The told ledger (what the reader already received) is in the status bar and the trace; a restatement the
     model grounds in it drops with the restated card's event id recorded; the persist step locks the final key."""
 
@@ -1471,7 +1476,7 @@ def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restat
         get_verdict=None,
         event_card=_card(),
         insert_verdict=True,
-        told_ledger=ledger,
+        reader_history=_recent_history(*ledger),
     )
     bus = FakeBus()
     model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0, decision="drop")])
@@ -1499,6 +1504,46 @@ def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restat
     assert bus.published == []
 
 
+def test_triage_shows_targeted_history_to_the_model_but_never_to_recent_seen_policy() -> None:
+    old_exact = {
+        **_ledger_row("ev-old-exact", NOW_MS - 24 * 3_600_000),
+        "family": "general",
+        "comparison_fingerprint": "f" * 64,
+        "canonical_assets": ["NVDA"],
+    }
+    history = assemble_reader_history(recent_rows=(), exact_rows=(old_exact,), now_ms=NOW_MS)
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),
+        insert_verdict=True,
+        reader_history=history,
+    )
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0, decision="drop")])
+    triage = _triage_with_judge(news, FakeBus(), model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    entry = model.inputs[0].told.entries[0]
+    assert (entry.event_id, entry.history_scope, entry.retrieval_reason, entry.tier) == (
+        "ev-old-exact",
+        "targeted",
+        "exact_fingerprint",
+        "exact_fact",
+    )
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
+    assert inserted["trace"]["seen_count"] == 0
+    assert inserted["trace"]["reader_history"] == {
+        "recent_count": 0,
+        "targeted_count": 1,
+        "source_count": 1,
+        "selected_count": 1,
+        "selected_reasons": ["exact_fingerprint"],
+    }
+    history_calls = [kwargs for name, kwargs in news.calls if name == "reader_history"]
+    assert history_calls and all(call["include_targeted"] is True for call in history_calls)
+
+
 def test_triage_does_not_reask_when_an_unrelated_card_lands_but_the_selection_is_unchanged() -> None:
     """The old rule re-asked whenever any new event id appeared in the recent ledger. In the fixed production
     cohort that fired on 16% of judgments and each one paid for a second full two-Predictor execution.
@@ -1512,14 +1557,14 @@ def test_triage_does_not_reask_when_an_unrelated_card_lands_but_the_selection_is
     ledger_calls = {"n": 0}
     unrelated = _ledger_row("ev-unrelated", NOW_MS - 1_000, key="theme:trade", headline="完全无关的新卡片")
 
-    def told_ledger(*, now_ms: int, window_ms: int, limit: int, **_: Any) -> list[dict[str, Any]]:
-        del now_ms, window_ms
+    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
         ledger_calls["n"] += 1
         related = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(4)]
         filler = [_ledger_row(f"bg-{i}", NOW_MS - (30 + i) * 1_000, key="theme:trade") for i in range(6)]
-        return ([unrelated, *related, *filler] if ledger_calls["n"] > 1 else [*related, *filler])[:limit]
+        rows = [unrelated, *related, *filler] if ledger_calls["n"] > 1 else [*related, *filler]
+        return _recent_history(*rows, now_ms=now_ms)
 
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, told_ledger=told_ledger)
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, reader_history=reader_history)
     model = _ScriptedSemanticJudge([_model_verdict(novelty="new_fact")])
     triage = _triage_with_judge(news, FakeBus(), model)
 
@@ -1537,12 +1582,12 @@ def test_triage_does_not_reask_when_only_the_source_row_order_changed() -> None:
     ledger_calls = {"n": 0}
     rows = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(3)]
 
-    def told_ledger(*, now_ms: int, window_ms: int, limit: int, **_: Any) -> list[dict[str, Any]]:
-        del now_ms, window_ms
+    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
         ledger_calls["n"] += 1
-        return (rows if ledger_calls["n"] == 1 else list(reversed(rows)))[:limit]
+        source = rows if ledger_calls["n"] == 1 else list(reversed(rows))
+        return _recent_history(*source, now_ms=now_ms)
 
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, told_ledger=told_ledger)
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, reader_history=reader_history)
     model = _ScriptedSemanticJudge([_model_verdict(novelty="new_fact")])
     triage = _triage_with_judge(news, FakeBus(), model)
 
@@ -1559,19 +1604,18 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
     ledger_calls = {"n": 0}
 
-    def told_ledger(*, now_ms: int, window_ms: int, limit: int, **_: Any) -> list[dict[str, Any]]:
-        del now_ms, window_ms
+    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
         ledger_calls["n"] += 1
         # First read (load): nothing yet. Every later read (in-lock check, reload) sees the new card.
         if ledger_calls["n"] == 1:
-            return []
-        return [fresh_push][:limit]
+            return ReaderHistorySnapshot()
+        return _recent_history(fresh_push, now_ms=now_ms)
 
     news = RecordingNews(
         get_verdict=None,
         event_card=_card(),
         insert_verdict=True,
-        told_ledger=told_ledger,
+        reader_history=reader_history,
     )
     bus = FakeBus()
     first_verdict = _model_verdict(novelty="new_fact")
@@ -1864,15 +1908,15 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
     ledger_calls = {"n": 0}
 
-    def told_ledger(**kwargs: Any) -> list[dict[str, Any]]:
+    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
         ledger_calls["n"] += 1
-        return [] if ledger_calls["n"] == 1 else [fresh_push][: int(kwargs.get("limit") or 1)]
+        return ReaderHistorySnapshot() if ledger_calls["n"] == 1 else _recent_history(fresh_push, now_ms=now_ms)
 
     news = RecordingNews(
         get_verdict=None,
         event_card=_card(queue_priority="normal", provider_score_max=70.0),
         insert_verdict=True,
-        told_ledger=told_ledger,
+        reader_history=reader_history,
     )
     bus = FakeBus()
 
@@ -2014,7 +2058,7 @@ def _duplicate_news(*, ledger_headline: str) -> RecordingNews:
         get_verdict=None,
         event_card=_card(queue_priority="normal", provider_score_max=75.0),
         insert_verdict=True,
-        told_ledger=[_ledger_row("ev-earlier", NOW_MS - 300_000, headline=ledger_headline)],
+        reader_history=_recent_history(_ledger_row("ev-earlier", NOW_MS - 300_000, headline=ledger_headline)),
     )
 
 
@@ -2193,6 +2237,8 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     )
     assert inserted["verdict"]["why_zh"] == ""
     assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
+    history_calls = [kwargs for name, kwargs in news.calls if name == "reader_history"]
+    assert history_calls and all(call["include_targeted"] is False for call in history_calls)
     # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1

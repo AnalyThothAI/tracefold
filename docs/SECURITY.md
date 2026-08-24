@@ -126,7 +126,7 @@ There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
 The DSPy GEPA compiler is a cold manual development workflow, not a runtime
-Worker. A trusted read-only exporter recomputes the current `program_v6`
+Worker. A trusted read-only exporter recomputes the current `program_v7`
 development artifact and ordered case/cluster/episode roots. An untrusted
 resource-bounded runner receives a read-only input bundle, no DB/holdout/
 application credentials, no ambient HOME or arbitrary egress, and provider
@@ -159,10 +159,12 @@ Docker transport failure is never interpreted as proof of cleanup.
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293`, `0294` and `0295` append the corrected semantic, expert-quality
-and D-generation epochs. `0298` appends `program_v5` for factory/artifact v2
-and the optimizer-ownership hard cut. `0301` preserves all history and appends
-`program_v6` for factory/executable v4, policy v10, review v4 and metric/compiler
-protocol v3. Every earlier review, dataset, recording and release receipt is
+and D-generation `program_v2`–`program_v4` epochs. `0298` appends `program_v5`
+for factory v3 and candidate-conditioned ToldContext. `0301` preserves all
+history and appends `program_v6` for factory/executable v4, policy v10, review
+v4 and metric/compiler protocol v3. `0303` appends the current `program_v7` for
+factory/executable v5 after the Program/Learning package split. Every earlier
+review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v4, DemoBank,
 validation, holdout or promotion evidence for the current Program factory.
 The reset is an eligibility hard cut, not permission for an optimizer to

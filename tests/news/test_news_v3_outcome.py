@@ -282,6 +282,38 @@ def test_timeline_for_a_recovery_event_stops_at_the_gate() -> None:
     assert "断线补抄" in steps[0]["summary_zh"]
 
 
+def test_news_why_names_the_restated_card_time_and_targeted_retrieval_reason() -> None:
+    verdict = {
+        "novelty": "restatement",
+        "restates": 0,
+        "headline_zh": "重复卡片",
+        "direction": "bearish",
+        "magnitude": 2,
+    }
+    triage = {
+        **_triage("drop", override_rule="restatement", verdict=verdict),
+        "trace": {
+            "restates_event_id": "prior",
+            "told": [
+                {
+                    "event_id": "prior",
+                    "at_ms": NOW - 24 * 3_600_000,
+                    "headline_zh": "昨日原卡",
+                    "history_scope": "targeted",
+                    "retrieval_reason": "exact_fingerprint",
+                }
+            ],
+        },
+    }
+
+    _, steps = event_timeline(event=_event(), members=[], verdicts=[triage], deliveries=[])
+
+    decide = next(step for step in steps if step["stage"] == "decide")
+    assert "昨日原卡" in decide["summary_zh"] and "精确事实定向召回" in decide["summary_zh"]
+    assert decide["facts"]["restated_at_ms"] == NOW - 24 * 3_600_000
+    assert decide["facts"]["restated_retrieval_reason"] == "exact_fingerprint"
+
+
 def _status_inputs(**over: object) -> dict[str, object]:
     base: dict[str, object] = {
         "ingest": {"connected": True, "last_frame_at_ms": NOW - 60_000, "open_incidents": []},

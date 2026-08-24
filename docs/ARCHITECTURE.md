@@ -126,12 +126,12 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v6` epoch hard-cuts to
-`tracefold.news.semantic_program.factory_v4` / `news_semantic_program_v4` on
+current `program_v7` epoch hard-cuts to
+`tracefold.news.program.factory_v5` / `news_semantic_program_v5` on
 the artifact-v2 envelope: structured code-owned quality contracts are separate
 from optimizer-owned strategy/demo state, and every earlier Prompt/Program row
 remains append-only audit history. Only accepted `news_review_v4` evidence
-created in the v6 epoch is eligible for metric v4, compiler, replay or release
+created in the v7 epoch is eligible for metric v4, compiler, replay or release
 gates.
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
@@ -157,11 +157,11 @@ tracefold.news
     loops.py           the two cold polling loops and their one-slot DB lane
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  candidate_evaluator.py content-addressed program_v6 datasets and stable/candidate evaluation workflow
+  learning/           content-addressed program_v7 datasets, reviews, compiler, and stable/candidate evaluation
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
-  agents/             SemanticJudge, DSPy Program artifacts/adapters, and the cold compiler
+  program/            SemanticJudge, DSPy Program artifacts/adapters, and code-owned quality baseline
   delivery.py / control.py  cards, control commands
   pipeline/
     admission.py      the atomic Deduper transaction and raw-queue consumer
@@ -632,14 +632,14 @@ sentinel, and keeps public `title_zh` empty. Splitting semantic judgment from co
 per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
-The only executable generation is `news_semantic_program_v4` from
-`tracefold.news.semantic_program.factory_v4` in learning epoch `program_v6`.
+The only executable generation is `news_semantic_program_v5` from
+`tracefold.news.program.factory_v5` in learning epoch `program_v7`.
 It is a code-owned `ProgramArtifact v2`: canonical `manifest.json` plus
 `state.json`, content-addressed by the whole reviewed identity. The manifest
 binds the fixed factory/topology, DSPy/dependency lock, and the input, Adapter,
 normalizer and assembler contracts, execution budgets, Predictor state hashes
-and compile provenance. The code-owned pack set is capped at nine and adds only
-`trade_relevance_attention` revision 1 for this generation;
+and compile provenance. The code-owned pack set is capped at nine; the active
+reader-memory wording is `novelty_told_ledger` revision 3;
 state is limited to the two validated Predictor records: signature identity,
 instructions, demonstrations, model-binding slots, token caps and their
 hashes. The dependency-lock digest is package-owned and drift-tested against
@@ -655,18 +655,29 @@ reviewed state without allowing a data row to become Python control flow.
 There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
 compatibility fallback; Prompt-era columns/rows are read-only audit history.
 
-The Module never retrieves from a network; it ranks one bounded local ledger.
-The worker builds reader context from settled sent cards, and the consumer adds
-the **told context** — the cards the reader actually received in the last 4 h
-(`repository.told_ledger`: the newest 128 push/escalate verdicts whose first
-delivery has a durable `sent` receipt, no degraded fallbacks, one row per Event,
-newest first). `ToldLedgerSnapshot.select` is a pure, deterministic,
-candidate-conditioned selector — not a Retriever service, Protocol or Adapter —
-that ranks that ledger against *this* Event and shows the Program at most 16
-rows. Its tiers are exact storyline, then shared instrument (canonical symbol
-sets), then positive same-fact similarity over the Deduper's normalized
+The Module never retrieves from a network; it ranks bounded local reader
+history. `repository.reader_history` reads only first deliveries durably settled
+`sent` for a Triage `push`/`escalate`, excluding the current Event. It returns
+two disjoint projections from that one material truth:
+
+- `recent_seen_rows`: every receipt aged at most 4 h, newest first, cap 128;
+- `targeted_told_rows`: receipts older than 4 h and at most 48 h, with up to 8
+  exact `(family, comparison_fingerprint)` matches followed by up to 24
+  canonical-asset overlaps. Exact matches win when one Event qualifies twice.
+
+Only the recent projection reaches deterministic `decide().seen`; the targeted
+projection is semantic evidence for the Program and cannot extend a policy
+throttle. Telemetry requests `include_targeted=False`. Production initial load
+and stale refresh, plus CandidateEvaluator seed and in-run receipt replay, use
+the same pure `build_reader_history` boundary/cap/dedup rules.
+
+`ToldLedgerSnapshot.select` is a pure, deterministic, candidate-conditioned
+selector — not a Retriever service, Protocol or Adapter — that ranks the union
+against *this* Event and shows the Program at most 16 rows. Its tiers are
+targeted exact fact, exact storyline, shared instrument (canonical symbol
+sets), positive same-fact similarity over the Deduper's normalized
 `comparison_title`, then recency. Inside a tier the order is similarity desc,
-sent time newest-first, then the stable Event identity, so the same ledger
+sent time newest-first, then the stable Event identity, so the same history
 always produces the same selection whatever order the database returned it in.
 The storyline tier is capped at 8 of the 16 rows and its overflow yields to the
 tiers below before filling what is left, because ranking storyline first with no
@@ -682,15 +693,17 @@ predecessor was never the ranking — no ordering recovers what the cap excludes
 so the row budget moved with it, paid for by `ReaderCard` no longer receiving
 the ledger at all (the two-call total moves about +2%). The single remaining
 miss is a cross-lingual paraphrase naming a different instrument, which no
-deterministic primitive reaches; it is evidence for a future retrieval Issue,
-not for this one. Each model-visible
+deterministic primitive reaches. Issue #175's fixed overnight cases then moved
+source and selected recall from 0/2 at 4 h to 2/2 at 48 h; an exploratory 7-day
+window recovered no additional fixed target and substantially enlarged the
+candidate pool. Each model-visible
 entry carries index `i`, age, final storyline key, event type, instrument
 symbols, magnitude, direction and `headline_zh`; the Event id, sent time,
-selection tier and similarity stay audit-only. `TOLD_SELECTOR_SHA256` binds the
-ledger truth and its projection, the window, the 128-row source cap, the tier
-order, the comparison primitives, the 16-entry cap and the model-visible schema,
-and *is* the arm's `retrieval_sha256` — a selector edit cannot ship as the same
-bundle.
+selection tier, similarity, history scope and retrieval reason stay audit-only.
+`READER_HISTORY_SHA256` binds source truth/windows/caps/projection;
+`TOLD_SELECTOR_SHA256` binds selection and the unchanged model-visible schema;
+their composite `NEWS_RETRIEVAL_SHA256` is the arm's `retrieval_sha256`, so
+either source or selector behavior changes the Program and bundle identities.
 
 The two Predictors do not read the same input. `EventSemantics.v2` receives the
 model-safe Event evidence, grounded Gate facts and selected told context;
@@ -938,17 +951,18 @@ deployment time. Corrective migration `0293` preserves that history and appends
 `program_v2` after fixing the semantic retry state machine. Issue #132 migration
 `0294` preserves both prior rows and appends `program_v3` for the expert quality
 baseline and semantic normalization. Issue #134 migration `0295` appends
-`program_v5`. Issue #160 migration `0301` hard-renames persisted `priority` to
+`program_v4`; `0298` appends `program_v5` for candidate-conditioned ToldContext.
+Issue #160 migration `0301` hard-renames persisted `priority` to
 `queue_priority`, adds atomic editorial/runtime-manifest judgment identity, and
 appends `program_v6` for factory v4/executable v4/policy v10. All earlier reviews, datasets, recordings,
 reports and release receipts remain readable audit evidence, but they are
-promotion-ineligible and cannot seed the v6 Program or DemoBank. Evidence
+promotion-ineligible and cannot seed the current Program or DemoBank. Evidence
 accumulation starts from zero: Event reviews and acceptance receipts must be
 created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v6` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
+`program_v7` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -1058,11 +1072,15 @@ appends the corrected `program_v2` epoch, making `program_v1` evidence
 audit-only for current release decisions. `0294` preserves both earlier Program
 epochs and appends the expert-quality `program_v3` epoch, making `program_v2`
 evidence audit-only for current release decisions. `0295` preserves v1-v3 and
-appends the `program_v5` epoch with factory v3 on the artifact-v2 envelope.
+appends `program_v4` with factory v2; `0298` preserves v1-v4 and appends
+`program_v5` with factory v3 on the artifact-v2 envelope.
 `0301` performs the #160 hard cut: `news_events.priority` becomes
 `queue_priority` with no alias; verdicts gain atomic editorial/scored/runtime-
 manifest identity; `program_v6` binds factory v4, executable v4, policy v10,
 review v4 and metric/compiler protocol v3; and older evidence becomes audit-only.
+`0303` preserves that history and appends the #162 `program_v7` epoch for
+factory v5/executable v5 after the Program/Learning package split; the v6
+baseline remains immutable audit evidence.
 Because the physical rename makes the old exact image incompatible, release
 requires a separately built and drilled new-schema/v5-behaviour rollback image;
 it is never part of the production registry or a second runtime loader. No
@@ -1098,9 +1116,9 @@ notification transport success; capital must not depend on a notification
 channel being reachable.
 
 **The News input is one hard-cut generation.** The public projections emit
-only post-epoch `program_v6` / policy-v10 judgments with the complete Program,
+only post-epoch `program_v7` / policy-v10 judgments with the complete Program,
 editorial, scored-judgment and runtime-manifest identity. Model judgments must
-come from executable v4; deterministic OI keeps its arithmetic Program v1.
+come from executable v5; deterministic OI keeps its arithmetic Program v1.
 `trading_manifest_v2` freezes those identities with the case. A pre-cut v1
 manifest that is still `PENDING`, or whose `RUNNING` lease expires, is blocked
 as `news_generation_retired` before a model call or order; prepared orders keep

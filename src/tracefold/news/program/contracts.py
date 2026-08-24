@@ -13,30 +13,23 @@ from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
-from ..models import TriageAsset, TriageVerdict, base_symbol
-from ..similarity import similarity
+from ..models import TriageAsset, TriageVerdict
+from ..told_context import TOLD_MAX as _TOLD_MAX
+from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
+from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
 
-TOLD_WINDOW_MS: Final[int] = 4 * 3_600_000
-# The bounded sent ledger the selector reads, and the bounded slice the model sees.  The gap between them is
-# the point: `decide()` keeps governing duplicates against the whole window while the Program reads a compact,
-# candidate-conditioned view of it.
-TOLD_SOURCE_MAX: Final[int] = 128
 # 16, not 12. Measured on every accepted restatement whose duplicate target was inside the 4 h ledger (n=22),
 # target recall@N: 12 rows recalls 19, 16 rows recalls 21. The binding constraint on the old selector was never
 # the ranking — a dense storyline puts 18-22 genuinely related cards in one window — so no ordering recovers
 # what the cap excludes. ReaderCard no longer receives the ledger at all, which more than pays for the four
 # extra rows: the two-call total moves ~+2%.
-TOLD_MAX: Final[int] = 16
 # No tier may take every slot. Ranking storyline first and filling the rest by tier order scored *below* the
 # predecessor (18/22 against 19/22): with 14-17 same-storyline cards in the window, tier 1 consumed all 16 rows
 # and the shared-instrument evidence that actually held the duplicate never got one. Capping the storyline tier
 # is what makes the lower tiers reachable.
-TOLD_STORYLINE_TIER_MAX: Final[int] = 8
-TOLD_SYMBOLS_MAX: Final[int] = 6
 # Retrieval's own threshold on comparison titles, deliberately not `news.policy.similarity_max`: that knob is
 # operator-owned duplicate policy over reader headlines, and coupling the two would let a policy edit silently
 # change what the model is allowed to see.
-TOLD_FACT_SIMILARITY_MIN: Final[float] = 0.25
 WATCHLIST_MAX: Final[int] = 64
 GROUNDED_ASSETS_MAX: Final[int] = 16
 STRATEGIES_MAX: Final[int] = 16
@@ -106,49 +99,6 @@ TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
     "single_asset",
 )
 EDITORIAL_CONTRACT_VERSION: Final[str] = "news_editorial_v1"
-
-ToldTier = Literal["storyline", "asset_overlap", "fact_similarity", "recency"]
-# Deterministic ordered union.  There is no learned score and no undocumented numeric weight.
-#
-# "same family" is deliberately absent: 96% of sent cards carry `family='general'`, so that tier would have
-# been a relabelled recency tier.  "same storyline theme" is absent for the opposite reason — two cards with
-# the same `theme:` key are already an exact storyline match, so the tier could never fire.
-TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = ("storyline", "asset_overlap", "fact_similarity", "recency")
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v1"
-# Stable bundle identity for retrieval.  Anything that changes what the model is shown — the ledger truth and
-# its projection, the window, the source cap, the tier order, the comparison primitives, the 12-entry cap, or
-# the model-visible schema — has to change this hash, or a selector edit would ship as the same arm.
-TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
-    {
-        "selector": TOLD_SELECTOR_ID,
-        "source_truth": "news_deliveries(kind=first,state=sent)",
-        "source_projection": [
-            "event_id",
-            "at_ms",
-            "storyline_key",
-            "event_type",
-            "magnitude",
-            "direction",
-            "headline_zh",
-            "grounded_assets",
-            "assets",
-            "comparison_title",
-        ],
-        "window_ms": TOLD_WINDOW_MS,
-        "source_max": TOLD_SOURCE_MAX,
-        "tier_order": list(TOLD_TIER_ORDER),
-        "symbol_primitive": "base_symbol_v1",
-        "similarity_primitive": "character_bigram_jaccard_v1",
-        "similarity_field": "comparison_title",
-        "similarity_min": TOLD_FACT_SIMILARITY_MIN,
-        "rank_order": ["tier", "-similarity", "-at_ms", "event_id"],
-        "storyline_tier_max": TOLD_STORYLINE_TIER_MAX,
-        "dedup": "event_id",
-        "excludes_candidate": True,
-        "visible_cap": TOLD_MAX,
-        "visible_fields": ["i", "ago_min", "key", "type", "sym", "m", "dir", "headline_zh"],
-    }
-)
 
 
 class _ExactContractModel(BaseModel):
@@ -286,162 +236,6 @@ class SemanticGateContext(_ExactContractModel):
     pr_template: bool = False
 
 
-class ToldLedgerEntry(_ExactContractModel):
-    """One card the reader already received, as the selector chose it.
-
-    ``event_id``, ``at_ms``, ``tier`` and ``similarity`` are audit-only: they answer "why was this row shown"
-    without ever reaching a Predictor.
-    """
-
-    i: int = Field(ge=0)
-    event_id: str
-    at_ms: int = Field(ge=0)
-    ago_min: int = Field(ge=0)
-    storyline_key: str = ""
-    event_type: str = ""
-    symbols: tuple[str, ...] = Field(default=(), max_length=TOLD_SYMBOLS_MAX)
-    magnitude: int = Field(ge=0, le=3)
-    direction: str
-    headline_zh: str = Field(max_length=60)
-    tier: ToldTier = "recency"
-    similarity: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
-    """Every instrument one ledger row was about: the Gate's grounded tags plus the verdict's own assets."""
-
-    symbols = {base_symbol(str(value)) for value in row.get("grounded_assets") or () if value}
-    for asset in row.get("assets") or ():
-        symbol = asset.get("symbol") if isinstance(asset, Mapping) else asset
-        if symbol:
-            symbols.add(base_symbol(str(symbol)))
-    return frozenset(symbol for symbol in symbols if symbol)
-
-
-def _take_with_tier_caps(
-    ranked: Sequence[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]],
-    *,
-    limit: int,
-) -> list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]]:
-    """Fill the slots in rank order, capping the storyline tier so the evidence tiers under it stay reachable —
-    and never letting recency filler displace evidence.
-
-    Three passes, and the order of the last two is the whole point. Filler exists so a sparse candidate still
-    sees what the reader has been reading; it must never take a slot an evidence row wants, because then an
-    unrelated delivery changes the evidence the model saw and buys a second paid execution. So a capped tier's
-    overflow is offered every remaining slot before any filler is, and is not discarded either way.
-    """
-
-    caps = {TOLD_TIER_ORDER.index("storyline"): TOLD_STORYLINE_TIER_MAX}
-    filler_tier = TOLD_TIER_ORDER.index("recency")
-    chosen: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
-    overflow: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
-    filler: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
-    used: dict[int, int] = {}
-    for item in ranked:
-        tier_index = item[0]
-        if tier_index == filler_tier:
-            filler.append(item)
-        elif used.get(tier_index, 0) >= caps.get(tier_index, limit):
-            overflow.append(item)
-        else:
-            used[tier_index] = used.get(tier_index, 0) + 1
-            chosen.append(item)
-        if len(chosen) >= limit:
-            return chosen[:limit]
-    for item in (*overflow, *filler):
-        if len(chosen) >= limit:
-            break
-        chosen.append(item)
-    return chosen[:limit]
-
-
-class ToldLedgerSnapshot(_ExactContractModel):
-    """The bounded, candidate-conditioned slice of the sent ledger that ``EventSemantics`` may read."""
-
-    storyline_key: str
-    preliminary: bool = True
-    entries: tuple[ToldLedgerEntry, ...] = Field(default=(), max_length=TOLD_MAX)
-    source_count: int = Field(default=0, ge=0)
-
-    @classmethod
-    def select(
-        cls,
-        rows: Sequence[Mapping[str, Any]],
-        *,
-        now_ms: int,
-        storyline_key: str,
-        symbols: Sequence[str] = (),
-        comparison_title: str = "",
-        exclude_event_id: str = "",
-        limit: int = TOLD_MAX,
-    ) -> ToldLedgerSnapshot:
-        """Rank the bounded sent ledger against *this* candidate and keep the top ``limit`` rows.
-
-        The tiers are an ordered union, not a quota: nothing is reserved for recency, and a candidate whose
-        storyline already fills every slot simply gets no unrelated cards.  Inside a tier, positive same-fact
-        similarity ranks first, then sent time newest-first, then the stable Event identity — so the same
-        ledger always produces the same selection, whatever order the database returned it in.
-        """
-
-        bounded = max(0, min(int(limit), TOLD_MAX))
-        cutoff = int(now_ms) - TOLD_WINDOW_MS
-        candidate_symbols = frozenset(base_symbol(str(value)) for value in symbols if value)
-        candidate_title = str(comparison_title or "")
-
-        window = sorted(
-            (row for row in rows if int(row.get("at_ms") or 0) >= cutoff),
-            key=lambda row: -int(row.get("at_ms") or 0),
-        )[:TOLD_SOURCE_MAX]
-
-        ranked: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
-        deduped: set[str] = set()
-        for row in window:
-            event_id = str(row.get("event_id") or "")
-            if not event_id or event_id == exclude_event_id or event_id in deduped:
-                continue
-            deduped.add(event_id)
-            at_ms = int(row.get("at_ms") or 0)
-            row_key = str(row.get("storyline_key") or "")
-            row_symbols = _row_symbols(row)
-            score = similarity(candidate_title, str(row.get("comparison_title") or ""))
-            fact_similarity = score if score >= TOLD_FACT_SIMILARITY_MIN else 0.0
-            tier: ToldTier
-            if row_key and row_key == storyline_key:
-                tier = "storyline"
-            elif candidate_symbols and candidate_symbols & row_symbols:
-                tier = "asset_overlap"
-            elif fact_similarity:
-                tier = "fact_similarity"
-            else:
-                tier = "recency"
-            ranked.append((TOLD_TIER_ORDER.index(tier), -fact_similarity, -at_ms, event_id, row, tier, fact_similarity))
-        ranked.sort(key=lambda item: item[:4])
-        chosen = _take_with_tier_caps(ranked, limit=bounded)
-
-        return cls(
-            storyline_key=storyline_key,
-            source_count=len(deduped),
-            entries=tuple(
-                ToldLedgerEntry(
-                    i=index,
-                    event_id=str(row.get("event_id") or ""),
-                    at_ms=int(row.get("at_ms") or 0),
-                    ago_min=max(0, int(now_ms) - int(row.get("at_ms") or 0)) // 60_000,
-                    storyline_key=str(row.get("storyline_key") or ""),
-                    event_type=str(row.get("event_type") or ""),
-                    symbols=tuple(sorted(_row_symbols(row)))[:TOLD_SYMBOLS_MAX],
-                    magnitude=int(row.get("magnitude") or row.get("m") or 0),
-                    direction=str(row.get("direction") or row.get("dir") or ""),
-                    headline_zh=str(row.get("headline_zh") or "")[:60],
-                    tier=tier,
-                    similarity=round(fact_similarity, 4),
-                )
-                for index, (_, _, _, _, row, tier, fact_similarity) in enumerate(chosen)
-            ),
-        )
-
-
 class _ModelVisibleEvent(_ExactContractModel):
     source: str
     strategies: tuple[str, ...] = Field(max_length=STRATEGIES_MAX)
@@ -466,7 +260,7 @@ class _ModelVisibleToldEntry(_ExactContractModel):
     ago_min: int = Field(ge=0)
     key: str
     type: str
-    sym: tuple[str, ...] = Field(max_length=TOLD_SYMBOLS_MAX)
+    sym: tuple[str, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
     m: int = Field(ge=0, le=3)
     dir: str
     headline_zh: str = Field(max_length=60)
@@ -475,7 +269,7 @@ class _ModelVisibleToldEntry(_ExactContractModel):
 class _ModelVisibleEventStatus(_ExactContractModel):
     storyline_key: str
     preliminary: bool
-    told: tuple[_ModelVisibleToldEntry, ...] = Field(max_length=TOLD_MAX)
+    told: tuple[_ModelVisibleToldEntry, ...] = Field(max_length=_TOLD_MAX)
 
 
 class ModelVisibleSemanticsInput(_ExactContractModel):
@@ -503,7 +297,7 @@ class TriageContext(_ExactContractModel):
     evidence: FrozenEventEvidence
     gate: SemanticGateContext
     watchlist: tuple[str, ...] = Field(default=(), max_length=WATCHLIST_MAX)
-    told: ToldLedgerSnapshot
+    told: _ToldLedgerSnapshot
     now_ms: int = Field(ge=0)
     queue_lag_ms: int = Field(default=0, ge=0)
 
@@ -552,7 +346,7 @@ class TriageContext(_ExactContractModel):
                 or str(card.get("admission") or "").startswith("suppressed_pr"),
             ),
             watchlist=tuple(str(value) for value in watchlist)[:WATCHLIST_MAX],
-            told=ToldLedgerSnapshot.select(
+            told=_ToldLedgerSnapshot.select(
                 told_rows,
                 now_ms=now_ms,
                 storyline_key=storyline_key,
@@ -877,12 +671,6 @@ __all__ = [
     "EDITORIAL_CONTRACT_VERSION",
     "GROUNDED_ASSETS_MAX",
     "STRATEGIES_MAX",
-    "TOLD_MAX",
-    "TOLD_SELECTOR_ID",
-    "TOLD_SELECTOR_SHA256",
-    "TOLD_SOURCE_MAX",
-    "TOLD_STORYLINE_TIER_MAX",
-    "TOLD_WINDOW_MS",
     "TRADE_AFFECTED_MARKET_ORDER",
     "TRADE_CHANNEL_ORDER",
     "WATCHLIST_MAX",
@@ -900,8 +688,6 @@ __all__ = [
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
-    "ToldLedgerEntry",
-    "ToldLedgerSnapshot",
     "TradeRelevanceV1",
     "TriageContext",
     "aggregate_program_usage",

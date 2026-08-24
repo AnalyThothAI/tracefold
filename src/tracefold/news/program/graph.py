@@ -44,13 +44,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..models import TriageAsset, TriageVerdict
+from ..told_context import NEWS_RETRIEVAL_SHA256, TOLD_SELECTOR_ID, TOLD_SELECTOR_SHA256
 from .contracts import (
-    TOLD_MAX,
-    TOLD_SELECTOR_ID,
-    TOLD_SELECTOR_SHA256,
-    TOLD_SOURCE_MAX,
-    TOLD_STORYLINE_TIER_MAX,
-    TOLD_WINDOW_MS,
     EditorialEnvelope,
     FrozenEventEvidence,
     ModelVisibleCardInput,
@@ -65,8 +60,6 @@ from .contracts import (
     SemanticJudge,
     SemanticJudgeError,
     SemanticJudgment,
-    ToldLedgerEntry,
-    ToldLedgerSnapshot,
     TradeRelevanceV1,
     TriageContext,
     aggregate_program_usage,
@@ -125,12 +118,11 @@ PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
 PROGRAM_INPUT_CONTRACT_SHA256: Final[str] = canonical_sha(
     {
         "context": "tracefold.news.TriageContext.v4",
-        # Two payloads, not one.  EventSemantics interprets the Event against the selected ledger; ReaderCard
-        # only ever sees the Event.
+        # EventSemantics sees the selected history; ReaderCard sees only the Event.
         "event_semantics_payload": "bounded_with_selected_told_context.v2",
         "reader_card_payload": "bounded_evidence_only.v2",
         "reader_card_semantic_view": "ReaderCardSemanticView.v1",
-        "told_selector": TOLD_SELECTOR_SHA256,
+        "news_retrieval": NEWS_RETRIEVAL_SHA256,
         "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
     }
 )
@@ -255,6 +247,8 @@ _MODEL_BINDING_SLOTS: Final[frozenset[str]] = frozenset(
 )
 _FACTORY_SOURCE_RESOURCES: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("news/artifact_identity.py", ("artifact_identity.py",)),
+    ("news/reader_history.py", ("reader_history.py",)),
+    ("news/told_context.py", ("told_context.py",)),
     ("news/program/contracts.py", ("program", "contracts.py")),
     ("news/program/quality_baseline.py", ("program", "quality_baseline.py")),
     ("news/program/graph.py", ("program", "graph.py")),
@@ -553,7 +547,7 @@ class QualityKernelRef(_ExactModel):
     verdict_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     renderer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_renderer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    told_selector_id: Literal["told_context_selector_v1"] = "told_context_selector_v1"
+    told_selector_id: Literal["told_context_selector_v2"] = "told_context_selector_v2"
     told_selector_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     untrusted_data_delimiter_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     semantic_validator_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -3578,12 +3572,6 @@ __all__ = [
     "PROGRAM_LEARNING_EPOCH",
     "PROGRAM_SCHEMA_VERSION",
     "PROGRAM_VERSION",
-    "TOLD_MAX",
-    "TOLD_SELECTOR_ID",
-    "TOLD_SELECTOR_SHA256",
-    "TOLD_SOURCE_MAX",
-    "TOLD_STORYLINE_TIER_MAX",
-    "TOLD_WINDOW_MS",
     "CompileProvenance",
     "CompileReceipt",
     "DemoBank",
@@ -3631,8 +3619,6 @@ __all__ = [
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
-    "ToldLedgerEntry",
-    "ToldLedgerSnapshot",
     "TradeRelevanceV1",
     "TriageContext",
     "apply_program_patch_v2",

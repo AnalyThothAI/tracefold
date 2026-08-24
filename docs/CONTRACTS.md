@@ -306,7 +306,10 @@ projections; there is no public alias.
   `dex:SYMBOL`) are mechanical and would fire the block on every commodity
   Event. Only groups that actually collapse more than one name are sent, so the surface
   explains a surprise (SKHY / SKHX / SKHYNIX share one storyline bucket)
-  rather than restating a ticker that answers to itself. `tracefold news why`
+  rather than restating a ticker that answers to itself. For a grounded
+  restatement, the decide step includes the prior Event id, sent timestamp,
+  headline, history scope, and retrieval reason (`recent`,
+  `exact_fingerprint`, or `canonical_asset_overlap`). `tracefold news why`
   prints the same `outcome` sentence and timeline. Unknown ids return 404.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, `health` (four thresholded items
@@ -426,9 +429,9 @@ finish reason, latency, token and cost identity. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
-`news_semantic_program_v4` (or `news_oi_signal_v1` for deterministic telemetry),
+`news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic telemetry),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact envelope v2,
-factory `tracefold.news.semantic_program.factory_v4`, and epoch `program_v6`.
+factory `tracefold.news.program.factory_v5`, and epoch `program_v7`.
 The exact Program identity is its content SHA, not the display version alone.
 
 `ProgramArtifact v2` is the only executable semantic configuration. It is a
@@ -545,14 +548,23 @@ that history and appends the corrected `program_v2` epoch; Prompt-era and
 `program_v1` learning rows are audit-only and promotion-ineligible.
 `20260822_0294` preserves both rows and appends the expert-quality `program_v3`
 epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
-then-current release chain. `20260822_0295` preserves v1-v3 and appends the
-`program_v5` epoch with factory v3 on the artifact-v2 envelope. `20260823_0301`
+then-current release chain. `20260822_0295` preserves v1-v3 and appends
+`program_v4` with factory v2; `20260822_0298` preserves v1-v4 and appends
+`program_v5` with factory v3 on the artifact-v2 envelope. `20260823_0301`
 hard-renames `news_events.priority` to `queue_priority`, appends atomic
 editorial/scored/runtime-manifest identity to verdicts, trips prior canaries,
 and starts `program_v6` with factory/executable v4 and policy v10. Every earlier
 row and review version is audit-only for the current compiler and release chain.
 `20260824_0302` adds the reverse `(event_id, symbol)` read index for bounded
 reader-history asset projection; it changes no fact, table, Program, or policy.
+`20260824_0303` preserves those rows and appends the #162 `program_v7` epoch
+with factory/executable v5 after the Program/Learning package split; v6 remains
+immutable audit evidence and is promotion-ineligible.
+Issue #175's following code hard cut keeps factory/executable v5, epoch
+`program_v7`, and policy v10, but replaces the sole stable Program artifact and
+bundle because the composite reader-history/selector retrieval identity and
+RulePack text changed. Earlier bundles remain immutable audit history and are
+not executable by the new image.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -829,14 +841,14 @@ includes magnitude, direction, assets and the seven TradeRelevance fields
 typed truth rather than duplicate `expected` fields. Every failed scored
 dimension must have expected gold; otherwise it is not scored, with no
 any-change fallback. Channels/markets canonicalize before exact comparison. Historical
-v2/v3 rows remain readable audit history but cannot enter v6 metric/GEPA/release
+v2/v3 rows remain readable audit history but cannot enter v7 metric/GEPA/release
 evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
-the deployment-time `program_v6` epoch and accepts only `news_review_v4`;
+the deployment-time `program_v7` epoch and accepts only `news_review_v4`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
 dataset, metric-v4 denominator or DemoBank.
 `learning compile --development SHA --artifact-root DIR --out FILE
@@ -891,7 +903,7 @@ deterministic safety close), and `trading approve|reject <order-id> --digest`
 settles one order bound to its exact frozen payload digest, idempotent by state
 so a second approval of an already-approved order changes nothing.
 
-Trading's News projection contract is `program_v6` / policy v10 only.
+Trading's News projection contract is `program_v7` / policy v10 only.
 `trading_manifest_v2` freezes the learning epoch, lane-specific Program
 version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
 and runtime-manifest SHA. Older v1 cases remain readable audit rows but cannot

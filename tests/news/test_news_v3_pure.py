@@ -793,7 +793,7 @@ def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
 
 
 def _select(rows: Sequence[Mapping[str, Any]], **overrides: Any) -> Any:
-    from tracefold.news.program.contracts import ToldLedgerSnapshot
+    from tracefold.news.told_context import ToldLedgerSnapshot
 
     kwargs: dict[str, Any] = {
         "now_ms": _NOW,
@@ -844,7 +844,7 @@ def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_
     was saturated on 61% of judgments: the model was shown unrelated cards while a same-storyline card it
     needed for novelty stayed outside the window. Tiers are an ordered union, not a quota."""
 
-    from tracefold.news.program.contracts import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+    from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
     same = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(10)]
     unrelated = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(10)]
@@ -869,7 +869,7 @@ def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
     an evidence row wanted, a new unrelated card would change the evidence set and force a re-ask.
     """
 
-    from tracefold.news.program.contracts import TOLD_MAX
+    from tracefold.news.told_context import TOLD_MAX
 
     dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
     filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(3)]
@@ -883,7 +883,7 @@ def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
 def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() -> None:
     """The cap yields to other tiers; it does not throw rows away."""
 
-    from tracefold.news.program.contracts import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+    from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
     same = [_told_row(f"s{i}", _NOW - i * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
     entries = _select(same).entries
@@ -932,7 +932,7 @@ def test_told_selector_uses_normalized_comparison_titles_not_reader_headlines() 
     assert all(entry.tier == "recency" for entry in weak)
 
 
-def test_told_selector_drops_expired_duplicate_and_self_rows_before_ranking() -> None:
+def test_told_selector_trusts_upstream_bounds_and_drops_duplicate_and_self_rows_before_ranking() -> None:
     rows = [
         _told_row("keep", _NOW - 60_000),
         _told_row("keep", _NOW - 120_000),  # same Event twice in the ledger
@@ -941,8 +941,74 @@ def test_told_selector_drops_expired_duplicate_and_self_rows_before_ranking() ->
         _told_row("", _NOW - 30_000),
     ]
     snapshot = _select(rows)
-    assert [entry.event_id for entry in snapshot.entries] == ["keep"]
-    assert snapshot.source_count == 1
+    assert [entry.event_id for entry in snapshot.entries] == ["keep", "expired"]
+    assert snapshot.source_count == 2
+
+
+def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fact() -> None:
+    from tracefold.news.program.contracts import TriageContext
+
+    targeted = _told_row(
+        "overnight-exact",
+        _NOW - 24 * 3_600_000,
+        history_scope="targeted",
+        retrieval_reason="exact_fingerprint",
+    )
+    recent = _told_row("recent", _NOW - 60_000, storyline_key="theme:rates")
+
+    snapshot = _select([recent, targeted])
+
+    assert [entry.event_id for entry in snapshot.entries] == ["overnight-exact", "recent"]
+    assert snapshot.entries[0].tier == "exact_fact"
+    assert snapshot.entries[0].history_scope == "targeted"
+    assert snapshot.entries[0].retrieval_reason == "exact_fingerprint"
+    visible = {
+        "i",
+        "ago_min",
+        "key",
+        "type",
+        "sym",
+        "m",
+        "dir",
+        "headline_zh",
+    }
+    context = TriageContext.from_card(
+        {
+            "event_id": "self",
+            "evidence_version": 1,
+            "evidence_sha256": "e" * 64,
+            "focus_fact_id": "fact",
+            "leader_title": "current",
+            "opened_at_ms": _NOW,
+            "storyline_key": "theme:rates",
+        },
+        watchlist=(),
+        told_rows=[recent, targeted],
+        now_ms=_NOW,
+        queue_lag_ms=0,
+    )
+    assert set(context.event_semantics_payload()["event_status"]["told"][0]) == visible
+
+
+def test_told_selector_keeps_a_targeted_canonical_alias_inside_a_dense_pool() -> None:
+    alias_target = _told_row(
+        "alias-target",
+        _NOW - 24 * 3_600_000,
+        storyline_key="asset:9988",
+        grounded_assets=["9988"],
+        canonical_assets=["BABA"],
+        history_scope="targeted",
+        retrieval_reason="canonical_asset_overlap",
+    )
+    recent = [
+        _told_row(f"recent-{index:02d}", _NOW - index * 60_000, storyline_key="theme:unrelated") for index in range(16)
+    ]
+
+    entries = _select([*recent, alias_target], storyline_key="asset:BABA", symbols=("BABA",)).entries
+
+    assert entries[0].event_id == "alias-target"
+    assert entries[0].tier == "asset_overlap"
+    assert entries[0].retrieval_reason == "canonical_asset_overlap"
 
 
 def test_told_selector_is_deterministic_under_equal_timestamps_and_input_order() -> None:
@@ -954,20 +1020,19 @@ def test_told_selector_is_deterministic_under_equal_timestamps_and_input_order()
     assert [entry.event_id for entry in first] == sorted(entry.event_id for entry in first)
 
 
-def test_told_selector_identity_binds_every_behaviour_that_changes_what_the_model_sees() -> None:
-    """`retrieval_sha256` is this hash. A literal describing the selector could not tell a tier-order or
-    projection edit from a no-op, and the arm would have shipped as the same bundle."""
+def test_composite_retrieval_identity_binds_reader_history_and_selector_behaviour() -> None:
 
-    import tracefold.news.program.contracts as contract
+    from tracefold.news import told_context as contract
     from tracefold.news.artifact_identity import canonical_sha
 
     assert len(contract.TOLD_SELECTOR_SHA256) == 64
+    assert len(contract.NEWS_RETRIEVAL_SHA256) == 64
+    assert contract.NEWS_RETRIEVAL_SHA256 != contract.TOLD_SELECTOR_SHA256
     payload = {
         "tier_order": list(contract.TOLD_TIER_ORDER),
         "source_max": contract.TOLD_SOURCE_MAX,
         "visible_cap": contract.TOLD_MAX,
         "similarity_min": contract.TOLD_FACT_SIMILARITY_MIN,
-        "window_ms": contract.TOLD_WINDOW_MS,
     }
     # Every one of these is inside the hashed payload, so changing any of them moves the bundle identity.
     assert all(canonical_sha({**payload, key: "changed"}) != canonical_sha(payload) for key in payload)

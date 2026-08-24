@@ -15,7 +15,6 @@ import random
 import statistics
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -40,6 +39,7 @@ from .contracts import (
     ClosedWindow,
     ProposalReceipt,
 )
+from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
 from .metric import production_decision
 from .review import (
     READER_CONTRACT_SHA256,
@@ -218,52 +218,6 @@ def evaluation_run_sha(
     )
 
 
-@dataclass(slots=True)
-class _Receipt:
-    """One arm-local card that would have reached the reader.
-
-    The projection is the told-context selector's input contract, not a convenience subset: production and this
-    evaluator have to rank the same ledger the same way, so a receipt that cannot answer "same instrument?" or
-    "same fact?" would silently give the offline arm a different selected context from the online one.
-    """
-
-    event_id: str
-    at_ms: int
-    storyline_key: str
-    magnitude: int
-    direction: str
-    headline_zh: str
-    comparison_title: str = ""
-    event_type: str = ""
-    grounded_assets: tuple[str, ...] = ()
-    assets: tuple[str, ...] = ()
-
-    def as_told_row(self) -> dict[str, Any]:
-        return {
-            "event_id": self.event_id,
-            "at_ms": self.at_ms,
-            "storyline_key": self.storyline_key,
-            "comparison_title": self.comparison_title,
-            "event_type": self.event_type,
-            "magnitude": self.magnitude,
-            "direction": self.direction,
-            "headline_zh": self.headline_zh,
-            "grounded_assets": list(self.grounded_assets),
-            "assets": list(self.assets),
-        }
-
-
-@dataclass(slots=True)
-class _ArmState:
-    receipts: deque[_Receipt] = field(default_factory=deque)
-    observations: list[dict[str, Any]] = field(default_factory=list)
-
-    def expire(self, at_ms: int) -> None:
-        cutoff = at_ms - 4 * 3_600_000
-        while self.receipts and self.receipts[0].at_ms < cutoff:
-            self.receipts.popleft()
-
-
 class CandidateEvaluator:
     """Freeze reviewed evidence and compare stable/candidate; never publish."""
 
@@ -285,6 +239,7 @@ class CandidateEvaluator:
         self._candidates = {candidate.candidate_sha: candidate for candidate in candidate_catalog}
         self._principal = principal
         self._trusted_root_sha = trusted_root_sha
+        self._history = EvaluationReaderHistory(conn)
 
     async def freeze_dataset(self, spec: DatasetSpec) -> DatasetManifest:
         self._assert_active_stable()
@@ -532,8 +487,8 @@ class CandidateEvaluator:
         an operator reads drift from the number GEPA maximizes, which is the whole reason #143 exists.
         """
 
-        state = _ArmState(deque(_Receipt(**receipt) for receipt in seed_receipts))
-        pending: list[_Receipt] = []
+        state = ArmState(deque(Receipt(**receipt) for receipt in seed_receipts))
+        pending: list[Receipt] = []
         episodes: list[dict[str, Any]] = []
         for case_ref in sorted(cases, key=lambda item: (item.opened_at_ms, item.case_id)):
             ready = [receipt for receipt in pending if receipt.at_ms <= case_ref.opened_at_ms]
@@ -570,7 +525,7 @@ class CandidateEvaluator:
                 verdict = ScoredJudgment.model_validate(judgment_payload).verdict
                 card = dict((case.get("snapshot") or {}).get("card") or {})
                 pending.append(
-                    _Receipt(
+                    Receipt(
                         event_id=str(case_ref.event_id or case_ref.case_id),
                         at_ms=int(receipt_at_ms),
                         storyline_key=str(card.get("storyline_key") or "macro:general"),
@@ -578,9 +533,14 @@ class CandidateEvaluator:
                         direction=verdict.direction,
                         headline_zh=verdict.headline_zh,
                         comparison_title=str(card.get("comparison_title") or ""),
+                        comparison_fingerprint=str(card.get("comparison_fingerprint") or ""),
+                        family=str(card.get("family") or "general"),
                         event_type=verdict.event_type,
                         grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
                         assets=tuple(asset.symbol for asset in verdict.assets),
+                        canonical_assets=self._history.canonical_assets(
+                            tuple(str(value) for value in card.get("grounded_assets") or ())
+                        ),
                     )
                 )
         return tuple(episodes)
@@ -588,7 +548,7 @@ class CandidateEvaluator:
     def _policy_metric_projection(
         self,
         case: Mapping[str, Any],
-        state: _ArmState,
+        state: ArmState,
         *,
         context: TriageContext,
         arm: ArmManifest | None = None,
@@ -617,7 +577,7 @@ class CandidateEvaluator:
                 "title": str(event.get("leader_title") or ""),
                 "family": str(event.get("family") or "general"),
             },
-            "seen": [receipt.as_told_row() for receipt in reversed(state.receipts)],
+            "seen": [row.as_told_row() for row in self._history.build(case, state).recent_seen_rows],
             "told": [
                 {
                     "event_id": entry.event_id,
@@ -1175,7 +1135,7 @@ class CandidateEvaluator:
     def _seed_receipts(
         self, from_ms: int, *, epoch_started_at_ms: int, cohort: bool = True
     ) -> tuple[dict[str, Any], ...]:
-        """The 4 h sent ledger the first cases replay against.
+        """The 48 h receipt source the first cases replay against.
 
         `cohort=False` drops the arm filter for the same reason `_baseline_cases` does. The ledger is what
         `decide()` reads for the restatement drop and the similarity throttle; scoping it to the current arm
@@ -1183,46 +1143,14 @@ class CandidateEvaluator:
         `--action-source policy` score toward push, silently.
         """
 
-        rows = self._conn.execute(
-            """
-            SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
-                   COALESCE(e.comparison_title, '') AS comparison_title,
-                   COALESCE(v.verdict ->> 'event_type', '') AS event_type,
-                   COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
-                   COALESCE(v.verdict ->> 'direction', 'unclear') AS direction,
-                   COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh', '')
-                     AS headline_zh,
-                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
-                   -- Same projection as `told_ledger` and the in-run receipts. A seed row that carries fewer
-                   -- instruments than production would give the first 4 h of every run a different selection
-                   -- and a different listing exemption than the arm it is meant to reproduce.
-                   COALESCE(
-                     (SELECT jsonb_agg(asset ->> 'symbol')
-                        FROM jsonb_array_elements(COALESCE(v.verdict -> 'assets', '[]'::jsonb)) AS asset
-                       WHERE asset ->> 'symbol' IS NOT NULL),
-                     '[]'::jsonb
-                   ) AS assets
-              FROM news_deliveries d
-              JOIN news_verdicts v ON v.event_id = d.event_id AND v.stage = 'triage'
-              JOIN news_events e ON e.event_id = d.event_id
-             WHERE d.kind = 'first' AND d.state = 'sent'
-               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-               AND (%s IS FALSE OR (
-                     v.program_version = %s AND v.program_sha256 = %s
-                     AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
-                   ))
-             ORDER BY d.settled_at_ms, v.event_id
-            """,
-            (
-                max(epoch_started_at_ms, from_ms - 4 * 3_600_000),
-                from_ms,
-                cohort,
-                self._stable.program_version,
-                self._stable.program_sha256,
-                self._stable.bundle_sha,
-            ),
-        ).fetchall()
-        return tuple(dict(row) for row in rows)
+        return self._history.seed_receipts(
+            from_ms=from_ms,
+            epoch_started_at_ms=epoch_started_at_ms,
+            cohort=cohort,
+            program_version=self._stable.program_version,
+            program_sha256=self._stable.program_sha256,
+            bundle_sha=self._stable.bundle_sha,
+        )
 
     async def _run_sequential(
         self,
@@ -1232,9 +1160,9 @@ class CandidateEvaluator:
         candidate: CandidateManifest,
         recording_replay: RecordingReplayCapability | None = None,
     ) -> list[dict[str, Any]]:
-        states: dict[ArmName, _ArmState] = {
-            "stable": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
-            "candidate": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
+        states: dict[ArmName, ArmState] = {
+            "stable": ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts)),
+            "candidate": ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts)),
         }
         arms: dict[ArmName, ArmManifest] = {"stable": self._stable, "candidate": candidate.candidate_arm}
         review_case_ids = self._review_case_ids(dataset, candidate=candidate)
@@ -1368,21 +1296,11 @@ class CandidateEvaluator:
                 if output.get("delivered"):
                     verdict = output["verdict"]
                     state.receipts.append(
-                        _Receipt(
+                        receipt_from_output(
                             event_id=case_ref.case_id,
                             at_ms=case_ref.opened_at_ms,
-                            storyline_key=str(output["storyline_key"]),
-                            magnitude=int(verdict.get("magnitude") or 0),
-                            direction=str(verdict.get("direction") or "unclear"),
-                            headline_zh=str(verdict.get("headline_zh") or ""),
-                            comparison_title=str(output.get("comparison_title") or ""),
-                            event_type=str(verdict.get("event_type") or ""),
-                            grounded_assets=tuple(str(value) for value in output.get("grounded_assets") or ()),
-                            assets=tuple(
-                                str(asset.get("symbol") or "")
-                                for asset in verdict.get("assets") or ()
-                                if isinstance(asset, Mapping)
-                            ),
+                            output=output,
+                            verdict=verdict,
                         )
                     )
                 state.observations.append(output)
@@ -1522,7 +1440,7 @@ class CandidateEvaluator:
                 self._stable.program_sha256,
             ),
         ).fetchall()
-        state = _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts))
+        state = ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts))
         observations: list[dict[str, Any]] = []
         for row in rows:
             opened_at_ms = int(row["opened_at_ms"])
@@ -1580,21 +1498,11 @@ class CandidateEvaluator:
             if candidate_output.get("delivered"):
                 verdict = dict(candidate_output.get("verdict") or {})
                 state.receipts.append(
-                    _Receipt(
+                    receipt_from_output(
                         event_id=case_id,
                         at_ms=opened_at_ms,
-                        storyline_key=str(candidate_output.get("storyline_key") or "macro:general"),
-                        magnitude=int(verdict.get("magnitude") or 0),
-                        direction=str(verdict.get("direction") or "unclear"),
-                        headline_zh=str(verdict.get("headline_zh") or ""),
-                        comparison_title=str(candidate_output.get("comparison_title") or ""),
-                        event_type=str(verdict.get("event_type") or ""),
-                        grounded_assets=tuple(str(value) for value in candidate_output.get("grounded_assets") or ()),
-                        assets=tuple(
-                            str(asset.get("symbol") or "")
-                            for asset in verdict.get("assets") or ()
-                            if isinstance(asset, Mapping)
-                        ),
+                        output=candidate_output,
+                        verdict=verdict,
                     )
                 )
             observations.append(
@@ -1766,14 +1674,14 @@ class CandidateEvaluator:
         }
         return observations, dimensions
 
-    def _build_context(self, case: Mapping[str, Any], state: _ArmState) -> TriageContext:
+    def _build_context(self, case: Mapping[str, Any], state: ArmState) -> TriageContext:
         snapshot = case["snapshot"]
         event = dict(snapshot.get("card") or {})
         focus = dict(snapshot.get("focus_fact") or {})
         event["focus_fact_id"] = focus.get("fact_id")
         event["leader_title"] = focus.get("text") or event.get("leader_title")
         event["leader_description"] = focus.get("context") or event.get("leader_description")
-        told_rows = [receipt.as_told_row() for receipt in reversed(state.receipts)]
+        told_rows = [row.as_told_row() for row in self._history.build(case, state).told_source_rows]
         return TriageContext.from_card(
             event,
             watchlist=tuple(str(value) for value in case.get("watchlist") or ()),
@@ -1786,7 +1694,7 @@ class CandidateEvaluator:
         self,
         case: Mapping[str, Any],
         raw_judgment: Mapping[str, Any],
-        state: _ArmState,
+        state: ArmState,
         arm: ArmManifest,
         context: TriageContext,
     ) -> dict[str, Any]:
@@ -1821,7 +1729,10 @@ class CandidateEvaluator:
             "throttled_by": decision.throttled_by,
             "storyline_key": storyline,
             "comparison_title": str(event.get("comparison_title") or ""),
+            "comparison_fingerprint": str(event.get("comparison_fingerprint") or ""),
+            "family": str(event.get("family") or "general"),
             "grounded_assets": list(grounded),
+            "canonical_assets": list(self._history.canonical_assets(grounded)),
             "delivered": delivered,
             "execution": "simulated",
             "delivery": "simulated",

@@ -235,12 +235,15 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     assert distinct.final == "push" and distinct.override_rule == "trade_relevance_realtime"
     # A decision is only a reservation.  With no settled first delivery there
     # is no ReaderReceipt and therefore no semantic told memory.
-    assert repos.news.told_ledger(now_ms=now_ms + 1000, window_ms=4 * 3600_000, limit=12) == []
-    assert repos.news.told_ledger(now_ms=now_ms + 5 * 3600_000, window_ms=4 * 3600_000, limit=12) == []
+    assert not repos.news.reader_history(
+        event_id="candidate-reader-history", now_ms=now_ms + 1000, include_targeted=False
+    ).recent_seen_rows
+    assert not repos.news.reader_history(
+        event_id="candidate-reader-history", now_ms=now_ms + 5 * 3600_000, include_targeted=False
+    ).recent_seen_rows
     # A card the reader never received (first delivery terminalised) leaves the ledger; a sent one stays; and the
     # preliminary storyline's own cards are fetched even when the global limit would not reach them.
     later = now_ms + 1000
-    window = 4 * 3600_000
     with repos.transaction():
         assert repos.news.begin_delivery(event_id=row["event_id"], kind="first", card={}, now_ms=now_ms + 10) == "new"
         assert repos.news.settle_delivery(
@@ -251,7 +254,9 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             error_code="delivery_unavailable",
             now_ms=now_ms + 20,
         )
-    assert repos.news.told_ledger(now_ms=later, window_ms=window, limit=12) == []
+    assert not repos.news.reader_history(
+        event_id="candidate-reader-history", now_ms=later, include_targeted=False
+    ).recent_seen_rows
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
         assert repos.news.begin_delivery(event_id=row["event_id"], kind="first", card={}, now_ms=now_ms + 10) == "new"
@@ -263,7 +268,12 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             error_code=None,
             now_ms=now_ms + 20,
         )
-    told = repos.news.told_ledger(now_ms=later, window_ms=window, limit=12)
+    told = [
+        row.as_told_row()
+        for row in repos.news.reader_history(
+            event_id="candidate-reader-history", now_ms=later, include_targeted=False
+        ).recent_seen_rows
+    ]
     assert [t["event_id"] for t in told] == [row["event_id"]]
     assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
     assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms + 20
@@ -426,7 +436,9 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         )
         assert repos.news.begin_delivery(event_id=sent_event, kind="first", card=degraded_card, now_ms=10_100) == "new"
     # A sending reservation is not a receipt.
-    assert repos.news.told_ledger(now_ms=10_150, window_ms=3600_000, limit=12) == []
+    assert not repos.news.reader_history(
+        event_id="candidate-reader-history", now_ms=10_150, include_targeted=False
+    ).recent_seen_rows
     with repos.transaction():
         assert repos.news.settle_delivery(
             event_id=sent_event, kind="first", state="sent", receipt={"ok": True}, error_code=None, now_ms=10_200
@@ -434,7 +446,12 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         assert repos.news.begin_delivery(event_id=ambiguous_event, kind="first", card={}, now_ms=20_000) == "new"
         assert repos.news.terminalize_interrupted_deliveries(now_ms=81_001) == 1
 
-    told = repos.news.told_ledger(now_ms=10_300, window_ms=3600_000, limit=12)
+    told = [
+        row.as_told_row()
+        for row in repos.news.reader_history(
+            event_id="candidate-reader-history", now_ms=10_300, include_targeted=False
+        ).recent_seen_rows
+    ]
     assert len(told) == 1 and told[0]["event_id"] == sent_event and told[0]["headline_zh"] == "实际降级卡片"
     sent_detail = repos.news.event_detail(sent_event)
     ambiguous_detail = repos.news.event_detail(ambiguous_event)

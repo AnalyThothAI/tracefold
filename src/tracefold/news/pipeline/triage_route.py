@@ -14,8 +14,9 @@ from typing import Any
 
 from ..models import GATE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import ScoredJudgment, SemanticJudge, TriageContext
+from ..reader_history import ReaderHistorySnapshot
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, fallback_verdict
-from .triage_audit import _told_trace
+from .triage_audit import _reader_history_trace, _told_trace
 
 
 @dataclass
@@ -52,7 +53,7 @@ class _TriageSettle:
     facts: GateFacts
     final_key: str
     told: Sequence[Mapping[str, Any]]
-    seen: Sequence[Mapping[str, Any]]
+    history: ReaderHistorySnapshot
     selected_context_sha: str
     novelty_context_sha: str
     prelim_key: str
@@ -137,7 +138,7 @@ class _RouteInputs:
 
     event_id: str
     card: Mapping[str, Any]
-    ledger_rows: Sequence[Mapping[str, Any]]
+    history: ReaderHistorySnapshot
     facts: GateFacts
     context: TriageContext
     told: Sequence[Mapping[str, Any]]
@@ -244,5 +245,6 @@ def _initial_trace(
         },
         "told": _told_trace(route.told),
         "told_count": len(route.told),
+        "reader_history": _reader_history_trace(route.history, route.told),
         "agent_assignment": arm.trace_view(),
     }

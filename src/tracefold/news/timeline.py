@@ -53,8 +53,35 @@ def restated_card(trace: Mapping[str, Any], verdict: Mapping[str, Any], *, at_ms
     return {
         "event_id": entry.get("event_id"),
         "headline_zh": str(entry.get("headline_zh") or ""),
+        "at_ms": entry_at or None,
         "ago_min": max(0, at_ms - entry_at) // 60_000 if entry_at else int(entry.get("ago_min") or 0),
+        "history_scope": str(entry.get("history_scope") or "recent"),
+        "retrieval_reason": str(entry.get("retrieval_reason") or "recent"),
     }
+
+
+def _restatement_reason(restated: Mapping[str, Any]) -> str:
+    reason = f"重复：{restated['ago_min']} 分钟前已推「{restated['headline_zh']}」"
+    retrieval_zh = {
+        "recent": "4 小时近期记录",
+        "exact_fingerprint": "精确事实定向召回",
+        "canonical_asset_overlap": "同一标的定向召回",
+    }.get(str(restated["retrieval_reason"]))
+    return reason + (f" · {retrieval_zh}" if retrieval_zh else "")
+
+
+def _seen_summary(latest: Mapping[str, Any], seen_against: Mapping[str, Any]) -> str:
+    ago = max(0, int(latest["created_at_ms"]) - int(seen_against.get("at_ms") or 0)) // 60_000
+    return f"重复拦截 · {ago} 分钟前已推「{seen_against.get('headline_zh')}」"
+
+
+def _decision_inputs(
+    latest: Mapping[str, Any], verdict: Mapping[str, Any]
+) -> tuple[str, dict[str, Any], dict[str, Any] | None, Mapping[str, Any] | None]:
+    trace = dict(latest.get("trace") or {})
+    restated = restated_card(trace, verdict, at_ms=int(latest["created_at_ms"]))
+    seen = trace.get("seen_against") if isinstance(trace.get("seen_against"), Mapping) else None
+    return str(latest.get("final_decision") or ""), trace, restated, seen
 
 
 def event_timeline(
@@ -176,23 +203,18 @@ def event_timeline(
                 },
             }
         )
-        final = str(latest.get("final_decision") or "")
-        trace = dict(latest.get("trace") or {})
-        restated = restated_card(trace, verdict, at_ms=int(latest["created_at_ms"]))
-        seen_against = trace.get("seen_against") if isinstance(trace.get("seen_against"), Mapping) else None
+        final, trace, restated, seen_against = _decision_inputs(latest, verdict)
         if final == "throttled":
             duplicate = str(latest.get("throttled_by") or "").endswith(":seen")
             decide_summary = ("重复拦截 · " if duplicate else "历史限流 · ") + throttled_by_zh(
                 latest.get("throttled_by")
             )
             if duplicate and seen_against:
-                # Name the card the reader already has, the way a restatement drop names the entry it repeats.
-                ago = max(0, int(latest["created_at_ms"]) - int(seen_against.get("at_ms") or 0)) // 60_000
-                decide_summary = f"重复拦截 · {ago} 分钟前已推「{seen_against.get('headline_zh')}」"
+                decide_summary = _seen_summary(latest, seen_against)
         else:
             reason = override_rule_zh(latest.get("override_rule"))
             if latest.get("override_rule") == "restatement" and restated is not None:
-                reason = f"重复：{restated['ago_min']} 分钟前已推「{restated['headline_zh']}」"
+                reason = _restatement_reason(restated)
             decide_summary = decision_zh(final) + (f" · {reason}" if reason else "")
         steps.append(
             {
@@ -213,6 +235,9 @@ def event_timeline(
                     "novelty": verdict.get("novelty"),
                     "restates_event_id": trace.get("restates_event_id"),
                     "restated_headline_zh": restated["headline_zh"] if restated else None,
+                    "restated_at_ms": restated["at_ms"] if restated else None,
+                    "restated_history_scope": restated["history_scope"] if restated else None,
+                    "restated_retrieval_reason": restated["retrieval_reason"] if restated else None,
                     "told_count": trace.get("told_count"),
                     "seen_count": trace.get("seen_count"),
                     "seen_similarity": trace.get("seen_similarity"),

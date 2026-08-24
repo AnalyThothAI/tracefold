@@ -9,6 +9,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
+from tracefold.news.reader_history import build_reader_history
 
 pytestmark = pytest.mark.integration
 
@@ -156,6 +157,59 @@ def test_reader_history_recalls_a_sent_cross_source_alias_after_four_hours(conn)
     assert [(row.event_id, row.reason, row.canonical_assets) for row in history.targeted_told_rows] == [
         (prior, "canonical_asset_overlap", ("BABA",))
     ]
+    conn.commit()
+
+
+def test_evaluator_does_not_recall_a_verdict_only_asset_that_production_cannot_join(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        prior = _admit(
+            repos,
+            hit_id=175003,
+            text="An unrelated issuer files a routine notice",
+            symbol="OTHER",
+            ts="2026-08-24T06:00:00+08:00",
+        )
+        current = _admit(
+            repos,
+            hit_id=175004,
+            text="Alibaba plans a new financing transaction",
+            symbol="BABA",
+            ts="2026-08-24T12:00:00+08:00",
+        )
+        current_opened = conn.execute("SELECT opened_at_ms FROM news_events WHERE event_id=%s", (current,)).fetchone()
+        assert current_opened is not None
+        now_ms = int(current_opened["opened_at_ms"])
+        sent_at_ms = now_ms - 6 * 3_600_000
+        _persist_sent_triage_card(repos, event_id=prior, at_ms=sent_at_ms, symbol="BABA")
+        conn.execute("DELETE FROM news_event_assets WHERE event_id=%s", (prior,))
+        conn.execute("UPDATE news_events SET grounded_assets='[]'::jsonb WHERE event_id=%s", (prior,))
+
+    production = repos.news.reader_history(event_id=current, now_ms=now_ms)
+    evaluator = build_reader_history(
+        (
+            {
+                "event_id": prior,
+                "at_ms": sent_at_ms,
+                "storyline_key": "asset:OTHER",
+                "comparison_title": "unrelated issuer routine notice",
+                "comparison_fingerprint": "prior-fingerprint",
+                "family": "general",
+                "grounded_assets": [],
+                "assets": ["BABA"],
+                "canonical_assets": [],
+                "event_type": "filing",
+                "magnitude": 2,
+                "direction": "bearish",
+                "headline_zh": "无关发行人提交例行文件",
+            },
+        ),
+        now_ms=now_ms,
+        comparison_fingerprint="current-fingerprint",
+        canonical_assets=("BABA",),
+    )
+
+    assert production.targeted_told_rows == evaluator.targeted_told_rows == ()
     conn.commit()
 
 
