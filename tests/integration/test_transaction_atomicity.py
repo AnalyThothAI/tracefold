@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import Any
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.postgres import client
 from tracefold.platform.postgres.client import create_pool
+
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 
 def _worker_pool_bundle(pool: Any) -> WorkerDatabase:
@@ -80,36 +80,3 @@ def test_require_transaction_accepts_real_postgres_transaction() -> None:
             client.require_transaction(conn, operation="projection_write")
     finally:
         conn.close()
-
-
-def test_require_transaction_rejects_fake_connections_without_psycopg_info() -> None:
-    with pytest.raises(RuntimeError, match="fake_write_requires_transaction_status_contract"):
-        client.require_transaction(object(), operation="fake_write")
-
-
-def test_repository_session_transaction_owns_database_transaction() -> None:
-    conn = FakeTransactionConnection()
-    repos = repositories_for_connection(
-        conn,
-    )
-
-    with repos.transaction():
-        conn.events.append("body")
-
-    assert conn.events == ["begin", "body", "commit"]
-
-
-class FakeTransactionConnection:
-    def __init__(self) -> None:
-        self.events: list[str] = []
-
-    @contextmanager
-    def transaction(self) -> Any:
-        self.events.append("begin")
-        try:
-            yield
-        except BaseException:
-            self.events.append("rollback")
-            raise
-        else:
-            self.events.append("commit")

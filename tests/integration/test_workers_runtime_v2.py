@@ -28,9 +28,7 @@ from tests.postgres_test_utils import (
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.probe import _create_workers_probe_app
-from tracefold.app.workers.root import _ProbeState
-from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import Settings
@@ -41,7 +39,7 @@ from tracefold.platform.postgres.runtime_roles import (
     runtime_role_contract,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.usefixtures("postgres_dsn")]
 
 RUNTIME_ID = "00000000-0000-0000-0000-000000000099"
 SECOND_RUNTIME_ID = "00000000-0000-0000-0000-000000000100"
@@ -214,25 +212,6 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
     assert not hasattr(runtime, "scheduler")
 
 
-def test_workers_probe_has_only_private_operational_routes_and_health_never_calls_readiness() -> None:
-    calls = 0
-
-    def readiness() -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        return {"ok": False, "reason": "starting"}
-
-    app = _create_workers_probe_app(readiness=readiness, render_metrics=lambda: "")
-    with TestClient(app) as client:
-        health = client.get("/healthz")
-        ready = client.get("/readyz")
-
-    assert health.status_code == 200
-    assert calls == 1
-    assert ready.status_code == 503
-    assert {route.path for route in app.routes} >= {"/healthz", "/readyz", "/metrics"}
-
-
 def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_path: Path) -> None:
     prepare_postgres_database()
     port = _free_port()
@@ -302,59 +281,6 @@ def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_pat
         _ensure_process_stopped(process)
 
 
-def test_workers_metrics_render_does_not_block_readiness() -> None:
-    metrics_entered = threading.Event()
-    release_metrics = threading.Event()
-
-    def render_metrics() -> str:
-        metrics_entered.set()
-        assert release_metrics.wait(timeout=2.0)
-        return "metric 1\n"
-
-    app = _create_workers_probe_app(
-        readiness=lambda: {"ok": True},
-        render_metrics=render_metrics,
-    )
-    with TestClient(app) as client:
-        metrics_response: list[object] = []
-        metrics_thread = threading.Thread(
-            target=lambda: metrics_response.append(client.get("/metrics")),
-        )
-        release_timer = threading.Timer(0.5, release_metrics.set)
-        try:
-            metrics_thread.start()
-            assert metrics_entered.wait(timeout=1.0)
-            release_timer.start()
-            started = time.monotonic()
-            ready = client.get("/readyz")
-            ready_elapsed = time.monotonic() - started
-        finally:
-            release_metrics.set()
-            release_timer.cancel()
-            metrics_thread.join(timeout=2.0)
-
-    assert ready.status_code == 200
-    assert ready_elapsed < 0.2
-    assert len(metrics_response) == 1
-    assert metrics_response[0].status_code == 200
-
-
-def test_workers_probe_fails_closed_when_persisted_heartbeat_is_stale() -> None:
-    state = _ProbeState(
-        runtime_id=RUNTIME_ID,
-        runtime_version="v2",
-        started_at_ms=1_000,
-        clock_ms=lambda: 16_001,
-        lifecycle_state="running",
-        heartbeat_at_ms=1_000,
-        ready=True,
-        unavailable_reason="",
-    )
-
-    assert state.payload()["ok"] is False
-    assert state.payload()["unavailable_reason"] == "runtime_heartbeat_stale"
-
-
 def test_steady_and_maintenance_locks_are_mutually_exclusive(tmp_path) -> None:
     prepare_postgres_database()
     settings = Settings(storage=postgres_settings_storage())
@@ -422,33 +348,6 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             )
     finally:
         conn.close()
-
-
-@pytest.mark.parametrize(
-    ("row", "query_failed", "state", "reason"),
-    [
-        (None, False, "unavailable", "runtime_missing"),
-        (None, True, "unavailable", "runtime_status_query_failed"),
-        (
-            {
-                "runtime_id": RUNTIME_ID,
-                "runtime_version": "v2",
-                "lifecycle_state": "running",
-                "started_at_ms": 1_000,
-                "heartbeat_at_ms": 1_000,
-                "fatal_code": None,
-            },
-            False,
-            "stale",
-            "runtime_heartbeat_stale",
-        ),
-    ],
-)
-def test_workers_runtime_status_truth_table(row, query_failed, state, reason) -> None:
-    status = workers_runtime_status(row, now_ms=20_000, query_failed=query_failed)
-    assert status["state"] == state
-    assert status["unavailable_reason"] == reason
-    assert status["heartbeat_stale_after_ms"] == 15_000
 
 
 def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:

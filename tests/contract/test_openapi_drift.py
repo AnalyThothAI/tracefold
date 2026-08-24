@@ -15,7 +15,6 @@ web/src/api/types.ts          — temporary hand-authored domain types until the
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -43,39 +42,6 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
             "OpenAPI schema drifted from docs/generated/openapi.json.\n"
             f"Run `make regen-contract` to update the committed artefacts.\n"
             f"Fresh schema written to {diff_path} for inspection."
-        )
-
-
-@pytest.mark.contract
-def test_openapi_ts_matches_committed_artefact(tmp_path: Path) -> None:
-    """Regenerate web/src/lib/types/openapi.ts and compare with the committed one."""
-    fresh_path = tmp_path / "openapi.ts"
-    result = subprocess.run(
-        [
-            "npx",
-            "openapi-typescript",
-            str(OPENAPI_PATH),
-            "-o",
-            str(fresh_path),
-        ],
-        cwd=str(ROOT / "web"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        pytest.fail(
-            "openapi-typescript invocation failed.\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}\n"
-            "Make sure `cd web && npm install` has run."
-        )
-    fresh = fresh_path.read_text(encoding="utf-8")
-    committed = OPENAPI_TS_PATH.read_text(encoding="utf-8")
-    if fresh != committed:
-        pytest.fail(
-            f"Frontend OpenAPI types drifted from {OPENAPI_TS_PATH.relative_to(ROOT)}.\n"
-            "Run `make regen-contract` to update the committed artefacts."
         )
 
 

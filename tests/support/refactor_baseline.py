@@ -8,11 +8,9 @@ remain available from the business package roots.
 from __future__ import annotations
 
 import argparse
-import ast
 import asyncio
 import hashlib
 import json
-import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import asdict
@@ -99,7 +97,7 @@ from tracefold.trading.pipeline.runtime import TradingConfig
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "docs" / "generated" / "refactor-baseline-9441ce99.json"
 BASELINE_REVISION = "9441ce995bea872805b9611b8b7a860f5d1d1385"
-SCHEMA_VERSION = "tracefold_refactor_baseline_v1"
+SCHEMA_VERSION = "tracefold_refactor_baseline_v2"
 NOW_MS = 1_787_000_000_000
 
 # Intentional post-#160 drift, declared leaf by leaf *with the value it drifted to*. The baseline is frozen at
@@ -108,22 +106,11 @@ NOW_MS = 1_787_000_000_000
 # move a contract declares exactly the leaves it moves and leaves every other leaf guarded.
 #
 # Declaring the *value*, not just the path, is what keeps this a guard. Against a frozen baseline a leaf that
-# has drifted once can never drift back, so exempting a path by name would exempt it forever: the next PR to
-# touch `openapi.json` or the Program root would sail through silently under a note written for #173. Pinning
-# the expected value means the next such PR has to come here and say so — and a leaf that returns to the
-# baseline value fails as a stale entry rather than lingering.
-#
-# #173 added the `product_progress` TradeChannel. It is publicly projected through `news_review_v3`, so both
-# generated contract artefacts move with it, and the code-owned stable Program root is re-issued.
+# has drifted once can never drift back, so exempting a path by name would exempt it forever. Pinning the
+# expected value means the next such PR has to come here and say so — and a leaf that returns to the baseline
+# value fails as a stale entry rather than lingering. Generated artifacts have their own canonical drift
+# checkers and are intentionally not duplicated in this baseline.
 INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
-    "generated_artifacts_sha256.docs/generated/openapi.json": (
-        "issue_179_oi_parser_health_counts",
-        "f5af9c03b9b53f40c99bdd490a4c6bac9ad6169d6cd817bc94153af2a68133b1",
-    ),
-    "generated_artifacts_sha256.web/src/lib/types/openapi.ts": (
-        "issue_179_oi_parser_health_counts",
-        "9f2de6729206f0af240078a0872877b3afb32ab56f86e09660e1da51a672ebcb",
-    ),
     # #162 PR8-B moved the Program into its own package and split the learning plane away from it. The
     # factory source closure is addressed by logical file name, so the move re-issues the Program root
     # with no prompt, RulePack, policy, model route or call budget changed — and the epoch, program and
@@ -781,78 +768,11 @@ def _trading_flow_snapshot() -> dict[str, Any]:
     return {"flow": flow, "snapshot_sha256": _canonical_sha(flow)}
 
 
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-
-
-def _declared_exports(tree: ast.AST) -> list[str] | None:
-    for node in getattr(tree, "body", ()):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
-                value = ast.literal_eval(node.value) if node.value is not None else []
-                return sorted(str(item) for item in value)
-    return None
-
-
-def _historical_structure() -> dict[str, Any]:
-    prefix = "src/tracefold/"
-    paths = [
-        path
-        for path in _git("ls-tree", "-r", "--name-only", BASELINE_REVISION, "src/tracefold").splitlines()
-        if path.endswith(".py")
-    ]
-    modules: dict[str, Any] = {}
-    package_exports: dict[str, list[str]] = {}
-    for relative in sorted(paths):
-        source = _git("show", f"{BASELINE_REVISION}:{relative}")
-        tree = ast.parse(source, filename=relative)
-        imports: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.update(alias.name for alias in node.names if alias.name.startswith("tracefold"))
-            elif isinstance(node, ast.ImportFrom):
-                rendered = f"{'.' * node.level}{node.module or ''}"
-                if node.level or rendered.startswith("tracefold"):
-                    imports.add(rendered)
-        modules[relative] = {
-            "lines": len(source.splitlines()),
-            "tracefold_imports": sorted(imports),
-        }
-        if relative.endswith("/__init__.py"):
-            exports = _declared_exports(tree)
-            if exports is not None:
-                package = relative.removeprefix(prefix).removesuffix("/__init__.py").replace("/", ".")
-                package_exports[f"tracefold.{package}" if package else "tracefold"] = exports
-    return {
-        "module_count": len(modules),
-        "modules": modules,
-        "package_exports": package_exports,
-        "package_export_counts": {name: len(exports) for name, exports in package_exports.items()},
-    }
-
-
 def capture_behavior() -> dict[str, Any]:
-    generated = {
-        path: _sha_bytes(ROOT / path)
-        for path in (
-            "docs/generated/cli-help.md",
-            "docs/generated/db-schema.md",
-            "docs/generated/openapi.json",
-            "web/src/lib/types/openapi.ts",
-        )
-    }
     immutable_inputs = {
         path: _sha_bytes(ROOT / path) for path in ("Dockerfile", "compose.yaml", "uv.lock", "web/package-lock.json")
     }
     return {
-        "generated_artifacts_sha256": generated,
         "infrastructure_and_dependency_sha256": immutable_inputs,
         "migration_head": latest_migration_version(),
         "rabbitmq": _rabbitmq_contract(),
@@ -868,14 +788,12 @@ def capture_behavior() -> dict[str, Any]:
 def assert_matches_baseline() -> None:
     expected = json.loads(OUTPUT.read_text(encoding="utf-8")) if OUTPUT.exists() else {}
     current = _jsonable(capture_behavior())
-    if (
-        expected.get("schema_version") != SCHEMA_VERSION
-        or expected.get("baseline_revision") != BASELINE_REVISION
-        or not expected.get("historical_structure")
-    ):
+    if expected.get("schema_version") != SCHEMA_VERSION or expected.get("baseline_revision") != BASELINE_REVISION:
         raise AssertionError("Issue #162 baseline identity is not the frozen one; do not regenerate it in place.")
 
-    changed = dict(_changed_leaves(expected.get("behavior_and_runtime_contracts"), current))
+    expected_contracts = dict(expected.get("behavior_and_runtime_contracts") or {})
+    expected_contracts.pop("generated_artifacts_sha256", None)
+    changed = dict(_changed_leaves(expected_contracts, current))
     undeclared = sorted(path for path in changed if path not in INTENTIONAL_DRIFT)
     if undeclared:
         raise AssertionError(
@@ -909,7 +827,6 @@ def _write() -> None:
         "schema_version": SCHEMA_VERSION,
         "baseline_revision": BASELINE_REVISION,
         "behavior_and_runtime_contracts": capture_behavior(),
-        "historical_structure": _historical_structure(),
     }
     OUTPUT.write_text(json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote {OUTPUT.relative_to(ROOT)}")

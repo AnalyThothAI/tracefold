@@ -22,7 +22,7 @@ from tracefold.news.market_review.pricing import (
     Quote,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_787_000_000_000
 HOUR = 3_600_000

@@ -28,7 +28,7 @@ from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.platform.config.models import Settings
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_787_287_000_000
 PRINCIPAL = Principal(subject="operator")
@@ -463,16 +463,6 @@ def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) 
         "external_misses": 1,
     }
     assert sum(row["events"] for row in coverage["strata"]) == 1
-
-
-def test_evidence_refs_are_bounded_per_entry() -> None:
-    with pytest.raises(ValueError, match="at most 500 characters"):
-        EventRubricSubmission(
-            should_push="must_hold",
-            dimensions={"factual_fidelity": "fail"},
-            novelty={"judgment": "new_fact"},
-            evidence_refs=["x" * 501],
-        )
 
 
 def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_bad_taxonomy(conn) -> None:

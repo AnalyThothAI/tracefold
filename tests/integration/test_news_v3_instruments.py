@@ -14,7 +14,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.instruments import Instrument, classify
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_787_000_000_000
 

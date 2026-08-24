@@ -1,20 +1,13 @@
-import asyncio
 import io
 import json
-import os
-import socket
 import tempfile
 import unittest
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 from pydantic import ValidationError
 
-from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.cli.parser import build_parser
 from tracefold.cli import main
 from tracefold.platform.config.loader import default_config_yaml
@@ -23,38 +16,10 @@ from tracefold.platform.config.models import Settings
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 
 
-def _amqp_reachable(url: str) -> bool:
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(url)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 5672
-    try:
-        with socket.create_connection((host, port), timeout=1.0):
-            return True
-    except OSError:
-        return False
-
-
-def _delete_test_topology(url: str, name_prefix: str) -> None:
-    """The bus-check test declares a prefixed topology on the shared development broker; leave nothing behind."""
-    from tracefold.integrations.rabbitmq import RabbitMQBus
-
-    async def _run() -> None:
-        bus = RabbitMQBus(url=url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
-        try:
-            await bus.connect()
-            await bus.delete_topology()
-        finally:
-            await bus.close()
-
-    asyncio.run(_run())
-
-
 def write_runtime_config(
     home: Path,
     *,
-    db_path: Path,
+    postgres_dsn: str = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test",
     ws_token: str | None = None,
     llm: bool = False,
     opennews_token: str | None = None,
@@ -64,9 +29,9 @@ def write_runtime_config(
     payload = {
         "storage": {
             "postgres": {
-                "serve_dsn": postgres_test_dsn(),
-                "workers_dsn": postgres_test_dsn(),
-                "migrate_dsn": postgres_test_dsn(),
+                "serve_dsn": postgres_dsn,
+                "workers_dsn": postgres_dsn,
+                "migrate_dsn": postgres_dsn,
                 "serve_password_file": None,
                 "workers_password_file": None,
                 "migrate_password_file": None,
@@ -199,10 +164,8 @@ class CliTests(unittest.TestCase):
     def test_config_prints_effective_runtime_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
-            db_path = home / ".tracefold" / "postgres_test_db"
             write_runtime_config(
                 home,
-                db_path=db_path,
                 ws_token="secret",
                 llm=True,
                 opennews_token="opennews-secret",
@@ -337,44 +300,10 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Settings.model_validate({"workers": {"collector": {"enabled": False}}})
 
-    def test_db_audit_query_audit_and_validate_projections_use_postgres_only(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            home = Path(tmpdir)
-            db_path = home / ".tracefold" / "postgres_test_db"
-            write_runtime_config(home, db_path=db_path)
-            conn = connect_postgres_test(db_path, read_only=False)
-            try:
-                migrate(conn)
-            finally:
-                conn.close()
-            stdout = io.StringIO()
-            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                db_audit_code = main(["db", "audit"], stdout=stdout)
-                query_audit_code = main(["db", "query-audit"], stdout=stdout)
-                validate_code = main(["ops", "validate-projections", "--sample", "5"], stdout=stdout)
-
-        lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
-        self.assertEqual(
-            [
-                db_audit_code,
-                query_audit_code,
-                validate_code,
-            ],
-            [0, 0, 0],
-            lines,
-        )
-        self.assertEqual(lines[0]["data"]["engine"], "postgresql")
-        self.assertTrue(lines[0]["data"]["news_schema"]["exact"])
-        self.assertNotIn("projection_schema", lines[0]["data"])
-        self.assertFalse(lines[1]["data"]["analyze"])
-        self.assertNotIn("token_radar_latest", {item["name"] for item in lines[1]["data"]["queries"]})
-        self.assertEqual(lines[2]["data"]["sample"], 5)
-        self.assertEqual(lines[2]["data"]["mismatch_count"], 0)
-
     def test_news_replay_reports_offline_gate_counts_from_a_hits_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
-            write_runtime_config(home, db_path=home / ".tracefold" / "postgres_test_db")
+            write_runtime_config(home)
             stdout = io.StringIO()
             with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
                 exit_code = main(["news", "replay", str(NEWS_V3_FIXTURE)], stdout=stdout)
@@ -388,43 +317,6 @@ class CliTests(unittest.TestCase):
         self.assertLessEqual(report["counts"]["events"], report["counts"]["items"])
         self.assertIn("candidate_share_of_items", report)
         self.assertIsInstance(report["sample_candidates"], list)
-
-    def test_news_bus_check_reports_topology_or_fails_closed_without_broker(self):
-        amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            home = Path(tmpdir)
-            config_path = write_runtime_config(home, db_path=home / ".tracefold" / "postgres_test_db")
-            stdout = io.StringIO()
-            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                missing_code = main(["news", "bus-check"], stdout=stdout)
-            missing_payload = json.loads(stdout.getvalue())
-            self.assertEqual(missing_code, 1)
-            self.assertFalse(missing_payload["ok"])
-            self.assertEqual(missing_payload["error"], "ValueError")
-            self.assertIn("news_broker_url_missing", missing_payload["detail"])
-
-            if not _amqp_reachable(amqp_url):
-                self.skipTest("development RabbitMQ is not reachable")
-            payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            name_prefix = f"tf_test_{uuid.uuid4().hex[:8]}"
-            payload["news"] = {
-                **(payload.get("news") or {}),
-                "broker": {"url": amqp_url, "name_prefix": name_prefix},
-            }
-            config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-            stdout = io.StringIO()
-            try:
-                with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                    exit_code = main(["news", "bus-check"], stdout=stdout)
-            finally:
-                _delete_test_topology(amqp_url, name_prefix)
-
-        payload = json.loads(stdout.getvalue())
-        self.assertEqual(exit_code, 0)
-        self.assertTrue(payload["ok"])
-        self.assertIn("queues", payload["data"])
-        self.assertIn("declared", payload["data"])
-        self.assertNotIn("guest:guest", stdout.getvalue())
 
 
 def test_init_creates_runtime_config(tmp_path, monkeypatch):

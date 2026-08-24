@@ -1,17 +1,5 @@
 # tests/integration/conftest.py
-"""Integration-test fixtures.
-
-Session-scope `_ensure_postgres_dsn` runs once per pytest invocation:
-- If GMGN_TEST_POSTGRES_DSN is reachable, use it (fast path; existing behavior).
-- Else if SKIP_INTEGRATION=1, skip the entire suite (cannot serve as
-  verification evidence).
-- Else if docker is available, spin a testcontainers Postgres + alembic
-  upgrade head, point GMGN_TEST_POSTGRES_DSN at it for the session.
-- Else fail loud with repair instructions.
-
-This makes tests/postgres_test_utils.connect_postgres_test() find a usable
-DSN in all cases, so individual integration tests no longer silently skip.
-"""
+"""Explicit integration-test resources."""
 
 from __future__ import annotations
 
@@ -24,12 +12,6 @@ import psycopg
 import pytest
 
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    for item in items:
-        if "tests/integration/" in str(item.path):
-            item.add_marker(pytest.mark.integration)
 
 
 def _dsn_reachable(dsn: str) -> bool:
@@ -49,17 +31,14 @@ def _docker_available() -> bool:
         return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_postgres_dsn() -> Iterator[None]:
-    """Ensure tests/postgres_test_utils.connect_postgres_test() finds a usable DSN.
-
-    Mutates os.environ["GMGN_TEST_POSTGRES_DSN"] for the entire session.
-    """
+@pytest.fixture(scope="session")
+def postgres_dsn() -> Iterator[str]:
+    """Yield a migrated PostgreSQL DSN only to tests that declare this resource."""
     existing = os.environ.get("GMGN_TEST_POSTGRES_DSN", DEFAULT_DSN)
 
     if _dsn_reachable(existing):
         os.environ["GMGN_TEST_POSTGRES_DSN"] = existing
-        yield
+        yield existing
         return
 
     if os.environ.get("SKIP_INTEGRATION") == "1":
@@ -95,4 +74,4 @@ def _ensure_postgres_dsn() -> Iterator[None]:
                 pytrace=False,
             )
         os.environ["GMGN_TEST_POSTGRES_DSN"] = dsn
-        yield
+        yield dsn

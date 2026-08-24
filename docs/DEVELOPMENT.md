@@ -43,10 +43,9 @@ Package roots are declarative: imports, constants, and a narrow `__all__`, with
 no runner lifecycle, SQL, network work, DSPy graph, provider construction, or
 import-time side effects.
 
-Issue #162's size harness is a ratchet, not a global cleanup gate. Existing
-oversized modules/functions may shrink or disappear but cannot grow; new
-production modules default to 800 lines and new functions to 100 lines. A pure
-file rename does not inherit an oversized-module exception.
+Module and function size are review signals, not correctness contracts. Prefer
+cohesive modules and narrow orchestration phases, but do not maintain exact
+line-count ledgers or rename-sensitive size exceptions in the test suite.
 
 PostgreSQL material facts and public HTTP/CLI contracts are migration
 boundaries. Internal Python imports are not compatibility contracts. Hard cuts
@@ -96,13 +95,10 @@ database transaction, and no connection is held across one.
 compatibility alias, forwarding module or re-export left behind by a rename —
 a hard cut updates every consumer in the same change.
 
-**Complexity.** New production modules default to 800 lines and new functions to
-100. The ledger in `tests/architecture/test_refactor_boundaries.py` records
-existing debt exactly, so it can only fall: a function that drops under the
-default loses its entry, and a rename inherits nothing. An orchestration
-function should own a sequence of named phases, not the phases themselves.
-Typing debt has the same shape — the `Any` ledger and the `tracefold.app.*`
-mypy `disable_error_code` list may only shrink.
+**Complexity.** An orchestration function should own a sequence of named phases,
+not the phases themselves. Use code review and static typing to improve
+cohesion; do not turn exact line counts, `Any` occurrences, suppression counts,
+or historical file inventories into permanent architecture contracts.
 
 **Program identity.** Prompt, RulePack, DemoBank, model routing, call budgets,
 `program_sha256`, the policy version and the metric identity are release
@@ -114,14 +110,14 @@ an explicit, evidence-gated identity migration.
 
 ## Tests
 
-| Lane | Location | Proves |
-|---|---|---|
-| Architecture | `tests/architecture/` | package shape, dependency direction, durable ownership |
-| Contract | `tests/contract/` | public HTTP/CLI and generated schemas |
-| Integration | `tests/integration/` | real PostgreSQL and composed service behavior |
-| Golden | `tests/golden/` | curated fact-to-product expectations |
-| E2E | `tests/e2e/` | one served process: `/readyz`, `/api/status`, `/api/news/status` shapes, retired routes `404` |
-| Frontend | `web/tests/` | UI, route, model, and frontend architecture behavior |
+| Entry | Purpose | Allowed | Excluded |
+|---|---|---|---|
+| `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
+| `make test` / `make test-fast` | default AI/developer loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
+| `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
+| `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | default loop |
+| `make test-e2e` | cross-process system evidence | real service topology and end-to-end paths | default loop |
+| `make test-all` | merge/release evidence | all Python lanes, frontend, golden, slow, external codegen | skip/xfail used to hide failures |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -138,9 +134,23 @@ Select commands by risk:
 - documentation: bounded surface and link checks;
 - generated files: run the owning generator and verify a clean second run.
 
-`make check` is a fast static/frontend/architecture/contract bundle, not a
-universal completion mandate. Run only the additional lanes that cross the
-changed seam and report omitted evidence honestly.
+Every bug or refactor PR records four pieces of evidence:
+
+1. the smallest F2P reproducer that failed before and passes after;
+2. the production seam it crosses;
+3. the targeted P2P regressions for affected public or persisted boundaries;
+4. the integration, deploy, e2e, or release lane still required.
+
+Mocking is not itself a problem. Mocking the risk mechanism under test is: a
+source-identity, import-path, wiring, serialization, migration, or transaction
+regression must traverse that real production seam. The compiler source-seal
+sanity test is the positive example: it calls the production identity
+calculation against the actual `tracefold.news.learning` package without
+monkeypatching the seal.
+
+`make check` is a hermetic static/architecture/contract bundle, not a universal
+completion mandate. Run the additional lanes that cross the changed seam and
+report omitted evidence honestly.
 
 ### Operator onboarding acceptance
 
@@ -165,22 +175,23 @@ The focused maintained checks include:
 
 ```bash
 uv run pytest -q \
-  tests/architecture/test_onboarding_surface.py \
-  tests/integration/test_cli.py \
-  tests/integration/test_compose_postgres.py
+  tests/deploy/test_onboarding_surface.py \
+  tests/deploy/test_postgres_deployment.py \
+  tests/integration/test_cli_resources.py
 ```
 
 ### Test lanes and speed
 
-`make test` is the default regression (unit + architecture + contract +
-integration, excluding `slow`, `e2e`, and `golden`; ~4 minutes on an idle
-machine with the local test PostgreSQL). `make test-slow` runs the real-process
-Workers runtime tests (`tests/integration/test_workers_runtime_v2.py`, bounded
-by wall-clock deadlines, ~2 minutes), `make test-e2e`/`make test-golden` the
-service and corpus lanes, and `make test-all` everything (~6.5 minutes).
-Integration tests reset the schema per test through `prepare_postgres_database`
-only when they seed data; validation/auth-only API tests reuse the migrated
-head. Historical migration-path tests are narrow and explicit: they cover the
+`make test` aliases `make test-fast` and never starts an external resource.
+Tests that need PostgreSQL declare the explicit `postgres_dsn` fixture; their
+directory is not a resource trigger. `make test-integration`, `make
+test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, and `make
+test-external-codegen` expose the larger lanes, while `make test-all` is the
+complete merge/release entry including frontend validation.
+
+Integration tests reset the schema only when they seed data; validation/auth-only
+API tests reuse the migrated head. Historical migration-path tests are narrow
+and explicit: they cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
@@ -475,10 +486,21 @@ make regen-contract   # openapi.json + web/src/lib/types/openapi.ts
 `AGENTS.md` and `CLAUDE.md` share one generated block, produced from
 `docs/agents/shared-router.md` by `scripts/sync_agent_router.py --write`.
 
-`make check` runs the database-free CLI-help, Issue #162 refactor-baseline, and
-agent-router drift checks. Generated OpenAPI and frontend types change in the same commit as
-their source. Regenerate the refactor baseline only as an explicit contract
-change and inspect its JSON diff before committing.
+Each generated artifact has one source of truth and one update command:
+
+- CLI help: the production parser rendered by `scripts/regen_cli_help.py`;
+- refactor baseline: `python -m tests.support.refactor_baseline`;
+- agent routers: `docs/agents/shared-router.md`, updated with
+  `scripts/sync_agent_router.py --write`;
+- OpenAPI and TypeScript: the Python app schema, updated with
+  `make regen-contract`.
+
+`make check` executes the database-free CLI-help, refactor-baseline, and
+agent-router canonical checker exactly once each. Its Python OpenAPI check is
+hermetic; Node-backed TypeScript codegen runs in the external-codegen/full
+lane. Generated outputs change in the same commit as their source. Regenerate
+the refactor baseline only as an explicit contract change and inspect its JSON
+diff before committing.
 
 ## Completion
 
