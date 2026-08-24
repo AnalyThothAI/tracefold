@@ -823,6 +823,10 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("external_scale_in_seconds_timestamp", "UNKNOWN"),
         ("external_scale_in_too_old_timestamp", "UNKNOWN"),
         ("historical_opening_trade", "OPEN_UNPROTECTED"),
+        ("external_reduction_trade", "UNKNOWN"),
+        ("external_reduction_missing_timestamp", "UNKNOWN"),
+        ("external_reduction_seconds_timestamp", "UNKNOWN"),
+        ("historical_closing_trade", "OPEN_UNPROTECTED"),
         ("closed", "CLOSED"),
         ("mixed_order_history", "UNKNOWN"),
         ("mixed_order_history_with_position", "UNKNOWN"),
@@ -874,6 +878,10 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     "external_scale_in_seconds_timestamp",
                     "external_scale_in_too_old_timestamp",
                     "historical_opening_trade",
+                    "external_reduction_trade",
+                    "external_reduction_missing_timestamp",
+                    "external_reduction_seconds_timestamp",
+                    "historical_closing_trade",
                     "mixed_order_history_with_position",
                     "closed_then_external_position",
                     "external_position_only",
@@ -999,6 +1007,10 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "external_scale_in_seconds_timestamp",
             "external_scale_in_too_old_timestamp",
             "historical_opening_trade",
+            "external_reduction_trade",
+            "external_reduction_missing_timestamp",
+            "external_reduction_seconds_timestamp",
+            "historical_closing_trade",
             "mixed_order_history_with_position",
         }:
             amount = "0.5" if scenario in {"partial", "partial_working"} else "1"
@@ -1065,6 +1077,42 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                                 }
                             ]
                             if scenario == "historical_opening_trade"
+                            else []
+                        ),
+                        *(
+                            [
+                                {
+                                    "exchange": "binance",
+                                    "tradeId": "external-close-trade-1",
+                                    "orderId": "external-close-order-1",
+                                    "symbol": "DOGE/USDT:USDT",
+                                    "side": "sell",
+                                    "reduceOnly": True,
+                                    "amount": "0.4",
+                                    **(
+                                        {}
+                                        if scenario == "external_reduction_missing_timestamp"
+                                        else {
+                                            "timestamp": (
+                                                (NOW - 501) // 1_000
+                                                if scenario == "external_reduction_seconds_timestamp"
+                                                else (
+                                                    NOW - 31_001
+                                                    if scenario == "historical_closing_trade"
+                                                    else NOW - 501
+                                                )
+                                            )
+                                        }
+                                    ),
+                                }
+                            ]
+                            if scenario
+                            in {
+                                "external_reduction_trade",
+                                "external_reduction_missing_timestamp",
+                                "external_reduction_seconds_timestamp",
+                                "historical_closing_trade",
+                            }
                             else []
                         ),
                     ],
@@ -1149,7 +1197,11 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
         assert observation.closed_at_ms == NOW - 1_000
     if scenario in {"future_fill", "missing_close_timestamp", "reversed_close"}:
         assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
-    if scenario in {"external_scale_in_seconds_timestamp", "external_scale_in_too_old_timestamp"}:
+    if scenario in {
+        "external_scale_in_seconds_timestamp",
+        "external_scale_in_too_old_timestamp",
+        "external_reduction_seconds_timestamp",
+    }:
         assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
     if scenario == "missing_close_price":
         assert observation.evidence["error_code"] == "opentrade_exit_price_invalid"
@@ -1160,6 +1212,10 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
         assert observation.evidence["unmatched_opening_trade_count"] == 1
     if scenario == "historical_opening_trade":
         assert observation.evidence["unmatched_opening_trade_count"] == 0
+    if scenario in {"external_reduction_trade", "external_reduction_missing_timestamp"}:
+        assert observation.evidence["unmatched_closing_trade_count"] == 1
+    if scenario == "historical_closing_trade":
+        assert observation.evidence["unmatched_closing_trade_count"] == 0
     if scenario in {"rejected_missing_fill", "rejected_invalid_fill"}:
         assert observation.evidence["error_code"] == "opentrade_fill_quantity_invalid"
     if scenario == "rejected_with_open_order":

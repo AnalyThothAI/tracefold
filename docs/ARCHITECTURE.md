@@ -1377,7 +1377,11 @@ history only after it also passes the composite snapshot's seven-day
 millisecond timestamp bounds and the provider's tolerated 30-second clock
 skew. A missing timestamp remains conservatively current; malformed, seconds,
 too-old or future values invalidate the observation. Unmatched current opening
-evidence is manual, never adopted or closed. A
+evidence is manual, never adopted or closed. A current unmatched reverse-side
+or reduce-only trade likewise proves that the earlier position snapshot may be
+stale after a concurrent reduction; it is manual and never supplies a close
+quantity. The same lifecycle timestamp rules distinguish prior closing history.
+A
 canceled/rejected entry is terminal only with an explicit
 finite zero fill, not a missing or malformed quantity, and only when the same
 snapshot has no current open-order exposure or correlated-but-unattributable

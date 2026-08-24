@@ -264,6 +264,17 @@ class OpenTradeAdapter:
             )
             and _optional_text(row.get("orderId")) != remote_id
         ]
+        unmatched_closing_trades = [
+            row
+            for row in trade_rows
+            if _possible_current_closing_trade(
+                row,
+                entry_side=order.side,
+                lifecycle_started_at_ms=order.instrument.observed_at_ms,
+                server_time=server_time,
+            )
+            and _optional_text(row.get("orderId")) != remote_id
+        ]
         evidence = {
             "schema": "tracefold.trading.execution_observation.v2",
             "position_count": len(position_rows),
@@ -280,6 +291,7 @@ class OpenTradeAdapter:
             "entry_history_correlated_count": len(correlated_history),
             "entry_history_count": len(entry_history),
             "unmatched_opening_trade_count": len(unmatched_opening_trades),
+            "unmatched_closing_trade_count": len(unmatched_closing_trades),
             "account_identity_proven": account_ref is not None,
         }
         if remote_id is None:
@@ -287,7 +299,7 @@ class OpenTradeAdapter:
         if account_ref != order.account_ref or len(position_rows) > 1 or len(expected_positions) != len(position_rows):
             return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
         if expected_positions:
-            if correlated_history or unmatched_opening_trades:
+            if correlated_history or unmatched_opening_trades or unmatched_closing_trades:
                 return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
             position = expected_positions[0]
             quantity = _positive_decimal(position.get("contracts"), "opentrade_position_quantity_invalid")
@@ -676,6 +688,17 @@ def _possible_current_opening_trade(
     side = _optional_text(row.get("side"))
     closing_side = "sell" if entry_side == "buy" else "buy"
     return side is None or side.lower() != closing_side
+
+
+def _possible_current_closing_trade(
+    row: Mapping[str, Any], *, entry_side: OrderSide, lifecycle_started_at_ms: int, server_time: int
+) -> bool:
+    side = _optional_text(row.get("side"))
+    closing_side = "sell" if entry_side == "buy" else "buy"
+    if row.get("reduceOnly") is not True and side is not None and side.lower() != closing_side:
+        return False
+    timestamp = _bounded_optional_timestamp(row.get("timestamp"), server_time=server_time)
+    return timestamp is None or timestamp >= lifecycle_started_at_ms - _MAX_SERVER_CLOCK_SKEW_MS
 
 
 def _all_explicit_zero_fills(rows: Sequence[Mapping[str, Any]]) -> bool:

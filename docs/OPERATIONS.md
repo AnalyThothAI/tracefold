@@ -61,6 +61,10 @@ inside the composite snapshot's seven-day millisecond bounds and earlier beyond
 the tolerated 30-second provider clock skew is ignored. Missing timestamps stay
 conflicting; malformed, seconds-unit, too-old or future values invalidate the
 observation.
+The same rule applies to unmatched reverse-side or reduce-only trades: a current
+closing trade means the preceding position quantity may already be stale, so
+reconciliation enters manual review and sends no close. Only closing history
+proven earlier than the lifecycle cutoff is ignored.
 When a lost entry response reaches manual review with no remote identity, use
 `tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
 after confirming that exact order and position at the venue. The command
