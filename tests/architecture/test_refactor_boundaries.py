@@ -32,7 +32,7 @@ GRANDFATHERED_MODULE_LINES = {
     "news/learning/evaluator.py": 3673,
     # PR4 moved the 823-line TriageConsumer atomically; PR7-B3 split `handle` into named phases and
     # moved the route's typed vocabulary to `triage_route.py`. Still over budget, still only shrinking.
-    "news/pipeline/triage.py": 937,
+    "news/pipeline/triage.py": 935,
     "news/learning/review.py": 2456,
     # #173 added the `product_progress` TradeChannel and its rationale: +2 enum lines, +4 comment lines.
     "news/program/contracts.py": 908,
@@ -72,14 +72,14 @@ GRANDFATHERED_FUNCTION_LINES = {
     # PR7-B3: 419 -> 81. `handle` now owns the broker sequence and the one stale re-ask loop; every
     # phase it names is its own function under the 100-line default.
     ("news/pipeline/triage.py", "TriageConsumer.handle"): 83,
-    ("news/pipeline/triage.py", "TriageConsumer._judge_telemetry"): 126,
+    ("news/pipeline/triage.py", "TriageConsumer._judge_telemetry"): 120,
     ("news/eval/replay.py", "replay_hits"): 133,
     ("news/pipeline/admission.py", "admit_item"): 250,
     ("news/market_review/loops.py", "EventReactionLoop.turn"): 104,
     ("news/query_specs.py", "news_query_specs"): 145,
     ("news/storage/events.py", "EventStorage.insert_event"): 103,
     ("news/storage/events.py", "EventStorage.append_evidence_snapshot"): 178,
-    ("news/storage/feed.py", "FeedStorage.status_snapshot"): 116,
+    ("news/storage/feed.py", "FeedStorage.status_snapshot"): 113,
     ("news/learning/review.py", "ReviewDesk._proposals"): 101,
     ("news/learning/review.py", "ReviewDesk._coverage"): 142,
     ("news/learning/review.py", "ReviewDesk._submit_external"): 132,

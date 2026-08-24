@@ -70,6 +70,9 @@ class NewsPipelineStatusData(ExactApiSchema):
     triage_degraded_24h: int = 0
     decided_push_24h: int = 0
     telemetry_push_24h: int = 0
+    telemetry_received_24h: int = 0
+    telemetry_parsed_24h: int = 0
+    telemetry_parse_failed_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None

@@ -301,6 +301,28 @@ class FeedStorage:
             "uncertain": bool(accepted and accepted["should_push"] == "uncertain"),
         }
 
+    def _oi_telemetry_24h(self, *, day_ago: int) -> dict[str, int]:
+        row = self.conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM news_items
+                WHERE observed_at_ms >= %s
+                  AND provider_metadata @> '{"strategies":[{"id":"1019"}]}'::jsonb
+              ) AS telemetry_received_24h,
+              (SELECT count(*) FROM news_oi_signals
+                WHERE created_at_ms >= %s) AS telemetry_parsed_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND error_code = 'oi_parse_failed'
+                  AND created_at_ms >= %s) AS telemetry_parse_failed_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND final_decision IN ('push','escalate')
+                  AND created_at_ms >= %s
+                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h
+            """,
+            (day_ago, day_ago, day_ago, day_ago),
+        ).fetchone()
+        return {key: int(value or 0) for key, value in dict(row or {}).items()}
+
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         ingest = self.conn.execute("SELECT * FROM news_ingest_state WHERE singleton_key = 'opennews'").fetchone()
         incidents = self.open_incidents()  # type: ignore[attr-defined]
@@ -328,10 +350,6 @@ class FeedStorage:
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s) AS decided_push_24h,
               (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND final_decision IN ('push','escalate')
-                  AND created_at_ms >= %s
-                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
-              (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s) AS throttled_24h,
               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
                  FROM news_verdicts
@@ -349,7 +367,7 @@ class FeedStorage:
                 WHERE stage = 'triage' AND created_at_ms >= %s
                   AND COALESCE((trace ->> 'novelty_defaulted')::boolean, false)) AS novelty_defaulted_24h
             """,
-            (hour_ago, *([day_ago] * 13)),
+            (hour_ago, *([day_ago] * 12)),
         ).fetchone()
         delivery = self.conn.execute(
             """
@@ -390,6 +408,7 @@ class FeedStorage:
                     k: (float(v) if isinstance(v, float) else (int(v) if v is not None else None))
                     for k, v in dict(pipeline or {}).items()
                 },
+                **self._oi_telemetry_24h(day_ago=day_ago),
                 **funnel,
             },
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},

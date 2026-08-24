@@ -9,8 +9,10 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
+from .. import oi_signals
 from ..bus import (
     Q_TRIAGE,
     RK_VERDICT_PUSH,
@@ -23,9 +25,6 @@ from ..bus import (
 from ..events.storyline import final_storyline_key
 from ..learning.canary import CanaryRuntimeArm
 from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, TriageVerdict, json_ready
-from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, evaluate_oi, parse_oi_signal, program_sha256
-from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from ..program.contracts import (
     TOLD_SOURCE_MAX,
     TOLD_WINDOW_MS,
@@ -104,7 +103,7 @@ class TriageConsumer:
         circuit_failures: int,
         circuit_open_seconds: float,
         policy: DecidePolicy = DEFAULT_POLICY,
-        oi_policy: OiPolicy = DEFAULT_OI_POLICY,
+        oi_policy: oi_signals.OiPolicy = oi_signals.DEFAULT_OI_POLICY,
         stable_bundle_sha: str | None = None,
         canary_arms: Mapping[str, CanaryRuntimeArm] | None = None,
         runtime_manifest: Mapping[str, Any] | None = None,
@@ -627,19 +626,19 @@ class TriageConsumer:
         cohorts read.
 
         Rank, ledger and verdict are one transaction under one storyline lock. The rank is a count of
-        this symbol's other frames in the window, so reading it outside the lock lets two frames for
+        this symbol's other eligible frames in the window, so reading it outside the lock lets two frames for
         one symbol both see a history without the other, both claim the same rank, and both qualify —
         three cards in a window that allows two. The lock is the same key `_decide_and_persist` takes,
         and `pg_advisory_xact_lock` is re-entrant within a transaction, so it takes it again for free.
         """
 
         title = str(card.get("leader_title") or "")
-        signal = parse_oi_signal(title)
+        signal = oi_signals.parse_oi_signal(title)
         observed = int(card.get("opened_at_ms") or card.get("leader_published_at_ms") or stamp)
         trace: dict[str, Any] = {
             "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
             "attempt": message.attempt,
-            "program_version": OI_PROGRAM_VERSION,
+            "program_version": oi_signals.PROGRAM_VERSION,
             "runtime_manifest_sha": self.runtime_manifest_sha,
             "policy": self.policy.as_dict(),
             "gate_policy_version": GATE_POLICY_VERSION,
@@ -654,21 +653,19 @@ class TriageConsumer:
             # `1019` is provider provenance, not a parser guarantee. A frame that is not the template
             # carries no numbers this rule can act on; it is dropped deterministically rather than
             # falling through to a model call the Gate admitted it specifically to avoid.
-            log.info("news telemetry frame not parseable event=%s title=%r", event_id, title[:120])
-            verdict = TriageVerdict(
-                novelty="new_fact",
-                event_type="noise",
-                assets=[],
-                direction="neutral",
-                scope="single_name",
-                magnitude=0,
-                actionable=False,
-                confidence=1.0,
-                decision="drop",
-                headline_zh=title[:60] or "持仓异动帧无法解析",
-                why_zh="",
+            provider_metadata = card.get("provider_metadata")
+            provider_source = (
+                str(provider_metadata.get("source") or "") if isinstance(provider_metadata, Mapping) else ""
             )
-            trace["oi_signal"] = {"parsed": False}
+            verdict, failure = oi_signals.oi_parse_failure(title, provider_source=provider_source)
+            log.warning(
+                "news_oi_parse_failed event_id=%s strategy_id=1019 provider=opennews "
+                "title_sha256=%s parser_version=%s failure_stage=template_match",
+                event_id,
+                failure["title_sha256"],
+                failure["parser_version"],
+            )
+            trace["oi_signal"] = failure
             settle = self._telemetry_settle(
                 event_id=event_id,
                 card=card,
@@ -677,6 +674,7 @@ class TriageConsumer:
                 ledger_rows=ledger_rows,
                 trace=trace,
                 stamp=stamp,
+                error_code="oi_parse_failed",
             )
             outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
         else:
@@ -685,17 +683,23 @@ class TriageConsumer:
                 # The key is a pure function of the symbol for this admission, so it is known before
                 # the verdict exists and can be locked first.
                 repos.news.lock_storyline(f"asset:{signal.symbol}")
-                earlier = repos.news.recent_oi_signal_times(
+                earlier_eligible_count = repos.news.count_recent_eligible_oi_signals(
                     symbol=signal.symbol,
-                    metric_version=OI_METRIC_VERSION,
+                    metric_version=oi_signals.METRIC_VERSION,
                     since_ms=observed - self.oi_policy.window_ms,
                     before_ms=observed,
+                    whale_oi_ratio_above_bps=self.oi_policy.whale_oi_ratio_above_bps,
+                    oi_change_at_least_bps=self.oi_policy.oi_change_at_least_bps,
                     exclude_event_id=event_id,
                 )
-                judgment = evaluate_oi(signal, earlier_at_ms=earlier, now_ms=observed, policy=self.oi_policy)
+                judgment = oi_signals.evaluate_oi(
+                    signal,
+                    earlier_eligible_count=earlier_eligible_count,
+                    policy=self.oi_policy,
+                )
                 repos.news.insert_oi_signal(
                     event_id=event_id,
-                    metric_version=OI_METRIC_VERSION,
+                    metric_version=oi_signals.METRIC_VERSION,
                     symbol=signal.symbol,
                     direction=signal.direction,
                     oi_change_bps=signal.oi_change_bps,
@@ -706,18 +710,7 @@ class TriageConsumer:
                     rank_in_window=judgment.rank_in_window,
                     now_ms=stamp,
                 )
-                trace["oi_signal"] = {
-                    "parsed": True,
-                    "symbol": signal.symbol,
-                    "direction": signal.direction,
-                    "oi_change_bps": signal.oi_change_bps,
-                    "oi_value_usd": signal.oi_value_usd,
-                    "whale_long_profit_bps": signal.whale_long_profit_bps,
-                    "whale_oi_ratio_bps": signal.whale_oi_ratio_bps,
-                    "rank_in_window": judgment.rank_in_window,
-                    "rule": judgment.rule,
-                    "policy": self.oi_policy.as_dict(),
-                }
+                trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy)
                 return self._decide_and_persist(
                     repos,
                     s=self._telemetry_settle(
@@ -747,6 +740,7 @@ class TriageConsumer:
         ledger_rows: Sequence[Mapping[str, Any]],
         trace: dict[str, Any],
         stamp: int,
+        error_code: str | None = None,
     ) -> _TriageSettle:
         return _TriageSettle(
             event_id=event_id,
@@ -777,10 +771,10 @@ class TriageConsumer:
             prelim_key=str(card.get("storyline_key") or ""),
             card=card,
             degraded=False,
-            error_code=None,
+            error_code=error_code,
             model_name=None,
-            program_version=OI_PROGRAM_VERSION,
-            program_sha256=program_sha256(self.oi_policy),
+            program_version=oi_signals.PROGRAM_VERSION,
+            program_sha256=oi_signals.program_sha256(self.oi_policy),
             policy=self.policy,
             runtime_manifest_sha=self.runtime_manifest_sha,
             trace=trace,
@@ -827,6 +821,10 @@ class TriageConsumer:
             degraded=s.degraded,
             policy=s.policy,
         )
+        if s.error_code == "oi_parse_failed":
+            # The final action still comes from the one deterministic decision plane; this names the
+            # provider-contract failure without changing the model policy helper's release identity.
+            decision = replace(decision, override_rule="oi_parse_failed")
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
         trace["verdict_sha256"] = s.judgment.verdict_sha256

@@ -322,7 +322,8 @@ projections; there is no public alias.
   (configured, connected, per-queue message/consumer counts when observed,
   error code), `pipeline` (events and candidates per hour/day, Triage counts,
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
-  throttled, Triage p50/p95, queue lag p95, the Triage model name, and the
+  throttled, OI telemetry received/parsed/parse-failed/pushed counts, Triage
+  p50/p95, queue lag p95, the Triage model name, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
   `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
   (`all` is the current content-only path; historical rows may retain the old
@@ -471,7 +472,12 @@ only the explicit `ReaderCardSemanticView`; it cannot read ToldContext,
 `reader_value`, tradability, surprise or development delta.
 `news.oi` keys are `window_ms` (4 h), `max_rank_in_window` (2),
 `whale_oi_ratio_above_bps` (8000, exceeded not met) and `oi_change_at_least_bps`
-(0, disabled): the deterministic open-interest lane's thresholds (#137).
+(0, disabled): the deterministic open-interest lane's thresholds (#137). Rank
+counts only earlier rows that satisfy both thresholds; parsed rows that fail a
+threshold remain auditable without consuming rank. Status exposes
+`telemetry_received_24h`, `telemetry_parsed_24h`,
+`telemetry_parse_failed_24h`, and `telemetry_push_24h`; parser-contract failures
+also appear under `dropped_by_rule.oi_parse_failed` and never call a model.
 `news.policy` has exactly four v10 keys: `restatement_drop` (true),
 `similarity_max` (0.25), `listing_exempt_from_duplicate` (true), and
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older

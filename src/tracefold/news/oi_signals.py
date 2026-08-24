@@ -9,7 +9,7 @@ storyline, so the Gate admits them as ``telemetry_deterministic`` and Triage jud
 of spending two structured model calls re-reading numbers a regex already has.
 
 What this module produces is an ordinary ``TriageVerdict``. That is the whole point: the rule the
-reader asked for counts a symbol's frames in a rolling window, and ``decide()`` is deliberately
+reader asked for counts a symbol's eligible signals in a rolling window, and ``decide()`` is deliberately
 unable to count — policy v7 removed every reader quota and ``StorylineStatus`` is tested to carry no
 capacity field. Counting *here* and handing ``decide()`` a verdict it already understands keeps one
 decision plane instead of two, and keeps delivery, receipts, outcome, feed, counters and audit on the
@@ -25,13 +25,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
 from .models import TriageAsset, TriageVerdict
 
 METRIC_VERSION: Final = "oi_signal_v1"
+PARSER_VERSION: Final = "oi_signal_parser_v1"
+RANK_SEMANTICS: Final = "eligible_rank_v1"
 # The judge's identity on the verdict row, where a model-judged Event carries its ProgramArtifact sha.
 # Content-addressed the same way: change the rule and the identity changes with it.
 PROGRAM_VERSION: Final = "news_oi_signal_v1"
@@ -74,18 +75,17 @@ class OiSignal:
 class OiPolicy:
     """Operator-owned thresholds for the OI lane, from `news.oi`; nothing is shared with `news.policy`.
 
-    These are the numbers the volume rests on — the shipped defaults push 40 of 190 daily frames — so
-    they are config rather than code: tuning them should not need a deploy, and a stored verdict
-    carries the values it ran under in its trace.
+    These are the numbers the volume rests on, so they are config rather than code: tuning them should
+    not need a deploy, and a stored verdict carries the values it ran under in its trace.
     """
 
     window_ms: int = WINDOW_MS
-    # The reader wants the opening moves of a run, not every tick of it.
+    # The reader wants the opening qualifying moves of a run, not every tick of it.
     max_rank_in_window: int = 2
     # Whale exposure relative to total open interest. The name carries the inclusivity because the
     # rule is 大于 80%: a frame must *exceed* this, so exactly 8000 bps does not qualify. Measured over
     # 24 h of live frames the distribution is min 30% / p50 51% / p90 196%, so this removes about two
-    # thirds; the rank ceiling above does most of the filtering (130 -> 40 frames a day, together).
+    # thirds before the eligible-rank ceiling is applied.
     whale_oi_ratio_above_bps: int = 8_000
     # A frame whose open interest barely moved is not a move; the name carries the inclusivity here
     # too. Zero disables the rule, which is the shipped default: the provider only emits a frame once
@@ -173,6 +173,35 @@ def parse_oi_signal(title: str) -> OiSignal | None:
     )
 
 
+def oi_parse_failure(title: str, *, provider_source: str) -> tuple[TriageVerdict, dict[str, Any]]:
+    """Fail-closed verdict and observable provider-contract trace for an unparseable 1019 frame."""
+
+    title_sha256 = hashlib.sha256(title.encode("utf-8")).hexdigest()
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        event_type="noise",
+        assets=[],
+        direction="neutral",
+        scope="single_name",
+        magnitude=0,
+        actionable=False,
+        confidence=1.0,
+        decision="drop",
+        headline_zh=title[:60] or "持仓异动帧无法解析",
+        why_zh="",
+    )
+    return verdict, {
+        "parsed": False,
+        "rule": "oi_parse_failed",
+        "strategy_id": "1019",
+        "provider": "opennews",
+        "provider_source": provider_source,
+        "title_sha256": title_sha256,
+        "parser_version": PARSER_VERSION,
+        "failure_stage": "template_match",
+    }
+
+
 def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
     """Content identity of this judge: the rule text plus the thresholds it ran under."""
 
@@ -182,6 +211,8 @@ def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
                 "program": PROGRAM_VERSION,
                 "reader_contract": READER_CONTRACT_VERSION,
                 "metric": METRIC_VERSION,
+                "parser": PARSER_VERSION,
+                "rank_semantics": RANK_SEMANTICS,
                 "policy": policy.as_dict(),
             },
             sort_keys=True,
@@ -265,29 +296,21 @@ def _usd_zh(value: int) -> str:
 def evaluate_oi(
     signal: OiSignal,
     *,
-    earlier_at_ms: Sequence[int],
-    now_ms: int,
+    earlier_eligible_count: int,
     policy: OiPolicy = DEFAULT_OI_POLICY,
 ) -> OiJudgment:
     """Judge one frame and express it as a ``TriageVerdict``.
 
-    ``earlier_at_ms`` is every frame already recorded for this symbol; only those inside the window
-    count toward the rank, so the window slides with the reader rather than resetting on a clock
-    boundary.
-
-    Rank counts *frames*, not pushes: a symbol emitting a third frame has moved three times whether or
-    not the earlier two cleared the whale threshold, and the reader asked for the opening moves of a
-    run. The consequence is deliberate but worth knowing — a symbol churning out low-concentration
-    frames spends its rank budget on them, so a later frame that does clear the threshold can arrive
-    past the ceiling. The 40-pushes-a-day measurement was taken under exactly this rule.
+    ``earlier_eligible_count`` is counted in PostgreSQL from this symbol's parsed rows inside the
+    sliding window, using the same whale and OI-change thresholds as this judgment. Ineligible frames
+    remain auditable but do not spend a later signal's rank.
 
     The verdict is shaped so ``decide()`` reaches the intended answer through its ordinary rules: a
     qualifying frame is an actionable, directional magnitude-2 ``oi_spike`` with a push intent, and a
     rejected one is a self-consistent magnitude-0 ``noise`` that policy v8's veto still holds.
     """
 
-    cutoff = int(now_ms) - policy.window_ms
-    rank = sum(1 for at in earlier_at_ms if at > cutoff) + 1
+    rank = int(earlier_eligible_count) + 1
     if signal.whale_oi_ratio_bps <= policy.whale_oi_ratio_above_bps:
         rule = "whale_ratio_below_threshold"
     elif abs(signal.oi_change_bps) < policy.oi_change_at_least_bps:
@@ -322,16 +345,39 @@ def evaluate_oi(
     return OiJudgment(verdict=verdict, signal=signal, rank_in_window=rank, rule=rule)
 
 
+def oi_judgment_trace(judgment: OiJudgment, *, policy: OiPolicy) -> dict[str, Any]:
+    """Audit projection for one successfully parsed deterministic judgment."""
+
+    signal = judgment.signal
+    return {
+        "parsed": True,
+        "symbol": signal.symbol,
+        "direction": signal.direction,
+        "oi_change_bps": signal.oi_change_bps,
+        "oi_value_usd": signal.oi_value_usd,
+        "whale_long_profit_bps": signal.whale_long_profit_bps,
+        "whale_oi_ratio_bps": signal.whale_oi_ratio_bps,
+        "eligible_rank_in_window": judgment.rank_in_window,
+        "rank_semantics": RANK_SEMANTICS,
+        "rule": judgment.rule,
+        "policy": policy.as_dict(),
+    }
+
+
 __all__ = [
     "DEFAULT_OI_POLICY",
     "METRIC_VERSION",
+    "PARSER_VERSION",
     "PROGRAM_VERSION",
+    "RANK_SEMANTICS",
     "READER_CONTRACT_VERSION",
     "WINDOW_MS",
     "OiJudgment",
     "OiPolicy",
     "OiSignal",
     "evaluate_oi",
+    "oi_judgment_trace",
+    "oi_parse_failure",
     "parse_oi_signal",
     "program_sha256",
 ]

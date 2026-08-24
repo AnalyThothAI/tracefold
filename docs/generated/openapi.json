@@ -2894,9 +2894,24 @@
             "title": "Tagged 24H",
             "type": "integer"
           },
+          "telemetry_parse_failed_24h": {
+            "default": 0,
+            "title": "Telemetry Parse Failed 24H",
+            "type": "integer"
+          },
+          "telemetry_parsed_24h": {
+            "default": 0,
+            "title": "Telemetry Parsed 24H",
+            "type": "integer"
+          },
           "telemetry_push_24h": {
             "default": 0,
             "title": "Telemetry Push 24H",
+            "type": "integer"
+          },
+          "telemetry_received_24h": {
+            "default": 0,
+            "title": "Telemetry Received 24H",
             "type": "integer"
           },
           "throttled_24h": {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from contextlib import contextmanager
 from pathlib import Path
@@ -52,6 +53,17 @@ class FakeBus:
 
     def routing_keys(self) -> list[str]:
         return [message.routing_key for message in self.published]
+
+
+class ExplodingJudge:
+    """A model seam that records an accidental call before making the test fail."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def judge(self, _context: Any) -> Any:
+        self.calls += 1
+        raise AssertionError("strategy 1019 must not call a model")
 
 
 class FakeWorkerDatabase:
@@ -126,11 +138,11 @@ def _deduper(conn: Any, bus: FakeBus) -> DeduperConsumer:
     return DeduperConsumer(bus=bus, db=FakeWorkerDatabase(conn), watchlist_symbols=WATCHLIST)
 
 
-def _triage(conn: Any, bus: FakeBus) -> TriageConsumer:
+def _triage(conn: Any, bus: FakeBus, *, judge: Any = None) -> TriageConsumer:
     return TriageConsumer(
         bus=bus,
         db=FakeWorkerDatabase(conn),
-        judge=None,
+        judge=judge,
         program_version=PROGRAM_VERSION,
         program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
@@ -347,6 +359,78 @@ def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn
     # Triage wrote the final storyline key back and recorded it in the replayable trace.
     assert context["storyline_key"] == strong_row["trace"]["storyline_key"]
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 2
+
+
+def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(
+    conn,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp = now_ms()
+    bus = FakeBus()
+    judge = ExplodingJudge()
+    telemetry_logger = logging.getLogger("tracefold.news")
+    monkeypatch.setattr(telemetry_logger, "disabled", False)
+    monkeypatch.setattr(telemetry_logger, "propagate", True)
+    caplog.set_level(logging.WARNING, logger="tracefold.news")
+    raw = BusMessage(
+        kind="raw",
+        message_id="raw:179-parse-failed",
+        routing_key=RK_RAW_LIVE.format(strategy_id="1019"),
+        payload={
+            "params": {
+                "id": 179_999_001,
+                "engineType": "market",
+                "text": "BTC OI provider format changed",
+                "source": "binance",
+                "ts": stamp,
+                "strategy": {"id": 1019, "name": "OI Event Monitor"},
+            },
+            "strategy_id": "1019",
+            "ingest_mode": "live",
+            "observed_at_ms": stamp,
+        },
+        trace_id=new_trace_id(),
+        occurred_at_ms=stamp,
+    )
+
+    asyncio.run(_deduper(conn, bus).handle(raw))
+    event_message = bus.published[-1]
+    event_id = str(event_message.payload["event_id"])
+    asyncio.run(_triage(conn, bus, judge=judge).handle(event_message))
+    conn.commit()
+
+    verdict = conn.execute(
+        "SELECT final_decision, override_rule, error_code, program_version, trace "
+        "FROM news_verdicts WHERE event_id = %s",
+        (event_id,),
+    ).fetchone()
+    assert verdict is not None
+    assert (verdict["final_decision"], verdict["override_rule"], verdict["error_code"]) == (
+        "drop",
+        "oi_parse_failed",
+        "oi_parse_failed",
+    )
+    assert verdict["program_version"] == "news_oi_signal_v1"
+    assert verdict["trace"]["oi_signal"] == {
+        "parsed": False,
+        "rule": "oi_parse_failed",
+        "strategy_id": "1019",
+        "provider": "opennews",
+        "provider_source": "binance",
+        "title_sha256": "3cbadc25cd510bd837cfcfae89b6c48040cfd9ffd18cafd13031cc660ee8786b",
+        "parser_version": "oi_signal_parser_v1",
+        "failure_stage": "template_match",
+    }
+    assert conn.execute("SELECT 1 FROM news_oi_signals WHERE event_id = %s", (event_id,)).fetchone() is None
+    assert judge.calls == 0
+    assert "news_oi_parse_failed" in caplog.text and "provider format changed" not in caplog.text
+    assert not [message for message in bus.published if message.routing_key == RK_VERDICT_PUSH]
+
+    pipeline = repositories_for_connection(conn).news.status_snapshot(now_ms=stamp + 1)["pipeline"]
+    assert pipeline["telemetry_received_24h"] >= 1
+    assert pipeline["telemetry_parse_failed_24h"] >= 1
+    assert pipeline["dropped_by_rule"]["oi_parse_failed"] >= 1
 
 
 def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) -> None:

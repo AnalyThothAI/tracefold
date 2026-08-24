@@ -2159,7 +2159,7 @@ def _oi_card(**overrides: Any) -> dict[str, Any]:
         queue_priority="normal",
         provider_score_max=None,
         storyline_key="macro:market_telemetry",
-        provider_metadata={"coins": [{"symbol": "TRUMP", "market_type": "cex"}]},
+        provider_metadata={"source": "binance", "coins": [{"symbol": "TRUMP", "market_type": "cex"}]},
         opened_at_ms=NOW_MS,
     )
     card.update(overrides)
@@ -2174,7 +2174,7 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
         get_verdict=None,
         event_card=_oi_card(),
         insert_verdict=True,
-        recent_oi_signal_times=[],
+        count_recent_eligible_oi_signals=0,
         latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
     )
     bus = FakeBus()
@@ -2204,7 +2204,7 @@ def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> Non
         get_verdict=None,
         event_card=_oi_card(),
         insert_verdict=True,
-        recent_oi_signal_times=[NOW_MS - 1, NOW_MS - 2],
+        count_recent_eligible_oi_signals=2,
         latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
     )
     bus = FakeBus()
@@ -2214,43 +2214,6 @@ def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> Non
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "telemetry_deterministic"
     assert news.kwargs_of("insert_oi_signal")["rank_in_window"] == 3
-    assert bus.published == []
-
-
-def test_telemetry_history_excludes_the_frame_itself_and_anything_after_it() -> None:
-    """Rank has to be a property of the frame, not of when or how often it was processed."""
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_oi_card(),
-        insert_verdict=True,
-        recent_oi_signal_times=[],
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-    asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
-
-    history = news.kwargs_of("recent_oi_signal_times")
-    assert history["exclude_event_id"] == "ev-oi" and history["before_ms"] == NOW_MS
-
-
-def test_an_unparseable_telemetry_frame_drops_without_reaching_the_model() -> None:
-    """Strategy 1019 is provider provenance, not a parser guarantee. A frame that is not the template
-    must not fall through to the model call the Gate admitted it specifically to avoid."""
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_oi_card(leader_title="HIP-3 has lost $820M in open interest over the past 5 days."),
-        insert_verdict=True,
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-    bus = FakeBus()
-    judge = _RecordingJudge()
-
-    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-oi"})))
-
-    assert judge.calls == 0
-    assert news.kwargs_of("insert_verdict")["final_decision"] == "drop"
-    assert "insert_oi_signal" not in news.names()
     assert bus.published == []
 
 
