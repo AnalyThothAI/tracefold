@@ -61,7 +61,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     )
     from tracefold.news.learning.compiler.security import (
         CompileInputBundle,
-        CompilerRunnerReceiptsV3,
+        CompilerRunnerReceipts,
     )
     from tracefold.news.learning.compiler.source_identity import (
         compiler_source_sha256,
@@ -135,21 +135,16 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         judge=judge,
     )
     result = compiler.compile(request)
-    receipts = CompilerRunnerReceiptsV3.issue(
+    receipts = CompilerRunnerReceipts(
         input_bundle_sha256=bundle.bundle_sha256,
-        parent_program_sha256=parent.program_sha256,
-        proxy_grant_sha256=grant.grant_sha256,
-        task_endpoint_identity_sha256=bundle.task.endpoint.binding_sha256,
-        reflection_endpoint_identity_sha256=bundle.reflection.endpoint.binding_sha256,
-        metric_judge_endpoint_identity_sha256=bundle.metric_judge.endpoint.binding_sha256,
-        compiler_source_sha256=compiler_source_sha256(),
-        proxy_source_sha256=proxy_source_sha256(),
-        compiler_lock_sha256=bundle.compiler_lock_sha256,
-        sandbox_policy_sha256=policy.policy_sha256,
+        container_source_sha256=compiler_source_sha256(),
+        container_proxy_source_sha256=proxy_source_sha256(),
         metric=result.receipt_payloads.metric,
         optimizer_config=result.receipt_payloads.optimizer_config,
         trajectory=result.receipt_payloads.trajectory,
         checkpoint=result.receipt_payloads.checkpoint,
+        split=result.receipt_payloads.split,
+        retrieval=result.receipt_payloads.retrieval,
         failure_cluster_ids=result.failure_cluster_ids,
         target_dimensions=result.target_dimensions,
         metric_calls=result.metric_calls,

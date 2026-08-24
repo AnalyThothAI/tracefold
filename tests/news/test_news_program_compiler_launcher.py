@@ -124,7 +124,6 @@ def _input(
         metric_judge=metric_judge,
         proxy_grant_sha256=grant.grant_sha256,
         proxy_config_sha256=secrets.secret_free_config_sha256,
-        tariff_sha256=secrets.tariff_sha256,
         proxy_tariff=secrets.tariff,
         compiler_source_sha256="1" * 64,
         proxy_source_sha256="4" * 64,

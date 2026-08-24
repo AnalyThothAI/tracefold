@@ -50,12 +50,15 @@ from ..metric import (
 from ..proposer import RulePackAwareProposer
 from .security import (
     CompileBudgetV3,
-    CompilerEndpointIdentity,
     CompilerProxyTariff,
+    ModelExecutionIdentity,
     gepa_metric_call_ceiling,
 )
 from .trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 
+_OWNED_LM_KWARGS = frozenset(
+    {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
+)
 LEARNING_EPOCH = "program_v7"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v3"
 _PROPOSAL_GUARDRAILS = (
@@ -126,19 +129,14 @@ class ProgramCompileResult(_ExactModel):
     actual_cost_microusd: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def _receipt_identities_match(self) -> ProgramCompileResult:
-        hashes = {
-            "metric": canonical_sha(self.receipt_payloads.metric),
-            "optimizer_config": canonical_sha(self.receipt_payloads.optimizer_config),
-            "trajectory": canonical_sha(self.receipt_payloads.trajectory),
-            "checkpoint": canonical_sha(self.receipt_payloads.checkpoint),
-            "split": canonical_sha(self.receipt_payloads.split),
-            "retrieval": canonical_sha(self.receipt_payloads.retrieval),
-        }
-        payloads = self.receipt_payloads.model_dump(mode="json")
-        for name, actual in hashes.items():
-            if actual != canonical_sha(payloads[name]):
-                raise ValueError(f"news_program_compile_{name}_receipt_hash_mismatch")
+    def _accounting_is_coherent(self) -> ProgramCompileResult:
+        """Check the arithmetic. There is nothing here to cross-bind.
+
+        This used to hash each of six payloads and compare the result against a hash of the same payload,
+        which is a comparison that cannot fail. Everything these payloads have to be bound to lives in the
+        record the trusted host builds around them.
+        """
+
         if (
             self.metric_judge_model_calls > self.metric_judge_attempts
             or self.metric_judge_failures > self.metric_judge_attempts
@@ -440,8 +438,7 @@ def build_compile_lm(
     """Build the cold compiler LM while keeping DSPy out of the CLI layer."""
 
     extras = dict(model_kwargs or {})
-    owned = {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
-    overlap = owned.intersection(extras)
+    overlap = _OWNED_LM_KWARGS.intersection(extras)
     if overlap:
         raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
     reflection = role == "reflection"
@@ -459,22 +456,32 @@ def build_compile_lm(
         num_retries=0,
         **extras,
     )
-    lm.tracefold_compiler_endpoint_identity = CompilerEndpointIdentity.issue(
-        model=str(model_name), api_base=str(api_base)
+    lm.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
+        role="reflection" if reflection else "task",
+        model=str(model_name),
+        api_base=str(api_base),
+        max_output_tokens=lm.kwargs["max_tokens"],
+        timeout_seconds=lm.kwargs["timeout"],
+        temperature=lm.kwargs["temperature"],
+        model_kwargs=extras,
     )
     return lm
 
 
-def _compiler_model_identity(lm: dspy.LM) -> dict[str, Any]:
+def _require_model_identity(lm: dspy.LM, *, role: Literal["task", "reflection"]) -> ModelExecutionIdentity:
+    """The identity this LM will answer under, or a refusal before anything is spent.
+
+    `build_compile_lm` stamps it. Reconstructing one here from an LM's own kwargs was worse than
+    refusing: the role contract (temperature, token ceiling, deadline) is exactly what an identity is
+    supposed to attest, so inferring it from the object it describes attests nothing. The check runs in
+    `ProgramCompiler.__init__` rather than at receipt time so a misconfigured route costs no provider
+    call instead of failing after a full run.
+    """
+
     identity = getattr(lm, "tracefold_compiler_endpoint_identity", None)
-    if isinstance(identity, CompilerEndpointIdentity):
-        return identity.model_dump(mode="json")
-    model = str(getattr(lm, "model", "")).strip()
-    kwargs = getattr(lm, "kwargs", None)
-    api_base = str(kwargs.get("api_base") or "") if isinstance(kwargs, Mapping) else ""
-    if not model or not api_base:
+    if not isinstance(identity, ModelExecutionIdentity) or identity.role != role:
         raise ValueError("news_program_compile_endpoint_identity_unavailable")
-    return CompilerEndpointIdentity.issue(model=model, api_base=api_base).model_dump(mode="json")
+    return identity
 
 
 def _optimizer_config_receipt(
@@ -509,12 +516,12 @@ def _optimizer_config_receipt(
             f"{type(constructor['instruction_proposer']).__qualname__}"
             if constructor.get("instruction_proposer") is not None
             else None,
-            "reads": "full rendered predictor instruction (QualityKernel + ordered RulePacks + authority seal)",
+            "reads": "full rendered predictor instruction (sealed kernel + ordered RulePacks + authority seal)",
             "writes": "LearnedStrategy body only",
         },
         "model_identities": {
-            "task": _compiler_model_identity(task_lm),
-            "reflection": _compiler_model_identity(reflection_lm),
+            "task": _require_model_identity(task_lm, role="task").model_dump(mode="json"),
+            "reflection": _require_model_identity(reflection_lm, role="reflection").model_dump(mode="json"),
         },
         "dspy_context": {
             "adapter": "DspyStrictJSONAdapter/native_function_calling_false",
@@ -547,6 +554,8 @@ class ProgramCompiler:
         active = load_stable_program_artifact()
         if base_artifact.program_sha256 != active.program_sha256:
             raise ValueError("news_program_compile_parent_must_be_exact_stable_root")
+        _require_model_identity(task_lm, role="task")
+        _require_model_identity(reflection_lm, role="reflection")
         self._base = base_artifact
         self._task_lm = task_lm
         self._reflection_lm = reflection_lm

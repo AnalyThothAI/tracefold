@@ -97,12 +97,10 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             from tracefold.news.learning.compiler.sandbox import CompilerSandboxPolicy
             from tracefold.news.learning.compiler.security import (
                 CompileBudgetV3,
-                CompileReceiptChain,
+                CompilerBuildAttestation,
+                CompileRecordV1,
                 CompilerProxyTariff,
-                CompilerRunnerReceiptsV3,
-                ContentAddressedCompileReceipt,
-                OptimizerCompileProvenanceV3,
-                gepa_metric_call_ceiling,
+                CompilerRunnerReceipts,
                 seal_compile_input,
             )
             from tracefold.news.learning.compiler.source_identity import (
@@ -117,8 +115,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 REFLECTION_TIMEOUT_SECONDS,
                 ProgramStrategyPatchV1,
                 apply_trusted_program_patch,
+                changed_predictors,
                 load_exact_stable_program,
-                program_machine_diff,
                 write_program_candidate_artifact,
             )
             from tracefold.news.program.runtime import (
@@ -240,7 +238,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 metric_judge=metric_judge_binding,
                 proxy_grant_sha256=proxy_grant.grant_sha256,
                 proxy_config_sha256=proxy_secrets.secret_free_config_sha256,
-                tariff_sha256=proxy_secrets.tariff_sha256,
                 proxy_tariff=tariff,
                 compiler_source_sha256=source_sha,
                 proxy_source_sha256=proxy_source_sha,
@@ -249,6 +246,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 compiler_image_digest=compiler_image,
                 budget=budget,
             )
+            with postgres_connection(settings, role="serve") as clock_conn:
+                compiled_at_ms = int(
+                    clock_conn.execute(
+                        "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
+                    ).fetchone()["now_ms"]
+                )
             launched = ProgramCompilerLauncher(
                 policy=sandbox_policy,
                 compiler_source_sha256=source_sha,
@@ -267,154 +270,103 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             runner = _canonical_model_document(
                 launched.runner_receipts_document,
-                CompilerRunnerReceiptsV3,
+                CompilerRunnerReceipts,
                 code="news_learning_compile_runner_receipt_invalid",
             )
             proxy_execution = launched.proxy_execution_receipt
-            try:
-                metric_call_ceiling = gepa_metric_call_ceiling(
-                    max_metric_calls=budget.max_metric_calls,
-                    optimizer_config=runner.optimizer_config,
-                    expected_example_count=bundle.corpus.episode_count,
-                )
-            except ValueError as exc:
-                raise ValueError("news_learning_compile_receipt_cross_binding_mismatch") from exc
+            # What only this point can check: the untrusted runner's own counters against the trusted
+            # sidecar's ledger. Two parties, two independent counts. Everything else the compile has to
+            # prove — the per-call reservation arithmetic, the budget ceilings, the write-set shape —
+            # is a property of the record, checked by the record, once.
             if (
                 runner.input_bundle_sha256 != bundle.bundle_sha256
-                or runner.parent_program_sha256 != parent.program_sha256
-                or runner.proxy_grant_sha256 != proxy_grant.grant_sha256
-                or runner.compiler_source_sha256 != source_sha
-                or runner.proxy_source_sha256 != proxy_source_sha
-                or runner.compiler_lock_sha256 != COMPILER_DEPENDENCY_LOCK_SHA256
-                or runner.sandbox_policy_sha256 != sandbox_policy.policy_sha256
-                or runner.task_endpoint_identity_sha256 != task_binding.endpoint.binding_sha256
-                or runner.reflection_endpoint_identity_sha256 != reflection_binding.endpoint.binding_sha256
-                or runner.metric_judge_endpoint_identity_sha256 != metric_judge_binding.endpoint.binding_sha256
+                or runner.container_source_sha256 != source_sha
+                or runner.container_proxy_source_sha256 != proxy_source_sha
                 or patch.parent_program_sha256 != parent.program_sha256
                 or proxy_execution.grant_sha256 != proxy_grant.grant_sha256
                 or proxy_execution.task_model_calls != runner.task_model_calls
                 or proxy_execution.reflection_model_calls != runner.reflection_model_calls
                 or proxy_execution.metric_judge_model_calls != runner.metric_judge_model_calls
-                or runner.metric_judge_model_calls > runner.metric_judge_attempts
-                or runner.metric_judge_failures > runner.metric_judge_attempts
-                or runner.metric_calls > metric_call_ceiling
                 or proxy_execution.task_cost_microusd != runner.task_cost_microusd
                 or proxy_execution.reflection_cost_microusd != runner.reflection_cost_microusd
                 or proxy_execution.metric_judge_cost_microusd != runner.metric_judge_cost_microusd
                 or proxy_execution.actual_cost_microusd != runner.actual_cost_microusd
-                or proxy_execution.reserved_cost_microusd > budget.max_cost_microusd
-                or proxy_execution.task_failures
-                or proxy_execution.reflection_failures
                 or proxy_execution.metric_judge_failures > runner.metric_judge_failures
                 or len(proxy_execution.calls)
                 < runner.task_model_calls + runner.reflection_model_calls + runner.metric_judge_model_calls
-                or any(
-                    (call.role != "metric_judge" and (not call.provider_invoked or call.error_code is not None))
-                    or (call.provider_invoked and call.total_tokens <= 0)
-                    or call.reserved_cost_microusd > budget.max_call_cost_microusd
-                    or call.provider_cost_microusd > call.reserved_cost_microusd
-                    for call in proxy_execution.calls
-                )
             ):
                 raise ValueError("news_learning_compile_receipt_cross_binding_mismatch")
-            optimizer_payload = {
-                "runner_optimizer_config": runner.optimizer_config,
-                "proxy_grant": proxy_grant.model_dump(mode="json"),
-                "proxy_execution": proxy_execution.model_dump(mode="json"),
-                "input_bundle_sha256": bundle.bundle_sha256,
-            }
-            receipts = CompileReceiptChain.issue(
-                (
-                    ContentAddressedCompileReceipt.issue("corpus", bundle.corpus),
-                    ContentAddressedCompileReceipt.issue("metric", runner.metric),
-                    ContentAddressedCompileReceipt.issue("optimizer_config", optimizer_payload),
-                    ContentAddressedCompileReceipt.issue("trajectory", runner.trajectory),
-                    ContentAddressedCompileReceipt.issue("checkpoint", runner.checkpoint),
-                    ContentAddressedCompileReceipt.issue("sandbox_launch", launched.launch_receipt),
-                    ContentAddressedCompileReceipt.issue("patch", patch),
-                )
-            )
-            provenance = OptimizerCompileProvenanceV3(
-                development_dataset_sha=bundle.corpus.development_dataset_sha,
-                learning_epoch="program_v7",
-                learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
-                projection_schema_id=bundle.corpus.projection_schema_id,
-                metric_sha256=canonical_sha(runner.metric),
-                optimizer_config_sha256=canonical_sha(optimizer_payload),
-                seed=budget.seed,
-                max_metric_calls=budget.max_metric_calls,
-                max_task_model_calls=budget.max_task_model_calls,
-                max_reflection_model_calls=budget.max_reflection_model_calls,
-                max_metric_judge_model_calls=budget.max_metric_judge_model_calls,
-                max_cost_microusd=budget.max_cost_microusd,
-                max_call_cost_microusd=budget.max_call_cost_microusd,
-                metric_calls=runner.metric_calls,
-                task_model_calls=runner.task_model_calls,
-                reflection_model_calls=runner.reflection_model_calls,
-                metric_judge_attempts=runner.metric_judge_attempts,
-                metric_judge_model_calls=runner.metric_judge_model_calls,
-                metric_judge_failures=runner.metric_judge_failures,
-                task_cost_microusd=runner.task_cost_microusd,
-                reflection_cost_microusd=runner.reflection_cost_microusd,
-                metric_judge_cost_microusd=runner.metric_judge_cost_microusd,
-                actual_cost_microusd=runner.actual_cost_microusd,
-                trajectory_sha256=canonical_sha(runner.trajectory),
-                checkpoint_sha256=canonical_sha(runner.checkpoint),
+            record = CompileRecordV1.issue(
                 parent_program_sha256=parent.program_sha256,
-                development_dataset_payload_sha256=bundle.corpus.development_dataset_payload_sha256,
-                case_root_sha256=bundle.corpus.case_root_sha256,
-                cluster_root_sha256=bundle.corpus.cluster_root_sha256,
-                episode_projection_root_sha256=bundle.corpus.episode_projection_root_sha256,
+                program_sha256=apply_trusted_program_patch(parent, patch).program_sha256,
+                development_dataset_sha256=bundle.corpus.development_dataset_sha,
+                learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
+                review_rubric_version=bundle.corpus.review_rubric_version,
                 episode_count=bundle.corpus.episode_count,
-                patch_sha256=canonical_sha(patch.model_dump(mode="json")),
-                receipt_payload_root_sha256=receipts.receipt_payload_root_sha256,
-                sandbox_launch_receipt_sha256=launched.launch_receipt.launch_receipt_sha256,
                 target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
-                task_endpoint_identity_sha256=task_binding.endpoint.binding_sha256,
-                reflection_endpoint_identity_sha256=reflection_binding.endpoint.binding_sha256,
-                metric_judge_endpoint_identity_sha256=metric_judge_binding.endpoint.binding_sha256,
-                compiler_source_sha256=source_sha,
-                compiler_lock_sha256=COMPILER_DEPENDENCY_LOCK_SHA256,
-                sandbox_policy_sha256=sandbox_policy.policy_sha256,
+                task_model=task_binding,
+                reflection_model=reflection_binding,
+                metric_judge_model=metric_judge_binding,
+                optimizer=runner.optimizer_config,
+                metric=runner.metric,
+                split=runner.split,
+                retrieval=runner.retrieval,
+                budget=budget,
+                tariff=tariff,
+                usage=proxy_execution,
+                metric_calls=runner.metric_calls,
+                metric_judge_attempts=runner.metric_judge_attempts,
+                sandbox=launched.launch_receipt,
+                compiler_build=CompilerBuildAttestation(
+                    compiler_image_digest=compiler_image,
+                    proxy_image_digest=compiler_image,
+                    host_source_sha256=source_sha,
+                    host_proxy_source_sha256=proxy_source_sha,
+                    host_lock_sha256=COMPILER_DEPENDENCY_LOCK_SHA256,
+                    image_source_sha256=launched.launch_receipt.image_preflight["compiler_source_sha256"],
+                    image_proxy_source_sha256=launched.launch_receipt.image_preflight["proxy_source_sha256"],
+                    image_lock_sha256=launched.launch_receipt.image_preflight["compiler_lock_sha256"],
+                    container_source_sha256=runner.container_source_sha256,
+                    container_proxy_source_sha256=runner.container_proxy_source_sha256,
+                ),
+                patch=patch.model_dump(mode="json"),
+                failure_cluster_ids=runner.failure_cluster_ids,
+                target_dimensions=runner.target_dimensions,
+                trajectory_blob_sha256=None,
+                checkpoint_blob_sha256=None,
+                created_at_ms=compiled_at_ms,
             )
             candidate_artifact = apply_trusted_program_patch(parent, patch)
             artifact_directory = write_program_candidate_artifact(
                 candidate_artifact,
                 artifact_root=Path(str(args.artifact_root)),
             )
-            machine_diff = program_machine_diff(parent, candidate_artifact)
+            if record.program_sha256 != candidate_artifact.program_sha256:
+                raise ValueError("news_learning_compile_receipt_cross_binding_mismatch")
             payload = {
                 "target": "program",
                 "hypothesis": "Repair the accepted program_v7 failure clusters with bounded DSPy GEPA.",
                 "target_dimensions": list(runner.target_dimensions),
                 "failure_cluster_ids": list(runner.failure_cluster_ids),
                 "guardrails": [
-                    "fixed_factory_v4",
+                    "fixed_factory_v6",
                     "development_only",
                     "holdout_unseen",
                     "no_dynamic_code",
                     "no_auto_promotion",
                 ],
                 "generator_kind": "model",
-                "generator_prompt_sha": provenance.metric_sha256,
-                "generator_model_sha": canonical_sha(
-                    {
-                        "task": task_binding.binding_sha256,
-                        "reflection": reflection_binding.binding_sha256,
-                        "metric_judge": metric_judge_binding.binding_sha256,
-                        "proxy_config": proxy_secrets.secret_free_config_sha256,
-                        "tariff": proxy_secrets.tariff_sha256,
-                    }
-                ),
-                "generator_execution_sha": canonical_sha(provenance.model_dump(mode="json")),
-                "candidate_patch_sha": provenance.patch_sha256,
+                # One record, one identity. The receipt used to carry a prompt digest, a model digest and
+                # an execution digest that between them re-hashed the same compile three times.
+                "generator_execution_sha": record.compile_record_sha256,
                 "program_parent_sha256": parent.program_sha256,
                 "program_sha256": candidate_artifact.program_sha256,
                 "program_artifact_path": artifact_directory,
-                "program_machine_diff": machine_diff,
-                "program_patch": patch.model_dump(mode="json"),
-                "compile_provenance": provenance.model_dump(mode="json"),
-                "compile_receipt_chain": receipts.model_dump(mode="json"),
+                "compile_record_sha256": record.compile_record_sha256,
+                "compile_record": record.model_dump(mode="json"),
+                # Operator-facing only, derived from the two artifacts rather than trusted: which advisory
+                # this compile actually rewrote.
+                "changed_predictors": list(changed_predictors(parent, candidate_artifact)),
             }
             _write_json(str(args.out), payload)
             return 0, {
@@ -422,23 +374,16 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "data": {
                     "path": args.out,
                     "program_sha256": candidate_artifact.program_sha256,
-                    "candidate_patch_sha": provenance.patch_sha256,
                     "artifact_directory": artifact_directory,
-                    "compile_receipt_root_sha256": receipts.receipt_payload_root_sha256,
+                    "compile_record_sha256": record.compile_record_sha256,
                 },
             }
 
         if action == "propose":
-            from tracefold.news.learning.compiler.security import (
-                CompileReceiptChain,
-                OptimizerCompileProvenanceV3,
-                ProgramMachineDiffV4,
-                validate_compile_receipt_chain_v3,
-            )
+            from tracefold.news.learning.compiler.security import CompileRecordV1, validate_compile_record
             from tracefold.news.learning.compiler.trusted import (
                 ProgramStrategyPatchV1,
                 load_program_artifact,
-                program_machine_diff,
                 reapply_exact_candidate,
             )
 
@@ -447,7 +392,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             candidate_arm = stable
             program_artifact_path: str | None = None
             program_fields: dict[str, Any] = {}
-            compile_receipt_chain_payload: dict[str, Any] | None = None
+            compile_record_payload: dict[str, Any] | None = None
             if target == "program":
                 program_artifact_path = str(spec.get("program_artifact_path") or "")
                 artifact = load_program_artifact(program_artifact_path)
@@ -456,23 +401,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 parent_artifact = load_program_artifact()
                 if parent_artifact.program_sha256 != stable.program_sha256:
                     raise ValueError("news_learning_program_parent_mismatch")
-                expected_diff = ProgramMachineDiffV4.model_validate(program_machine_diff(parent_artifact, artifact))
-                provided_diff = ProgramMachineDiffV4.model_validate(spec.get("program_machine_diff"))
-                if provided_diff.model_dump(mode="json") != expected_diff.model_dump(mode="json"):
-                    raise ValueError("news_learning_program_machine_diff_mismatch")
-                compile_provenance = OptimizerCompileProvenanceV3.model_validate(spec.get("compile_provenance"))
-                if compile_provenance.parent_program_sha256 != parent_artifact.program_sha256:
-                    raise ValueError("news_learning_program_compile_provenance_mismatch")
-                if str(args.development) != compile_provenance.development_dataset_sha:
-                    raise ValueError("news_learning_program_development_dataset_mismatch")
-                patch = ProgramStrategyPatchV1.model_validate(spec.get("program_patch"))
-                candidate_patch_sha = canonical_sha(patch.model_dump(mode="json"))
-                chain = CompileReceiptChain.model_validate(spec.get("compile_receipt_chain"))
-                validate_compile_receipt_chain_v3(
-                    chain,
-                    provenance=compile_provenance,
-                    patch_sha256=candidate_patch_sha,
+                record = validate_compile_record(
+                    CompileRecordV1.model_validate(spec.get("compile_record")),
                     parent_program_sha256=parent_artifact.program_sha256,
+                    program_sha256=artifact.program_sha256,
+                    development_dataset_sha256=str(args.development),
                     target_runtime_manifest_sha256=stable.runtime_model_bindings_sha256,
                 )
                 with postgres_connection(settings, role="serve") as export_conn:
@@ -481,21 +414,21 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                         stable=stable,
                         judges={},
                     ).development_compile_export(str(args.development))
-                if compile_export.dataset_sha != compile_provenance.development_dataset_sha:
+                if compile_export.dataset_sha != record.development_dataset_sha256:
                     raise ValueError("news_learning_program_development_reexport_mismatch")
+                # The record carries the write-set; rebuilding the candidate from it is what proves the
+                # artifact on disk is the one that compile produced.
+                patch = ProgramStrategyPatchV1.model_validate(record.patch)
                 reapply_exact_candidate(parent_artifact, patch, artifact)
                 arm_payload = stable.model_dump(mode="json")
                 arm_payload.update(program_sha256=artifact.program_sha256)
                 candidate_arm = type(stable).model_validate(arm_payload)
-                if str(spec.get("candidate_patch_sha") or "") != candidate_patch_sha:
-                    raise ValueError("news_learning_program_patch_sha_mismatch")
                 program_fields = {
                     "program_parent_sha256": stable.program_sha256,
                     "program_candidate_sha256": artifact.program_sha256,
-                    "program_machine_diff": expected_diff.model_dump(mode="json"),
-                    "compile_provenance": compile_provenance.model_dump(mode="json"),
+                    "compile_record_sha256": record.compile_record_sha256,
                 }
-                compile_receipt_chain_payload = chain.model_dump(mode="json")
+                compile_record_payload = record.model_dump(mode="json")
             elif target == "policy":
                 if str(spec.get("parent_program_sha256") or "") != stable.program_sha256:
                     raise ValueError("news_learning_policy_parent_program_mismatch")
@@ -504,8 +437,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 arm_payload = stable.model_dump(mode="json")
                 arm_payload.update(policy=policy, policy_sha256=canonical_sha(policy))
                 candidate_arm = type(stable).model_validate(arm_payload)
-                patch_payload: Mapping[str, Any] = {"policy": dict(spec.get("policy") or {})}
-                candidate_patch_sha = canonical_sha(patch_payload)
             else:
                 raise ValueError("candidate_kind_unsupported")
             dimensions = tuple(str(value) for value in spec.get("target_dimensions") or ())
@@ -530,11 +461,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     development_dataset_sha=str(args.development),
                     failure_cluster_ids=tuple(str(value) for value in spec.get("failure_cluster_ids") or ()),
                     generator_kind=generator_kind,
-                    generator_prompt_sha=spec.get("generator_prompt_sha"),
-                    generator_model_sha=spec.get("generator_model_sha"),
                     generator_execution_sha=spec.get("generator_execution_sha"),
                     registered_at_ms=registered_at_ms,
-                    candidate_patch_sha=candidate_patch_sha,
                     declared_target_dimensions=dimensions,
                     guardrails=tuple(str(value) for value in spec.get("guardrails") or ()),
                     **program_fields,
@@ -549,11 +477,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     proposal_receipt=receipt,
                 )
                 proposal_payload = receipt.model_dump(mode="json")
-                if compile_receipt_chain_payload is not None:
+                if compile_record_payload is not None:
                     _insert_learning_artifact(
                         conn,
-                        kind="compile_receipt",
-                        payload=compile_receipt_chain_payload,
+                        kind="compile_record",
+                        payload=compile_record_payload,
                         parent_sha=str(args.development),
                         created_at_ms=registered_at_ms,
                     )

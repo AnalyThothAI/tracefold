@@ -33,7 +33,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from ...artifact_identity import canonical_json, canonical_sha
 from .proxy import (
     CompilerModelProxyGrant,
-    CompilerProxyExecutionReceipt,
     CompilerProxyReadyReceipt,
     CompilerProxySecretConfig,
 )
@@ -42,7 +41,7 @@ from .sandbox import (
     CompilerSandboxPolicy,
     verify_sandbox_output_directory,
 )
-from .security import CompileInputBundle
+from .security import CompileInputBundle, CompilerProxyExecution
 from .source_identity import compiler_source_sha256, proxy_source_sha256
 
 RUNNER_MODULE: Literal["tracefold.news.learning.compiler.runner"] = "tracefold.news.learning.compiler.runner"
@@ -74,7 +73,7 @@ class CompilerLauncherResult(_ExactModel):
     patch_document: str = Field(repr=False)
     runner_receipts_document: str = Field(repr=False)
     output_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    proxy_execution_receipt: CompilerProxyExecutionReceipt
+    proxy_execution_receipt: CompilerProxyExecution
     launch_receipt: CompilerSandboxLaunchReceipt
 
 
@@ -144,7 +143,6 @@ class ProgramCompilerLauncher:
             or proxy_secret_config.reflection.binding("reflection") != bundle.reflection
             or proxy_secret_config.metric_judge.binding("metric_judge") != bundle.metric_judge
             or proxy_secret_config.secret_free_config_sha256 != bundle.proxy_config_sha256
-            or proxy_secret_config.tariff_sha256 != bundle.tariff_sha256
             or proxy_secret_config.tariff != bundle.proxy_tariff
             or grant.max_call_cost_microusd != bundle.budget.max_call_cost_microusd
             or bundle.compiler_source_sha256 != self._compiler_source_sha256
@@ -176,7 +174,6 @@ class ProgramCompilerLauncher:
                 staging=staging,
                 container_name=preflight_name,
             )
-            image_preflight_sha = canonical_sha(image_preflight_payload)
             paths = _prepare_staging(
                 staging,
                 canonical_input=canonical_input,
@@ -197,12 +194,11 @@ class ProgramCompilerLauncher:
                 "ambient_forwarded": False,
                 "image_environment_cleared_before_package_import": True,
             }
-            environment_sha = canonical_sha(environment_payload)
+            socket_volume_sha = canonical_sha({"name": volume_name})
             socket_volume_payload = {
                 "schema": "tracefold.news.compiler_socket_volume.v2",
                 "name": volume_name,
             }
-            socket_volume_sha = canonical_sha(socket_volume_payload)
             mount_manifest_payload = {
                 "schema": "tracefold.news.compiler_mount_manifest.v2",
                 "input_bundle_sha256": bundle_sha,
@@ -220,7 +216,6 @@ class ProgramCompilerLauncher:
                 "docker_socket_mounted": False,
                 "host_home_mounted": False,
             }
-            mount_manifest_sha = canonical_sha(mount_manifest_payload)
             egress_manifest_payload = {
                 "schema": "tracefold.news.compiler_egress_manifest.v2",
                 "compiler_network": "none",
@@ -229,7 +224,6 @@ class ProgramCompilerLauncher:
                 "compiler_other_network_allowed": False,
                 "trusted_proxy_egress": True,
             }
-            egress_manifest_sha = canonical_sha(egress_manifest_payload)
             init_command = self._volume_init_command(volume_name=volume_name, container_name=init_name)
             proxy_command = self._proxy_command(
                 paths=paths,
@@ -248,16 +242,16 @@ class ProgramCompilerLauncher:
                 "proxy": list(proxy_command),
                 "compiler": list(compiler_command),
             }
-            boundary_command_root_sha = canonical_sha(boundary_command_payload)
             compiler_cid: str | None = None
             proxy_cid: str | None = None
             compiler_removed = proxy_removed = init_removed = volume_removed = network_removed = False
             compiler_started = proxy_started = False
             ready: CompilerProxyReadyReceipt | None = None
-            proxy_execution: CompilerProxyExecutionReceipt | None = None
+            proxy_execution: CompilerProxyExecution | None = None
             termination: Literal["succeeded", "failed", "timed_out", "killed"] = "failed"
             exit_code: int | None = None
             failure_code = "news_program_compile_sandbox_failed"
+            boundary_cause: BaseException | None = None
             output_root_sha: str | None = None
             network_inspect_payload: dict[str, Any] | None = None
             volume_inspect_payload: dict[str, Any] | None = None
@@ -354,9 +348,14 @@ class ProgramCompilerLauncher:
             except subprocess.TimeoutExpired:
                 termination = "timed_out"
                 failure_code = "news_program_compile_proxy_ready_timed_out"
-            except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+            except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
                 termination = "failed"
-                failure_code = "news_program_compile_launcher_boundary_failed"
+                # Keep the cause. This handler is deliberately broad — nothing about a docker boundary
+                # failure should escape as an arbitrary exception — but collapsing every one of them to a
+                # single code left a real container failure undiagnosable from the receipt alone, which is
+                # exactly what the smoke lane hit under CPU contention.
+                failure_code = f"news_program_compile_launcher_boundary_failed:{type(exc).__name__}"
+                boundary_cause = exc
             finally:
                 compiler_cid = compiler_cid or _optional_container_id(paths.compiler_cid)
                 proxy_cid = proxy_cid or _optional_container_id(paths.proxy_cid)
@@ -392,12 +391,6 @@ class ProgramCompilerLauncher:
             usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
             output_files = tuple(paths.output.iterdir())
             output_bytes = sum(child.lstat().st_size for child in output_files if stat.S_ISREG(child.lstat().st_mode))
-            ready_hash = ready.ready_sha256 if ready is not None else canonical_sha({"status": "proxy_not_ready"})
-            execution_hash = (
-                proxy_execution.receipt_sha256
-                if proxy_execution is not None
-                else canonical_sha({"status": "proxy_execution_unavailable"})
-            )
             boundary_inspect_payload = {
                 "schema": "tracefold.news.compiler_boundary_inspections.v2",
                 "image_preflight": image_preflight_payload,
@@ -406,7 +399,6 @@ class ProgramCompilerLauncher:
                 "proxy": proxy_inspect_payload,
                 "compiler": compiler_inspect_payload,
             }
-            boundary_inspect_root_sha = canonical_sha(boundary_inspect_payload)
             boundary_actuals_available = all(
                 payload is not None
                 for payload in (
@@ -428,38 +420,20 @@ class ProgramCompilerLauncher:
                 "socket_volume_removed": volume_removed,
                 "egress_network_removed": network_removed,
             }
-            lifecycle_sha = canonical_sha(lifecycle_payload)
             receipt = CompilerSandboxLaunchReceipt.issue(
-                policy_payload=self._policy.model_dump(mode="json"),
-                policy_sha256=self._policy.policy_sha256,
+                policy=self._policy.model_dump(mode="json"),
                 input_bundle_sha256=bundle_sha,
-                compiler_source_sha256=self._compiler_source_sha256,
-                compiler_lock_sha256=self._compiler_lock_sha256,
-                image_preflight_payload=image_preflight_payload,
-                image_preflight_sha256=image_preflight_sha,
+                image_preflight=image_preflight_payload,
                 compiler_image_digest=self._compiler_image_digest,
                 proxy_image_digest=self._compiler_image_digest,
-                proxy_source_sha256=self._proxy_source_sha256,
-                proxy_identity_sha256=grant.grant_sha256,
-                proxy_config_sha256=grant.proxy_config_sha256,
-                proxy_tariff_sha256=grant.tariff_sha256,
-                proxy_ready_receipt_sha256=ready_hash,
-                proxy_execution_receipt_sha256=execution_hash,
-                socket_volume_payload=socket_volume_payload,
-                socket_volume_sha256=socket_volume_sha,
-                lifecycle_payload=lifecycle_payload,
-                lifecycle_sha256=lifecycle_sha,
-                boundary_command_payload=boundary_command_payload,
-                boundary_command_root_sha256=boundary_command_root_sha,
-                boundary_inspect_payload=boundary_inspect_payload,
-                boundary_inspect_root_sha256=boundary_inspect_root_sha,
+                socket_volume=socket_volume_payload,
+                lifecycle=lifecycle_payload,
+                boundary_command=boundary_command_payload,
+                boundary_inspect=boundary_inspect_payload,
                 boundary_actuals_available=boundary_actuals_available,
-                environment_payload=environment_payload,
-                environment_sha256=environment_sha,
-                mount_manifest_payload=mount_manifest_payload,
-                mount_manifest_sha256=mount_manifest_sha,
-                egress_manifest_payload=egress_manifest_payload,
-                egress_manifest_sha256=egress_manifest_sha,
+                environment=environment_payload,
+                mount_manifest=mount_manifest_payload,
+                egress_manifest=egress_manifest_payload,
                 holdout_mounted=False,
                 db_credentials_present=False,
                 ambient_credentials_present=False,
@@ -505,7 +479,7 @@ class ProgramCompilerLauncher:
                 )
                 or not all((compiler_removed, proxy_removed, init_removed, volume_removed, network_removed))
             ):
-                raise CompilerSandboxFailure(failure_code, receipt=receipt)
+                raise CompilerSandboxFailure(failure_code, receipt=receipt) from boundary_cause
             return CompilerLauncherResult(
                 patch_document=(paths.output / "patch.json").read_text(encoding="utf-8"),
                 runner_receipts_document=(paths.output / "runner_receipts.json").read_text(encoding="utf-8"),
@@ -781,7 +755,6 @@ def _wait_for_proxy_ready(path: Path, *, grant: CompilerModelProxyGrant) -> Comp
         if (
             ready.grant_sha256 != grant.grant_sha256
             or ready.proxy_config_sha256 != grant.proxy_config_sha256
-            or ready.tariff_sha256 != grant.tariff_sha256
             or ready.proxy_source_sha256 != grant.proxy_source_sha256
         ):
             raise ValueError("news_program_compile_proxy_ready_receipt_mismatch")
@@ -789,12 +762,12 @@ def _wait_for_proxy_ready(path: Path, *, grant: CompilerModelProxyGrant) -> Comp
     raise subprocess.TimeoutExpired("compiler-proxy-ready", _READY_TIMEOUT_SECONDS)
 
 
-def _load_proxy_execution(path: Path, *, grant: CompilerModelProxyGrant) -> CompilerProxyExecutionReceipt:
+def _load_proxy_execution(path: Path, *, grant: CompilerModelProxyGrant) -> CompilerProxyExecution:
     try:
-        receipt = CompilerProxyExecutionReceipt.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        receipt = CompilerProxyExecution.model_validate(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, TypeError, ValueError) as exc:
         raise ValueError("news_program_compile_proxy_execution_receipt_invalid") from exc
-    if receipt.grant_sha256 != grant.grant_sha256 or receipt.tariff_sha256 != grant.tariff_sha256:
+    if receipt.grant_sha256 != grant.grant_sha256:
         raise ValueError("news_program_compile_proxy_execution_receipt_mismatch")
     return receipt
 

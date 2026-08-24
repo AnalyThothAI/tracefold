@@ -22,7 +22,11 @@ from tracefold.news.learning.compiler.root import (
     _FeedbackCompileProgram,
     build_compile_lm,
 )
-from tracefold.news.learning.compiler.security import CompilerProxyTariff
+from tracefold.news.learning.compiler.security import (
+    REFLECTION_TIMEOUT_SECONDS,
+    CompilerProxyTariff,
+    ModelExecutionIdentity,
+)
 from tracefold.news.learning.judge import CardEquivalenceJudge
 from tracefold.news.learning.metric import DevelopmentEpisode
 from tracefold.news.learning.proposer import RulePackAwareProposer
@@ -81,19 +85,34 @@ _CARD = {"headline_zh": "特斯拉发布 Cybercab", "why_zh": "新车型进入�
 
 
 class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
-    """Answers both Predictors and the reflection call without a provider."""
+    """Answers both Predictors and the reflection call without a provider.
+
+    It carries the same `tracefold_compiler_endpoint_identity` stamp `build_compile_lm` puts on a real
+    route: `ProgramCompiler` refuses an unstamped LM at construction, because the role contract this
+    fixture claims to run under is precisely what an identity attests.
+    """
 
     def __init__(self, model: str, *, reflection: bool = False) -> None:
         super().__init__(model=model)
         self.cache = False
         self.num_retries = 0
+        api_base = "http://scripted.invalid/v1"
         self.kwargs = {
             "temperature": 1.0 if reflection else 0,
             "max_tokens": REFLECTION_MAX_TOKENS,
-            "api_base": "http://scripted.invalid/v1",
+            "api_base": api_base,
         }
         self.calls: list[str] = []
         self._reflection = reflection
+        self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
+            role="reflection" if reflection else "task",
+            model=model,
+            api_base=api_base,
+            max_output_tokens=REFLECTION_MAX_TOKENS if reflection else 1_200,
+            timeout_seconds=REFLECTION_TIMEOUT_SECONDS if reflection else 20.0,
+            temperature=1.0 if reflection else 0.0,
+            model_kwargs={},
+        )
 
     def observe_exact_call(self):  # mirrors ExactMetadataDspyLM's seam
         from contextlib import contextmanager

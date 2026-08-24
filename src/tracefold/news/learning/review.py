@@ -945,7 +945,7 @@ class ReviewDesk:
                     "development_dataset_sha": manifest.get("development_dataset_sha"),
                     "learning_epoch": learning_epoch,
                     "evidence_disposition": evidence_disposition,
-                    "candidate_patch_sha": receipt.get("candidate_patch_sha"),
+                    "compile_record_sha256": receipt.get("compile_record_sha256"),
                     "exact_diff": payload.get("exact_diff") if reveal_diff else None,
                     "diff_withheld_reason": None if reveal_diff else "hidden_validation_in_progress",
                     "created_at_ms": int(row["created_at_ms"]),

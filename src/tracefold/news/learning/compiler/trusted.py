@@ -72,30 +72,6 @@ def parse_program_patch(payload: Mapping[str, Any]) -> ProgramStrategyPatchV1:
     return ProgramStrategyPatchV1.model_validate(payload)
 
 
-def program_machine_diff(
-    parent: ProgramStrategyArtifactV1,
-    candidate: ProgramStrategyArtifactV1,
-) -> dict[str, Any]:
-    """Prove the compile changed nothing but the advisory instructions, and say which ones.
-
-    The returned mapping is the persisted receipt: `factory_id` is the whole immutable surface, and the two
-    Program roots already commit to the instruction bytes. `changed_predictors` is returned beside it for
-    the operator and is deliberately not part of the receipt — nothing that reads a stored candidate holds
-    the instructions, so it could never be checked there.
-    """
-
-    if candidate.factory_id != parent.factory_id or candidate.schema_version != parent.schema_version:
-        raise ValueError("news_program_compile_machine_diff_immutable_change")
-    if not changed_predictors(parent, candidate):
-        raise ValueError("news_program_compile_machine_diff_empty")
-    return {
-        "schema_version": "tracefold.news.program_machine_diff.v4",
-        "factory_id": parent.factory_id,
-        "parent_program_sha256": parent.program_sha256,
-        "candidate_program_sha256": candidate.program_sha256,
-    }
-
-
 def changed_predictors(
     parent: ProgramStrategyArtifactV1,
     candidate: ProgramStrategyArtifactV1,
@@ -164,7 +140,6 @@ __all__ = [
     "load_exact_stable_program",
     "load_program_artifact",
     "parse_program_patch",
-    "program_machine_diff",
     "reapply_exact_candidate",
     "write_program_candidate_artifact",
 ]

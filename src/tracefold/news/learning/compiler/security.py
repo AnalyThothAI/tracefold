@@ -18,23 +18,22 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...artifact_identity import canonical_sha
+from .sandbox import CompilerSandboxLaunchReceipt
 
 COMPILER_INPUT_SCHEMA: Literal["tracefold.news.compile_input_bundle.v3"] = "tracefold.news.compile_input_bundle.v3"
 COMPILER_CORPUS_SCHEMA: Literal["tracefold.news.compile_corpus_receipt.v3"] = "tracefold.news.compile_corpus_receipt.v3"
-COMPILER_ENDPOINT_IDENTITY_SCHEMA: Literal["tracefold.news.compiler_endpoint_identity.v3"] = (
-    "tracefold.news.compiler_endpoint_identity.v3"
+MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
+    "tracefold.news.model_execution_identity.v1"
 )
-COMPILER_ROLE_BINDING_SCHEMA: Literal["tracefold.news.compiler_role_binding.v3"] = (
-    "tracefold.news.compiler_role_binding.v3"
+COMPILER_BUILD_ATTESTATION_SCHEMA: Literal["tracefold.news.compiler_build_attestation.v1"] = (
+    "tracefold.news.compiler_build_attestation.v1"
 )
-COMPILER_RECEIPT_SCHEMA: Literal["tracefold.news.compile_receipt_payload.v3"] = (
-    "tracefold.news.compile_receipt_payload.v3"
+COMPILE_RECORD_SCHEMA: Literal["news_program_compile_record_v1"] = "news_program_compile_record_v1"
+PROXY_EXECUTION_SCHEMA: Literal["tracefold.news.compiler_proxy_execution.v4"] = (
+    "tracefold.news.compiler_proxy_execution.v4"
 )
-COMPILER_RECEIPT_CHAIN_SCHEMA: Literal["tracefold.news.compile_receipt_chain.v3"] = (
-    "tracefold.news.compile_receipt_chain.v3"
-)
-COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipts.v3"] = (
-    "tracefold.news.compiler_runner_receipts.v3"
+COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipts.v4"] = (
+    "tracefold.news.compiler_runner_receipts.v4"
 )
 LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 # v3 (#150): the projection now carries `policy_values`/`policy_sha256`/`policy_source`, and the metric
@@ -47,6 +46,7 @@ COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_e
 )
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
+_IMAGE_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
 CompilerRole = Literal["task", "reflection", "metric_judge"]
 REFLECTION_MAX_TOKENS = 32_000
 REFLECTION_TIMEOUT_SECONDS = 300.0
@@ -96,120 +96,61 @@ class _ExactModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class CompilerEndpointIdentity(_ExactModel):
-    """Secret-free identity of one task or reflection compiler endpoint."""
+class ModelExecutionIdentity(_ExactModel):
+    """One compiler role's complete, secret-free execution contract.
 
-    schema_version: Literal["tracefold.news.compiler_endpoint_identity.v3"] = COMPILER_ENDPOINT_IDENTITY_SCHEMA
+    This replaced a three-level digest chain — `endpoint_sha256` -> `model_sha256` -> `binding_sha256`,
+    and then a fourth `binding_sha256` over the whole role config. Only the first addressed anything the
+    record cannot carry: the endpoint URL, which holds the host and travels beside a credential. The rest
+    hashed values printed immediately below them, so a verifier that had the object never needed them and
+    a verifier that did not have the object could not use them.
+    """
+
+    schema_version: Literal["tracefold.news.model_execution_identity.v1"] = MODEL_EXECUTION_IDENTITY_SCHEMA
+    role: CompilerRole
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    endpoint_sha256: str = Field(pattern=_SHA256_PATTERN)
-    model_sha256: str = Field(pattern=_SHA256_PATTERN)
-    binding_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-    @classmethod
-    def issue(cls, *, model: str, api_base: str) -> CompilerEndpointIdentity:
-        normalized_model = str(model).strip()
-        if not normalized_model:
-            raise ValueError("news_program_compile_model_identity_unavailable")
-        provider = normalized_model.split("/", maxsplit=1)[0] if "/" in normalized_model else "unknown"
-        canonical_endpoint = _canonical_endpoint(api_base)
-        endpoint_sha = canonical_sha(
-            {
-                "identity_schema": COMPILER_ENDPOINT_IDENTITY_SCHEMA,
-                "canonical_endpoint": canonical_endpoint,
-            }
-        )
-        model_sha = canonical_sha(
-            {
-                "identity_schema": COMPILER_ENDPOINT_IDENTITY_SCHEMA,
-                "provider": provider,
-                "model": normalized_model,
-                "endpoint_sha256": endpoint_sha,
-            }
-        )
-        return cls(
-            provider=provider,
-            model=normalized_model,
-            endpoint_sha256=endpoint_sha,
-            model_sha256=model_sha,
-            binding_sha256=canonical_sha(
-                {
-                    "identity_schema": COMPILER_ENDPOINT_IDENTITY_SCHEMA,
-                    "provider": provider,
-                    "model": normalized_model,
-                    "model_sha256": model_sha,
-                }
-            ),
-        )
-
-    @model_validator(mode="after")
-    def _identity_matches(self) -> CompilerEndpointIdentity:
-        expected_model = canonical_sha(
-            {
-                "identity_schema": self.schema_version,
-                "provider": self.provider,
-                "model": self.model,
-                "endpoint_sha256": self.endpoint_sha256,
-            }
-        )
-        expected_binding = canonical_sha(
-            {
-                "identity_schema": self.schema_version,
-                "provider": self.provider,
-                "model": self.model,
-                "model_sha256": self.model_sha256,
-            }
-        )
-        if self.model_sha256 != expected_model or self.binding_sha256 != expected_binding:
-            raise ValueError("news_program_compile_endpoint_identity_mismatch")
-        return self
-
-
-class CompilerRoleBindingV3(_ExactModel):
-    """Secret-free, content-addressed execution contract for one compiler role."""
-
-    schema_version: Literal["tracefold.news.compiler_role_binding.v3"] = COMPILER_ROLE_BINDING_SCHEMA
-    role: CompilerRole
-    endpoint: CompilerEndpointIdentity
+    # The one digest here: the canonical endpoint URL identifies the host a credential is presented to, so
+    # it is fingerprinted rather than stored.
+    endpoint_fingerprint: str = Field(pattern=_SHA256_PATTERN)
     max_output_tokens: int = Field(ge=64, le=32_000)
     timeout_seconds: float = Field(gt=0, le=3_600)
     temperature: float = Field(ge=0, le=2)
-    model_kwargs_sha256: str = Field(pattern=_SHA256_PATTERN)
+    model_kwargs: dict[str, Any] = Field(default_factory=dict)
     adapter: Literal["strict_json", "gepa_reflection"]
     cache: Literal[False] = False
     num_retries: Literal[0] = 0
-    binding_sha256: str = Field(pattern=_SHA256_PATTERN)
 
     @classmethod
     def issue(
         cls,
         *,
         role: CompilerRole,
-        endpoint: CompilerEndpointIdentity,
+        model: str,
+        api_base: str,
         max_output_tokens: int,
         timeout_seconds: float,
         temperature: float,
         model_kwargs: Mapping[str, Any],
-    ) -> CompilerRoleBindingV3:
-        safe_model_kwargs = _model_or_mapping_payload(model_kwargs)
-        values = {
-            "schema_version": COMPILER_ROLE_BINDING_SCHEMA,
-            "role": role,
-            "endpoint": endpoint.model_dump(mode="json"),
-            "max_output_tokens": max_output_tokens,
-            "timeout_seconds": float(timeout_seconds),
-            "temperature": float(temperature),
-            "model_kwargs_sha256": canonical_sha(safe_model_kwargs),
-            "adapter": "gepa_reflection" if role == "reflection" else "strict_json",
-            "cache": False,
-            "num_retries": 0,
-        }
-        return cls(**values, binding_sha256=canonical_sha(values))
+    ) -> ModelExecutionIdentity:
+        normalized_model = str(model).strip()
+        if not normalized_model:
+            raise ValueError("news_program_compile_model_identity_unavailable")
+        provider = normalized_model.split("/", maxsplit=1)[0] if "/" in normalized_model else "unknown"
+        return cls(
+            role=role,
+            provider=provider,
+            model=normalized_model,
+            endpoint_fingerprint=endpoint_fingerprint(api_base),
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=float(timeout_seconds),
+            temperature=float(temperature),
+            model_kwargs=_model_or_mapping_payload(model_kwargs),
+            adapter="gepa_reflection" if role == "reflection" else "strict_json",
+        )
 
     @model_validator(mode="after")
-    def _binding_matches(self) -> CompilerRoleBindingV3:
-        if self.binding_sha256 != canonical_sha(self.model_dump(mode="json", exclude={"binding_sha256"})):
-            raise ValueError("news_program_compile_role_binding_hash_mismatch")
+    def _role_contract_is_exact(self) -> ModelExecutionIdentity:
         if self.role == "task":
             valid = self.temperature == 0 and self.adapter == "strict_json"
         elif self.role == "reflection":
@@ -228,7 +169,19 @@ class CompilerRoleBindingV3(_ExactModel):
             )
         if not valid:
             raise ValueError(f"news_program_compile_{self.role}_role_contract_invalid")
+        _reject_secret_material(self.model_dump(mode="json"), path=f"model_execution_identity.{self.role}")
         return self
+
+
+def endpoint_fingerprint(api_base: str) -> str:
+    """The secret-free identity of one provider endpoint."""
+
+    return canonical_sha(
+        {
+            "identity_schema": MODEL_EXECUTION_IDENTITY_SCHEMA,
+            "canonical_endpoint": _canonical_endpoint(api_base),
+        }
+    )
 
 
 class CompileCorpusReceipt(_ExactModel):
@@ -357,97 +310,146 @@ def gepa_metric_call_ceiling(
     return max_metric_calls + val_count + minibatch
 
 
-class OptimizerCompileProvenanceV3(_ExactModel):
-    """Framework-neutral exact optimizer provenance used by release governance.
+class CompilerBuildAttestation(_ExactModel):
+    """The one place in this chain where two independent parties look at the same thing.
 
-    This mirrors the optimizer-only projection of the Program manifest without
-    importing the Program implementation into ``CandidateEvaluator``.  Unlike
-    the manifest's baseline/candidate union, every candidate field is required.
+    The host computes the source and lock identity of its own tree; it then copies `/app/src/tracefold`
+    and `/app/uv.lock` out of the pinned image and computes them again, before any secret is staged; and
+    the runner recomputes the source identity a third time from inside the running container. Recording
+    all three is not redundancy — each is a different party's answer, and the attestation *is* their
+    agreement. Everything else the compile produces is one party describing itself.
     """
 
-    mode: Literal["optimizer_candidate"] = "optimizer_candidate"
-    development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
-    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
-    learning_epoch_started_at_ms: int = Field(ge=0)
-    projection_schema_id: str = Field(min_length=1)
-    optimizer: Literal["dspy.GEPA@3.3.0/gepa@0.1.1"] = "dspy.GEPA@3.3.0/gepa@0.1.1"
-    dspy_version: Literal["3.3.0"] = "3.3.0"
-    gepa_version: Literal["0.1.1"] = "0.1.1"
-    metric_sha256: str = Field(pattern=_SHA256_PATTERN)
-    optimizer_config_sha256: str = Field(pattern=_SHA256_PATTERN)
-    seed: int = Field(ge=0)
-    max_metric_calls: int = Field(gt=0)
-    max_task_model_calls: int = Field(gt=0)
-    max_reflection_model_calls: int = Field(gt=0)
-    max_metric_judge_model_calls: int = Field(gt=0)
-    max_cost_microusd: int = Field(gt=0)
-    max_call_cost_microusd: int = Field(gt=0)
-    metric_calls: int = Field(ge=0)
-    task_model_calls: int = Field(ge=0)
-    reflection_model_calls: int = Field(ge=0)
-    metric_judge_attempts: int = Field(ge=0)
-    metric_judge_model_calls: int = Field(ge=0)
-    metric_judge_failures: int = Field(ge=0)
-    task_cost_microusd: int = Field(ge=0)
-    reflection_cost_microusd: int = Field(ge=0)
-    metric_judge_cost_microusd: int = Field(ge=0)
-    actual_cost_microusd: int = Field(ge=0)
-    trajectory_sha256: str = Field(pattern=_SHA256_PATTERN)
-    checkpoint_sha256: str = Field(pattern=_SHA256_PATTERN)
-    parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    development_dataset_payload_sha256: str = Field(pattern=_SHA256_PATTERN)
-    case_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    cluster_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    episode_count: int = Field(gt=0)
-    patch_sha256: str = Field(pattern=_SHA256_PATTERN)
-    receipt_payload_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    sandbox_launch_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
-    target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    task_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    reflection_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    metric_judge_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    compiler_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    compiler_lock_sha256: str = Field(pattern=_SHA256_PATTERN)
-    sandbox_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    schema_version: Literal["tracefold.news.compiler_build_attestation.v1"] = COMPILER_BUILD_ATTESTATION_SCHEMA
+    compiler_image_digest: str = Field(pattern=_IMAGE_DIGEST_PATTERN)
+    proxy_image_digest: str = Field(pattern=_IMAGE_DIGEST_PATTERN)
+    host_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    host_proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    host_lock_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_lock_sha256: str = Field(pattern=_SHA256_PATTERN)
+    container_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    container_proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
 
     @model_validator(mode="after")
-    def _budgets_are_exact(self) -> OptimizerCompileProvenanceV3:
+    def _every_party_agrees(self) -> CompilerBuildAttestation:
         if (
-            self.task_model_calls > self.max_task_model_calls
-            or self.reflection_model_calls > self.max_reflection_model_calls
-            or self.metric_judge_model_calls > self.max_metric_judge_model_calls
-            or self.metric_judge_model_calls > self.metric_judge_attempts
-            or self.metric_judge_failures > self.metric_judge_attempts
-            or self.actual_cost_microusd
-            != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
-            or self.actual_cost_microusd > self.max_cost_microusd
-            or self.max_call_cost_microusd > self.max_cost_microusd
+            self.image_source_sha256 != self.host_source_sha256
+            or self.container_source_sha256 != self.host_source_sha256
+            or self.image_proxy_source_sha256 != self.host_proxy_source_sha256
+            or self.container_proxy_source_sha256 != self.host_proxy_source_sha256
+            or self.image_lock_sha256 != self.host_lock_sha256
         ):
-            raise ValueError("news_program_compile_provenance_budget_exceeded")
+            raise ValueError("news_program_compile_build_attestation_mismatch")
         return self
 
 
-class ProgramMachineDiffV4(_ExactModel):
-    """What the compile changed about the immutable surface: by construction, nothing.
+class CompilerProxyCall(_ExactModel):
+    """One trusted server observation of one socket request.
 
-    The predecessor also carried a per-Predictor `changed` flag. Nothing that reads a persisted candidate
-    could falsify it — `CandidateEvaluator` has the two Program roots, not the two instructions — so a
-    receipt claiming the wrong Predictor moved would have been accepted and published as release
-    evidence. A claim no verifier can check is not evidence, so it is not stored; the CLI still derives
-    it for the operator from the artifacts themselves.
+    Defined here rather than beside the socket server because it is a security contract: the proxy
+    sidecar produces it, the host arithmetic verifies it, and the compile record carries it. It has no
+    digest of itself — the record that embeds it is what is content-addressed.
     """
 
-    schema_version: Literal["tracefold.news.program_machine_diff.v4"]
-    factory_id: Literal["tracefold.news.program.factory_v6"]
-    parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    candidate_program_sha256: str = Field(pattern=_SHA256_PATTERN)
+    role: CompilerRole
+    sequence: int = Field(gt=0)
+    # These two address request and response bytes the receipt deliberately does not retain.
+    request_sha256: str = Field(pattern=_SHA256_PATTERN)
+    response_sha256: str = Field(pattern=_SHA256_PATTERN)
+    responding_model: str | None = None
+    provider_invoked: bool
+    request_bytes: int = Field(gt=0)
+    max_output_tokens: int = Field(ge=64, le=32_000)
+    reserved_cost_microusd: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    provider_cost_microusd: int = Field(ge=0)
+    finish_reason: str | None = None
+    error_code: str | None = None
 
     @model_validator(mode="after")
-    def _diff_is_exact(self) -> ProgramMachineDiffV4:
-        if self.parent_program_sha256 == self.candidate_program_sha256:
-            raise ValueError("news_program_compile_machine_diff_empty")
-        _reject_secret_material(self.model_dump(mode="json"), path="program_machine_diff")
+    def _reservation_is_coherent(self) -> CompilerProxyCall:
+        if (
+            (self.provider_invoked and self.reserved_cost_microusd <= 0)
+            or (not self.provider_invoked and self.reserved_cost_microusd != 0)
+            or (not self.provider_invoked and self.error_code is None)
+            or (self.error_code is None and self.total_tokens <= 0)
+            or self.provider_cost_microusd > self.reserved_cost_microusd
+        ):
+            raise ValueError("news_program_compile_proxy_call_reservation_invalid")
+        return self
+
+
+class CompilerProxyExecution(_ExactModel):
+    """The trusted per-call ledger, embedded whole.
+
+    The Merkle roots this used to carry — over the calls, over their request digests and over their
+    response digests — addressed a list printed directly beside them. So did its own `receipt_sha256`.
+    The record root is what makes any of it tamper-evident.
+    """
+
+    schema_version: Literal["tracefold.news.compiler_proxy_execution.v4"] = PROXY_EXECUTION_SCHEMA
+    # The grant travels to the sidecar and the container by other channels and is not carried here, so
+    # this is the address the host uses to prove the ledger belongs to the grant it issued.
+    grant_sha256: str = Field(pattern=_SHA256_PATTERN)
+    task_model_calls: int = Field(ge=0)
+    reflection_model_calls: int = Field(ge=0)
+    metric_judge_model_calls: int = Field(ge=0)
+    task_cost_microusd: int = Field(ge=0)
+    reflection_cost_microusd: int = Field(ge=0)
+    metric_judge_cost_microusd: int = Field(ge=0)
+    task_failures: int = Field(ge=0)
+    reflection_failures: int = Field(ge=0)
+    metric_judge_failures: int = Field(ge=0)
+    actual_cost_microusd: int = Field(ge=0)
+    reserved_cost_microusd: int = Field(ge=0)
+    calls: tuple[CompilerProxyCall, ...]
+    error_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _ledger_sums_to_its_totals(self) -> CompilerProxyExecution:
+        """The ledger must add up. It may still contain refusals.
+
+        The sidecar writes this receipt whether it served a call or refused one — a budget it would have
+        exceeded, a reused sequence, a grant that did not match — and those refusals are exactly the
+        evidence that the boundary held. Whether a *successful compile* may contain one is a different
+        question, answered by `CompileRecordV1`, which only exists when a compile succeeded.
+        """
+
+        seen: set[tuple[str, int]] = set()
+        role_calls = {"task": 0, "reflection": 0, "metric_judge": 0}
+        role_costs = {"task": 0, "reflection": 0, "metric_judge": 0}
+        role_failures = {"task": 0, "reflection": 0, "metric_judge": 0}
+        actual = reserved = 0
+        errors: list[str] = []
+        for call in self.calls:
+            identity = (call.role, call.sequence)
+            if identity in seen:
+                raise ValueError("news_program_compile_proxy_call_sequence_duplicate")
+            seen.add(identity)
+            role_calls[call.role] += int(call.provider_invoked)
+            role_costs[call.role] += call.provider_cost_microusd
+            role_failures[call.role] += int(call.error_code is not None)
+            actual += call.provider_cost_microusd
+            reserved += call.reserved_cost_microusd
+            if call.error_code is not None:
+                errors.append(call.error_code)
+        if (
+            (self.task_model_calls, self.reflection_model_calls, self.metric_judge_model_calls)
+            != (role_calls["task"], role_calls["reflection"], role_calls["metric_judge"])
+            or (self.task_cost_microusd, self.reflection_cost_microusd, self.metric_judge_cost_microusd)
+            != (role_costs["task"], role_costs["reflection"], role_costs["metric_judge"])
+            or (self.task_failures, self.reflection_failures, self.metric_judge_failures)
+            != (role_failures["task"], role_failures["reflection"], role_failures["metric_judge"])
+            or self.actual_cost_microusd != actual
+            or self.reserved_cost_microusd != reserved
+            or tuple(errors) != self.error_codes
+        ):
+            raise ValueError("news_program_compile_proxy_execution_accounting_mismatch")
         return self
 
 
@@ -458,12 +460,13 @@ class CompileInputBundle(_ExactModel):
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
     stable_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
     target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    task: CompilerRoleBindingV3
-    reflection: CompilerRoleBindingV3
-    metric_judge: CompilerRoleBindingV3
+    task: ModelExecutionIdentity
+    reflection: ModelExecutionIdentity
+    metric_judge: ModelExecutionIdentity
+    # Each of these addresses an object handed to the container by a separate channel: the grant over the
+    # socket, the policy and the source tree inside the image. None of them is carried here.
     proxy_grant_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_config_sha256: str = Field(pattern=_SHA256_PATTERN)
-    tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_tariff: CompilerProxyTariff
     compiler_source_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -483,12 +486,11 @@ class CompileInputBundle(_ExactModel):
         parent_program_sha256: str,
         stable_bundle_sha256: str,
         target_runtime_manifest_sha256: str,
-        task: CompilerRoleBindingV3,
-        reflection: CompilerRoleBindingV3,
-        metric_judge: CompilerRoleBindingV3,
+        task: ModelExecutionIdentity,
+        reflection: ModelExecutionIdentity,
+        metric_judge: ModelExecutionIdentity,
         proxy_grant_sha256: str,
         proxy_config_sha256: str,
-        tariff_sha256: str,
         proxy_tariff: CompilerProxyTariff,
         compiler_source_sha256: str,
         proxy_source_sha256: str,
@@ -511,7 +513,6 @@ class CompileInputBundle(_ExactModel):
             "metric_judge": metric_judge.model_dump(mode="json"),
             "proxy_grant_sha256": proxy_grant_sha256,
             "proxy_config_sha256": proxy_config_sha256,
-            "tariff_sha256": tariff_sha256,
             "proxy_tariff": proxy_tariff.model_dump(mode="json"),
             "compiler_source_sha256": compiler_source_sha256,
             "proxy_source_sha256": proxy_source_sha256,
@@ -534,8 +535,6 @@ class CompileInputBundle(_ExactModel):
             "metric_judge",
         ):
             raise ValueError("news_program_compile_role_binding_order_invalid")
-        if self.tariff_sha256 != self.proxy_tariff.tariff_sha256:
-            raise ValueError("news_program_compile_proxy_tariff_hash_mismatch")
         if self.corpus.development_dataset_payload_sha256 != canonical_sha(
             self.dataset_payload
         ) or self.corpus.development_dataset_sha != canonical_sha({"kind": "dataset", "payload": self.dataset_payload}):
@@ -556,91 +555,29 @@ class CompileInputBundle(_ExactModel):
         return self
 
 
-class ContentAddressedCompileReceipt(_ExactModel):
-    """One retained compile payload with an independently verifiable identity."""
+class CompilerRunnerReceipts(_ExactModel):
+    """The untrusted runner's own counters and payloads, cross-checked by the host.
 
-    schema_version: Literal["tracefold.news.compile_receipt_payload.v3"] = COMPILER_RECEIPT_SCHEMA
-    kind: Literal[
-        "corpus",
-        "metric",
-        "optimizer_config",
-        "trajectory",
-        "checkpoint",
-        "sandbox_launch",
-        "patch",
-    ]
-    payload: dict[str, Any]
-    receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
+    It no longer restates the compiler source, lock, sandbox policy or endpoint identities the sealed
+    input already fixed and the record commits to once. What it uniquely knows is what the optimizer
+    did: the metric it ran, the configuration GEPA was constructed with, the trajectory it walked, the
+    checkpoint it ended on, and how much of the budget it believes it spent.
+    """
 
-    @classmethod
-    def issue(cls, kind: str, payload: BaseModel | Mapping[str, Any]) -> ContentAddressedCompileReceipt:
-        safe_payload = _model_or_mapping_payload(payload)
-        values = {
-            "schema_version": COMPILER_RECEIPT_SCHEMA,
-            "kind": kind,
-            "payload": safe_payload,
-        }
-        return cls(**values, receipt_sha256=canonical_sha(values))
-
-    @model_validator(mode="after")
-    def _receipt_matches(self) -> ContentAddressedCompileReceipt:
-        values = self.model_dump(mode="json", exclude={"receipt_sha256"})
-        if self.receipt_sha256 != canonical_sha(values):
-            raise ValueError(f"news_program_compile_{self.kind}_receipt_hash_mismatch")
-        _reject_secret_material(self.payload, path=f"compile_receipt.{self.kind}")
-        return self
-
-
-class CompileReceiptChain(_ExactModel):
-    """The complete retained payload chain required by propose/evaluate."""
-
-    schema_version: Literal["tracefold.news.compile_receipt_chain.v3"] = COMPILER_RECEIPT_CHAIN_SCHEMA
-    receipts: tuple[ContentAddressedCompileReceipt, ...] = Field(min_length=1)
-    receipt_payload_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-    @classmethod
-    def issue(cls, receipts: Sequence[ContentAddressedCompileReceipt]) -> CompileReceiptChain:
-        ordered = tuple(sorted(receipts, key=lambda receipt: receipt.kind))
-        values = [receipt.model_dump(mode="json") for receipt in ordered]
-        return cls(receipts=ordered, receipt_payload_root_sha256=canonical_sha(values))
-
-    @model_validator(mode="after")
-    def _chain_matches(self) -> CompileReceiptChain:
-        kinds = tuple(receipt.kind for receipt in self.receipts)
-        if len(kinds) != len(set(kinds)) or set(kinds) != _REQUIRED_RECEIPT_KINDS:
-            raise ValueError("news_program_compile_receipt_chain_incomplete")
-        if tuple(sorted(kinds)) != kinds:
-            raise ValueError("news_program_compile_receipt_chain_order_invalid")
-        values = [receipt.model_dump(mode="json") for receipt in self.receipts]
-        if self.receipt_payload_root_sha256 != canonical_sha(values):
-            raise ValueError("news_program_compile_receipt_chain_hash_mismatch")
-        return self
-
-    def payload(self, kind: str) -> dict[str, Any]:
-        for receipt in self.receipts:
-            if receipt.kind == kind:
-                return dict(receipt.payload)
-        raise ValueError(f"news_program_compile_receipt_missing:{kind}")
-
-
-class CompilerRunnerReceiptsV3(_ExactModel):
-    """Exact untrusted runner result, cross-checked against trusted receipts."""
-
-    schema_version: Literal["tracefold.news.compiler_runner_receipts.v3"] = COMPILER_RUNNER_RECEIPTS_SCHEMA
+    schema_version: Literal["tracefold.news.compiler_runner_receipts.v4"] = COMPILER_RUNNER_RECEIPTS_SCHEMA
     input_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
-    parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_grant_sha256: str = Field(pattern=_SHA256_PATTERN)
-    task_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    reflection_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    metric_judge_endpoint_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    compiler_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    compiler_lock_sha256: str = Field(pattern=_SHA256_PATTERN)
-    sandbox_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    container_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    container_proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
     metric: dict[str, Any]
     optimizer_config: dict[str, Any]
     trajectory: dict[str, Any]
     checkpoint: dict[str, Any]
+    # The two things a scalar score cannot answer: was the winner picked on examples it never trained
+    # on, and did the model see the card it was supposed to recognise. Both were computed and validated
+    # inside the container and then dropped before the host saw them, so the documented proof never
+    # reached any receipt.
+    split: dict[str, Any]
+    retrieval: dict[str, Any]
     failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
     target_dimensions: tuple[str, ...] = Field(min_length=1)
     metric_calls: int = Field(ge=0)
@@ -653,18 +590,9 @@ class CompilerRunnerReceiptsV3(_ExactModel):
     reflection_cost_microusd: int = Field(ge=0)
     metric_judge_cost_microusd: int = Field(ge=0)
     actual_cost_microusd: int = Field(ge=0)
-    runner_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-    @classmethod
-    def issue(cls, **values: Any) -> CompilerRunnerReceiptsV3:
-        payload = {"schema_version": COMPILER_RUNNER_RECEIPTS_SCHEMA, **values}
-        return cls(**payload, runner_receipt_sha256=canonical_sha(payload))
 
     @model_validator(mode="after")
-    def _receipt_matches(self) -> CompilerRunnerReceiptsV3:
-        values = self.model_dump(mode="json", exclude={"runner_receipt_sha256"})
-        if self.runner_receipt_sha256 != canonical_sha(values):
-            raise ValueError("news_program_compile_runner_receipt_hash_mismatch")
+    def _accounting_is_coherent(self) -> CompilerRunnerReceipts:
         if (
             self.metric_judge_model_calls > self.metric_judge_attempts
             or self.metric_judge_failures > self.metric_judge_attempts
@@ -672,320 +600,183 @@ class CompilerRunnerReceiptsV3(_ExactModel):
             != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
         ):
             raise ValueError("news_program_compile_runner_receipt_accounting_mismatch")
-        _reject_secret_material(values, path="compiler_runner_receipts")
+        _reject_secret_material(self.model_dump(mode="json"), path="compiler_runner_receipts")
         return self
 
 
-def validate_compile_receipt_chain_v3(
-    chain: CompileReceiptChain | Mapping[str, Any],
-    *,
-    provenance: OptimizerCompileProvenanceV3 | Mapping[str, Any],
-    patch_sha256: str,
-    parent_program_sha256: str,
-    target_runtime_manifest_sha256: str,
-) -> CompileReceiptChain:
-    """Cross-bind the retained v3 chain without importing DSPy or Program code."""
+class CompileRecordV1(_ExactModel):
+    """One trusted compile execution, whole.
 
-    parsed = chain if isinstance(chain, CompileReceiptChain) else CompileReceiptChain.model_validate(chain)
-    proof = (
-        provenance
-        if isinstance(provenance, OptimizerCompileProvenanceV3)
-        else OptimizerCompileProvenanceV3.model_validate(provenance)
-    )
-    if (
-        parsed.receipt_payload_root_sha256 != proof.receipt_payload_root_sha256
-        or proof.patch_sha256 != patch_sha256
-        or proof.parent_program_sha256 != parent_program_sha256
-        or proof.target_runtime_manifest_sha256 != target_runtime_manifest_sha256
-    ):
-        raise ValueError("news_program_compile_receipt_chain_identity_mismatch")
-    corpus = CompileCorpusReceipt.model_validate(parsed.payload("corpus"))
-    if (
-        corpus.development_dataset_sha != proof.development_dataset_sha
-        or corpus.learning_epoch != proof.learning_epoch
-        or corpus.learning_epoch_started_at_ms != proof.learning_epoch_started_at_ms
-        or corpus.projection_schema_id != proof.projection_schema_id
-        or corpus.development_dataset_payload_sha256 != proof.development_dataset_payload_sha256
-        or corpus.case_root_sha256 != proof.case_root_sha256
-        or corpus.cluster_root_sha256 != proof.cluster_root_sha256
-        or corpus.episode_projection_root_sha256 != proof.episode_projection_root_sha256
-        or corpus.episode_count != proof.episode_count
-    ):
-        raise ValueError("news_program_compile_receipt_chain_corpus_mismatch")
-    if (
-        canonical_sha(parsed.payload("metric")) != proof.metric_sha256
-        or canonical_sha(parsed.payload("optimizer_config")) != proof.optimizer_config_sha256
-        or canonical_sha(parsed.payload("trajectory")) != proof.trajectory_sha256
-        or canonical_sha(parsed.payload("checkpoint")) != proof.checkpoint_sha256
-    ):
-        raise ValueError("news_program_compile_receipt_chain_payload_mismatch")
-    patch = parsed.payload("patch")
-    expected_patch_keys = {
-        "schema_version",
-        "parent_program_sha256",
-        "event_semantics_instruction",
-        "reader_card_instruction",
-    }
-    if (
-        set(patch) != expected_patch_keys
-        or patch.get("schema_version") != "news_program_strategy_patch_v1"
-        or patch.get("parent_program_sha256") != parent_program_sha256
-        or canonical_sha(patch) != patch_sha256
-        or not all(
-            isinstance(patch.get(key), str) for key in ("event_semantics_instruction", "reader_card_instruction")
-        )
-    ):
-        raise ValueError("news_program_compile_receipt_chain_patch_mismatch")
+    This replaced seven content-addressed receipts, a chain root, a runner receipt, a provenance record
+    and a machine diff, which between them carried the same identity up to four times. Everything the
+    compile produced is embedded here, so `compile_record_sha256` — the ledger key — is the only thing
+    that has to be checked for any of it to be tamper-evident.
+    """
 
-    from .sandbox import CompilerSandboxLaunchReceipt
+    schema_version: Literal["news_program_compile_record_v1"] = COMPILE_RECORD_SCHEMA
+    parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
+    program_sha256: str = Field(pattern=_SHA256_PATTERN)
+    development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
+    projection_schema_id: Literal["tracefold.news.development_compile_episode.v3"] = COMPILE_EPISODE_PROJECTION_SCHEMA
+    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
+    learning_epoch_started_at_ms: int = Field(ge=0)
+    review_rubric_version: str = Field(min_length=1, max_length=64)
+    episode_count: int = Field(gt=0)
+    target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    task_model: ModelExecutionIdentity
+    reflection_model: ModelExecutionIdentity
+    metric_judge_model: ModelExecutionIdentity
+    optimizer: dict[str, Any]
+    metric: dict[str, Any]
+    split: dict[str, Any]
+    retrieval: dict[str, Any]
+    budget: CompileBudgetV3
+    tariff: CompilerProxyTariff
+    usage: CompilerProxyExecution
+    metric_calls: int = Field(ge=0)
+    metric_judge_attempts: int = Field(ge=0)
+    sandbox: CompilerSandboxLaunchReceipt
+    compiler_build: CompilerBuildAttestation
+    patch: dict[str, Any]
+    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
+    target_dimensions: tuple[str, ...] = Field(min_length=1)
+    trajectory_blob_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    checkpoint_blob_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    created_at_ms: int = Field(ge=0)
+    compile_record_sha256: str = Field(pattern=_SHA256_PATTERN)
 
-    launch = CompilerSandboxLaunchReceipt.model_validate(parsed.payload("sandbox_launch"))
-    optimizer = parsed.payload("optimizer_config")
-    if set(optimizer) != {
-        "runner_optimizer_config",
-        "proxy_grant",
-        "proxy_execution",
-        "input_bundle_sha256",
-    }:
-        raise ValueError("news_program_compile_receipt_chain_optimizer_config_invalid")
-    runner_optimizer_config = optimizer.get("runner_optimizer_config")
-    if not isinstance(runner_optimizer_config, Mapping):
-        raise ValueError("news_program_compile_receipt_chain_optimizer_config_invalid")
-    try:
-        metric_call_ceiling = gepa_metric_call_ceiling(
-            max_metric_calls=proof.max_metric_calls,
-            optimizer_config=runner_optimizer_config,
-            expected_example_count=corpus.episode_count,
-        )
-    except ValueError as exc:
-        raise ValueError("news_program_compile_receipt_chain_optimizer_config_invalid") from exc
-    if proof.metric_calls > metric_call_ceiling:
-        raise ValueError("news_program_compile_receipt_chain_metric_budget_exceeded")
-    raw_grant = optimizer.get("proxy_grant")
-    if not isinstance(raw_grant, Mapping):
-        raise ValueError("news_program_compile_receipt_chain_proxy_grant_invalid")
-    grant = dict(raw_grant)
-    grant_keys = {
-        "schema_version",
-        "task",
-        "reflection",
-        "metric_judge",
-        "max_task_model_calls",
-        "max_reflection_model_calls",
-        "max_metric_judge_model_calls",
-        "max_cost_microusd",
-        "max_call_cost_microusd",
-        "tariff",
-        "tariff_sha256",
-        "proxy_config_sha256",
-        "proxy_source_sha256",
-        "max_request_bytes",
-        "max_response_bytes",
-        "grant_sha256",
-    }
-    try:
-        tariff = CompilerProxyTariff.model_validate(grant.get("tariff"))
-        roles: tuple[CompilerRole, ...] = ("task", "reflection", "metric_judge")
-        bindings = {role: CompilerRoleBindingV3.model_validate(grant.get(role)) for role in roles}
-        expected_max_call = max(
-            tariff.worst_case_cost_microusd(
-                role=role,
-                request_bytes=int(grant["max_request_bytes"]),
-                max_output_tokens=binding.max_output_tokens,
-            )
-            for role, binding in bindings.items()
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("news_program_compile_receipt_chain_proxy_grant_invalid") from exc
-    if (
-        set(grant) != grant_keys
-        or grant.get("schema_version") != "tracefold.news.compiler_proxy_grant.v3"
-        or grant.get("grant_sha256")
-        != canonical_sha({key: value for key, value in grant.items() if key != "grant_sha256"})
-        or grant.get("tariff_sha256") != tariff.tariff_sha256
-        or grant.get("max_task_model_calls") != proof.max_task_model_calls
-        or grant.get("max_reflection_model_calls") != proof.max_reflection_model_calls
-        or grant.get("max_metric_judge_model_calls") != proof.max_metric_judge_model_calls
-        or grant.get("max_cost_microusd") != proof.max_cost_microusd
-        or grant.get("max_call_cost_microusd") != proof.max_call_cost_microusd
-        or grant.get("max_call_cost_microusd") != expected_max_call
-        or bindings["task"].endpoint.binding_sha256 != proof.task_endpoint_identity_sha256
-        or bindings["reflection"].endpoint.binding_sha256 != proof.reflection_endpoint_identity_sha256
-        or bindings["metric_judge"].endpoint.binding_sha256 != proof.metric_judge_endpoint_identity_sha256
-    ):
-        raise ValueError("news_program_compile_receipt_chain_proxy_grant_mismatch")
-    execution = optimizer.get("proxy_execution")
-    if not isinstance(execution, Mapping):
-        raise ValueError("news_program_compile_receipt_chain_proxy_execution_invalid")
-    execution_keys = {
-        "schema_version",
-        "grant_sha256",
-        "task_model_calls",
-        "reflection_model_calls",
-        "metric_judge_model_calls",
-        "task_cost_microusd",
-        "reflection_cost_microusd",
-        "metric_judge_cost_microusd",
-        "task_failures",
-        "reflection_failures",
-        "metric_judge_failures",
-        "actual_cost_microusd",
-        "reserved_cost_microusd",
-        "tariff_sha256",
-        "calls",
-        "call_root_sha256",
-        "request_root_sha256",
-        "response_root_sha256",
-        "error_codes",
-        "receipt_sha256",
-    }
-    execution_payload = dict(execution)
-    call_payloads = execution_payload.get("calls")
-    if not isinstance(call_payloads, list):
-        raise ValueError("news_program_compile_receipt_chain_proxy_calls_invalid")
-    expected_call_keys = {
-        "role",
-        "sequence",
-        "request_sha256",
-        "response_sha256",
-        "runtime_identity_sha256",
-        "provider_invoked",
-        "request_bytes",
-        "max_output_tokens",
-        "reserved_cost_microusd",
-        "input_tokens",
-        "output_tokens",
-        "cached_tokens",
-        "total_tokens",
-        "provider_cost_microusd",
-        "finish_reason",
-        "error_code",
-        "leaf_sha256",
-    }
-    call_identities: set[tuple[str, int]] = set()
-    role_calls: dict[str, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
-    role_costs: dict[str, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
-    role_failures: dict[str, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
-    actual_cost = reserved_cost = 0
-    request_shas: list[str] = []
-    response_shas: list[str] = []
-    error_codes: list[str] = []
-    for item in call_payloads:
-        if not isinstance(item, Mapping):
-            raise ValueError("news_program_compile_receipt_chain_proxy_calls_invalid")
-        call = dict(item)
-        role = call.get("role")
-        sequence = call.get("sequence")
-        identity = (str(role), int(sequence)) if isinstance(sequence, int) else ("", 0)
-        provider_invoked = call.get("provider_invoked")
-        error_code = call.get("error_code")
-        if (
-            set(call) != expected_call_keys
-            or role not in bindings
-            or not isinstance(sequence, int)
-            or sequence <= 0
-            or identity in call_identities
-            or not isinstance(provider_invoked, bool)
-            or (role != "metric_judge" and (provider_invoked is not True or error_code is not None))
-            or (provider_invoked is False and error_code is None)
-            or (error_code is not None and not isinstance(error_code, str))
-            or not isinstance(call.get("request_bytes"), int)
-            or int(call["request_bytes"]) <= 0
-            or int(call["request_bytes"]) > int(grant["max_request_bytes"])
-            or call.get("max_output_tokens") != bindings[role].max_output_tokens
-            or not isinstance(call.get("reserved_cost_microusd"), int)
-            or (
-                provider_invoked
-                and (
-                    int(call["reserved_cost_microusd"]) <= 0
-                    or int(call["reserved_cost_microusd"])
-                    != tariff.worst_case_cost_microusd(
-                        role=role,
-                        request_bytes=int(call["request_bytes"]),
-                        max_output_tokens=int(call["max_output_tokens"]),
-                    )
-                )
-            )
-            or (not provider_invoked and int(call["reserved_cost_microusd"]) != 0)
-            or not isinstance(call.get("total_tokens"), int)
-            or (error_code is None and int(call["total_tokens"]) <= 0)
-            or int(call["total_tokens"]) < 0
-            or not isinstance(call.get("provider_cost_microusd"), int)
-            or int(call["provider_cost_microusd"]) < 0
-            or int(call["provider_cost_microusd"]) > int(call["reserved_cost_microusd"])
-            or call.get("leaf_sha256")
-            != canonical_sha({key: value for key, value in call.items() if key != "leaf_sha256"})
+    @property
+    def sandbox_profile(self) -> str:
+        """The policy generation this compile ran under, read from the policy the record embeds."""
+
+        return str(self.sandbox.policy.get("schema_version") or "")
+
+    @classmethod
+    def issue(cls, **values: Any) -> CompileRecordV1:
+        """Build the record and address it by exactly what the validator will re-hash.
+
+        Hashing the caller's mapping instead would omit every field the caller let default, and would
+        choke on the nested models it is handed — the same shape `ProposalReceipt.issue` gets right by
+        drafting first and dumping the draft.
+        """
+
+        draft = cls.model_construct(compile_record_sha256="0" * 64, **values)
+        payload = draft.model_dump(mode="json", exclude={"compile_record_sha256"})
+        return cls(**values, compile_record_sha256=canonical_sha(payload))
+
+    @model_validator(mode="after")
+    def _record_is_exact(self) -> CompileRecordV1:
+        values = self.model_dump(mode="json", exclude={"compile_record_sha256"})
+        if self.compile_record_sha256 != canonical_sha(values):
+            raise ValueError("news_program_compile_record_hash_mismatch")
+        if (self.task_model.role, self.reflection_model.role, self.metric_judge_model.role) != (
+            "task",
+            "reflection",
+            "metric_judge",
         ):
-            raise ValueError("news_program_compile_receipt_chain_proxy_calls_invalid")
-        for field in ("request_sha256", "response_sha256", "runtime_identity_sha256"):
-            value = call.get(field)
-            if not isinstance(value, str) or re.fullmatch(_SHA256_PATTERN, value) is None:
-                raise ValueError("news_program_compile_receipt_chain_proxy_calls_invalid")
-        call_identities.add(identity)
-        role_calls[str(role)] += int(provider_invoked)
-        role_costs[str(role)] += int(call["provider_cost_microusd"])
-        role_failures[str(role)] += int(error_code is not None)
-        actual_cost += int(call["provider_cost_microusd"])
-        reserved_cost += int(call["reserved_cost_microusd"])
-        request_shas.append(str(call["request_sha256"]))
-        response_shas.append(str(call["response_sha256"]))
-        if error_code is not None:
-            error_codes.append(str(error_code))
+            raise ValueError("news_program_compile_record_role_order_invalid")
+        if self.parent_program_sha256 == self.program_sha256:
+            raise ValueError("news_program_compile_record_no_program_change")
+        self._patch_is_the_whole_write_set()
+        self._budget_held()
+        _reject_secret_material(values, path="compile_record")
+        return self
+
+    def _patch_is_the_whole_write_set(self) -> None:
+        expected = {
+            "schema_version",
+            "parent_program_sha256",
+            "event_semantics_instruction",
+            "reader_card_instruction",
+        }
+        if (
+            set(self.patch) != expected
+            or self.patch.get("schema_version") != "news_program_strategy_patch_v1"
+            or self.patch.get("parent_program_sha256") != self.parent_program_sha256
+            or not isinstance(self.patch.get("event_semantics_instruction"), str)
+            or not isinstance(self.patch.get("reader_card_instruction"), str)
+        ):
+            raise ValueError("news_program_compile_record_patch_write_set_invalid")
+
+    def _budget_held(self) -> None:
+        """Every physical call was reserved at the trusted worst-case rate and stayed inside the budget.
+
+        This is the arithmetic the old chain performed across five documents that had to be cross-bound
+        by hash first. Here every operand is a field of one object.
+        """
+
+        usage, budget = self.usage, self.budget
+        roles = {
+            "task": (self.task_model, usage.task_model_calls, budget.max_task_model_calls),
+            "reflection": (self.reflection_model, usage.reflection_model_calls, budget.max_reflection_model_calls),
+            "metric_judge": (
+                self.metric_judge_model,
+                usage.metric_judge_model_calls,
+                budget.max_metric_judge_model_calls,
+            ),
+        }
+        for role, (_identity, calls, limit) in roles.items():
+            if calls > limit:
+                raise ValueError(f"news_program_compile_record_{role}_call_budget_exceeded")
+        for call in usage.calls:
+            identity = roles[call.role][0]
+            if call.max_output_tokens != identity.max_output_tokens:
+                raise ValueError("news_program_compile_record_call_binding_mismatch")
+            expected = (
+                self.tariff.worst_case_cost_microusd(
+                    role=call.role,
+                    request_bytes=call.request_bytes,
+                    max_output_tokens=call.max_output_tokens,
+                )
+                if call.provider_invoked
+                else 0
+            )
+            if call.reserved_cost_microusd != expected:
+                raise ValueError("news_program_compile_record_call_reservation_invalid")
+            if call.reserved_cost_microusd > budget.max_call_cost_microusd:
+                raise ValueError("news_program_compile_record_call_cost_reservation_exceeded")
+        if self.sandbox.egress_manifest.get("proxy_grant_sha256") != self.usage.grant_sha256:
+            raise ValueError("news_program_compile_record_proxy_grant_mismatch")
+        # A record exists only for a compile that finished, so the two roles that must answer for it to
+        # have finished may not carry a refusal. The metric judge may: its answer is a score component,
+        # and the metric already treats an unavailable judgment as zero.
+        if any(
+            call.role != "metric_judge" and (not call.provider_invoked or call.error_code is not None)
+            for call in usage.calls
+        ):
+            raise ValueError("news_program_compile_record_task_call_failed")
+        if (
+            usage.actual_cost_microusd > budget.max_cost_microusd
+            or usage.reserved_cost_microusd > budget.max_cost_microusd
+            or usage.metric_judge_model_calls > self.metric_judge_attempts
+            or self.metric_calls
+            > gepa_metric_call_ceiling(
+                max_metric_calls=budget.max_metric_calls,
+                optimizer_config=self.optimizer,
+                expected_example_count=self.episode_count,
+            )
+        ):
+            raise ValueError("news_program_compile_record_budget_exceeded")
+
+
+def validate_compile_record(
+    record: CompileRecordV1 | Mapping[str, Any],
+    *,
+    parent_program_sha256: str,
+    program_sha256: str,
+    development_dataset_sha256: str,
+    target_runtime_manifest_sha256: str,
+) -> CompileRecordV1:
+    """Re-verify one persisted record against the candidate that claims it."""
+
+    parsed = record if isinstance(record, CompileRecordV1) else CompileRecordV1.model_validate(record)
     if (
-        set(execution_payload) != execution_keys
-        or execution_payload.get("schema_version") != "tracefold.news.compiler_proxy_execution.v3"
-        or execution_payload.get("receipt_sha256")
-        != canonical_sha({key: value for key, value in execution_payload.items() if key != "receipt_sha256"})
-        or execution_payload.get("grant_sha256") != launch.proxy_identity_sha256
-        or execution_payload.get("grant_sha256") != grant.get("grant_sha256")
-        or execution_payload.get("tariff_sha256") != launch.proxy_tariff_sha256
-        or launch.proxy_tariff_sha256 != tariff.tariff_sha256
-        or launch.proxy_config_sha256 != grant.get("proxy_config_sha256")
-        or launch.proxy_source_sha256 != grant.get("proxy_source_sha256")
-        or execution_payload.get("receipt_sha256") != launch.proxy_execution_receipt_sha256
-        or execution_payload.get("task_model_calls") != proof.task_model_calls
-        or execution_payload.get("reflection_model_calls") != proof.reflection_model_calls
-        or execution_payload.get("metric_judge_model_calls") != proof.metric_judge_model_calls
-        or execution_payload.get("task_cost_microusd") != proof.task_cost_microusd
-        or execution_payload.get("reflection_cost_microusd") != proof.reflection_cost_microusd
-        or execution_payload.get("metric_judge_cost_microusd") != proof.metric_judge_cost_microusd
-        or execution_payload.get("task_failures") != 0
-        or execution_payload.get("reflection_failures") != 0
-        or execution_payload.get("metric_judge_failures", 0) > proof.metric_judge_failures
-        or execution_payload.get("actual_cost_microusd") != proof.actual_cost_microusd
-        or execution_payload.get("task_model_calls") != role_calls["task"]
-        or execution_payload.get("reflection_model_calls") != role_calls["reflection"]
-        or execution_payload.get("metric_judge_model_calls") != role_calls["metric_judge"]
-        or execution_payload.get("task_cost_microusd") != role_costs["task"]
-        or execution_payload.get("reflection_cost_microusd") != role_costs["reflection"]
-        or execution_payload.get("metric_judge_cost_microusd") != role_costs["metric_judge"]
-        or execution_payload.get("task_failures") != role_failures["task"]
-        or execution_payload.get("reflection_failures") != role_failures["reflection"]
-        or execution_payload.get("metric_judge_failures") != role_failures["metric_judge"]
-        or execution_payload.get("actual_cost_microusd") != actual_cost
-        or execution_payload.get("reserved_cost_microusd") != reserved_cost
-        or reserved_cost > proof.max_cost_microusd
-        or any(int(item["reserved_cost_microusd"]) > proof.max_call_cost_microusd for item in call_payloads)
-        or execution_payload.get("call_root_sha256") != canonical_sha(call_payloads)
-        or execution_payload.get("request_root_sha256") != canonical_sha(request_shas)
-        or execution_payload.get("response_root_sha256") != canonical_sha(response_shas)
-        or execution_payload.get("error_codes") != error_codes
-        or any(
-            item.get("role") != "metric_judge"
-            for item in call_payloads
-            if isinstance(item, Mapping) and item.get("error_code") is not None
-        )
-        or role_calls["task"] > proof.max_task_model_calls
-        or role_calls["reflection"] > proof.max_reflection_model_calls
-        or role_calls["metric_judge"] > proof.max_metric_judge_model_calls
-        or role_calls["metric_judge"] > proof.metric_judge_attempts
-        or launch.launch_receipt_sha256 != proof.sandbox_launch_receipt_sha256
-        or launch.compiler_source_sha256 != proof.compiler_source_sha256
-        or launch.compiler_lock_sha256 != proof.compiler_lock_sha256
-        or launch.policy_sha256 != proof.sandbox_policy_sha256
-        or launch.input_bundle_sha256 != optimizer.get("input_bundle_sha256")
+        parsed.parent_program_sha256 != parent_program_sha256
+        or parsed.program_sha256 != program_sha256
+        or parsed.development_dataset_sha256 != development_dataset_sha256
+        or parsed.target_runtime_manifest_sha256 != target_runtime_manifest_sha256
     ):
-        raise ValueError("news_program_compile_receipt_chain_proxy_execution_mismatch")
+        raise ValueError("news_program_compile_record_identity_mismatch")
     return parsed
 
 
@@ -997,12 +788,11 @@ def seal_compile_input(
     parent_program_sha256: str,
     stable_bundle_sha256: str,
     target_runtime_manifest_sha256: str,
-    task: CompilerRoleBindingV3,
-    reflection: CompilerRoleBindingV3,
-    metric_judge: CompilerRoleBindingV3,
+    task: ModelExecutionIdentity,
+    reflection: ModelExecutionIdentity,
+    metric_judge: ModelExecutionIdentity,
     proxy_grant_sha256: str,
     proxy_config_sha256: str,
-    tariff_sha256: str,
     proxy_tariff: CompilerProxyTariff,
     review_rubric_version: str,
     compiler_source_sha256: str,
@@ -1070,7 +860,6 @@ def seal_compile_input(
         metric_judge=metric_judge,
         proxy_grant_sha256=proxy_grant_sha256,
         proxy_config_sha256=proxy_config_sha256,
-        tariff_sha256=tariff_sha256,
         proxy_tariff=proxy_tariff,
         compiler_source_sha256=compiler_source_sha256,
         proxy_source_sha256=proxy_source_sha256,
@@ -1176,32 +965,32 @@ def _contains_parts(parts: tuple[str, ...], forbidden: tuple[str, ...]) -> bool:
 
 
 __all__ = [
+    "COMPILER_BUILD_ATTESTATION_SCHEMA",
     "COMPILER_CORPUS_SCHEMA",
-    "COMPILER_ENDPOINT_IDENTITY_SCHEMA",
     "COMPILER_INPUT_SCHEMA",
-    "COMPILER_RECEIPT_CHAIN_SCHEMA",
-    "COMPILER_RECEIPT_SCHEMA",
-    "COMPILER_ROLE_BINDING_SCHEMA",
     "COMPILER_RUNNER_RECEIPTS_SCHEMA",
     "COMPILE_EPISODE_PROJECTION_SCHEMA",
+    "COMPILE_RECORD_SCHEMA",
     "LEARNING_EPOCH",
     "METRIC_JUDGE_MAX_TOKENS",
     "METRIC_JUDGE_TIMEOUT_SECONDS",
+    "MODEL_EXECUTION_IDENTITY_SCHEMA",
+    "PROXY_EXECUTION_SCHEMA",
     "REFLECTION_MAX_TOKENS",
     "REFLECTION_TIMEOUT_SECONDS",
     "CompileBudgetV3",
     "CompileCorpusReceipt",
     "CompileInputBundle",
-    "CompileReceiptChain",
-    "CompilerEndpointIdentity",
+    "CompileRecordV1",
+    "CompilerBuildAttestation",
+    "CompilerProxyCall",
+    "CompilerProxyExecution",
     "CompilerProxyTariff",
     "CompilerRole",
-    "CompilerRoleBindingV3",
-    "CompilerRunnerReceiptsV3",
-    "ContentAddressedCompileReceipt",
-    "OptimizerCompileProvenanceV3",
-    "ProgramMachineDiffV4",
+    "CompilerRunnerReceipts",
+    "ModelExecutionIdentity",
+    "endpoint_fingerprint",
     "gepa_metric_call_ceiling",
     "seal_compile_input",
-    "validate_compile_receipt_chain_v3",
+    "validate_compile_record",
 ]

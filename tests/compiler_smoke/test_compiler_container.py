@@ -24,11 +24,16 @@ from tracefold.news.learning.compiler.proxy import (
 from tracefold.news.learning.compiler.sandbox import CompilerSandboxPolicy
 from tracefold.news.learning.compiler.security import (
     CompileBudgetV3,
+    CompileInputBundle,
+    CompilerBuildAttestation,
+    CompileRecordV1,
     CompilerProxyTariff,
-    CompilerRunnerReceiptsV3,
+    CompilerRunnerReceipts,
     seal_compile_input,
+    validate_compile_record,
 )
 from tracefold.news.learning.compiler.source_identity import compiler_source_sha256, proxy_source_sha256
+from tracefold.news.learning.compiler.trusted import apply_trusted_program_patch
 from tracefold.news.program.artifact import ProgramStrategyPatchV1, load_stable_program_artifact
 from tracefold.news.program.runtime import PROGRAM_VERSION
 
@@ -200,7 +205,7 @@ def _secrets(provider: str) -> CompilerProxySecretConfig:
 
 def _sealed_input(
     *, image_id: str, secrets: CompilerProxySecretConfig, policy: CompilerSandboxPolicy
-) -> tuple[str, str]:
+) -> CompileInputBundle:
     episodes = compiler_development_corpus()
     parent = load_stable_program_artifact()
     stable_bundle = canonical_sha({"kind": "compiler_smoke_stable_bundle"})
@@ -252,7 +257,7 @@ def _sealed_input(
         max_call_cost_microusd=grant.max_call_cost_microusd,
         seed=190,
     )
-    bundle = seal_compile_input(
+    return seal_compile_input(
         dataset_sha=dataset_sha,
         dataset_payload=dataset_payload,
         episodes=episodes,
@@ -265,7 +270,6 @@ def _sealed_input(
         metric_judge=judge,
         proxy_grant_sha256=grant.grant_sha256,
         proxy_config_sha256=secrets.secret_free_config_sha256,
-        tariff_sha256=secrets.tariff_sha256,
         proxy_tariff=secrets.tariff,
         compiler_source_sha256=compiler_source_sha256(),
         proxy_source_sha256=proxy_source_sha256(),
@@ -274,11 +278,10 @@ def _sealed_input(
         compiler_image_digest=image_id,
         budget=budget,
     )
-    return canonical_json(bundle.model_dump(mode="json")), bundle.bundle_sha256
 
 
 def _assert_every_runner_call_has_a_proxy_leaf(
-    runner: CompilerRunnerReceiptsV3, *, proxy_task: int, proxy_reflection: int, proxy_judge: int
+    runner: CompilerRunnerReceipts, *, proxy_task: int, proxy_reflection: int, proxy_judge: int
 ) -> None:
     if (
         runner.task_model_calls,
@@ -302,7 +305,7 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     docker, image_id, provider = compiler_runtime
     policy = _sandbox_policy()
     secrets = _secrets(provider)
-    input_document, input_sha = _sealed_input(image_id=image_id, secrets=secrets, policy=policy)
+    bundle = _sealed_input(image_id=image_id, secrets=secrets, policy=policy)
     launcher = ProgramCompilerLauncher(
         policy=policy,
         compiler_source_sha256=compiler_source_sha256(),
@@ -313,15 +316,16 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     )
 
     result = launcher.launch(
-        input_document=input_document,
-        input_bundle_sha256=input_sha,
+        input_document=canonical_json(bundle.model_dump(mode="json")),
+        input_bundle_sha256=bundle.bundle_sha256,
         proxy_secret_config=secrets,
     )
     patch = ProgramStrategyPatchV1.model_validate_json(result.patch_document)
-    runner = CompilerRunnerReceiptsV3.model_validate_json(result.runner_receipts_document)
+    runner = CompilerRunnerReceipts.model_validate_json(result.runner_receipts_document)
     proxy = result.proxy_execution_receipt
+    parent = load_stable_program_artifact()
 
-    assert patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
+    assert patch.parent_program_sha256 == parent.program_sha256
     # The optimizer's whole write-set is these two advisories; a run that changed neither compiled nothing.
     assert patch.event_semantics_instruction.strip() or patch.reader_card_instruction.strip()
     assert result.launch_receipt.termination == "succeeded"
@@ -331,17 +335,91 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     assert result.launch_receipt.egress_network_removed
     assert result.launch_receipt.boundary_actuals_available
     assert proxy.calls and all(call.provider_invoked for call in proxy.calls)
+    # The runner is the untrusted side of the socket and the sidecar is the trusted side. Only here, with
+    # both in hand, can their independent counts be compared; the record cannot do it, because by then
+    # the runner's own counters are gone.
     _assert_every_runner_call_has_a_proxy_leaf(
         runner,
         proxy_task=proxy.task_model_calls,
         proxy_reflection=proxy.reflection_model_calls,
         proxy_judge=proxy.metric_judge_model_calls,
     )
+    assert runner.input_bundle_sha256 == bundle.bundle_sha256
+    # Three parties computed the source identity of this compile: the host tree, the pinned image, and
+    # the process inside the running container. This is the one place they can be made to agree.
+    assert runner.container_source_sha256 == compiler_source_sha256()
+    assert runner.container_proxy_source_sha256 == proxy_source_sha256()
+    # Both proofs are produced inside the container and must survive the boundary: a winner selected on
+    # clusters it also trained on, or a case whose evidence the model never saw, is not evidence at all.
+    assert runner.split["schema"] == "tracefold.news.compile_split_receipt.v1"
+    assert runner.retrieval["schema"] == "tracefold.news.compile_retrieval_receipt.v1"
 
-    tampered = runner.model_dump(mode="json")
-    tampered["task_model_calls"] += 1
-    with pytest.raises(ValidationError, match="runner_receipt_hash_mismatch"):
-        CompilerRunnerReceiptsV3.model_validate(tampered)
+    candidate = apply_trusted_program_patch(parent, patch)
+    assert candidate.program_sha256 != parent.program_sha256
+    record = CompileRecordV1.issue(
+        parent_program_sha256=parent.program_sha256,
+        program_sha256=candidate.program_sha256,
+        development_dataset_sha256=bundle.corpus.development_dataset_sha,
+        learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
+        review_rubric_version=bundle.corpus.review_rubric_version,
+        episode_count=bundle.corpus.episode_count,
+        target_runtime_manifest_sha256=bundle.target_runtime_manifest_sha256,
+        task_model=bundle.task,
+        reflection_model=bundle.reflection,
+        metric_judge_model=bundle.metric_judge,
+        optimizer=runner.optimizer_config,
+        metric=runner.metric,
+        split=runner.split,
+        retrieval=runner.retrieval,
+        budget=bundle.budget,
+        tariff=bundle.proxy_tariff,
+        usage=proxy,
+        metric_calls=runner.metric_calls,
+        metric_judge_attempts=runner.metric_judge_attempts,
+        sandbox=result.launch_receipt,
+        compiler_build=CompilerBuildAttestation(
+            compiler_image_digest=result.launch_receipt.compiler_image_digest,
+            proxy_image_digest=result.launch_receipt.proxy_image_digest,
+            host_source_sha256=compiler_source_sha256(),
+            host_proxy_source_sha256=proxy_source_sha256(),
+            host_lock_sha256=hashlib.sha256((ROOT / "uv.lock").read_bytes()).hexdigest(),
+            image_source_sha256=result.launch_receipt.image_preflight["compiler_source_sha256"],
+            image_proxy_source_sha256=result.launch_receipt.image_preflight["proxy_source_sha256"],
+            image_lock_sha256=result.launch_receipt.image_preflight["compiler_lock_sha256"],
+            container_source_sha256=runner.container_source_sha256,
+            container_proxy_source_sha256=runner.container_proxy_source_sha256,
+        ),
+        patch=patch.model_dump(mode="json"),
+        failure_cluster_ids=runner.failure_cluster_ids,
+        target_dimensions=runner.target_dimensions,
+        created_at_ms=int(time.time() * 1000),
+    )
+    assert (
+        validate_compile_record(
+            record.model_dump(mode="json"),
+            parent_program_sha256=parent.program_sha256,
+            program_sha256=candidate.program_sha256,
+            development_dataset_sha256=bundle.corpus.development_dataset_sha,
+            target_runtime_manifest_sha256=bundle.target_runtime_manifest_sha256,
+        )
+        == record
+    )
+    assert record.sandbox_profile == policy.schema_version
+
+    # The record root is what makes any of this tamper-evident: the runner receipt, the sidecar ledger
+    # and the launch receipt no longer carry digests of themselves.
+    tampered = record.model_dump(mode="json")
+    tampered["metric_calls"] += 1
+    with pytest.raises(ValidationError, match="compile_record_hash_mismatch"):
+        CompileRecordV1.model_validate(tampered)
+
+    # And the one claim no single party can make alone: a container whose source disagrees with the host
+    # tree and the pinned image is not the compiler this record says ran.
+    disagreeing = record.model_dump(mode="json")
+    disagreeing["compiler_build"]["container_source_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="build_attestation_mismatch"):
+        CompileRecordV1.model_validate(disagreeing)
+
     forged = runner.model_copy(update={"task_model_calls": runner.task_model_calls + 1})
     with pytest.raises(ValueError, match="unrecorded model request"):
         _assert_every_runner_call_has_a_proxy_leaf(
