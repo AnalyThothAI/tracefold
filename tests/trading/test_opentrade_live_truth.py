@@ -819,6 +819,7 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("unprotected", "OPEN_UNPROTECTED"),
         ("future_fill", "UNKNOWN"),
         ("external_scale_in_trade", "UNKNOWN"),
+        ("historical_opening_trade", "OPEN_UNPROTECTED"),
         ("closed", "CLOSED"),
         ("mixed_order_history", "UNKNOWN"),
         ("mixed_order_history_with_position", "UNKNOWN"),
@@ -866,6 +867,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     "unprotected",
                     "future_fill",
                     "external_scale_in_trade",
+                    "historical_opening_trade",
                     "mixed_order_history_with_position",
                     "closed_then_external_position",
                     "external_position_only",
@@ -987,6 +989,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "unprotected",
             "future_fill",
             "external_scale_in_trade",
+            "historical_opening_trade",
             "mixed_order_history_with_position",
         }:
             amount = "0.5" if scenario in {"partial", "partial_working"} else "1"
@@ -1013,10 +1016,26 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                                     "side": "buy",
                                     "reduceOnly": False,
                                     "amount": "0.5",
-                                    "timestamp": NOW - 250,
+                                    "timestamp": NOW - 1_001,
                                 }
                             ]
                             if scenario == "external_scale_in_trade"
+                            else []
+                        ),
+                        *(
+                            [
+                                {
+                                    "exchange": "binance",
+                                    "tradeId": "historical-trade-1",
+                                    "orderId": "historical-order-1",
+                                    "symbol": "DOGE/USDT:USDT",
+                                    "side": "buy",
+                                    "reduceOnly": False,
+                                    "amount": "1",
+                                    "timestamp": NOW - 31_001,
+                                }
+                            ]
+                            if scenario == "historical_opening_trade"
                             else []
                         ),
                     ],
@@ -1105,6 +1124,8 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
         assert observation.evidence["error_code"] == "opentrade_exit_price_invalid"
     if scenario == "external_scale_in_trade":
         assert observation.evidence["unmatched_opening_trade_count"] == 1
+    if scenario == "historical_opening_trade":
+        assert observation.evidence["unmatched_opening_trade_count"] == 0
     if scenario in {"rejected_missing_fill", "rejected_invalid_fill"}:
         assert observation.evidence["error_code"] == "opentrade_fill_quantity_invalid"
     if scenario == "rejected_with_open_order":

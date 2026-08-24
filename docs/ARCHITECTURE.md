@@ -1371,8 +1371,12 @@ open-order inventory: closing only the filled slice could leave the working
 remainder to fill afterward, so that composite observation is `UNKNOWN`/manual
 and issues no close. A later read must first prove the entry terminal. Every
 same-side or otherwise unclassified opening trade for an active position must
-carry the tracked entry order ID; unmatched opening evidence is manual, never
-adopted or closed. A canceled/rejected entry is terminal only with an explicit
+carry the tracked entry order ID during the current order lifecycle; a provider
+timestamp proven earlier than the frozen instrument/preflight cutoff is prior
+history after accounting for the provider's tolerated 30-second clock skew,
+while a missing or nearer timestamp remains conservatively current. Unmatched
+current opening evidence is manual, never adopted or closed. A
+canceled/rejected entry is terminal only with an explicit
 finite zero fill, not a missing or malformed quantity, and only when the same
 snapshot has no current open-order exposure or correlated-but-unattributable
 position history. Contradictory composite evidence remains `UNKNOWN`/manual.

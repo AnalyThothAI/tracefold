@@ -33,6 +33,7 @@ from tracefold.trading import (
 _API = "/open/trader/newsliquid/v1"
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _ABSENCE_WINDOW_MS = 7 * 86_400_000
+_MAX_SERVER_CLOCK_SKEW_MS = 30_000
 _STOP_ORDER_TYPES = frozenset({"stop", "stop_market", "stop_loss", "stop_loss_market"})
 
 
@@ -255,7 +256,12 @@ class OpenTradeAdapter:
         unmatched_opening_trades = [
             row
             for row in trade_rows
-            if _possible_opening_trade(row, entry_side=order.side) and _optional_text(row.get("orderId")) != remote_id
+            if _possible_current_opening_trade(
+                row,
+                entry_side=order.side,
+                lifecycle_started_at_ms=order.instrument.observed_at_ms,
+            )
+            and _optional_text(row.get("orderId")) != remote_id
         ]
         evidence = {
             "schema": "tracefold.trading.execution_observation.v2",
@@ -420,7 +426,7 @@ class OpenTradeAdapter:
             timestamp = int(value)
         except (TypeError, ValueError):
             raise OpenTradeContractError("opentrade_server_time_invalid") from None
-        if abs(self._clock() - timestamp) > 30_000:
+        if abs(self._clock() - timestamp) > _MAX_SERVER_CLOCK_SKEW_MS:
             raise OpenTradeContractError("opentrade_server_time_stale")
         return timestamp
 
@@ -658,8 +664,13 @@ def _filled_quantity(*groups: Sequence[Mapping[str, Any]]) -> Decimal | None:
     return max(candidates) if candidates else None
 
 
-def _possible_opening_trade(row: Mapping[str, Any], *, entry_side: OrderSide) -> bool:
+def _possible_current_opening_trade(
+    row: Mapping[str, Any], *, entry_side: OrderSide, lifecycle_started_at_ms: int
+) -> bool:
     if row.get("reduceOnly") is True:
+        return False
+    timestamp = _optional_timestamp(row.get("timestamp"))
+    if timestamp is not None and timestamp < lifecycle_started_at_ms - _MAX_SERVER_CLOCK_SKEW_MS:
         return False
     side = _optional_text(row.get("side"))
     closing_side = "sell" if entry_side == "buy" else "buy"
