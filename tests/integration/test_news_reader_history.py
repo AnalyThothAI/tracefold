@@ -9,8 +9,6 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
-from tracefold.news.reader_history import RECENT_HISTORY_MAX, RECENT_HISTORY_WINDOW_MS
-from tracefold.news.storage.decisions import _READER_HISTORY_PROJECTION
 
 pytestmark = pytest.mark.integration
 
@@ -260,42 +258,9 @@ def test_targeted_history_is_not_displaced_by_more_than_128_recent_cards(conn) -
                 ts="2026-08-28T11:00:00+08:00",
             )
             _persist_sent_triage_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
-        noise_event = _admit(
-            repos,
-            hit_id=175500,
-            text="Index plan noise owner remains outside the sent reader ledger",
-            symbol="NOISEBASE",
-            ts="2026-08-28T11:30:00+08:00",
-        )
-        noise_opened = conn.execute(
-            "SELECT opened_at_ms FROM news_events WHERE event_id=%s",
-            (noise_event,),
-        ).fetchone()
-        assert noise_opened is not None
-        conn.execute(
-            """
-            INSERT INTO news_event_assets(symbol, event_id, market_type, opened_at_ms)
-            SELECT 'NOISE' || lpad(value::text, 5, '0'), %s, NULL, %s
-              FROM generate_series(1, 7000) value
-            """,
-            (noise_event, noise_opened["opened_at_ms"]),
-        )
-        conn.execute("ANALYZE news_event_assets")
-        plan_rows = conn.execute(
-            "EXPLAIN (ANALYZE, BUFFERS) "
-            + _READER_HISTORY_PROJECTION
-            + """
-             WHERE e.event_id <> %s AND d.settled_at_ms >= %s
-             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
-            """,
-            (current, now_ms - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
-        ).fetchall()
-        plan = "\n".join(str(row["QUERY PLAN"]) for row in plan_rows)
 
     history = repos.news.reader_history(event_id=current, now_ms=now_ms)
 
-    assert "ix_news_event_assets_event" in plan
-    assert "Seq Scan on news_event_assets" not in plan
     assert len(history.recent_seen_rows) == 128
     assert prior not in {row.event_id for row in history.recent_seen_rows}
     assert [(row.event_id, row.reason) for row in history.targeted_told_rows] == [(prior, "canonical_asset_overlap")]

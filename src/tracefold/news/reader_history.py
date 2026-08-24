@@ -8,7 +8,6 @@ from typing import Any, Final, Literal
 
 from .artifact_identity import canonical_sha
 from .models import base_symbol
-from .semantic_contract import TOLD_SELECTOR_SHA256
 
 RECENT_HISTORY_WINDOW_MS: Final = 4 * 3_600_000
 TARGETED_HISTORY_WINDOW_MS: Final = 48 * 3_600_000
@@ -56,15 +55,20 @@ READER_HISTORY_CONTRACT: Final = {
     "ordering": "reason_then_sent_desc_event_id",
 }
 READER_HISTORY_SHA256: Final = canonical_sha(READER_HISTORY_CONTRACT)
-NEWS_RETRIEVAL_SHA256: Final = canonical_sha(
-    {
-        "reader_history_sha256": READER_HISTORY_SHA256,
-        "told_selector_sha256": TOLD_SELECTOR_SHA256,
-    }
-)
 
 HistoryScope = Literal["recent", "targeted"]
 HistoryReason = Literal["recent", "exact_fingerprint", "canonical_asset_overlap"]
+
+
+def news_retrieval_sha256(*, told_selector_sha256: str) -> str:
+    """Compose the retrieval root without making history depend on its selector consumer."""
+
+    return canonical_sha(
+        {
+            "reader_history_sha256": READER_HISTORY_SHA256,
+            "told_selector_sha256": str(told_selector_sha256),
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +243,6 @@ def _newest_first(row: ReaderHistoryRow) -> tuple[int, str]:
 
 
 __all__ = [
-    "NEWS_RETRIEVAL_SHA256",
     "READER_HISTORY_CONTRACT",
     "READER_HISTORY_ID",
     "READER_HISTORY_SHA256",
@@ -252,4 +255,5 @@ __all__ = [
     "ReaderHistorySnapshot",
     "assemble_reader_history",
     "build_reader_history",
+    "news_retrieval_sha256",
 ]

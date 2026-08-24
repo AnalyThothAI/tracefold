@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from tracefold.news.reader_history import (
-    NEWS_RETRIEVAL_SHA256,
     READER_HISTORY_SHA256,
     RECENT_HISTORY_WINDOW_MS,
     TARGETED_HISTORY_WINDOW_MS,
     build_reader_history,
+    news_retrieval_sha256,
 )
 from tracefold.news.semantic_contract import TOLD_SELECTOR_SHA256
 
@@ -21,9 +21,12 @@ DISCOVERY = (
 
 
 def test_reader_history_and_composite_retrieval_identities_are_content_addressed() -> None:
+    composite = news_retrieval_sha256(told_selector_sha256=TOLD_SELECTOR_SHA256)
+
     assert len(READER_HISTORY_SHA256) == 64
-    assert NEWS_RETRIEVAL_SHA256 != READER_HISTORY_SHA256
-    assert NEWS_RETRIEVAL_SHA256 != TOLD_SELECTOR_SHA256
+    assert composite != READER_HISTORY_SHA256
+    assert composite != TOLD_SELECTOR_SHA256
+    assert composite != news_retrieval_sha256(told_selector_sha256="f" * 64)
 
 
 def _row(

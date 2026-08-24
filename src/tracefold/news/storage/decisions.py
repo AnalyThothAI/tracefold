@@ -106,21 +106,10 @@ class DecisionStorage:
               SELECT base AS symbol FROM current_bases
               UNION
               SELECT a.alias FROM news_symbol_aliases a JOIN current_bases b ON b.base = a.base_symbol
-            ), candidate_events AS MATERIALIZED (
-              SELECT DISTINCT candidate.event_id
-                FROM equivalent_symbols equivalent
-                CROSS JOIN LATERAL (
-                  -- OFFSET 0 keeps this as one symbol-led primary-key lookup per canonical equivalent.
-                  -- Without the subquery boundary PostgreSQL flattens the join and scans every Event asset.
-                  SELECT ea.event_id FROM news_event_assets ea
-                   WHERE ea.symbol = equivalent.symbol
-                   OFFSET 0
-                ) candidate
             )
             """
             + _READER_HISTORY_PROJECTION
             + """
-             JOIN candidate_events candidate ON candidate.event_id = e.event_id
              CROSS JOIN current_event current
              WHERE e.event_id <> current.event_id
                AND NOT (
@@ -128,6 +117,11 @@ class DecisionStorage:
                  AND e.comparison_fingerprint = current.comparison_fingerprint
                )
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+               AND EXISTS (
+                 SELECT 1 FROM news_event_assets candidate_asset
+                  WHERE candidate_asset.event_id = e.event_id
+                    AND candidate_asset.symbol IN (SELECT symbol FROM equivalent_symbols)
+               )
              ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
             """,
             (

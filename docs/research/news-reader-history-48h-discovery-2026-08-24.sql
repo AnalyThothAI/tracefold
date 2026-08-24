@@ -118,27 +118,20 @@ WITH current_event AS (
   SELECT base AS symbol FROM current_bases
   UNION
   SELECT a.alias FROM news_symbol_aliases a JOIN current_bases b ON b.base = a.base_symbol
-), candidate_events AS MATERIALIZED (
-  SELECT DISTINCT candidate.event_id
-    FROM equivalent_symbols equivalent
-    CROSS JOIN LATERAL (
-      -- Preserve a symbol-led lookup on news_event_assets(symbol,event_id). Without this subquery boundary,
-      -- PostgreSQL can flatten the semi-join into one event-id probe per delivery in the 48 h window.
-      SELECT ea.event_id FROM news_event_assets ea
-       WHERE ea.symbol = equivalent.symbol
-       OFFSET 0
-    ) candidate
 )
 SELECT e.event_id, d.settled_at_ms
   FROM current_event
-  JOIN candidate_events candidate ON true
-  JOIN news_events e ON e.event_id = candidate.event_id
   JOIN news_deliveries d
-    ON d.event_id = e.event_id
-   AND d.kind = 'first'
+    ON d.kind = 'first'
    AND d.state = 'sent'
    AND d.settled_at_ms >= current_event.opened_at_ms - 48 * 3_600_000
    AND d.settled_at_ms < current_event.opened_at_ms - 4 * 3_600_000
+  JOIN news_events e ON e.event_id = d.event_id
+ WHERE EXISTS (
+   SELECT 1 FROM news_event_assets candidate_asset
+    WHERE candidate_asset.event_id = e.event_id
+      AND candidate_asset.symbol IN (SELECT symbol FROM equivalent_symbols)
+ )
  ORDER BY d.settled_at_ms DESC, e.event_id
  LIMIT 24;
 

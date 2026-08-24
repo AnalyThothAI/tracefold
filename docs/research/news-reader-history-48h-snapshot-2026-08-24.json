@@ -76,8 +76,9 @@
     }
   },
   "query_plan": {
-    "targeted_candidate_execution_ms_pre_index": 1.419,
-    "targeted_candidate_shared_buffers_hit_pre_index": 236,
+    "targeted_candidate_execution_ms_pre_index": 230.855,
+    "targeted_candidate_shared_buffers_hit_pre_index": 43992,
+    "targeted_candidate_pre_index_shape": "48h sent deliveries followed by repeated event-id skip scans on the symbol-led primary key",
     "canonical_projection_execution_ms_pre_index": 48.959,
     "canonical_projection_shared_buffers_hit_pre_index": 13466,
     "canonical_projection_pre_index_shape": "news_event_assets sequential scan repeated 128 times",
@@ -89,13 +90,13 @@
       "news_symbol_aliases_pkey"
     ],
     "decision": "add ix_news_event_assets_event(event_id,symbol) in migration 20260824_0302",
-    "post_migration_plan_source": "migrated local PostgreSQL with the 129-card cap fixture plus 7000 noise asset rows",
-    "post_migration_plan": {
+    "post_migration_projection_plan_source": "migrated local PostgreSQL with the 129-card cap fixture plus 7000 noise asset rows",
+    "post_migration_projection_plan": {
       "execution_ms": 3.749,
       "shared_buffers_hit": 4517,
       "asset_node": "Bitmap Index Scan on ix_news_event_assets_event, 128 index searches, 384 asset-index buffer hits"
     },
-    "caveat": "production figures are one warm snapshot; PR-B must retain bounded limits and re-run the checked SQL after migration 0302"
+    "caveat": "production figures are one warm pre-index snapshot; the checked target query is 48h delivery-led and migration 0302 supplies its event-led asset lookup; PR-B must re-run it after migration"
   },
   "pr_a_identity_guard": {
     "program_version": "news_semantic_program_v4",
