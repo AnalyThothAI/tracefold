@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-from ..contracts import ACTIVE_ORDER_STATES, TRADING_LIVE_APPROVAL_MARKER, TRADING_LIVE_APPROVAL_TTL_MS
+from ..contracts import (
+    ACTIVE_ORDER_STATES,
+    TRADING_LIVE_APPROVAL_MARKER,
+    TRADING_LIVE_APPROVAL_TTL_MS,
+    canonical_sha256,
+)
 from .sql_values import _dumps
 
 _ACTIVE_SQL: Final = ", ".join(f"'{state}'" for state in ACTIVE_ORDER_STATES)
@@ -245,7 +250,33 @@ class OrderStorage:
             )
         else:  # pragma: no cover - the CLI constrains the choices
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
-        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+        resolved = int(getattr(cursor, "rowcount", 0) or 0) > 0
+        if resolved:
+            content = {
+                "outcome": outcome,
+                "reason": reason,
+                "remote_order_id": remote_order_id,
+                "resolved_at_ms": int(now_ms),
+            }
+            self.conn.execute(
+                """
+                INSERT INTO trading_order_observations (
+                  order_id, observation_kind, content_sha256, content,
+                  first_seen_at_ms, last_seen_at_ms, seen_count
+                ) VALUES (%s, 'operator_resolution', %s, %s::jsonb, %s, %s, 1)
+                ON CONFLICT (order_id, observation_kind, content_sha256) DO UPDATE
+                   SET last_seen_at_ms = EXCLUDED.last_seen_at_ms,
+                       seen_count = trading_order_observations.seen_count + 1
+                """,
+                (
+                    order_id,
+                    canonical_sha256(content),
+                    _dumps(content),
+                    int(now_ms),
+                    int(now_ms),
+                ),
+            )
+        return resolved
 
     def promote_acknowledged(
         self,
@@ -377,6 +408,21 @@ class OrderStorage:
         row = self.conn.execute("SELECT * FROM trading_orders WHERE case_id = %s", (case_id,)).fetchone()
         return dict(row) if row is not None else None
 
+    def latest_open_resolution_sha256(self, *, order_id: str) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT content_sha256
+              FROM trading_order_observations
+             WHERE order_id = %s
+               AND observation_kind = 'operator_resolution'
+               AND content->>'outcome' = 'open'
+             ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
+             LIMIT 1
+            """,
+            (order_id,),
+        ).fetchone()
+        return None if row is None else str(row["content_sha256"])
+
     def due_orders(self, *, now_ms: int, limit: int = 32) -> list[dict[str, Any]]:
         """Live orders whose next reconcile is due, oldest first."""
 
@@ -391,6 +437,16 @@ class OrderStorage:
                    AND observation_kind = 'close'
                    AND content->>'remote_order_id' IS NOT NULL
                    AND content->>'exit_attempt_ordinal' = o.exit_attempt_total::text
+                   AND content->>'operator_generation_sha256' IS NOT DISTINCT FROM (
+                     SELECT reset.content_sha256
+                       FROM trading_order_observations reset
+                      WHERE reset.order_id = o.order_id
+                        AND reset.observation_kind = 'operator_resolution'
+                        AND reset.content->>'outcome' = 'open'
+                      ORDER BY reset.last_seen_at_ms DESC, reset.first_seen_at_ms DESC,
+                               reset.content_sha256 DESC
+                      LIMIT 1
+                   )
                  ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
                  LIMIT 1
               ) latest_close ON true

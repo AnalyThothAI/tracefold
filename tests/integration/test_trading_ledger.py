@@ -1973,6 +1973,69 @@ def test_an_ambiguous_new_close_never_reuses_an_older_attempts_terminal_identity
     assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
 
 
+def test_manual_rearm_fences_off_old_close_identity_when_the_new_attempt_is_ambiguous(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    trading = _repos(conn).trading
+    trading.update_order(
+        order_id=str(row["order_id"]),
+        state="MANUAL_REVIEW_REQUIRED",
+        state_reason="operator_check_required",
+        next_reconcile_at_ms=NOW + 2_000,
+        now_ms=NOW + 2_000,
+    )
+    assert trading.resolve_manual_review(
+        order_id=str(row["order_id"]),
+        outcome="open",
+        reason="position_still_open",
+        now_ms=NOW + 3_000,
+    )
+    conn.commit()
+
+    adapter.close_faults = ["timeout"]
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+
+    stale_terminal = _live_position_observation(row, protected=False)
+    adapter.observations = [
+        stale_terminal.model_copy(update={"evidence": {**stale_terminal.evidence, "close_terminal_without_fill": True}})
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 61_002,
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert adapter.observed_close_ids[-1] is None
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+
+
 def test_slow_live_observation_that_crosses_max_holding_closes_in_the_same_turn(conn) -> None:
     policy = OrderPolicy(
         fixed_notional_usd=Decimal("10"),

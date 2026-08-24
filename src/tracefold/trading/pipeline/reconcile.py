@@ -821,7 +821,11 @@ class ReconcileRunner:
         def _write(repos: Any) -> None:
             current = repos.trading.order(order_id=order.order_id)
             attempt_ordinal = 0 if current is None else int(current.get("exit_attempt_total") or 0)
-            content = {**receipt_content, "exit_attempt_ordinal": attempt_ordinal}
+            content = {
+                **receipt_content,
+                "exit_attempt_ordinal": attempt_ordinal,
+                "operator_generation_sha256": repos.trading.latest_open_resolution_sha256(order_id=order.order_id),
+            }
             repos.trading.record_observation(
                 order_id=order.order_id,
                 observation_kind="close",

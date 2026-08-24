@@ -1438,10 +1438,13 @@ the close leaves the position open and escalates; it never books a result.
 The two legs also need different retry contracts, and giving the exit the
 entry's made a position unclosable. An entry gets one attempt ever — a resend
 doubles it, and no read makes that safe. An exit gets one attempt *per known
-state*: `exit_attempt_count` is released only when a read has proven the
-position is still open, which proves the previous close did not take effect, and
-`exit_attempt_total` caps that at three. `SAFETY_CLOSING` is the exit's analogue
-of `SUBMITTING` and terminalises the same way after a restart.
+state*: `exit_attempt_count` is released only when the exact attempt-scoped close
+identity is terminal rejected/canceled with an explicit zero fill and no open or
+trade evidence. A position snapshot alone may lag the close and never makes a
+retry safe. `exit_attempt_total` caps automatic attempts at three, and an
+operator `open` resolution writes a durable generation fence so a later attempt
+cannot reuse pre-resolution close evidence. `SAFETY_CLOSING` is the exit's
+analogue of `SUBMITTING` and terminalises the same way after a restart.
 
 `MANUAL_REVIEW_REQUIRED` is where every unprovable outcome lands, and it sits
 inside the active-underlying index on purpose — unknown exposure must block. It
