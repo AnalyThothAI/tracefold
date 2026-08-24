@@ -77,6 +77,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "degraded_no_objective_guard": "模型不可用且未命中客观推送条件",
     "listing_deterministic": "上币/下币公告按客观规则推送",
     "telemetry_deterministic": "持仓异动按客观规则判断",
+    "oi_parse_failed": "持仓异动供应商格式无法解析，已安全拦截",
     "watchlist_objective_guard": "命中关注列表客观条件",
     "trade_relevance_escalate": "交易相关性达到重点推送标准",
     "trade_relevance_realtime": "交易相关性达到实时推送标准",
@@ -103,6 +104,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
 }
 
 ERROR_CODE_ZH: Final[dict[str, str]] = {
+    "oi_parse_failed": "持仓异动供应商格式无法解析",
     "news_triage_timeout": "模型超时",
     "news_triage_output_truncated": "模型输出被截断",
     "news_triage_output_invalid": "模型输出格式错误",

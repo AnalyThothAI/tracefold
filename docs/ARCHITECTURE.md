@@ -421,7 +421,8 @@ any decision, and absent rather than approximated when no fresh value exists —
 OI telemetry has no provider coin tag and therefore no `news_event_assets` row.
 Its deterministic parser, `telemetry_deterministic` admission, matching
 `news_oi_signals(event_id, oi_signal_v1)` ledger row, and current OI Program
-version plus SHA (including reader contract and OI policy) together form an
+version plus SHA (including reader contract, parser, eligible-rank semantics and
+OI policy) together form an
 equivalent code-grounded reader asset. Deliverer uses that one
 verified asset list for both facts and quotes, while the Quote planner unions
 symbols from recent live OI ledger rows into its existing bounded working set.
@@ -1218,11 +1219,12 @@ admits it as `telemetry_deterministic`.
 Those four numbers are the whole message, so Triage judges the frame by
 arithmetic instead of spending two structured model calls re-reading them.
 `tracefold.news.oi_signals` parses it, ranks it against the symbol's other
-frames in a rolling `window_ms` (4 h), and returns an ordinary
+threshold-eligible frames in a rolling `window_ms` (4 h), and returns an ordinary
 `ScoredJudgment` with `editorial_origin=telemetry_deterministic` and null
 relevance:
-a qualifying frame — inside `max_rank_in_window` (2) with `whale_oi_ratio_bps`
-above `whale_oi_ratio_above_bps` (8000, which the frame must exceed) — is an
+a qualifying frame — inside `max_rank_in_window` (2), with `whale_oi_ratio_bps`
+above `whale_oi_ratio_above_bps` (8000, which the frame must exceed), and with
+absolute OI change at least `oi_change_at_least_bps` — is an
 actionable, directional
 magnitude-2 `oi_spike` with a push intent, and a rejected one is a
 self-consistent magnitude-0 `noise` that the deterministic telemetry action
@@ -1232,7 +1234,8 @@ Returning the same typed scored judgment rather than a separate delivery lane
 is the design, not a detail.
 The rule counts, and `decide()` deliberately cannot: policy v7 removed every
 reader quota and `StorylineStatus` is tested to carry no capacity field.
-Counting inside the evaluator and handing `decide()` a verdict it already knows
+Counting eligible history in PostgreSQL inside the Triage transaction and
+handing `decide()` a verdict it already knows
 how to rule on keeps one decision plane, and keeps delivery, receipts,
 `event_outcome`, the feed, the counters and the audit trail on the single path
 they were built for.
@@ -1250,13 +1253,18 @@ exemption they were given in #72, which is per instrument rather than blanket,
 because two notices for the same instrument really are one fact.
 
 Rank, ledger row and verdict are written in one transaction under the storyline's
-advisory lock. The rank is a count of the symbol's other frames, so reading it
-outside the lock lets two frames for one symbol both see a history without the
-other and both claim the same rank.
+advisory lock. PostgreSQL filters the complete `(cutoff, observed_at]` range by
+the same strict whale-ratio and inclusive absolute-change thresholds before
+`count(*)`; ineligible frames stay in the ledger for audit but never spend a
+later signal's rank. Reading that count outside the lock would let two frames for
+one symbol both see a history without the other and both claim the same rank.
 
 `news_oi_signals` is the rank ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
-cascade-deleted with it. Two consequences of judging these frames rather than
+cascade-deleted with it. `rank_in_window` is the eligible rank under the policy
+recorded in the verdict trace; rows that failed a threshold are still stored and
+carry the eligible position they would have occupied without consuming it for
+later rows. Two consequences of judging these frames rather than
 suppressing them are deliberate and worth stating: every 1019 frame now carries
 a verdict, so `news.retention` keeps its Item for 365 days instead of purging at
 30 (~70k small rows a year), and the card may show the ledger-verified ticker
@@ -1265,6 +1273,15 @@ row. A pre-reader-contract verdict, a mismatched Program SHA, or an unavailable
 quote leaves that ticker/行情 context absent. The decision itself lives in `news_verdicts` like every
 other decision, which is also where the lane's idempotency comes from — Triage
 already re-publishes an unpublished push on redelivery.
+
+Strategy provenance and parser success are separate contracts. Every live 1019
+frame bypasses near-duplicate matching so provider format drift reaches Triage;
+an unparseable frame fails closed without a model call and persists the named
+`oi_parse_failed` rule/error. Its trace and structured warning carry strategy
+id, OpenNews/provider source, a title SHA-256 rather than raw text, parser
+version and failure stage. Status exposes 24 h received, parsed, parse-failed
+and pushed counts, while ordinary non-1019 OI prose keeps the normal Deduper and
+model path.
 
 Two places treat these Events specially and both are explicit: they are exempt
 from near-duplicate matching (two frames for one symbol differ only in their

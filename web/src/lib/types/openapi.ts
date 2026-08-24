@@ -1326,10 +1326,25 @@ export interface components {
              */
             tagged_24h: number;
             /**
+             * Telemetry Parse Failed 24H
+             * @default 0
+             */
+            telemetry_parse_failed_24h: number;
+            /**
+             * Telemetry Parsed 24H
+             * @default 0
+             */
+            telemetry_parsed_24h: number;
+            /**
              * Telemetry Push 24H
              * @default 0
              */
             telemetry_push_24h: number;
+            /**
+             * Telemetry Received 24H
+             * @default 0
+             */
+            telemetry_received_24h: number;
             /**
              * Throttled 24H
              * @default 0

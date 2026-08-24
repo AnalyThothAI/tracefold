@@ -276,7 +276,7 @@ class NewsOiSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     window_ms: int = 4 * 3_600_000
-    # The opening moves of a run, by count. This is the knob that decides volume.
+    # The opening eligible moves of a run, by count. This is the knob that decides volume.
     max_rank_in_window: int = 2
     # A frame must *exceed* this: the rule is 大于 80%, so exactly 8000 does not qualify.
     whale_oi_ratio_above_bps: int = 8_000

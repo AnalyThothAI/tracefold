@@ -113,13 +113,13 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.
-        # #137: the rank read runs on every telemetry frame.
+        # #179: the eligible-rank count runs on every parsed telemetry frame.
         ReadQuerySpec(
             name="news_signal_history",
-            sql="SELECT observed_at_ms FROM news_oi_signals "
+            sql="SELECT count(*)::int AS n FROM news_oi_signals "
             "WHERE metric_version = 'oi_signal_v1' AND symbol = 'BTC' "
             "AND observed_at_ms > 0 AND observed_at_ms < 1 AND event_id <> '' "
-            "ORDER BY observed_at_ms DESC LIMIT 64",
+            "AND whale_oi_ratio_bps > 8000 AND abs(oi_change_bps) >= 0",
         ),
         ReadQuerySpec(
             name="news_quote_snapshot_read",

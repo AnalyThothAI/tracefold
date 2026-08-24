@@ -466,6 +466,10 @@ Diagnose News in this order:
    `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
    raw first line -> normalized title -> gate facts -> triage verdict ->
    decide rule / throttle key -> storyline status snapshots -> delivery.
+   For strategy 1019, compare `telemetry_received_24h`,
+   `telemetry_parsed_24h`, `telemetry_parse_failed_24h`, and
+   `telemetry_push_24h`; `dropped_by_rule.oi_parse_failed` is a provider parser
+   contract fault, not ordinary model noise.
 4. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or webhook invalid;
    `ambiguous_after_crash` = a send whose ack was lost). Historical rows can

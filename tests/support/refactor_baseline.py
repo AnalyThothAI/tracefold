@@ -117,12 +117,12 @@ NOW_MS = 1_787_000_000_000
 # generated contract artefacts move with it, and the code-owned stable Program root is re-issued.
 INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
     "generated_artifacts_sha256.docs/generated/openapi.json": (
-        "issue_173_product_progress_channel",
-        "b0e424cf22fe9b12a6d5e5e8f59098315bb0c2b7f77e0775b27b014120efa23a",
+        "issue_179_oi_parser_health_counts",
+        "f5af9c03b9b53f40c99bdd490a4c6bac9ad6169d6cd817bc94153af2a68133b1",
     ),
     "generated_artifacts_sha256.web/src/lib/types/openapi.ts": (
-        "issue_173_product_progress_channel",
-        "1fd00735c168b23be86806c96d4e062a484ff42756e29dc52fcec0fe9211290a",
+        "issue_179_oi_parser_health_counts",
+        "9f2de6729206f0af240078a0872877b3afb32ab56f86e09660e1da51a672ebcb",
     ),
     # #162 PR8-B moved the Program into its own package and split the learning plane away from it. The
     # factory source closure is addressed by logical file name, so the move re-issues the Program root

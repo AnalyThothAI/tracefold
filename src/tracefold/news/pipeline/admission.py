@@ -27,7 +27,6 @@ from ..events.storyline import preliminary_storyline_key
 from ..events.titles import description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
-from ..oi_signals import parse_oi_signal
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from .runtime import NewsDatabasePort
 
@@ -311,13 +310,13 @@ def admit_item(
         # and never count toward its own rank. Byte-identical redeliveries are still collapsed by the
         # exact fingerprint above.
         #
-        # Keyed on the parser rather than on `family`: `event_family()` calls anything matching
-        # \b(oi|open interest|whale oi ratio)\b market telemetry, which includes ordinary prose such as
-        # "Bitcoin open interest hits a record". Exempting that too would let one story from two
-        # sources become two Events, two model calls and possibly two cards.
+        # Keyed on Gate admission rather than parser success: strategy 1019 is provider provenance,
+        # and a format-drift frame must reach Triage's explicit `oi_parse_failed` state instead of
+        # disappearing into a near-duplicate Event. Ordinary OI prose has `candidate` admission and
+        # keeps the normal duplicate path.
         candidates = (
             ()
-            if parse_oi_signal(title) is not None
+            if gate.admission == "telemetry_deterministic"
             else news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms)
         )
         for cand in candidates:

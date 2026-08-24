@@ -179,27 +179,41 @@ class DecisionStorage:
         self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
-    def recent_oi_signal_times(
-        self, *, symbol: str, metric_version: str, since_ms: int, before_ms: int, exclude_event_id: str = ""
-    ) -> list[int]:
-        """Every *other* frame recorded for this symbol inside the window, newest first.
+    def count_recent_eligible_oi_signals(
+        self,
+        *,
+        symbol: str,
+        metric_version: str,
+        since_ms: int,
+        before_ms: int,
+        whale_oi_ratio_above_bps: int,
+        oi_change_at_least_bps: int,
+        exclude_event_id: str = "",
+    ) -> int:
+        """Count eligible *other* frames for this symbol in ``(since_ms, before_ms]``.
 
-        The rank rule counts frames, not pushes: a frame the rule rejected still happened and still
-        moves the next one further down the run. ``before_ms`` is the judged frame's own timestamp, so
-        a frame processed out of order — the outbox rescue, or the retry lane — is not ranked behind
-        frames that arrived after it. It is inclusive because the provider can stamp two frames for one
-        symbol with the same publication millisecond, and the earlier one still happened;
-        ``exclude_event_id`` is what keeps a redelivery out of its own history.
+        Filtering happens before ``count(*)`` so any number of ineligible rows cannot hide older
+        eligible ones. ``before_ms`` is the judged frame's publication time; the inclusive upper bound
+        preserves provider frames sharing one millisecond, while ``exclude_event_id`` keeps a redelivery
+        out of its own history.
         """
 
-        rows = self.conn.execute(
-            "SELECT observed_at_ms FROM news_oi_signals "
+        row = self.conn.execute(
+            "SELECT count(*)::int AS n FROM news_oi_signals "
             "WHERE metric_version = %s AND symbol = %s "
             "AND observed_at_ms > %s AND observed_at_ms <= %s AND event_id <> %s "
-            "ORDER BY observed_at_ms DESC LIMIT 64",
-            (metric_version, symbol, int(since_ms), int(before_ms), exclude_event_id),
-        ).fetchall()
-        return [int(row["observed_at_ms"]) for row in rows]
+            "AND whale_oi_ratio_bps > %s AND abs(oi_change_bps) >= %s",
+            (
+                metric_version,
+                symbol,
+                int(since_ms),
+                int(before_ms),
+                exclude_event_id,
+                int(whale_oi_ratio_above_bps),
+                int(oi_change_at_least_bps),
+            ),
+        ).fetchone()
+        return int(row["n"] if row is not None else 0)
 
     def oi_signal(self, *, event_id: str, metric_version: str) -> dict[str, Any] | None:
         """The code-verified OI row that may ground its deterministic reader card."""
