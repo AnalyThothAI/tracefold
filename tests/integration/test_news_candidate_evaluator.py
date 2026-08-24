@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
@@ -140,18 +141,19 @@ def _epoch_started_at_ms(conn: object) -> int:
 
 
 def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
-    """What the evaluator requires of the epoch row is the eligible window and the evidence disposition.
+    """The evaluator proves the persisted epoch identity — against what the epoch was *opened* with.
 
-    `program_factory_id` and `artifact_schema_version` record what the epoch was *opened* with, exactly
-    like `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only
-    ever be history. #193 replaced `factory_v5` with `factory_v6` without re-opening the epoch, because a
-    serialization and identity change does not change which evidence is eligible. So the evaluator has to
-    accept a row that still names the old factory, and asserting today's runtime values against those two
-    columns would fail a correctly migrated database.
+    `program_factory_id` and `artifact_schema_version` record what opened the epoch, exactly like
+    `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only ever
+    be history. #193 replaced `factory_v5` with `factory_v6` without re-opening the epoch, because a
+    serialization and identity change does not change which evidence is eligible. Asserting today's
+    runtime values against those columns would therefore fail a correctly migrated database; asserting the
+    historical ones still catches migration drift and a corrupted ledger row, which is what the check is
+    for.
     """
 
     row = conn.execute(
-        "SELECT program_factory_id, artifact_schema_version, baseline_program_version, "
+        "SELECT starts_at_ms, program_factory_id, artifact_schema_version, baseline_program_version, "
         "prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
         (LEARNING_EPOCH,),
     ).fetchone()
@@ -162,17 +164,46 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
     assert row["baseline_program_version"] == PROGRAM_VERSION
     assert row["prior_evidence_disposition"] == "audit_only"
     assert row["reset_reason"] == candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON
-    # The two it no longer validates, still naming what #162 opened the epoch with.
-    assert (row["program_factory_id"], row["artifact_schema_version"]) == (
-        "tracefold.news.program.factory_v5",
-        "news_semantic_program_artifact_v2",
+    # The two that name what #162 opened the epoch with, and are validated against exactly those.
+    assert (
+        (row["program_factory_id"], row["artifact_schema_version"])
+        == (
+            candidate_evaluator_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
+            candidate_evaluator_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+        )
+        == ("tracefold.news.program.factory_v5", "news_semantic_program_artifact_v2")
     )
     assert (
         candidate_evaluator_module.LEARNING_PROGRAM_FACTORY_ID
         == PROGRAM_FACTORY_ID
         == ("tracefold.news.program.factory_v6")
     )
-    assert CandidateEvaluator(conn, stable=_arm(), judges={})._learning_epoch_started_at_ms() > 0
+    evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
+    assert evaluator._learning_epoch_started_at_ms() > 0
+
+    # A drifted or corrupted row must not be treated as an eligible epoch. The table is append-only by
+    # trigger, so the corruption is staged by making the evaluator read a different epoch id.
+    conn.execute(
+        "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, program_factory_id, "
+        "artifact_schema_version, baseline_program_version, baseline_program_sha256, "
+        "prior_evidence_disposition, reset_reason, created_at_ms) "
+        "VALUES ('program_v7_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
+        "'audit_only', %s, %s)",
+        (
+            row["starts_at_ms"],
+            "https://github.com/AnalyThothAI/tracefold/issues/193",
+            candidate_evaluator_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+            PROGRAM_VERSION,
+            "a" * 64,
+            candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
+            row["starts_at_ms"],
+        ),
+    )
+    with (
+        patch.object(candidate_evaluator_module, "LEARNING_EPOCH", "program_v7_corrupted"),
+        pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"),
+    ):
+        CandidateEvaluator(conn, stable=_arm(), judges={})._learning_epoch_started_at_ms()
 
 
 def _arm(

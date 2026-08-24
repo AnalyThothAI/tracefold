@@ -67,6 +67,14 @@ EVALUATOR_VERSION = "news_candidate_evaluator_v1"
 # Must equal the `reset_reason` migration 0302 wrote for `program_v7`. The evaluator validates the
 # epoch row field by field, so a bumped epoch with a stale reason here fails every evaluation.
 LEARNING_EPOCH_RESET_REASON = "program_learning_package_split_identity_migration"
+# What migration 0303 wrote when it opened `program_v7` — deliberately not the runtime constants. The
+# Program root is re-issued *inside* an epoch whenever its serialization or factory changes without
+# changing which evidence is eligible (#173/#174, #190, #193), so the row keeps naming what it was
+# opened with, exactly as `baseline_program_sha256` already did. Asserting these still detects migration
+# drift and ledger corruption; asserting today's values against them would fail a correctly migrated
+# database on every in-epoch re-issue.
+LEARNING_EPOCH_OPENED_FACTORY_ID = "tracefold.news.program.factory_v5"
+LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating, and it would drift silently the first time the factory is bumped.
 LEARNING_PROGRAM_FACTORY_ID = PROGRAM_FACTORY_ID
@@ -2924,19 +2932,20 @@ class CandidateEvaluator:
 
     def _learning_epoch_started_at_ms(self) -> int:
         row = self._conn.execute(
-            "SELECT starts_at_ms, baseline_program_version, prior_evidence_disposition, reset_reason "
+            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
+            "baseline_program_version, prior_evidence_disposition, reset_reason "
             "FROM news_learning_epochs WHERE epoch_id = %s",
             (LEARNING_EPOCH,),
         ).fetchone()
         if row is None:
             raise ValueError("news_learning_epoch_not_deployed")
-        # `program_factory_id` and `artifact_schema_version` name what the epoch was *opened* with, the
-        # same way `baseline_program_sha256` does. The Program root is re-issued inside an epoch whenever
-        # its serialization or factory changes without changing which evidence is eligible (#173/#174,
-        # #190, #193), so asserting today's runtime values against them would fail a correctly migrated
-        # database. What the epoch actually gates is the eligible window and the evidence disposition.
+        # Compared against what the epoch was opened with, not against today's runtime constants. Both
+        # still prove the persisted epoch identity before its evidence is treated as eligible, which is
+        # what catches migration drift or a corrupted ledger row.
         if (
-            str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
+            str(row["program_factory_id"]) != LEARNING_EPOCH_OPENED_FACTORY_ID
+            or str(row["artifact_schema_version"]) != LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION
+            or str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
             or str(row["prior_evidence_disposition"]) != "audit_only"
             or str(row["reset_reason"]) != LEARNING_EPOCH_RESET_REASON
         ):
@@ -3086,6 +3095,8 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "LEARNING_EPOCH",
+    "LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION",
+    "LEARNING_EPOCH_OPENED_FACTORY_ID",
     "LEARNING_EPOCH_RESET_REASON",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
