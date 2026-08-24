@@ -2994,6 +2994,15 @@ def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
 
 
 def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
+    """Whether one observation *dict* carries the identity a release decision needs.
+
+    Every clause here is trivially true of a judgment this process just built, `factory_id` included.
+    That is the point: the function validates a mapping whose provenance the evaluator does not own —
+    replayed, stored, or handed in — and its job is to refuse a shape that has lost its identity, not to
+    re-derive one. What pins a release cohort to a generation is `_accepted_cases`, which filters on the
+    active arm's `program_sha256` and `bundle_sha`; the factory id is a coarser cross-check beside it.
+    """
+
     usage = dict(observation.get("usage") or {})
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])

@@ -428,30 +428,23 @@ class OptimizerCompileProvenanceV3(_ExactModel):
         return self
 
 
-class ProgramInstructionDiffV4(_ExactModel):
-    predictor: Literal["event_semantics", "reader_card"]
-    changed: bool
-
-
 class ProgramMachineDiffV4(_ExactModel):
-    """Which of the two advisory instructions the compile changed; prompt bytes are forbidden.
+    """What the compile changed about the immutable surface: by construction, nothing.
 
-    `factory_id` is the whole immutable surface, and both Program roots already commit to the instruction
-    bytes, so this carries no component root and no digest of its own embedded payload.
+    The predecessor also carried a per-Predictor `changed` flag. Nothing that reads a persisted candidate
+    could falsify it — `CandidateEvaluator` has the two Program roots, not the two instructions — so a
+    receipt claiming the wrong Predictor moved would have been accepted and published as release
+    evidence. A claim no verifier can check is not evidence, so it is not stored; the CLI still derives
+    it for the operator from the artifacts themselves.
     """
 
     schema_version: Literal["tracefold.news.program_machine_diff.v4"]
     factory_id: Literal["tracefold.news.program.factory_v6"]
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
     candidate_program_sha256: str = Field(pattern=_SHA256_PATTERN)
-    instructions: tuple[ProgramInstructionDiffV4, ProgramInstructionDiffV4] = Field(min_length=2, max_length=2)
 
     @model_validator(mode="after")
     def _diff_is_exact(self) -> ProgramMachineDiffV4:
-        if tuple(item.predictor for item in self.instructions) != ("event_semantics", "reader_card"):
-            raise ValueError("news_program_compile_machine_diff_strategy_order_invalid")
-        if not any(item.changed for item in self.instructions):
-            raise ValueError("news_program_compile_machine_diff_empty")
         if self.parent_program_sha256 == self.candidate_program_sha256:
             raise ValueError("news_program_compile_machine_diff_empty")
         _reject_secret_material(self.model_dump(mode="json"), path="program_machine_diff")
@@ -1207,7 +1200,6 @@ __all__ = [
     "CompilerRunnerReceiptsV3",
     "ContentAddressedCompileReceipt",
     "OptimizerCompileProvenanceV3",
-    "ProgramInstructionDiffV4",
     "ProgramMachineDiffV4",
     "gepa_metric_call_ceiling",
     "seal_compile_input",

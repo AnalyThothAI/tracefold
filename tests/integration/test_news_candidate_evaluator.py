@@ -804,10 +804,6 @@ def _program_candidate(
         "factory_id": PROGRAM_FACTORY_ID,
         "parent_program_sha256": stable.program_sha256,
         "candidate_program_sha256": candidate_arm.program_sha256,
-        "instructions": [
-            {"predictor": "event_semantics", "changed": True},
-            {"predictor": "reader_card", "changed": False},
-        ],
     }
     patch_sha = str(compile_provenance.get("patch_sha256") or "0" * 64)
     receipt_values = {

@@ -76,32 +76,38 @@ def program_machine_diff(
     parent: ProgramStrategyArtifactV1,
     candidate: ProgramStrategyArtifactV1,
 ) -> dict[str, Any]:
-    """Return which of the two instructions the compile changed; never prompt content.
+    """Prove the compile changed nothing but the advisory instructions, and say which ones.
 
-    The immutable surface is no longer restated field by field: `factory_id` is the whole of it, and the two
-    Program roots already commit to the instruction bytes — so a per-instruction digest here would only
-    re-hash a payload its parent already addresses.
+    The returned mapping is the persisted receipt: `factory_id` is the whole immutable surface, and the two
+    Program roots already commit to the instruction bytes. `changed_predictors` is returned beside it for
+    the operator and is deliberately not part of the receipt — nothing that reads a stored candidate holds
+    the instructions, so it could never be checked there.
     """
 
     if candidate.factory_id != parent.factory_id or candidate.schema_version != parent.schema_version:
         raise ValueError("news_program_compile_machine_diff_immutable_change")
-    predictors: tuple[PredictorName, ...] = ("event_semantics", "reader_card")
-    instructions = [
-        {
-            "predictor": predictor,
-            "changed": parent.instruction_for(predictor) != candidate.instruction_for(predictor),
-        }
-        for predictor in predictors
-    ]
-    if not any(item["changed"] for item in instructions):
+    if not changed_predictors(parent, candidate):
         raise ValueError("news_program_compile_machine_diff_empty")
     return {
         "schema_version": "tracefold.news.program_machine_diff.v4",
         "factory_id": parent.factory_id,
         "parent_program_sha256": parent.program_sha256,
         "candidate_program_sha256": candidate.program_sha256,
-        "instructions": instructions,
     }
+
+
+def changed_predictors(
+    parent: ProgramStrategyArtifactV1,
+    candidate: ProgramStrategyArtifactV1,
+) -> tuple[PredictorName, ...]:
+    """Which advisory instructions a candidate rewrote, for the operator-facing proposal document."""
+
+    predictors: tuple[PredictorName, ...] = ("event_semantics", "reader_card")
+    return tuple(
+        predictor
+        for predictor in predictors
+        if parent.instruction_for(predictor) != candidate.instruction_for(predictor)
+    )
 
 
 def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, artifact_root: Path) -> str:
@@ -154,6 +160,7 @@ __all__ = [
     "REFLECTION_TIMEOUT_SECONDS",
     "ProgramStrategyPatchV1",
     "apply_trusted_program_patch",
+    "changed_predictors",
     "load_exact_stable_program",
     "load_program_artifact",
     "parse_program_patch",

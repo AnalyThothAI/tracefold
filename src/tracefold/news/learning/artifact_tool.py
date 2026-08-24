@@ -10,6 +10,7 @@ import argparse
 import importlib.resources
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -71,11 +72,30 @@ def _write_image(root: Path, artifact: ProgramStrategyArtifactV1) -> Path:
         if image.read_text(encoding="utf-8") != document:
             raise ValueError("news_program_artifact_existing_image_mismatch")
         return image
-    temporary = image.with_name(f".{image.name}.tmp")
-    temporary.write_text(document, encoding="utf-8")
-    os.replace(temporary, image)
+    # Exclusive, no-follow and unique, then unwound on any failure. The two-file predecessor got this from
+    # `mkdir()`, which is atomic and fails closed on collision; a plain `write_text` to a predictable
+    # `.<name>.tmp` in a package directory would follow a planted symlink and survive a failed rename.
+    temporary = image.with_name(f".{image.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        _write_exclusive(temporary, document)
+        os.replace(temporary, image)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     ProgramStrategyArtifactCodec.decode(image.read_text(encoding="utf-8"))
     return image
+
+
+def _write_exclusive(path: Path, document: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        encoded = document.encode("utf-8")
+        written = 0
+        while written < len(encoded):
+            written += os.write(descriptor, encoded[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> str:

@@ -251,9 +251,11 @@ class _FeedbackCompileProgram(DspyCompileProgram):
     about why. It then proposed text that tripped the same bound again. Returned as a prediction, the code
     reaches the metric and comes back as a repair instruction.
 
-    It lives here rather than in `semantic_program` on purpose: the factory source is hashed into the shipped
-    Artifact's QualityKernel, so editing that module would force a new `program_sha256` and reset the review
-    corpus — the exact failure mode #143 exists to stop.
+    It lives here rather than in the Program package because it is optimizer-only: nothing in the production
+    graph may learn to answer with `advisory_rejected`, and the module boundary is what keeps that true.
+    (Until #193 the stated reason was that the Program package's source was hashed into the shipped
+    Artifact, so editing it re-issued `program_sha256`. That is no longer so — the root commits to the
+    factory id and the two instructions — but the placement is still right for the reason above.)
     """
 
     def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> dspy.Prediction:

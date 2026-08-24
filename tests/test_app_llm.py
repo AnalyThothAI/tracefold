@@ -507,10 +507,6 @@ def _program_candidate_document() -> CandidateManifest:
             "factory_id": "tracefold.news.program.factory_v6",
             "parent_program_sha256": "b" * 64,
             "candidate_program_sha256": candidate_arm.program_sha256,
-            "instructions": [
-                {"predictor": "event_semantics", "changed": False},
-                {"predictor": "reader_card", "changed": True},
-            ],
         },
         compile_provenance={"mode": "test"},
     )
