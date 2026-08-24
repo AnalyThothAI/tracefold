@@ -52,6 +52,9 @@ slice was closed. Cancel or otherwise settle the entry at the venue, then let a
 fresh provider read prove it terminal before resolving the manual row.
 Provider redirects are ambiguous writes even when their body says rejection;
 they never release the daily attempt charge or active-underlying slot.
+A provider rejection with explicit zero fill also remains ambiguous when the
+same snapshot contains any current open order or correlated position history
+that cannot be fully attributed to the tracked lifecycle.
 When a lost entry response reaches manual review with no remote identity, use
 `tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
 after confirming that exact order and position at the venue. The command

@@ -374,7 +374,9 @@ class OpenTradeAdapter:
                 evidence=evidence,
             )
         if (
-            entry_closed
+            not open_rows
+            and not correlated_history
+            and entry_closed
             and all(
                 str(row.get("status") or "").lower() in {"canceled", "cancelled", "rejected"} for row in entry_closed
             )

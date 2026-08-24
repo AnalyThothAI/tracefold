@@ -830,6 +830,8 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("missing_open_timestamp", "CLOSED"),
         ("reversed_close", "UNKNOWN"),
         ("rejected", "REJECTED"),
+        ("rejected_with_open_order", "UNKNOWN"),
+        ("rejected_with_unattributed_history", "UNKNOWN"),
         ("rejected_missing_fill", "UNKNOWN"),
         ("rejected_invalid_fill", "UNKNOWN"),
     ],
@@ -901,7 +903,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                         "reduceOnly": False,
                     }
                 )
-            if scenario == "closed_with_open_order":
+            if scenario in {"closed_with_open_order", "rejected_with_open_order"}:
                 rows.append(
                     {
                         "exchange": "binance",
@@ -945,6 +947,8 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             return httpx.Response(200, json={"success": True, "data": rows}, request=request)
         if path.endswith("/orders/closed") and scenario in {
             "rejected",
+            "rejected_with_open_order",
+            "rejected_with_unattributed_history",
             "rejected_missing_fill",
             "rejected_invalid_fill",
         }:
@@ -1022,6 +1026,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "missing_close_timestamp",
             "missing_open_timestamp",
             "reversed_close",
+            "rejected_with_unattributed_history",
         }:
             return httpx.Response(
                 200,
@@ -1044,10 +1049,19 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                                 {"orderId": "remote-1", "side": "buy", "reduceOnly": False},
                                 *(
                                     [{"orderId": "external-1", "side": "buy", "reduceOnly": False}]
-                                    if scenario in {"mixed_order_history", "mixed_order_history_with_position"}
+                                    if scenario
+                                    in {
+                                        "mixed_order_history",
+                                        "mixed_order_history_with_position",
+                                        "rejected_with_unattributed_history",
+                                    }
                                     else []
                                 ),
-                                {"orderId": "close-1", "side": "sell", "reduceOnly": True},
+                                *(
+                                    [{"orderId": "close-1", "side": "sell", "reduceOnly": True}]
+                                    if scenario != "rejected_with_unattributed_history"
+                                    else []
+                                ),
                             ],
                         }
                     ],
@@ -1086,6 +1100,11 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
         assert observation.evidence["unmatched_opening_trade_count"] == 1
     if scenario in {"rejected_missing_fill", "rejected_invalid_fill"}:
         assert observation.evidence["error_code"] == "opentrade_fill_quantity_invalid"
+    if scenario == "rejected_with_open_order":
+        assert observation.evidence["open_order_ids"] == ["external-1"]
+    if scenario == "rejected_with_unattributed_history":
+        assert observation.evidence["entry_history_correlated_count"] == 1
+        assert observation.evidence["entry_history_count"] == 0
 
 
 def test_provider_snapshot_identity_is_stable_across_collection_order() -> None:

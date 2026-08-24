@@ -1373,7 +1373,9 @@ and issues no close. A later read must first prove the entry terminal. Every
 same-side or otherwise unclassified opening trade for an active position must
 carry the tracked entry order ID; unmatched opening evidence is manual, never
 adopted or closed. A canceled/rejected entry is terminal only with an explicit
-finite zero fill, not a missing or malformed quantity.
+finite zero fill, not a missing or malformed quantity, and only when the same
+snapshot has no current open-order exposure or correlated-but-unattributable
+position history. Contradictory composite evidence remains `UNKNOWN`/manual.
 
 **One provider attempt, ever.** OpenTrade publishes no client idempotency key,
 so nothing downstream can deduplicate a resend. The ledger row moves to
