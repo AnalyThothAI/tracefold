@@ -252,6 +252,11 @@ class OpenTradeAdapter:
         entry_history = _attributed_history_rows(correlated_history, remote_id, entry_side=order.side)
         expected_position_side = "long" if order.side == "buy" else "short"
         expected_positions = [row for row in position_rows if _optional_text(row.get("side")) == expected_position_side]
+        unmatched_opening_trades = [
+            row
+            for row in trade_rows
+            if _possible_opening_trade(row, entry_side=order.side) and _optional_text(row.get("orderId")) != remote_id
+        ]
         evidence = {
             "schema": "tracefold.trading.execution_observation.v2",
             "position_count": len(position_rows),
@@ -267,6 +272,7 @@ class OpenTradeAdapter:
             "entry_trade_count": len(entry_trades),
             "entry_history_correlated_count": len(correlated_history),
             "entry_history_count": len(entry_history),
+            "unmatched_opening_trade_count": len(unmatched_opening_trades),
             "account_identity_proven": account_ref is not None,
         }
         if remote_id is None:
@@ -274,7 +280,7 @@ class OpenTradeAdapter:
         if account_ref != order.account_ref or len(position_rows) > 1 or len(expected_positions) != len(position_rows):
             return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
         if expected_positions:
-            if correlated_history:
+            if correlated_history or unmatched_opening_trades:
                 return ExecutionObservation(state="UNKNOWN", observed_at_ms=server_time, evidence=evidence)
             position = expected_positions[0]
             quantity = _positive_decimal(position.get("contracts"), "opentrade_position_quantity_invalid")
@@ -367,8 +373,12 @@ class OpenTradeAdapter:
                 remote_order_id=remote_id,
                 evidence=evidence,
             )
-        if entry_closed and all(
-            str(row.get("status") or "").lower() in {"canceled", "cancelled", "rejected"} for row in entry_closed
+        if (
+            entry_closed
+            and all(
+                str(row.get("status") or "").lower() in {"canceled", "cancelled", "rejected"} for row in entry_closed
+            )
+            and _all_explicit_zero_fills(entry_closed)
         ):
             return ExecutionObservation(
                 state="REJECTED",
@@ -644,6 +654,18 @@ def _filled_quantity(*groups: Sequence[Mapping[str, Any]]) -> Decimal | None:
     )
     candidates = [*reported, *([traded] if traded > 0 else [])]
     return max(candidates) if candidates else None
+
+
+def _possible_opening_trade(row: Mapping[str, Any], *, entry_side: OrderSide) -> bool:
+    if row.get("reduceOnly") is True:
+        return False
+    side = _optional_text(row.get("side"))
+    closing_side = "sell" if entry_side == "buy" else "buy"
+    return side is None or side.lower() != closing_side
+
+
+def _all_explicit_zero_fills(rows: Sequence[Mapping[str, Any]]) -> bool:
+    return all(_nonnegative_decimal(row.get("filledQty"), "opentrade_fill_quantity_invalid") == 0 for row in rows)
 
 
 def _first_timestamp(rows: Sequence[Mapping[str, Any]], *, server_time: int) -> int | None:

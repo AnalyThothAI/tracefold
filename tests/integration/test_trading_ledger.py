@@ -1930,6 +1930,52 @@ def test_ambiguous_entry_that_was_manually_closed_is_never_released_as_absent(co
     assert int(closed["provider_attempt_count"]) == 1
 
 
+def test_manual_open_recovery_requires_and_persists_the_provider_entry_identity(conn) -> None:
+    adapter = _LiveLifecycleAdapter(submit_fault="timeout")
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    manual = _order_row(conn, str(row["order_id"]))
+    assert manual["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert manual["remote_order_id"] is None
+
+    trading = _repos(conn).trading
+    assert (
+        trading.resolve_manual_review(
+            order_id=str(row["order_id"]),
+            outcome="open",
+            reason="position_confirmed",
+            now_ms=NOW + 2_000,
+        )
+        is False
+    )
+    remote_id = f"remote-{row['order_id']}"
+    assert trading.resolve_manual_review(
+        order_id=str(row["order_id"]),
+        outcome="open",
+        reason="position_confirmed",
+        remote_order_id=remote_id,
+        now_ms=NOW + 2_000,
+    )
+    conn.commit()
+    adapter.observations = [_live_position_observation(row)]
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 2_001
+        ).turn()
+    )
+    recovered = _order_row(conn, str(row["order_id"]))
+    assert recovered["state"] == "OPEN"
+    assert recovered["remote_order_id"] == remote_id
+    assert int(recovered["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+
+
 @pytest.mark.parametrize("missing_field", ["closed_at_ms", "average_price", "exit_price"])
 def test_incomplete_live_close_evidence_never_fabricates_a_terminal_position(conn, missing_field: str) -> None:
     adapter = _LiveLifecycleAdapter()

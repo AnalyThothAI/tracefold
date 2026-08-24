@@ -818,6 +818,7 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("protected_external_order", "UNKNOWN"),
         ("unprotected", "OPEN_UNPROTECTED"),
         ("future_fill", "UNKNOWN"),
+        ("external_scale_in_trade", "UNKNOWN"),
         ("closed", "CLOSED"),
         ("mixed_order_history", "UNKNOWN"),
         ("mixed_order_history_with_position", "UNKNOWN"),
@@ -829,6 +830,8 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("missing_open_timestamp", "CLOSED"),
         ("reversed_close", "UNKNOWN"),
         ("rejected", "REJECTED"),
+        ("rejected_missing_fill", "UNKNOWN"),
+        ("rejected_invalid_fill", "UNKNOWN"),
     ],
 )
 def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> None:
@@ -860,6 +863,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     "protected_external_order",
                     "unprotected",
                     "future_fill",
+                    "external_scale_in_trade",
                     "mixed_order_history_with_position",
                     "closed_then_external_position",
                     "external_position_only",
@@ -939,7 +943,14 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     }
                 )
             return httpx.Response(200, json={"success": True, "data": rows}, request=request)
-        if path.endswith("/orders/closed") and scenario == "rejected":
+        if path.endswith("/orders/closed") and scenario in {
+            "rejected",
+            "rejected_missing_fill",
+            "rejected_invalid_fill",
+        }:
+            fill: dict[str, object] = (
+                {} if scenario == "rejected_missing_fill" else {"filledQty": 0 if scenario == "rejected" else "NaN"}
+            )
             return httpx.Response(
                 200,
                 json={
@@ -950,7 +961,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                             "orderId": "remote-1",
                             "symbol": "DOGE/USDT:USDT",
                             "status": "rejected",
-                            "filledQty": 0,
+                            **fill,
                         }
                     ],
                 },
@@ -964,6 +975,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "protected_external_order",
             "unprotected",
             "future_fill",
+            "external_scale_in_trade",
             "mixed_order_history_with_position",
         }:
             amount = "0.5" if scenario in {"partial", "partial_working"} else "1"
@@ -979,7 +991,23 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                             "symbol": "DOGE/USDT:USDT",
                             "amount": amount,
                             "timestamp": NOW + 1 if scenario == "future_fill" else NOW - 500,
-                        }
+                        },
+                        *(
+                            [
+                                {
+                                    "exchange": "binance",
+                                    "tradeId": "external-trade-1",
+                                    "orderId": "external-order-1",
+                                    "symbol": "DOGE/USDT:USDT",
+                                    "side": "buy",
+                                    "reduceOnly": False,
+                                    "amount": "0.5",
+                                    "timestamp": NOW - 250,
+                                }
+                            ]
+                            if scenario == "external_scale_in_trade"
+                            else []
+                        ),
                     ],
                 },
                 request=request,
@@ -1054,6 +1082,10 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
         assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
     if scenario == "missing_close_price":
         assert observation.evidence["error_code"] == "opentrade_exit_price_invalid"
+    if scenario == "external_scale_in_trade":
+        assert observation.evidence["unmatched_opening_trade_count"] == 1
+    if scenario in {"rejected_missing_fill", "rejected_invalid_fill"}:
+        assert observation.evidence["error_code"] == "opentrade_fill_quantity_invalid"
 
 
 def test_provider_snapshot_identity_is_stable_across_collection_order() -> None:

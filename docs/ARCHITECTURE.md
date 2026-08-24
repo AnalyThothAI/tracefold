@@ -1369,7 +1369,11 @@ safety close; it does not wait for the ordinary reconcile interval. The one
 exception is a partial fill whose tracked entry still appears in the provider's
 open-order inventory: closing only the filled slice could leave the working
 remainder to fill afterward, so that composite observation is `UNKNOWN`/manual
-and issues no close. A later read must first prove the entry terminal.
+and issues no close. A later read must first prove the entry terminal. Every
+same-side or otherwise unclassified opening trade for an active position must
+carry the tracked entry order ID; unmatched opening evidence is manual, never
+adopted or closed. A canceled/rejected entry is terminal only with an explicit
+finite zero fill, not a missing or malformed quantity.
 
 **One provider attempt, ever.** OpenTrade publishes no client idempotency key,
 so nothing downstream can deduplicate a resend. The ledger row moves to
@@ -1424,7 +1428,10 @@ of `SUBMITTING` and terminalises the same way after a restart.
 `MANUAL_REVIEW_REQUIRED` is where every unprovable outcome lands, and it sits
 inside the active-underlying index on purpose — unknown exposure must block. It
 therefore needs a drain, and `tracefold trading resolve <order-id> closed|open`
-is it. Without one, escalating correctly would still halt the lane.
+is it. If an accepted entry lost its response and therefore has no durable
+provider identity, `open` additionally requires `--remote-order-id`; that exact
+ID is persisted before the row returns to automated protection and max-holding
+reconciliation. Without one, escalating correctly would still halt the lane.
 
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the

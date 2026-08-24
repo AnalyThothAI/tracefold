@@ -152,6 +152,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 order_id=str(args.order_id),
                 outcome=str(args.outcome),
                 reason=str(getattr(args, "reason", "") or "operator_checked_venue"),
+                remote_order_id=str(getattr(args, "remote_order_id", "") or "").strip() or None,
                 now_ms=now,
             )
             repos.conn.commit()

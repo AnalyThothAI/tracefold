@@ -71,6 +71,14 @@ class CliTests(unittest.TestCase):
         assert parser.parse_args(["serve"]).command == "serve"
         assert parser.parse_args(["workers"]).command == "workers"
 
+    def test_manual_open_recovery_accepts_the_exact_provider_entry_identity(self):
+        args = build_parser().parse_args(
+            ["trading", "resolve", "order-1", "open", "--remote-order-id", "provider-entry-1"]
+        )
+
+        self.assertEqual(args.trading_command, "resolve")
+        self.assertEqual(args.remote_order_id, "provider-entry-1")
+
     def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()
 

@@ -320,6 +320,11 @@ def build_parser() -> argparse.ArgumentParser:
     trading_resolve.add_argument("order_id")
     trading_resolve.add_argument("outcome", choices=("closed", "open"))
     trading_resolve.add_argument("--reason", default="operator_checked_venue")
+    trading_resolve.add_argument(
+        "--remote-order-id",
+        default="",
+        help="provider entry order identity; required for open recovery when the ledger has none",
+    )
     trading_control = trading_subcommands.add_parser("control", help="set the runtime control state")
     trading_control.add_argument("state", choices=("running", "close-only", "paused"))
 

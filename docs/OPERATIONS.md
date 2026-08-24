@@ -52,6 +52,10 @@ slice was closed. Cancel or otherwise settle the entry at the venue, then let a
 fresh provider read prove it terminal before resolving the manual row.
 Provider redirects are ambiguous writes even when their body says rejection;
 they never release the daily attempt charge or active-underlying slot.
+When a lost entry response reaches manual review with no remote identity, use
+`tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
+after confirming that exact order and position at the venue. The command
+persists the identity before protection/max-holding reconciliation resumes.
 
 ## Operator lifecycle
 

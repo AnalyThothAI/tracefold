@@ -179,7 +179,15 @@ class OrderStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def resolve_manual_review(self, *, order_id: str, outcome: str, reason: str, now_ms: int) -> bool:
+    def resolve_manual_review(
+        self,
+        *,
+        order_id: str,
+        outcome: str,
+        reason: str,
+        remote_order_id: str | None = None,
+        now_ms: int,
+    ) -> bool:
         """The operator drain for `MANUAL_REVIEW_REQUIRED`. Without it the state is a permanent wedge.
 
         Five reconcile paths escalate here and the state sits inside the active-underlying index, so
@@ -208,18 +216,22 @@ class OrderStorage:
             # ceiling should defer to — without this reset, `resolve <id> open` after exhaustion put
             # the row straight back into MANUAL_REVIEW_REQUIRED on the next turn with no explanation,
             # and the only escape left was asserting `closed` about a position that is still open.
+            remote_id = None if remote_order_id is None else str(remote_order_id).strip() or None
             cursor = self.conn.execute(
                 """
                 UPDATE trading_orders
                    SET state = 'OPEN',
                        state_reason = %s,
+                       remote_order_id = coalesce(%s, remote_order_id),
                        exit_attempt_count = 0,
                        exit_attempt_total = 0,
                        next_reconcile_at_ms = %s,
                        updated_at_ms = %s
-                 WHERE order_id = %s AND state = 'MANUAL_REVIEW_REQUIRED'
+                 WHERE order_id = %s
+                   AND state = 'MANUAL_REVIEW_REQUIRED'
+                   AND (mode = 'paper' OR remote_order_id IS NOT NULL OR %s)
                 """,
-                (f"operator_resolved:{reason}", int(now_ms), int(now_ms), order_id),
+                (f"operator_resolved:{reason}", remote_id, int(now_ms), int(now_ms), order_id, remote_id is not None),
             )
         else:  # pragma: no cover - the CLI constrains the choices
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
