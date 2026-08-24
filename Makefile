@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -28,14 +28,19 @@ uninstall: ## uninstall the global CLI installed by uv tool
 tool-path: ## ensure uv tool executables are on PATH
 	@uv tool update-shell
 
-test: ## fast regression: unit + architecture + contract + integration, excluding slow/e2e/golden
-	@uv run python -m pytest -m "not slow" --ignore=tests/e2e --ignore=tests/golden
+test: test-fast ## hermetic default regression (alias for test-fast)
 
-test-all: ## every lane including slow runtime, e2e, and golden
+test-fast: ## unit + hermetic contract + semantic architecture; no external resources
+	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not slow and not external_codegen"
+
+test-all: test-frontend ## every Python lane plus frontend and external codegen release evidence
 	@uv run python -m pytest
 
 test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
 	@uv run python -m pytest tests/integration -m slow
+
+test-frontend: ## frontend type, architecture, lint, and format checks
+	@cd web && npm run typecheck && npm run lint && npm run format:check
 
 lint: ## run ruff
 	@uv run python -m ruff check .
@@ -43,19 +48,21 @@ lint: ## run ruff
 compile: ## compile Python files
 	@uv run python -m compileall src tests
 
-check: ## run static, frontend, architecture, and public-contract checks
+check: ## run hermetic static, architecture, contract, and generated drift checks
 	@uv run ruff check .
 	@uv run ruff format --check .
 	@uv run mypy src
-	@cd web && npm run typecheck && npm run lint && npm run format:check
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python -m tests.support.refactor_baseline --check
 	@uv run python scripts/sync_agent_router.py --check
-	@uv run python -m pytest tests/architecture tests/contract -m "architecture or contract"
+	@uv run python -m pytest tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen"
 	@uv run python -m compileall src tests
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow"
+
+test-deploy: ## run deploy/operations subprocess and lifecycle tests
+	@uv run python -m pytest tests/deploy -m deploy
 
 test-e2e: ## run only tests/e2e/ (running service boundary)
 	@uv run python -m pytest tests/e2e -m e2e
@@ -67,7 +74,10 @@ test-architecture: ## run only tests/architecture/ (AST/grep checks)
 	@uv run python -m pytest tests/architecture -m architecture
 
 test-contract: ## run only tests/contract/
-	@uv run python -m pytest tests/contract -m contract
+	@uv run python -m pytest tests/contract -m "contract and not external_codegen"
+
+test-external-codegen: ## run release-only Node-backed generated contract checks
+	@uv run python -m pytest -m external_codegen
 
 regen-contract: ## regenerate openapi.json + web/src/lib/types/openapi.ts
 	@uv run python scripts/regen_openapi.py

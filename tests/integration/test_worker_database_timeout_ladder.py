@@ -12,8 +12,9 @@ from tracefold.app.workers import root as workers_module
 from tracefold.platform.postgres.client import connect_postgres, create_pool
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
-@pytest.mark.integration
+
 def test_native_postgres_timeout_is_recoverable_before_wrapper_watchdog() -> None:
     pool = create_pool(
         _test_postgres_dsn(),
@@ -68,7 +69,6 @@ def test_native_postgres_timeout_is_recoverable_before_wrapper_watchdog() -> Non
         pool.close()
 
 
-@pytest.mark.integration
 def test_control_loop_survives_one_idle_pool_connection_closed_by_postgres(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -140,7 +140,6 @@ def test_control_loop_survives_one_idle_pool_connection_closed_by_postgres(
         pool.close()
 
 
-@pytest.mark.integration
 def test_native_transaction_timeout_bounds_the_complete_worker_session() -> None:
     pool = create_pool(
         _test_postgres_dsn(),
@@ -197,7 +196,6 @@ def test_native_transaction_timeout_bounds_the_complete_worker_session() -> None
         pool.close()
 
 
-@pytest.mark.integration
 def test_worker_statement_budget_does_not_cancel_a_multi_statement_transaction() -> None:
     pool = create_pool(
         _test_postgres_dsn(),
@@ -237,7 +235,6 @@ def test_worker_statement_budget_does_not_cancel_a_multi_statement_transaction()
         pool.close()
 
 
-@pytest.mark.integration
 def test_idle_transaction_timeout_is_recoverable_only_on_the_business_lane() -> None:
     pool = create_pool(
         _test_postgres_dsn(),

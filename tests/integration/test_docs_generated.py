@@ -7,34 +7,14 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.postgres_test_utils import prepare_postgres_database
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 GENERATED = REPO_ROOT / "docs" / "generated"
-AUTO_GENERATED = {
-    "db-schema.md",
-    "cli-help.md",
-}
-EXPECTED = {"README.md"} | AUTO_GENERATED
-HEADER_MARKER = "AUTO-GENERATED"
-
-
-def test_generated_directory_present() -> None:
-    assert GENERATED.is_dir(), "docs/generated/ missing"
-
-
-def test_expected_generated_files() -> None:
-    actual = {p.name for p in GENERATED.iterdir() if p.is_file()}
-    expected = EXPECTED | {"openapi.json", "refactor-baseline-9441ce99.json"}
-    assert actual == expected, f"unexpected docs/generated/ contents: {actual ^ expected}"
-
-
-def test_generated_files_have_header_marker() -> None:
-    for name in AUTO_GENERATED:
-        path = GENERATED / name
-        first_line = path.read_text(encoding="utf-8").splitlines()[0]
-        assert HEADER_MARKER in first_line, f"{name} missing AUTO-GENERATED header"
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 
 def test_make_docs_generated_clean_diff() -> None:

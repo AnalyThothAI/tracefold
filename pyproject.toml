@@ -46,10 +46,13 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 empty_parameter_set_mark = "fail_at_collect"
 markers = [
-  "integration: requires real Postgres (lives in tests/integration/)",
+  "integration: requires PostgreSQL, RabbitMQ, or an HTTP/worker integration resource",
+  "deploy: deploy/operations subprocess, process, signal, or executable simulation",
   "e2e: cross-process; needs testcontainers + uvicorn subprocess (lives in tests/e2e/)",
-  "architecture: AST/grep enforcement of repo invariants (lives in tests/architecture/)",
+  "architecture: hermetic semantic package/dependency/ownership invariants",
   "contract: front-back schema/contract drift checks (lives in tests/contract/)",
+  "generated: generated-artifact check with a separate canonical Make check entry",
+  "external_codegen: release-only code generation requiring Node dependencies",
   "golden: deterministic corpus checks against real Postgres (lives in tests/golden/)",
   "live: opt-in tests that call external provider APIs",
   "slow: real-process runtime tests bounded by wall-clock deadlines (excluded from make test)",

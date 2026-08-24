@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any
 
+import pytest
 from alembic import command
 
 from tests.postgres_test_utils import (
@@ -16,6 +17,8 @@ from tests.postgres_test_utils import (
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.program.graph import load_stable_program_artifact
 from tracefold.platform.postgres.migrations import alembic_config
+
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 
 def _upgrade(revision: str) -> None:

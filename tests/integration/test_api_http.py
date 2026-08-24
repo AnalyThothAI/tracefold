@@ -1,10 +1,9 @@
 import json
-import math
 import time
 from contextlib import contextmanager
-from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.postgres_test_utils import (
@@ -13,39 +12,14 @@ from tests.postgres_test_utils import (
     prepare_postgres_database,
 )
 from tracefold.app.http.app import create_app
-from tracefold.app.http.responses import _json
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import NewsSettings, Settings
 
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
-
-
-def test_api_json_response_encodes_decimal_payloads():
-    response = _json({"ok": True, "data": {"price": Decimal("1.23")}})
-
-    assert json.loads(response.body) == {"ok": True, "data": {"price": 1.23}}
-
-
-def test_api_json_response_replaces_non_finite_float_payloads_with_null():
-    response = _json(
-        {
-            "ok": True,
-            "data": {
-                "score": math.nan,
-                "nested": [{"value": math.inf}, {"value": -math.inf}, {"value": 1.0}],
-            },
-        }
-    )
-
-    assert json.loads(response.body) == {
-        "ok": True,
-        "data": {
-            "score": None,
-            "nested": [{"value": None}, {"value": None}, {"value": 1.0}],
-        },
-    }
 
 
 _SCHEMA_STATE = {"prepared": False}

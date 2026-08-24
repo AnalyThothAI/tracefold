@@ -28,7 +28,7 @@ def _command_parsers(
     return commands
 
 
-def _render() -> str:
+def render_cli_help() -> str:
     parser = build_parser()
     body = ["# CLI Help", "", "## Top level", "", "```", parser.format_help(), "```", ""]
     for path, child in _command_parsers(parser):
@@ -41,7 +41,7 @@ def main() -> int:
     parser.add_argument("--check", action="store_true", help="exit non-zero if docs/generated/cli-help.md is stale")
     args = parser.parse_args()
 
-    rendered = _render()
+    rendered = render_cli_help()
     if args.check:
         existing = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
         if existing != rendered:

@@ -52,7 +52,7 @@ from tracefold.trading.pipeline.candidate import CandidateRunner
 from tracefold.trading.pipeline.reconcile import ReconcileRunner
 from tracefold.trading.pipeline.runtime import TradingConfig
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 # Deliberately after the dynamically-created program_v7 epoch in migration 0302.
 NOW = 1_900_000_000_000

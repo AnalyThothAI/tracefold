@@ -23,7 +23,7 @@ from tracefold.news.learning.canary import (
 )
 from tracefold.platform.postgres.client import create_pool
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 
 @pytest.fixture()

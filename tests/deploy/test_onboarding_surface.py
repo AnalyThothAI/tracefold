@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.deploy
+
 ROOT = Path(__file__).resolve().parents[2]
 TEST_IMAGE_ID = "sha256:" + "a" * 64
 

@@ -4,9 +4,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
-from tests.postgres_test_utils import connect_postgres_test
+pytestmark = pytest.mark.deploy
 
 POSTGRES_IMAGE = "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
 
@@ -213,41 +214,3 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     )
     assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes])
     assert "tracefold-postgres" in compose["volumes"]
-
-
-def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
-    assert not Path("ops").exists()
-    scripts = {path.name for path in Path("scripts").iterdir() if path.is_file()}
-    assert scripts == {
-        "regen_cli_help.py",
-        "regen_db_schema.py",
-        "regen_openapi.py",
-        # #162 PR7-B4: the one generator for the shared `AGENTS.md` / `CLAUDE.md` block.
-        "sync_agent_router.py",
-        "with_deployment_lock.py",
-    }
-    assert not Path("docker/postgres-provision-review-role.sh").exists()
-
-
-def test_postgres_keeps_supported_extensions_and_removes_retired_ones() -> None:
-    conn = connect_postgres_test(read_only=True)
-    try:
-        installed = {row["extname"] for row in conn.execute("SELECT extname FROM pg_extension").fetchall()}
-        retired_setting_files = conn.execute(
-            """
-            SELECT name
-              FROM pg_file_settings
-             WHERE name IN ('powa.coalesce', 'powa.frequency')
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    assert {"pg_stat_statements", "pg_trgm"} <= installed
-    assert {
-        "powa",
-        "pg_stat_kcache",
-        "pg_qualstats",
-        "pg_wait_sampling",
-    }.isdisjoint(installed)
-    assert retired_setting_files == []

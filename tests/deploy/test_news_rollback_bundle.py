@@ -7,6 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.deploy
+
 ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = ROOT / "deploy/news-program-v5-schema0301"
 

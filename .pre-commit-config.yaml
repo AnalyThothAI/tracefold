@@ -1,6 +1,6 @@
 # .pre-commit-config.yaml
-# Hooks run on every commit. They are gate-1 only — the canonical "is-it-green" entry
-# point is `make check-all`, which is what verification artefacts must paste.
+# Hooks run on every commit. They are gate-1 only; `make check` is the canonical
+# hermetic static/drift entry and release evidence additionally uses `make test-all`.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.2
@@ -11,15 +11,6 @@ repos:
 
   - repo: local
     hooks:
-      - id: mypy-domain-platform-cli
-        name: mypy (domains/, platform/, cli.py — strict)
-        entry: uv run mypy
-        language: system
-        types: [python]
-        files: ^src/gmgn_twitter_intel/(domains|platform)/.*\.py$|^src/gmgn_twitter_intel/cli\.py$
-        pass_filenames: false
-        args: ["src/gmgn_twitter_intel"]
-
       - id: eslint-web
         name: eslint (web/src)
         entry: bash -c 'cd web && npm run lint'

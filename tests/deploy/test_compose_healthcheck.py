@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.deploy
+
 
 def test_container_healthcheck_uses_liveness_endpoint():
     compose_yaml = Path("compose.yaml").read_text()
