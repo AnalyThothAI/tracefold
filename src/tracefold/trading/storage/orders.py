@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-from ..contracts import ACTIVE_ORDER_STATES, TRADING_LIVE_APPROVAL_TTL_MS
+from ..contracts import ACTIVE_ORDER_STATES, TRADING_LIVE_APPROVAL_MARKER, TRADING_LIVE_APPROVAL_TTL_MS
 from .sql_values import _dumps
 
 _ACTIVE_SQL: Final = ", ".join(f"'{state}'" for state in ACTIVE_ORDER_STATES)
@@ -376,13 +376,17 @@ class OrderStorage:
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET state = 'APPROVED', next_reconcile_at_ms = %s, updated_at_ms = %s
+               SET state = 'APPROVED',
+                   state_reason = %s,
+                   next_reconcile_at_ms = %s,
+                   updated_at_ms = %s
              WHERE order_id = %s
                AND payload_sha256 = %s
                AND state = 'AWAITING_APPROVAL'
                AND created_at_ms BETWEEN %s AND %s
             """,
             (
+                TRADING_LIVE_APPROVAL_MARKER,
                 int(now_ms),
                 int(now_ms),
                 order_id,
@@ -390,6 +394,32 @@ class OrderStorage:
                 int(now_ms) - TRADING_LIVE_APPROVAL_TTL_MS,
                 int(now_ms),
             ),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def reject_unsubmitted(self, *, order_id: str, expected_state: str, reason: str, now_ms: int) -> bool:
+        """Reject only the exact unsubmitted state the caller read.
+
+        Approval and reconciliation are concurrent database clients. A stale AWAITING_APPROVAL scan
+        must not overwrite an APPROVED row, and a stale APPROVED scan must not overwrite a claimed
+        provider attempt. The state and counter predicates make either advancement authoritative.
+        """
+
+        if expected_state not in {"AWAITING_APPROVAL", "APPROVED"}:
+            raise ValueError(f"trading_unsubmitted_state_invalid:{expected_state}")
+        cursor = self.conn.execute(
+            """
+            UPDATE trading_orders
+               SET state = 'REJECTED',
+                   state_reason = %s,
+                   closed_at_ms = %s,
+                   next_reconcile_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE order_id = %s
+               AND state = %s
+               AND provider_attempt_count = 0
+            """,
+            (reason, int(now_ms), int(now_ms), order_id, expected_state),
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 

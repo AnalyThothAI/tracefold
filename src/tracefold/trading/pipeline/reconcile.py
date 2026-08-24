@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from ..contracts import (
+    TRADING_LIVE_APPROVAL_MARKER,
     TRADING_LIVE_APPROVAL_TTL_MS,
     TRADING_LIVE_MAX_ENTRY_DRIFT_BPS,
     TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
@@ -152,16 +153,25 @@ class ReconcileRunner:
         if order.mode != "paper" and state == OrderState.AWAITING_APPROVAL.value:
             approval_age = now - int(row["created_at_ms"])
             if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
-                await self._reject_unsubmitted(order_id, "approval_expired", now)
-                return True
+                return await self._reject_unsubmitted(
+                    order_id,
+                    expected_state=OrderState.AWAITING_APPROVAL.value,
+                    reason="approval_expired",
+                    now=now,
+                )
         elif order.mode != "paper" and state == OrderState.APPROVED.value:
             approval_deadline_ms = _approved_submission_deadline(
                 created_at_ms=int(row["created_at_ms"]),
                 approved_at_ms=int(row["updated_at_ms"]),
+                approval_marker=str(row.get("state_reason") or ""),
             )
             if approval_deadline_ms is None or now > approval_deadline_ms:
-                await self._reject_unsubmitted(order_id, "approval_expired", now)
-                return True
+                return await self._reject_unsubmitted(
+                    order_id,
+                    expected_state=OrderState.APPROVED.value,
+                    reason="approval_expired",
+                    now=now,
+                )
 
         if state == OrderState.AWAITING_APPROVAL.value:
             await self._defer(order_id, state, now)
@@ -290,8 +300,12 @@ class ReconcileRunner:
         if order.mode == "paper":
             return await self._commit(order, now)
         if not isinstance(self._adapter, LiveExecutionAdapter):
-            await self._reject_unsubmitted(order.order_id, "live_repreflight_unavailable", now)
-            return True
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason="live_repreflight_unavailable",
+                now=now,
+            )
         try:
             preflight = await observe_provider_call(
                 self._telemetry,
@@ -300,8 +314,12 @@ class ReconcileRunner:
                 call=self._adapter.preflight(instrument=order.instrument, account_ref=order.account_ref),
             )
         except Exception:
-            await self._reject_unsubmitted(order.order_id, "live_repreflight_failed", self._clock())
-            return True
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason="live_repreflight_failed",
+                now=self._clock(),
+            )
         submit_now = self._clock()
         approval_expired = submit_now < created_at_ms or submit_now > approval_deadline_ms
         rejection = (
@@ -311,7 +329,7 @@ class ReconcileRunner:
         )
         audit = preflight.audit_payload()
 
-        def _record(repos: Any) -> None:
+        def _record(repos: Any) -> bool:
             repos.trading.record_observation(
                 order_id=order.order_id,
                 observation_kind="live_repreflight",
@@ -320,29 +338,38 @@ class ReconcileRunner:
                 now_ms=submit_now,
             )
             if rejection is not None:
-                repos.trading.update_order(
-                    order_id=order.order_id,
-                    state=OrderState.REJECTED.value,
-                    state_reason=(
-                        "approval_expired" if rejection == "approval_expired" else f"live_repreflight_{rejection}"
-                    ),
-                    closed_at_ms=submit_now,
-                    next_reconcile_at_ms=None,
-                    now_ms=submit_now,
+                return bool(
+                    repos.trading.reject_unsubmitted(
+                        order_id=order.order_id,
+                        expected_state=OrderState.APPROVED.value,
+                        reason=(
+                            "approval_expired" if rejection == "approval_expired" else f"live_repreflight_{rejection}"
+                        ),
+                        now_ms=submit_now,
+                    )
                 )
+            return False
 
-        await self._db.tx("trading_live_repreflight", _record, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+        rejected = await self._db.tx("trading_live_repreflight", _record, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
         if rejection is not None:
-            return True
+            return bool(rejected)
 
         claim_now = self._clock()
         if claim_now < created_at_ms or claim_now > approval_deadline_ms:
-            await self._reject_unsubmitted(order.order_id, "approval_expired", claim_now)
-            return True
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason="approval_expired",
+                now=claim_now,
+            )
         late_rejection = _live_repreflight_rejection(order, preflight, config=self._config, now=claim_now)
         if late_rejection is not None:
-            await self._reject_unsubmitted(order.order_id, f"live_repreflight_{late_rejection}", claim_now)
-            return True
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason=f"live_repreflight_{late_rejection}",
+                now=claim_now,
+            )
 
         await self._commit(order, claim_now)
         current = await self._db.read(
@@ -356,18 +383,18 @@ class ReconcileRunner:
             return await self._reconcile(current, control="RUNNING", now=claim_now)
         return True
 
-    async def _reject_unsubmitted(self, order_id: str, reason: str, now: int) -> None:
-        await self._db.tx(
-            "trading_reject_unsubmitted",
-            lambda repos: repos.trading.update_order(
-                order_id=order_id,
-                state=OrderState.REJECTED.value,
-                state_reason=reason,
-                closed_at_ms=now,
-                next_reconcile_at_ms=None,
-                now_ms=now,
-            ),
-            timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+    async def _reject_unsubmitted(self, order_id: str, *, expected_state: str, reason: str, now: int) -> bool:
+        return bool(
+            await self._db.tx(
+                "trading_reject_unsubmitted",
+                lambda repos: repos.trading.reject_unsubmitted(
+                    order_id=order_id,
+                    expected_state=expected_state,
+                    reason=reason,
+                    now_ms=now,
+                ),
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
         )
 
     async def _defer(self, order_id: str, state: str, now: int) -> None:
@@ -1011,7 +1038,9 @@ class ReconcileRunner:
         return True
 
 
-def _approved_submission_deadline(*, created_at_ms: int, approved_at_ms: int) -> int | None:
+def _approved_submission_deadline(*, created_at_ms: int, approved_at_ms: int, approval_marker: str) -> int | None:
+    if approval_marker != TRADING_LIVE_APPROVAL_MARKER:
+        return None
     approval_age = approved_at_ms - created_at_ms
     if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
         return None

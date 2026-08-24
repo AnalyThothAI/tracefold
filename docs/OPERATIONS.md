@@ -42,7 +42,9 @@ accepts an approval only during the 60 s window from order creation. A valid
 approval near the end of that window remains due for one 30 s reconcile cadence,
 and the runner still requires a fresh no-drift preflight immediately before the
 write; rejection there is expected fail-closed behavior and must record zero
-provider attempts. `live_bounded` is rejected at settings
+provider attempts. An `APPROVED` row without the C2 approval marker has no
+provable approval instant and rejects without a write after upgrade.
+`live_bounded` is rejected at settings
 validation and again at composition. If a partially filled tracked entry still
 appears in provider open orders, reconciliation enters manual review and sends
 no position close: the remaining entry could otherwise fill after the filled

@@ -1342,6 +1342,10 @@ account, exact execution contract,
 position mode, 1x leverage and margin mode, no remote exposure, acceptable
 spread and balance, and at most 25 bps mark drift. Any mismatch terminally
 rejects the old payload before the attempt fence, with zero provider writes.
+The transition stores a C2 marker beside its approval timestamp; an older
+`APPROVED` row without that proof fails closed after upgrade. Every pre-submit
+rejection is conditional on the exact unsubmitted state and zero provider
+attempts, so a stale scan cannot overwrite a concurrent approval or attempt claim.
 
 **The current live adapter owns the narrow reviewed lifecycle.** It performs
 startup inventory, fresh prepare/re-preflight, one allowlisted OpenTrade market

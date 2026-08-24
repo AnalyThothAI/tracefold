@@ -175,6 +175,9 @@ execution-contract fingerprint, hedged mode, 1x leverage, margin mode, spread,
 balance or 25 bps mark-drift bound no longer holds. The only provider writes are
 one allowlisted market entry and bounded full-position closes using the latest
 authoritative quantity; ACK never means fill or closed.
+The approval transition stores a C2 marker with its timestamp; a pre-C2
+`APPROVED` row without that marker fails closed because its approval time cannot
+be proved.
 `llm.trading_decision_model` selects the single `dspy.Predict` endpoint; without
 it a News-bearing case settles as `no_trade / program_unconfigured` and an
 open-interest case still decides, because that lane calls no model at all.

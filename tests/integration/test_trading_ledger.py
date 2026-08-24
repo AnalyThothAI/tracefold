@@ -383,6 +383,7 @@ def test_approval_is_bound_to_the_exact_payload_digest_and_is_idempotent(conn) -
     assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=approved_at) is True
     conn.commit()
     approved = trading.order(order_id="o1")
+    assert approved["state_reason"] == "operator_approved_c2"
     assert approved["next_reconcile_at_ms"] == approved_at
     assert approved["updated_at_ms"] == approved_at
     assert trading.reschedule_order(
@@ -1134,10 +1135,11 @@ def test_read_only_c1_never_claims_or_submits_an_approved_live_order(conn) -> No
         take_profit_price=None,
         payload={"symbol": "DOGE/USDT:USDT"},
         payload_sha256="digest",
-        state="APPROVED",
+        state="AWAITING_APPROVAL",
         must_close_at_ms=NOW + 900_000,
         now_ms=NOW,
     )
+    assert trading.approve_order(order_id="live-approved-order", payload_sha256="digest", now_ms=NOW)
     conn.commit()
     adapter = _ReadOnlyLiveAdapter()
     report = asyncio.run(
@@ -1221,6 +1223,60 @@ def test_expired_live_approval_is_terminal_with_zero_provider_writes(conn, appro
     assert rejected["state"] == "REJECTED"
     assert rejected["state_reason"] == "approval_expired"
     assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_an_unversioned_approved_row_from_before_c2_fails_closed(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    conn.execute(
+        "UPDATE trading_orders SET state = 'APPROVED', state_reason = NULL, "
+        "next_reconcile_at_ms = %s, updated_at_ms = %s WHERE order_id = %s",
+        (NOW + 80_000, NOW + 50_000, str(row["order_id"])),
+    )
+    conn.commit()
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 80_000,
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == "approval_expired"
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_stale_awaiting_scan_cannot_overwrite_a_concurrent_valid_approval(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, stale_row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, stale_row, now=NOW + 59_999)
+
+    class _StaleApprovalScanDb(_DirectDb):
+        async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
+            if name == "trading_reconcile_scan":
+                return ([dict(stale_row)], "RUNNING")
+            return await super().read(name, fn, timeout_seconds=timeout_seconds)
+
+    report = asyncio.run(
+        ReconcileRunner(
+            db=_StaleApprovalScanDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 60_001,
+        ).turn()
+    )
+    approved = _order_row(conn, str(stale_row["order_id"]))
+    assert report["resolved"] == 0
+    assert approved["state"] == "APPROVED"
+    assert approved["state_reason"] == "operator_approved_c2"
+    assert int(approved["provider_attempt_count"]) == 0
     assert adapter.submit_calls == 0
 
 
