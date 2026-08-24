@@ -952,8 +952,15 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "rejected_missing_fill",
             "rejected_invalid_fill",
         }:
+            zero_fill_scenarios = {
+                "rejected",
+                "rejected_with_open_order",
+                "rejected_with_unattributed_history",
+            }
             fill: dict[str, object] = (
-                {} if scenario == "rejected_missing_fill" else {"filledQty": 0 if scenario == "rejected" else "NaN"}
+                {}
+                if scenario == "rejected_missing_fill"
+                else {"filledQty": 0 if scenario in zero_fill_scenarios else "NaN"}
             )
             return httpx.Response(
                 200,
@@ -1101,8 +1108,10 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
     if scenario in {"rejected_missing_fill", "rejected_invalid_fill"}:
         assert observation.evidence["error_code"] == "opentrade_fill_quantity_invalid"
     if scenario == "rejected_with_open_order":
+        assert "error_code" not in observation.evidence
         assert observation.evidence["open_order_ids"] == ["external-1"]
     if scenario == "rejected_with_unattributed_history":
+        assert "error_code" not in observation.evidence
         assert observation.evidence["entry_history_correlated_count"] == 1
         assert observation.evidence["entry_history_count"] == 0
 
