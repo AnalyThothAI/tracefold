@@ -148,12 +148,18 @@ class ReconcileRunner:
         if state in (OrderState.AMBIGUOUS.value, OrderState.RECONCILING.value):
             return await self._resolve_ambiguity(order, row, now=now)
 
-        if order.mode != "paper" and state in {
-            OrderState.AWAITING_APPROVAL.value,
-            OrderState.APPROVED.value,
-        }:
+        approval_deadline_ms: int | None = None
+        if order.mode != "paper" and state == OrderState.AWAITING_APPROVAL.value:
             approval_age = now - int(row["created_at_ms"])
             if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
+                await self._reject_unsubmitted(order_id, "approval_expired", now)
+                return True
+        elif order.mode != "paper" and state == OrderState.APPROVED.value:
+            approval_deadline_ms = _approved_submission_deadline(
+                created_at_ms=int(row["created_at_ms"]),
+                approved_at_ms=int(row["updated_at_ms"]),
+            )
+            if approval_deadline_ms is None or now > approval_deadline_ms:
                 await self._reject_unsubmitted(order_id, "approval_expired", now)
                 return True
 
@@ -187,7 +193,12 @@ class ReconcileRunner:
             if any(over_cap):
                 await self._defer(order_id, state, now)
                 return False
-            return await self._submit_approved(order, created_at_ms=int(row["created_at_ms"]), now=now)
+            return await self._submit_approved(
+                order,
+                created_at_ms=int(row["created_at_ms"]),
+                approval_deadline_ms=cast(int, approval_deadline_ms),
+                now=now,
+            )
 
         if state == OrderState.SAFETY_CLOSING.value:
             # The exit's analogue of the `SUBMITTING` orphan. Without it a crash between the attempt
@@ -268,7 +279,14 @@ class ReconcileRunner:
             ),
         )
 
-    async def _submit_approved(self, order: PreparedOrder, *, created_at_ms: int, now: int) -> bool:
+    async def _submit_approved(
+        self,
+        order: PreparedOrder,
+        *,
+        created_at_ms: int,
+        approval_deadline_ms: int,
+        now: int,
+    ) -> bool:
         if order.mode == "paper":
             return await self._commit(order, now)
         if not isinstance(self._adapter, LiveExecutionAdapter):
@@ -285,8 +303,7 @@ class ReconcileRunner:
             await self._reject_unsubmitted(order.order_id, "live_repreflight_failed", self._clock())
             return True
         submit_now = self._clock()
-        approval_age = submit_now - created_at_ms
-        approval_expired = approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS
+        approval_expired = submit_now < created_at_ms or submit_now > approval_deadline_ms
         rejection = (
             "approval_expired"
             if approval_expired
@@ -319,8 +336,7 @@ class ReconcileRunner:
             return True
 
         claim_now = self._clock()
-        approval_age = claim_now - created_at_ms
-        if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
+        if claim_now < created_at_ms or claim_now > approval_deadline_ms:
             await self._reject_unsubmitted(order.order_id, "approval_expired", claim_now)
             return True
         late_rejection = _live_repreflight_rejection(order, preflight, config=self._config, now=claim_now)
@@ -521,6 +537,23 @@ class ReconcileRunner:
                 f"exit_position_{observed_state.lower()}",
                 now,
             )
+            return True
+        if observed_state == "ABSENT_CONFIRMED" and prior_state == OrderState.ACKNOWLEDGED.value:
+            if str(row.get("state_reason") or "") == "provider_visibility_pending":
+                await self._record_and_escalate(
+                    order.order_id,
+                    observation,
+                    "live_ack_visibility_unresolved",
+                    now,
+                )
+            else:
+                await self._record_live_state(
+                    order,
+                    observation,
+                    state=OrderState.ACKNOWLEDGED,
+                    reason="provider_visibility_pending",
+                    now=now,
+                )
             return True
         if observed_state in {"ABSENT_CONFIRMED", "REJECTED"}:
             content = observation.model_dump(mode="json")
@@ -976,6 +1009,16 @@ class ReconcileRunner:
 
         await self._db.tx("trading_close", _close, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
         return True
+
+
+def _approved_submission_deadline(*, created_at_ms: int, approved_at_ms: int) -> int | None:
+    approval_age = approved_at_ms - created_at_ms
+    if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
+        return None
+    return max(
+        created_at_ms + TRADING_LIVE_APPROVAL_TTL_MS,
+        approved_at_ms + _RECONCILE_BACKOFF_MS,
+    )
 
 
 def _live_repreflight_rejection(

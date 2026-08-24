@@ -167,8 +167,10 @@ to the operator config directory (or as an absolute path), must be a non-empty
 regular non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`), and is read only by App composition. `live_bounded` fails
 configuration and composition closed. A reviewed approval binds the exact
-payload digest for 60 seconds from order creation. Submission repeats preflight
-and terminally rejects before any write if the account, external inventory,
+payload digest and is accepted only during the 60 seconds from order creation.
+An approval accepted near the end of that window gets one 30-second reconcile
+cadence to reach submission. Submission repeats preflight and terminally rejects
+before any write if the account, external inventory,
 execution-contract fingerprint, hedged mode, 1x leverage, margin mode, spread,
 balance or 25 bps mark-drift bound no longer holds. The only provider writes are
 one allowlisted market entry and bounded full-position closes using the latest

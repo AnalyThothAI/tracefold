@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-from ..contracts import ACTIVE_ORDER_STATES
+from ..contracts import ACTIVE_ORDER_STATES, TRADING_LIVE_APPROVAL_TTL_MS
 from .sql_values import _dumps
 
 _ACTIVE_SQL: Final = ", ".join(f"'{state}'" for state in ACTIVE_ORDER_STATES)
@@ -275,12 +275,15 @@ class OrderStorage:
         `update_order` writes `state` unconditionally, so a deferral computed from a state read at the
         top of a 32-row batch could blind-write a stale state back over one the commit path had since
         advanced — a live position whose row says `PREPARED` is invisible to `_manage_open` forever.
+        An APPROVED row keeps `updated_at_ms` as its durable approval time; reconciliation uses that
+        instant to give a valid late approval one full runner cadence without extending approval TTL.
         """
 
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET next_reconcile_at_ms = %s, updated_at_ms = %s
+               SET next_reconcile_at_ms = %s,
+                   updated_at_ms = CASE WHEN state = 'APPROVED' THEN updated_at_ms ELSE %s END
              WHERE order_id = %s AND state = %s
             """,
             (int(next_reconcile_at_ms), int(now_ms), order_id, expected_state),
@@ -373,10 +376,20 @@ class OrderStorage:
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET state = 'APPROVED', updated_at_ms = %s
-             WHERE order_id = %s AND payload_sha256 = %s AND state = 'AWAITING_APPROVAL'
+               SET state = 'APPROVED', next_reconcile_at_ms = %s, updated_at_ms = %s
+             WHERE order_id = %s
+               AND payload_sha256 = %s
+               AND state = 'AWAITING_APPROVAL'
+               AND created_at_ms BETWEEN %s AND %s
             """,
-            (int(now_ms), order_id, payload_sha256),
+            (
+                int(now_ms),
+                int(now_ms),
+                order_id,
+                payload_sha256,
+                int(now_ms) - TRADING_LIVE_APPROVAL_TTL_MS,
+                int(now_ms),
+            ),
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 

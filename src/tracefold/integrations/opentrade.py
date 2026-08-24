@@ -117,9 +117,10 @@ class OpenTradeAdapter:
         leverage = await self._object("/leverage/current", params=params)
         margin = await self._object("/margin/mode", params=params)
         # Account-wide reads close the drift window after startup: an operator or another process
-        # opening a different symbol must still block this one-position canary.
-        positions = await self._list("/positions", params={"exchangeId": exchange_id})
+        # opening a different symbol must still block this one-position canary. Orders come first so
+        # an order that becomes a position between the two reads is visible in at least one snapshot.
         orders = await self._list("/orders/open", params={"exchangeId": exchange_id})
+        positions = await self._list("/positions", params={"exchangeId": exchange_id})
 
         mark = _positive_decimal(ticker.get("last") or ticker.get("markPrice"), "opentrade_mark_invalid")
         bid = _positive_decimal(ticker.get("bid"), "opentrade_bid_invalid")

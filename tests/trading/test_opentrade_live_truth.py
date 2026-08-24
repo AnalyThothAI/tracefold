@@ -161,6 +161,70 @@ def test_fresh_preflight_replaces_the_research_symbol_price_and_position_mode() 
     assert "123.45" not in str(preflight.audit_payload())
 
 
+def test_preflight_sees_an_external_order_that_becomes_a_position_between_account_reads() -> None:
+    reads = {"orders": False, "positions": False}
+    request_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        request_paths.append(path)
+        if path.endswith("/orders/open"):
+            payload = {
+                "success": True,
+                "data": (
+                    []
+                    if reads["positions"]
+                    else [
+                        {
+                            "exchange": "binance",
+                            "symbol": "SOL/USDT:USDT",
+                            "side": "buy",
+                            "amount": "1",
+                            "orderId": "external-order",
+                        }
+                    ]
+                ),
+            }
+            reads["orders"] = True
+            return httpx.Response(200, json=payload, request=request)
+        if path.endswith("/positions"):
+            payload = {
+                "success": True,
+                "data": (
+                    [
+                        {
+                            "exchange": "binance",
+                            "symbol": "SOL/USDT:USDT",
+                            "side": "long",
+                            "contracts": "1",
+                            "hedged": False,
+                        }
+                    ]
+                    if reads["orders"]
+                    else []
+                ),
+            }
+            reads["positions"] = True
+            return httpx.Response(200, json=payload, request=request)
+        return _response(request, account_identity=True)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        preflight = asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert preflight.open_orders or preflight.positions
+    orders_index = next(index for index, path in enumerate(request_paths) if path.endswith("/orders/open"))
+    positions_index = next(index for index, path in enumerate(request_paths) if path.endswith("/positions"))
+    assert orders_index < positions_index
+
+
 def test_amount_min_is_not_guessed_to_be_the_quantity_step() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         response = _response(request)

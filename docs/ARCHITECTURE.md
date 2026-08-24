@@ -1305,8 +1305,10 @@ answers why the signal qualified; it is never a live execution reference. A
 live-reviewed prepare first completes an account-wide startup inventory, then
 reads fresh server time, venue health, exact CCXT swap symbol, mark/bid/ask,
 spread, explicit quantity step and minimums, contract size, account balance,
-position mode, leverage, margin mode, positions and open orders. Missing or
-conflicting truth fails closed. The exact fresh payload and a balance-redacted
+position mode, leverage and margin mode, then account-wide open orders followed
+by positions. That order makes an external order transitioning into a position
+between reads visible in at least one snapshot. Missing or conflicting truth
+fails closed. The exact fresh payload and a balance-redacted
 preflight observation are frozen together. OpenTrade's published `amountMin`
 is a minimum, not a quantity step, so it is never guessed into precision.
 
@@ -1322,16 +1324,21 @@ stop bounds silently unreachable in combination.
 
 **ACK is not a fill.** A submit acknowledgement records provider acceptance and
 never writes `position_opened_at_ms` or `must_close_at_ms`. Only a composite
-provider observation may establish a position. Its explicit vocabulary is
+provider observation may establish a position. The first empty composite read
+after ACK keeps the order active for one more read; a second empty read
+escalates to manual review and still does not free the underlying. Its explicit
+vocabulary is
 `ABSENT_CONFIRMED | WORKING | PARTIAL | OPEN_PROTECTED | OPEN_UNPROTECTED |
 CLOSED | REJECTED | UNKNOWN`; Python `None`, malformed output, or a partial read
 cannot free the underlying. When exact fill time is unavailable, submission
 time is the conservative lower bound, never the later reconcile time.
 
 **Reviewed approval is short-lived execution authority.** The operator approves
-the exact immutable payload digest, not a symbol or a general permission. At
-submission the row must be no older than the code-owned 60 s TTL and a second
-preflight must still prove the same account, exact execution contract,
+the exact immutable payload digest, not a symbol or a general permission. The
+database accepts that approval only during the code-owned 60 s window from row
+creation. A valid approval near the end of the window gets one 30 s reconcile
+cadence to reach submission; a second preflight must still prove the same
+account, exact execution contract,
 position mode, 1x leverage and margin mode, no remote exposure, acceptable
 spread and balance, and at most 25 bps mark drift. Any mismatch terminally
 rejects the old payload before the attempt fence, with zero provider writes.

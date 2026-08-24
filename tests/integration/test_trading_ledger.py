@@ -379,10 +379,34 @@ def test_approval_is_bound_to_the_exact_payload_digest_and_is_idempotent(conn) -
     )
     trading = _repos(conn).trading
     assert trading.approve_order(order_id="o1", payload_sha256="wrong", now_ms=NOW) is False
-    assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=NOW) is True
+    approved_at = NOW + 30_000
+    assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=approved_at) is True
     conn.commit()
+    approved = trading.order(order_id="o1")
+    assert approved["next_reconcile_at_ms"] == approved_at
+    assert approved["updated_at_ms"] == approved_at
+    assert trading.reschedule_order(
+        order_id="o1",
+        expected_state="APPROVED",
+        next_reconcile_at_ms=NOW + 61_000,
+        now_ms=NOW + 31_000,
+    )
+    conn.commit()
+    deferred = trading.order(order_id="o1")
+    assert deferred["next_reconcile_at_ms"] == NOW + 61_000
+    assert deferred["updated_at_ms"] == approved_at
     # A second approval of an already-approved order changes nothing: the operator signed once.
     assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=NOW) is False
+
+
+def test_approval_after_the_operator_window_is_rejected_at_the_database_boundary(conn) -> None:
+    _case(conn, case_id="c1", source_key="k1")
+    _order(
+        conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="binance", state="AWAITING_APPROVAL"
+    )
+    trading = _repos(conn).trading
+    assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=NOW + 60_001) is False
+    assert trading.order(order_id="o1")["state"] == "AWAITING_APPROVAL"
 
 
 # ---------------------------------------------------------------------------- runner, end to end
@@ -753,6 +777,15 @@ def _live_position_observation(
         first_fill_at_ms=first_fill_at_ms,
         protection=protection,
         evidence={"provider": "opentrade", "snapshot": str(quantity)},
+    )
+
+
+def _live_absent_observation(row: Any, *, observed_at_ms: int) -> ExecutionObservation:
+    return ExecutionObservation(
+        state="ABSENT_CONFIRMED",
+        observed_at_ms=observed_at_ms,
+        remote_order_id=f"remote-{row['order_id']}",
+        evidence={"provider": "opentrade", "snapshot": f"absent-{observed_at_ms}"},
     )
 
 
@@ -1191,6 +1224,46 @@ def test_expired_live_approval_is_terminal_with_zero_provider_writes(conn, appro
     assert adapter.submit_calls == 0
 
 
+def test_in_window_approval_gets_one_runner_cadence_to_reach_submission(conn) -> None:
+    approved_at = NOW + 31_000
+    submitted_at = NOW + 60_001
+    adapter = _LiveLifecycleAdapter(repreflight_update={"observed_at_ms": submitted_at, "server_time_ms": submitted_at})
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 30_000,
+        ).turn()
+    )
+    _approve_live(conn, row, now=approved_at)
+    adapter.observations = [
+        ExecutionObservation(
+            state="WORKING",
+            observed_at_ms=submitted_at,
+            remote_order_id=f"remote-{row['order_id']}",
+            evidence={"provider": "opentrade", "state": "working"},
+        )
+    ]
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: submitted_at,
+        ).turn()
+    )
+    submitted = _order_row(conn, str(row["order_id"]))
+    assert submitted["state"] == "ACKNOWLEDGED"
+    assert int(submitted["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+
+
 @pytest.mark.parametrize(
     ("update", "reason"),
     [
@@ -1401,6 +1474,72 @@ def test_live_working_order_stays_acknowledged_without_a_fabricated_fill(conn) -
     assert working["filled_quantity"] is None
     assert working["position_opened_at_ms"] is None
     assert adapter.submit_calls == 1
+
+
+def test_live_acknowledgement_survives_one_empty_provider_read_before_the_fill_appears(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        _live_absent_observation(row, observed_at_ms=NOW + 1_000),
+        _live_position_observation(row),
+    ]
+    _approve_live(conn, row)
+
+    first_turn = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 1_000,
+    )
+    asyncio.run(first_turn.turn())
+    pending = _order_row(conn, str(row["order_id"]))
+    assert pending["state"] == "ACKNOWLEDGED"
+    assert pending["state_reason"] == "provider_visibility_pending"
+    assert str(row["underlying_key"]) in _repos(conn).trading.active_underlyings()
+
+    second_turn = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 31_001,
+    )
+    asyncio.run(second_turn.turn())
+    opened = _order_row(conn, str(row["order_id"]))
+    assert opened["state"] == "OPEN"
+    assert int(opened["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+    assert adapter.close_quantities == []
+
+
+def test_two_empty_reads_after_a_live_ack_escalate_without_freeing_the_underlying(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        _live_absent_observation(row, observed_at_ms=NOW + 1_000),
+        _live_absent_observation(row, observed_at_ms=NOW + 31_001),
+    ]
+    _approve_live(conn, row)
+
+    for observed_at in (NOW + 1_000, NOW + 31_001):
+        asyncio.run(
+            ReconcileRunner(
+                db=_DirectDb(conn),
+                config=config,
+                bars=lambda _venue: None,
+                adapter=adapter,
+                clock=lambda observed_at=observed_at: observed_at,
+            ).turn()
+        )
+
+    escalated = _order_row(conn, str(row["order_id"]))
+    assert escalated["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert escalated["state_reason"] == "live_ack_visibility_unresolved"
+    assert str(row["underlying_key"]) in _repos(conn).trading.active_underlyings()
+    assert int(escalated["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+    assert adapter.close_quantities == []
 
 
 def test_live_submitting_after_restart_is_read_without_resending(conn) -> None:

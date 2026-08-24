@@ -37,10 +37,12 @@ one explicit `trading.live_symbol`, notional at most 10 USD, one open
 underlying and one order per day. `trading status` shows
 `execution_backend=opentrade_reviewed`, `live_mode_supported=true`,
 `live_ready=false`, and `live_readiness=not_proven`: the CLI cannot infer the
-Workers process's account/metadata/position-mode/inventory receipt. Before a
-reviewed submit, the runner independently enforces the 60 s approval TTL and a
-fresh no-drift preflight; rejection there is expected fail-closed behavior and
-must record zero provider attempts. `live_bounded` is rejected at settings
+Workers process's account/metadata/position-mode/inventory receipt. The database
+accepts an approval only during the 60 s window from order creation. A valid
+approval near the end of that window remains due for one 30 s reconcile cadence,
+and the runner still requires a fresh no-drift preflight immediately before the
+write; rejection there is expected fail-closed behavior and must record zero
+provider attempts. `live_bounded` is rejected at settings
 validation and again at composition. If a partially filled tracked entry still
 appears in provider open orders, reconciliation enters manual review and sends
 no position close: the remaining entry could otherwise fill after the filled
