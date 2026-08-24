@@ -165,11 +165,10 @@ class OrderStorage:
         return "wrong_state"
 
     def release_exit_attempt(self, *, order_id: str, now_ms: int) -> bool:
-        """Let the exit be attempted again, because a read proved the position is still open.
+        """Let the exit be attempted again after the prior close is proven terminal with no fill.
 
-        This is the only thing that makes the exit's one-attempt claim recoverable. It is safe for the
-        exact reason the entry has no equivalent: the read has proven the previous close did not take
-        effect, so re-issuing it cannot double-close. `exit_attempt_total` still caps the retries.
+        The caller owns that proof. A position snapshot alone is insufficient because provider
+        projections can lag a close acknowledgement. `exit_attempt_total` still caps the retries.
         """
 
         cursor = self.conn.execute(
@@ -383,10 +382,20 @@ class OrderStorage:
 
         rows = self.conn.execute(
             f"""
-            SELECT * FROM trading_orders
-             WHERE state IN ({_ACTIVE_SQL})
-               AND coalesce(next_reconcile_at_ms, 0) <= %s
-             ORDER BY coalesce(next_reconcile_at_ms, 0), created_at_ms
+            SELECT o.*, latest_close.remote_close_order_id
+              FROM trading_orders o
+              LEFT JOIN LATERAL (
+                SELECT content->>'remote_order_id' AS remote_close_order_id
+                  FROM trading_order_observations
+                 WHERE order_id = o.order_id
+                   AND observation_kind = 'close'
+                   AND content->>'remote_order_id' IS NOT NULL
+                 ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
+                 LIMIT 1
+              ) latest_close ON true
+             WHERE o.state IN ({_ACTIVE_SQL})
+               AND coalesce(o.next_reconcile_at_ms, 0) <= %s
+             ORDER BY coalesce(o.next_reconcile_at_ms, 0), o.created_at_ms
              LIMIT %s
             """,
             (int(now_ms), int(limit)),

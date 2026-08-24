@@ -488,6 +488,80 @@ def test_composite_negative_read_is_the_only_path_to_absent_confirmed() -> None:
     assert observation.evidence["open_order_ids"] == []
 
 
+@pytest.mark.parametrize(("close_terminal", "expected"), [(False, False), (True, True)])
+def test_exit_retry_requires_the_exact_close_to_be_terminal_with_zero_fill(
+    close_terminal: bool, expected: bool
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/positions"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "side": "long",
+                            "contracts": "1",
+                            "entryPrice": "10",
+                        }
+                    ],
+                },
+                request=request,
+            )
+        if path.endswith("/orders/closed"):
+            rows = (
+                [
+                    {
+                        "exchange": "binance",
+                        "symbol": "DOGE/USDT:USDT",
+                        "orderId": "close-1",
+                        "status": "rejected",
+                        "filledQty": 0,
+                    }
+                ]
+                if close_terminal
+                else []
+            )
+            return httpx.Response(200, json={"success": True, "data": rows}, request=request)
+        if path.endswith("/trades/history"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {
+                            "exchange": "binance",
+                            "symbol": "DOGE/USDT:USDT",
+                            "orderId": "remote-1",
+                            "tradeId": "entry-trade",
+                            "amount": "1",
+                            "timestamp": NOW - 500,
+                        }
+                    ],
+                },
+                request=request,
+            )
+        return _response(request, account_identity=True)
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    order = _order().model_copy(update={"remote_close_order_id": "close-1"})
+    try:
+        observation = asyncio.run(adapter.observe(order))
+    finally:
+        asyncio.run(adapter.aclose())
+
+    assert observation.state == "OPEN_UNPROTECTED"
+    assert observation.evidence["close_terminal_without_fill"] is expected
+
+
 def test_composite_snapshot_time_is_captured_after_the_provider_reads() -> None:
     composite_paths = {
         "/account/summary",
@@ -755,26 +829,31 @@ def test_reviewed_entry_and_actual_quantity_close_send_only_the_pinned_contract(
     ]
 
 
-def test_provider_write_refuses_a_decimal_that_json_cannot_represent_exactly() -> None:
+def test_provider_write_serializes_a_decimal_without_binary_float_precision_loss() -> None:
+    written: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        written.append(request.content)
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"orderId": "precise"}},
+            request=request,
+        )
+
     adapter = OpenTradeAdapter(
         base_url="https://example.invalid",
         token="secret-token",
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                200,
-                json={"success": True, "data": {"orderId": "never"}},
-                request=request,
-            )
-        ),
+        transport=httpx.MockTransport(handler),
         clock=lambda: NOW,
     )
     order = _order(remote_order_id=None).model_copy(update={"quantity": Decimal("0.123456789123456789")})
     order = order.model_copy(update={"payload": {**order.payload, "quantity": str(order.quantity)}})
     try:
-        with pytest.raises(OpenTradeContractError, match="opentrade_number_precision_loss"):
-            asyncio.run(adapter.submit(order))
+        receipt = asyncio.run(adapter.submit(order))
     finally:
         asyncio.run(adapter.aclose())
+    assert receipt.state == "ACKNOWLEDGED"
+    assert json.loads(written[0], parse_float=Decimal)["quantity"] == order.quantity
 
 
 def test_provider_write_refuses_take_profit_outside_the_reviewed_contract() -> None:

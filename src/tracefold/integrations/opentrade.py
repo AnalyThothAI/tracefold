@@ -258,6 +258,9 @@ class OpenTradeAdapter:
         entry_open = _remote_rows(open_rows, remote_id)
         entry_closed = _remote_rows(closed_rows, remote_id)
         entry_trades = _remote_rows(trade_rows, remote_id)
+        close_open = _remote_rows(open_rows, order.remote_close_order_id)
+        close_closed = _remote_rows(closed_rows, order.remote_close_order_id)
+        close_trades = _remote_rows(trade_rows, order.remote_close_order_id)
         correlated_history = _correlated_history_rows(history_rows, remote_id)
         entry_history = _attributed_history_rows(correlated_history, remote_id, entry_side=order.side)
         expected_position_side = "long" if order.side == "buy" else "short"
@@ -297,6 +300,20 @@ class OpenTradeAdapter:
             "entry_open_count": len(entry_open),
             "entry_closed_count": len(entry_closed),
             "entry_trade_count": len(entry_trades),
+            "close_open_count": len(close_open),
+            "close_closed_count": len(close_closed),
+            "close_trade_count": len(close_trades),
+            "close_terminal_without_fill": bool(
+                order.remote_close_order_id
+                and close_closed
+                and not close_open
+                and not close_trades
+                and all(
+                    str(row.get("status") or "").lower() in {"canceled", "cancelled", "rejected"}
+                    for row in close_closed
+                )
+                and _all_explicit_zero_fills(close_closed)
+            ),
             "entry_history_correlated_count": len(correlated_history),
             "entry_history_count": len(entry_history),
             "unmatched_opening_trade_count": len(unmatched_opening_trades),
@@ -465,7 +482,8 @@ class OpenTradeAdapter:
                 method,
                 f"{_API}{path}",
                 params=dict(params or {}),
-                json=None if json_body is None else dict(json_body),
+                content=None if json_body is None else _json_content(json_body),
+                headers=None if json_body is None else {"Content-Type": "application/json"},
             ) as response:
                 if response.status_code >= 400:
                     return response.status_code, {}
@@ -772,9 +790,9 @@ def _entry_body(order: PreparedOrder) -> dict[str, Any]:
         "symbol": order.instrument.provider_symbol,
         "side": order.side,
         "type": "market",
-        "quantity": _json_number(order.quantity),
+        "quantity": order.quantity,
         "hedged": hedged,
-        "stopLossPrice": _json_number(order.stop_price),
+        "stopLossPrice": order.stop_price,
     }
     return body
 
@@ -787,20 +805,25 @@ def _close_body(order: PreparedOrder, *, quantity: Decimal) -> dict[str, Any]:
         "exchangeId": order.instrument.exchange_id,
         "symbol": order.instrument.provider_symbol,
         "side": "long" if order.side == "buy" else "short",
-        "quantity": _json_number(quantity),
+        "quantity": quantity,
         "hedged": hedged,
     }
 
 
-def _json_number(value: Decimal) -> int | float:
+def _json_decimal(value: Decimal) -> str:
     if not value.is_finite() or value <= 0:
         raise OpenTradeContractError("opentrade_number_invalid")
-    if value == value.to_integral_value():
-        return int(value)
-    encoded = float(value)
-    if Decimal(str(encoded)) != value:
-        raise OpenTradeContractError("opentrade_number_precision_loss")
-    return encoded
+    return format(value, "f")
+
+
+def _json_content(body: Mapping[str, Any]) -> bytes:
+    """Encode the pinned flat write contract without routing Decimal through binary floats."""
+
+    fields: list[str] = []
+    for key, value in body.items():
+        encoded = _json_decimal(value) if isinstance(value, Decimal) else json.dumps(value, allow_nan=False)
+        fields.append(f"{json.dumps(key)}:{encoded}")
+    return ("{" + ",".join(fields) + "}").encode()
 
 
 def _live_exchange(value: object) -> LiveExchangeId:

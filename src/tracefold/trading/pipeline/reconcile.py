@@ -686,6 +686,14 @@ class ReconcileRunner:
         ):
             await self._record_and_escalate(order.order_id, observation, "live_position_evidence_incomplete", now)
             return True
+        if exiting and observation.evidence.get("close_terminal_without_fill") is not True:
+            await self._record_and_escalate(
+                order.order_id,
+                observation,
+                "exit_close_terminal_evidence_missing",
+                now,
+            )
+            return True
         observed_order = (
             order
             if order.remote_order_id is not None or observation.remote_order_id is None
@@ -705,6 +713,8 @@ class ReconcileRunner:
 
         def _position(repos: Any) -> None:
             if exiting:
+                # The provider correlated the exact close id to a terminal rejection/cancellation
+                # with an explicit zero fill. A lagging position projection alone never reaches here.
                 repos.trading.release_exit_attempt(order_id=order.order_id, now_ms=now)
             repos.trading.record_observation(
                 order_id=order.order_id,
@@ -1113,6 +1123,7 @@ def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrde
         underlying_key=str(row["underlying_key"]),
         account_ref=str(row["account_ref"]),
         remote_order_id=None if row.get("remote_order_id") is None else str(row["remote_order_id"]),
+        remote_close_order_id=(None if row.get("remote_close_order_id") is None else str(row["remote_close_order_id"])),
         instrument=InstrumentRef(
             exchange_id=cast(ExchangeId, row["exchange_id"]),
             venue=str(row["exchange_id"]),

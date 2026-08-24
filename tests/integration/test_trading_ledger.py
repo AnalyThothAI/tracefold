@@ -630,6 +630,7 @@ class _LiveLifecycleAdapter(_ReadOnlyLiveAdapter):
         self.submit_fault = submit_fault
         self.observe_fault = observe_fault
         self.close_quantities: list[Decimal] = []
+        self.observed_close_ids: list[str | None] = []
 
     async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
         self.preflight_calls += 1
@@ -647,6 +648,7 @@ class _LiveLifecycleAdapter(_ReadOnlyLiveAdapter):
         return ExecutionReceipt(state="ACKNOWLEDGED", remote_order_id=f"remote-{order.order_id}")
 
     async def observe(self, order: PreparedOrder) -> ExecutionObservation:
+        self.observed_close_ids.append(order.remote_close_order_id)
         if self.observe_fault:
             raise TimeoutError("read unavailable")
         if self.observations:
@@ -1863,6 +1865,58 @@ def test_live_max_holding_closes_the_current_position_quantity_and_waits_for_rea
     assert closed["position_closed_at_ms"] == NOW + 62_000
     assert int(closed["realized_bps"]) == 192
     assert adapter.close_quantities == [Decimal("0.4")]
+
+
+@pytest.mark.parametrize(
+    ("terminal_without_fill", "expected_state", "expected_closes", "expected_attempts"),
+    [
+        (False, "MANUAL_REVIEW_REQUIRED", [Decimal("1")], (1, 1)),
+        (True, "RECONCILING", [Decimal("1"), Decimal("1")], (1, 2)),
+    ],
+)
+def test_live_exit_rearms_only_after_the_exact_close_is_terminal_without_fill(
+    conn,
+    terminal_without_fill: bool,
+    expected_state: str,
+    expected_closes: list[Decimal],
+    expected_attempts: tuple[int, int],
+) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1")]
+
+    active = _live_position_observation(row, protected=False)
+    adapter.observations = [
+        active.model_copy(
+            update={"evidence": {**active.evidence, "close_terminal_without_fill": terminal_without_fill}}
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert adapter.observed_close_ids[-1] == "close-1"
+    assert current["state"] == expected_state
+    assert adapter.close_quantities == expected_closes
+    assert (int(current["exit_attempt_count"]), int(current["exit_attempt_total"])) == expected_attempts
 
 
 def test_slow_live_observation_that_crosses_max_holding_closes_in_the_same_turn(conn) -> None:

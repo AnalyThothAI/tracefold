@@ -426,6 +426,7 @@ class PreparedOrder(_Frozen):
     underlying_key: str
     account_ref: str
     remote_order_id: str | None = None
+    remote_close_order_id: str | None = None
     instrument: InstrumentRef
     mode: TradingMode
     side: OrderSide
