@@ -8,22 +8,18 @@ and content-addressable optimizer receipt payloads.
 
 from __future__ import annotations
 
-import importlib.metadata
-import math
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal, Protocol, cast
+from collections.abc import Callable, Mapping
+from typing import Any, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, model_validator
 
-from ...artifact_identity import canonical_sha
 from ...program.artifact import (
     ProgramStrategyArtifactV1,
     ProgramStrategyPatchV1,
     load_stable_program_artifact,
 )
 from ...program.dspy_adapter import (
-    DspyStrictJSONAdapter,
     ExactMetadataDspyLM,
     ExactProviderCallCapture,
     ExactProviderMetadata,
@@ -32,27 +28,19 @@ from ...program.dspy_adapter import (
 )
 from ...program.graph import (
     DspyCompileProgram,
-    extract_optimizer_patch,
 )
 from ..metric import (
     METRIC_ID,
     DevelopmentEpisode,
-    _compile_example,
     _ExactModel,
-    _honest_split,
     _json_safe,
-    _metric_receipt,
-    _retrieval_receipt,
     accepted_review_metric,
-    bind_metric,
-    production_decision,
 )
-from ..proposer import RulePackAwareProposer
+from .gepa import OptimizerFactory, require_model_identity, run_gepa
 from .security import (
     CompileBudgetV3,
     CompilerProxyTariff,
     ModelExecutionIdentity,
-    gepa_metric_call_ceiling,
 )
 from .trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 
@@ -145,20 +133,6 @@ class ProgramCompileResult(_ExactModel):
         ):
             raise ValueError("news_program_compile_result_accounting_mismatch")
         return self
-
-
-class _Optimizer(Protocol):
-    def compile(
-        self,
-        student: DspyCompileProgram,
-        *,
-        trainset: list[dspy.Example],
-        teacher: None,
-        valset: list[dspy.Example],
-    ) -> dspy.Module: ...
-
-
-OptimizerFactory = Callable[..., _Optimizer]
 
 
 class CompileBudgetExceeded(RuntimeError):
@@ -295,38 +269,6 @@ class _FeedbackCompileProgram(DspyCompileProgram):
             if offset >= len(named) or not isinstance(entry, tuple) or len(entry) != 3:
                 continue
             trace[before + offset] = (named[offset], entry[1], entry[2])
-
-
-def _generated_default_instruction(predictor: dspy.Predict) -> str:
-    """What DSPy writes into a signature when it is handed an empty instruction."""
-
-    return str(predictor.signature.with_instructions("").instructions or "")
-
-
-def _restore_empty_advisories(compiled: DspyCompileProgram) -> None:
-    """Map DSPy's auto-generated default instruction back to the empty advisory it stands for.
-
-    The empty advisory cannot survive a GEPA round-trip on its own. `Signature.with_instructions("")` does not
-    store an empty instruction — DSPy substitutes a generated one, ``"Given the fields `evidence_json`, produce
-    the fields `semantics`."`` The Artifact's code-owned baseline is empty, so GEPA's seed candidate is `""`,
-    and the very first `build_program(seed)` therefore rebuilt the student with that boilerplate in the
-    advisory slot.
-
-    Two things went wrong from there. The optimizer never evaluated the true baseline, and — worse — when the
-    Pareto front kept the seed, `extract_optimizer_patch` read the boilerplate back out as a *learned* strategy.
-    `news_program_compile_no_program_change` did not fire, because the text genuinely differs from the parent's
-    empty string. A run that learned nothing produced a patch that looked like it had, carrying a meaningless
-    "produce the fields" line into a prompt that already has eight RulePacks.
-
-    One blank character is the canonical empty instruction (`with_instructions(" ")` stores `""`), which is how
-    the factory builds the baseline in the first place; this restores that representation before the patch is
-    extracted.
-    """
-
-    for name in ("event_semantics", "reader_card"):
-        predictor = getattr(compiled, name)
-        if str(predictor.signature.instructions or "") == _generated_default_instruction(predictor):
-            predictor.signature = predictor.signature.with_instructions(" ")
 
 
 def _is_transport_failure(exc: BaseException) -> bool:
@@ -471,76 +413,6 @@ def build_compile_lm(
     return lm
 
 
-def _require_model_identity(lm: dspy.LM, *, role: Literal["task", "reflection"]) -> ModelExecutionIdentity:
-    """The identity this LM will answer under, or a refusal before anything is spent.
-
-    `build_compile_lm` stamps it. Reconstructing one here from an LM's own kwargs was worse than
-    refusing: the role contract (temperature, token ceiling, deadline) is exactly what an identity is
-    supposed to attest, so inferring it from the object it describes attests nothing. The check runs in
-    `ProgramCompiler.__init__` rather than at receipt time so a misconfigured route costs no provider
-    call instead of failing after a full run.
-    """
-
-    identity = getattr(lm, "tracefold_compiler_endpoint_identity", None)
-    if not isinstance(identity, ModelExecutionIdentity) or identity.role != role:
-        raise ValueError("news_program_compile_endpoint_identity_unavailable")
-    return identity
-
-
-def _optimizer_config_receipt(
-    *,
-    constructor: Mapping[str, Any],
-    task_lm: dspy.LM,
-    reflection_lm: dspy.LM,
-    optimizer_factory: OptimizerFactory,
-    metric_sha256: str,
-    example_count: int,
-    train_count: int,
-    val_count: int,
-) -> dict[str, Any]:
-    return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v1",
-        "optimizer": {
-            "implementation": f"{optimizer_factory.__module__}.{optimizer_factory.__qualname__}",
-            "dspy_version": importlib.metadata.version("dspy"),
-            "gepa_version": importlib.metadata.version("gepa"),
-        },
-        "metric_sha256": metric_sha256,
-        # The proposer is code, not a scalar. It is named below rather than serialized, so the receipt still
-        # says exactly which one ran without trying to JSON-encode an object.
-        "constructor_scalar_arguments": _json_safe(
-            {key: value for key, value in constructor.items() if key not in {"instruction_proposer", "wandb_api_key"}}
-        ),
-        # GEPA requires the named kwarg even when telemetry is disabled. A secret-shaped key is forbidden in
-        # retained receipts, so record its exact absence as a scalar name instead of serializing the key.
-        "omitted_unset_arguments": ["wandb_api_key"],
-        "instruction_proposer": {
-            "implementation": f"{type(constructor['instruction_proposer']).__module__}."
-            f"{type(constructor['instruction_proposer']).__qualname__}"
-            if constructor.get("instruction_proposer") is not None
-            else None,
-            "reads": "full rendered predictor instruction (sealed kernel + ordered RulePacks + authority seal)",
-            "writes": "LearnedStrategy body only",
-        },
-        "model_identities": {
-            "task": _require_model_identity(task_lm, role="task").model_dump(mode="json"),
-            "reflection": _require_model_identity(reflection_lm, role="reflection").model_dump(mode="json"),
-        },
-        "dspy_context": {
-            "adapter": "DspyStrictJSONAdapter/native_function_calling_false",
-            "track_usage": True,
-            "disable_history": True,
-        },
-        "compile_call": {
-            "teacher": None,
-            "example_count": example_count,
-            "trainset_count": train_count,
-            "valset_count": val_count,
-            "valset_identity": "disjoint_cluster_split",
-        },
-    }
-
-
 class ProgramCompiler:
     """Bounded cold optimizer for the fixed v2 semantic Program factory."""
 
@@ -557,8 +429,8 @@ class ProgramCompiler:
         active = load_stable_program_artifact()
         if base_artifact.program_sha256 != active.program_sha256:
             raise ValueError("news_program_compile_parent_must_be_exact_stable_root")
-        _require_model_identity(task_lm, role="task")
-        _require_model_identity(reflection_lm, role="reflection")
+        require_model_identity(task_lm, role="task")
+        require_model_identity(reflection_lm, role="reflection")
         self._base = base_artifact
         self._task_lm = task_lm
         self._reflection_lm = reflection_lm
@@ -573,128 +445,21 @@ class ProgramCompiler:
     def compile(self, request: CompileRequest) -> ProgramCompileResult:
         if request.learning_epoch != LEARNING_EPOCH:
             raise ValueError("news_program_compile_epoch_mismatch")
-        if self._judge is None:
-            raise ValueError("news_program_compile_metric_judge_required")
-        failure_clusters, target_dimensions = _failure_scope(request.episodes)
-        if not failure_clusters:
-            raise ValueError("news_program_compile_no_verified_failure_clusters")
-        train_episodes, val_episodes, split_receipt = _honest_split(request.episodes)
-        train_examples = [_compile_example(episode) for episode in train_episodes]
-        val_examples = [_compile_example(episode) for episode in val_episodes]
-        examples = train_examples + val_examples
-        retrieval_receipt = _retrieval_receipt(request.episodes)
         meter = _BudgetMeter(request.budget, tariff=self._tariff)
-        task_lm = _BudgetedLM(self._task_lm, role="task", meter=meter)
-        reflection_lm = _BudgetedLM(self._reflection_lm, role="reflection", meter=meter)
-        student = _FeedbackCompileProgram(self._base)
-        if tuple(name for name, _ in student.named_predictors()) != ("event_semantics", "reader_card"):
-            raise ValueError("news_program_compile_factory_topology_mismatch")
-
-        proposer = RulePackAwareProposer(self._base)
-        metric = bind_metric(self._judge)
-        metric_receipt = _metric_receipt(metric, review_rubric_version=request.review_rubric_version)
-        metric_sha = canonical_sha(metric_receipt)
-        optimizer_constructor = {
-            "auto": None,
-            "max_full_evals": None,
-            "max_metric_calls": request.budget.max_metric_calls,
-            # DSPy's default is 3, and 3 is too few for this metric. In the first real run every proposal was
-            # skipped on an *exact* tie — 1.729166 vs 1.729166, 1.597917 vs 1.597917, 1.714583 vs 1.714583 —
-            # because a good advisory here names recurring evidence patterns (a sentiment index, a comparison
-            # base, a crypto-linked equity) that a 3-example sample almost never contains. The metric is also
-            # coarse, moving in steps like 0 / 0.675 / 0.825 / 1.0, so ties are easy to hit and GEPA skips on
-            # a tie by rule. A wider minibatch is what gives a real improvement room to show up as one.
-            "reflection_minibatch_size": min(10, len(train_examples)),
-            "candidate_selection_strategy": "pareto",
-            "skip_perfect_score": True,
-            "add_format_failure_as_feedback": True,
-            # #143. The default proposer shows the reflection model only the mutable component, which for this
-            # Program is an advisory slot whose code-owned baseline is empty. It was being asked to write a
-            # whole instruction while blind to the eight RulePacks already in the prompt.
-            "instruction_proposer": proposer,
-            "component_selector": "round_robin",
-            "use_merge": True,
-            "max_merge_invocations": 5,
-            "num_threads": 1,
-            "failure_score": 0.0,
-            "perfect_score": 1.0,
-            "track_stats": True,
-            "track_best_outputs": False,
-            "log_dir": None,
-            "use_wandb": False,
-            "wandb_api_key": None,
-            "wandb_init_kwargs": None,
-            "warn_on_score_mismatch": True,
-            "use_mlflow": False,
-            "seed": request.budget.seed,
-            "gepa_kwargs": None,
-        }
-        optimizer_config_receipt = _optimizer_config_receipt(
-            constructor=optimizer_constructor,
-            task_lm=self._task_lm,
-            reflection_lm=self._reflection_lm,
-            optimizer_factory=self._optimizer_factory,
-            metric_sha256=metric_sha,
-            example_count=len(examples),
-            train_count=len(train_examples),
-            val_count=len(val_examples),
-        )
-        optimizer = self._optimizer_factory(
-            metric,
-            reflection_lm=reflection_lm,
-            **optimizer_constructor,
-        )
-        with dspy.context(
-            lm=task_lm,
-            adapter=DspyStrictJSONAdapter(use_native_function_calling=False),
-            track_usage=True,
-            disable_history=True,
-        ):
-            compiled = optimizer.compile(student, trainset=train_examples, teacher=None, valset=val_examples)
-        if not isinstance(compiled, DspyCompileProgram):
-            raise TypeError("news_program_compile_result_type_invalid")
-        details = getattr(compiled, "detailed_results", None)
-        metric_calls = int(getattr(details, "total_metric_calls", -1))
-        # GEPA reports `state.total_num_evals` and checks its own budget *between* steps, so a completed run
-        # legitimately finishes past `max_metric_calls` by whatever the step in flight consumes: one reflection
-        # minibatch plus, if that candidate is accepted, one full valset evaluation.
-        #
-        # This bound has been wrong twice, and each time it destroyed a finished 30-minute run after the work
-        # was already done — first as an exact ceiling, then as `+ valset` (observed 316 against a 314 bound).
-        # So it is derived from the configuration rather than guessed, and generously: the spend that actually
-        # needs bounding is physical provider calls and cost, and `_BudgetMeter` bounds those on every single
-        # request, before it is made. This check only proves the reported figure is present and sane.
-        metric_call_ceiling = gepa_metric_call_ceiling(
+        # The only thing this plane adds to the shared core: every physical provider call is metered
+        # against the operator's budget before it is made. The experiment loop runs the same optimizer
+        # over plain LMs, which is what makes the two planes' numbers comparable at all.
+        result = run_gepa(
+            base_program=self._base,
+            episodes=request.episodes,
+            task_lm=_BudgetedLM(self._task_lm, role="task", meter=meter),
+            reflection_lm=_BudgetedLM(self._reflection_lm, role="reflection", meter=meter),
+            judge=self._judge,
             max_metric_calls=request.budget.max_metric_calls,
-            optimizer_config=optimizer_config_receipt,
-            expected_example_count=len(examples),
-        )
-        if metric_calls < 0 or metric_calls > metric_call_ceiling:
-            raise ValueError(
-                "news_program_compile_metric_budget_unverifiable:"
-                f"observed={metric_calls},requested={request.budget.max_metric_calls},ceiling={metric_call_ceiling}"
-            )
-        trajectory_receipt = _trajectory_receipt(details)
-        # Canonicalize first. The checkpoint receipt is the record of what the run produced, and until
-        # `_restore_empty_advisories` runs, an untouched Predictor still holds DSPy's generated default
-        # ("Given the fields ..., produce the fields ...") rather than the empty advisory it stands for.
-        # Reading it before the restore made the receipt disagree with the patch and the shipped artifact
-        # for exactly the case `_restore_empty_advisories` exists to handle.
-        _restore_empty_advisories(compiled)
-        checkpoint_receipt = _checkpoint_receipt(compiled)
-        patch = extract_optimizer_patch(compiled, self._base)
-        if (
-            patch.event_semantics_instruction == self._base.event_semantics_instruction
-            and patch.reader_card_instruction == self._base.reader_card_instruction
-        ):
-            raise ValueError("news_program_compile_no_program_change")
-        receipt_payloads = CompileReceiptPayloads(
-            metric=metric_receipt,
-            optimizer_config=optimizer_config_receipt,
-            trajectory=trajectory_receipt,
-            checkpoint=checkpoint_receipt,
-            split=split_receipt,
-            retrieval=retrieval_receipt,
+            seed=request.budget.seed,
+            review_rubric_version=request.review_rubric_version,
+            optimizer_factory=self._optimizer_factory,
+            student_factory=_FeedbackCompileProgram,
         )
         judge_stats = dict(self._judge.stats)
         metric_judge_attempts = int(judge_stats.get("attempts", -1))
@@ -718,11 +483,18 @@ class ProgramCompiler:
         if total_cost_microusd > request.budget.max_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
         return ProgramCompileResult(
-            patch=patch,
-            receipt_payloads=receipt_payloads,
-            failure_cluster_ids=failure_clusters,
-            target_dimensions=target_dimensions,
-            metric_calls=metric_calls,
+            patch=result.patch,
+            receipt_payloads=CompileReceiptPayloads(
+                metric=result.metric,
+                optimizer_config=result.optimizer_config,
+                trajectory=result.trajectory,
+                checkpoint=result.checkpoint,
+                split=result.split,
+                retrieval=result.retrieval,
+            ),
+            failure_cluster_ids=result.failure_cluster_ids,
+            target_dimensions=result.target_dimensions,
+            metric_calls=result.metric_calls,
             task_model_calls=meter.task_model_calls,
             reflection_model_calls=meter.reflection_model_calls,
             metric_judge_attempts=metric_judge_attempts,
@@ -733,71 +505,6 @@ class ProgramCompiler:
             metric_judge_cost_microusd=metric_judge_cost_microusd,
             actual_cost_microusd=total_cost_microusd,
         )
-
-
-def _failure_scope(episodes: Sequence[DevelopmentEpisode]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    clusters: set[str] = set()
-    dimensions: set[str] = set()
-    for episode in episodes:
-        review = episode.accepted_review
-        results = dict(review.get("dimensions") or {})
-        failed = {str(key) for key, value in results.items() if value == "fail"}
-        production_judgment = episode.production_judgment
-        should_push = str(review.get("should_push") or "uncertain")
-        production_action = (
-            production_decision(production_judgment, episode.policy_metric) if production_judgment is not None else None
-        )
-        production_pushes = production_action is not None and production_action.final in {"push", "escalate"}
-        decision_failed = (should_push in {"must_push", "should_push"} and not production_pushes) or (
-            should_push in {"must_hold", "should_hold"} and production_pushes
-        )
-        novelty = str(dict(review.get("novelty") or {}).get("judgment") or "uncertain")
-        production_novelty = production_judgment.verdict.novelty if production_judgment is not None else ""
-        novelty_failed = novelty not in ("uncertain", production_novelty)
-        correction = bool(str(review.get("expected_correction") or "").strip())
-        if failed or decision_failed or novelty_failed or correction:
-            clusters.add(episode.cluster_id)
-            dimensions.update(failed)
-            if decision_failed:
-                dimensions.add("should_push")
-            if novelty_failed:
-                dimensions.add("novelty")
-            if correction and not failed:
-                dimensions.add("factual_fidelity")
-    return tuple(sorted(clusters)), tuple(sorted(dimensions))
-
-
-def _trajectory_receipt(details: Any) -> dict[str, Any]:
-    if details is None:
-        raise ValueError("news_program_compile_trajectory_missing")
-    scores = [float(value) for value in list(getattr(details, "val_aggregate_scores", ()) or ())]
-    if any(not math.isfinite(score) for score in scores):
-        raise TypeError("news_program_compile_nonfinite_receipt_value")
-    parents = _json_safe(list(getattr(details, "parents", ()) or ()))
-    discovery = [int(value) for value in list(getattr(details, "discovery_eval_counts", ()) or ())]
-    return {
-        "schema": "tracefold.news.compile_trajectory_receipt.v1",
-        "parents": parents,
-        "val_aggregate_scores": scores,
-        "discovery_eval_counts": discovery,
-        "total_metric_calls": int(getattr(details, "total_metric_calls", -1)),
-        "num_full_val_evals": int(getattr(details, "num_full_val_evals", 0) or 0),
-        "seed": int(getattr(details, "seed", 0) or 0),
-        "best_idx": int(getattr(details, "best_idx", 0) or 0),
-    }
-
-
-def _checkpoint_receipt(program: DspyCompileProgram) -> dict[str, Any]:
-    return {
-        "schema": "tracefold.news.compile_checkpoint_receipt.v2",
-        "factory": program.artifact.factory_id,
-        # The advisory text itself, not a digest of it: this receipt is the record of what the run produced,
-        # and the winner's two instructions are already carried by the patch beside it.
-        "predictors": {
-            name: {"instruction": str(predictor.signature.instructions or "")}
-            for name, predictor in program.named_predictors()
-        },
-    }
 
 
 __all__ = [

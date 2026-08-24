@@ -9,6 +9,7 @@ import dspy
 import pytest
 
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.gepa import optimizer_config_receipt as _optimizer_config_receipt
 from tracefold.news.learning.compiler.root import (
     CompileBudget,
     CompileRequest,
@@ -16,10 +17,6 @@ from tracefold.news.learning.compiler.root import (
     ProgramCompiler,
     _BudgetedLM,
     _BudgetMeter,
-    _honest_split,
-    _metric_receipt,
-    _optimizer_config_receipt,
-    _retrieval_receipt,
     accepted_review_metric,
 )
 from tracefold.news.learning.compiler.security import (
@@ -27,6 +24,7 @@ from tracefold.news.learning.compiler.security import (
     REFLECTION_TIMEOUT_SECONDS,
     ModelExecutionIdentity,
 )
+from tracefold.news.learning.metric import _honest_split, _metric_receipt, _retrieval_receipt
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.artifact import (
     ProgramStrategyArtifactV1,

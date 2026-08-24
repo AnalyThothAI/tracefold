@@ -399,7 +399,7 @@ def test_empty_advisory_survives_a_gepa_round_trip() -> None:
     the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
     """
 
-    from tracefold.news.learning.compiler.root import _generated_default_instruction, _restore_empty_advisories
+    from tracefold.news.learning.compiler.gepa import generated_default_instruction, restore_empty_advisories
 
     artifact = load_stable_program_artifact()
     program = _FeedbackCompileProgram(artifact)
@@ -410,10 +410,10 @@ def test_empty_advisory_survives_a_gepa_round_trip() -> None:
     for name, pred in program.named_predictors():
         pred.signature = pred.signature.with_instructions(seed[name])
     polluted = {name: pred.signature.instructions for name, pred in program.named_predictors()}
-    assert polluted["event_semantics"] == _generated_default_instruction(program.event_semantics)
+    assert polluted["event_semantics"] == generated_default_instruction(program.event_semantics)
     assert "produce the fields" in polluted["event_semantics"]
 
-    _restore_empty_advisories(program)
+    restore_empty_advisories(program)
     assert {name: pred.signature.instructions for name, pred in program.named_predictors()} == seed
 
 
@@ -428,7 +428,7 @@ def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() ->
     that disagrees with the artifact it attests to is not evidence.
     """
 
-    from tracefold.news.learning.compiler.root import _generated_default_instruction
+    from tracefold.news.learning.compiler.gepa import generated_default_instruction
 
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
@@ -462,7 +462,7 @@ def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() ->
     assert untouched, "this run rewrote both advisories, so it cannot exercise the untouched Predictor"
     program = _FeedbackCompileProgram(load_stable_program_artifact())
     for name in untouched:
-        boilerplate = _generated_default_instruction(getattr(program, name))
+        boilerplate = generated_default_instruction(getattr(program, name))
         # The exact text the receipt must not carry, so this test cannot pass vacuously.
         assert "produce the fields" in boilerplate
         assert recorded[name] == ""
