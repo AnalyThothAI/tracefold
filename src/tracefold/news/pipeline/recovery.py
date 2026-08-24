@@ -8,7 +8,7 @@ from typing import Any
 
 from ..bus import RK_RAW_RECOVERY, BusMessage, DeferError, TransientError, new_trace_id, now_ms
 from ..opennews import OpenNewsHistoryError, enabled_strategy_ids, parse_opennews_strategy_hits
-from .runtime import _Db, _sleep_or_stop
+from .runtime import NewsDatabasePort, _sleep_or_stop
 
 _HISTORY_PAGE_SIZE = 100
 _HISTORY_PAGE_CAP = 60
@@ -18,9 +18,9 @@ _RECOVERY_OVERLAP_MS = 30_000
 class RecoveryRunner:
     """Closed incidents -> official Strategy hits -> raw.recovery.* messages (never delivered)."""
 
-    def __init__(self, *, bus: Any, db: Any, history_client: Any | None) -> None:
+    def __init__(self, *, bus: Any, db: NewsDatabasePort, history_client: Any | None) -> None:
         self.bus = bus
-        self.db = _Db(db)
+        self.db = db
         self.history_client = history_client
         self._requested = asyncio.Event()
 

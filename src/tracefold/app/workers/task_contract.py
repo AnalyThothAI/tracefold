@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable
 
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading.pipeline.root import TradingPipeline
@@ -12,7 +11,8 @@ from tracefold.trading.pipeline.root import TradingPipeline
 WORKERS_PROBE_TASK_NAME = "workers-probe"
 WORKERS_CONTROL_TASK_NAME = "workers-control"
 
-WorkerRunner = tuple[str, Callable[[asyncio.Event], Any]]
+# One task: its stable runtime name, and a callable that runs it until the stop event is set.
+WorkerRunner = tuple[str, Callable[[asyncio.Event], Awaitable[None]]]
 
 
 def worker_business_runners(

@@ -26,7 +26,12 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.app.workers.wiring.trading import _news_trade_candidates, _news_trade_instruments
+from tracefold.app.workers.wiring.news_to_trading import (
+    news_trade_candidates,
+    news_trade_instruments,
+    to_news_candidate_row,
+    to_oi_candidate_row,
+)
 from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.candidate.eligibility import EligibilityPolicy, Funnel, news_candidate, oi_candidate
 from tracefold.trading.contracts import (
@@ -491,8 +496,8 @@ def _runner(conn: Any, *, adapter: PaperAdapter, now: int, config: TradingConfig
         config=config or _config(),
         bars=bars,
         adapter=adapter,
-        candidate_projection=_news_trade_candidates,
-        instrument_projection=_news_trade_instruments,
+        candidate_projection=news_trade_candidates,
+        instrument_projection=news_trade_instruments,
         program=None,
         clock=lambda: now,
     )
@@ -658,13 +663,14 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     } == {("program_v6", "news_semantic_program_v4", "news_triage_policy_v10", "model")}
 
     blacklist = Blacklist.from_rows([])
+    # Through the App mapper, because that is the only path a projection row takes to the trading lane.
     oi = oi_candidate(
-        next(row for row in oi_rows if row["event_id"] == "oi-a"),
+        to_oi_candidate_row(next(row for row in oi_rows if row["event_id"] == "oi-a")),
         now_ms=NOW,
         blacklist=blacklist,
     )
     projected_news = news_candidate(
-        next(row for row in news_rows if row["event_id"] == "news-a"),
+        to_news_candidate_row(next(row for row in news_rows if row["event_id"] == "news-a")),
         now_ms=NOW,
         blacklist=blacklist,
     )
@@ -1074,8 +1080,8 @@ def test_the_frozen_mark_is_the_price_at_the_cutoff_not_the_freshest_bar(conn) -
         config=_config(),
         bars=lambda _venue: feed_result,
         adapter=PaperAdapter(),
-        candidate_projection=_news_trade_candidates,
-        instrument_projection=_news_trade_instruments,
+        candidate_projection=news_trade_candidates,
+        instrument_projection=news_trade_instruments,
         program=None,
         clock=lambda: now,
     )

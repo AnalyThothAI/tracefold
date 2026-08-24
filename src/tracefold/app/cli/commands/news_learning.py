@@ -5,7 +5,7 @@ import time
 from argparse import Namespace
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from tracefold.platform.config.loader import load_settings
 
@@ -18,6 +18,10 @@ from .news_learning_documents import (
     _read_json_or_yaml,
     _write_json,
 )
+
+if TYPE_CHECKING:
+    from tracefold.news.semantic_contract import SemanticJudge
+
 from .news_learning_runtime import (
     _insert_learning_artifact,
     _learning_program_judges,
@@ -480,9 +484,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 if str(spec.get("program_state_sha256") or "") != artifact.state_sha256:
                     raise ValueError("news_learning_program_state_identity_mismatch")
                 parent_artifact = load_program_artifact()
-                machine_diff = ProgramMachineDiffV3.model_validate(program_machine_diff(parent_artifact, artifact))
+                expected_diff = ProgramMachineDiffV3.model_validate(program_machine_diff(parent_artifact, artifact))
                 provided_diff = ProgramMachineDiffV3.model_validate(spec.get("program_machine_diff"))
-                if provided_diff.model_dump(mode="json") != machine_diff.model_dump(mode="json"):
+                if provided_diff.model_dump(mode="json") != expected_diff.model_dump(mode="json"):
                     raise ValueError("news_learning_program_machine_diff_mismatch")
                 manifest_provenance = optimizer_provenance_from_artifact(artifact)
                 compile_provenance = OptimizerCompileProvenanceV3.model_validate(spec.get("compile_provenance"))
@@ -533,7 +537,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     "program_parent_sha256": stable.program_sha256,
                     "program_candidate_sha256": artifact.program_sha256,
                     "program_state_sha256": artifact.state_sha256,
-                    "program_machine_diff": machine_diff.model_dump(mode="json"),
+                    "program_machine_diff": expected_diff.model_dump(mode="json"),
                     "compile_provenance": compile_provenance.model_dump(mode="json"),
                 }
                 compile_receipt_chain_payload = chain.model_dump(mode="json")
@@ -580,7 +584,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     guardrails=tuple(str(value) for value in spec.get("guardrails") or ()),
                     **program_fields,
                 )
-                candidate = CandidateManifest(
+                registered = CandidateManifest(
                     target=target,
                     parent_stable_sha=stable.bundle_sha,
                     candidate_arm=candidate_arm,
@@ -618,18 +622,18 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     conn,
                     kind="candidate",
                     payload={
-                        "candidate_sha": candidate.candidate_sha,
+                        "candidate_sha": registered.candidate_sha,
                         "proposal_sha": sealed_proposal_sha,
-                        "manifest": candidate.model_dump(mode="json"),
+                        "manifest": registered.model_dump(mode="json"),
                     },
                     parent_sha=stable.bundle_sha,
                     created_at_ms=registered_at_ms,
                 )
             payload = {
-                "candidate_sha": candidate.candidate_sha,
-                "candidate": candidate.model_dump(mode="json"),
+                "candidate_sha": registered.candidate_sha,
+                "candidate": registered.model_dump(mode="json"),
                 "program_artifacts": (
-                    {candidate.candidate_arm.program_sha256: str(Path(program_artifact_path).resolve())}
+                    {registered.candidate_arm.program_sha256: str(Path(program_artifact_path).resolve())}
                     if program_artifact_path is not None
                     else {}
                 ),
@@ -694,7 +698,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     artifact_paths=artifact_paths,
                     run_sha=run_sha,
                 )
-                judges = {}
+                judges: Mapping[tuple[Literal["stable", "candidate"], str], SemanticJudge] = {}
             else:
                 judges = _learning_program_judges(
                     conn,

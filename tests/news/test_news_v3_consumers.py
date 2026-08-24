@@ -12,6 +12,7 @@ from typing import Any, Literal
 import pytest
 
 from tests.support.news_judgment import trade_relevance
+from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerNewsDatabase
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
@@ -133,7 +134,12 @@ class RecordingPrice:
 
 
 class FakeWorkerDatabase:
-    """Only the News lane exists on the fake; a consumer that reaches for run_business is a wiring bug."""
+    """Stands in for `WorkerDatabase`; the ports it hands out are the production adapters over it.
+
+    Reaching a consumer's own `read`/`tx` lands on the News lane and appends to `operations`; the
+    Janitor's cold port lands on `run_business` and appends to `heavy_operations`. A consumer that took
+    the wrong lane is therefore visible as a wrong list, not as a passing test.
+    """
 
     def __init__(
         self,
@@ -149,6 +155,14 @@ class FakeWorkerDatabase:
         self.operations: list[str] = []
         self.heavy_operations: list[str] = []
         self.admission_timeout_for = admission_timeout_for or set()
+        self._port = WorkerNewsDatabase(self)
+        self.cold_port = WorkerNewsColdDatabase(self)
+
+    async def read(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+        return await self._port.read(name, fn, timeout_seconds=timeout_seconds)
+
+    async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+        return await self._port.tx(name, fn, timeout_seconds=timeout_seconds)
 
     @contextmanager
     def worker_session(self, name: str, *_args: Any, **_kwargs: Any):
@@ -1190,7 +1204,8 @@ def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     )
     bus = FakeBus()
 
-    republished = asyncio.run(JanitorLoop(db=FakeWorkerDatabase(news), bus=bus).republish_unpublished())
+    db = FakeWorkerDatabase(news)
+    republished = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus).republish_unpublished())
 
     assert republished == 1
     assert bus.routing_keys() == ["event.general.normal"]
@@ -1210,13 +1225,15 @@ def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch
     # Some earlier real-runtime tests reconfigure logging. This unit owns its logger state and restores it.
     monkeypatch.setattr(logging.getLogger("tracefold.news"), "disabled", False)
     with caplog.at_level("WARNING", logger="tracefold.news"):
-        asyncio.run(JanitorLoop(db=FakeWorkerDatabase(news), bus=FakeBus()).republish_unpublished())
+        stranded = FakeWorkerDatabase(news)
+        asyncio.run(JanitorLoop(db=stranded, cold_db=stranded.cold_port, bus=FakeBus()).republish_unpublished())
     assert any("gave up on 3 stranded event" in r.getMessage() for r in caplog.records)
 
     quiet = RecordingNews(unpublished_candidates=[])
     with caplog.at_level("WARNING", logger="tracefold.news"):
         caplog.clear()
-        asyncio.run(JanitorLoop(db=FakeWorkerDatabase(quiet), bus=FakeBus()).republish_unpublished())
+        quiet_db = FakeWorkerDatabase(quiet)
+        asyncio.run(JanitorLoop(db=quiet_db, cold_db=quiet_db.cold_port, bus=FakeBus()).republish_unpublished())
     assert not [r for r in caplog.records if "gave up" in r.getMessage()]
 
 
@@ -1230,7 +1247,7 @@ def test_janitor_runs_learning_retention_on_the_one_slot_cold_lane() -> None:
     )
     db = FakeWorkerDatabase(news)
 
-    asyncio.run(JanitorLoop(db=db).turn())
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
 
     assert db.heavy_operations == ["news_janitor"]
     assert db.operations == []
@@ -1245,7 +1262,7 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     news = RecordingNews(purge_learning_retention=_fail)
     db = FakeWorkerDatabase(news)
 
-    asyncio.run(JanitorLoop(db=db).turn())
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
 
     assert db.heavy_operations == ["news_janitor", "news_learning_retention_error"]
     error = news.kwargs_of("record_learning_retention_error")

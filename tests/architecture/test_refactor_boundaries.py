@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,9 +29,9 @@ GRANDFATHERED_MODULE_LINES = {
     "news/agents/program_metric.py": 1120,
     "news/agents/semantic_program.py": 3645,
     "news/candidate_evaluator.py": 3784,
-    # PR4 moved the 823-line TriageConsumer atomically. Its body is deliberately untouched here;
-    # later ownership PRs may reduce this final module exception without changing the live route.
-    "news/pipeline/triage.py": 966,
+    # PR4 moved the 823-line TriageConsumer atomically; PR7-B3 split `handle` into named phases and
+    # moved the route's typed vocabulary to `triage_route.py`. Still over budget, still only shrinking.
+    "news/pipeline/triage.py": 937,
     "news/review.py": 2456,
     # #173 added the `product_progress` TradeChannel and its rationale: +2 enum lines, +4 comment lines.
     "news/semantic_contract.py": 908,
@@ -42,13 +43,11 @@ GRANDFATHERED_MODULE_LINES = {
 GRANDFATHERED_FUNCTION_LINES = {
     ("app/cli/commands/news_review.py", "_handle_review_accept_drafts"): 105,
     ("app/cli/commands/news_learning.py", "_handle_learning"): 696,
-    ("app/cli/commands/news_learning_baseline.py", "_handle_learning_baseline"): 121,
     ("app/cli/commands/news_learning_baseline.py", "_handle_learning_draft_reviews"): 125,
     ("app/cli/commands/trading.py", "handle_trading"): 130,
     ("app/cli/parser.py", "build_parser"): 314,
     ("app/worker_database.py", "WorkerDatabase._run_executor"): 111,
     ("app/workers/root.py", "run_workers"): 262,
-    ("app/workers/wiring/news.py", "_wire_news_pipeline"): 172,
     ("news/agents/program_baseline.py", "run_baseline"): 239,
     ("news/agents/program_baseline.py", "_build_report"): 124,
     ("news/agents/program_compiler.py", "ProgramCompiler.compile"): 163,
@@ -69,7 +68,9 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/candidate_evaluator.py", "CandidateEvaluator._persist_program_call"): 212,
     ("news/candidate_evaluator.py", "CandidateEvaluator._evaluate_evidence"): 311,
     ("news/candidate_evaluator.py", "_observed_production_output"): 142,
-    ("news/pipeline/triage.py", "TriageConsumer.handle"): 419,
+    # PR7-B3: 419 -> 81. `handle` now owns the broker sequence and the one stale re-ask loop; every
+    # phase it names is its own function under the 100-line default.
+    ("news/pipeline/triage.py", "TriageConsumer.handle"): 83,
     ("news/pipeline/triage.py", "TriageConsumer._judge_telemetry"): 126,
     ("news/eval/replay.py", "replay_hits"): 133,
     ("news/pipeline/admission.py", "admit_item"): 250,
@@ -511,3 +512,280 @@ def test_target_workers_root_owns_lifecycle_but_not_capability_construction() ->
     tree = ast.parse(root.read_text(encoding="utf-8"), filename=str(root))
     imports = _import_targets(root, tree)
     assert sorted(imported for imported in imports if imported.startswith(forbidden)) == []
+
+
+# ---------------------------------------------------------------------------- PR7-B4 guards
+# `tracefold.app` decides how capabilities are assembled and run; it never decides what a business fact
+# means. Reads are legitimate at the composition seam — the News -> Trading projection is one — but a
+# write is an ownership claim, and business writes belong to the owning package's storage.
+APP_ROOT = SRC / "app"
+BUSINESS_WRITE_SQL_RE = re.compile(
+    r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>(?:news|trading)_[a-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+# The exact modules that may import DSPy. The old rule allowed the whole `workers/wiring` directory,
+# which meant News or Market Review wiring could have started importing it without anything failing.
+DSPY_WIRING_OWNERS = {"app/workers/wiring/trading.py"}
+
+# `Any` at a seam is debt with a reason: a repository session is an App aggregate the business packages
+# may not name, and a provider payload is whatever the venue sent. The counts are exact so the number
+# can only fall — a new `Any` on one of these boundaries has to be argued for here.
+ANY_DEBT_LEDGER = {
+    # `Callable[[Any], T]`: the repository session the port hands the caller back is App-owned.
+    "news/pipeline/runtime.py": 4,
+    "trading/pipeline/runtime.py": 4,
+    "app/workers/wiring/database.py": 10,
+    # `verdict` and `grounded_assets` are jsonb documents; `conn` is the psycopg connection.
+    "news/storage/trade_projection.py": 5,
+    "app/workers/wiring/news_to_trading.py": 2,
+    "app/workers/wiring/news.py": 1,
+    # Operator settings and the venue adapter factories: pydantic models and provider callables the
+    # composition root only forwards. Real debt, and the reason it is written down rather than waived.
+    "app/workers/wiring/market_review.py": 10,
+    "app/workers/wiring/trading.py": 4,
+    "app/workers/task_contract.py": 0,
+    "app/workers/wiring/components.py": 0,
+}
+
+# Where one context's facts become another's inputs. A bare dictionary here is exactly the untyped
+# pass-through PR7-B2 removed, so it may not come back.
+CROSS_CONTEXT_BOUNDARY_MODULES = (
+    "app/workers/wiring/news_to_trading.py",
+    "news/pipeline/runtime.py",
+    "news/storage/trade_projection.py",
+    "trading/pipeline/runtime.py",
+)
+BARE_DICT_MARKERS = ("dict[str, Any]", "Mapping[str, Any]")
+
+
+def _module_name_of(path: Path) -> str:
+    return _module_name(path)
+
+
+def _top_level_import_targets(path: Path, tree: ast.Module) -> set[str]:
+    """Imports that execute (or are declared) at module scope.
+
+    A deferred import inside a function body is the documented way this repository breaks an import
+    cycle, so it is not one. A `TYPE_CHECKING` block is still a declared design dependency and counts.
+    """
+
+    statements: list[ast.stmt] = list(tree.body)
+    for node in tree.body:
+        if isinstance(node, ast.If):
+            statements.extend(node.body)
+    imports: set[str] = set()
+    for node in statements:
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            resolved = _resolved_from_module(path, node)
+            if not resolved or not _module_exists(resolved):
+                continue
+            imports.add(resolved)
+            imports.update(
+                candidate
+                for alias in node.names
+                if alias.name != "*"
+                if _module_exists(candidate := f"{resolved}.{alias.name}")
+            )
+    return imports
+
+
+def _internal_import_graph(package: str) -> dict[str, set[str]]:
+    prefix = f"tracefold.{package}."
+    graph: dict[str, set[str]] = {}
+    for path in _production_files():
+        if path.relative_to(SRC).parts[0] != package:
+            continue
+        module = _module_name_of(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        graph[module] = {imported for imported in _top_level_import_targets(path, tree) if imported.startswith(prefix)}
+    return {module: {target for target in targets if target in graph} for module, targets in graph.items()}
+
+
+def _import_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
+    """Strongly connected components with more than one module, plus any self-import."""
+
+    order: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    cycles: list[list[str]] = []
+    counter = 0
+
+    def visit(root: str) -> None:
+        nonlocal counter
+        work: list[tuple[str, list[str]]] = [(root, sorted(graph[root]))]
+        order[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, pending = work[-1]
+            if pending:
+                target = pending.pop()
+                if target not in order:
+                    order[target] = low[target] = counter
+                    counter += 1
+                    stack.append(target)
+                    on_stack.add(target)
+                    work.append((target, sorted(graph[target])))
+                elif target in on_stack:
+                    low[node] = min(low[node], order[target])
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == order[node]:
+                component: list[str] = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                if len(component) > 1:
+                    cycles.append(sorted(component))
+
+    for module in sorted(graph):
+        if module not in order:
+            visit(module)
+    cycles.extend([module] for module in sorted(graph) if module in graph[module])
+    return cycles
+
+
+def test_app_composes_capabilities_but_never_writes_their_facts() -> None:
+    """#162 PR7-B4: business SQL writes live in the owning package's storage, never at the seam."""
+
+    violations = [
+        f"{path.relative_to(ROOT).as_posix()}:{table}"
+        for path in _production_files()
+        if path.relative_to(SRC).parts[0] == "app"
+        for table in BUSINESS_WRITE_SQL_RE.findall(path.read_text(encoding="utf-8"))
+    ]
+    assert violations == []
+    assert BUSINESS_WRITE_SQL_RE.findall("INSERT INTO news_learning_artifacts (a) VALUES (1)") == [
+        "news_learning_artifacts"
+    ]
+    assert BUSINESS_WRITE_SQL_RE.findall("UPDATE workers_runtime SET x = 1") == []
+
+
+def test_the_three_owning_packages_have_acyclic_internal_import_graphs() -> None:
+    """A cycle inside a package means its modules cannot be read, tested or moved one at a time."""
+
+    cycles = {package: _import_cycles(_internal_import_graph(package)) for package in ("app", "news", "trading")}
+    assert cycles == {"app": [], "news": [], "trading": []}
+    # The detector must actually detect: a two-node loop is a cycle, a diamond is not.
+    assert _import_cycles({"a": {"b"}, "b": {"a"}}) == [["a", "b"]]
+    assert _import_cycles({"a": {"b", "c"}, "b": {"d"}, "c": {"d"}, "d": set()}) == []
+
+
+def test_dspy_wiring_is_owned_by_named_modules_not_a_directory() -> None:
+    """Only the Trading decision wiring builds an LM here; News wiring goes through `learning_runtime`."""
+
+    wiring = SRC / "app" / "workers" / "wiring"
+    importers = {
+        path.relative_to(SRC).as_posix()
+        for path in sorted(wiring.rglob("*.py"))
+        if "dspy" in {imported.split(".")[0] for imported in _import_targets(path, ast.parse(path.read_text("utf-8")))}
+    }
+    assert importers == DSPY_WIRING_OWNERS
+
+
+def test_seam_any_debt_only_shrinks() -> None:
+    """An exact ledger, not a threshold: a new `Any` on a declared boundary has to be argued for here."""
+
+    actual = {
+        relative: sum(
+            1
+            for node in ast.walk(ast.parse((SRC / relative).read_text(encoding="utf-8")))
+            if isinstance(node, ast.Name) and node.id == "Any"
+        )
+        for relative in ANY_DEBT_LEDGER
+    }
+    assert actual == ANY_DEBT_LEDGER
+
+
+def test_the_cross_context_boundary_carries_no_bare_dictionaries() -> None:
+    """PR7-B2 replaced `dict[str, Any]` pass-through with named row contracts; it may not return."""
+
+    violations = [
+        f"{relative}:{marker}"
+        for relative in CROSS_CONTEXT_BOUNDARY_MODULES
+        for marker in BARE_DICT_MARKERS
+        if marker in (SRC / relative).read_text(encoding="utf-8")
+    ]
+    assert violations == []
+
+
+def test_the_news_to_trading_mapper_names_the_projection_version_it_was_written_against() -> None:
+    """A News projection that changes what a field *means* keeps its keys; only the version moves."""
+
+    from tracefold.app.workers.wiring.news_to_trading import MAPPED_NEWS_PROJECTION_VERSION
+    from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
+
+    assert MAPPED_NEWS_PROJECTION_VERSION == NEWS_TRADE_PROJECTION_VERSION
+
+
+# The error codes `tracefold.app.*` may still suppress. Exact, so the list can only be shortened: PR7-B4
+# restored `arg-type`, `union-attr`, `assignment` and `warn_return_any` by fixing the 28 errors they hid,
+# and what remains is untyped-third-party debt (`attr-defined`, `index`, `operator`, `no-untyped-call`).
+APP_MYPY_SUPPRESSED_CODES = frozenset({"attr-defined", "index", "operator", "no-untyped-call"})
+# Strictness flags a composition seam may not turn off again. `tracefold.integrations.*` keeps its own
+# looser policy on purpose — a provider payload is whatever the venue sent — and is deliberately not here.
+APP_MYPY_REQUIRED_FLAGS = ("warn_return_any", "strict_equality", "no_implicit_optional")
+
+
+def _mypy_override(module: str) -> dict[str, object]:
+    import tomllib
+
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    overrides = config["tool"]["mypy"]["overrides"]
+    matched = [
+        override
+        for override in overrides
+        if override["module"] == module or (isinstance(override["module"], list) and module in override["module"])
+    ]
+    assert len(matched) == 1, f"expected exactly one mypy override for {module}"
+    return dict(matched[0])
+
+
+def test_app_type_suppression_only_shrinks() -> None:
+    """#162 PR7-B4: the seam's typing debt is a ledger, not a preference."""
+
+    override = _mypy_override("tracefold.app.*")
+    assert frozenset(override.get("disable_error_code", ())) == APP_MYPY_SUPPRESSED_CODES
+    assert [flag for flag in APP_MYPY_REQUIRED_FLAGS if flag in override] == []
+    # The looser third-party policy still exists, and still belongs to the adapter layer only.
+    integrations = _mypy_override("tracefold.integrations.*")
+    assert integrations.get("warn_return_any") is False
+    assert frozenset(integrations.get("disable_error_code", ())) > APP_MYPY_SUPPRESSED_CODES
+
+
+# The App-owned database methods a business package may never reach for. Checked as attribute *access*
+# rather than source text, so the sentence in `news/pipeline/runtime.py` that explains the rule — and any
+# future comment quoting it — is prose, not a violation.
+APP_DATABASE_METHODS = frozenset({"worker_session", "run_news", "run_business", "run_control", "heavy_business"})
+
+
+def test_business_packages_never_reach_for_an_app_database_method() -> None:
+    """#162 PR7-B1's rule, made executable: capabilities depend on their port, not on `WorkerDatabase`.
+
+    Before PR7-B there was no import edge and a hard dependency anyway — `db: Any`, then
+    `db.heavy_business()`. Nothing but this guard would notice that coming back.
+    """
+
+    violations = [
+        f"{path.relative_to(SRC).as_posix()}:{node.lineno}:{node.attr}"
+        for path in _production_files()
+        if path.relative_to(SRC).parts[0] in ("news", "trading")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+        if isinstance(node, ast.Attribute) and node.attr in APP_DATABASE_METHODS
+    ]
+    assert violations == []
+    # The detector reads attribute access, not the words: a docstring naming the method is not a call.
+    quoted = ast.parse('"""Do not call heavy_business() here."""\nx = 1\n')
+    assert [n for n in ast.walk(quoted) if isinstance(n, ast.Attribute)] == []
+    reached = ast.parse("db.heavy_business()\n")
+    assert [n.attr for n in ast.walk(reached) if isinstance(n, ast.Attribute)] == ["heavy_business"]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
@@ -8,6 +7,8 @@ from loguru import logger
 
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.worker_database import WorkerDatabase
+from tracefold.app.workers.wiring.database import WorkerTradingDatabase
+from tracefold.app.workers.wiring.news_to_trading import news_trade_candidates, news_trade_instruments
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
@@ -19,34 +20,9 @@ from tracefold.trading.decision.program import DEFAULT_MAX_TOKENS as TRADING_DEC
 from tracefold.trading.decision.program import TradingDecisionProgram
 from tracefold.trading.decision.regime import RegimePolicy
 from tracefold.trading.execution.order import OrderPolicy
+from tracefold.trading.pipeline.root import TradingPipeline
 from tracefold.trading.pipeline.root import build_pipeline as build_trading_pipeline
 from tracefold.trading.pipeline.runtime import TradingConfig
-
-
-class _TradingColdDb:
-    """Trading's database admission: one slot on the heavy-business lane, never the News lane.
-
-    Same shape and same reasoning as the price plane's cold lane (#88). The composition root owns it
-    because `WorkerDatabase` is an app type and `tracefold.trading` depends on `platform` only.
-    """
-
-    def __init__(self, db: WorkerDatabase) -> None:
-        self._db = db
-        self._lane = db.heavy_business()
-
-    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
-        def _run() -> Any:
-            with self._db.worker_session(name, timeout_seconds) as repos, repos.transaction():
-                return fn(repos)
-
-        return await self._lane.run_business(name, _run, operation_timeout_seconds=timeout_seconds)
-
-    async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
-        def _run() -> Any:
-            with self._db.worker_session(name, timeout_seconds) as repos:
-                return fn(repos)
-
-        return await self._lane.run_business(name, _run, operation_timeout_seconds=timeout_seconds)
 
 
 def trading_config_from_settings(settings: Settings) -> TradingConfig:
@@ -94,38 +70,7 @@ def trading_config_from_settings(settings: Settings) -> TradingConfig:
     )
 
 
-def _news_trade_candidates(
-    repos: Any,
-    metric_version: str,
-    after_created_at_ms: int,
-    until_created_at_ms: int,
-    max_rank_in_window: int,
-    min_oi_value_usd: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """App-owned handoff from the News projection into Trading's candidate reader."""
-
-    return (
-        repos.news.trade_candidate_oi_rows(
-            metric_version=metric_version,
-            after_created_at_ms=after_created_at_ms,
-            until_created_at_ms=until_created_at_ms,
-            max_rank_in_window=max_rank_in_window,
-            min_oi_value_usd=min_oi_value_usd,
-        ),
-        repos.news.trade_candidate_news_rows(
-            after_created_at_ms=after_created_at_ms,
-            until_created_at_ms=until_created_at_ms,
-        ),
-    )
-
-
-def _news_trade_instruments(repos: Any, base_symbol: str, venues: Sequence[str]) -> list[dict[str, Any]]:
-    """App-owned handoff from News instrument facts into Trading's venue resolver."""
-
-    return repos.news.trade_candidate_instrument(base_symbol=base_symbol, venues=venues)
-
-
-def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | None:
+def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> TradingPipeline | None:
     """#104. Disabled by default; a disabled Trading context constructs no program and no adapter.
 
     The runners share the price plane's one-slot cold admission rather than the four News lane slots,
@@ -158,11 +103,11 @@ def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | N
             )
 
         return build_trading_pipeline(
-            db=_TradingColdDb(db),
+            db=WorkerTradingDatabase(db),
             config=trading_config_from_settings(settings),
             bars=_trading_bar_fetcher(settings),
-            candidate_projection=_news_trade_candidates,
-            instrument_projection=_news_trade_instruments,
+            candidate_projection=news_trade_candidates,
+            instrument_projection=news_trade_instruments,
             program=program,
         )
     except Exception:

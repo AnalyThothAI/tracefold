@@ -1,11 +1,98 @@
-"""News-owned point-in-time projection read by App composition for Trading."""
+"""News-owned point-in-time projection read by App composition for Trading.
+
+The three row contracts below are the published shape of that projection. They are `TypedDict`s
+because the rows *are* the SELECT lists — naming the columns is the whole contract, and a runtime
+model here would coerce values PostgreSQL already typed and turn a nullable LEFT JOIN column into a
+different value. Nothing outside this module may add, rename or retype a key without editing them,
+which is what makes the App-side mapper break at type-check time instead of at 03:00 in a runner.
+
+They say nothing about *trade* eligibility: single-primary, grounding, novelty, magnitude, freshness
+and rank live in the trading lane's own pure rules. This side owns generation identity, the
+point-in-time boundaries and the deterministic order.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TypedDict
 
 from ..opennews import source_artifact_identity
+
+# Bump when a key is added, removed or retyped below. The consumer's mapper is versioned against it,
+# so a silently widened projection cannot reach Trading as an unnoticed extra field.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v1"
+
+
+class OiTradeProjectionRow(TypedDict):
+    """One deterministic OI telemetry verdict that pushed, with its rank-ledger row and frame venue."""
+
+    event_id: str
+    verdict_created_at_ms: int
+    final_decision: str
+    learning_epoch: str
+    program_version: str
+    program_sha256: str
+    policy_version: str
+    editorial_origin: str
+    editorial_sha256: str
+    scored_judgment_sha256: str
+    runtime_manifest_sha: str
+    metric_version: str
+    symbol: str
+    direction: str
+    oi_change_bps: int
+    oi_value_usd: int
+    whale_long_profit_bps: int
+    whale_oi_ratio_bps: int
+    rank_in_window: int
+    observed_at_ms: int
+    ingest_mode: str
+    # LEFT JOIN on the leader Item, then a JSON member: absent frames and untagged frames both read None.
+    venue: str | None
+
+
+class NewsTradeProjectionRow(TypedDict):
+    """One model Triage verdict that pushed on a crypto-class Event, frozen at the verdict cutoff."""
+
+    event_id: str
+    verdict_created_at_ms: int
+    final_decision: str
+    # Nullable in `news_verdicts` and deliberately not filtered here: a verdict with no evidence pointer
+    # is still a real judgment, and adding the predicate would silently narrow the projection's rows.
+    # `program_sha256`, `scored_judgment_sha256` and `runtime_manifest_sha` are nullable too, but the
+    # WHERE clause already requires each of them, so those cross as `str`.
+    evidence_version: int | None
+    evidence_sha256: str | None
+    focus_fact_id: str | None
+    verdict: Any
+    learning_epoch: str
+    program_version: str
+    program_sha256: str
+    policy_version: str
+    editorial_origin: str
+    editorial_sha256: str
+    scored_judgment_sha256: str
+    runtime_manifest_sha: str
+    opened_at_ms: int
+    comparison_fingerprint: str
+    asset_class: str
+    grounded_assets: Any
+    ingest_mode: str
+    source_artifact_id: str | None
+    # Derived here from the canonical URL's own identity, never selected: see the note in the reader.
+    source_published_at_ms: int | None
+
+
+class TradeInstrumentProjectionRow(TypedDict):
+    """One exactly-listed native crypto perpetual for one underlying."""
+
+    venue: str
+    venue_symbol: str
+    base_symbol: str
+    instrument_class: str
+    quote_asset: str | None
+    status: str
+    last_seen_ms: int
 
 
 class TradeProjectionStorage:
@@ -20,7 +107,7 @@ class TradeProjectionStorage:
         max_rank_in_window: int,
         min_oi_value_usd: int,
         limit: int = 64,
-    ) -> list[dict[str, Any]]:
+    ) -> list[OiTradeProjectionRow]:
         """Deterministic telemetry verdicts that pushed, with their rank-ledger row and the frame's venue.
 
         `venue` comes from the Item's own `provider_metadata.source` rather than the ledger, which does
@@ -90,7 +177,7 @@ class TradeProjectionStorage:
                 int(limit),
             ),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [_oi_projection_row(row) for row in rows]
 
     def trade_candidate_news_rows(
         self,
@@ -98,7 +185,7 @@ class TradeProjectionStorage:
         after_created_at_ms: int,
         until_created_at_ms: int,
         limit: int = 64,
-    ) -> list[dict[str, Any]]:
+    ) -> list[NewsTradeProjectionRow]:
         """Model Triage verdicts that pushed on a crypto-class Event, frozen at the verdict cutoff.
 
         Only the structural conditions live in SQL. Single-primary, grounding, novelty and magnitude are
@@ -157,18 +244,11 @@ class TradeProjectionStorage:
             """,
             (int(after_created_at_ms), int(until_created_at_ms), int(limit)),
         ).fetchall()
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            record = dict(row)
-            # #154/#157 keep the artifact id as a column and derive its publication time from the URL's
-            # own identity (a snowflake, for x.com), so the projection derives it the same way the
-            # delivery card's `source_age_s` does rather than inventing a second answer.
-            _, published_at_ms = source_artifact_identity(str(record.pop("canonical_url", "") or ""))
-            record["source_published_at_ms"] = published_at_ms
-            out.append(record)
-        return out
+        return [_news_projection_row(row) for row in rows]
 
-    def trade_candidate_instrument(self, *, base_symbol: str, venues: Sequence[str]) -> list[dict[str, Any]]:
+    def trade_candidate_instrument(
+        self, *, base_symbol: str, venues: Sequence[str]
+    ) -> list[TradeInstrumentProjectionRow]:
         """Exactly-listed native crypto perpetuals for one underlying, in the caller's venue order.
 
         `instrument_class = 'crypto'` is not decoration: Binance labels its 169 TradFi perps `EQUITY`
@@ -197,4 +277,80 @@ class TradeProjectionStorage:
             """,
             (str(base_symbol or "").strip().upper(), list(venues)),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            TradeInstrumentProjectionRow(
+                venue=row["venue"],
+                venue_symbol=row["venue_symbol"],
+                base_symbol=row["base_symbol"],
+                instrument_class=row["instrument_class"],
+                quote_asset=row["quote_asset"],
+                status=row["status"],
+                last_seen_ms=row["last_seen_ms"],
+            )
+            for row in rows
+        ]
+
+
+def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
+    """Name every selected column. No coercion: psycopg already returns the column's own type."""
+
+    return OiTradeProjectionRow(
+        event_id=row["event_id"],
+        verdict_created_at_ms=row["verdict_created_at_ms"],
+        final_decision=row["final_decision"],
+        learning_epoch=row["learning_epoch"],
+        program_version=row["program_version"],
+        program_sha256=row["program_sha256"],
+        policy_version=row["policy_version"],
+        editorial_origin=row["editorial_origin"],
+        editorial_sha256=row["editorial_sha256"],
+        scored_judgment_sha256=row["scored_judgment_sha256"],
+        runtime_manifest_sha=row["runtime_manifest_sha"],
+        metric_version=row["metric_version"],
+        symbol=row["symbol"],
+        direction=row["direction"],
+        oi_change_bps=row["oi_change_bps"],
+        oi_value_usd=row["oi_value_usd"],
+        whale_long_profit_bps=row["whale_long_profit_bps"],
+        whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
+        rank_in_window=row["rank_in_window"],
+        observed_at_ms=row["observed_at_ms"],
+        ingest_mode=row["ingest_mode"],
+        venue=row["venue"],
+    )
+
+
+def _news_projection_row(row: Any) -> NewsTradeProjectionRow:
+    """Name every selected column, and derive the one field that is not selected.
+
+    #154/#157 keep the artifact id as a column and derive its publication time from the URL's own
+    identity (a snowflake, for x.com), so the projection derives it the same way the delivery card's
+    `source_age_s` does rather than inventing a second answer. `canonical_url` is read here and does
+    not cross the boundary.
+    """
+
+    _, published_at_ms = source_artifact_identity(str(row["canonical_url"] or ""))
+    return NewsTradeProjectionRow(
+        event_id=row["event_id"],
+        verdict_created_at_ms=row["verdict_created_at_ms"],
+        final_decision=row["final_decision"],
+        evidence_version=row["evidence_version"],
+        evidence_sha256=row["evidence_sha256"],
+        focus_fact_id=row["focus_fact_id"],
+        verdict=row["verdict"],
+        learning_epoch=row["learning_epoch"],
+        program_version=row["program_version"],
+        program_sha256=row["program_sha256"],
+        policy_version=row["policy_version"],
+        editorial_origin=row["editorial_origin"],
+        editorial_sha256=row["editorial_sha256"],
+        scored_judgment_sha256=row["scored_judgment_sha256"],
+        runtime_manifest_sha=row["runtime_manifest_sha"],
+        opened_at_ms=row["opened_at_ms"],
+        comparison_fingerprint=row["comparison_fingerprint"],
+        asset_class=row["asset_class"],
+        grounded_assets=row["grounded_assets"],
+        ingest_mode=row["ingest_mode"],
+        source_artifact_id=row["source_artifact_id"],
+        source_published_at_ms=published_at_ms,
+    )

@@ -9,7 +9,6 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from ..bus import (
@@ -34,25 +33,37 @@ from ..semantic_contract import (
     ScoredJudgment,
     SemanticJudge,
     SemanticJudgeError,
+    SemanticJudgment,
     TriageContext,
 )
 from ..triage_rules import (
     DEFAULT_POLICY,
     DecidePolicy,
-    DecisionResult,
     GateFacts,
     decide,
-    fallback_verdict,
     grounded_restatement,
     storyline_status,
 )
-from .runtime import _Db
+from .runtime import NewsDatabasePort
 from .triage_audit import (
     _program_execution,
     _sync_program_audit,
     _told_from_context,
     _told_trace,
     _usage_from_partial_trace,
+)
+from .triage_route import (
+    _ArmSelection,
+    _Circuit,
+    _degraded_judgment,
+    _gate_facts,
+    _initial_trace,
+    _Judged,
+    _ProgramAttempts,
+    _resolve_after_reask_failure,
+    _RouteInputs,
+    _TriageOutcome,
+    _TriageSettle,
 )
 
 log = logging.getLogger("tracefold.news")
@@ -64,69 +75,6 @@ log = logging.getLogger("tracefold.news")
 # blocks the next distinct fact.
 _SEEN_LEDGER_MAX = TOLD_SOURCE_MAX
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
-
-
-@dataclass
-class _Circuit:
-    failures: int = 0
-    open_until_ms: int = 0
-    threshold: int = 3
-    open_seconds: float = 60.0
-
-    def is_open(self, at_ms: int) -> bool:
-        return at_ms < self.open_until_ms
-
-    def record_failure(self, at_ms: int) -> bool:
-        self.failures += 1
-        if self.failures >= self.threshold:
-            self.open_until_ms = at_ms + int(self.open_seconds * 1000)
-            self.failures = 0
-            return True
-        return False
-
-    def record_success(self) -> None:
-        self.failures = 0
-
-
-@dataclass(frozen=True, slots=True)
-class _TriageSettle:
-    """Everything the in-transaction decide-and-persist step needs (built after the model call)."""
-
-    event_id: str
-    evidence_version: int
-    evidence_sha256: str
-    focus_fact_id: str
-    judgment: ScoredJudgment
-    facts: GateFacts
-    final_key: str
-    told: Sequence[Mapping[str, Any]]
-    seen: Sequence[Mapping[str, Any]]
-    selected_context_sha: str
-    novelty_context_sha: str
-    prelim_key: str
-    card: Mapping[str, Any]
-    degraded: bool
-    error_code: str | None
-    model_name: str | None
-    program_version: str
-    program_sha256: str
-    policy: DecidePolicy
-    runtime_manifest_sha: str
-    trace: dict[str, Any]
-    stamp: int
-    allow_stale: bool
-
-    @property
-    def verdict(self) -> TriageVerdict:
-        return self.judgment.verdict
-
-
-@dataclass(frozen=True, slots=True)
-class _TriageOutcome:
-    stale: bool
-    final: str
-    decision: DecisionResult | None
-    stale_reason: str | None = None
 
 
 def _open_circuit_incident(repos: Any, *, now_ms: int) -> Any:
@@ -146,7 +94,7 @@ class TriageConsumer:
         self,
         *,
         bus: Any,
-        db: Any,
+        db: NewsDatabasePort,
         judge: SemanticJudge | None,
         program_version: str,
         program_sha256: str,
@@ -162,7 +110,7 @@ class TriageConsumer:
         runtime_manifest: Mapping[str, Any] | None = None,
     ) -> None:
         self.bus = bus
-        self.db = _Db(db)
+        self.db = db
         self.judge = judge
         self.program_version = str(program_version)
         self.program_sha256 = str(program_sha256)
@@ -220,21 +168,19 @@ class TriageConsumer:
         await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
 
     async def handle(self, message: BusMessage) -> None:
+        """Broker orchestration for one Event: load, route, settle, publish.
+
+        Every step below is a named phase with its own function. What stays here is the sequence and the
+        one loop the route is allowed to take — the single stale re-ask — because that sequence, not any
+        individual phase, is what a reader has to hold to reason about the consumer.
+        """
+
         event_id = str(message.payload.get("event_id") or "")
         if not event_id:
             raise PermanentError("news_event_id_missing")
         stamp = now_ms()
-        existing = await self.db.read(
-            "news_triage_existing",
-            lambda repos: repos.news.get_verdict(
-                event_id=event_id, stage="triage", policy_version=TRIAGE_POLICY_VERSION
-            ),
-        )
-        if existing is not None:
-            if existing.get("published_at_ms") is None and existing["final_decision"] in {"push", "escalate"}:
-                await self._publish_decision(
-                    event_id, existing["final_decision"], trace_id=message.trace_id, amqp_priority=message.priority
-                )
+        published = await self._republish_settled_verdict(event_id, message)
+        if published:
             return
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
@@ -242,12 +188,7 @@ class TriageConsumer:
         card, ledger_rows = bundle
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
             raise PermanentError("news_event_evidence_v2_required")
-        facts = GateFacts(
-            grounded_assets=tuple(card.get("grounded_assets") or []),
-            watchlist_symbols=self.watchlist_symbols,
-            admission=str(card.get("admission") or ""),
-            source_age_s=card.get("source_age_s"),
-        )
+        facts = _gate_facts(card, self.watchlist_symbols)
         if str(card.get("admission") or "") == "telemetry_deterministic":
             # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
             # structured model calls that would re-read four numbers a regex already has. Everything
@@ -262,6 +203,118 @@ class TriageConsumer:
                 message=message,
             )
             return
+        arm = await self._select_arm(card, event_id=event_id, stamp=stamp)
+        queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
+        route = self._route_inputs(
+            card, ledger_rows, event_id=event_id, facts=facts, stamp=stamp, queue_lag_ms=queue_lag_ms
+        )
+        trace = _initial_trace(
+            route,
+            arm=arm,
+            queue_lag_ms=queue_lag_ms,
+            attempt=message.attempt,
+            runtime_manifest_sha=self.runtime_manifest_sha,
+        )
+        attempts = _ProgramAttempts()
+        while True:
+            judged = await self._judge_once(route=route, arm=arm, attempts=attempts, trace=trace)
+            _sync_program_audit(trace, executions=attempts.executions, selected_execution_index=attempts.selected_index)
+            settle = self._settle_for(route, arm=arm, attempts=attempts, judged=judged, trace=trace)
+            outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
+            if outcome.stale:
+                # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
+                # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
+                # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
+                route = await self._refresh_after_stale(
+                    route,
+                    event_id=event_id,
+                    attempts=attempts,
+                    judgment=judged.judgment,
+                    stale_reason=outcome.stale_reason,
+                    queue_lag_ms=queue_lag_ms,
+                    trace=trace,
+                )
+                continue
+            if arm.arm == "candidate" and arm.activation_id:
+                with contextlib.suppress(ValueError, TransientError, DeferError):
+                    await self.db.tx(
+                        "news_canary_rolling_slo",
+                        functools.partial(
+                            _evaluate_canary_rolling_slo,
+                            activation_id=arm.activation_id,
+                            now_ms=route.stamp,
+                        ),
+                    )
+            break
+        if outcome.final in {"push", "escalate"}:
+            await self._publish_decision(
+                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+            )
+
+    async def _republish_settled_verdict(self, event_id: str, message: BusMessage) -> bool:
+        """Whether this Event already has a verdict. A push that never left the process is re-published."""
+
+        existing = await self.db.read(
+            "news_triage_existing",
+            lambda repos: repos.news.get_verdict(
+                event_id=event_id, stage="triage", policy_version=TRIAGE_POLICY_VERSION
+            ),
+        )
+        if existing is None:
+            return False
+        if existing.get("published_at_ms") is None and existing["final_decision"] in {"push", "escalate"}:
+            await self._publish_decision(
+                event_id, existing["final_decision"], trace_id=message.trace_id, amqp_priority=message.priority
+            )
+        return True
+
+    def _route_inputs(
+        self,
+        card: Mapping[str, Any],
+        ledger_rows: Sequence[Mapping[str, Any]],
+        *,
+        event_id: str,
+        facts: GateFacts,
+        stamp: int,
+        queue_lag_ms: int,
+    ) -> _RouteInputs:
+        """The Event as the Program will see it, plus the hashes the persist step compares against.
+
+        The told context is the <= TOLD_MAX cards the selector ranked against *this* candidate out of the
+        bounded sent ledger. The model judges novelty against it, and its SHA — not the raw ledger's
+        event-id set — is what the persist step compares, so only a change to what the model saw can make
+        the judgment stale.
+        """
+
+        context = TriageContext.from_card(
+            card,
+            watchlist=tuple(self.watchlist),
+            told_rows=ledger_rows,
+            now_ms=stamp,
+            queue_lag_ms=queue_lag_ms,
+        )
+        return _RouteInputs(
+            event_id=event_id,
+            card=card,
+            ledger_rows=ledger_rows,
+            facts=facts,
+            context=context,
+            told=_told_from_context(context),
+            selected_context_sha=context.selected_context_sha256(),
+            novelty_context_sha=context.novelty_context_sha256(),
+            prelim_key=str(card.get("storyline_key") or ""),
+            wire_title=str(card.get("leader_title") or ""),
+            stamp=stamp,
+        )
+
+    async def _select_arm(self, card: Mapping[str, Any], *, event_id: str, stamp: int) -> _ArmSelection:
+        """Which Program and policy judge this Event: the stable arm, a canary candidate, or neither.
+
+        Every way the assignment can fail to name something this image can execute is kept apart, because
+        each one is a different `error_code` on the degraded verdict and the reader of `news why` has to
+        be able to tell a missing candidate artifact from an unconfigured Program.
+        """
+
         assignment = (
             await self.db.tx(
                 "news_canary_assign",
@@ -282,362 +335,280 @@ class TriageConsumer:
                 "eligibility_reason": "canary_not_composed",
             }
         )
-        selected_bundle_sha = str(assignment["bundle_sha"])
-        selected_arm = str(assignment["arm"])
-        assignment_validation_error = str(assignment.get("validation_error") or "")
-        runtime_arm = self.canary_arms.get(selected_bundle_sha) if selected_arm == "candidate" else None
-        candidate_artifact_missing = selected_arm == "candidate" and runtime_arm is None
-        stable_assignment_mismatch = selected_arm == "stable" and selected_bundle_sha != self.stable_bundle_sha
-        assignment_shape_mismatch = selected_arm not in {"stable", "candidate"}
-        if candidate_artifact_missing and assignment.get("activation_id"):
-            await self._trip_canary(str(assignment["activation_id"]), "candidate_artifact_missing", stamp)
-        assigned_runtime_missing = (
-            bool(assignment_validation_error)
+        bundle_sha = str(assignment["bundle_sha"])
+        arm = str(assignment["arm"])
+        validation_error = str(assignment.get("validation_error") or "")
+        runtime_arm = self.canary_arms.get(bundle_sha) if arm == "candidate" else None
+        candidate_artifact_missing = arm == "candidate" and runtime_arm is None
+        stable_assignment_mismatch = arm == "stable" and bundle_sha != self.stable_bundle_sha
+        assignment_shape_mismatch = arm not in {"stable", "candidate"}
+        activation_id = str(assignment["activation_id"]) if assignment.get("activation_id") else None
+        if candidate_artifact_missing and activation_id:
+            await self._trip_canary(activation_id, "candidate_artifact_missing", stamp)
+        runtime_missing = (
+            bool(validation_error)
             or candidate_artifact_missing
             or stable_assignment_mismatch
             or assignment_shape_mismatch
         )
-        active_judge = (
-            runtime_arm.program if runtime_arm is not None else (None if assigned_runtime_missing else self.judge)
-        )
-        active_policy = runtime_arm.policy if runtime_arm is not None else self.policy
-        active_program_version = runtime_arm.program_version if runtime_arm is not None else self.program_version
-        active_program_sha = runtime_arm.program_sha256 if runtime_arm is not None else self.program_sha256
-        active_circuit = (
-            self._candidate_circuits.setdefault(
-                selected_bundle_sha,
-                _Circuit(threshold=self._circuit_failures, open_seconds=self._circuit_open_seconds),
-            )
-            if selected_arm == "candidate"
-            else self.circuit
-        )
-        prelim_key = str(card.get("storyline_key") or "")
-        # The told context: the <= TOLD_MAX cards the selector ranked against *this* candidate out of the bounded sent
-        # ledger.  The model judges novelty against it, and its SHA — not the raw ledger's event-id set — is what
-        # the persist step compares, so only a change to what the model saw can make the judgment stale.
-        context = TriageContext.from_card(
-            card,
-            watchlist=tuple(self.watchlist),
-            told_rows=ledger_rows,
-            now_ms=stamp,
-            queue_lag_ms=max(0, stamp - int(message.occurred_at_ms or stamp)),
-        )
-        told = _told_from_context(context)
-        selected_context_sha = context.selected_context_sha256()
-        novelty_context_sha = context.novelty_context_sha256()
-        queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
-        assignment_trace = {
-            "activation_id": assignment.get("activation_id"),
-            "arm": selected_arm,
-            "bundle_sha": selected_bundle_sha,
-            "selector_version": assignment.get("selector_version"),
-            "eligibility_reason": assignment.get("eligibility_reason"),
-        }
-        if assignment_validation_error:
-            assignment_trace["validation_error"] = assignment_validation_error
-        trace: dict[str, Any] = {
-            "queue_lag_ms": queue_lag_ms,
-            "attempt": message.attempt,
-            "program_version": active_program_version,
-            "program_sha256": active_program_sha,
-            "runtime_manifest_sha": self.runtime_manifest_sha,
-            # The policy numbers and the Gate version that produced this decision, not just the rule name: a
-            # verdict has to be replayable against the thresholds it actually ran under (#81).
-            "policy": active_policy.as_dict(),
-            "gate_policy_version": GATE_POLICY_VERSION,
-            "evidence_version": int(card.get("evidence_version") or 0),
-            "evidence_sha256": str(card.get("evidence_sha256") or ""),
-            "focus_fact_id": str(card.get("focus_fact_id") or ""),
-            "storyline_key_preliminary": prelim_key,
-            "status": {
-                "storyline_key": prelim_key,
-                "preliminary": True,
-                "queue_lag_ms": queue_lag_ms,
-            },
-            "told": _told_trace(told),
-            "told_count": len(told),
-            "agent_assignment": assignment_trace,
-        }
-        model_name: str | None = None
-        wire_title = str(card.get("leader_title") or "")
-        reasked = False
-        reask_reason: str | None = None
-        first_judgment: ScoredJudgment | None = None
-        program_executions: list[dict[str, Any]] = []
-        selected_execution_index: int | None = None
-        while True:
-            degraded = False
-            error_code = None
-            if active_judge is None:
-                code = (
-                    "news_canary_assignment_identity_invalid"
-                    if assignment_validation_error
-                    else "news_canary_artifact_missing"
-                    if candidate_artifact_missing
-                    else "news_semantic_program_identity_mismatch"
-                    if stable_assignment_mismatch or assignment_shape_mismatch
-                    else "news_semantic_program_unconfigured"
+        return _ArmSelection(
+            assignment=assignment,
+            arm=arm,
+            bundle_sha=bundle_sha,
+            activation_id=activation_id,
+            judge=(runtime_arm.program if runtime_arm is not None else (None if runtime_missing else self.judge)),
+            policy=runtime_arm.policy if runtime_arm is not None else self.policy,
+            program_version=runtime_arm.program_version if runtime_arm is not None else self.program_version,
+            program_sha256=runtime_arm.program_sha256 if runtime_arm is not None else self.program_sha256,
+            circuit=(
+                self._candidate_circuits.setdefault(
+                    bundle_sha,
+                    _Circuit(threshold=self._circuit_failures, open_seconds=self._circuit_open_seconds),
                 )
-                judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
-                degraded, error_code = True, code
-            elif active_circuit.is_open(stamp) and first_judgment is None:
-                code = "news_canary_circuit_open" if selected_arm == "candidate" else "news_triage_circuit_open"
-                judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
-                degraded, error_code = True, code
-            elif active_circuit.is_open(stamp) and first_judgment is not None:
-                code = "news_canary_circuit_open" if selected_arm == "candidate" else "news_triage_circuit_open"
-                trace["reask_failed"] = code
-                if reask_reason == "evidence":
-                    judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
-                    degraded, error_code = True, code
-                    model_name = None
-                    selected_execution_index = None
-                else:
-                    judgment = first_judgment  # told-only staleness does not change the evidence judgment
-                    if selected_execution_index is not None:
-                        program_executions[selected_execution_index]["status"] = "accepted_after_reask_failure"
-            else:
-                trace["watchlist"] = list(self.watchlist)
-                execution_phase = "stale_reask" if first_judgment is not None else "initial"
-                try:
-                    call = await active_judge.judge(context)
-                except SemanticJudgeError as exc:
-                    program_executions.append(
-                        _program_execution(
-                            execution_index=len(program_executions),
-                            phase=execution_phase,
-                            status="failed",
-                            context=context,
-                            program_trace=exc.partial_trace,
-                            usage=_usage_from_partial_trace(exc.partial_trace, attempts=exc.attempts),
-                            error={
-                                "code": exc.code,
-                                "retryable": exc.retryable,
-                                "output_failure": exc.output_failure,
-                                "finish_reason": exc.finish_reason,
-                                "failing_predictor": exc.failing_predictor,
-                                "primary_code": exc.primary_code,
-                            },
-                        )
-                    )
-                    trace.update(
-                        {
-                            "model_failure_retryable": exc.retryable,
-                            "program_error": exc.code,
-                        }
-                    )
-                    if exc.finish_reason:
-                        trace["finish_reason"] = exc.finish_reason
-                    if exc.failing_predictor:
-                        trace["failing_predictor"] = exc.failing_predictor
-                    if exc.primary_code:
-                        trace["primary_error"] = exc.primary_code
-                    if exc.output_failure:
-                        log.warning(
-                            "news semantic program output unusable event=%s code=%s",
-                            event_id,
-                            exc.code,
-                        )
-                        if selected_arm == "candidate" and assignment.get("activation_id"):
-                            await self._trip_canary(
-                                str(assignment["activation_id"]), "candidate_schema_contract_breach", stamp
-                            )
-                    elif exc.retryable and active_circuit.record_failure(stamp):
-                        if selected_arm != "candidate":
-                            self._circuit_incident_open = True
-                            with contextlib.suppress(TransientError, DeferError):
-                                await self.db.tx(
-                                    "news_triage_circuit",
-                                    functools.partial(_open_circuit_incident, now_ms=stamp),
-                                )
-                    if first_judgment is not None:
-                        trace["reask_failed"] = exc.code
-                        if reask_reason == "evidence":
-                            judgment, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
-                            degraded, error_code = True, exc.code
-                            model_name = None
-                            selected_execution_index = None
-                        else:
-                            # A told-only re-ask failure may keep the first valid judgment. Its evidence is unchanged;
-                            # only its novelty view predates the newest delivered card.
-                            judgment = first_judgment
-                            if selected_execution_index is not None:
-                                program_executions[selected_execution_index]["status"] = "accepted_after_reask_failure"
-                    else:
-                        judgment, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
-                        degraded, error_code = True, exc.code
-                else:
-                    execution_index = len(program_executions)
-                    program_executions.append(
-                        _program_execution(
-                            execution_index=execution_index,
-                            phase=execution_phase,
-                            status="completed",
-                            context=context,
-                            program_trace=call.trace,
-                            usage=call.usage,
-                            answering_model=call.answering_model,
-                            fallback_from=call.fallback_from,
-                        )
-                    )
-                    if call.program_version != active_program_version or call.program_sha256 != active_program_sha:
-                        code = "news_semantic_program_identity_mismatch"
-                        program_executions[execution_index]["status"] = "identity_mismatch"
-                        program_executions[execution_index]["error"] = {"code": code}
-                        if selected_arm == "candidate" and assignment.get("activation_id"):
-                            await self._trip_canary(str(assignment["activation_id"]), code, stamp)
-                        if first_judgment is not None:
-                            trace["reask_failed"] = code
-                            if reask_reason == "evidence":
-                                judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
-                                degraded, error_code = True, code
-                                model_name = None
-                                selected_execution_index = None
-                            else:
-                                judgment = first_judgment
-                                if selected_execution_index is not None:
-                                    program_executions[selected_execution_index]["status"] = (
-                                        "accepted_after_reask_failure"
-                                    )
-                        else:
-                            judgment, _ = fallback_verdict(facts, error_code=code, title=wire_title)
-                            degraded, error_code = True, code
-                    else:
-                        active_circuit.record_success()
-                        if selected_arm == "stable" and self._circuit_incident_open:
-                            self._circuit_incident_open = False
-                            with contextlib.suppress(TransientError, DeferError):
-                                await self.db.tx(
-                                    "news_triage_circuit_close",
-                                    functools.partial(_close_circuit_incidents, now_ms=stamp),
-                                )
-                        judgment = call.scored()
-                        model_name = call.answering_model
-                        selected_execution_index = execution_index
-                        program_executions[execution_index]["status"] = "accepted"
-                        if call.fallback_from:
-                            log.warning(
-                                "news semantic program fallback answered event=%s model=%s primary_error=%s",
-                                event_id,
-                                call.answering_model,
-                                call.fallback_from,
-                            )
-            _sync_program_audit(
-                trace,
-                executions=program_executions,
-                selected_execution_index=selected_execution_index,
+                if arm == "candidate"
+                else self.circuit
+            ),
+            validation_error=validation_error,
+            candidate_artifact_missing=candidate_artifact_missing,
+            identity_mismatch=stable_assignment_mismatch or assignment_shape_mismatch,
+        )
+
+    async def _judge_once(
+        self,
+        *,
+        route: _RouteInputs,
+        arm: _ArmSelection,
+        attempts: _ProgramAttempts,
+        trace: dict[str, Any],
+    ) -> _Judged:
+        """One pass at a judgment: the Program, or the deterministic fallback that names why not."""
+
+        if arm.judge is None:
+            return _degraded_judgment(route, arm.unavailable_code)
+        if arm.circuit.is_open(route.stamp):
+            if attempts.first_judgment is None:
+                return _degraded_judgment(route, arm.circuit_open_code)
+            return _resolve_after_reask_failure(route, attempts=attempts, code=arm.circuit_open_code, trace=trace)
+        trace["watchlist"] = list(self.watchlist)
+        phase = "stale_reask" if attempts.first_judgment is not None else "initial"
+        try:
+            call = await arm.judge.judge(route.context)
+        except SemanticJudgeError as exc:
+            await self._record_program_failure(exc, route=route, arm=arm, attempts=attempts, trace=trace, phase=phase)
+            if attempts.first_judgment is not None:
+                return _resolve_after_reask_failure(route, attempts=attempts, code=exc.code, trace=trace)
+            return _degraded_judgment(route, exc.code)
+        return await self._accept_program_call(call, route=route, arm=arm, attempts=attempts, trace=trace, phase=phase)
+
+    async def _record_program_failure(
+        self,
+        exc: SemanticJudgeError,
+        *,
+        route: _RouteInputs,
+        arm: _ArmSelection,
+        attempts: _ProgramAttempts,
+        trace: dict[str, Any],
+        phase: str,
+    ) -> None:
+        """Audit one failed execution, then charge it to the right breaker.
+
+        An unusable *output* is the candidate's own contract breach and trips its canary; a retryable
+        transport failure counts against the circuit and, on the stable arm only, opens an incident.
+        """
+
+        attempts.executions.append(
+            _program_execution(
+                execution_index=len(attempts.executions),
+                phase=phase,
+                status="failed",
+                context=route.context,
+                program_trace=exc.partial_trace,
+                usage=_usage_from_partial_trace(exc.partial_trace, attempts=exc.attempts),
+                error={
+                    "code": exc.code,
+                    "retryable": exc.retryable,
+                    "output_failure": exc.output_failure,
+                    "finish_reason": exc.finish_reason,
+                    "failing_predictor": exc.failing_predictor,
+                    "primary_code": exc.primary_code,
+                },
             )
-            verdict = judgment.verdict
+        )
+        trace.update({"model_failure_retryable": exc.retryable, "program_error": exc.code})
+        if exc.finish_reason:
+            trace["finish_reason"] = exc.finish_reason
+        if exc.failing_predictor:
+            trace["failing_predictor"] = exc.failing_predictor
+        if exc.primary_code:
+            trace["primary_error"] = exc.primary_code
+        if exc.output_failure:
+            log.warning("news semantic program output unusable event=%s code=%s", route.event_id, exc.code)
+            if arm.arm == "candidate" and arm.activation_id:
+                await self._trip_canary(arm.activation_id, "candidate_schema_contract_breach", route.stamp)
+        elif exc.retryable and arm.circuit.record_failure(route.stamp):
+            if arm.arm != "candidate":
+                self._circuit_incident_open = True
+                with contextlib.suppress(TransientError, DeferError):
+                    await self.db.tx(
+                        "news_triage_circuit",
+                        functools.partial(_open_circuit_incident, now_ms=route.stamp),
+                    )
+
+    async def _accept_program_call(
+        self,
+        call: SemanticJudgment,
+        *,
+        route: _RouteInputs,
+        arm: _ArmSelection,
+        attempts: _ProgramAttempts,
+        trace: dict[str, Any],
+        phase: str,
+    ) -> _Judged:
+        """A Program answered. Bind it only if it is the exact Program this arm was assigned."""
+
+        index = len(attempts.executions)
+        attempts.executions.append(
+            _program_execution(
+                execution_index=index,
+                phase=phase,
+                status="completed",
+                context=route.context,
+                program_trace=call.trace,
+                usage=call.usage,
+                answering_model=call.answering_model,
+                fallback_from=call.fallback_from,
+            )
+        )
+        if call.program_version != arm.program_version or call.program_sha256 != arm.program_sha256:
+            code = "news_semantic_program_identity_mismatch"
+            attempts.executions[index]["status"] = "identity_mismatch"
+            attempts.executions[index]["error"] = {"code": code}
+            if arm.arm == "candidate" and arm.activation_id:
+                await self._trip_canary(arm.activation_id, code, route.stamp)
+            if attempts.first_judgment is not None:
+                return _resolve_after_reask_failure(route, attempts=attempts, code=code, trace=trace)
+            return _degraded_judgment(route, code)
+        arm.circuit.record_success()
+        if arm.arm == "stable" and self._circuit_incident_open:
+            self._circuit_incident_open = False
+            with contextlib.suppress(TransientError, DeferError):
+                await self.db.tx(
+                    "news_triage_circuit_close",
+                    functools.partial(_close_circuit_incidents, now_ms=route.stamp),
+                )
+        attempts.model_name = call.answering_model
+        attempts.selected_index = index
+        attempts.executions[index]["status"] = "accepted"
+        if call.fallback_from:
+            log.warning(
+                "news semantic program fallback answered event=%s model=%s primary_error=%s",
+                route.event_id,
+                call.answering_model,
+                call.fallback_from,
+            )
+        return _Judged(judgment=call.scored(), degraded=False, error_code=None)
+
+    def _settle_for(
+        self,
+        route: _RouteInputs,
+        *,
+        arm: _ArmSelection,
+        attempts: _ProgramAttempts,
+        judged: _Judged,
+        trace: dict[str, Any],
+    ) -> _TriageSettle:
+        """Freeze the judgment, its final storyline key and its identities for the one persist transaction."""
+
+        verdict = judged.judgment.verdict
+        card = route.card
+        return _TriageSettle(
+            event_id=route.event_id,
+            evidence_version=int(card.get("evidence_version") or 0),
+            evidence_sha256=str(card.get("evidence_sha256") or ""),
+            focus_fact_id=str(card.get("focus_fact_id") or ""),
+            judgment=judged.judgment,
+            facts=route.facts,
             # The final storyline key comes from the verdict (primaries/scope); duplicate evidence is traced on it.
-            final_key = final_storyline_key(
-                title=str(card.get("leader_title") or ""),
+            final_key=final_storyline_key(
+                title=route.wire_title,
                 headline_zh=verdict.headline_zh,
                 scope=verdict.scope,
                 verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
-                grounded_assets=facts.grounded_assets,
+                grounded_assets=route.facts.grounded_assets,
                 family=str(card.get("family") or "general"),
                 aliases=self._aliases,
-                degraded=degraded,
-            )
-            settle = _TriageSettle(
-                event_id=event_id,
-                evidence_version=int(card.get("evidence_version") or 0),
-                evidence_sha256=str(card.get("evidence_sha256") or ""),
-                focus_fact_id=str(card.get("focus_fact_id") or ""),
-                judgment=judgment,
-                facts=facts,
-                final_key=final_key,
-                told=told,
-                seen=ledger_rows,
-                selected_context_sha=selected_context_sha,
-                novelty_context_sha=novelty_context_sha,
-                prelim_key=prelim_key,
-                card=card,
-                degraded=degraded,
-                error_code=error_code,
-                model_name=model_name,
-                program_version=active_program_version,
-                program_sha256=active_program_sha,
-                policy=active_policy,
-                runtime_manifest_sha=self.runtime_manifest_sha,
-                trace=trace,
-                stamp=stamp,
-                allow_stale=not reasked and not degraded,
-            )
-            outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
-            if outcome.stale:
-                # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
-                # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
-                # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
-                reasked = True
-                reask_reason = outcome.stale_reason
-                first_judgment = judgment
-                if selected_execution_index is None:
-                    raise ValueError("news_stale_program_execution_missing")
-                program_executions[selected_execution_index]["status"] = (
-                    "superseded_evidence_change" if reask_reason == "evidence" else "superseded_stale_ledger"
-                )
-                trace["reask_reason"] = reask_reason
-                trace[
-                    "reasked_after_evidence_change" if reask_reason == "evidence" else "reasked_after_told_change"
-                ] = True
-                trace["first_input_sha256"] = trace.get("input_sha256")
-                trace["first_judgment"] = judgment.model_dump(mode="json")
-                stamp = now_ms()
-                bundle = await self.db.read(
-                    "news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp)
-                )
-                if bundle is None:
-                    raise PermanentError("news_event_missing")
-                card, ledger_rows = bundle
-                wire_title = str(card.get("leader_title") or "")
-                facts = GateFacts(
-                    grounded_assets=tuple(card.get("grounded_assets") or []),
-                    watchlist_symbols=self.watchlist_symbols,
-                    admission=str(card.get("admission") or ""),
-                    source_age_s=card.get("source_age_s"),
-                )
-                refreshed_prelim_key = str(card.get("storyline_key") or "")
-                if refreshed_prelim_key != prelim_key:
-                    trace["first_storyline_key_preliminary"] = prelim_key
-                    prelim_key = refreshed_prelim_key
-                    trace["storyline_key_preliminary"] = prelim_key
-                trace["evidence_version"] = int(card.get("evidence_version") or 0)
-                trace["evidence_sha256"] = str(card.get("evidence_sha256") or "")
-                trace["focus_fact_id"] = str(card.get("focus_fact_id") or "")
-                context = TriageContext.from_card(
-                    card,
-                    watchlist=tuple(self.watchlist),
-                    told_rows=ledger_rows,
-                    now_ms=stamp,
-                    queue_lag_ms=queue_lag_ms,
-                )
-                told = _told_from_context(context)
-                selected_context_sha = context.selected_context_sha256()
-                novelty_context_sha = context.novelty_context_sha256()
-                trace["status"] = {
-                    "storyline_key": prelim_key,
-                    "preliminary": True,
-                    "queue_lag_ms": queue_lag_ms,
-                }
-                trace["told"] = _told_trace(told)
-                trace["told_count"] = len(told)
-                continue
-            if selected_arm == "candidate" and assignment.get("activation_id"):
-                with contextlib.suppress(ValueError, TransientError, DeferError):
-                    await self.db.tx(
-                        "news_canary_rolling_slo",
-                        functools.partial(
-                            _evaluate_canary_rolling_slo,
-                            activation_id=str(assignment["activation_id"]),
-                            now_ms=stamp,
-                        ),
-                    )
-            break
-        if outcome.final in {"push", "escalate"}:
-            await self._publish_decision(
-                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
-            )
+                degraded=judged.degraded,
+            ),
+            told=route.told,
+            seen=route.ledger_rows,
+            selected_context_sha=route.selected_context_sha,
+            novelty_context_sha=route.novelty_context_sha,
+            prelim_key=route.prelim_key,
+            card=card,
+            degraded=judged.degraded,
+            error_code=judged.error_code,
+            model_name=attempts.model_name,
+            program_version=arm.program_version,
+            program_sha256=arm.program_sha256,
+            policy=arm.policy,
+            runtime_manifest_sha=self.runtime_manifest_sha,
+            trace=trace,
+            stamp=route.stamp,
+            allow_stale=not attempts.reasked and not judged.degraded,
+        )
+
+    async def _refresh_after_stale(
+        self,
+        route: _RouteInputs,
+        *,
+        event_id: str,
+        attempts: _ProgramAttempts,
+        judgment: ScoredJudgment,
+        stale_reason: str | None,
+        queue_lag_ms: int,
+        trace: dict[str, Any],
+    ) -> _RouteInputs:
+        """Re-read the Event and the ledger under a fresh stamp so the second ask sees one consistent input."""
+
+        attempts.reasked = True
+        attempts.reask_reason = stale_reason
+        attempts.first_judgment = judgment
+        if attempts.selected_index is None:
+            raise ValueError("news_stale_program_execution_missing")
+        attempts.executions[attempts.selected_index]["status"] = (
+            "superseded_evidence_change" if stale_reason == "evidence" else "superseded_stale_ledger"
+        )
+        trace["reask_reason"] = stale_reason
+        trace["reasked_after_evidence_change" if stale_reason == "evidence" else "reasked_after_told_change"] = True
+        trace["first_input_sha256"] = trace.get("input_sha256")
+        trace["first_judgment"] = judgment.model_dump(mode="json")
+        stamp = now_ms()
+        bundle = await self.db.read("news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp))
+        if bundle is None:
+            raise PermanentError("news_event_missing")
+        card, ledger_rows = bundle
+        refreshed = self._route_inputs(
+            card,
+            ledger_rows,
+            event_id=event_id,
+            facts=_gate_facts(card, self.watchlist_symbols),
+            stamp=stamp,
+            queue_lag_ms=queue_lag_ms,
+        )
+        if refreshed.prelim_key != route.prelim_key:
+            trace["first_storyline_key_preliminary"] = route.prelim_key
+            trace["storyline_key_preliminary"] = refreshed.prelim_key
+        trace["evidence_version"] = int(card.get("evidence_version") or 0)
+        trace["evidence_sha256"] = str(card.get("evidence_sha256") or "")
+        trace["focus_fact_id"] = str(card.get("focus_fact_id") or "")
+        trace["status"] = {
+            "storyline_key": refreshed.prelim_key,
+            "preliminary": True,
+            "queue_lag_ms": queue_lag_ms,
+        }
+        trace["told"] = _told_trace(refreshed.told)
+        trace["told_count"] = len(refreshed.told)
+        return refreshed
 
     async def _judge_telemetry(
         self,

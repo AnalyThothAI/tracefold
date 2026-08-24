@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from tracefold.app.workers.wiring.database import WorkerMarketReviewDatabase
 from tracefold.news.bus import now_ms
 from tracefold.news.market_review.loops import EventReactionLoop, QuoteSnapshotLoop
 from tracefold.news.market_review.pricing import (
@@ -79,15 +80,27 @@ class _FakePrice:
 
 
 class _FakeColdDatabase:
-    """Only the cold lane exists here: a loop that reaches for the News lane is a wiring bug (#88 §11)."""
+    """Only the cold lane exists here: a loop that reaches for the News lane is a wiring bug (#88 §11).
+
+    It stands in for `WorkerDatabase`, and satisfies `MarketReviewDatabasePort` through the production
+    adapter rather than a second hand-written one, so the lane, session and transaction wiring the loops
+    actually run under is the wiring under test.
+    """
 
     def __init__(self, price: _FakePrice) -> None:
         self.price = price
         self.in_transaction = False
         self.operations: list[str] = []
+        self._port = WorkerMarketReviewDatabase(self)
 
     def heavy_business(self) -> _FakeColdDatabase:
         return self
+
+    async def read(self, name: str, fn: Any, *, timeout_seconds: float) -> Any:
+        return await self._port.read(name, fn, timeout_seconds=timeout_seconds)
+
+    async def tx(self, name: str, fn: Any, *, timeout_seconds: float) -> Any:
+        return await self._port.tx(name, fn, timeout_seconds=timeout_seconds)
 
     async def run_business(self, name: str, fn: Any, *, operation_timeout_seconds: float) -> Any:
         del operation_timeout_seconds

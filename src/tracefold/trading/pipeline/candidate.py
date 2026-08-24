@@ -59,6 +59,7 @@ from .runtime import (
 from .runtime import (
     BarFetcherFactory,
     TradingConfig,
+    TradingDatabasePort,
 )
 from .runtime import (
     CandidateProjectionReader as _CandidateProjectionReader,
@@ -95,7 +96,7 @@ class CandidateRunner:
     def __init__(
         self,
         *,
-        db: Any,
+        db: TradingDatabasePort,
         config: TradingConfig,
         bars: BarFetcherFactory,
         adapter: Any,

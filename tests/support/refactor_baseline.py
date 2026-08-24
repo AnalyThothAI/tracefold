@@ -78,7 +78,9 @@ from tracefold.trading.contracts import (
     Bar,
     InstrumentRef,
     MarketContext,
+    NewsCandidateRow,
     NewsTradeCandidate,
+    OiCandidateRow,
     OiTradeCandidate,
     OrderState,
     PreparedOrder,
@@ -550,8 +552,8 @@ async def _trading_faults(order: PreparedOrder) -> dict[str, Any]:
 
 def _trading_manifest() -> tuple[OiTradeCandidate, NewsTradeCandidate, TradingCaseManifest]:
     blacklist = Blacklist.from_rows([])
-    oi = oi_candidate(_oi_row(), now_ms=NOW_MS, blacklist=blacklist)
-    projected_news = news_candidate(_news_row(), now_ms=NOW_MS, blacklist=blacklist)
+    oi = oi_candidate(OiCandidateRow(**_oi_row()), now_ms=NOW_MS, blacklist=blacklist)
+    projected_news = news_candidate(NewsCandidateRow(**_news_row()), now_ms=NOW_MS, blacklist=blacklist)
     assert isinstance(oi, OiTradeCandidate)
     assert isinstance(projected_news, NewsTradeCandidate)
     instrument = resolve_instrument(

@@ -159,6 +159,7 @@ def workers_runtime_status(
         lifecycle in {"starting", "running", "stopping"}
         and int(now_ms) - heartbeat_at_ms > WORKERS_RUNTIME_STALE_AFTER_MS
     )
+    reason: str | None
     if stale:
         state = "stale"
         reason = "runtime_heartbeat_stale"

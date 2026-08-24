@@ -11,7 +11,7 @@ from typing import Any
 from ..bus import RK_RAW_LIVE, BusMessage, DeferError, TransientError, new_trace_id, now_ms
 from ..opennews import OpenNewsExpectedError, parse_opennews_message
 from .recovery import RecoveryRunner
-from .runtime import _Db, _receive_or_stop, _sleep_or_stop
+from .runtime import NewsDatabasePort, _receive_or_stop, _sleep_or_stop
 
 log = logging.getLogger("tracefold.news")
 
@@ -41,13 +41,13 @@ class OpenNewsReceiver:
         self,
         *,
         bus: Any,
-        db: Any,
+        db: NewsDatabasePort,
         ws_client: Any | None,
         history_client: Any | None,
         recovery: RecoveryRunner | None,
     ) -> None:
         self.bus = bus
-        self.db = _Db(db)
+        self.db = db
         self.ws_client = ws_client
         self.history_client = history_client
         self.recovery = recovery

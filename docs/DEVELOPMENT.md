@@ -52,6 +52,66 @@ PostgreSQL material facts and public HTTP/CLI contracts are migration
 boundaries. Internal Python imports are not compatibility contracts. Hard cuts
 delete the old path and update all consumers in the same change.
 
+## Architecture coding rules
+
+These are normative and executed by `tests/architecture/`; the list below is
+the reason each check exists. `docs/ARCHITECTURE.md` says what the system is,
+this section says how code in it must be written.
+
+**Ownership.** A table's prefix is its owner: only `tracefold.news` may read or
+write `news_*`, only `tracefold.trading` may touch `trading_*`. The two never
+import each other. `tracefold.app` is the single seam that knows both.
+
+**App purity.** `tracefold.app` decides how capabilities are assembled and run,
+never what a business fact means. It may read a business projection — the
+News → Trading handoff is exactly that — but it may not `INSERT`, `UPDATE` or
+`DELETE` a `news_*` or `trading_*` row. Business SQL lives in the owning
+package's storage module, behind a named repository method.
+
+**Ports.** A business package states what it needs from the process as a narrow
+`Protocol` it owns (`NewsDatabasePort`, `MarketReviewDatabasePort`,
+`TradingDatabasePort`), and `tracefold.app` implements it. A business module may
+not call an App-specific method — `worker_session`, `run_news`,
+`heavy_business` — even through an untyped parameter: no import edge is not the
+same as no dependency. Ports that look alike stay separate when their answers
+differ (which lane admits the work, whether a deadline may default, whose error
+vocabulary an admission timeout speaks). Do not add a `BaseDatabase`, a generic
+`RepositoryService`, or a port for an internal object with a single adapter.
+
+**Cross-context mapping.** Each side declares its own frozen, versioned row
+contract, and `tracefold.app` maps between them field by field. Neither side
+imports the other's contract. `dict[str, Any]` and `Mapping[str, Any]` do not
+cross a context boundary: a pass-through dictionary turns one context's rename
+into the other's runtime bug months later. Choose the smallest shape that fits
+the existing code — a `TypedDict` where the row *is* a SELECT list and a
+validating model would coerce values PostgreSQL already typed, a frozen
+dataclass otherwise. Do not build a DTO framework.
+
+**Transactions and I/O.** The caller owns the transaction; a repository never
+hides a commit. Provider, model, filesystem and network I/O happen outside a
+database transaction, and no connection is held across one.
+
+**Naming.** Modules are named for what they own, not for a layer. There are no
+`services/`, `managers/`, `factories/` or `utils.py` packages, and no
+compatibility alias, forwarding module or re-export left behind by a rename —
+a hard cut updates every consumer in the same change.
+
+**Complexity.** New production modules default to 800 lines and new functions to
+100. The ledger in `tests/architecture/test_refactor_boundaries.py` records
+existing debt exactly, so it can only fall: a function that drops under the
+default loses its entry, and a rename inherits nothing. An orchestration
+function should own a sequence of named phases, not the phases themselves.
+Typing debt has the same shape — the `Any` ledger and the `tracefold.app.*`
+mypy `disable_error_code` list may only shrink.
+
+**Program identity.** Prompt, RulePack, DemoBank, model routing, call budgets,
+`program_sha256`, the policy version and the metric identity are release
+evidence, not implementation details. A structural change must leave every one
+of them byte-identical, and the Issue #162 refactor baseline
+(`python -m tests.support.refactor_baseline --check`) is what proves it. Moving
+a factory source resource changes the content-addressed Program and belongs to
+an explicit, evidence-gated identity migration.
+
 ## Tests
 
 | Lane | Location | Proves |
@@ -410,8 +470,11 @@ make docs-generated   # db-schema.md + cli-help.md
 make regen-contract   # openapi.json + web/src/lib/types/openapi.ts
 ```
 
-`make check` runs the database-free CLI-help and Issue #162 refactor-baseline
-drift checks. Generated OpenAPI and frontend types change in the same commit as
+`AGENTS.md` and `CLAUDE.md` share one generated block, produced from
+`docs/agents/shared-router.md` by `scripts/sync_agent_router.py --write`.
+
+`make check` runs the database-free CLI-help, Issue #162 refactor-baseline, and
+agent-router drift checks. Generated OpenAPI and frontend types change in the same commit as
 their source. Regenerate the refactor baseline only as an explicit contract
 change and inspect its JSON diff before committing.
 

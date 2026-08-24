@@ -119,6 +119,10 @@ explicit_package_bases = true
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
 
+# `tracefold.app` is the cross-capability composition seam: what it hands News and Trading has to be
+# the shape they declared. Issue #162 PR7-B4 restored `warn_return_any`, `assignment`, `union-attr` and
+# `arg-type` here, which is what makes the typed runtime ports and the News -> Trading mapper real
+# rather than decorative. The remainder is untyped-provider debt and may only shrink.
 [[tool.mypy.overrides]]
 module = "tracefold.app.*"
 disallow_untyped_defs = false
@@ -126,8 +130,7 @@ disallow_incomplete_defs = false
 disallow_untyped_decorators = false
 disallow_any_generics = false
 disallow_subclassing_any = false
-warn_return_any = false
-disable_error_code = ["arg-type", "attr-defined", "union-attr", "index", "operator", "assignment", "no-untyped-call"]
+disable_error_code = ["attr-defined", "index", "operator", "no-untyped-call"]
 
 [[tool.mypy.overrides]]
 module = "tracefold.integrations.*"

@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
 
-from ..contracts import InstrumentRef, canonical_base_symbol
+from ..contracts import InstrumentCandidateRow, InstrumentRef, canonical_base_symbol
 
 _NATIVE_PERP_VENUE: Mapping[str, str] = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
 
 
 def resolve_instrument(
-    rows: Iterable[Mapping[str, Any]],
+    rows: Iterable[InstrumentCandidateRow],
     *,
     priority: Sequence[str],
     observed_at_ms: int,
@@ -23,7 +22,7 @@ def resolve_instrument(
     symbol comes from the catalogue row; a display symbol has never been safe to submit.
     """
 
-    by_venue: dict[str, Mapping[str, Any]] = {}
+    by_venue: dict[str, InstrumentCandidateRow] = {}
     for row in rows:
         venue = str(row.get("venue") or "")
         for exchange_id, native in _NATIVE_PERP_VENUE.items():

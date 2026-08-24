@@ -18,6 +18,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         ExternalMissSubmission,
         Principal,
         ReviewDesk,
+        ReviewSubmission,
         TaskRef,
     )
     from tracefold.platform.postgres.client import transaction
@@ -63,6 +64,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         with postgres_connection(settings, role="serve") as conn, transaction(conn):
             conn.execute("SET TRANSACTION READ WRITE")
             desk = ReviewDesk(conn)
+            submission: ReviewSubmission
             if action == "external-miss":
                 submission = ExternalMissSubmission.model_validate(payload)
                 data = desk.submit(None, submission, principal=principal, idempotency_key=key)

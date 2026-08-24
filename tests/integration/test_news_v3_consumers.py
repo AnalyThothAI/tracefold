@@ -18,6 +18,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
     RK_RAW_LIVE,
     RK_VERDICT_PUSH,
@@ -54,11 +55,22 @@ class FakeBus:
 
 
 class FakeWorkerDatabase:
-    """WorkerDatabase-like adapter over one test connection: the News lane runs inline."""
+    """WorkerDatabase-like adapter over one test connection: the News lane runs inline.
+
+    The consumers see it through the production `WorkerNewsDatabase` port, so the session and
+    transaction boundaries under test are the ones the composition root actually wires.
+    """
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
         self.operations: list[str] = []
+        self._port = WorkerNewsDatabase(self)
+
+    async def read(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+        return await self._port.read(name, fn, timeout_seconds=timeout_seconds)
+
+    async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+        return await self._port.tx(name, fn, timeout_seconds=timeout_seconds)
 
     @contextmanager
     def worker_session(self, name: str, *_args: Any, **_kwargs: Any):

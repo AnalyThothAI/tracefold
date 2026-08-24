@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from argparse import Namespace
+from collections.abc import Callable
 from typing import Any
 
 from tracefold.platform.config.loader import load_settings
@@ -25,7 +26,8 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
         )
 
         venues = settings.news.venues
-        fetchers = []
+        # Each adapter takes its own venue-shaped keyword defaults; the loop below calls them with none.
+        fetchers: list[tuple[str, Callable[[], Any]]] = []
         if venues.binance:
             fetchers.append(("binance", fetch_binance_instruments))
         if venues.hyperliquid:
@@ -69,8 +71,8 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "unmatched":
             days = int(args.days)
             rows = repos.instruments.unmatched_provider_tags(since_ms=stamp - days * 86_400_000, limit=int(args.limit))
-            dangling = list(repos.instruments.dangling_seed_aliases())
-            return 0, {"ok": True, "data": {"days": days, "tags": rows, "dangling_aliases": dangling}}
+            unmatched_dangling = list(repos.instruments.dangling_seed_aliases())
+            return 0, {"ok": True, "data": {"days": days, "tags": rows, "dangling_aliases": unmatched_dangling}}
         symbol = str(getattr(args, "symbol", "") or "").strip()
         if not symbol:
             return 1, {"ok": False, "error": "news_instruments_symbol_required"}
