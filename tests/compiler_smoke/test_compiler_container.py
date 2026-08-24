@@ -353,6 +353,12 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     # clusters it also trained on, or a case whose evidence the model never saw, is not evidence at all.
     assert runner.split["schema"] == "tracefold.news.compile_split_receipt.v1"
     assert runner.retrieval["schema"] == "tracefold.news.compile_retrieval_receipt.v1"
+    # How the winner was reached and what it ended up saying. Both are produced inside the container, and
+    # the record is the only place they are ever read from, so a boundary that dropped them would leave a
+    # merged candidate whose search history exists nowhere.
+    assert runner.trajectory["schema"] == "tracefold.news.compile_trajectory_receipt.v1"
+    assert runner.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert set(runner.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     candidate = apply_trusted_program_patch(parent, patch)
     assert candidate.program_sha256 != parent.program_sha256
@@ -363,6 +369,7 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
         learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
         review_rubric_version=bundle.corpus.review_rubric_version,
         episode_count=bundle.corpus.episode_count,
+        episode_projection_root_sha256=bundle.corpus.episode_projection_root_sha256,
         target_runtime_manifest_sha256=bundle.target_runtime_manifest_sha256,
         task_model=bundle.task,
         reflection_model=bundle.reflection,
@@ -371,6 +378,8 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
         metric=runner.metric,
         split=runner.split,
         retrieval=runner.retrieval,
+        trajectory=runner.trajectory,
+        checkpoint=runner.checkpoint,
         budget=bundle.budget,
         tariff=bundle.proxy_tariff,
         usage=proxy,
@@ -404,7 +413,11 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
         )
         == record
     )
-    assert record.sandbox_profile == policy.schema_version
+    # The record used to repeat the policy schema in a `sandbox_profile` string beside the launch receipt
+    # that already contained it. There is one copy now, and this is the seam that has to hold: the policy
+    # the launcher actually ran under is the one embedded in the record.
+    assert record.sandbox.policy == policy.model_dump(mode="json")
+    assert record.sandbox.schema_version == "tracefold.news.compiler_sandbox_launch.v3"
 
     # The record root is what makes any of this tamper-evident: the runner receipt, the sidecar ledger
     # and the launch receipt no longer carry digests of themselves.
