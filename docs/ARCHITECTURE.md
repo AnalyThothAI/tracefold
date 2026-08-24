@@ -34,8 +34,10 @@ Beside both runs the Trading core (#104), disabled by default. Two more cold
 polling loops in the same Workers root read persisted Triage verdicts through
 two **public News projections**, freeze one content-addressed case, decide it —
 arithmetic for an open-interest case, one `dspy.Predict` call for a News one —
-and, when the pure policy says so, write one durable order through a paper or
-OpenTrade adapter. It shares the price plane's one-slot cold database
+and, when the pure policy says so, write one durable order through the paper
+adapter. Issue #185 PR-C1 wires a typed, read-only OpenTrade adapter for fresh
+preflight and provider truth; capital writes remain code-disabled until the
+separate reviewed-entry proof lands. It shares the price plane's one-slot cold database
 admission rather than the four News lane slots, holds no agent framework, and
 its failure is local the same way the price plane's is.
 
@@ -1295,13 +1297,42 @@ mismatch — resolves to `no_trade` with a named reason. The three input
 documents are screened by `assert_model_input_safe`, which refuses to build a
 prompt carrying an account, credential, quantity, stop or provider payload.
 
+**Research truth and execution truth are separate.** The immutable Case mark
+answers why the signal qualified; it is never a live execution reference. A
+live-reviewed prepare first completes an account-wide startup inventory, then
+reads fresh server time, venue health, exact CCXT swap symbol, mark/bid/ask,
+spread, explicit quantity step and minimums, contract size, account balance,
+position mode, leverage, margin mode, positions and open orders. Missing or
+conflicting truth fails closed. The exact fresh payload and a balance-redacted
+preflight observation are frozen together. OpenTrade's published `amountMin`
+is a minimum, not a quantity step, so it is never guessed into precision.
+
 **Sizing is notional-first.** `quantity = floor_to_step(fixed_notional /
-mark / contract_size)`, stop at a fixed distance, no take-profit (a measured
+fresh_mark / contract_size)`, stop at a fixed distance, no take-profit (a measured
 stop/TP grid found every fixed take-profit negative because the return
 distribution is right-tailed). The worst case is a multiplication the operator
 can read off the config: `fixed_notional x fixed_stop_bps x max_orders_per_day`.
 Stop-distance sizing is deliberately absent: it makes the notional cap and the
 stop bounds silently unreachable in combination.
+
+**ACK is not a fill.** A submit acknowledgement records provider acceptance and
+never writes `position_opened_at_ms` or `must_close_at_ms`. Only a composite
+provider observation may establish a position. Its explicit vocabulary is
+`ABSENT_CONFIRMED | WORKING | PARTIAL | OPEN_PROTECTED | OPEN_UNPROTECTED |
+CLOSED | REJECTED | UNKNOWN`; Python `None`, malformed output, or a partial read
+cannot free the underlying. When exact fill time is unavailable, submission
+time is the conservative lower bound, never the later reconcile time.
+
+**The current live adapter is read-only.** The C1 contracts and runner can
+perform startup inventory, fresh preflight, freeze an approval digest, and
+reconcile provider reads. Its `submit` and `close` capabilities are
+hard-disabled and an approved row is deferred without claiming a provider
+attempt. The pinned public OpenTrade response cannot prove a stable account
+identity, so the concrete adapter keeps startup fail-closed and cannot prepare
+an approval until that evidence exists. `live_bounded`
+is rejected by configuration. One operator-owned `trading.live_symbol` also
+hard-bounds the canary before any provider call. This is deliberate release state, not runtime
+readiness inferred from `enabled: true`.
 
 **One provider attempt, ever.** OpenTrade publishes no client idempotency key,
 so nothing downstream can deduplicate a resend. The ledger row moves to

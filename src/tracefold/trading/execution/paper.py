@@ -19,8 +19,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import ClassVar
 
-from ..contracts import Bar, ExecutionReceipt, OrderSide, PreparedOrder
+from ..contracts import (
+    Bar,
+    ExecutionObservation,
+    ExecutionReceipt,
+    NativeProtection,
+    OrderSide,
+    PreparedOrder,
+)
 
 
 @dataclass(slots=True)
@@ -37,20 +45,22 @@ class PaperFaults:
 class PaperAdapter:
     """Fills at the frozen entry reference. One attempt, one answer, no retry, no second venue.
 
-    `remote` is the simulated venue's own book, and it is deliberately separate from what `submit`
-    returned. That separation is the whole point of the ambiguous fault: `ambiguous` means the write
-    landed but the answer did not, `ambiguous_lost` means neither did. Reconciliation must be able to
-    tell those apart by *reading*, exactly as it will against a real venue, and a fake that always
-    agrees with its own return value can never exercise that.
+    `remote` is the simulated venue's process-local book, and it is deliberately separate from what
+    `submit` returned. That separation is the whole point of the ambiguous fault: `ambiguous` means
+    the write landed but the answer did not, `ambiguous_lost` means neither did. A durable paper ACK
+    can reconstruct its deterministic fill after restart; an unseen order without one stays unknown.
     """
 
+    writes_enabled: ClassVar[bool] = True
     name: str = "paper"
     faults: PaperFaults = field(default_factory=PaperFaults)
     attempts: int = 0
     remote: dict[str, ExecutionReceipt] = field(default_factory=dict)
+    attempted_order_ids: set[str] = field(default_factory=set)
 
     async def submit(self, order: PreparedOrder) -> ExecutionReceipt:
         self.attempts += 1
+        self.attempted_order_ids.add(order.order_id)
         fault = self.faults.next()
         if fault == "reject":
             return ExecutionReceipt(state="REJECTED", reason="paper_rejected")
@@ -69,10 +79,53 @@ class PaperAdapter:
         self.remote[order.order_id] = accepted
         return accepted
 
-    async def observe(self, order: PreparedOrder) -> ExecutionReceipt | None:
-        """The read-only reconcile primitive: what the venue says it holds for this intent, or nothing."""
+    async def observe(self, order: PreparedOrder) -> ExecutionObservation:
+        """Read the local fake book or reconstruct a deterministic, durably acknowledged fill."""
 
-        return self.remote.get(order.order_id)
+        receipt = self.remote.get(order.order_id)
+        expected_remote_id = f"paper-{order.order_id}"
+        if receipt is None and order.remote_order_id == expected_remote_id:
+            # An acknowledged paper fill is deterministic, so its durable remote id is enough to
+            # reconstruct the fake venue after a process restart. The process cache is not truth.
+            receipt = ExecutionReceipt(
+                state="ACKNOWLEDGED",
+                remote_order_id=expected_remote_id,
+                filled_quantity=order.quantity,
+                average_price=order.entry_reference,
+                reason="paper_ack",
+            )
+        if receipt is None:
+            return ExecutionObservation(
+                state="ABSENT_CONFIRMED" if order.order_id in self.attempted_order_ids else "UNKNOWN",
+                observed_at_ms=order.instrument.observed_at_ms,
+                remote_order_id=None,
+                evidence={
+                    "provider": "paper",
+                    "complete_book": order.order_id in self.attempted_order_ids,
+                },
+            )
+        opposite = "sell" if order.side == "buy" else "buy"
+        return ExecutionObservation(
+            state="OPEN_PROTECTED",
+            observed_at_ms=order.instrument.observed_at_ms,
+            remote_order_id=receipt.remote_order_id,
+            actual_position_quantity=order.quantity,
+            filled_quantity=receipt.filled_quantity or order.quantity,
+            average_price=receipt.average_price or order.entry_reference,
+            first_fill_at_ms=None,
+            protection=NativeProtection(
+                remote_order_id=f"paper-stop-{order.order_id}",
+                account_ref=order.account_ref,
+                exchange_id=order.instrument.exchange_id,
+                provider_symbol=order.instrument.provider_symbol,
+                side=opposite,
+                quantity=order.quantity,
+                trigger_price=order.stop_price,
+                reduce_only=True,
+                status="working",
+            ),
+            evidence={"provider": "paper", "complete_book": True},
+        )
 
     async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
         self.attempts += 1
@@ -88,6 +141,9 @@ class PaperAdapter:
             filled_quantity=quantity,
             reason="paper_close_ack",
         )
+
+    async def aclose(self) -> None:
+        return None
 
 
 @dataclass(frozen=True, slots=True)

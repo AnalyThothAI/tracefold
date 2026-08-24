@@ -13,13 +13,14 @@ from ..contracts import (
     TRADING_RECONCILE_BACKOFF_MS as _RECONCILE_BACKOFF_MS,
 )
 from ..contracts import (
+    ExecutionAdapter,
     ExecutionReceipt,
     OrderState,
     PreparedOrder,
     canonical_sha256,
     utc_day_key,
 )
-from .order import OrderPolicy, must_close_at, next_state_for
+from .order import next_state_for
 
 log = logging.getLogger("tracefold.trading")
 
@@ -81,9 +82,8 @@ async def attempt_once(
 async def commit_order(
     *,
     db: Any,
-    adapter: Any,
+    adapter: ExecutionAdapter,
     order: PreparedOrder,
-    policy: OrderPolicy,
     count: Callable[[str], None] | None = None,
     now: int,
     observe_call: ExecutionCallObserver | None = None,
@@ -117,8 +117,6 @@ async def commit_order(
         return True
 
     state = next_state_for(receipt)
-    opened = now if state is OrderState.ACKNOWLEDGED else None
-    deadline = must_close_at(opened_at_ms=now, policy=policy) if opened is not None else None
 
     def _apply(repos: Any) -> None:
         repos.trading.update_order(
@@ -126,10 +124,12 @@ async def commit_order(
             state=state.value,
             state_reason=receipt.reason,
             remote_order_id=receipt.remote_order_id,
-            filled_quantity=None if receipt.filled_quantity is None else str(receipt.filled_quantity),
-            average_price=None if receipt.average_price is None else str(receipt.average_price),
-            position_opened_at_ms=opened,
-            must_close_at_ms=deadline,
+            # A receipt may repeat exchange fill hints, but the canonical fill/position fields belong
+            # only to the explicit read path. The complete receipt remains in the observation ledger.
+            filled_quantity=None,
+            average_price=None,
+            position_opened_at_ms=None,
+            must_close_at_ms=None,
             next_reconcile_at_ms=now,
             closed_at_ms=now if state is OrderState.REJECTED else None,
             now_ms=now,

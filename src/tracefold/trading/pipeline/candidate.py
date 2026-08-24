@@ -25,7 +25,9 @@ from ..contracts import (
     Bar,
     CaseKind,
     CaseState,
+    ExecutionAdapter,
     InstrumentRef,
+    LiveExecutionAdapter,
     MarketContext,
     NewsTradeCandidate,
     OiRegime,
@@ -92,6 +94,7 @@ _MAX_CASES_PER_TURN = 4
 # How long a frozen case may wait to be decided. Its own budget, separate from the freshness the
 # candidate rules already spent, so queueing behind another case's model call cannot discard a signal.
 _CASE_DECISION_TTL_MS = 300_000
+_LIVE_PREFLIGHT_MAX_AGE_MS = 10_000
 # What still stops a News-only case even though it has no quadrant: no price to enter at, and the
 # measured chasing bucket above the pre-move ceiling.
 _NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_band_chasing"})
@@ -108,7 +111,7 @@ class CandidateRunner:
         db: TradingDatabasePort,
         config: TradingConfig,
         bars: BarFetcherFactory,
-        adapter: Any,
+        adapter: ExecutionAdapter,
         candidate_projection: _CandidateProjectionReader,
         instrument_projection: _InstrumentProjectionReader,
         program: TradingDecisionProgram | None = None,
@@ -119,12 +122,14 @@ class CandidateRunner:
         self._config = config
         self._bars = bars
         self._adapter = adapter
+        self._live_adapter = adapter if isinstance(adapter, LiveExecutionAdapter) else None
         self._candidate_projection = candidate_projection
         self._instrument_projection = instrument_projection
         self._program = program
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
+        self._live_startup_complete = False
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -161,6 +166,9 @@ class CandidateRunner:
             funnel.count(f"scan_skipped_control:{control.lower()}")
             await self._merge_funnel(funnel, now)
             return {"control": control, "funnel": funnel.as_dict()}
+        if self._config.mode != "paper" and not await self._ensure_live_startup(funnel=funnel):
+            await self._merge_funnel(funnel, now)
+            return {"skipped": "live_startup_not_ready", "funnel": funnel.as_dict()}
 
         plans = self._plan(state, funnel=funnel, now=now)
         created = 0
@@ -177,6 +185,49 @@ class CandidateRunner:
 
         await self._merge_funnel(funnel, now)
         return {"created": created, "decided": decided, "funnel": funnel.as_dict()}
+
+    async def _ensure_live_startup(self, *, funnel: Funnel) -> bool:
+        if self._live_startup_complete:
+            return True
+        live_adapter = self._live_adapter
+        if live_adapter is None:
+            funnel.count("startup_reject:read_capability_unavailable")
+            return False
+        venue = self._config.venue_priority[0]
+        live_symbol = self._config.live_symbol or ""
+        instrument = InstrumentRef(
+            exchange_id=venue,
+            venue="binance.perp" if venue == "binance" else "hl.perp",
+            provider_symbol=live_symbol,
+            base_symbol=live_symbol,
+            instrument_class="crypto",
+            # Startup asks metadata to resolve the unique active swap. Presuming USDT here would
+            # reject a valid non-USDT venue before the provider could return exact instrument truth.
+            quote_asset=None,
+            observed_at_ms=self._clock(),
+        )
+        try:
+            inventory = await observe_provider_call(
+                self._telemetry,
+                name="trading_candidate",
+                source="other",
+                call=live_adapter.startup(instrument=instrument, account_ref=self._config.account_ref),
+            )
+        except Exception:
+            log.warning("trading live startup reconciliation failed")
+            funnel.count("startup_reject:provider_unavailable")
+            return False
+        if inventory.exposures:
+            # The initial canary allows one account-wide position. Unknown/manual exposure is never
+            # adopted or auto-closed, so any remote inventory makes readiness explicitly false.
+            funnel.count("startup_reject:external_exposure")
+            return False
+        if inventory.preflight.observed_account_ref != self._config.account_ref:
+            funnel.count("startup_reject:account_identity_unproven")
+            return False
+        self._live_startup_complete = True
+        funnel.count("startup_ready")
+        return True
 
     async def _merge_funnel(self, funnel: Funnel, now: int) -> None:
         counts = funnel.as_dict()
@@ -469,6 +520,16 @@ class CandidateRunner:
             funnel.count("advance_reject:mode_changed")
             await self._settle(case_id, CaseState.BLOCKED, "no_trade", "mode_changed_since_freeze", now=now)
             return "mode_changed"
+        if case_mode != "paper" and manifest.instrument.base_symbol != self._config.live_symbol:
+            funnel.count("advance_reject:live_symbol_not_allowed")
+            await self._settle(
+                case_id,
+                CaseState.BLOCKED,
+                "no_trade",
+                "live_symbol_not_allowed",
+                now=now,
+            )
+            return "live_symbol_not_allowed"
 
         decision: TradeDecision | None = None
         program_version: str | None = None
@@ -608,15 +669,84 @@ class CandidateRunner:
         if side is None:
             return False
 
-        market = MarketContext(
-            instrument=manifest.instrument,
-            mark_price=manifest.mark_price,
-            observed_at_ms=manifest.cutoff_ms,
-            pre_move_bps=manifest.pre_move_bps,
-            pre_move_lookback_ms=self._config.regime.lookback_ms,
-            spread_bps=None,
-            spread_available=False,
-        )
+        preflight_audit: dict[str, Any] | None = None
+        hedged = False
+        instrument = manifest.instrument
+        if mode == "paper":
+            market = MarketContext(
+                instrument=instrument,
+                mark_price=manifest.mark_price,
+                observed_at_ms=manifest.cutoff_ms,
+                pre_move_bps=manifest.pre_move_bps,
+                pre_move_lookback_ms=self._config.regime.lookback_ms,
+                spread_bps=None,
+                spread_available=False,
+            )
+        else:
+            if instrument.base_symbol != self._config.live_symbol:
+                funnel.count("risk_reject:live_symbol_not_allowed")
+                return False
+            live_adapter = self._live_adapter
+            if live_adapter is None:
+                funnel.count("risk_reject:live_read_capability_unavailable")
+                return False
+            try:
+                preflight = await observe_provider_call(
+                    self._telemetry,
+                    name="trading_candidate",
+                    source=external_data_source(instrument.exchange_id),
+                    call=live_adapter.preflight(instrument=instrument, account_ref=self._config.account_ref),
+                )
+            except Exception:
+                log.warning("trading live preflight failed")
+                funnel.count("risk_reject:live_preflight_failed")
+                return False
+            if not preflight.venue_healthy:
+                funnel.count("risk_reject:venue_unhealthy")
+                return False
+            preflight_now = self._clock()
+            if preflight.observed_at_ms > preflight_now + _LIVE_PREFLIGHT_MAX_AGE_MS or (
+                preflight_now - preflight.observed_at_ms > _LIVE_PREFLIGHT_MAX_AGE_MS
+            ):
+                funnel.count("risk_reject:live_preflight_stale")
+                return False
+            if (
+                preflight.requested_account_ref != self._config.account_ref
+                or preflight.observed_account_ref != self._config.account_ref
+            ):
+                funnel.count("risk_reject:account_mismatch")
+                return False
+            if preflight.positions or preflight.open_orders:
+                funnel.count("risk_reject:remote_exposure")
+                return False
+            if preflight.leverage != 1:
+                funnel.count("risk_reject:leverage_not_one")
+                return False
+            if not preflight.margin_mode:
+                funnel.count("risk_reject:margin_mode_unknown")
+                return False
+            if preflight.available_balance is None:
+                funnel.count("risk_reject:balance_unknown")
+                return False
+            if preflight.available_balance < self._config.order.fixed_notional_usd:
+                funnel.count("risk_reject:balance_insufficient")
+                return False
+            instrument = preflight.instrument
+            hedged = preflight.hedged
+            preflight_audit = preflight.audit_payload()
+            market = MarketContext(
+                instrument=instrument,
+                mark_price=preflight.mark_price,
+                observed_at_ms=preflight.observed_at_ms,
+                pre_move_bps=manifest.pre_move_bps,
+                pre_move_lookback_ms=self._config.regime.lookback_ms,
+                spread_bps=preflight.spread_bps,
+                spread_available=True,
+                quantity_step=preflight.quantity_step,
+                min_quantity=preflight.min_quantity,
+                min_notional=preflight.min_notional,
+                contract_size=preflight.contract_size,
+            )
         sized = size_order(side=side, market=market, mode=mode, policy=self._config.order)
         if isinstance(sized, RiskRejection):
             funnel.count(f"risk_reject:{sized.rule}")
@@ -624,13 +754,13 @@ class CandidateRunner:
 
         order_id = uuid.uuid4().hex
         payload = build_payload(
-            instrument_exchange_id=manifest.instrument.exchange_id,
-            provider_symbol=manifest.instrument.provider_symbol,
+            instrument_exchange_id=instrument.exchange_id,
+            provider_symbol=instrument.provider_symbol,
             side=side,
             quantity=sized.quantity,
             stop_price=sized.stop_price,
             take_profit_price=sized.take_profit_price,
-            hedged=False,
+            hedged=hedged,
         )
         state = OrderState.AWAITING_APPROVAL if mode == "live_reviewed" else OrderState.PREPARED
 
@@ -659,7 +789,7 @@ class CandidateRunner:
             if len(repos.trading.active_underlyings()) >= self._config.order.max_open_underlyings:
                 funnel.count("risk_reject:max_open_underlyings")
                 return False
-            return bool(
+            inserted = bool(
                 repos.trading.insert_prepared_order(
                     order_id=order_id,
                     case_id=case_id,
@@ -667,8 +797,8 @@ class CandidateRunner:
                     # The venue is part of the frozen intent, so the row records the one that was
                     # chosen even in paper. `mode` is what says whether the write was real; storing
                     # "paper" here would erase which venue the case actually routed to.
-                    exchange_id=manifest.instrument.exchange_id,
-                    provider_symbol=manifest.instrument.provider_symbol,
+                    exchange_id=instrument.exchange_id,
+                    provider_symbol=instrument.provider_symbol,
                     account_ref=self._config.account_ref,
                     mode=mode,
                     side=side,
@@ -684,6 +814,15 @@ class CandidateRunner:
                     now_ms=now,
                 )
             )
+            if inserted and preflight_audit is not None:
+                repos.trading.record_observation(
+                    order_id=order_id,
+                    observation_kind="live_preflight",
+                    content_sha256=canonical_sha256(preflight_audit),
+                    content=preflight_audit,
+                    now_ms=now,
+                )
+            return inserted
 
         try:
             inserted = await self._db.tx("trading_order_prepare", _insert, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
@@ -703,7 +842,8 @@ class CandidateRunner:
             order_id=order_id,
             case_id=case_id,
             underlying_key=manifest.underlying_key,
-            instrument=manifest.instrument,
+            account_ref=self._config.account_ref,
+            instrument=instrument,
             mode=mode,
             side=side,
             notional_usd=sized.notional_usd,
@@ -718,7 +858,6 @@ class CandidateRunner:
             db=self._db,
             adapter=self._adapter,
             order=prepared,
-            policy=self._config.order,
             count=funnel.count,
             now=now,
             observe_call=lambda call: observe_provider_call(

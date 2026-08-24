@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import dspy  # type: ignore[import-untyped]
 from loguru import logger
@@ -9,12 +9,15 @@ from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_trade_candidates, news_trade_instruments
+from tracefold.integrations.opentrade import OpenTradeReadAdapter
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.candidate.eligibility import EligibilityPolicy
 from tracefold.trading.contracts import Bar as TradingBar
+from tracefold.trading.contracts import LiveExchangeId
 from tracefold.trading.decision.policy import TradePolicy
 from tracefold.trading.decision.program import DEFAULT_DEADLINE_SECONDS as TRADING_DECISION_DEADLINE_SECONDS
 from tracefold.trading.decision.program import DEFAULT_MAX_TOKENS as TRADING_DECISION_MAX_TOKENS
@@ -35,9 +38,10 @@ def trading_config_from_settings(settings: Settings) -> TradingConfig:
     return TradingConfig(
         mode=trading.mode,
         account_ref=trading.account_ref,
+        live_symbol=trading.live_symbol,
         poll_seconds=float(trading.poll_seconds),
         oi_metric_version=NEWS_OI_METRIC_VERSION,
-        venue_priority=trading.venues.enabled,
+        venue_priority=cast(tuple[LiveExchangeId, ...], trading.venues.enabled),
         eligibility=EligibilityPolicy(
             max_age_ms=candidates.max_age_seconds * 1000,
             max_rank_in_window=candidates.max_rank_in_window,
@@ -108,6 +112,21 @@ def _wire_trading_pipeline(
                 deadline_seconds=TRADING_DECISION_DEADLINE_SECONDS,
             )
 
+        adapter = None
+        if trading.mode == "live_reviewed":
+            token_path = settings.trading_opentrade_token_file()
+            if token_path is None:
+                raise ValueError("trading_opentrade_token_file_missing")
+            try:
+                token = read_secure_secret_text(token_path)
+            except SecretFileError as exc:
+                raise ValueError(f"trading_opentrade_token_file_{exc.code}") from None
+            adapter = OpenTradeReadAdapter(
+                base_url=str(trading.opentrade.base_url),
+                token=token,
+                request_timeout_seconds=trading.opentrade.request_timeout_seconds,
+            )
+
         return build_trading_pipeline(
             db=WorkerTradingDatabase(db),
             config=trading_config_from_settings(settings),
@@ -115,6 +134,7 @@ def _wire_trading_pipeline(
             candidate_projection=news_trade_candidates,
             instrument_projection=news_trade_instruments,
             program=program,
+            adapter=adapter,
             telemetry=telemetry,
         )
     except Exception:

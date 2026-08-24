@@ -43,6 +43,7 @@ def _order() -> PreparedOrder:
         order_id="property-order",
         case_id="property-case",
         underlying_key="crypto:DOGE",
+        account_ref="default",
         instrument=instrument,
         mode="paper",
         side="buy",
@@ -63,6 +64,7 @@ class _Ledger:
     orders_today: int = 0
     transitions: list[str] = field(default_factory=lambda: [OrderState.PREPARED.value])
     observations: int = 0
+    last_update: dict[str, Any] = field(default_factory=dict)
 
     def apply_provider_event(self, event: str) -> None:
         """Reference the provider read-path contract without inventing a second submit path."""
@@ -106,6 +108,7 @@ class _Ledger:
         return "claimed"
 
     def update_order(self, **values: Any) -> None:
+        self.last_update = dict(values)
         self.state = str(values["state"])
         self.transitions.append(self.state)
 
@@ -223,7 +226,6 @@ class OrderSubmissionStateMachine(RuleBasedStateMachine):
                 db=self.db,
                 adapter=self.adapter,
                 order=self.order,
-                policy=DEFAULT_ORDER_POLICY,
                 now=1_000,
             )
         )
@@ -266,6 +268,23 @@ class OrderSubmissionStateMachine(RuleBasedStateMachine):
 
 
 TestOrderSubmissionStateMachine = OrderSubmissionStateMachine.TestCase
+
+
+def test_acknowledgement_never_stamps_a_position_open_or_holding_deadline() -> None:
+    ledger = _Ledger()
+    asyncio.run(
+        commit_order(
+            db=_Db(ledger),
+            adapter=_Adapter(),
+            order=_order(),
+            now=1_000,
+        )
+    )
+    assert ledger.state == OrderState.ACKNOWLEDGED.value
+    assert ledger.last_update["position_opened_at_ms"] is None
+    assert ledger.last_update["must_close_at_ms"] is None
+    assert ledger.last_update["filled_quantity"] is None
+    assert ledger.last_update["average_price"] is None
 
 
 _positive_decimal = st.decimals(

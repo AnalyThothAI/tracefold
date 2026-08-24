@@ -564,7 +564,19 @@ class TradingOpenTradeSettings(BaseModel):
     @classmethod
     def parse_base_url(cls, value: Any) -> str | None:
         normalized = str(value or "").strip().rstrip("/")
-        return normalized or None
+        if not normalized:
+            return None
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("trading_opentrade_base_url_invalid")
+        return normalized
 
     @property
     def configured(self) -> bool:
@@ -578,6 +590,7 @@ class TradingSettings(BaseModel):
 
     enabled: bool = False
     mode: Literal["paper", "live_reviewed", "live_bounded"] = "paper"
+    live_symbol: str | None = None
     poll_seconds: float = 2.0
     account_ref: str = "default"
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
@@ -586,6 +599,14 @@ class TradingSettings(BaseModel):
     venues: TradingVenueSettings = Field(default_factory=TradingVenueSettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
     opentrade: TradingOpenTradeSettings = Field(default_factory=TradingOpenTradeSettings)
+
+    @field_validator("live_symbol", mode="before")
+    @classmethod
+    def parse_live_symbol(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip().upper()
+        if normalized and not re.fullmatch(r"[A-Z0-9]{1,24}", normalized):
+            raise ValueError("trading_live_symbol_invalid")
+        return normalized or None
 
     @model_validator(mode="after")
     def validate_mode(self) -> TradingSettings:
@@ -597,6 +618,19 @@ class TradingSettings(BaseModel):
             raise ValueError("trading_live_mode_requires_opentrade")
         if self.mode != "paper" and not self.venues.enabled:
             raise ValueError("trading_live_mode_requires_enabled_venue")
+        if self.mode == "live_bounded":
+            raise ValueError("trading_live_bounded_not_supported")
+        if self.mode == "live_reviewed":
+            if self.live_symbol is None:
+                raise ValueError("trading_live_reviewed_requires_one_symbol")
+            if len(self.venues.enabled) != 1:
+                raise ValueError("trading_live_reviewed_requires_one_venue")
+            if self.order.fixed_notional_usd > Decimal("10"):
+                raise ValueError("trading_live_reviewed_notional_above_canary")
+            if self.order.max_open_underlyings != 1:
+                raise ValueError("trading_live_reviewed_requires_one_position")
+            if self.order.max_orders_per_day != 1:
+                raise ValueError("trading_live_reviewed_requires_one_order_per_day")
         return self
 
     @property
@@ -631,6 +665,15 @@ class Settings(BaseModel):
         role: Literal["serve", "workers", "migrate"],
     ) -> Path | None:
         value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
+        if not value:
+            return None
+        configured = Path(value).expanduser()
+        if configured.is_absolute():
+            return configured
+        return self._config_dir / configured
+
+    def trading_opentrade_token_file(self) -> Path | None:
+        value = self.trading.opentrade.token_file
         if not value:
             return None
         configured = Path(value).expanduser()

@@ -38,7 +38,9 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
 and password-file references, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook, the API bind address and bearer token, and model
-provider/name.
+provider/name. The optional `trading.opentrade.token_file` points to the
+OpenTrade bearer token used only by App-owned live composition; Trading domain
+code never reads the filesystem or receives the token.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
@@ -47,8 +49,9 @@ The complete secret inventory is: `ws_token` (HTTP API bearer token),
 the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
 fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
-`news.push.feishu_signing_secret`, and the five PostgreSQL password files
-(bootstrap, Serve, Review, Workers, migrate).
+`news.push.feishu_signing_secret`, the five PostgreSQL password files
+(bootstrap, Serve, Review, Workers, migrate), and the optional OpenTrade token
+file named by `trading.opentrade.token_file`.
 There is no other provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
@@ -57,7 +60,13 @@ secret files with mode `0600`; reruns repair those permissions. Without
 `--force`, an existing config is preserved byte-for-byte. `--force` replaces
 only the generated config and does not rotate existing PostgreSQL passwords.
 Generated defaults contain no live provider, model, or webhook credential and
-leave outbound News push disabled.
+leave outbound News push disabled. They do not create or populate the optional
+OpenTrade token file. A live operator creates it separately as a regular,
+non-symlink file of at most 16 KiB with no group/other permission bits
+(normally mode `0600`);
+diagnostics expose only configured/readable booleans and its resolved path,
+never its contents. The provider base URL must be credential-free HTTPS, so
+plain HTTP is rejected before the token file is read.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model

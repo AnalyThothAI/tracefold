@@ -74,6 +74,7 @@ from tracefold.trading.contracts import (
     TRADING_POLICY_VERSION,
     TRADING_PROGRAM_VERSION,
     Bar,
+    ExecutionObservationState,
     InstrumentRef,
     MarketContext,
     NewsCandidateRow,
@@ -110,7 +111,7 @@ NOW_MS = 1_787_000_000_000
 # expected value means the next such PR has to come here and say so — and a leaf that returns to the baseline
 # value fails as a stale entry rather than lingering. Generated artifacts have their own canonical drift
 # checkers and are intentionally not duplicated in this baseline.
-INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
+INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # #162 PR8-B moved the Program into its own package and split the learning plane away from it. The
     # factory source closure is addressed by logical file name, so the move re-issues the Program root
     # with no prompt, RulePack, policy, model route or call budget changed — and the epoch, program and
@@ -204,9 +205,33 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, str]] = {
         "issue_162_pr8b_program_learning_identity_migration",
         "program_v7",
     ),
+    "representative_trading_flow.flow.faults_and_reconciliation.ack.observation_state": (
+        "issue_185_explicit_execution_observation_state",
+        "OPEN_PROTECTED",
+    ),
+    "representative_trading_flow.flow.faults_and_reconciliation.reject.observation_state": (
+        "issue_185_explicit_execution_observation_state",
+        "ABSENT_CONFIRMED",
+    ),
+    "representative_trading_flow.flow.faults_and_reconciliation.ambiguous.observation_state": (
+        "issue_185_explicit_execution_observation_state",
+        "OPEN_PROTECTED",
+    ),
+    "representative_trading_flow.flow.faults_and_reconciliation.ambiguous_lost.observation_state": (
+        "issue_185_explicit_execution_observation_state",
+        "ABSENT_CONFIRMED",
+    ),
+    "representative_trading_flow.flow.prepared_order.account_ref": (
+        "issue_185_account_bound_execution_contract",
+        "default",
+    ),
+    "representative_trading_flow.flow.prepared_order.remote_order_id": (
+        "issue_185_explicit_remote_order_identity",
+        None,
+    ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "913e320ca78ba6e027867a2f3e3a42682a47a7aa4f76f7eaf8fee253056348b0",
+        "issue_185_explicit_execution_observation_contract",
+        "d019e5e1274e9a3f3cb668b3fab5bfaa32bd9bbe125502fd54fb1da7faea32b0",
     ),
 }
 
@@ -614,18 +639,30 @@ async def _trading_faults(order: PreparedOrder) -> dict[str, Any]:
         receipt = await adapter.submit(order.model_copy(update={"order_id": f"order-{fault}"}))
         current_order = order.model_copy(update={"order_id": f"order-{fault}"})
         observation = await adapter.observe(current_order)
+        state = observation.state
         entry: dict[str, Any] = {
             "attempts": adapter.attempts,
             "ledger_state": receipt.state,
             "receipt": receipt.model_dump(mode="json"),
-            "remote_present": observation is not None,
+            "observation_state": state,
+            "remote_present": state
+            not in {
+                ExecutionObservationState.ABSENT_CONFIRMED,
+                ExecutionObservationState.REJECTED,
+                ExecutionObservationState.UNKNOWN,
+            },
         }
         if receipt.state == "AMBIGUOUS":
-            entry["reconciliation_result"] = (
-                {"state": "OPEN", "reason": "resolved_by_read"}
-                if observation is not None
-                else {"state": "REJECTED", "reason": "proven_absent"}
-            )
+            if state == ExecutionObservationState.ABSENT_CONFIRMED:
+                entry["reconciliation_result"] = {"state": "REJECTED", "reason": "proven_absent"}
+            elif state in {
+                ExecutionObservationState.PARTIAL,
+                ExecutionObservationState.OPEN_PROTECTED,
+                ExecutionObservationState.OPEN_UNPROTECTED,
+            }:
+                entry["reconciliation_result"] = {"state": "OPEN", "reason": "resolved_by_read"}
+            else:
+                entry["reconciliation_result"] = {"state": "MANUAL_REVIEW_REQUIRED", "reason": "unknown"}
         snapshots[fault] = entry
     return snapshots
 
@@ -734,6 +771,7 @@ def _trading_order(
         order_id="order-baseline",
         case_id="case-baseline",
         underlying_key=manifest.underlying_key,
+        account_ref="default",
         instrument=manifest.instrument,
         mode="paper",
         side=side,

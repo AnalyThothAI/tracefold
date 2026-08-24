@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
+from ..contracts import ExecutionAdapter, LiveExecutionAdapter
 from ..decision.program import TradingDecisionProgram
 from ..execution.paper import PaperAdapter
 from ..telemetry import TradingExternalDataTelemetryPort
@@ -27,6 +27,7 @@ class TradingPipeline:
 
     candidate: CandidateRunner
     reconcile: ReconcileRunner
+    adapter: ExecutionAdapter
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]]:
         candidate, reconcile = self.candidate, self.reconcile
@@ -36,7 +37,7 @@ class TradingPipeline:
         ]
 
     async def close(self) -> None:
-        return None
+        await self.adapter.aclose()
 
 
 def build_pipeline(
@@ -47,27 +48,33 @@ def build_pipeline(
     candidate_projection: CandidateProjectionReader,
     instrument_projection: InstrumentProjectionReader,
     program: TradingDecisionProgram | None = None,
-    adapter: Any | None = None,
+    adapter: ExecutionAdapter | None = None,
     telemetry: TradingExternalDataTelemetryPort | None = None,
 ) -> TradingPipeline:
     """Compose the two runners. A live mode without a real adapter refuses to start."""
 
-    if adapter is None:
-        if config.mode != "paper":
+    resolved_adapter: ExecutionAdapter
+    if config.mode != "paper":
+        if adapter is None or not isinstance(adapter, LiveExecutionAdapter):
             raise ValueError("trading_live_mode_requires_execution_adapter")
-        adapter = PaperAdapter()
+        resolved_adapter = adapter
+    elif adapter is None:
+        resolved_adapter = PaperAdapter()
+    else:
+        resolved_adapter = adapter
     return TradingPipeline(
         candidate=CandidateRunner(
             db=db,
             config=config,
             bars=bars,
-            adapter=adapter,
+            adapter=resolved_adapter,
             candidate_projection=candidate_projection,
             instrument_projection=instrument_projection,
             program=program,
             telemetry=telemetry,
         ),
-        reconcile=ReconcileRunner(db=db, config=config, bars=bars, adapter=adapter, telemetry=telemetry),
+        reconcile=ReconcileRunner(db=db, config=config, bars=bars, adapter=resolved_adapter, telemetry=telemetry),
+        adapter=resolved_adapter,
     )
 
 

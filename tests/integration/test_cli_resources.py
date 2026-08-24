@@ -39,6 +39,27 @@ def test_db_audit_query_audit_and_validate_projections_use_postgres_only() -> No
     assert lines[2]["data"]["mismatch_count"] == 0
 
 
+@pytest.mark.usefixtures("postgres_dsn")
+def test_trading_status_reports_capability_without_claiming_runtime_readiness() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        home = Path(tmpdir)
+        write_runtime_config(home, postgres_dsn=_test_postgres_dsn())
+        stdout = io.StringIO()
+        with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+            exit_code = main(["trading", "status"], stdout=stdout)
+
+    response = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    data = response["data"]
+    assert data["live_symbol"] is None
+    assert data["worst_case_daily_loss_usd"] == "4"
+    assert data["execution_backend"] == "disabled"
+    assert data["execution_configured"] is False
+    assert data["live_mode_supported"] is False
+    assert data["live_ready"] is False
+    assert data["live_readiness"] == "not_applicable"
+
+
 def _delete_test_topology(url: str, name_prefix: str) -> None:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 

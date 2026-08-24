@@ -30,7 +30,7 @@ existing database passwords. The generated config has a new API bearer token
 is false, and `news.broker.url` points at the compose RabbitMQ service.
 
 The configuration schema is exactly the top-level keys `ws_token`, `api`
-(`host`, `port`), `storage.postgres`, `llm`, and `news`, each a typed nested
+(`host`, `port`), `storage.postgres`, `llm`, `news`, and `trading`, each a typed nested
 model with `extra=forbid`. `ws_token` is the HTTP
 API bearer token; the key name is kept so operator configs need not churn.
 Root-level `postgres_*`, `api_*`, provider, and LLM forwarding aliases are not
@@ -139,7 +139,7 @@ Workers still start and deliveries settle `terminal/delivery_unavailable`.
 
 `trading.*` is the whole Trading surface (#104) and it is `enabled: false` by
 default; a disabled Trading context constructs no program, no adapter and no
-runner. `trading.mode` is `paper | live_reviewed | live_bounded` and is
+runner. `trading.mode` names `paper | live_reviewed | live_bounded` and is
 startup-owned — a prompt or a tool argument cannot change it, and paper never
 reads the OpenTrade token. `trading.candidates.*` bounds what may become a case
 (`max_age_seconds`, `news_lookback_seconds`, `oi_lookback_seconds`,
@@ -152,11 +152,22 @@ ceiling is rejected at startup); `trading.policy.*` gates the pure mapping
 `binance` and `hyperliquid`; `trading.order.*` is every order parameter
 (`fixed_notional_usd`, `leverage` fixed at 1, `fixed_stop_bps`,
 `take_profit_bps`, `max_holding_seconds`, `max_spread_bps`,
-`max_open_underlyings`, `max_orders_per_day`), so the worst-case daily envelope
-is the multiplication `fixed_notional x fixed_stop_bps x max_orders_per_day`;
+`max_open_underlyings`, `max_orders_per_day`), so
+the current worst-case daily envelope is the multiplication
+`fixed_notional x fixed_stop_bps x max_orders_per_day`;
 `trading.opentrade.*` is the provider contract (`base_url`, `token_file`,
-`request_timeout_seconds`). A live mode without a configured OpenTrade contract
-or an enabled venue fails at startup, not at the first order.
+`request_timeout_seconds`); `base_url` must be credential-free HTTPS. A live
+mode without a configured OpenTrade contract
+or an enabled venue fails at startup, not at the first order. Issue #185 PR-C1
+supports only a read-only `live_reviewed` canary: exactly one enabled venue,
+one uppercase base symbol in `trading.live_symbol`,
+`fixed_notional_usd <= 10`, `max_open_underlyings = 1`,
+`max_orders_per_day = 1`, and leverage 1. The token file is resolved relative
+to the operator config directory (or as an absolute path), must be a non-empty
+regular non-symlink file of at most 16 KiB with no group/other permission bits
+(normally mode `0600`), and is read only by App composition. `live_bounded` fails
+configuration closed. OpenTrade submit/close are code-disabled until the
+separate reviewed-write release.
 `llm.trading_decision_model` selects the single `dspy.Predict` endpoint; without
 it a News-bearing case settles as `no_trade / program_unconfigured` and an
 open-interest case still decides, because that lane calls no model at all.
@@ -895,8 +906,12 @@ peeks, republishes, or purges `news.dead`.
 
 The `trading` family is read-mostly, and deliberately has no command that
 places, amends or cancels an order. `trading status` reports mode, control
-state, the day's counters and the day's funnel plus the worst-case daily
-envelope; `trading cases [--state] [--limit]` and `trading show <case-id>` read
+state, the day's counters and funnel, `worst_case_daily_loss_usd`,
+the configured `live_symbol`,
+`execution_backend`, `execution_configured`, `live_mode_supported`,
+`live_ready`, and `live_readiness`; C1 reports `opentrade_read_only` and never
+derives runtime readiness from configuration alone. `trading cases [--state]
+[--limit]` and `trading show <case-id>` read
 the case, its order and its deduplicated remote observations. The three writes
 are narrow: `trading blacklist list|add|remove` owns the canonical deny-list
 (one row per underlying — `CL` blocks `CL` and `XYZ-CL`; a read failure blocks
