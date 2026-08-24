@@ -137,9 +137,9 @@ class OpenTradeAdapter:
         orders = await self._list("/orders/open", params={"exchangeId": exchange_id})
         positions = await self._list("/positions", params={"exchangeId": exchange_id})
 
-        mark = _aliased_decimal(ticker, "last", "markPrice", code="opentrade_mark_invalid")
-        if mark is None:
-            raise OpenTradeContractError("opentrade_mark_invalid")
+        # The pinned provider contract defines ``last`` as this endpoint's execution reference.
+        # Other price kinds may coexist and differ; they are neither aliases nor fallbacks.
+        mark = _positive_decimal(ticker.get("last"), "opentrade_mark_invalid")
         bid = _positive_decimal(ticker.get("bid"), "opentrade_bid_invalid")
         ask = _positive_decimal(ticker.get("ask"), "opentrade_ask_invalid")
         if ask < bid:

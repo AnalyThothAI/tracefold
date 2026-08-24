@@ -240,6 +240,51 @@ def test_preflight_rejects_conflicting_provider_identity_aliases(
     assert all(request.method == "GET" for request in requests)
 
 
+def test_preflight_uses_documented_last_when_an_extra_mark_price_differs() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = _response(request)
+        if request.url.path.endswith("/market/ticker"):
+            body = response.json()
+            body["data"]["markPrice"] = "10.5"
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        preflight = asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+    assert preflight.mark_price == Decimal("10")
+
+
+def test_preflight_does_not_replace_missing_last_with_an_extra_mark_price() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = _response(request)
+        if request.url.path.endswith("/market/ticker"):
+            body = response.json()
+            del body["data"]["last"]
+            body["data"]["markPrice"] = "10.5"
+            return httpx.Response(200, json=body, request=request)
+        return response
+
+    adapter = OpenTradeAdapter(
+        base_url="https://example.invalid",
+        token="secret-token",
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(OpenTradeContractError, match="opentrade_mark_invalid"):
+            asyncio.run(adapter.preflight(instrument=_instrument(), account_ref="canary"))
+    finally:
+        asyncio.run(adapter.aclose())
+
+
 @pytest.mark.parametrize("timestamp", [None, NOW // 1_000, NOW - 10_001, NOW + 1, NOW + 9_999, NOW + 10_001])
 def test_preflight_requires_a_fresh_millisecond_ticker_timestamp_before_any_write(timestamp: object) -> None:
     requests: list[httpx.Request] = []
