@@ -819,6 +819,9 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("unprotected", "OPEN_UNPROTECTED"),
         ("future_fill", "UNKNOWN"),
         ("external_scale_in_trade", "UNKNOWN"),
+        ("external_scale_in_missing_timestamp", "UNKNOWN"),
+        ("external_scale_in_seconds_timestamp", "UNKNOWN"),
+        ("external_scale_in_too_old_timestamp", "UNKNOWN"),
         ("historical_opening_trade", "OPEN_UNPROTECTED"),
         ("closed", "CLOSED"),
         ("mixed_order_history", "UNKNOWN"),
@@ -867,6 +870,9 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     "unprotected",
                     "future_fill",
                     "external_scale_in_trade",
+                    "external_scale_in_missing_timestamp",
+                    "external_scale_in_seconds_timestamp",
+                    "external_scale_in_too_old_timestamp",
                     "historical_opening_trade",
                     "mixed_order_history_with_position",
                     "closed_then_external_position",
@@ -989,6 +995,9 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "unprotected",
             "future_fill",
             "external_scale_in_trade",
+            "external_scale_in_missing_timestamp",
+            "external_scale_in_seconds_timestamp",
+            "external_scale_in_too_old_timestamp",
             "historical_opening_trade",
             "mixed_order_history_with_position",
         }:
@@ -1016,10 +1025,30 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                                     "side": "buy",
                                     "reduceOnly": False,
                                     "amount": "0.5",
-                                    "timestamp": NOW - 1_001,
+                                    **(
+                                        {}
+                                        if scenario == "external_scale_in_missing_timestamp"
+                                        else {
+                                            "timestamp": (
+                                                (NOW - 1_001) // 1_000
+                                                if scenario == "external_scale_in_seconds_timestamp"
+                                                else (
+                                                    NOW - 8 * 86_400_000
+                                                    if scenario == "external_scale_in_too_old_timestamp"
+                                                    else NOW - 1_001
+                                                )
+                                            )
+                                        }
+                                    ),
                                 }
                             ]
-                            if scenario == "external_scale_in_trade"
+                            if scenario
+                            in {
+                                "external_scale_in_trade",
+                                "external_scale_in_missing_timestamp",
+                                "external_scale_in_seconds_timestamp",
+                                "external_scale_in_too_old_timestamp",
+                            }
                             else []
                         ),
                         *(
@@ -1120,9 +1149,14 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
         assert observation.closed_at_ms == NOW - 1_000
     if scenario in {"future_fill", "missing_close_timestamp", "reversed_close"}:
         assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
+    if scenario in {"external_scale_in_seconds_timestamp", "external_scale_in_too_old_timestamp"}:
+        assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
     if scenario == "missing_close_price":
         assert observation.evidence["error_code"] == "opentrade_exit_price_invalid"
     if scenario == "external_scale_in_trade":
+        assert observation.evidence["unmatched_opening_trade_count"] == 1
+    if scenario == "external_scale_in_missing_timestamp":
+        assert "error_code" not in observation.evidence
         assert observation.evidence["unmatched_opening_trade_count"] == 1
     if scenario == "historical_opening_trade":
         assert observation.evidence["unmatched_opening_trade_count"] == 0

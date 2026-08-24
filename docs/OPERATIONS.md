@@ -57,8 +57,10 @@ same snapshot contains any current open order or correlated position history
 that cannot be fully attributed to the tracked lifecycle.
 Same-symbol opening trades from the provider's lookback are scoped to the
 current order's frozen instrument/preflight time. Only a valid timestamp proven
-earlier beyond the tolerated 30-second provider clock skew is ignored; missing
-or nearer timestamps remain conflicting evidence.
+inside the composite snapshot's seven-day millisecond bounds and earlier beyond
+the tolerated 30-second provider clock skew is ignored. Missing timestamps stay
+conflicting; malformed, seconds-unit, too-old or future values invalidate the
+observation.
 When a lost entry response reaches manual review with no remote identity, use
 `tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
 after confirming that exact order and position at the venue. The command

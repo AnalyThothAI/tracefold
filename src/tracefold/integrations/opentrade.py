@@ -260,6 +260,7 @@ class OpenTradeAdapter:
                 row,
                 entry_side=order.side,
                 lifecycle_started_at_ms=order.instrument.observed_at_ms,
+                server_time=server_time,
             )
             and _optional_text(row.get("orderId")) != remote_id
         ]
@@ -665,11 +666,11 @@ def _filled_quantity(*groups: Sequence[Mapping[str, Any]]) -> Decimal | None:
 
 
 def _possible_current_opening_trade(
-    row: Mapping[str, Any], *, entry_side: OrderSide, lifecycle_started_at_ms: int
+    row: Mapping[str, Any], *, entry_side: OrderSide, lifecycle_started_at_ms: int, server_time: int
 ) -> bool:
     if row.get("reduceOnly") is True:
         return False
-    timestamp = _optional_timestamp(row.get("timestamp"))
+    timestamp = _bounded_optional_timestamp(row.get("timestamp"), server_time=server_time)
     if timestamp is not None and timestamp < lifecycle_started_at_ms - _MAX_SERVER_CLOCK_SKEW_MS:
         return False
     side = _optional_text(row.get("side"))
