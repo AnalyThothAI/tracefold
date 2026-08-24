@@ -38,13 +38,21 @@ from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     TRADING_MANIFEST_VERSION,
     Bar,
+    ExecutionObservation,
+    ExecutionReceipt,
     InstrumentRef,
+    LivePreflight,
     NewsTradeCandidate,
     OiTradeCandidate,
+    PreparedOrder,
+    RemoteExposure,
+    StartupReconciliation,
+    TradeDecision,
     TradingCaseManifest,
     canonical_sha256,
 )
 from tracefold.trading.decision.policy import TradePolicy
+from tracefold.trading.decision.program import DecisionResult
 from tracefold.trading.decision.regime import RegimePolicy, assess
 from tracefold.trading.execution.order import OrderPolicy
 from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
@@ -482,7 +490,110 @@ def _regime_bars(now: int) -> tuple[Bar, ...]:
     return tuple(out)
 
 
-def _runner(conn: Any, *, adapter: PaperAdapter, now: int, config: TradingConfig | None = None) -> CandidateRunner:
+class _LiveDecisionProgram:
+    async def decide(self, manifest: TradingCaseManifest) -> DecisionResult:
+        assert manifest.case_kind == "news_oi"
+        return DecisionResult(
+            decision=TradeDecision(
+                decision="long",
+                directness="direct",
+                surprise=3,
+                price_in=0,
+                alignment="aligned",
+                horizon="hours",
+                reason_code="material_direct_catalyst",
+                thesis_zh="直接催化剂与 OI 象限一致",
+                invalidation_zh="催化失效",
+            ),
+            identity=None,
+            trace={"calls": 0, "provider": "test"},
+        )
+
+
+class _ReadOnlyLiveAdapter:
+    name = "opentrade"
+    writes_enabled = False
+
+    def __init__(
+        self,
+        *,
+        startup_exposures: tuple[RemoteExposure, ...] = (),
+        account_identity_proven: bool = True,
+    ) -> None:
+        self.startup_exposures = startup_exposures
+        self.account_identity_proven = account_identity_proven
+        self.preflight_calls = 0
+        self.submit_calls = 0
+        self.startup_instruments: list[InstrumentRef] = []
+
+    def _truth(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
+        exact_instrument = instrument.model_copy(
+            update={
+                "provider_symbol": f"{instrument.base_symbol}/USDT:USDT",
+                "observed_at_ms": NOW,
+            }
+        )
+        return LivePreflight(
+            provider=self.name,
+            observed_at_ms=NOW,
+            server_time_ms=NOW,
+            venue_healthy=True,
+            instrument=exact_instrument,
+            mark_price=Decimal("10"),
+            bid_price=Decimal("9.99"),
+            ask_price=Decimal("10.01"),
+            spread_bps=20,
+            quantity_step=Decimal("0.1"),
+            min_quantity=Decimal("0.1"),
+            min_notional=Decimal("5"),
+            requested_account_ref=account_ref,
+            observed_account_ref=account_ref if self.account_identity_proven else None,
+            available_balance=Decimal("100"),
+            available_currency="USDT",
+            hedged=True,
+            leverage=1,
+            margin_mode="cross",
+            positions=tuple(item for item in self.startup_exposures if item.kind == "position"),
+            open_orders=tuple(item for item in self.startup_exposures if item.kind == "open_order"),
+        )
+
+    async def startup(self, *, instrument: InstrumentRef, account_ref: str) -> StartupReconciliation:
+        self.startup_instruments.append(instrument)
+        return StartupReconciliation(preflight=self._truth(instrument=instrument, account_ref=account_ref))
+
+    async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
+        self.preflight_calls += 1
+        return self._truth(instrument=instrument, account_ref=account_ref)
+
+    async def submit(self, order: PreparedOrder) -> ExecutionReceipt:
+        del order
+        self.submit_calls += 1
+        raise AssertionError("C1 must not submit")
+
+    async def observe(self, order: PreparedOrder) -> ExecutionObservation:
+        return ExecutionObservation(
+            state="UNKNOWN",
+            observed_at_ms=NOW,
+            remote_order_id=order.remote_order_id,
+            evidence={"provider": self.name},
+        )
+
+    async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
+        del order, quantity
+        raise AssertionError("C1 must not close")
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _runner(
+    conn: Any,
+    *,
+    adapter: Any,
+    now: int,
+    config: TradingConfig | None = None,
+    program: Any = None,
+) -> CandidateRunner:
     at_trigger = _regime_bars(now)
 
     def bars(_exchange_id: str) -> Any:
@@ -498,7 +609,7 @@ def _runner(conn: Any, *, adapter: PaperAdapter, now: int, config: TradingConfig
         adapter=adapter,
         candidate_projection=news_trade_candidates,
         instrument_projection=news_trade_instruments,
-        program=None,
+        program=program,
         clock=lambda: now,
     )
 
@@ -709,7 +820,7 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     # an obstacle. If the lane ever routed one through DSPy this would settle as `program_unconfigured`.
     report = asyncio.run(_runner(conn, adapter=adapter, now=now).turn())
 
-    assert report["created"] == 1
+    assert report["created"] == 1, report
     trading = _repos(conn).trading
     case = trading.cases()[0]
     assert case["manifest"]["manifest_version"] == TRADING_MANIFEST_VERSION
@@ -721,8 +832,176 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     order = trading.order_for_case(case_id=case["case_id"])
     assert order is not None
     assert order["state"] == "ACKNOWLEDGED"
+    assert order["filled_quantity"] is None
+    assert order["average_price"] is None
+    assert order["position_opened_at_ms"] is None
+    assert order["must_close_at_ms"] is None
     assert int(order["provider_attempt_count"]) == 1
     assert adapter.attempts == 1
+
+
+def test_live_prepare_uses_fresh_provider_truth_and_the_existing_observation_ledger(conn) -> None:
+    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE)
+    _promote_to_model_projection(conn, event_id="live-c1-news", symbol="DOGE")
+    adapter = _ReadOnlyLiveAdapter()
+    report = asyncio.run(
+        _runner(
+            conn,
+            adapter=adapter,
+            now=NOW,
+            config=_config(
+                mode="live_reviewed",
+                account_ref="canary",
+                live_symbol="DOGE",
+                venue_priority=("binance",),
+                order=OrderPolicy(
+                    fixed_notional_usd=Decimal("10"),
+                    max_holding_ms=900_000,
+                    max_open_underlyings=1,
+                    max_orders_per_day=1,
+                ),
+            ),
+            program=_LiveDecisionProgram(),
+        ).turn()
+    )
+    assert report["created"] == 1, report
+    assert report["decided"] == 1, report
+
+    order = conn.execute("SELECT * FROM trading_orders").fetchone()
+    assert order is not None
+    assert order["state"] == "AWAITING_APPROVAL"
+    assert order["provider_symbol"] == "DOGE/USDT:USDT"
+    assert order["entry_reference"] == Decimal("10")
+    assert order["quantity"] == Decimal("1.0")
+    assert order["payload"]["hedged"] is True
+    observations = _repos(conn).trading.observations(order_id=str(order["order_id"]))
+    assert [row["observation_kind"] for row in observations] == ["live_preflight"]
+    assert observations[0]["content"]["account_identity_proven"] is True
+    assert observations[0]["content"]["available_balance_proven"] is True
+    assert "available_balance" not in observations[0]["content"]
+    assert adapter.preflight_calls == 1
+    assert adapter.submit_calls == 0
+
+
+def test_external_startup_inventory_blocks_a_live_turn_before_case_creation(conn) -> None:
+    _seed_oi_event(conn, event_id="live-exposure", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    adapter = _ReadOnlyLiveAdapter(
+        startup_exposures=(
+            RemoteExposure(
+                kind="position",
+                exchange_id="binance",
+                provider_symbol="DOGE/USDT:USDT",
+                side="long",
+                quantity=Decimal("1"),
+            ),
+        )
+    )
+    report = asyncio.run(
+        _runner(
+            conn,
+            adapter=adapter,
+            now=NOW,
+            config=_config(
+                mode="live_reviewed",
+                account_ref="canary",
+                live_symbol="DOGE",
+                venue_priority=("binance",),
+            ),
+        ).turn()
+    )
+
+    assert report["skipped"] == "live_startup_not_ready"
+    assert report["funnel"]["startup_reject:external_exposure"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"] == 0
+    assert adapter.startup_instruments[0].quote_asset is None
+    assert adapter.startup_instruments[0].venue == "binance.perp"
+
+
+def test_read_only_c1_never_claims_or_submits_an_approved_live_order(conn) -> None:
+    _case(conn, case_id="live-approved", source_key="live:approved")
+    trading = _repos(conn).trading
+    assert trading.insert_prepared_order(
+        order_id="live-approved-order",
+        case_id="live-approved",
+        underlying_key="crypto:DOGE",
+        exchange_id="binance",
+        provider_symbol="DOGE/USDT:USDT",
+        account_ref="canary",
+        mode="live_reviewed",
+        side="buy",
+        notional_usd="10",
+        quantity="1",
+        entry_reference="10",
+        stop_price="9.8",
+        take_profit_price=None,
+        payload={"symbol": "DOGE/USDT:USDT"},
+        payload_sha256="digest",
+        state="APPROVED",
+        must_close_at_ms=NOW + 900_000,
+        now_ms=NOW,
+    )
+    conn.commit()
+    adapter = _ReadOnlyLiveAdapter()
+    report = asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=_config(mode="live_reviewed", account_ref="canary", live_symbol="DOGE"),
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW,
+        ).turn()
+    )
+
+    order = _order_row(conn, "live-approved-order")
+    assert report["due"] == 1
+    assert order["state"] == "APPROVED"
+    assert int(order["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_read_only_c1_records_a_live_ack_observation_without_calling_it_a_fill(conn) -> None:
+    _case(conn, case_id="live-ack", source_key="live:ack")
+    trading = _repos(conn).trading
+    assert trading.insert_prepared_order(
+        order_id="live-ack-order",
+        case_id="live-ack",
+        underlying_key="crypto:DOGE",
+        exchange_id="binance",
+        provider_symbol="DOGE/USDT:USDT",
+        account_ref="canary",
+        mode="live_reviewed",
+        side="buy",
+        notional_usd="10",
+        quantity="1",
+        entry_reference="10",
+        stop_price="9.8",
+        take_profit_price=None,
+        payload={"symbol": "DOGE/USDT:USDT"},
+        payload_sha256="digest",
+        state="ACKNOWLEDGED",
+        must_close_at_ms=None,
+        now_ms=NOW,
+    )
+    conn.commit()
+    adapter = _ReadOnlyLiveAdapter()
+    report = asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=_config(mode="live_reviewed", account_ref="canary", live_symbol="DOGE"),
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW,
+        ).turn()
+    )
+
+    order = _order_row(conn, "live-ack-order")
+    assert report["resolved"] == 1
+    assert order["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert order["filled_quantity"] is None
+    assert order["position_opened_at_ms"] is None
+    assert [row["observation_kind"] for row in trading.observations(order_id="live-ack-order")] == ["reconcile"]
+    assert adapter.submit_calls == 0
 
 
 @pytest.mark.parametrize("case_kind", ["oi_only", "news_only"])
@@ -1224,6 +1503,8 @@ def test_close_only_and_paused_both_refuse_to_submit_an_approved_entry(conn) -> 
 def test_an_approved_order_is_submitted_once_when_the_lane_is_running(conn) -> None:
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="APPROVED")
+    conn.execute("UPDATE trading_orders SET must_close_at_ms = NULL WHERE order_id = 'o1'")
+    conn.commit()
     adapter = PaperAdapter()
     reconcile = ReconcileRunner(
         db=_DirectDb(conn), config=_config(), bars=lambda _v: None, adapter=adapter, clock=lambda: NOW
@@ -1231,6 +1512,8 @@ def test_an_approved_order_is_submitted_once_when_the_lane_is_running(conn) -> N
     asyncio.run(reconcile.turn())
     row = _order_row(conn, "o1")
     assert row["state"] == "ACKNOWLEDGED"
+    assert row["position_opened_at_ms"] is None
+    assert row["must_close_at_ms"] is None
     assert int(row["provider_attempt_count"]) == 1
     assert adapter.attempts == 1
 
@@ -1558,7 +1841,10 @@ def test_a_live_paper_position_is_reported_as_open_not_acknowledged(conn) -> Non
     _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE)
     adapter = PaperAdapter()
     asyncio.run(_runner(conn, adapter=adapter, now=now).turn())
-    assert conn.execute("SELECT state FROM trading_orders").fetchone()["state"] == "ACKNOWLEDGED"
+    submitted = conn.execute("SELECT state, filled_quantity, average_price FROM trading_orders").fetchone()
+    assert submitted["state"] == "ACKNOWLEDGED"
+    assert submitted["filled_quantity"] is None
+    assert submitted["average_price"] is None
 
     async def feed(_symbol: str, _start: int, _end: int) -> Any:
         return (Bar(open_at_ms=now, close_at_ms=now + 300_000, close=Decimal("102")),)
@@ -1567,4 +1853,11 @@ def test_a_live_paper_position_is_reported_as_open_not_acknowledged(conn) -> Non
         db=_DirectDb(conn), config=_config(), bars=lambda _v: feed, adapter=adapter, clock=lambda: now + 400_000
     )
     asyncio.run(reconcile.turn())
-    assert conn.execute("SELECT state FROM trading_orders").fetchone()["state"] == "OPEN"
+    row = conn.execute(
+        "SELECT state, filled_quantity, average_price, position_opened_at_ms, must_close_at_ms FROM trading_orders"
+    ).fetchone()
+    assert row["state"] == "OPEN"
+    assert row["filled_quantity"] == Decimal("0.4901")
+    assert row["average_price"] == Decimal("102")
+    assert row["position_opened_at_ms"] == now
+    assert row["must_close_at_ms"] == now + _config().order.max_holding_ms

@@ -178,7 +178,22 @@ def test_news_never_imports_trading() -> None:
 def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 
-    assert trading.__all__ == ["Bar", "ExecutionReceipt", "InstrumentRef", "PreparedOrder", "TradingMode"]
+    assert trading.__all__ == [
+        "Bar",
+        "ExecutionAdapter",
+        "ExecutionObservation",
+        "ExecutionObservationState",
+        "ExecutionReceipt",
+        "InstrumentRef",
+        "LiveExchangeId",
+        "LiveExecutionAdapter",
+        "LivePreflight",
+        "NativeProtection",
+        "PreparedOrder",
+        "RemoteExposure",
+        "StartupReconciliation",
+        "TradingMode",
+    ]
     assert "TradingRepository" not in trading.__dict__
     assert "CandidateRunner" not in trading.__dict__
     assert "decide" not in trading.__dict__
@@ -217,6 +232,22 @@ def test_a_live_mode_without_an_execution_adapter_refuses_to_compose() -> None:
         )
 
 
+def test_a_live_mode_cannot_compose_with_the_paper_adapter() -> None:
+    from tracefold.trading.execution.paper import PaperAdapter
+    from tracefold.trading.pipeline.root import build_pipeline
+    from tracefold.trading.pipeline.runtime import TradingConfig
+
+    with pytest.raises(ValueError, match="trading_live_mode_requires_execution_adapter"):
+        build_pipeline(
+            db=object(),
+            config=TradingConfig(mode="live_reviewed"),
+            bars=lambda _venue: None,
+            candidate_projection=lambda *_: ((), ()),
+            instrument_projection=lambda *_: (),
+            adapter=PaperAdapter(),
+        )
+
+
 def test_the_regime_band_must_have_a_ceiling() -> None:
     """A floor-only pre-move filter keeps exactly the chasing trades the measurement rejects."""
 
@@ -250,12 +281,12 @@ def test_the_worst_case_daily_envelope_is_derivable_from_configuration_alone() -
     assert order.worst_case_daily_loss_usd == Decimal("4")
 
 
-def test_a_trading_wiring_failure_never_takes_the_workers_process_down() -> None:
+def test_a_trading_wiring_failure_never_takes_the_workers_process_down(tmp_path: Path) -> None:
     """Trading's failure being local has to include its own composition.
 
     A `live_reviewed` mode with an OpenTrade base URL and token file is config-valid and documented,
-    but no execution adapter ships yet, so `build_pipeline` raises. Unguarded, that propagated out of
-    `_wire_components` into the fatal path and crash-looped the process — News never started either.
+    but a local adapter/composition failure must still be contained. Unguarded, that would propagate
+    out of `_wire_components` into the fatal path and crash-loop the process — News would not start.
     """
 
     from tracefold.app.workers.wiring import trading as workers_module
@@ -269,11 +300,94 @@ def test_a_trading_wiring_failure_never_takes_the_workers_process_down() -> None
     original = workers_module.build_trading_pipeline
     workers_module.build_trading_pipeline = _boom  # type: ignore[assignment]
     try:
-        settings = _live_reviewed_settings()
+        token_file = tmp_path / "opentrade_token"
+        token_file.write_text("test-token", encoding="utf-8")
+        token_file.chmod(0o600)
+        settings = _live_reviewed_settings(token_file=token_file)
         assert workers_module._wire_trading_pipeline(settings=settings, db=_FakeDb()) is None
     finally:
         workers_module.build_trading_pipeline = original  # type: ignore[assignment]
     assert calls == ["built"]
+
+
+def test_live_bounded_remains_fail_closed_even_with_a_provider_contract() -> None:
+    from pydantic import ValidationError
+
+    from tracefold.platform.config.models import TradingSettings
+
+    with pytest.raises(ValidationError, match="trading_live_bounded_not_supported"):
+        TradingSettings.model_validate(
+            {
+                "enabled": True,
+                "mode": "live_bounded",
+                "live_symbol": "DOGE",
+                "venues": {"binance_enabled": True, "hyperliquid_enabled": False},
+                "order": {"fixed_notional_usd": 10, "max_open_underlyings": 1, "max_orders_per_day": 1},
+                "opentrade": {"base_url": "https://example.invalid", "token_file": "opentrade_token"},
+            }
+        )
+
+
+def test_live_provider_token_can_never_be_sent_over_plain_http() -> None:
+    from pydantic import ValidationError
+
+    from tracefold.platform.config.models import TradingOpenTradeSettings
+
+    with pytest.raises(ValidationError, match="trading_opentrade_base_url_invalid"):
+        TradingOpenTradeSettings.model_validate({"base_url": "http://example.invalid"})
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ({}, "trading_live_reviewed_requires_one_symbol"),
+        ({"live_symbol": "DOGE"}, "trading_live_reviewed_requires_one_venue"),
+        (
+            {
+                "live_symbol": "DOGE",
+                "venues": {"binance_enabled": True, "hyperliquid_enabled": False},
+            },
+            "trading_live_reviewed_notional_above_canary",
+        ),
+        (
+            {
+                "live_symbol": "DOGE",
+                "venues": {"binance_enabled": True, "hyperliquid_enabled": False},
+                "order": {"fixed_notional_usd": 10, "max_open_underlyings": 2, "max_orders_per_day": 1},
+            },
+            "trading_live_reviewed_requires_one_position",
+        ),
+    ],
+)
+def test_live_reviewed_configuration_enforces_the_initial_canary(override: dict[str, object], error: str) -> None:
+    from pydantic import ValidationError
+
+    from tracefold.platform.config.models import TradingSettings
+
+    values: dict[str, object] = {
+        "enabled": True,
+        "mode": "live_reviewed",
+        "opentrade": {"base_url": "https://example.invalid", "token_file": "opentrade_token"},
+        **override,
+    }
+    with pytest.raises(ValidationError, match=error):
+        TradingSettings.model_validate(values)
+
+
+def test_live_reviewed_wiring_injects_a_read_only_adapter(tmp_path: Path) -> None:
+    import asyncio
+
+    from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
+    from tracefold.integrations.opentrade import OpenTradeReadAdapter
+
+    token_file = tmp_path / "opentrade_token"
+    token_file.write_text("test-token", encoding="utf-8")
+    token_file.chmod(0o600)
+    pipeline = _wire_trading_pipeline(settings=_live_reviewed_settings(token_file=token_file), db=_FakeDb())
+    assert pipeline is not None
+    assert isinstance(pipeline.adapter, OpenTradeReadAdapter)
+    assert pipeline.adapter.writes_enabled is False
+    asyncio.run(pipeline.close())
 
 
 def test_the_bar_fetcher_reads_the_same_venue_switch_the_router_reads() -> None:
@@ -303,7 +417,7 @@ class _FakeDb:
         return self
 
 
-def _live_reviewed_settings() -> object:
+def _live_reviewed_settings(*, token_file: Path) -> object:
     from tracefold.platform.config.models import Settings
 
     return Settings.model_validate(
@@ -311,7 +425,10 @@ def _live_reviewed_settings() -> object:
             "trading": {
                 "enabled": True,
                 "mode": "live_reviewed",
-                "opentrade": {"base_url": "https://example.invalid", "token_file": "opentrade_token"},
+                "live_symbol": "DOGE",
+                "venues": {"binance_enabled": True, "hyperliquid_enabled": False},
+                "order": {"fixed_notional_usd": 10, "max_open_underlyings": 1, "max_orders_per_day": 1},
+                "opentrade": {"base_url": "https://example.invalid", "token_file": str(token_file)},
             }
         }
     )

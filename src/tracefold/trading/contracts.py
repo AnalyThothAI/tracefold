@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -120,6 +120,7 @@ TradingMode = Literal["paper", "live_reviewed", "live_bounded"]
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 CaseKind = Literal["oi_only", "news_only", "news_oi"]
 ExchangeId = Literal["binance", "hyperliquid", "paper"]
+LiveExchangeId = Literal["binance", "hyperliquid"]
 OrderSide = Literal["buy", "sell"]
 PolicyDecision = Literal["no_trade", "long", "short"]
 
@@ -346,6 +347,7 @@ class MarketContext(_Frozen):
     # declared conservative step and live must get it from provider metadata or refuse to size at all.
     quantity_step: Decimal | None = None
     min_quantity: Decimal | None = None
+    min_notional: Decimal | None = None
     contract_size: Decimal = Decimal("1")
 
 
@@ -417,6 +419,8 @@ class PreparedOrder(_Frozen):
     order_id: str
     case_id: str
     underlying_key: str
+    account_ref: str
+    remote_order_id: str | None = None
     instrument: InstrumentRef
     mode: TradingMode
     side: OrderSide
@@ -449,6 +453,152 @@ class ExecutionReceipt(_Frozen):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class RemoteExposure(_Frozen):
+    """One provider-side position or working order visible to the capital lane."""
+
+    kind: Literal["position", "open_order"]
+    exchange_id: LiveExchangeId
+    provider_symbol: str
+    side: str
+    quantity: Decimal
+    remote_id: str | None = None
+
+
+class LivePreflight(_Frozen):
+    """Fresh execution truth; unlike a Case manifest, it says whether an exact order is safe now."""
+
+    provider: str
+    observed_at_ms: int
+    server_time_ms: int
+    venue_healthy: bool
+    instrument: InstrumentRef
+    mark_price: Decimal
+    bid_price: Decimal
+    ask_price: Decimal
+    spread_bps: int
+    quantity_step: Decimal | None = None
+    min_quantity: Decimal | None = None
+    min_notional: Decimal | None = None
+    contract_size: Decimal = Decimal("1")
+    requested_account_ref: str
+    observed_account_ref: str | None = None
+    available_balance: Decimal | None = None
+    available_currency: str | None = None
+    hedged: bool
+    leverage: int
+    margin_mode: str
+    positions: tuple[RemoteExposure, ...] = ()
+    open_orders: tuple[RemoteExposure, ...] = ()
+
+    def audit_payload(self) -> dict[str, Any]:
+        """Persist the execution proof without account balances or provider response bodies."""
+
+        return {
+            "schema": "tracefold.trading.live_preflight.v1",
+            "provider": self.provider,
+            "observed_at_ms": self.observed_at_ms,
+            "server_time_ms": self.server_time_ms,
+            "venue_healthy": self.venue_healthy,
+            "instrument": self.instrument.model_dump(mode="json"),
+            "mark_price": str(self.mark_price),
+            "bid_price": str(self.bid_price),
+            "ask_price": str(self.ask_price),
+            "spread_bps": self.spread_bps,
+            "quantity_step": None if self.quantity_step is None else str(self.quantity_step),
+            "min_quantity": None if self.min_quantity is None else str(self.min_quantity),
+            "min_notional": None if self.min_notional is None else str(self.min_notional),
+            "contract_size": str(self.contract_size),
+            "requested_account_ref": self.requested_account_ref,
+            "account_identity_proven": self.observed_account_ref is not None,
+            "available_balance_proven": self.available_balance is not None,
+            "available_currency": self.available_currency,
+            "hedged": self.hedged,
+            "leverage": self.leverage,
+            "margin_mode": self.margin_mode,
+            "positions": [item.model_dump(mode="json") for item in self.positions],
+            "open_orders": [item.model_dump(mode="json") for item in self.open_orders],
+        }
+
+
+class StartupReconciliation(_Frozen):
+    """The complete read capability proof required before a live candidate may advance."""
+
+    preflight: LivePreflight
+
+    @property
+    def exposures(self) -> tuple[RemoteExposure, ...]:
+        return (*self.preflight.positions, *self.preflight.open_orders)
+
+
+class ExecutionObservationState(StrEnum):
+    ABSENT_CONFIRMED = "ABSENT_CONFIRMED"
+    WORKING = "WORKING"
+    PARTIAL = "PARTIAL"
+    OPEN_PROTECTED = "OPEN_PROTECTED"
+    OPEN_UNPROTECTED = "OPEN_UNPROTECTED"
+    CLOSED = "CLOSED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class NativeProtection(_Frozen):
+    remote_order_id: str
+    account_ref: str
+    exchange_id: LiveExchangeId
+    provider_symbol: str
+    side: OrderSide
+    quantity: Decimal
+    trigger_price: Decimal
+    reduce_only: bool
+    status: str
+
+
+class ExecutionObservation(_Frozen):
+    """One composite provider read. Missing evidence is UNKNOWN, never Python None."""
+
+    state: ExecutionObservationState
+    observed_at_ms: int
+    remote_order_id: str | None = None
+    actual_position_quantity: Decimal | None = None
+    filled_quantity: Decimal | None = None
+    average_price: Decimal | None = None
+    first_fill_at_ms: int | None = None
+    protection: NativeProtection | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionAdapter(Protocol):
+    """The execution operations shared by the deterministic fake and the live provider."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def writes_enabled(self) -> bool: ...
+
+    async def submit(self, order: PreparedOrder) -> ExecutionReceipt: ...
+
+    async def observe(self, order: PreparedOrder) -> ExecutionObservation: ...
+
+    async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt: ...
+
+    async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class LiveExecutionAdapter(ExecutionAdapter, Protocol):
+    """The live-only read seam. Provider HTTP and credentials remain outside the package."""
+
+    async def startup(
+        self,
+        *,
+        instrument: InstrumentRef,
+        account_ref: str,
+    ) -> StartupReconciliation: ...
+
+    async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight: ...
+
+
 __all__ = [
     "ACTIVE_ORDER_STATES",
     "NO_TRADE_DECISION",
@@ -463,10 +613,17 @@ __all__ = [
     "CaseState",
     "ControlState",
     "ExchangeId",
+    "ExecutionAdapter",
+    "ExecutionObservation",
+    "ExecutionObservationState",
     "ExecutionReceipt",
     "InstrumentCandidateRow",
     "InstrumentRef",
+    "LiveExchangeId",
+    "LiveExecutionAdapter",
+    "LivePreflight",
     "MarketContext",
+    "NativeProtection",
     "NewsCandidateRow",
     "NewsTradeCandidate",
     "OiCandidateRow",
@@ -478,7 +635,9 @@ __all__ = [
     "PolicyOutcome",
     "PreparedOrder",
     "RegimeAssessment",
+    "RemoteExposure",
     "RiskRejection",
+    "StartupReconciliation",
     "TradeDecision",
     "TradingCaseManifest",
     "TradingMode",

@@ -42,8 +42,10 @@ def _production_stage_types() -> set[type[object]]:
     for pipeline in (NewsPipeline, TradingPipeline):
         for annotation in get_type_hints(pipeline).values():
             for candidate in get_args(annotation) or (annotation,):
-                if isinstance(candidate, type) and candidate.__module__.startswith(
-                    ("tracefold.news", "tracefold.trading")
+                if (
+                    isinstance(candidate, type)
+                    and candidate.__module__.startswith(("tracefold.news", "tracefold.trading"))
+                    and not getattr(candidate, "_is_protocol", False)
                 ):
                     stages.add(candidate)
     return stages

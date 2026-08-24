@@ -29,6 +29,16 @@ Before deploying #160, remove every retired policy-v9 action/priority key from
 `~/.tracefold/config.yaml` and report only its redacted result. There is no
 compatibility alias.
 
+Issue #185 PR-C1 keeps OpenTrade capital writes disabled. A configured
+`live_reviewed` lane must use one venue, a non-empty owner-private regular
+non-symlink token file (normally mode `0600`, at most 16 KiB),
+one explicit `trading.live_symbol`, notional at most 10 USD, one open
+underlying and one order per day. `trading status` must still show
+`execution_backend=opentrade_read_only`,
+`live_mode_supported=false`, `live_ready=false`, and
+`live_readiness=not_proven`. That is healthy read-only capability, not a failed
+attempt to live trade. `live_bounded` is rejected at config validation.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:

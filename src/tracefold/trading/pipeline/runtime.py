@@ -15,6 +15,7 @@ from ..contracts import (
     TRADING_RECONCILE_BACKOFF_MS,
     Bar,
     InstrumentCandidateRow,
+    LiveExchangeId,
     NewsCandidateRow,
     OiCandidateRow,
     TradingMode,
@@ -69,9 +70,10 @@ class TradingConfig:
 
     mode: TradingMode = "paper"
     account_ref: str = "default"
+    live_symbol: str | None = None
     poll_seconds: float = 2.0
     oi_metric_version: str = "oi_signal_v1"
-    venue_priority: tuple[str, ...] = ("binance", "hyperliquid")
+    venue_priority: tuple[LiveExchangeId, ...] = ("binance", "hyperliquid")
     eligibility: EligibilityPolicy = field(default_factory=EligibilityPolicy)
     regime: RegimePolicy = field(default_factory=lambda: DEFAULT_REGIME_POLICY)
     trade: TradePolicy = field(default_factory=lambda: DEFAULT_TRADE_POLICY)

@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
+from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
@@ -26,6 +27,37 @@ _READ_COMMANDS = frozenset({"status", "cases", "show"})
 
 def _now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
+
+
+def _execution_capability(settings: Any) -> dict[str, Any]:
+    trading = settings.trading
+    if not trading.enabled:
+        return {
+            "execution_backend": "disabled",
+            "execution_configured": False,
+            "live_mode_supported": False,
+            "live_ready": False,
+            "live_readiness": "not_applicable",
+        }
+    if trading.mode == "paper":
+        return {
+            "execution_backend": "paper",
+            "execution_configured": True,
+            "live_mode_supported": False,
+            "live_ready": False,
+            "live_readiness": "not_applicable",
+        }
+    token_file = settings.trading_opentrade_token_file()
+    token_configured = secret_file_configured(token_file)
+    return {
+        "execution_backend": "opentrade_read_only",
+        "execution_configured": bool(trading.opentrade.base_url and token_configured),
+        # C1 proves read capability only. A separate runtime process/canary cannot be inferred by this
+        # CLI, and provider writes are deliberately disabled until PR-C2.
+        "live_mode_supported": False,
+        "live_ready": False,
+        "live_readiness": "not_proven",
+    }
 
 
 def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
@@ -51,7 +83,9 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     "orders_today": int(runtime.get("orders_today") or 0),
                     "dspy_calls_today": int(runtime.get("dspy_calls_today") or 0),
                     "venues": list(settings.trading.venues.enabled),
+                    "live_symbol": settings.trading.live_symbol,
                     "worst_case_daily_loss_usd": str(order.worst_case_daily_loss_usd),
+                    **_execution_capability(settings),
                     "funnel_24h": runtime.get("funnel") or {},
                     **counts,
                 },

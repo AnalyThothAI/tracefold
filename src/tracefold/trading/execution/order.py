@@ -21,7 +21,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
-from typing import Protocol
 
 from ..contracts import (
     ExecutionReceipt,
@@ -151,6 +150,8 @@ def size_order(
         return RiskRejection(rule="quantity_below_venue_minimum", detail=f"{quantity} < {market.min_quantity}")
 
     notional = quantity * entry * contract_size
+    if market.min_notional is not None and notional < market.min_notional:
+        return RiskRejection(rule="notional_below_venue_minimum", detail=f"{notional} < {market.min_notional}")
     return SizedOrder(
         quantity=quantity,
         notional_usd=notional,
@@ -191,16 +192,6 @@ def build_payload(
     return payload
 
 
-class ExecutionAdapter(Protocol):
-    """One attempt, one answer. An adapter never retries and never routes to a second venue."""
-
-    name: str
-
-    async def submit(self, order: PreparedOrder) -> ExecutionReceipt: ...
-
-    async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt: ...
-
-
 ClockMs = Callable[[], int]
 Submit = Callable[[PreparedOrder], Awaitable[ExecutionReceipt]]
 
@@ -213,12 +204,6 @@ def next_state_for(receipt: ExecutionReceipt) -> OrderState:
     if receipt.state == "AMBIGUOUS":
         return OrderState.AMBIGUOUS
     return OrderState.ACKNOWLEDGED
-
-
-def protection_verified(*, stop_price: Decimal | None, remote_stop_price: Decimal | None) -> bool:
-    """An open position without a venue-side stop is `UNPROTECTED`, whatever the submit payload said."""
-
-    return stop_price is not None and remote_stop_price is not None and remote_stop_price > 0
 
 
 def must_close_at(*, opened_at_ms: int, policy: OrderPolicy = DEFAULT_ORDER_POLICY) -> int:
@@ -240,14 +225,12 @@ def realized_bps(*, side: OrderSide, entry: Decimal, exit_price: Decimal, fee_bp
 __all__ = [
     "DEFAULT_ORDER_POLICY",
     "DEFAULT_TAKER_FEE_BPS",
-    "ExecutionAdapter",
     "OrderPolicy",
     "SizedOrder",
     "build_payload",
     "floor_to_step",
     "must_close_at",
     "next_state_for",
-    "protection_verified",
     "realized_bps",
     "size_order",
     "stop_price_for",

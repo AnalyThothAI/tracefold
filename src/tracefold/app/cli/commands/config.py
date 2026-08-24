@@ -9,6 +9,7 @@ from tracefold.platform.config.models import (
     news_model_availability,
     news_push_availability,
 )
+from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.platform.paths import config_path
 
 # The closed role vocabulary the Settings accessors are keyed by.
@@ -41,6 +42,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
     model_availability = news_model_availability(settings)
+    opentrade_token_file = settings.trading_opentrade_token_file()
     return (
         0,
         {
@@ -102,6 +104,19 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
                         "min_interval_seconds": settings.news.push.min_interval_seconds,
+                    },
+                },
+                "trading": {
+                    "enabled": settings.trading.enabled,
+                    "mode": settings.trading.mode,
+                    "account_ref": settings.trading.account_ref,
+                    "live_symbol": settings.trading.live_symbol,
+                    "venues": list(settings.trading.venues.enabled),
+                    "worst_case_daily_loss_usd": str(settings.trading.order.worst_case_daily_loss_usd),
+                    "opentrade": {
+                        "base_url_configured": bool(settings.trading.opentrade.base_url),
+                        "token_file": None if opentrade_token_file is None else str(opentrade_token_file),
+                        "token_file_configured": secret_file_configured(opentrade_token_file),
                     },
                 },
             },

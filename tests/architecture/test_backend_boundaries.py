@@ -93,6 +93,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     "integrations.rabbitmq": ("tracefold.news.bus",),
     "integrations.venues": ("tracefold.news.market_review.instruments", "tracefold.news.market_review.pricing"),
 }
+# Concrete integration families may own one business-facing adapter. This is a module-family rule,
+# not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
+INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {"opentrade": {"trading"}}
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
 # would have to be named here; no News module may write another business package's tables.
 ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES: dict[str, set[str]] = {}
@@ -249,7 +252,13 @@ def test_app_is_the_only_top_level_package_that_may_know_both_businesses() -> No
     violations: dict[str, list[str]] = {}
     for owner, owner_allowed in allowed.items():
         for path in _python_files(SRC / owner):
-            unexpected = sorted(_business_dependencies(path) - owner_allowed)
+            dependencies = _business_dependencies(path)
+            relative = path.relative_to(SRC / "integrations") if owner == "integrations" else None
+            integration_family = relative.parts[0].removesuffix(".py") if relative is not None else ""
+            path_allowed = INTEGRATION_BUSINESS_ADAPTER_FAMILIES.get(integration_family, owner_allowed)
+            unexpected = sorted(dependencies - path_allowed)
+            if owner != "app" and dependencies == {"news", "trading"}:
+                unexpected = ["news+trading"]
             if unexpected:
                 violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}

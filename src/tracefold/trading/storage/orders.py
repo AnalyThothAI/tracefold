@@ -208,7 +208,17 @@ class OrderStorage:
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def promote_acknowledged(self, *, order_id: str, now_ms: int) -> bool:
+    def promote_acknowledged(
+        self,
+        *,
+        order_id: str,
+        remote_order_id: str | None,
+        filled_quantity: str,
+        average_price: str,
+        position_opened_at_ms: int,
+        must_close_at_ms: int,
+        now_ms: int,
+    ) -> bool:
         """`ACKNOWLEDGED -> OPEN`, guarded on the state it expects like every other transition here.
 
         The reconcile loop is sequential and this is the only handler for ACKNOWLEDGED, so an
@@ -220,10 +230,25 @@ class OrderStorage:
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET state = 'OPEN', state_reason = 'observed_open', updated_at_ms = %s
+               SET state = 'OPEN',
+                   state_reason = 'paper_fill_observed',
+                   remote_order_id = %s,
+                   filled_quantity = %s,
+                   average_price = %s,
+                   position_opened_at_ms = %s,
+                   must_close_at_ms = %s,
+                   updated_at_ms = %s
              WHERE order_id = %s AND state = 'ACKNOWLEDGED'
             """,
-            (int(now_ms), order_id),
+            (
+                remote_order_id,
+                filled_quantity,
+                average_price,
+                int(position_opened_at_ms),
+                int(must_close_at_ms),
+                int(now_ms),
+                order_id,
+            ),
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 

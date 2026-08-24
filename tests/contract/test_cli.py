@@ -233,6 +233,13 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("rss_enabled", news)
         self.assertNotIn("brief", news)
         self.assertNotIn("title_presentation", news)
+        trading = payload["data"]["trading"]
+        self.assertEqual(trading["mode"], "paper")
+        self.assertFalse(trading["enabled"])
+        self.assertIsNone(trading["live_symbol"])
+        self.assertEqual(trading["worst_case_daily_loss_usd"], "4")
+        self.assertFalse(trading["opentrade"]["base_url_configured"])
+        self.assertFalse(trading["opentrade"]["token_file_configured"])
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())
         self.assertNotIn("private-strategy-beta", stdout.getvalue())
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")

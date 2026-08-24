@@ -19,8 +19,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import ClassVar
 
-from ..contracts import Bar, ExecutionReceipt, OrderSide, PreparedOrder
+from ..contracts import (
+    Bar,
+    ExecutionObservation,
+    ExecutionReceipt,
+    NativeProtection,
+    OrderSide,
+    PreparedOrder,
+)
 
 
 @dataclass(slots=True)
@@ -44,6 +52,7 @@ class PaperAdapter:
     agrees with its own return value can never exercise that.
     """
 
+    writes_enabled: ClassVar[bool] = True
     name: str = "paper"
     faults: PaperFaults = field(default_factory=PaperFaults)
     attempts: int = 0
@@ -69,10 +78,39 @@ class PaperAdapter:
         self.remote[order.order_id] = accepted
         return accepted
 
-    async def observe(self, order: PreparedOrder) -> ExecutionReceipt | None:
-        """The read-only reconcile primitive: what the venue says it holds for this intent, or nothing."""
+    async def observe(self, order: PreparedOrder) -> ExecutionObservation:
+        """The deterministic fake has a complete book, so absence really can be proven here."""
 
-        return self.remote.get(order.order_id)
+        receipt = self.remote.get(order.order_id)
+        if receipt is None:
+            return ExecutionObservation(
+                state="ABSENT_CONFIRMED",
+                observed_at_ms=order.instrument.observed_at_ms,
+                remote_order_id=None,
+                evidence={"provider": "paper", "complete_book": True},
+            )
+        opposite = "sell" if order.side == "buy" else "buy"
+        return ExecutionObservation(
+            state="OPEN_PROTECTED",
+            observed_at_ms=order.instrument.observed_at_ms,
+            remote_order_id=receipt.remote_order_id,
+            actual_position_quantity=order.quantity,
+            filled_quantity=receipt.filled_quantity or order.quantity,
+            average_price=receipt.average_price or order.entry_reference,
+            first_fill_at_ms=None,
+            protection=NativeProtection(
+                remote_order_id=f"paper-stop-{order.order_id}",
+                account_ref=order.account_ref,
+                exchange_id=order.instrument.exchange_id,
+                provider_symbol=order.instrument.provider_symbol,
+                side=opposite,
+                quantity=order.quantity,
+                trigger_price=order.stop_price,
+                reduce_only=True,
+                status="working",
+            ),
+            evidence={"provider": "paper", "complete_book": True},
+        )
 
     async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
         self.attempts += 1
@@ -88,6 +126,9 @@ class PaperAdapter:
             filled_quantity=quantity,
             reason="paper_close_ack",
         )
+
+    async def aclose(self) -> None:
+        return None
 
 
 @dataclass(frozen=True, slots=True)
