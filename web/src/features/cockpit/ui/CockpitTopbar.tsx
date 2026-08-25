@@ -1,7 +1,9 @@
 import type { OpenApiStatusData } from "@lib/types";
 import { IconButton } from "@shared/ui/IconButton";
-import { RefreshCw, Search, TriangleAlert } from "lucide-react";
+import { ChevronRight, RefreshCw, Search, TriangleAlert } from "lucide-react";
+import { Popover } from "radix-ui";
 import { useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 import "./CockpitTopbar.css";
 
@@ -29,8 +31,35 @@ export type CockpitTopbarFigure = {
   value?: number;
 };
 
+/**
+ * The pipeline's own read, as the topbar lamp shows it (#207).
+ *
+ * The shape is structural on purpose: the topbar owns where the lamp sits and how it behaves, and News owns
+ * what the words are. Every string here is server copy the route passed through — the frame translates
+ * nothing and computes no second health state.
+ */
+export type CockpitHealthRow = {
+  key: string;
+  label: string;
+  level: "ok" | "warn" | "bad" | "off";
+  summary: string;
+};
+
+export type CockpitHealth = {
+  /** Only the two levels worth interrupting for. `ok` and `off` arrive as `null` and draw nothing at all. */
+  level: "warn" | "bad";
+  /** The overall word, e.g. `流水线注意`. */
+  headline: string;
+  /** The worst item's own sentence. */
+  summary: string;
+  items: CockpitHealthRow[];
+  to: string;
+};
+
 export type CockpitTopbarProps = {
   figures?: CockpitTopbarFigure[];
+  /** `null` while the pipeline is healthy — see `HealthLamp`. */
+  health?: CockpitHealth | null;
   onRefresh: () => void;
   search: {
     onSubmitQuery: (query: string) => void;
@@ -48,6 +77,7 @@ export type CockpitTopbarProps = {
 
 export function CockpitTopbar({
   figures,
+  health,
   navigationTrigger,
   onRefresh,
   search,
@@ -62,6 +92,7 @@ export function CockpitTopbar({
       <div className="brand">
         {navigationTrigger}
         <span className="topbar-page-title">{title}</span>
+        <HealthLamp health={health} />
       </div>
 
       {/* Enter submits. The box is the whole search interaction — there is no hotkey that focuses it. */}
@@ -113,6 +144,60 @@ export function CockpitTopbar({
         </IconButton>
       </div>
     </header>
+  );
+}
+
+/**
+ * Pipeline health, on every page, and only when there is something to say (#207).
+ *
+ * A healthy pipeline renders zero pixels. That is the whole rule: a permanently green light is one the
+ * reader learns to stop seeing, and 流水线状态 used to spend a navigation slot proving "everything is fine".
+ * When a level is `warn` or `bad` the lamp appears beside the page title with the failing item's own
+ * sentence, and one click opens the four stage lines and the door to the page that explains them.
+ *
+ * Radix owns `Esc`, the dismiss layer and `aria-expanded`. The console binds no document-level key handler
+ * of its own and this must not become the exception.
+ */
+function HealthLamp({ health }: { health?: CockpitHealth | null }) {
+  if (!health) return null;
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          aria-label={`流水线健康：${health.summary || health.headline}`}
+          className="topbar-health-lamp"
+          data-level={health.level}
+          title={health.summary || health.headline}
+          type="button"
+        >
+          <span aria-hidden className="topbar-health-dot" />
+          <span className="topbar-health-summary">{health.summary || health.headline}</span>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          className="topbar-health-popover"
+          collisionPadding={12}
+          sideOffset={6}
+        >
+          <b className="topbar-health-popover-title">{health.headline}</b>
+          <ul className="topbar-health-items">
+            {health.items.map((item) => (
+              <li data-level={item.level} key={item.key}>
+                <span aria-hidden className="topbar-health-dot" data-level={item.level} />
+                <b>{item.label}</b>
+                <span>{item.summary}</span>
+              </li>
+            ))}
+          </ul>
+          <Link className="topbar-health-link" to={health.to}>
+            打开流水线状态
+            <ChevronRight aria-hidden />
+          </Link>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

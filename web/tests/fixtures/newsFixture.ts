@@ -443,11 +443,97 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       triage_p50_ms: 640,
       triage_p95_ms: 1_900,
     },
+    // #207: the deterministic OI lane. `by_rule_24h` is keyed on the judge's own gate names — those cannot
+    // come from `dropped_by_rule`, which groups `override_rule` and reads `telemetry_deterministic` for
+    // every OI verdict whether it pushed or withheld.
+    oi: {
+      by_rule_24h: {
+        whale_ratio_below_threshold: 106,
+        beyond_window_rank: 30,
+        opening_move_with_whale_concentration: 3,
+        oi_parse_failed: 1,
+      },
+      policy: {
+        max_rank_in_window: 2,
+        oi_change_at_least_bps: 0,
+        whale_oi_ratio_above_bps: 8_000,
+        window_ms: 14_400_000,
+      },
+      trade_floors: {
+        enabled: false,
+        max_price_move_bps: 600,
+        min_oi_value_usd: 20_000_000,
+        min_price_move_bps: 100,
+        min_whale_long_profit_bps: 9_500,
+        mode: "paper",
+        pre_move_lookback_ms: 3_600_000,
+      },
+      window_occupancy: [
+        { full: true, max_rank_in_window: 2, symbol: "WIF", used: 2 },
+        { full: false, max_rank_in_window: 2, symbol: "DOGE", used: 1 },
+      ],
+    },
     state: "ready",
     watchlist: ["BTC", "ETH", "SOL"],
     workers_state: "running",
     ...overrides,
   };
+}
+
+/**
+ * One judged telemetry frame, as the feed serves it (#207/#137). The `oi` block is the judge's own trace
+ * read back, so a test that wants the withheld or the unparseable shape overrides `rule` and the fields that
+ * shape actually carries rather than inventing new ones.
+ */
+export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): NewsFeedEvent {
+  return newsFeedEventFixture({
+    admission: "telemetry_deterministic",
+    assets: [{ base_symbol: "WIF", listed: true, symbol: "WIF", venue: "binance.perp" }],
+    delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
+    event_id: "evt-oi-wif",
+    family: "market_telemetry",
+    grounded_assets: ["WIF"],
+    leader_title:
+      "WIF OI Rise 6.71%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
+    oi: {
+      eligible_rank_in_window: 1,
+      failure_stage: null,
+      max_rank_in_window: 2,
+      oi_change_at_least_bps: 0,
+      oi_change_bps: 671,
+      oi_value_usd: 11_030_000,
+      parsed: true,
+      parser_version: null,
+      rank_semantics: "eligible_rank_v1",
+      rule: "opening_move_with_whale_concentration",
+      title_sha256: null,
+      whale_long_profit_bps: 8_840,
+      whale_oi_ratio_above_bps: 8_000,
+      whale_oi_ratio_bps: 14_390,
+      window_ms: 14_400_000,
+    },
+    reaction: newsReactionFixture({ return_1h_bps: 203, return_4h_bps: 145, state: "complete" }),
+    title_zh: null,
+    triage: newsTriageFixture({
+      assets: [{ role: "primary", symbol: "WIF" }],
+      // `evaluate_oi` maps a rising frame to `bullish`. Keeping the fixture self-consistent matters here:
+      // the direction word and the OI change are two different measurements and a test that let them
+      // disagree would be asserting a screen the pipeline cannot produce.
+      direction: "bullish",
+      direction_zh: "利多",
+      event_type: "oi_spike",
+      event_type_zh: "持仓异动",
+      headline_zh: "▲ WIF 持仓异动6.71%｜持仓1103万｜鲸鱼占比143.9%｜鲸鱼多头盈利88.4%｜4h内第1次",
+      magnitude: 2,
+      magnitude_zh: "影响明显",
+      override_rule: "telemetry_deterministic",
+      scope: "single_name",
+      scope_zh: "单一标的",
+      why_zh: "",
+    }),
+    watchlist_hits: [],
+    ...overrides,
+  });
 }
 
 export function newsQuoteFixture(overrides: Partial<NewsQuote> = {}): NewsQuote {

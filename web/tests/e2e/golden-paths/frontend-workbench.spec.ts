@@ -20,6 +20,14 @@ const archetypes = [
     ready: (page: Page) => page.locator(".news-detail-hero"),
     settled: (page: Page) => page.locator(".news-timeline-step").first(),
   },
+  {
+    // #207: the deterministic OI lane. Its table is the widest thing in the console and scrolls inside
+    // itself; the baseline is what keeps that from becoming a page-level horizontal scroll.
+    name: "oi",
+    path: "/news/oi",
+    ready: (page: Page) => page.locator(".news-oi-row").first(),
+    settled: (page: Page) => page.locator(".news-oi-window-row").first(),
+  },
 ] as const;
 
 test.beforeEach(async ({ page }) => {

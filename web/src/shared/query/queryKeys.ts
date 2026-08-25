@@ -27,6 +27,9 @@ export const queryKeys = {
   newsFeedHistory: (filters: NewsFeedQueryKeyFilters, firstCursor: string) =>
     ["news-feed-history", ...newsFeedIdentity(filters), firstCursor] as const,
   newsEvent: (eventId: string) => ["news-event", eventId] as const,
+  // #207: the OI monitor's own slice of the feed. Its own key, because it is a different filter set on a
+  // different rhythm and must not evict the feed page a reader is scrolled into.
+  newsOiFeed: (outcome: string) => ["news-oi-feed", outcome] as const,
   newsStatus: () => ["news-status"] as const,
   // #88: the quote key is the sorted symbol batch, so the feed and an open Event share one poll.
   newsQuotes: (symbols: readonly string[]) => ["news-quotes", symbols.join(",")] as const,

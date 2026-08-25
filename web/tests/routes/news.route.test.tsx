@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { newsStatusFixture } from "@tests/fixtures/newsFixture";
 import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -42,6 +43,7 @@ describe("news route", () => {
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
     ["/news/review", "学习复盘", "/api/news/review"],
+    ["/news/oi", "持仓异动监控", "/api/news/status"],
     [
       "/news/events/evt-global-policy",
       "央行政策转向，风险资产承压",
@@ -54,12 +56,50 @@ describe("news route", () => {
     await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(endpoint, expect.any(Object)));
   });
 
-  it("navigates between the Event Feed and Status with stable public URLs", async () => {
+  it("keeps the topbar health lamp dark while the pipeline is ok, on every route", async () => {
+    // The lamp is a frame control now (#207), so its silence has to hold across routes rather than only on
+    // the one page that used to carry a pill.
+    for (const path of ["/news", "/news/oi", "/news/review"]) {
+      cleanup();
+      setupAppRouteTest(mockAppRoutes);
+      renderAppRoute(path);
+      await screen.findByRole("heading", { level: 1 });
+      expect(screen.queryByRole("button", { name: /流水线健康/ })).not.toBeInTheDocument();
+    }
+  });
+
+  it("lights the topbar lamp with the failing item's own sentence when health degrades", async () => {
+    setupAppRouteTest((mock) => {
+      mockAppRoutes(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) => {
+        if (path !== "/api/news/status") return base(path, options);
+        const health = newsStatusFixture().health;
+        return {
+          ok: true,
+          data: newsStatusFixture({
+            health: {
+              ...health,
+              model: { detail_zh: "p95 9.2 秒", level: "bad", summary_zh: "24 小时降级率 20%" },
+              overall: "bad",
+            },
+          }),
+        };
+      };
+    });
+    renderAppRoute("/news/oi");
+
+    // The mapping the shell owns: server level -> lamp level, worst item's `summary_zh` -> lamp text.
+    const lamp = await screen.findByRole("button", { name: "流水线健康：24 小时降级率 20%" });
+    expect(lamp).toHaveAttribute("data-level", "bad");
+  });
+
+  it("navigates between the three working surfaces with stable public URLs", async () => {
     renderAppRoute("/news");
     await screen.findByRole("heading", { name: "新闻事件流" });
 
-    fireEvent.click(screen.getByRole("link", { name: "流水线状态" }));
-    expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "持仓异动" }));
+    expect(await screen.findByRole("heading", { name: "持仓异动监控" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "学习复盘" }));
     expect(await screen.findByRole("heading", { name: "学习复盘" })).toBeInTheDocument();

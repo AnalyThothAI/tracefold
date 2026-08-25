@@ -4,9 +4,12 @@ import {
   newsEventFixture,
   newsFeedEventFixture,
   newsFeedFixture,
+  newsOiFrameFixture,
+  newsOutcomeFixture,
   newsQuoteFixture,
   newsReviewFixture,
   newsStatusFixture,
+  newsTriageFixture,
 } from "@tests/fixtures/newsFixture";
 
 const NOW = 1_777_746_300_000;
@@ -44,7 +47,16 @@ export async function installMockApi(
 
     if (path === "/api/bootstrap") return fulfill(route, { ws_token: "secret" });
     if (path === "/api/status") return fulfill(route, statusData());
-    if (path === "/api/news/feed") return fulfill(route, newsFeedData(prepended));
+    // The OI monitor asks the same endpoint for one admission (#207), and the rows it gets back carry the
+    // `oi` block. Serving the ordinary feed there would exercise only the degraded path.
+    if (path === "/api/news/feed") {
+      return fulfill(
+        route,
+        url.searchParams.get("admission") === "telemetry_deterministic"
+          ? newsOiFeedData(url.searchParams.get("oi"))
+          : newsFeedData(prepended),
+      );
+    }
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
     // #88: the price surfaces answer on every route — the shell reads the review summary for the topbar.
     if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));
@@ -96,6 +108,92 @@ function newsFeedData(prepended: string[] = []) {
           : row(`evt-global-policy-${index + 1}`, `Global policy update ${index + 1}`),
       ),
     ],
+  };
+}
+
+/**
+ * A judged frame per gate, so the monitor's baseline shows the four measurements, the rank, both withhold
+ * rules and the unparseable shape rather than one row repeated.
+ */
+function newsOiFeedData(oi: string | null) {
+  const frames = [
+    newsOiFrameFixture(),
+    newsOiFrameFixture({
+      event_id: "evt-oi-doge",
+      leader_title:
+        "DOGE OI Rise 2.08%, OI Value 892.31M, Whale Long Profit 63.00%, Whale/OI Ratio 54.20%",
+      oi: {
+        ...newsOiFrameFixture().oi!,
+        eligible_rank_in_window: null,
+        oi_change_bps: 208,
+        oi_value_usd: 892_310_000,
+        rule: "whale_ratio_below_threshold",
+        whale_long_profit_bps: 6_300,
+        whale_oi_ratio_bps: 5_420,
+      },
+      outcome: newsOutcomeFixture({
+        group: "held",
+        kind: "dropped",
+        reason_zh: "持仓异动按客观规则判断",
+        text_zh: "未推送",
+      }),
+      triage: newsTriageFixture({
+        assets: [{ role: "primary", symbol: "DOGE" }],
+        direction: "bullish",
+        direction_zh: "利多",
+        event_type: "noise",
+        event_type_zh: "噪音",
+        final_decision: "drop",
+        headline_zh: "▲ DOGE 持仓异动2.08%",
+        override_rule: "telemetry_deterministic",
+      }),
+    }),
+    newsOiFrameFixture({
+      event_id: "evt-oi-pengu",
+      leader_title:
+        "PENGU OI Rise 3.4%, OI Value --, Whale Long Profit 55.10%, Whale/OI Ratio 71.00%",
+      oi: {
+        eligible_rank_in_window: null,
+        failure_stage: "template_match",
+        max_rank_in_window: null,
+        oi_change_at_least_bps: null,
+        oi_change_bps: null,
+        oi_value_usd: null,
+        parsed: false,
+        parser_version: "oi_signal_parser_v1",
+        rank_semantics: null,
+        rule: "oi_parse_failed",
+        title_sha256: "9f2c41ab7d10",
+        whale_long_profit_bps: null,
+        whale_oi_ratio_above_bps: null,
+        whale_oi_ratio_bps: null,
+        window_ms: null,
+      },
+      outcome: newsOutcomeFixture({
+        group: "held",
+        kind: "dropped",
+        reason_zh: "持仓异动供应商格式无法解析，已安全拦截",
+        text_zh: "未推送",
+      }),
+      reaction: null,
+      triage: newsTriageFixture({
+        assets: [],
+        // An unparseable frame carries no direction: nothing was measured, so nothing is stated (#207).
+        direction: "neutral",
+        direction_zh: "中性",
+        error_code: "oi_parse_failed",
+        event_type: "noise",
+        event_type_zh: "噪音",
+        final_decision: "drop",
+        headline_zh: "持仓异动帧无法解析",
+        override_rule: "telemetry_deterministic",
+      }),
+    }),
+  ];
+  const wanted = { pushed: 0, withheld: 1, parse_failed: 2 }[oi ?? ""];
+  return {
+    ...newsFeedFixture(),
+    events: wanted == null ? frames : [frames[wanted]],
   };
 }
 

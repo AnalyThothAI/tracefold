@@ -47,7 +47,7 @@ test.describe("desktop sidebar navigation", () => {
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "状态" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "持仓异动" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
@@ -72,9 +72,9 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/news");
 
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-    await primaryNavigation.getByRole("link", { name: "状态" }).click();
-    await expect(page).toHaveURL(/\/news\/status$/);
-    await expect(primaryNavigation.getByRole("link", { name: "状态" })).toHaveAttribute(
+    await primaryNavigation.getByRole("link", { name: "持仓异动" }).click();
+    await expect(page).toHaveURL(/\/news\/oi$/);
+    await expect(primaryNavigation.getByRole("link", { name: "持仓异动" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -141,12 +141,14 @@ test.describe("mobile bottom navigation", () => {
     await expect(primaryNavigation).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "持仓异动" })).toBeVisible();
+    // #207: the pipeline status page kept its route and lost its slot — the topbar lamp is the way in.
+    await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toHaveCount(0);
 
-    await primaryNavigation.getByRole("link", { name: "流水线状态" }).click();
-    await expect(page).toHaveURL(/\/news\/status$/);
+    await primaryNavigation.getByRole("link", { name: "持仓异动" }).click();
+    await expect(page).toHaveURL(/\/news\/oi$/);
     await expect(primaryNavigation).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toHaveAttribute(
+    await expect(primaryNavigation.getByRole("link", { name: "持仓异动" })).toHaveAttribute(
       "aria-current",
       "page",
     );

@@ -473,7 +473,9 @@ describe("NewsPage", () => {
     );
   });
 
-  it("turns the health pill red when the model degrades and names the failing item", async () => {
+  it("shows no health pill of its own even when the model degrades", async () => {
+    // #207: health is the topbar lamp's, in one place and on every route. Two pills on one screen saying the
+    // same thing is one of them the reader learns to skip — `CockpitTopbarHealth.test.tsx` covers the lamp.
     server.use(
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({
@@ -493,10 +495,10 @@ describe("NewsPage", () => {
       ),
     );
     renderNews(<NewsPage token="test-token" view="feed" />);
-    const pill = await screen.findByRole("link", { name: "查看流水线状态" });
-    await waitFor(() => expect(pill).toHaveTextContent("流水线异常"));
-    expect(pill).toHaveAttribute("data-tone", "alert");
-    expect(pill).toHaveTextContent("24 小时降级率 20%（30/150）");
+    await screen.findByRole("heading", { name: "新闻事件流" });
+    await waitFor(() => expect(screen.getByText(/收到/)).toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: "查看流水线状态" })).not.toBeInTheDocument();
+    expect(screen.queryByText("流水线异常")).not.toBeInTheDocument();
   });
 
   // ------------------------------------------------------------------ status

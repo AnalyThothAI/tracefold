@@ -10,6 +10,10 @@ export function newsStatusPath(): string {
   return "/news/status";
 }
 
+export function newsOiPath(): string {
+  return "/news/oi";
+}
+
 export function newsReviewPath(): string {
   return "/news/review";
 }
