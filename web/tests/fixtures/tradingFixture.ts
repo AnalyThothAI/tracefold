@@ -16,7 +16,10 @@ export const TRADING_NOW_MS = 1_779_000_000_000;
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
     budget: {
-      max_hold_ms: 4 * 3_600_000,
+      // `max_holding_seconds: 1800`, the shipped default and what this deployment runs. The design's mock
+      // used 4 h, which is the one value that could not expose `Math.round(ms / 3.6e6)` rendering the real
+      // ceiling as `0 h`.
+      max_hold_ms: 1_800_000,
       max_orders_per_day: 4,
       nominal_daily_stop_loss_usd: "4",
       notional_usd: "200",

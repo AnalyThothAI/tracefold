@@ -3,7 +3,7 @@ import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 
 import { useTradingOrdersWithToken, useTradingStatusWithToken } from "../api/tradingQueries";
-import { isActiveOrder } from "../model/tradingLabels";
+import { holdCeiling, isActiveOrder } from "../model/tradingLabels";
 
 import { TradingShell, TradingSourceLine } from "./TradingChrome";
 import { TradingClosed } from "./TradingClosed";
@@ -105,7 +105,7 @@ export function TradingPage({ token }: { token: string }) {
                 <Metric
                   caption="从首笔成交起算"
                   eyebrow="最长持有"
-                  value={`${Math.round(status.budget.max_hold_ms / 3_600_000)} h`}
+                  value={holdCeiling(status.budget.max_hold_ms)}
                 />
                 <Metric
                   caption="nominal_daily_stop_loss_usd，不含跳空滑点"
