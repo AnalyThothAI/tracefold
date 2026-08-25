@@ -2142,6 +2142,95 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
         )
 
 
+def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_its_roots(conn) -> None:
+    """#199 §5: readiness, this baseline, the trusted record and the release gate name one corpus.
+
+    The check that matters is the last one — the baseline's split roots and episode root are the record's
+    own, so the "before" number a release reads was measured on the corpus the winner was picked from. The
+    predecessor had no `--dataset` at all: every baseline was a moving window, and two of them taken a day
+    apart compared two different populations under one name.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    import dspy
+
+    from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
+
+    stable_artifact = load_stable_program_artifact()
+    stable = _arm(program_sha256=stable_artifact.program_sha256)
+    with repositories_for_connection(conn).transaction():
+        repositories_for_connection(conn).news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "dataset-baseline-test"}),
+            stable_bundle_sha=stable.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:dataset-baseline-test",
+            runtime_revision="dataset-baseline-test",
+            now_ms=NOW - 23 * 3_600_000,
+        )
+    _accepted_compilable_event(conn, stable=stable)
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        evaluator.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    export = evaluator.development_compile_export(development.artifact_sha)
+    plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
+    assert plan.split is not None
+
+    optimizer = set(plan.optimizer_case_ids)
+    scored = tuple(episode for episode in export.episodes if str(episode["case_id"]) in optimizer)
+    assert len(scored) == len(optimizer)
+
+    # `compile_live` is the mode a formal optimizer baseline runs in — `recorded` is refused for a frozen
+    # dataset, because the plan classifies under a replayed `decide()` and `recorded` scores against the
+    # action that shipped. The graph is stubbed to a fixed judgment so the parity this test is about is
+    # measured without a provider; what it exercises is the corpus, the plan and the roots.
+    frozen_prediction = dspy.Prediction(verdict=_verdict(), editorial=_editorial().model_dump(mode="json"))
+
+    class _FrozenCompileProgram(dspy.Module):
+        def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> Any:
+            del evidence_json, card_evidence_json, told_count
+            return frozen_prediction
+
+    report = run_baseline(
+        build_baseline_cases(scored, action_source="policy"),
+        mode="compile_live",
+        artifact=stable_artifact,
+        program_factory=lambda _artifact: _FrozenCompileProgram(),
+        lm=dspy.LM("openai/offline-fixture", api_key="unused", api_base="http://127.0.0.1:1"),
+        cohort_scope="frozen_development",
+        objective=plan,
+        dataset_identity={
+            "development_dataset_sha": development.artifact_sha,
+            "episode_projection_root_sha256": canonical_sha(list(export.episodes)),
+        },
+        # The corpus that still contains the retrieval misses the plan just excluded.
+        retrieval_population=[DevelopmentEpisode.model_validate(episode) for episode in export.episodes],
+    )
+
+    # Only target + control reached a denominator; the excluded diagnostics are counted, never scored.
+    assert report.population["requested_n"] == len(optimizer)
+    assert report.objective["excluded_case_n"] == len(plan.excluded_case_ids)
+    assert report.objective["target_failure_cluster_ids"] == list(plan.target_failure_cluster_ids)
+    # Three numbers, not one: the selection half is the formal before value.
+    assert report.subsets["train"]["case_n"] == len(plan.train_episodes)
+    assert report.subsets["development_selection"]["case_n"] == len(plan.development_selection_episodes)
+    assert (
+        report.subsets["optimizer_union"]["case_n"]
+        == report.subsets["train"]["case_n"] + report.subsets["development_selection"]["case_n"]
+    )
+
+    record = _compile_record(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        program_sha256=_sha({"program": "candidate", "case": "dataset-baseline-parity"}),
+    )
+    assert record.episode_projection_root_sha256 == report.identity["episode_projection_root_sha256"]
+    assert record.run.split == report.objective["split"] == plan.split
+
+
 def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(conn) -> None:
     """#199: the release gate rebuilds the Objective Plan and holds the candidate to it, exactly.
 

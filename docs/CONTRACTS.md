@@ -727,14 +727,50 @@ per-queue message/consumer counts.
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
-`news learning baseline --from-ms N --to-ms N [--mode
-recorded|compile_live|runtime_live] [--action-source recorded|policy]
-[--max-model-cases N] [--all-cohorts] [--semantic-judge MODEL] [--limit N]
+`news learning baseline (--dataset SHA | --from-ms N --to-ms N [--all-cohorts])
+[--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
+[--max-model-cases N] [--semantic-judge MODEL] [--limit N]
 [--out FILE]` scores the
 stable Program over accepted reviews and returns one content-addressed
-`tracefold.news.program_baseline_report.v2`. It is read-only — no dataset,
+`tracefold.news.program_baseline_report.v3`. It is read-only — no dataset write,
 sandbox, tariff or container, no write to any table, and the only database
 contact is one `serve` connection that closes before the first model call.
+
+The two corpus forms are mutually exclusive because a run can only measure one
+of them (#199 §5). `--from-ms/--to-ms` is a moving window anchored to the clock:
+the population changes underneath it, so a before/after taken across two of them
+compares two different corpora, and the receipt says `cohort_scope: current` or
+`all` — discovery, never release evidence. `--dataset SHA` is the exact frozen
+development dataset a trusted compile would seal. It re-projects the sealed
+corpus once, builds the same `GepaObjectivePlan` readiness and `run_gepa` build,
+and scores **only** `target + control`: excluded diagnostics are counted and
+named in the report's `objective` section and never enter a denominator, because
+a retrieval miss averaged into the "before" number is movement a candidate can
+be credited for without repairing anything. `subsets` publishes three separate
+numbers — `train`, `development_selection` (the formal *before* value a Candidate
+is picked on) and `optimizer_union` (a diagnostic) — and `identity` carries the
+dataset SHA and the `episode_projection_root_sha256` that
+`CompileRecordV1` commits to and `CandidateEvaluator` re-derives, so readiness,
+this baseline, the trusted record and the release gate can be checked against
+each other. `--max-model-cases` must cover the whole optimizer corpus
+(`news_program_baseline_dataset_requires_full_corpus_budget:N`): a truncated run
+would publish split roots describing cases it never scored. A blocked plan is
+refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
+rather than published with an empty `subsets` block that reads as a measured
+zero — `readiness` explains the same blockers for free.
+
+`--dataset` is refused with `--mode recorded`
+(`news_program_baseline_dataset_requires_policy_action`). The Objective Plan
+classifies under a replayed `decide()`, because readiness, the trusted compiler
+and the release gate all rebuild it from the sealed export, which carries no
+recorded decision; `recorded` scores against the action that actually shipped.
+The two disagree on any case whose ledger state differed at ingest, and the
+report would then call a case a control and zero it in the same document. The
+moving-window form remains the recorded-behaviour diagnostic. For the same
+reason the retrieval receipt in a dataset-bound report is computed over the
+**whole** sealed export rather than the scored subset: the plan excludes exactly
+the cases `_retrieval_receipt` counts as misses, so a receipt over
+`target + control` would report a recall biased toward 1.0 by construction.
 
 The three modes answer three different questions and are never interchangeable
 (#150 removed the single ambiguous `live`, with no alias):

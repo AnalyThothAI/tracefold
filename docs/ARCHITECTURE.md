@@ -1220,9 +1220,9 @@ root is simply what makes them tamper-evident now.
 
 What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
 and every plane that needs the answer rebuilds the same plan from the same
-frozen episodes: `news learning readiness`, `run_gepa` (so both the trusted
-compiler and the experiment loop), and `CandidateEvaluator` when it re-projects
-a Program candidate's corpus. A case is a **target** only when an operator wrote
+frozen episodes: `news learning readiness`, `news learning baseline --dataset`,
+`run_gepa` (so both the trusted compiler and the experiment loop), and
+`CandidateEvaluator` when it re-projects a Program candidate's corpus. A case is a **target** only when an operator wrote
 `first_bad_owner = triage_prompt` into the submission itself — a ReviewDesk-derived
 owner routes queue work and grants nothing — and the failure belongs to
 EventSemantics or ReaderCard with something checkable behind it: an exact typed

@@ -395,6 +395,7 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
         "learning_command": "baseline",
         "from_ms": 1,
         "to_ms": 2,
+        "dataset": "",
         "mode": "recorded",
         "action_source": "",
         "all_cohorts": False,
@@ -405,6 +406,49 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
     }
     args.update(updates)
     return SimpleNamespace(**args)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"dataset": "a" * 64},
+        {"dataset": "a" * 64, "from_ms": None, "to_ms": None, "all_cohorts": True},
+    ],
+)
+def test_a_dataset_baseline_refuses_to_also_take_a_moving_window(monkeypatch: Any, updates: dict[str, Any]) -> None:
+    """A run measures one corpus.
+
+    The frozen dataset and the moving window answer different questions — release evidence and discovery —
+    and silently preferring one would publish a report whose window and whose cases came from different
+    ones (#199 §5).
+    """
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the guard must fail before the corpus is read")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
+
+    code, payload = _handle_learning(_baseline_args(**updates))
+    assert code == 2
+    assert payload["error"] == "news_program_baseline_dataset_excludes_moving_window"
+
+
+def test_a_baseline_with_neither_a_dataset_nor_a_window_is_refused(monkeypatch: Any) -> None:
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    code, payload = _handle_learning(_baseline_args(from_ms=None, to_ms=None))
+    assert code == 2
+    assert payload["error"] == "news_program_baseline_requires_dataset_or_window"
+
+
+def test_the_parser_leaves_the_window_absent_so_the_handler_can_tell_it_apart_from_zero() -> None:
+    parser = build_parser()
+    dataset = parser.parse_args(["news", "learning", "baseline", "--dataset", "a" * 64])
+    assert (dataset.dataset, dataset.from_ms, dataset.to_ms) == ("a" * 64, None, None)
+    window = parser.parse_args(["news", "learning", "baseline", "--from-ms", "0", "--to-ms", "2"])
+    assert (window.dataset, window.from_ms, window.to_ms) == ("", 0, 2)
 
 
 @pytest.mark.parametrize(
@@ -543,6 +587,109 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
 
     _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", limit=500, max_model_cases=12))
     assert seen["limit"] == 12, "the smaller of the two bounds wins, so --limit cannot widen it"
+
+
+def test_a_dataset_baseline_will_not_publish_split_roots_for_cases_it_did_not_score(monkeypatch: Any) -> None:
+    """`--max-model-cases` truncates; a formal optimizer baseline cannot be truncated.
+
+    The report republishes the Objective Plan's split roots, so a run that scored 2 of 3 optimizer cases
+    would publish roots describing a corpus it never measured. The moving-window form stays available for
+    a cheap probe and names itself discovery.
+    """
+
+    from tracefold.app.cli.commands import news_learning_baseline as baseline_commands
+    from tracefold.news.learning.objective import GepaObjectivePlan
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        baseline_commands,
+        "_dataset_corpus",
+        lambda *_args, **_kwargs: (
+            tuple({"case_id": f"case-{index}"} for index in range(3)),
+            (),
+            GepaObjectivePlan(case_n=3, cluster_n=3),
+            {},
+        ),
+    )
+
+    code, payload = _handle_learning(
+        _baseline_args(
+            dataset="a" * 64,
+            from_ms=None,
+            to_ms=None,
+            mode="compile_live",
+            action_source="policy",
+            max_model_cases=2,
+        )
+    )
+    assert code == 2
+    assert payload["error"] == "news_program_baseline_dataset_requires_full_corpus_budget:3"
+
+
+def test_a_frozen_dataset_is_not_scored_against_the_action_that_shipped(monkeypatch: Any) -> None:
+    """The plan classifies under a replayed `decide()`; `recorded` scores against what shipped.
+
+    They disagree on any case whose ledger state differed at ingest, and the report would then call a case
+    a control and zero it in the same document. The moving-window form is still the recorded diagnostic.
+    """
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the guard must fail before the corpus is read")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
+
+    code, payload = _handle_learning(_baseline_args(dataset="a" * 64, from_ms=None, to_ms=None, mode="recorded"))
+    assert code == 2
+    assert payload["error"] == "news_program_baseline_dataset_requires_policy_action"
+
+
+def test_a_blocked_objective_plan_does_not_become_an_empty_before_number(monkeypatch: Any) -> None:
+    """`subsets.development_selection` is the number this report exists to publish.
+
+    A blocked plan has no split to compute it from, so a `frozen_development` report would carry an empty
+    subsets block that reads as a measured zero. `news learning readiness` explains why, for free.
+    """
+
+    from tracefold.app.cli.commands import news_learning_baseline as baseline_commands
+    from tracefold.news.learning.objective import GepaObjectivePlan
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        baseline_commands,
+        "_dataset_corpus",
+        lambda *_args, **_kwargs: (
+            ({"case_id": "case-0"},),
+            (),
+            GepaObjectivePlan(case_n=1, cluster_n=1, blocking_reasons=("development_selection_target_missing",)),
+            {},
+        ),
+    )
+
+    code, payload = _handle_learning(
+        _baseline_args(
+            dataset="a" * 64, from_ms=None, to_ms=None, mode="compile_live", action_source="policy", max_model_cases=8
+        )
+    )
+    assert code == 2
+    assert payload["error"] == ("news_program_baseline_dataset_objective_blocked:development_selection_target_missing")
 
 
 def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) -> None:

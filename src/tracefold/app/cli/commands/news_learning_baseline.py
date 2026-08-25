@@ -180,6 +180,40 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     return 0, {"ok": True, "data": summary}
 
 
+def _dataset_corpus(evaluator: Any, dataset_sha: str) -> tuple[tuple[Any, ...], tuple[Any, ...], Any, dict[str, Any]]:
+    """The frozen development corpus, its Objective Plan, and the identity the report has to publish.
+
+    One projection, read once. `_project_episodes` is a per-case `_load_case` plus a reader-history
+    rebuild, and — the part that matters — a review edited between two reads would leave the published
+    projection root describing a corpus other than the one that was scored.
+
+    Only `target + control` is scored. Excluded diagnostics are counted and named in `objective` and never
+    enter a denominator: a formal optimizer baseline has to measure what the optimizer measures, and a
+    retrieval miss averaged into the "before" number is exactly the kind of movement a candidate can be
+    credited for without repairing anything. The whole export comes back beside the scored subset, because
+    the retrieval receipt has to be computed over the corpus that still *contains* the retrieval misses.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
+
+    export = evaluator.development_compile_export(dataset_sha)
+    episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
+    plan = build_gepa_objective_plan(episodes)
+    optimizer = set(plan.optimizer_case_ids)
+    scored = tuple(episode for episode in export.episodes if str(episode["case_id"]) in optimizer)
+    identity = {
+        "development_dataset_sha": dataset_sha,
+        # The exact root `CompileRecordV1` commits to and `CandidateEvaluator` re-derives, over the sealed
+        # export rather than over the scored subset: readiness, this baseline, the record and the evaluator
+        # have to agree about the corpus before they can agree about the split.
+        "episode_projection_root_sha256": canonical_sha(list(export.episodes)),
+        "episode_count": len(export.episodes),
+        "scored_population": "objective_plan_target_and_control",
+    }
+    return scored, episodes, plan, identity
+
+
 def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
 
@@ -213,13 +247,55 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     max_model_cases = int(getattr(args, "max_model_cases", 0) or 0)
     if mode != "recorded" and max_model_cases <= 0:
         raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
-    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
+    dataset_sha = str(getattr(args, "dataset", "") or "").strip()
+    moving_window = [name for name in ("from_ms", "to_ms") if getattr(args, name, None) is not None]
+    if dataset_sha and (moving_window or bool(args.all_cohorts)):
+        # A run measures one corpus. Silently preferring one input would publish a report whose window and
+        # whose cases came from different questions.
+        raise ValueError("news_program_baseline_dataset_excludes_moving_window")
+    if not dataset_sha and len(moving_window) != 2:
+        raise ValueError("news_program_baseline_requires_dataset_or_window")
+
+    if dataset_sha and mode == "recorded":
+        # The Objective Plan classifies under a replayed `decide()` — it has to, because readiness, the
+        # trusted compiler and the release gate all rebuild it from the sealed export, which carries no
+        # recorded decision. `recorded` scores against the action that actually shipped. The two disagree
+        # on any case whose ledger state differed at ingest, and the report would then call a case a
+        # control and zero it in the same document. The moving-window form stays the recorded-behavior
+        # diagnostic; a frozen dataset is scored under the policy its plan was built with.
+        raise ValueError("news_program_baseline_dataset_requires_policy_action")
+
+    plan = None
+    dataset_identity: dict[str, Any] = {}
+    retrieval_population: tuple[Any, ...] | None = None
     with postgres_connection(settings, role="serve") as conn:
         evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-        limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
-        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
+        if dataset_sha:
+            episodes, retrieval_population, plan, dataset_identity = _dataset_corpus(evaluator, dataset_sha)
+        else:
+            window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
+            limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
+            episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
     if not episodes:
-        return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
+        code = (
+            "news_program_baseline_dataset_has_no_optimizer_corpus"
+            if dataset_sha
+            else "news_program_baseline_no_accepted_reviews_in_window"
+        )
+        return 2, {
+            "ok": False,
+            "error": {"code": code, "blocking_reasons": list(plan.blocking_reasons) if plan else []},
+        }
+    if plan is not None and plan.blocking_reasons:
+        # `subsets.development_selection` is the one number this report exists to publish, and a blocked
+        # plan has no split to compute it from. A `frozen_development` report with an empty subsets block
+        # would read as a measured zero. `news learning readiness` explains why, for free.
+        raise ValueError(f"news_program_baseline_dataset_objective_blocked:{','.join(plan.blocking_reasons)}")
+    if dataset_sha and max_model_cases < len(episodes):
+        # A formal optimizer baseline covers the whole optimizer corpus or it is not one: a truncated run
+        # would publish split roots that describe cases it never scored. The moving-window form stays
+        # available for a cheap probe, and says `discovery` in its own receipt.
+        raise ValueError(f"news_program_baseline_dataset_requires_full_corpus_budget:{len(episodes)}")
     artifact = load_program_artifact(stable.program_sha256)
     lm, semantic_judge, runtime_identity = _baseline_model_route(mode, settings=settings, artifact=artifact)
     judge_model = str(args.semantic_judge).strip()
@@ -242,7 +318,10 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
-        cohort_scope="all" if bool(args.all_cohorts) else "current",
+        cohort_scope=("frozen_development" if dataset_sha else "all" if bool(args.all_cohorts) else "current"),
+        objective=plan,
+        dataset_identity=dataset_identity,
+        retrieval_population=retrieval_population,
         mode=mode,
         artifact=artifact,
         program_factory=compile_program_factory if mode == "compile_live" else None,
