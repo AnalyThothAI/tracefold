@@ -9,26 +9,26 @@ import dspy
 import pytest
 
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.learning.compiler.gepa import optimizer_config_receipt as _optimizer_config_receipt
-from tracefold.news.learning.compiler.root import (
-    CompileBudget,
-    CompileRequest,
-    DevelopmentEpisode,
-    ProgramCompiler,
-    _BudgetedLM,
-    _BudgetMeter,
-    accepted_review_metric,
-)
-from tracefold.news.learning.compiler.security import (
+from tracefold.news.learning.contracts import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
     REFLECTION_MAX_TOKENS,
     REFLECTION_TIMEOUT_SECONDS,
     ModelExecutionIdentity,
+    OptimizationBudget,
 )
-from tracefold.news.learning.metric import _metric_receipt
-from tracefold.news.learning.objective import _honest_split, _retrieval_receipt
+from tracefold.news.learning.metric import _metric_receipt, accepted_review_metric
+from tracefold.news.learning.objective import DevelopmentEpisode, _honest_split, _retrieval_receipt
+from tracefold.news.learning.optimizer import (
+    _BudgetedLM,
+    _BudgetMeter,
+    build_optimizer_lm,
+    require_model_identity,
+    run_gepa,
+)
+from tracefold.news.learning.optimizer import optimizer_config_receipt as _optimizer_config_receipt
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.artifact import (
-    ProgramStrategyArtifactV1,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import (
@@ -232,7 +232,7 @@ class _FakeGEPA:
         return student
 
 
-def _request(*, max_calls: int = 4) -> CompileRequest:
+def _episode_payloads() -> tuple[dict[str, Any], ...]:
     context = TriageContext.from_card(
         {
             "event_id": "event-1",
@@ -252,180 +252,151 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
         now_ms=1_800_000_000_000,
         queue_lag_ms=0,
     )
-    return CompileRequest(
-        development_dataset_sha="d" * 64,
-        review_rubric_version="news_review_v4",
-        episodes=tuple(
-            {
-                "case_id": f"case-{cluster}-{name}",
-                "cluster_id": f"cluster-{cluster}",
-                "stratum": "review_failure" if name == "target" else "delivered",
-                "context": context,
-                "policy_metric": {
-                    "gate": {
-                        "grounded_assets": ["ABC"],
-                        "watchlist_symbols": [],
-                        "admission": "candidate",
-                    },
-                    "storyline": {"title": "Issuer files a material update", "family": "filing"},
-                    "seen": [],
-                    "told": [],
-                    "recorded_decision_result": {
-                        "final": final,
-                        "rule_baseline": final,
-                        "override_rule": None,
-                        "throttled_by": None,
-                        "watchlist_hits": [],
-                        "seen_similarity": None,
-                        "seen_against": -1,
-                        "seen_scope": "",
-                    },
-                    **_frozen_policy_projection(),
+    return tuple(
+        {
+            "case_id": f"case-{cluster}-{name}",
+            "cluster_id": f"cluster-{cluster}",
+            "stratum": "review_failure" if name == "target" else "delivered",
+            "context": context,
+            "policy_metric": {
+                "gate": {
+                    "grounded_assets": ["ABC"],
+                    "watchlist_symbols": [],
+                    "admission": "candidate",
                 },
-                "accepted_review": review,
-                "production_judgment": _judgment(**verdict).model_dump(mode="json"),
-            }
-            # Two clusters so the split is possible, and both halves carry every required stratum: a
-            # safety/positive case and a safety/negative one. Since #199 each half also has to carry at
-            # least one verified Prompt target *and* at least one stable-correct control — GEPA is handed
-            # `target + control` only, so a corpus of failures alone no longer splits at all.
-            for cluster in (1, 2)
-            for name, final, review, verdict in (
-                (
-                    "target",
-                    "push",
-                    {
-                        "should_push": "must_push",
-                        "dimensions": {"direction": "fail", "factual_fidelity": "pass"},
-                        "novelty": {"judgment": "new_fact", "duplicate_of": ""},
-                        # The owner an operator wrote into the submission, not the one ReviewDesk derives
-                        # for the queue. Without it this case is an excluded diagnostic.
-                        "first_bad_owner_explicit": "triage_prompt",
-                        "first_bad_owner": "triage_prompt",
-                        "evidence_refs": ["filing#timetable"],
-                        "expected": {"direction": "bullish"},
-                        "expected_correction": "The direction must follow the filing's actual mechanism.",
-                    },
-                    {"direction": "neutral"},
-                ),
-                (
-                    "control",
-                    "drop",
-                    {
-                        "should_push": "must_hold",
-                        "dimensions": {"direction": "pass", "factual_fidelity": "pass"},
-                        "novelty": {"judgment": "new_fact", "duplicate_of": ""},
-                        "evidence_refs": [],
-                        "expected": {},
-                        "expected_correction": "",
-                    },
-                    {},
-                ),
-            )
-        ),
-        budget=CompileBudget(
-            max_metric_calls=3,
-            max_task_model_calls=max_calls,
-            max_reflection_model_calls=4,
-            max_metric_judge_model_calls=16,
-            max_cost_microusd=20,
-            max_call_cost_microusd=5,
-            seed=17,
-        ),
-    )
-
-
-def _compiler(base: Any | None = None) -> ProgramCompiler:
-    return ProgramCompiler(
-        base_artifact=base or load_stable_program_artifact(),
-        task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_FakeGEPA,
-        judge=_NoopJudge(),
-    )
-
-
-def test_compiler_budget_uses_exact_call_metadata_not_shared_history() -> None:
-    lm = _MeteredFakeLM("task/model", cost=0.000002)
-    meter = _BudgetMeter(
-        CompileBudget(
-            max_metric_calls=1,
-            max_task_model_calls=1,
-            max_reflection_model_calls=1,
-            max_metric_judge_model_calls=1,
-            max_cost_microusd=10,
-            max_call_cost_microusd=10,
-            seed=17,
+                "storyline": {"title": "Issuer files a material update", "family": "filing"},
+                "seen": [],
+                "told": [],
+                "recorded_decision_result": {
+                    "final": final,
+                    "rule_baseline": final,
+                    "override_rule": None,
+                    "throttled_by": None,
+                    "watchlist_hits": [],
+                    "seen_similarity": None,
+                    "seen_against": -1,
+                    "seen_scope": "",
+                },
+                **_frozen_policy_projection(),
+            },
+            "accepted_review": review,
+            "production_judgment": _judgment(**verdict).model_dump(mode="json"),
+        }
+        # Two clusters so the split is possible, and both halves carry every required stratum: a
+        # safety/positive case and a safety/negative one. Since #199 each half also has to carry at
+        # least one verified Prompt target *and* at least one stable-correct control — GEPA is handed
+        # `target + control` only, so a corpus of failures alone no longer splits at all.
+        for cluster in (1, 2)
+        for name, final, review, verdict in (
+            (
+                "target",
+                "push",
+                {
+                    "should_push": "must_push",
+                    "dimensions": {"direction": "fail", "factual_fidelity": "pass"},
+                    "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+                    # The owner an operator wrote into the submission, not the one ReviewDesk derives
+                    # for the queue. Without it this case is an excluded diagnostic.
+                    "first_bad_owner_explicit": "triage_prompt",
+                    "first_bad_owner": "triage_prompt",
+                    "evidence_refs": ["filing#timetable"],
+                    "expected": {"direction": "bullish"},
+                    "expected_correction": "The direction must follow the filing's actual mechanism.",
+                },
+                {"direction": "neutral"},
+            ),
+            (
+                "control",
+                "drop",
+                {
+                    "should_push": "must_hold",
+                    "dimensions": {"direction": "pass", "factual_fidelity": "pass"},
+                    "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+                    "evidence_refs": [],
+                    "expected": {},
+                    "expected_correction": "",
+                },
+                {},
+            ),
         )
     )
 
+
+def _episodes() -> tuple[DevelopmentEpisode, ...]:
+    return tuple(DevelopmentEpisode.model_validate(payload) for payload in _episode_payloads())
+
+
+def _budget(**overrides: Any) -> OptimizationBudget:
+    values: dict[str, Any] = {
+        "max_metric_calls": 3,
+        "max_task_model_calls": 4,
+        "max_reflection_model_calls": 4,
+        "max_metric_judge_model_calls": 16,
+        "max_cost_microusd": 20,
+        "max_call_cost_microusd": 5,
+        "max_wall_clock_seconds": 900.0,
+        "seed": 17,
+    }
+    values.update(overrides)
+    return OptimizationBudget(**values)
+
+
+def _run(*, optimizer_factory: Any = _FakeGEPA, judge: Any = None) -> Any:
+    """One bounded GEPA run over the corpus above, through the shared core.
+
+    The container, the proxy and `ProgramCompiler` are gone (#202 PR-C); what is left is the core itself,
+    which is what these tests were ever about. The metered path is exercised through `optimize()` in
+    `tests/news/test_news_learning_optimize.py`.
+    """
+
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+    return run_gepa(
+        base_program=load_stable_program_artifact(),
+        episodes=_episodes(),
+        task_lm=_BudgetedLM(_MeteredFakeLM("task/model", cost=0.000002), role="task", meter=meter),  # type: ignore[arg-type]
+        reflection_lm=_BudgetedLM(
+            _MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
+            role="reflection",
+            meter=meter,
+        ),
+        judge=judge or _NoopJudge(),
+        max_metric_calls=3,
+        seed=17,
+        review_rubric_version="news_review_v4",
+        optimizer_factory=optimizer_factory,
+    )
+
+
+def test_the_meter_uses_exact_call_metadata_not_shared_history() -> None:
+    lm = _MeteredFakeLM("task/model", cost=0.000002)
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+
     assert _BudgetedLM(lm, role="task", meter=meter)(prompt="probe") == ["unused"]  # type: ignore[arg-type]
-    assert lm.history[-1]["cost"] == 0.5
+
+    # The provider reported 2 micro-USD for this call; the shared `history` list deliberately says 0.5 USD.
+    assert meter.actual_cost_microusd == 2
+    assert meter.task_model_calls == 1
+
+
+def test_the_meter_charges_a_provider_response_even_when_the_lm_raises_afterward() -> None:
+    class _RaisingLM(_MeteredFakeLM):
+        def __call__(self, *args: Any, **kwargs: Any) -> list[str]:
+            super().__call__(*args, **kwargs)
+            raise ValueError("provider_answered_then_failed")
+
+    lm = _RaisingLM("task/model", cost=0.000002)
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+
+    with pytest.raises(ValueError, match="provider_answered_then_failed"):
+        _BudgetedLM(lm, role="task", meter=meter)(prompt="probe")  # type: ignore[arg-type]
+
     assert meter.actual_cost_microusd == 2
 
 
-def test_compiler_charges_a_provider_response_even_when_the_lm_raises_afterward() -> None:
-    class ResponseThenErrorLM(_MeteredFakeLM):
-        def __call__(self, *args: Any, **kwargs: Any) -> list[str]:
-            super().__call__(*args, **kwargs)
-            raise RuntimeError("parse failed after provider response")
-
-    lm = ResponseThenErrorLM("task/model", cost=0.000004)
-    meter = _BudgetMeter(
-        CompileBudget(
-            max_metric_calls=1,
-            max_task_model_calls=1,
-            max_reflection_model_calls=1,
-            max_metric_judge_model_calls=1,
-            max_cost_microusd=10,
-            max_call_cost_microusd=10,
-            seed=17,
-        )
-    )
-
-    with pytest.raises(RuntimeError, match="parse failed"):
-        _BudgetedLM(lm, role="task", meter=meter)(prompt="probe")  # type: ignore[arg-type]
-    assert meter.task_model_calls == 1
-    assert meter.actual_cost_microusd == 4
-
-
-def test_program_compiler_refuses_an_unstamped_or_misrouted_lm_before_spending_anything() -> None:
-    """#193: the route identity is checked at construction, so a bad route costs no provider call.
-
-    It used to be read when the optimizer receipt was built — after a full GEPA run had already been
-    paid for. Both refusals below are the same failure: an LM that cannot attest the contract the seat
-    it was handed to runs under.
-    """
-
-    unstamped = _MeteredFakeLM("task/model")
-    del unstamped.tracefold_compiler_endpoint_identity
-    with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
-        ProgramCompiler(
-            base_artifact=load_stable_program_artifact(),
-            task_lm=unstamped,  # type: ignore[arg-type]
-            reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-            optimizer_factory=_FakeGEPA,
-            judge=_NoopJudge(),
-        )
-    assert unstamped.history == []
-
-    # A task-stamped route seated as the reflection teacher: same model, wrong contract.
-    misrouted = _MeteredFakeLM("reflection/model")
-    with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
-        ProgramCompiler(
-            base_artifact=load_stable_program_artifact(),
-            task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-            reflection_lm=misrouted,  # type: ignore[arg-type]
-            optimizer_factory=_FakeGEPA,
-            judge=_NoopJudge(),
-        )
-    assert misrouted.history == []
-
-
-def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> None:
+def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     _FakeGEPA.calls.clear()
 
-    result = _compiler().compile(_request())
+    result = _run()
 
     kwargs = _FakeGEPA.calls[-1]
     assert kwargs["auto"] is None
@@ -433,41 +404,30 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.run.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
+    assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     # The whole write-set: one bounded advisory per Predictor, carrying exactly what the optimizer wrote.
-    assert result.run.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
-    assert result.run.patch.reader_card_instruction == ""
-    assert result.run.metric_calls == 2
-    assert result.spend.task_model_calls == 1
-    assert result.spend.reflection_model_calls == 1
-    assert result.spend.metric_judge_model_calls == 0
-    assert result.spend.actual_cost_microusd == 5
-    assert result.run.failure_cluster_ids == ("cluster-1", "cluster-2")
-    assert result.run.target_dimensions == ("direction",)
-    receipts = result.run.model_dump(mode="json")
+    assert result.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
+    assert result.patch.reader_card_instruction == ""
+    assert result.metric_calls == 2
+    assert result.failure_cluster_ids == ("cluster-1", "cluster-2")
+    assert result.target_dimensions == ("direction",)
+    receipts = result.model_dump(mode="json")
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
     assert "source" in receipts["metric"]["implementation"]
-    assert "artifact" not in type(result).model_fields
-    assert "proposal_input" not in type(result).model_fields
-
-
-def test_non_root_program_cannot_be_a_compiler_parent() -> None:
-    """A compile may only ever descend from the exact active stable root, never from a learned descendant."""
-
-    non_root = ProgramStrategyArtifactV1.issue(
-        event_semantics_instruction="A previously learned advisory.",
-        reader_card_instruction="",
-    )
-    assert non_root.program_sha256 != load_stable_program_artifact().program_sha256
-    with pytest.raises(ValueError, match="parent_must_be_exact_stable_root"):
-        _compiler(non_root)
-
-
-def test_task_and_reflection_calls_have_independent_explicit_budgets() -> None:
-    result = _compiler().compile(_request(max_calls=1))
-
-    assert result.spend.task_model_calls == 1
-    assert result.spend.reflection_model_calls == 1
+    assert set(type(result).model_fields) == {
+        "patch",
+        "metric",
+        "optimizer_config",
+        "trajectory",
+        "checkpoint",
+        "split",
+        "retrieval",
+        "failure_cluster_ids",
+        "target_dimensions",
+        "metric_calls",
+        "train_count",
+        "val_count",
+    }
 
 
 def test_non_json_trajectory_value_fails_closed() -> None:
@@ -477,16 +437,8 @@ def test_non_json_trajectory_value_fails_closed() -> None:
             student.detailed_results.parents = [[object()]]
             return student
 
-    compiler = ProgramCompiler(
-        base_artifact=load_stable_program_artifact(),
-        task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_UnsafeGEPA,
-        judge=_NoopJudge(),
-    )
-
     with pytest.raises(TypeError, match="non_json_receipt_value"):
-        compiler.compile(_request())
+        _run(optimizer_factory=_UnsafeGEPA)
 
 
 def test_nonfinite_trajectory_value_fails_closed() -> None:
@@ -496,16 +448,44 @@ def test_nonfinite_trajectory_value_fails_closed() -> None:
             student.detailed_results.val_aggregate_scores = [float("nan")]
             return student
 
-    compiler = ProgramCompiler(
-        base_artifact=load_stable_program_artifact(),
-        task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_NonfiniteGEPA,
-        judge=_NoopJudge(),
-    )
-
     with pytest.raises(TypeError, match="nonfinite_receipt_value"):
-        compiler.compile(_request())
+        _run(optimizer_factory=_NonfiniteGEPA)
+
+
+def test_an_unstamped_or_misrouted_endpoint_is_refused_before_anything_is_spent() -> None:
+    """The role contract — temperature, token ceiling, deadline — is what an identity attests.
+
+    Inferring it from the object it describes would be circular, so an LM without the stamp is refused.
+    """
+
+    class _Unstamped(_MeteredFakeLM):
+        def __init__(self, model: str, **kwargs: Any) -> None:
+            super().__init__(model, **kwargs)
+            del self.tracefold_compiler_endpoint_identity
+
+    with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
+        require_model_identity(_Unstamped("task/model"), role="task")
+    # Right stamp, wrong role: the reflection endpoint cannot answer as the task one.
+    with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
+        require_model_identity(_MeteredFakeLM("reflection/model", role="reflection"), role="task")
+
+
+def test_each_role_is_built_under_its_own_exact_budget() -> None:
+    reflection = build_optimizer_lm(
+        role="reflection",
+        model_name="reflection/model",
+        api_key="k",
+        api_base="https://reflection.test/v1",
+        # Deliberately the task route's numbers: the reflection role's budget is exact, not a floor.
+        timeout=20.0,
+        max_tokens=1_200,
+    )
+    identity = require_model_identity(reflection, role="reflection")
+
+    assert identity.max_output_tokens == REFLECTION_MAX_TOKENS
+    assert identity.timeout_seconds == REFLECTION_TIMEOUT_SECONDS
+    assert identity.temperature == 1
+    assert (METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS) == (4_096, 120.0)
 
 
 def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
@@ -878,7 +858,7 @@ def _split_episode(cluster: str, case: str, should_push: str, order: int) -> Any
             "case_id": case,
             "cluster_id": cluster,
             "stratum": "review_failure",
-            "context": _request().episodes[0].context,
+            "context": _episodes()[0].context,
             "accepted_review": {
                 "should_push": should_push,
                 "dimensions": {"factual_fidelity": "pass"},
@@ -927,7 +907,7 @@ def test_split_fails_closed_when_a_half_cannot_detect_the_regressions_it_exists_
 def test_retrieval_is_reported_separately_so_a_scalar_score_cannot_hide_a_recall_failure() -> None:
     """ "The model called it new" and "the model was never shown the card" are different defects."""
 
-    context = _request().episodes[0].context
+    context = _episodes()[0].context
     shown = context.model_copy(
         update={
             "told": context.told.model_copy(

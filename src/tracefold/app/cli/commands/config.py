@@ -89,8 +89,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "reader_card_fallback_dedicated": (model_availability.reader_card_fallback_dedicated),
                         "compiler_reflection_configured": settings.llm.news_compiler_reflection.configured,
                         "compiler_reflection_model": settings.llm.news_compiler_reflection.model,
-                        "compiler_tariff_configured": settings.llm.news_compiler_tariff.configured,
-                        "compiler_tariff_id": settings.llm.news_compiler_tariff.tariff_id,
                     },
                     "triage": settings.news.triage.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),

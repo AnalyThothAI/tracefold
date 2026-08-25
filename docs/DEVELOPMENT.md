@@ -130,7 +130,7 @@ instruction, and the empty demo section left with the DemoBank family.
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | default loop |
 | `make test-e2e` | cross-process system evidence | real service topology and end-to-end paths | default loop |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD or fail-closed evidence claims |
-| `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python lanes, PostgreSQL, RabbitMQ, compiler container smoke, deploy/e2e/golden/slow/external codegen, frontend typecheck/architecture/tests/build | `live`; missing declared resources; skip/xfail/xpass/rerun/maxfail |
+| `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python lanes, PostgreSQL, RabbitMQ, deploy/e2e/golden/slow/external codegen, frontend typecheck/architecture/tests/build | `live`; missing declared resources; skip/xfail/xpass/rerun/maxfail |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -207,10 +207,10 @@ non-passing outcome counts; and the explicit `live` deselection. A successful
 evidence run has zero failed, skipped, xfailed, xpassed, and rerun outcomes.
 Hypothesis is a test-only development dependency pinned with hashes in
 `property.lock` and installed by `make sync`; it stays outside root `uv.lock`
-because that file is byte-bound into the compiler image's
-`COMPILER_DEPENDENCY_LOCK_SHA256` host-to-container attestation. A test-tool
-addition must not silently move an identity the host verifies before staging a
-provider secret.
+because a test-tool addition should not move the runtime dependency set. (Until
+#202 that separation was load-bearing for a second reason: `uv.lock` was
+byte-bound into the compiler image's host-to-container attestation. The image is
+gone; the separation is kept because it is still the right shape.)
 
 Required CI has four jobs: hermetic `quality` (`make check`), hermetic `fast`
 (`make test-fast`), resource-backed `deterministic-full` (`make
@@ -237,10 +237,9 @@ Every PR uses the repository template and completes these fields:
 
 Mocking is not itself a problem. Mocking the risk mechanism under test is: a
 source-identity, import-path, wiring, serialization, migration, or transaction
-regression must traverse that real production seam. The compiler source-seal
-sanity test is the positive example: it calls the production identity
-calculation against the actual `tracefold.news.learning` package without
-monkeypatching the seal.
+regression must traverse that real production seam. The optimizer boundary test
+is the positive example: it parses the real import graph of
+`tracefold.news.learning.optimizer` rather than asserting its docstring.
 
 `make check` is a hermetic static/architecture/contract bundle, not a universal
 completion mandate. Run the additional lanes that cross the changed seam and
@@ -389,7 +388,7 @@ preserves history and starts `program_v6` for
 factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
 protocol/receipt v3. `0303` preserves history and starts the current
 `program_v7` for factory/executable v5. Every earlier review, dataset, recording and release receipt
-remains immutable audit history but is not compiler, validation,
+remains immutable audit history but is not optimizer, validation,
 holdout or promotion evidence. New datasets require post-epoch reviews and
 acceptance receipts bound to the exact stable Program bundle, so quality
 evidence begins at zero. Issue #190 later reissues the sole bundle inside v7
@@ -422,7 +421,7 @@ ask to ship.
 
 Until #202 there were two generation paths and two candidate types, because
 release eligibility came from *where* a candidate was produced: a sealed
-compiler image against a metered proxy, or the fast loop behind
+sealed image against a metered proxy, or the fast loop behind
 `promotable=false`. The generator was never the authority for two strings.
 `learning register` now binds any Prompt patch — GEPA's or a person's — to the
 active stable Program and a frozen dataset, re-derives the #199 Objective Plan
@@ -439,7 +438,7 @@ asserts each rather than arguing it: only an accepted review can score anything
 (a teacher draft is a proposal, never truth), a case nobody judged is named in
 the report rather than dropped from the denominator, and the package can no
 longer produce a candidate of its own.
-`tests/architecture/test_news_compiler_boundary.py` names the one CLI module
+`tests/architecture/test_news_optimizer_boundary.py` names the one CLI module
 allowed to load the optimizer in process, and asserts what the optimizer itself
 can reach: no database session, no review plane, no canary, no promotion.
 
@@ -449,7 +448,7 @@ until then: a cold, read-only `dspy.Evaluate` over the same graph, the same
 `accepted_review_metric`, so the number an operator reads before a RulePack edit
 is the number GEPA will later try to maximize. It needs no dataset, sandbox,
 tariff or container and writes nothing. Two source facts about the optimizer are
-worth stating plainly, because both were invisible while the compiler's only
+worth stating plainly, because both were invisible while the optimizer's only
 tests drove a fake GEPA:
 
 - **`dspy.GEPA` never writes demos.** Its `build_program` only assigns
@@ -461,7 +460,7 @@ tests drove a fake GEPA:
 - **GEPA matches traces to components by signature equality**
   (`t[0].signature.equals(module.signature)`). `_OptimizerOwnedPredictor` renders
   RulePacks plus the advisory into a fresh inner `dspy.Predict` and delegates, so
-  the trace records a signature the outer one never equals; the compiler re-keys
+  the trace records a signature the outer one never equals; the core re-keys
   those two entries positionally. Without that, `make_reflective_dataset` raises
   "No valid predictions found for any module" and the reflective loop cannot
   propose anything at all.
@@ -476,7 +475,7 @@ single-slot GPU that serves production Triage. A code-owned
 reflection model as read-only context; before it, `<curr_param>` was one space
 and the model was rewriting 8.5 KB of rules it could not see.
 
-The compiler has three typed roles, not copied adjacent scalars: task,
+The optimization has three typed roles, not copied adjacent scalars: task,
 reflection and `metric_judge`, each one `ModelExecutionIdentity`. Secret-free
 identity, grant, bundle and proxy enforcement derive from that single object,
 whose only digest is `endpoint_fingerprint` — the endpoint URL travels beside a
@@ -550,7 +549,7 @@ The metric scores the **reader-facing action**, not the assembler's compatibilit
 `decision` field. Each sealed episode carries one `ScoredJudgment` and a frozen
 policy projection — objective Gate facts plus the ordered sent ledger — so the
 shared pure/version-bound `production_decision()` returns the complete
-`DecisionResult` used by failure-cluster selection, baseline, compiler and
+`DecisionResult` used by failure-cluster selection, baseline, the optimizer and
 CandidateEvaluator. The projection contains no queue priority, provider score,
 macro lexicon or control state. Grounded restatement, stale-source, similarity,
 listing/telemetry and watchlist guards can all differ from model intent, so an
@@ -585,32 +584,35 @@ accepted `restatement` whose `duplicate_of` was inside the bounded window, the
 receipt reports target recall and the selected rank. "The model called it new"
 and "the model was never shown the card" are different defects with different
 fixes.
-The operator config must contain one complete, positive
-`llm.news_compiler_tariff`; every invocation pins the exact local compiler
-image ID and states metric/model/total-cost and resource limits plus a seed. The
-trusted applier cross-checks the runner's counters against the sidecar ledger,
-issues one `CompileRecordV1` holding the whole compile, and reissues the
-canonical artifact document from the exact stable root. The runner cannot write
-accepted truth, register a candidate, alter trusted Program state, accept,
-deploy or promote.
+Every invocation states metric/model/total-cost limits, a per-call cost ceiling
+and a seed. The job cannot write accepted truth, register a candidate, alter
+trusted Program state, accept, deploy or promote — `learning register` is a
+separate command with a separate credential, and it re-derives the Objective
+Plan rather than trusting what the candidate declares.
 
-That record is the second half of #193. Seven content-addressed receipts, a
+The compile record was the second half of #193. Seven content-addressed receipts, a
 chain root, a runner receipt, an optimizer provenance record and a machine diff
 became one document, embedded whole and addressed by `compile_record_sha256`,
-which is also its `news_learning_artifacts` key under the new `compile_record`
-kind. The rule that decided each field: a digest survives only if it addresses
-independently stored bytes, crosses a real trust boundary, is a durable key,
-fingerprints an external mutable identity that cannot be stored whole, or
-serves a consumer that cannot read the parent payload. Everything else was
-being computed and verified by the same code in the same process over a payload
-sitting next to it. `CompilerBuildAttestation` is what a digest looks like when
-it does pass that rule: host tree, image payload copied out before any secret
-is staged, and the container's own recomputation, all three required to agree.
-`ProposalReceipt` carries the record root and repeats it as
-`generator_execution_sha` for a Program candidate; `CandidateEvaluator` reads
-that one row instead of walking a chain. Migration `20260825_0305` admits the
-new kind, keeps `compile_receipt` readable as audit history, and trips open
-canary activations whose candidate was registered against the old chain.
+which was also its `news_learning_artifacts` key. #202 removed the compile
+itself, and with it that record, the sealed input bundle, the sidecar ledger,
+the `CompilerBuildAttestation` and the tariff — documents that proved *where*
+two advisory instructions were produced, which is not what makes them safe to
+ship. The rule those cuts were decided by still holds and is worth keeping: a
+digest survives only if it addresses independently stored bytes, crosses a real
+trust boundary, is a durable key, fingerprints an external mutable identity that
+cannot be stored whole, or serves a consumer that cannot read the parent
+payload. Everything else is computed and verified by the same code in the same
+process over a payload sitting next to it — a self-proof, not an attestation.
+
+What replaced provenance is binding, checked by a party that did not produce the
+candidate. `ProposalReceipt` names the registered `news_prompt_candidate_v1` by
+`prompt_candidate_sha256` and carries the registrar's *own*
+`development_episode_projection_root_sha256`; `learning register` re-applies the
+patch to derive the arm's Program identity and re-derives the #199 Objective
+Plan rather than trusting the candidate's summary. Migration `20260825_0307`
+admits the new kind, keeps `compile_receipt` and `compile_record` readable as
+audit history, and trips open canary activations whose candidate was registered
+against the old contract.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,

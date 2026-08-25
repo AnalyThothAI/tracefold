@@ -159,15 +159,20 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.learning.baseline import build_judge
-    from tracefold.news.learning.compiler.gepa import build_compile_lm
-    from tracefold.news.learning.compiler.security import (
+    from tracefold.news.learning.contracts import (
         REFLECTION_MAX_TOKENS,
         REFLECTION_TIMEOUT_SECONDS,
+        DevelopmentDatasetRef,
+        OptimizationBudget,
     )
-    from tracefold.news.learning.contracts import DevelopmentDatasetRef, OptimizationBudget
     from tracefold.news.learning.evaluator import CandidateEvaluator
     from tracefold.news.learning.objective import DevelopmentEpisode
-    from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
+    from tracefold.news.learning.optimizer import (
+        FrozenDevelopmentDataset,
+        OptimizationConfig,
+        build_optimizer_lm,
+        optimize,
+    )
     from tracefold.news.program.artifact import load_stable_program_artifact
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
@@ -213,7 +218,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         api_key=str(configured_reflection.api_key),
         base_url=str(configured_reflection.base_url),
     )
-    task_lm = build_compile_lm(
+    task_lm = build_optimizer_lm(
         role="task",
         model_name=task.model_name,
         api_key=task.api_key,
@@ -222,7 +227,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
         model_kwargs=task.model_kwargs,
     )
-    reflection_lm = build_compile_lm(
+    reflection_lm = build_optimizer_lm(
         role="reflection",
         model_name=reflection.model_name,
         api_key=reflection.api_key,

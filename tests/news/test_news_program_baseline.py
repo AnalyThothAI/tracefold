@@ -14,7 +14,6 @@ from tracefold.news.learning.baseline import (
     build_baseline_cases,
     run_baseline,
 )
-from tracefold.news.learning.compiler import root as program_compiler
 from tracefold.news.learning.metric import accepted_review_metric
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
@@ -146,7 +145,7 @@ def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> dspy.Predict
 def test_optimizer_and_baseline_share_one_metric_object() -> None:
     """Two implementations would let the number an operator reads drift from the number GEPA maximizes."""
 
-    assert program_compiler.accepted_review_metric is accepted_review_metric
+    assert program_metric.accepted_review_metric is accepted_review_metric
     assert accepted_review_metric.__module__ == "tracefold.news.learning.metric"
 
 

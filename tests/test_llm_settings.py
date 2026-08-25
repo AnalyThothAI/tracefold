@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from tracefold.platform.config.models import LlmCompilerTariffConfig, LlmConfig, news_model_availability
+from tracefold.platform.config.models import LlmConfig, news_model_availability
 
 
 def _availability(llm: LlmConfig):
@@ -54,38 +54,18 @@ def test_availability_without_fallback_is_unchanged() -> None:
     assert models.reader_card_dedicated is False
     assert models.program_configured is True
     assert LlmConfig().news_triage_fallback.configured is False
-    assert LlmConfig().news_compiler_tariff.configured is False
 
 
-def test_compiler_tariff_is_complete_positive_and_secret_free() -> None:
-    with pytest.raises(ValidationError, match="llm_news_compiler_tariff_incomplete"):
-        LlmCompilerTariffConfig(tariff_id="provider-contract-2026-08")
-    with pytest.raises(ValidationError):
-        LlmCompilerTariffConfig(
-            tariff_id="provider-contract-2026-08",
-            input_token_overhead=1024,
-            task_input_microusd_per_million=0,
-            task_output_microusd_per_million=1,
-            reflection_input_microusd_per_million=1,
-            reflection_output_microusd_per_million=1,
-            metric_judge_input_microusd_per_million=1,
-            metric_judge_output_microusd_per_million=1,
-        )
+def test_the_compiler_tariff_key_is_gone_rather_than_ignored() -> None:
+    """#202 §6.2 deletes the tariff with the metered proxy that reserved against it.
 
-    tariff = LlmCompilerTariffConfig(
-        tariff_id="provider-contract-2026-08",
-        input_token_overhead=1024,
-        task_input_microusd_per_million=300_000,
-        task_output_microusd_per_million=1_200_000,
-        reflection_input_microusd_per_million=300_000,
-        reflection_output_microusd_per_million=1_200_000,
-        metric_judge_input_microusd_per_million=400_000,
-        metric_judge_output_microusd_per_million=1_600_000,
-    )
+    `LlmConfig` forbids unknown keys, so an operator YAML still carrying the block fails to load with the
+    key named — which is the intended migration signal, not a silently ignored setting. The offline
+    optimizer charges an unpriced call at the operator's declared `--max-call-cost-microusd` instead.
+    """
 
-    assert tariff.configured is True
-    assert tariff.tariff_id == "provider-contract-2026-08"
-    assert tariff.metric_judge_output_microusd_per_million == 1_600_000
+    with pytest.raises(ValidationError, match="news_compiler_tariff"):
+        LlmConfig(news_compiler_tariff={"tariff_id": "provider-contract-2026-08"})
 
 
 def test_reader_fallback_requires_the_event_fallback_route() -> None:

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import os
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -441,3 +443,46 @@ def load_program_artifact(program_sha256: str) -> ProgramStrategyArtifactV1:
     if artifact.program_sha256 != identity:
         raise ValueError("news_program_artifact_file_identity_mismatch")
     return artifact
+
+
+def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, artifact_root: Path) -> str:
+    """Persist one already trusted/applied artifact document atomically."""
+
+    requested_root = Path(artifact_root)
+    if ".." in requested_root.parts or requested_root.is_symlink():
+        raise ValueError("news_program_compile_artifact_root_invalid")
+    requested_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        root = requested_root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("news_program_compile_artifact_root_invalid") from exc
+    if not root.is_dir() or requested_root.absolute().resolve() != root:
+        raise ValueError("news_program_compile_artifact_root_invalid")
+    document = ProgramStrategyArtifactCodec.encode(artifact)
+    destination = root / f"{artifact.program_sha256}.json"
+    if destination.exists():
+        if ProgramStrategyArtifactCodec.load(str(destination)) != artifact:
+            raise ValueError("news_program_compile_artifact_collision")
+        return str(destination)
+    temporary = root / f".{artifact.program_sha256}.{uuid.uuid4().hex}.tmp"
+    try:
+        _write_exclusive(temporary, document)
+        os.rename(temporary, destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    if ProgramStrategyArtifactCodec.load(str(destination)) != artifact:
+        raise ValueError("news_program_compile_artifact_write_verification_failed")
+    return str(destination)
+
+
+def _write_exclusive(path: Path, document: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        encoded = document.encode("utf-8")
+        written = 0
+        while written < len(encoded):
+            written += os.write(descriptor, encoded[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

@@ -25,15 +25,10 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import MAX_TRANSIENT_ATTEMPTS, RETRY_TTL_MS
 from tracefold.news.delivery import render_first_card
 from tracefold.news.eval.replay import replay_hits
-from tracefold.news.learning.compiler.root import COMPILER_ID
-from tracefold.news.learning.compiler.security import (
-    COMPILE_RECORD_SCHEMA,
-    COMPILER_BUILD_ATTESTATION_SCHEMA,
-    COMPILER_CORPUS_SCHEMA,
-    COMPILER_INPUT_SCHEMA,
-    COMPILER_RUNNER_RECEIPTS_SCHEMA,
+from tracefold.news.learning.contracts import (
     MODEL_EXECUTION_IDENTITY_SCHEMA,
-    PROXY_EXECUTION_SCHEMA,
+    OPTIMIZATION_RUN_REPORT_SCHEMA,
+    PROMPT_CANDIDATE_SCHEMA,
 )
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
@@ -128,12 +123,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_175_index_then_issue_193_compile_record_then_issue_202_prompt_candidate",
         "20260825_0307",
     ),
-    # #190 adds the dedicated real-package compiler target and moves the web-dist copy to the final
-    # runtime stage. Program source, dependency lock, prompts, routes and call budgets stay unchanged;
-    # the container boundary is intentionally strengthened and is exercised by compiler-smoke.
+    # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
+    # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
+    # — what leaves the file is one build stage that only ever produced an image for the sandbox.
     "infrastructure_and_dependency_sha256.Dockerfile": (
-        "issue_190_compiler_container_verification",
-        "387d0d8713f9e87d228d78684e188d571c1a25ab0f800370977cf14e20bb85b1",
+        "issue_202_compiler_image_deleted",
+        "e777fbc00a1f67bb2cbc7a3b349171beb2f10a2c3c33c8dd8c18ed3e2188e6cb",
     ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
@@ -169,39 +164,19 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # receipt, a provenance record and a machine diff become one `CompileRecordV1`, and the three-level
     # endpoint identity plus the role binding become one `ModelExecutionIdentity`. The schema list is the
     # shape of that collapse, so every slot moves.
-    "program_learning.compiler_schemas[0]": (
-        "issue_193_compile_record_convergence",
-        "news_program_compile_record_v1",
-    ),
-    # v4: the corpus receipt kept three digests of content the bundle already embeds and commits to —
-    # `development_dataset_payload_sha256`, `case_root_sha256`, `cluster_root_sha256` — each checked
-    # against a value computed from the same object. Only `episode_projection_root_sha256` survives,
-    # because a second party re-projects the episodes and compares it.
-    "program_learning.compiler_schemas[1]": (
-        "issue_193_compile_record_convergence",
-        "tracefold.news.compile_corpus_receipt.v4",
-    ),
-    "program_learning.compiler_schemas[2]": (
-        "issue_193_compile_record_convergence",
-        "tracefold.news.compile_input_bundle.v3",
-    ),
-    "program_learning.compiler_schemas[3]": (
-        "issue_193_compile_record_convergence",
-        "tracefold.news.compiler_build_attestation.v1",
-    ),
-    "program_learning.compiler_schemas[4]": (
-        "issue_193_compile_record_convergence",
-        "tracefold.news.compiler_proxy_execution.v4",
-    ),
-    # v5 (#193 PR-C): the receipt carries the optimization and the spend whole, rather than restating
-    # sixteen fields the runner's own result already held on the other side of a field-by-field copy.
-    "program_learning.compiler_schemas[5]": (
-        "issue_193_compile_record_convergence",
-        "tracefold.news.compiler_runner_receipts.v5",
-    ),
-    "program_learning.compiler_schemas[6]": (
-        "issue_193_compile_record_convergence",
-        "tracefold.news.model_execution_identity.v1",
+    # #202 deletes the News-specific compiler platform. The seven schemas that described an image, a
+    # metered proxy ledger, a three-party build attestation and a sealed input bundle are replaced by
+    # three that describe what a candidate *is*: the role identity, the write-set, and the terminal run
+    # report. `compiler_id` goes with the compiler.
+    "program_learning.compiler_id": ("issue_202_single_offline_optimizer", _MISSING),
+    "program_learning.compiler_schemas": ("issue_202_single_offline_optimizer", _MISSING),
+    "program_learning.optimizer_schemas": (
+        "issue_202_single_offline_optimizer",
+        [
+            "news_optimization_run_report_v1",
+            "news_prompt_candidate_v1",
+            "tracefold.news.model_execution_identity.v1",
+        ],
     ),
     "program_learning.factory_id": (
         "issue_193_program_strategy_artifact_hard_cut",
@@ -457,16 +432,13 @@ def _program_contract() -> dict[str, Any]:
         "policy_version": TRIAGE_POLICY_VERSION,
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "metric_id": METRIC_ID,
-        "compiler_id": COMPILER_ID,
-        "compiler_schemas": sorted(
+        # #202 deleted the compiler platform: seven schemas describing an image, a proxy ledger, a build
+        # attestation and a sealed input bundle become three describing what a candidate *is*.
+        "optimizer_schemas": sorted(
             (
-                COMPILER_INPUT_SCHEMA,
-                COMPILER_CORPUS_SCHEMA,
-                COMPILER_BUILD_ATTESTATION_SCHEMA,
                 MODEL_EXECUTION_IDENTITY_SCHEMA,
-                PROXY_EXECUTION_SCHEMA,
-                COMPILER_RUNNER_RECEIPTS_SCHEMA,
-                COMPILE_RECORD_SCHEMA,
+                PROMPT_CANDIDATE_SCHEMA,
+                OPTIMIZATION_RUN_REPORT_SCHEMA,
             )
         ),
     }

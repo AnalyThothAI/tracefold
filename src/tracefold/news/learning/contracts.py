@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any, Literal
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +25,30 @@ LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_releas
 LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"
+MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
+    "tracefold.news.model_execution_identity.v1"
+)
+# v3 (#150): the projection now carries `policy_values`/`policy_sha256`/`policy_source`, and the metric
+# fails closed without them. A dataset sealed under v2 is content-addressed by its `dataset_sha` and so
+# cannot be regenerated without changing identity — left at v2 it would still validate here and then
+# raise inside every single metric call, which a compile run reports as 100% provider failure with zero
+# provider calls actually made. This is the one field whose job is to detect exactly that change.
+# v4 (#199): `accepted_review.first_bad_owner_explicit` carries the owner an operator wrote into the
+# submission, distinct from the derived one the column holds. A v3 projection cannot answer "did a human
+# blame the Prompt", so an Objective Plan built from one would grant GEPA every derived owner in the
+# corpus — the exact permission #199 exists to withdraw.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v4"] = (
+    "tracefold.news.development_compile_episode.v4"
+)
+OptimizerRole = Literal["task", "reflection", "metric_judge"]
+# The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,
+# which capped a proposed instruction at 1,200 tokens — below what the advisory slot itself accepts — and
+# gave a reflection call the 20 s route deadline. These live here, not beside the optimizer, because the
+# metric judge is built by the baseline harness too and must not pull DSPy's GEPA in to learn its ceiling.
+REFLECTION_MAX_TOKENS = 32_000
+REFLECTION_TIMEOUT_SECONDS = 300.0
+METRIC_JUDGE_MAX_TOKENS = 4_096
+METRIC_JUDGE_TIMEOUT_SECONDS = 120.0
 OPTIMIZATION_RUN_REPORT_SCHEMA: Literal["news_optimization_run_report_v1"] = "news_optimization_run_report_v1"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -44,6 +69,128 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(normalized, dict):  # pragma: no cover - Mapping input guarantees this
         raise TypeError("news_learning_proposal_payload_invalid")
     return normalized
+
+
+class ModelExecutionIdentity(BaseModel):
+    """One optimizer role's complete, secret-free execution contract.
+
+    This replaced a three-level digest chain — `endpoint_sha256` -> `model_sha256` -> `binding_sha256`,
+    and then a fourth `binding_sha256` over the whole role config. Only the first addressed anything the
+    record cannot carry: the endpoint URL, which holds the host and travels beside a credential. The rest
+    hashed values printed immediately below them, so a verifier that had the object never needed them and
+    a verifier that did not have the object could not use them.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["tracefold.news.model_execution_identity.v1"] = MODEL_EXECUTION_IDENTITY_SCHEMA
+    role: OptimizerRole
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    # The one digest here: the canonical endpoint URL identifies the host a credential is presented to, so
+    # it is fingerprinted rather than stored.
+    endpoint_fingerprint: str = Field(pattern=_SHA256_PATTERN)
+    max_output_tokens: int = Field(ge=64, le=32_000)
+    timeout_seconds: float = Field(gt=0, le=3_600)
+    temperature: float = Field(ge=0, le=2)
+    model_kwargs: dict[str, Any] = Field(default_factory=dict)
+    adapter: Literal["strict_json", "gepa_reflection"]
+    cache: Literal[False] = False
+    num_retries: Literal[0] = 0
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        role: OptimizerRole,
+        model: str,
+        api_base: str,
+        max_output_tokens: int,
+        timeout_seconds: float,
+        temperature: float,
+        model_kwargs: Mapping[str, Any],
+    ) -> ModelExecutionIdentity:
+        normalized_model = str(model).strip()
+        if not normalized_model:
+            raise ValueError("news_program_compile_model_identity_unavailable")
+        provider = normalized_model.split("/", maxsplit=1)[0] if "/" in normalized_model else "unknown"
+        return cls(
+            role=role,
+            provider=provider,
+            model=normalized_model,
+            endpoint_fingerprint=endpoint_fingerprint(api_base),
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=float(timeout_seconds),
+            temperature=float(temperature),
+            model_kwargs=_model_or_mapping_payload(model_kwargs),
+            adapter="gepa_reflection" if role == "reflection" else "strict_json",
+        )
+
+    @model_validator(mode="after")
+    def _role_contract_is_exact(self) -> ModelExecutionIdentity:
+        if self.role == "task":
+            valid = self.temperature == 0 and self.adapter == "strict_json"
+        elif self.role == "reflection":
+            valid = (
+                self.temperature == 1
+                and self.adapter == "gepa_reflection"
+                and self.max_output_tokens == REFLECTION_MAX_TOKENS
+                and self.timeout_seconds == REFLECTION_TIMEOUT_SECONDS
+            )
+        else:
+            valid = (
+                self.temperature == 0
+                and self.adapter == "strict_json"
+                and self.max_output_tokens == METRIC_JUDGE_MAX_TOKENS
+                and self.timeout_seconds == METRIC_JUDGE_TIMEOUT_SECONDS
+            )
+        if not valid:
+            raise ValueError(f"news_program_compile_{self.role}_role_contract_invalid")
+        reject_secret_material(self.model_dump(mode="json"), path=f"model_execution_identity.{self.role}")
+        return self
+
+
+def endpoint_fingerprint(api_base: str) -> str:
+    """The secret-free identity of one provider endpoint."""
+
+    return canonical_sha(
+        {
+            "identity_schema": MODEL_EXECUTION_IDENTITY_SCHEMA,
+            "canonical_endpoint": _canonical_endpoint(api_base),
+        }
+    )
+
+
+def _canonical_endpoint(value: str) -> str:
+    raw = str(value).strip()
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("news_program_compile_endpoint_identity_invalid") from exc
+    if (
+        parsed.scheme.casefold() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("news_program_compile_endpoint_identity_invalid")
+    scheme = parsed.scheme.casefold()
+    host = parsed.hostname.casefold()
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    netloc = host if port is None or default_port else f"{host}:{port}"
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit(SplitResult(scheme, netloc, path, "", ""))
+
+
+def _model_or_mapping_payload(value: BaseModel | Mapping[str, Any]) -> dict[str, Any]:
+    payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else dict(value)
+    reject_nonfinite_json(payload)
+    return payload
 
 
 class ClosedWindow(BaseModel):
@@ -246,6 +393,9 @@ class PromptPatchV1(BaseModel):
             reader_card_instruction=self.reader_card_instruction,
         )
 
+    def instruction_for(self, predictor: str) -> str:
+        return self.event_semantics_instruction if predictor == "event_semantics" else self.reader_card_instruction
+
     def changes(self, parent: ProgramStrategyArtifactV1) -> bool:
         return (
             self.event_semantics_instruction != parent.event_semantics_instruction
@@ -386,21 +536,30 @@ class DatasetCaseRef(BaseModel):
 
 
 __all__ = [
+    "COMPILE_EPISODE_PROJECTION_SCHEMA",
     "LEARNING_EPOCH",
     "LEARNING_PROFILE_ID",
     "LEARNING_PROGRAM_VERSION",
+    "METRIC_JUDGE_MAX_TOKENS",
+    "METRIC_JUDGE_TIMEOUT_SECONDS",
+    "MODEL_EXECUTION_IDENTITY_SCHEMA",
     "OPTIMIZATION_RUN_REPORT_SCHEMA",
     "PROMPT_CANDIDATE_SCHEMA",
+    "REFLECTION_MAX_TOKENS",
+    "REFLECTION_TIMEOUT_SECONDS",
     "ArmManifest",
     "CandidateManifest",
     "ClosedWindow",
     "DatasetCaseRef",
     "DevelopmentDatasetRef",
+    "ModelExecutionIdentity",
     "OptimizationBudget",
     "OptimizationOutcome",
     "OptimizationResult",
     "OptimizationRunReport",
+    "OptimizerRole",
     "PromptCandidateV1",
     "PromptPatchV1",
     "ProposalReceipt",
+    "endpoint_fingerprint",
 ]

@@ -159,24 +159,13 @@ llm:
     api_key: "<reader fallback secret>"
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
-  # Required only for the cold compiler. Reflection uses this endpoint with
+  # Required only for `news learning optimize`. Reflection uses this endpoint with
   # code-owned 32k/300s/temperature-1; metric_judge derives a distinct sealed
   # role from it with its own schema, budget, tariff and accounted calls.
   news_compiler_reflection:
     api_key: "<compiler reflection secret>"
     base_url: "https://reflection.example/v1"
     model: "reflection-model"
-  # Optional cold-compiler contract. All values are required together and do
-  # not affect production News calls. Rates are micro-USD per million tokens.
-  news_compiler_tariff:
-    tariff_id: "provider-contract-2026-08"
-    input_token_overhead: 1024
-    task_input_microusd_per_million: 300000
-    task_output_microusd_per_million: 1200000
-    reflection_input_microusd_per_million: 300000
-    reflection_output_microusd_per_million: 1200000
-    metric_judge_input_microusd_per_million: 400000
-    metric_judge_output_microusd_per_million: 1600000
 
 news:
   enabled: true
