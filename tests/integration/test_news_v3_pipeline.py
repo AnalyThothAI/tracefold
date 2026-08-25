@@ -770,6 +770,21 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
     assert all(row["source_contract_version"] == "opennews_liquidation_source_v1" for row in rows)
     assert all(row["source_contract_complete"] is False for row in rows)
 
+    # Raw Item retention may remove the provider envelope, but the normalized
+    # immutable replay fact is a separate durable research source.
+    retained = conn.execute(
+        "SELECT source_key, item_id FROM news_market_liquidations WHERE venue = 'binance'"
+    ).fetchone()
+    assert retained is not None
+    conn.execute("DELETE FROM news_items WHERE item_id = %s", (retained["item_id"],))
+    conn.commit()
+    assert (
+        conn.execute(
+            "SELECT source_key FROM news_market_liquidations WHERE source_key = %s", (retained["source_key"],)
+        ).fetchone()
+        is not None
+    )
+
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:
     repos = repositories_for_connection(conn)

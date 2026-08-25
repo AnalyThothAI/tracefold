@@ -103,15 +103,31 @@ export function TradingFunnel({
                     .filter(([, value]) => value > 0)
                     .map(([reason, value]) => `${reason} ${value}`)
                     .join("、");
+                  const exits = Object.entries(cohort.exit_by_reason ?? {})
+                    .filter(([, value]) => value > 0)
+                    .map(([reason, value]) => `${reason} ${value}`)
+                    .join("、");
+                  const net = cohort.net_ex_funding_bootstrap;
+                  const promotion = (cohort.promotion_reasons ?? []).join("、");
                   return `${STRATEGY_ZH[cohort.strategy_id] ?? cohort.strategy_id} · ${cohort.venue}/${
                     cohort.liquidity_bucket
                   } · holdout ${cohort.holdout}/${cohort.evaluated} · 覆盖 ${(
                     cohort.coverage_bps / 100
-                  ).toFixed(0)}% · ${horizons} · MFE/MAE ${
+                  ).toFixed(0)}% · 延迟均值 ${
+                    cohort.mean_source_latency_ms == null ? "—" : `${cohort.mean_source_latency_ms}ms`
+                  } · ${horizons} · MFE/MAE ${
                     cohort.mfe_mean_bps == null ? "—" : (cohort.mfe_mean_bps / 100).toFixed(2)
                   }%/${cohort.mae_mean_bps == null ? "—" : (cohort.mae_mean_bps / 100).toFixed(2)}%${
+                    exits ? ` · 出场：${exits}` : ""
+                  } · 净值(不含资金费) ${
+                    net == null
+                      ? "—"
+                      : `${(net.mean_bps / 100).toFixed(2)}% [${(
+                          net.lower_95_bps / 100
+                        ).toFixed(2)}%, ${(net.upper_95_bps / 100).toFixed(2)}%]`
+                  }${
                     missing ? ` · 缺失：${missing}` : ""
-                  }`;
+                  }${promotion ? ` · 晋级阻断：${promotion}` : ""}`;
                 })
                 .join(" ｜ ")}
         </span>

@@ -10,9 +10,8 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from ..contracts import Bar, PolicyDecision
-from ..decision.regime import select_bar
 
-EVENT_STUDY_VERSION = "liquidation_event_study_v2"
+EVENT_STUDY_VERSION = "liquidation_event_study_v3"
 BAR_INTERVAL_MS = 300_000
 HORIZONS_MS: tuple[tuple[str, int], ...] = (
     ("5s", 5_000),
@@ -32,6 +31,34 @@ class EventStudyPolicy:
     taker_fee_bps_per_leg: int
     slippage_bps_per_leg: int = 2
     bar_interval_ms: int = BAR_INTERVAL_MS
+
+    @property
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "stop_bps": self.stop_bps,
+            "take_profit_bps": self.take_profit_bps,
+            "max_holding_ms": self.max_holding_ms,
+            "taker_fee_bps_per_leg": self.taker_fee_bps_per_leg,
+            "slippage_bps_per_leg": self.slippage_bps_per_leg,
+            "bar_interval_ms": self.bar_interval_ms,
+        }
+
+
+# This policy belongs to EVENT_STUDY_VERSION. Operator order edits affect new
+# capital Orders, never pending research rows completed under this version.
+EVENT_STUDY_POLICY = EventStudyPolicy(
+    stop_bps=200,
+    take_profit_bps=0,
+    max_holding_ms=1_800_000,
+    taker_fee_bps_per_leg=5,
+)
+EVENT_STUDY_SETTLEMENT_LAG_MS = (
+    max(
+        EVENT_STUDY_POLICY.max_holding_ms,
+        *(duration for _, duration in HORIZONS_MS),
+    )
+    + EVENT_STUDY_POLICY.bar_interval_ms
+)
 
 
 def hypothesis_side(strategy_id: str, dominant_liquidated_side: str | None) -> Literal["long", "short"] | None:
@@ -53,7 +80,7 @@ def measure_event(
     """Measure only closed bars at or after the cutoff; unsupported precision stays explicit."""
 
     ordered = sorted(bars, key=lambda bar: bar.close_at_ms)
-    start = select_bar(ordered, target_ms=cutoff_ms, gap_tolerance_ms=gap_tolerance_ms)
+    start = _select_bar_at_or_after(ordered, target_ms=cutoff_ms, gap_tolerance_ms=gap_tolerance_ms)
     if start is None:
         return None
     horizons: dict[str, dict[str, Any]] = {}
@@ -66,7 +93,8 @@ def measure_event(
             }
             missing.append(f"horizon:{label}:source_bar_resolution_unsupported")
             continue
-        end = select_bar(ordered, target_ms=cutoff_ms + duration, gap_tolerance_ms=gap_tolerance_ms)
+        target_at_ms = start.close_at_ms + duration
+        end = _select_bar_at_or_after(ordered, target_ms=target_at_ms, gap_tolerance_ms=gap_tolerance_ms)
         if end is None or end.close_at_ms <= start.close_at_ms:
             horizons[label] = {"status": "missing", "reason": "closed_bar_unavailable"}
             missing.append(f"horizon:{label}:closed_bar_unavailable")
@@ -76,17 +104,32 @@ def measure_event(
             "status": "measured",
             "return_bps": raw,
             "signed_return_bps": _signed(raw, research_side),
+            "target_at_ms": target_at_ms,
             "observed_at_ms": end.close_at_ms,
         }
 
-    path = [bar for bar in ordered if start.close_at_ms < bar.close_at_ms <= cutoff_ms + 3_600_000]
+    longest_horizon_ms = max(duration for _, duration in HORIZONS_MS)
+    path = [bar for bar in ordered if start.close_at_ms < bar.close_at_ms <= start.close_at_ms + longest_horizon_ms]
     raw_path = [_return_bps(start.close, bar.close) for bar in path]
     signed_path = (
         [value if research_side == "long" else -value for value in raw_path] if research_side is not None else []
     )
     mfe = max(signed_path) if signed_path else None
     mae = min(signed_path) if signed_path else None
-    exit_result = _simulate_exit(start.close, path, side=research_side, policy=policy, cutoff_ms=cutoff_ms)
+    exit_path = [
+        bar
+        for bar in ordered
+        if start.close_at_ms < bar.close_at_ms <= start.close_at_ms + policy.max_holding_ms + policy.bar_interval_ms
+    ]
+    exit_result = _simulate_exit(
+        start.close,
+        exit_path,
+        entry_at_ms=start.close_at_ms,
+        side=research_side,
+        policy=policy,
+    )
+    if exit_result.get("status") == "missing":
+        missing.append(f"exit:{exit_result.get('reason') or 'unavailable'}")
     if exit_result.get("funding_cost_bps") is None:
         missing.append("cost:funding_unavailable")
     return {
@@ -94,7 +137,10 @@ def measure_event(
         "cutoff_ms": cutoff_ms,
         "start_price": str(start.close),
         "start_bar_closed_at_ms": start.close_at_ms,
+        "entry_lag_ms": start.close_at_ms - cutoff_ms,
+        "entry_semantics": "first_closed_5m_trade_price_bar_at_or_after_cutoff",
         "source_bar_interval_ms": policy.bar_interval_ms,
+        "event_study_policy": policy.snapshot,
         "strategy_decision": decision,
         "hypothesis_side": research_side,
         "horizons": horizons,
@@ -171,13 +217,14 @@ def summarize_evaluation_rows(
 
 
 def _summary(rows: Sequence[Mapping[str, Any]], *, cohort_key: str) -> dict[str, Any]:
-    completed = [row for row in rows if isinstance(row.get("market_outcome"), Mapping)]
+    outcomes = [row for row in rows if isinstance(row.get("market_outcome"), Mapping)]
+    completed = [row for row in outcomes if _outcome_complete(row["market_outcome"])]
     horizons: dict[str, dict[str, Any]] = {}
     for label, _ in HORIZONS_MS:
-        values = [value for row in completed if (value := measured_horizon(row["market_outcome"], label)) is not None]
+        values = [value for row in outcomes if (value := measured_horizon(row["market_outcome"], label)) is not None]
         horizons[label] = {
             "measured": len(values),
-            "missing": len(completed) - len(values),
+            "missing": len(rows) - len(values),
             "bootstrap": bootstrap_mean_interval(values, cohort_key=f"{cohort_key}:{label}"),
         }
     mfe = _integer_values(completed, "mfe_bps")
@@ -200,7 +247,9 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, cohort_key: str) -> dict[str,
         event_at, received_at = fact.get("event_at_ms"), fact.get("received_at_ms")
         if isinstance(event_at, int) and isinstance(received_at, int):
             latency.append(max(0, received_at - event_at))
-    for row in completed:
+    if len(outcomes) != len(rows):
+        missing["outcome:not_attached"] = len(rows) - len(outcomes)
+    for row in outcomes:
         outcome = row["market_outcome"]
         for reason in outcome.get("missing_data", []):
             missing[str(reason)] = missing.get(str(reason), 0) + 1
@@ -269,33 +318,41 @@ def _simulate_exit(
     entry: Decimal,
     path: Sequence[Bar],
     *,
+    entry_at_ms: int,
     side: Literal["long", "short"] | None,
     policy: EventStudyPolicy,
-    cutoff_ms: int,
 ) -> dict[str, Any]:
-    assumptions = {
+    assumptions: dict[str, int | str] = {
         "path_semantics": "closed_5m_trade_price_bars",
-        "stop_bps": policy.stop_bps,
-        "take_profit_bps": policy.take_profit_bps,
-        "max_holding_ms": policy.max_holding_ms,
-        "taker_fee_bps_per_leg": policy.taker_fee_bps_per_leg,
-        "slippage_bps_per_leg": policy.slippage_bps_per_leg,
+        **policy.snapshot,
     }
     if side is None:
         return {**assumptions, "status": "not_applicable", "reason": "hypothesis_side_unavailable"}
-    eligible = [bar for bar in path if bar.close_at_ms <= cutoff_ms + policy.max_holding_ms]
-    if not eligible:
-        return {**assumptions, "status": "missing", "reason": "holding_path_unavailable"}
-    selected = eligible[-1]
-    reason = "max_holding"
+    deadline_ms = entry_at_ms + policy.max_holding_ms
+    eligible = [bar for bar in path if bar.close_at_ms <= deadline_ms]
     for bar in eligible:
         signed = _signed(_return_bps(entry, bar.close), side)
         if signed is not None and signed <= -policy.stop_bps:
-            selected, reason = bar, "stop_loss"
-            break
+            return _measured_exit(assumptions, entry=entry, selected=bar, side=side, reason="stop_loss", policy=policy)
         if policy.take_profit_bps > 0 and signed is not None and signed >= policy.take_profit_bps:
-            selected, reason = bar, "take_profit"
-            break
+            return _measured_exit(
+                assumptions, entry=entry, selected=bar, side=side, reason="take_profit", policy=policy
+            )
+    selected = _select_bar_at_or_after(path, target_ms=deadline_ms, gap_tolerance_ms=policy.bar_interval_ms)
+    if selected is None:
+        return {**assumptions, "status": "missing", "reason": "holding_deadline_unobserved"}
+    return _measured_exit(assumptions, entry=entry, selected=selected, side=side, reason="max_holding", policy=policy)
+
+
+def _measured_exit(
+    assumptions: Mapping[str, int | str],
+    *,
+    entry: Decimal,
+    selected: Bar,
+    side: Literal["long", "short"],
+    reason: str,
+    policy: EventStudyPolicy,
+) -> dict[str, Any]:
     gross = _signed(_return_bps(entry, selected.close), side)
     costs = 2 * (policy.taker_fee_bps_per_leg + policy.slippage_bps_per_leg)
     return {
@@ -313,6 +370,21 @@ def _simulate_exit(
     }
 
 
+def _select_bar_at_or_after(bars: Sequence[Bar], *, target_ms: int, gap_tolerance_ms: int) -> Bar | None:
+    selected = min((bar for bar in bars if bar.close_at_ms >= target_ms), key=lambda bar: bar.close_at_ms, default=None)
+    if selected is None or selected.close_at_ms - target_ms > gap_tolerance_ms:
+        return None
+    return selected
+
+
+def _outcome_complete(outcome: Mapping[str, Any]) -> bool:
+    return (
+        all(measured_horizon(outcome, label) is not None for label in ("5m", "15m", "1h"))
+        and isinstance((exit_result := outcome.get("exit_simulation")), Mapping)
+        and exit_result.get("status") == "measured"
+    )
+
+
 def _return_bps(start: Decimal, end: Decimal) -> int:
     return int((end / start - 1) * 10_000)
 
@@ -325,6 +397,8 @@ def _signed(value: int, side: Literal["long", "short"] | None) -> int | None:
 
 __all__ = [
     "BAR_INTERVAL_MS",
+    "EVENT_STUDY_POLICY",
+    "EVENT_STUDY_SETTLEMENT_LAG_MS",
     "EVENT_STUDY_VERSION",
     "EventStudyPolicy",
     "bootstrap_mean_interval",

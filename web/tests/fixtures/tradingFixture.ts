@@ -51,6 +51,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
           holdout: 2,
           source_contract_complete: 0,
           coverage_bps: 5_000,
+          mean_source_latency_ms: 1_200,
           promotion_ready: false,
           mean_return_bps: 25,
         },
@@ -60,6 +61,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
           holdout: 2,
           source_contract_complete: 0,
           coverage_bps: 5_000,
+          mean_source_latency_ms: 1_200,
           promotion_ready: false,
           mean_return_bps: 25,
         },
@@ -75,6 +77,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
           holdout: 2,
           source_contract_complete: 0,
           coverage_bps: 5_000,
+          mean_source_latency_ms: 1_200,
           promotion_ready: false,
           promotion_reasons: ["source_contract_incomplete", "intraminute_coverage_missing"],
           horizons: {
@@ -96,6 +99,8 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
           },
           mfe_mean_bps: 80,
           mae_mean_bps: -20,
+          exit_by_reason: { max_holding: 1 },
+          net_ex_funding_bootstrap: { mean_bps: 12, lower_95_bps: 8, upper_95_bps: 16 },
           missing_data: {
             "horizon:5s:source_bar_resolution_unsupported": 1,
             "cost:funding_unavailable": 1,

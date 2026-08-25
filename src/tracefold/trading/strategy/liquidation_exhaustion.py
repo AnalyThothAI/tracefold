@@ -63,20 +63,20 @@ class LiquidationExhaustionStrategy:
             return _no_trade("source_contract_incomplete")
         if fact.source_latency_ms > self.config.max_source_latency_ms:
             return _no_trade("source_latency_above_bound")
-        if aggregate.count < self.config.min_count:
+        if aggregate.dominant_count < self.config.min_count:
             return _no_trade("exhaustion_burst_count_below_floor")
-        if aggregate.notional_usd < self.config.min_notional_usd:
+        if aggregate.dominant_notional_usd < self.config.min_notional_usd:
             return _no_trade("exhaustion_burst_notional_below_floor")
         if aggregate.dominant_liquidated_side is None:
             return _no_trade("exhaustion_burst_side_tied")
         if aggregate.dominant_share_bps < self.config.min_dominant_share_bps:
             return _no_trade("exhaustion_burst_not_one_sided")
-        move = context.market.pre_move_bps
-        if move is None:
+        displacement = context.market.displacement_bps
+        if displacement is None:
             return _no_trade("extreme_displacement_missing")
         forced_buy = aggregate.dominant_liquidated_side == "short"
-        signed_move = move if forced_buy else -move
-        if signed_move < self.config.min_extreme_displacement_bps:
+        signed_displacement = displacement if forced_buy else -displacement
+        if signed_displacement < self.config.min_extreme_displacement_bps:
             return _no_trade("extreme_displacement_below_floor")
         required = {
             "intensity_decelerating": context.intensity_decelerating,

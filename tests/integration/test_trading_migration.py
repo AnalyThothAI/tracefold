@@ -302,6 +302,12 @@ def test_0310_hard_cuts_case_kind_and_adds_immutable_strategy_ledgers() -> None:
             "trading_strategy_registrations",
             "trading_strategy_evaluations",
         }
+        liquidation_fks = conn.execute(
+            "SELECT constraint_name FROM information_schema.table_constraints "
+            "WHERE table_schema = 'public' AND table_name = 'news_market_liquidations' "
+            "AND constraint_type = 'FOREIGN KEY'"
+        ).fetchall()
+        assert liquidation_fks == []
     finally:
         if conn is not None:
             conn.close()

@@ -44,11 +44,13 @@ Before enabling it, from the clean primary checkout:
 The first enabled worker turn durably registers both liquidation strategy
 identities; any older frame is refused from the holdout. Every later live
 Strategy 2000 frame should create two shadow evaluation rows and zero
-cases/orders. After one hour, status should move those cohorts from evaluated
-to completed as closed bars become available. The report must show all six
+cases/orders. After the one-hour horizon plus the next 5-minute close, status
+should move fully measured cohorts from evaluated to completed. The report must show all six
 horizons; 5s/30s/1m and funding currently appear as named missing data because
 the source is 5-minute trade-price closes. Cohorts are separated by strategy,
 venue and liquidity bucket and include bootstrap, MFE/MAE and cost assumptions.
+Event-study v3 owns those research exit/cost assumptions as constants; editing
+the capital Order configuration cannot rewrite a pending evaluation.
 Their promotion gate must remain false with source/coverage/cost reasons;
 changing the YAML cannot
 override the code-owned `shadow` permission. To stop new paper cases without
@@ -888,6 +890,10 @@ and deployment/rollback receipts are append-only audit evidence; a retention
 change must preserve every foreign-key dependency and the ability to replay a
 sealed dataset. Narrowing the evidence window silently destroys the only
 ground truth the system has.
+
+`news_market_liquidations` is a separate immutable normalized replay ledger,
+not an Item-owned child. Item retention may remove its provider envelope but
+must leave the typed liquidation fact and source identity intact.
 
 Learning evidence follows #118's separate deterministic policy:
 

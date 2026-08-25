@@ -876,18 +876,20 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
 def test_triage_replays_an_existing_unpublished_decision_without_reinserting() -> None:
     news = RecordingNews(
         get_verdict={"final_decision": "push", "published_at_ms": None},
-        event_card=lambda *_a, **_k: pytest.fail("existing verdict must short-circuit"),
+        event_card=_card(),
     )
     bus = FakeBus()
 
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-strong"})))
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
-    assert news.names() == ["get_verdict", "mark_verdict_published"]
+    assert "event_card" in news.names()
+    assert "insert_verdict" not in news.names()
+    assert news.names()[-2:] == ["get_verdict", "mark_verdict_published"]
 
-    settled = RecordingNews(get_verdict={"final_decision": "drop", "published_at_ms": None})
+    settled = RecordingNews(get_verdict={"final_decision": "drop", "published_at_ms": None}, event_card=_card())
     quiet = FakeBus()
     asyncio.run(_triage(settled, quiet).handle(_message("event", {"event_id": "ev-strong"})))
-    assert quiet.published == [] and settled.names() == ["get_verdict"]
+    assert quiet.published == [] and settled.names()[-1] == "get_verdict"
 
 
 def test_triage_rejects_missing_event_id_and_missing_event() -> None:
@@ -2294,7 +2296,13 @@ def _liquidation_card(**overrides: Any) -> dict[str, Any]:
 
 def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> None:
     news = RecordingNews(
-        get_verdict=None,
+        # A historical generic-v10 row must not short-circuit the dedicated
+        # liquidation policy selected from the durable admission.
+        get_verdict=lambda **kwargs: (
+            {"final_decision": "push", "published_at_ms": None}
+            if kwargs["policy_version"] == TRIAGE_POLICY_VERSION
+            else None
+        ),
         event_card=_liquidation_card(),
         insert_verdict=True,
         market_liquidation={
@@ -2331,6 +2339,7 @@ def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> No
 
     assert judge.calls == 0
     assert "assign_agent_arm" not in news.names()
+    assert news.kwargs_of("get_verdict")["policy_version"] == "news_liquidation_policy_v1"
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["program_version"] == "news_liquidation_fact_v1"
     assert inserted["policy_version"] == "news_liquidation_policy_v1"

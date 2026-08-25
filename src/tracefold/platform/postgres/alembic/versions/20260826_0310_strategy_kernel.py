@@ -42,8 +42,6 @@ def upgrade() -> None:
           source_contract_version   TEXT    NOT NULL,
           source_contract_complete  BOOLEAN NOT NULL,
           created_at_ms             BIGINT  NOT NULL,
-          CONSTRAINT news_market_liquidations_item_fk
-            FOREIGN KEY (item_id) REFERENCES news_items (item_id) ON DELETE CASCADE,
           CONSTRAINT news_market_liquidations_fact_unique UNIQUE (item_id, fact_id, parser_version),
           CONSTRAINT news_market_liquidations_venue_check
             CHECK (venue IN ('binance', 'hyperliquid')),

@@ -73,26 +73,29 @@ class LiquidationContinuationStrategy:
             return _no_trade("source_contract_incomplete")
         if fact.source_latency_ms > self.config.max_source_latency_ms:
             return _no_trade("source_latency_above_bound")
-        if aggregate.count < self.config.min_count:
+        if aggregate.dominant_count < self.config.min_count:
             return _no_trade("burst_count_below_floor")
-        if aggregate.notional_usd < self.config.min_notional_usd:
+        if aggregate.dominant_notional_usd < self.config.min_notional_usd:
             return _no_trade("burst_notional_below_floor")
         if aggregate.dominant_liquidated_side is None:
             return _no_trade("burst_side_tied")
         if aggregate.dominant_share_bps < self.config.min_dominant_share_bps:
             return _no_trade("burst_not_one_sided")
-        if aggregate.acceleration_bps is None:
+        if aggregate.dominant_acceleration_bps is None:
             return _no_trade("burst_acceleration_missing")
-        if aggregate.acceleration_bps < self.config.min_acceleration_bps:
+        if aggregate.dominant_acceleration_bps < self.config.min_acceleration_bps:
             return _no_trade("burst_acceleration_below_floor")
-        move = context.market.pre_move_bps
-        if move is None:
+        momentum = context.market.price_momentum_bps
+        if momentum is None:
             return _no_trade("price_momentum_missing")
         forced_buy = aggregate.dominant_liquidated_side == "short"
-        signed_move = move if forced_buy else -move
-        if signed_move < self.config.min_price_momentum_bps:
+        signed_momentum = momentum if forced_buy else -momentum
+        if signed_momentum < self.config.min_price_momentum_bps:
             return _no_trade("price_momentum_not_confirmed")
-        if abs(move) > self.config.max_pre_move_bps:
+        pre_move = context.market.pre_move_bps
+        if pre_move is None:
+            return _no_trade("pre_move_missing")
+        if abs(pre_move) > self.config.max_pre_move_bps:
             return _no_trade("pre_move_above_ceiling")
         if context.oi is None:
             return _no_trade("oi_context_missing")

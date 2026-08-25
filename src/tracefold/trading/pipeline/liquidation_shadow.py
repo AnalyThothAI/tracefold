@@ -27,7 +27,13 @@ from ..contracts import (
     underlying_key,
 )
 from ..decision.regime import assess, pre_move_bps, select_bar
-from ..research.event_study import EVENT_STUDY_VERSION, EventStudyPolicy, hypothesis_side, measure_event
+from ..research.event_study import (
+    EVENT_STUDY_POLICY,
+    EVENT_STUDY_SETTLEMENT_LAG_MS,
+    EVENT_STUDY_VERSION,
+    hypothesis_side,
+    measure_event,
+)
 from ..strategy.root import TradingStrategy
 from ..telemetry import TradingExternalDataTelemetryPort, external_data_source, observe_provider_call
 from .runtime import (
@@ -44,7 +50,6 @@ log = logging.getLogger("tracefold.trading")
 
 _WINDOW_MS = 60_000
 _MAX_PER_TURN = 4
-_OUTCOME_HORIZON_MS = 3_600_000
 LIQUIDATION_STRATEGY_IDS: tuple[StrategyId, StrategyId] = (
     "liquidation_continuation_shadow_v1",
     "liquidation_exhaustion_shadow_v1",
@@ -72,12 +77,6 @@ class LiquidationShadowRunner:
         self._strategies = strategies
         self._telemetry = telemetry
         self._clock = clock
-        self._event_policy = EventStudyPolicy(
-            stop_bps=config.order.fixed_stop_bps,
-            take_profit_bps=config.order.take_profit_bps,
-            max_holding_ms=config.order.max_holding_ms,
-            taker_fee_bps_per_leg=config.order.taker_fee_bps,
-        )
 
     async def turn(self, state: dict[str, Any], *, funnel: Funnel, now: int) -> tuple[int, int]:
         registrations = await self._register(now)
@@ -167,6 +166,13 @@ class LiquidationShadowRunner:
                 observed_at_ms=trigger.received_at_ms,
                 pre_move_bps=move,
                 pre_move_lookback_ms=self._config.regime.lookback_ms,
+                # The public source is 5-minute close-only. A 1-minute burst
+                # cannot inherit the unrelated 1-hour pre-move as momentum or
+                # displacement; those distinct features remain unavailable.
+                price_momentum_bps=None,
+                price_momentum_window_ms=_WINDOW_MS,
+                displacement_bps=None,
+                displacement_window_ms=_WINDOW_MS,
             )
             context = FrozenStrategyContext(
                 mode=self._config.mode,
@@ -174,7 +180,9 @@ class LiquidationShadowRunner:
                 liquidation_aggregate=aggregate,
                 regime=assess(oi_direction=None, move=move, policy=self._config.regime),
                 market=market,
-                intensity_decelerating=(None if aggregate.acceleration_bps is None else aggregate.acceleration_bps < 0),
+                intensity_decelerating=(
+                    None if aggregate.dominant_acceleration_bps is None else aggregate.dominant_acceleration_bps < 0
+                ),
             )
             primary = LiquidationMarketTrigger(
                 source_key=trigger.source_key,
@@ -256,10 +264,11 @@ class LiquidationShadowRunner:
         return created
 
     async def _complete(self, *, funnel: Funnel, now: int) -> int:
-        horizon = max(_OUTCOME_HORIZON_MS, self._event_policy.max_holding_ms)
         pending = await self._db.read(
             "trading_liquidation_outcomes_pending",
-            lambda repos: repos.trading.pending_strategy_outcomes(before_cutoff_ms=now - horizon, limit=32),
+            lambda repos: repos.trading.pending_strategy_outcomes(
+                before_cutoff_ms=now - EVENT_STUDY_SETTLEMENT_LAG_MS, limit=32
+            ),
             timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
         )
         completed = 0
@@ -278,7 +287,11 @@ class LiquidationShadowRunner:
                 str(row["strategy_id"]),
             )
             if key not in cache:
-                bars = await self._outcome_bars(manifest.instrument, cutoff=cutoff, horizon=horizon)
+                bars = await self._outcome_bars(
+                    manifest.instrument,
+                    cutoff=cutoff,
+                    horizon=EVENT_STUDY_SETTLEMENT_LAG_MS,
+                )
                 aggregate = manifest.contexts.liquidation_aggregate
                 side = hypothesis_side(
                     manifest.strategy_id,
@@ -289,7 +302,7 @@ class LiquidationShadowRunner:
                     cutoff_ms=cutoff,
                     decision=str(row["decision"]),  # type: ignore[arg-type]
                     research_side=side,
-                    policy=self._event_policy,
+                    policy=EVENT_STUDY_POLICY,
                     gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms,
                 )
             outcome = cache[key]
@@ -388,12 +401,13 @@ def _aggregate(
     total = long_notional + short_notional
     dominant = "long" if long_notional > short_notional else "short" if short_notional > long_notional else None
     dominant_notional = max(long_notional, short_notional)
-    older = sum(
-        (item.notional_usd for item in visible if item.event_at_ms <= trigger.event_at_ms - _WINDOW_MS // 2),
+    dominant_rows = long_rows if dominant == "long" else short_rows if dominant == "short" else []
+    dominant_older = sum(
+        (item.notional_usd for item in dominant_rows if item.event_at_ms <= trigger.event_at_ms - _WINDOW_MS // 2),
         Decimal("0"),
     )
-    recent = total - older
-    acceleration = None if older == 0 else int((recent / older - 1) * 10_000)
+    dominant_recent = dominant_notional - dominant_older
+    dominant_acceleration = None if dominant_older == 0 else int((dominant_recent / dominant_older - 1) * 10_000)
     return LiquidationAggregate(
         window_ms=_WINDOW_MS,
         count=len(visible),
@@ -404,7 +418,9 @@ def _aggregate(
         short_count=len(short_rows),
         dominant_liquidated_side=dominant,
         dominant_share_bps=int(dominant_notional / total * 10_000),
-        acceleration_bps=acceleration,
+        dominant_count=len(dominant_rows),
+        dominant_notional_usd=dominant_notional,
+        dominant_acceleration_bps=dominant_acceleration,
         source_refs=tuple(item.source_key for item in visible),
     )
 

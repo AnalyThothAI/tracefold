@@ -148,7 +148,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     ),
     "news_to_trading.schema_sha256.manifest": (
         "issue_213_versioned_strategy_kernel",
-        "4186192feb186a260a5631974088d842fddfcbcbcf3bd8077d50c76563e0f2a4",
+        "0d2c337053b745c1be0a096947c7a434f522cdb642fe202a51befee2c2fae333",
     ),
     "news_to_trading.policy_version": ("issue_213_versioned_strategy_kernel", "trading_strategy_policy_v1"),
     "news_to_trading.schema_sha256.news": (
@@ -227,7 +227,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     ),
     "representative_trading_flow.flow.manifest_sha256": (
         "issue_213_versioned_strategy_kernel",
-        "0b8b0dff52f3d3195d39bc77d23287101f0b5730267e859d5ca9b6d4f57cab42",
+        "6059dbbfb3d4030a2985bb0e18530733996599169d4f1b1d32584560a3ce00c1",
     ),
     "representative_trading_flow.flow.manifest.case_kind": ("issue_213_versioned_strategy_kernel", _MISSING),
     "representative_trading_flow.flow.manifest.mark_price": ("issue_213_versioned_strategy_kernel", _MISSING),
@@ -334,6 +334,10 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
                 "observed_at_ms": NOW_MS,
                 "pre_move_bps": 300,
                 "pre_move_lookback_ms": 3_600_000,
+                "price_momentum_bps": None,
+                "price_momentum_window_ms": None,
+                "displacement_bps": None,
+                "displacement_window_ms": None,
                 "spread_bps": None,
                 "depth_notional_usd": None,
                 "funding_bps": None,
@@ -486,7 +490,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     ),
     "representative_trading_flow.snapshot_sha256": (
         "issue_213_versioned_strategy_kernel",
-        "6b0824d793dbdf7d6d09c8f692278f5ca1df9bc73f342105ca66ff209a600cfb",
+        "19dac8a8f2e58928c6a4fdb37aac358e5f3dae469ff95c8d1492ff0cb6d88d66",
     ),
 }
 

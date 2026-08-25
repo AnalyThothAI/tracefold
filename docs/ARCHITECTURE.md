@@ -1430,7 +1430,13 @@ acceleration floors, aligned price momentum below a pre-move ceiling, OI and
 funding context, healthy spread/depth and bounded source latency. Exhaustion
 requires a large one-sided burst and aligned extreme displacement before the
 separate deceleration, OI-collapse, stopped-extreme and liquidity-recovery facts.
-Every missing prerequisite returns a named `no_trade`.
+The aggregate's threshold fields count/notional/acceleration only for its
+dominant side; opposite flow remains in total audit fields but cannot satisfy a
+one-sided floor. One-hour pre-move, burst-window momentum and matching-window
+displacement are three distinct frozen fields. The current 5-minute source
+cannot measure the latter two for a 1-minute burst, so they remain null and
+return named `no_trade` rather than inheriting the one-hour move. Every missing
+prerequisite returns a named `no_trade`.
 
 **Liquidation is a typed fact, not prose sentiment.** At News admission,
 Strategy 2000's exact wire template is parsed into
@@ -1439,6 +1445,9 @@ the forced order side separately: a short liquidation is forced buying, while
 a long liquidation is forced selling. Venue is restricted to Binance or
 Hyperliquid, money uses decimal arithmetic, malformed units or timestamps fail
 closed, and recovery-origin facts remain in audit but cannot trigger Trading.
+The normalized fact deliberately has no cascading Item foreign key: ordinary
+raw-Item retention may remove its provider envelope, but cannot erase the
+immutable liquidation replay dataset.
 The reader verdict is deliberately direction-neutral because an observed
 forced trade is not by itself a forecast.
 
@@ -1780,11 +1789,16 @@ strategy_config_digest)`. The first worker turn registers that identity; an
 event whose cutoff precedes `registered_at_ms` is refused as
 `holdout_precedes_strategy_registration`. A later typed trigger produces
 exactly two immutable holdout evaluations and zero orders. Once the longest
-horizon closes, the outcome worker may attach `liquidation_event_study_v2`.
-It reports the six required horizons, MFE/MAE, close-only stop/TP/max-holding,
-fees/slippage, funding availability, deterministic bootstrap intervals and
-failure/missing counts. The current 5-minute public candle contract marks
-5s/30s/1m and funding missing. The provider does not expose a durable duplicate
+horizon and the next close have matured, the outcome worker may attach
+`liquidation_event_study_v3`. Its stop/TP/holding/fee/slippage policy is a
+constant owned by that version, not current Order configuration. The first
+closed 5-minute bar at or after the trigger is the entry origin; every forward
+horizon starts there, so a mid-bar event never imports pre-trigger price action.
+Coverage counts only rows with every supported 5m/15m/1h horizon and a proven
+terminal exit; a missing holding-deadline bar is not called max-holding. It also
+reports MFE/MAE, fees/slippage, funding availability, deterministic bootstrap
+intervals and failure/missing counts. The current 5-minute public candle
+contract marks 5s/30s/1m and funding missing. The provider does not expose a durable duplicate
 denominator, so duplicate rate remains null and is itself a named evidence gap.
 API cohorts remain separate by strategy, venue and liquidity bucket, and
 promotion stays false until source, coverage, cost, holdout and diversity

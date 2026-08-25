@@ -1154,7 +1154,7 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     )
     conn.commit()
     first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 2 * MINUTE).turn())
-    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 63 * MINUTE).turn())
+    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 67 * MINUTE).turn())
 
     rows = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
     assert first["shadow_evaluated"] == 2
@@ -1166,7 +1166,7 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     }
     assert {row["rule"] for row in rows} == {"source_contract_incomplete"}
     assert {row["permission"] for row in rows} == {"shadow"}
-    assert all(row["market_outcome_version"] == "liquidation_event_study_v2" for row in rows)
+    assert all(row["market_outcome_version"] == "liquidation_event_study_v3" for row in rows)
     assert all(row["market_outcome"] is not None for row in rows)
     assert all(set(row["market_outcome"]["horizons"]) == {"5s", "30s", "1m", "5m", "15m", "1h"} for row in rows)
     counts = _repos(conn).trading.status_counts(since_ms=NOW - 24 * 3_600_000)

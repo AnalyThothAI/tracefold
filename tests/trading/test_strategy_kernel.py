@@ -63,6 +63,10 @@ def _liquidation_context(*, complete: bool, exhaustion_features: bool = False) -
         observed_at_ms=NOW,
         pre_move_bps=250,
         pre_move_lookback_ms=3_600_000,
+        price_momentum_bps=100,
+        price_momentum_window_ms=60_000,
+        displacement_bps=250,
+        displacement_window_ms=60_000,
         spread_bps=5,
         depth_notional_usd=Decimal("2000000"),
         funding_bps=10,
@@ -80,7 +84,9 @@ def _liquidation_context(*, complete: bool, exhaustion_features: bool = False) -
             short_count=3,
             dominant_liquidated_side="short",
             dominant_share_bps=10_000,
-            acceleration_bps=1_000,
+            dominant_count=3,
+            dominant_notional_usd=Decimal("1500000"),
+            dominant_acceleration_bps=1_000,
             source_refs=("a" * 64, "b" * 64, "c" * 64),
         ),
         regime=RegimeAssessment(
@@ -194,8 +200,8 @@ def test_continuation_and_exhaustion_are_opposite_named_hypotheses_when_evidence
     ("aggregate_update", "market_update", "rule"),
     [
         ({"dominant_share_bps": 5_000}, {}, "burst_not_one_sided"),
-        ({"acceleration_bps": None}, {}, "burst_acceleration_missing"),
-        ({}, {"pre_move_bps": -100}, "price_momentum_not_confirmed"),
+        ({"dominant_acceleration_bps": None}, {}, "burst_acceleration_missing"),
+        ({}, {"price_momentum_bps": -100}, "price_momentum_not_confirmed"),
         ({}, {"pre_move_bps": 251}, "pre_move_above_ceiling"),
     ],
 )
@@ -212,6 +218,30 @@ def test_continuation_requires_the_declared_setup_features(
         }
     )
     assert LiquidationContinuationStrategy().evaluate(changed).rule == rule
+
+
+def test_opposite_flow_cannot_satisfy_the_dominant_one_sided_burst_floors() -> None:
+    context = _liquidation_context(complete=True)
+    aggregate = context.liquidation_aggregate
+    assert aggregate is not None
+    diluted = aggregate.model_copy(
+        update={
+            "count": 12,
+            "notional_usd": Decimal("6000000"),
+            "dominant_count": 1,
+            "dominant_notional_usd": Decimal("250000"),
+        }
+    )
+    outcome = LiquidationContinuationStrategy().evaluate(context.model_copy(update={"liquidation_aggregate": diluted}))
+    assert outcome.rule == "burst_count_below_floor"
+
+
+def test_exhaustion_uses_matching_displacement_not_the_one_hour_pre_move() -> None:
+    context = _liquidation_context(complete=True, exhaustion_features=True)
+    changed = context.model_copy(
+        update={"market": context.market.model_copy(update={"pre_move_bps": 500, "displacement_bps": None})}
+    )
+    assert LiquidationExhaustionStrategy().evaluate(changed).rule == "extreme_displacement_missing"
 
 
 def test_liquidation_trigger_can_never_select_a_capital_strategy() -> None:

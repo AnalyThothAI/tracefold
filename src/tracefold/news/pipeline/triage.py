@@ -176,20 +176,20 @@ class TriageConsumer:
         if not event_id:
             raise PermanentError("news_event_id_missing")
         stamp = now_ms()
-        if await self._republish_settled_verdict(event_id, message, policy_version=TRIAGE_POLICY_VERSION):
-            return
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
         card, history = bundle
-        if str(card.get("admission") or "") == "liquidation_deterministic" and await self._republish_settled_verdict(
-            event_id, message, policy_version=liquidations.TRIAGE_POLICY_VERSION
-        ):
+        admission = str(card.get("admission") or "")
+        policy_version = (
+            liquidations.TRIAGE_POLICY_VERSION if admission == "liquidation_deterministic" else TRIAGE_POLICY_VERSION
+        )
+        if await self._republish_settled_verdict(event_id, message, policy_version=policy_version):
             return
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
             raise PermanentError("news_event_evidence_v2_required")
         facts = _gate_facts(card, self.watchlist_symbols)
-        if str(card.get("admission") or "") == "telemetry_deterministic":
+        if admission == "telemetry_deterministic":
             # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
             # structured model calls that would re-read four numbers a regex already has. Everything
             # after the judgment — decide(), the storyline lock, the verdict row, delivery, the receipt,
@@ -203,7 +203,7 @@ class TriageConsumer:
                 message=message,
             )
             return
-        if str(card.get("admission") or "") == "liquidation_deterministic":
+        if admission == "liquidation_deterministic":
             await self._judge_liquidation(
                 event_id=event_id,
                 card=card,

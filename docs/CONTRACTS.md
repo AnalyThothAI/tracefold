@@ -1226,7 +1226,11 @@ duplicate rate, 5s/30s/1m/5m/15m/1h outcomes, deterministic bootstrap
 intervals, MFE/MAE, stop/TP/max-holding results, fees/slippage/funding
 availability and missing-data counts. Cohorts stay separate by strategy, venue,
 and liquidity bucket. The current public bar source is 5-minute close-only, so
-5s/30s/1m and funding are explicitly missing rather than synthesized.
+5s/30s/1m and funding are explicitly missing rather than synthesized. The
+first close at or after the trigger is the forward-return origin; coverage
+requires all supported horizons plus a measured terminal exit. Event-study v3
+owns fixed research stop/TP/holding/fee/slippage constants, independent of
+operator Order edits.
 `liquidation_promotion_ready` is false with a named evidence reason; it is not a
 configuration switch.
 `nominal_daily_stop_loss_usd`, the configured `live_symbol`,
@@ -1259,8 +1263,8 @@ version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
 and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211),
 the single primary trigger, point-in-time contexts, and strategy ID, version,
 the exact typed configuration values and their digest (#213). The serialized
-manifest has one market fact at `contexts.market`; `market_context` is not a
-second writable copy. A pending Case reconstructs its strategy from that frozen
+manifest has one market fact at `contexts.market`; there is no serialized or
+accessor alias named `market_context`. A pending Case reconstructs its strategy from that frozen
 snapshot, so editing runtime thresholds affects only later Cases.
 Cases frozen under any earlier manifest version remain readable audit rows but
 cannot advance: an undecided case is terminalized as
@@ -1279,6 +1283,8 @@ Event-study cohorts expose `duplicate_rate_bps=null` and the named missing fact
 `source:duplicate_rate_unavailable` until the upstream source publishes a
 durable duplicate/replay denominator; surviving ledger rows are not treated as
 evidence of a zero duplicate rate.
+The typed liquidation ledger is not cascade-owned by `news_items`; raw Item
+retention cannot delete the normalized replay fact.
 
 The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded

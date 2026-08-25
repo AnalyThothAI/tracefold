@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 from tracefold.trading.contracts import Bar
 from tracefold.trading.research.event_study import (
+    EVENT_STUDY_POLICY,
+    EVENT_STUDY_VERSION,
     EventStudyPolicy,
     bootstrap_mean_interval,
     measure_event,
@@ -55,6 +58,15 @@ def test_event_study_reports_every_required_horizon_and_missing_resolution() -> 
     assert outcome["exit_simulation"]["slippage_bps"] == 4
     assert outcome["exit_simulation"]["net_return_bps"] is None
     assert "cost:funding_unavailable" in outcome["missing_data"]
+    assert (
+        outcome["event_study_policy"]
+        == EventStudyPolicy(
+            stop_bps=500,
+            take_profit_bps=100,
+            max_holding_ms=1_800_000,
+            taker_fee_bps_per_leg=5,
+        ).snapshot
+    )
 
 
 def test_bootstrap_and_strategy_venue_liquidity_cohorts_are_stable_and_separate() -> None:
@@ -106,3 +118,68 @@ def test_bootstrap_and_strategy_venue_liquidity_cohorts_are_stable_and_separate(
     assert bootstrap_mean_interval([10, 20, 30], cohort_key="same") == bootstrap_mean_interval(
         [10, 20, 30], cohort_key="same"
     )
+
+
+def test_mid_bar_event_uses_the_first_post_cutoff_close_as_the_forward_origin() -> None:
+    outcome = measure_event(
+        _bars(),
+        cutoff_ms=NOW + 60_000,
+        decision="no_trade",
+        research_side="long",
+        policy=EVENT_STUDY_POLICY,
+        gap_tolerance_ms=FIVE_MINUTES,
+    )
+    assert outcome is not None
+    assert outcome["schema"] == EVENT_STUDY_VERSION
+    assert outcome["start_bar_closed_at_ms"] == NOW + FIVE_MINUTES
+    assert outcome["start_price"] == "102"
+    assert outcome["entry_lag_ms"] == 240_000
+    assert outcome["horizons"]["5m"]["target_at_ms"] == NOW + 2 * FIVE_MINUTES
+    assert outcome["horizons"]["5m"]["signed_return_bps"] == -98
+
+
+def test_partial_outcome_is_not_counted_as_complete_coverage_or_max_holding() -> None:
+    outcome = measure_event(
+        _bars()[:2],
+        cutoff_ms=NOW,
+        decision="no_trade",
+        research_side="long",
+        policy=EVENT_STUDY_POLICY,
+        gap_tolerance_ms=FIVE_MINUTES,
+    )
+    assert outcome is not None
+    assert outcome["exit_simulation"] == {
+        **outcome["event_study_policy"],
+        "path_semantics": "closed_5m_trade_price_bars",
+        "status": "missing",
+        "reason": "holding_deadline_unobserved",
+    }
+    rows = [
+        {
+            "strategy_id": "liquidation_continuation_shadow_v1",
+            "underlying_key": "crypto:DOGE",
+            "research_partition": "holdout",
+            "manifest": {"instrument": {"exchange_id": "binance"}, "contexts": {}},
+            "market_outcome": outcome,
+        }
+    ]
+    _, cohorts = summarize_evaluation_rows(rows)
+    assert cohorts[0]["completed"] == 0
+    assert cohorts[0]["coverage_bps"] == 0
+    assert cohorts[0]["exit_by_reason"] == {"holding_deadline_unobserved": 1}
+    assert cohorts[0]["missing_data"]["exit:holding_deadline_unobserved"] == 1
+
+
+def test_event_study_policy_is_version_owned_not_read_from_runtime_order_config() -> None:
+    source = (
+        Path(__file__).parents[2] / "src" / "tracefold" / "trading" / "pipeline" / "liquidation_shadow.py"
+    ).read_text(encoding="utf-8")
+    assert "config.order" not in source
+    assert EVENT_STUDY_POLICY.snapshot == {
+        "stop_bps": 200,
+        "take_profit_bps": 0,
+        "max_holding_ms": 1_800_000,
+        "taker_fee_bps_per_leg": 5,
+        "slippage_bps_per_leg": 2,
+        "bar_interval_ms": FIVE_MINUTES,
+    }

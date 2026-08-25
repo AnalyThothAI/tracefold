@@ -515,7 +515,9 @@ class LiquidationAggregate(_Frozen):
     short_count: int = Field(ge=0)
     dominant_liquidated_side: Literal["long", "short"] | None
     dominant_share_bps: int = Field(ge=0, le=10_000)
-    acceleration_bps: int | None = None
+    dominant_count: int = Field(ge=0)
+    dominant_notional_usd: Decimal = Field(ge=0)
+    dominant_acceleration_bps: int | None = None
     source_refs: tuple[str, ...] = ()
 
 
@@ -524,6 +526,10 @@ class FrozenMarketContext(_Frozen):
     observed_at_ms: int
     pre_move_bps: int | None
     pre_move_lookback_ms: int = Field(gt=0)
+    price_momentum_bps: int | None = None
+    price_momentum_window_ms: int | None = Field(default=None, gt=0)
+    displacement_bps: int | None = None
+    displacement_window_ms: int | None = Field(default=None, gt=0)
     spread_bps: int | None = None
     depth_notional_usd: Decimal | None = None
     funding_bps: int | None = None
@@ -594,18 +600,12 @@ class TradingCaseManifest(_Frozen):
         return self.contexts.regime
 
     @property
-    def market_context(self) -> FrozenMarketContext:
-        """Compatibility accessor over the manifest's single market-truth object."""
-
-        return self.contexts.market
-
-    @property
     def mark_price(self) -> Decimal:
-        return self.market_context.mark_price
+        return self.contexts.market.mark_price
 
     @property
     def pre_move_bps(self) -> int | None:
-        return self.market_context.pre_move_bps
+        return self.contexts.market.pre_move_bps
 
     def digest(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
