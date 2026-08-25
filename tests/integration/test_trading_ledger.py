@@ -1061,7 +1061,9 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     # content hash. That is the contract working — a case frozen under v6 must not read as a v7 case.
     # #211 moves it again: the OI projection now carries when its verdict became durable, and
     # `trading_manifest_v4` also binds trigger and strategy identity, so older case shapes cannot replay.
-    assert manifest.digest() == "588cfda818dfeb3e220d2e7947a4d4d81a4141e678046a4084626e80bffe687d"
+    # #213's liquidation strategies keep burst momentum and displacement separate from the one-hour
+    # pre-move. Their explicit nulls are part of every v4 frozen market context and therefore its digest.
+    assert manifest.digest() == "9f5b6e5d09ea9b2d56eca44a2f2a92edb8c47f6e55fe1cb159c59828ef6bf875"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
