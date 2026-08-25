@@ -14,15 +14,14 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
+from tracefold.news.learning.compiler.gepa import _FeedbackCompileProgram, build_compile_lm
 from tracefold.news.learning.compiler.root import (
-    REFLECTION_MAX_TOKENS,
     CompileBudget,
     CompileRequest,
     ProgramCompiler,
-    _FeedbackCompileProgram,
-    build_compile_lm,
 )
 from tracefold.news.learning.compiler.security import (
+    REFLECTION_MAX_TOKENS,
     REFLECTION_TIMEOUT_SECONDS,
     CompilerProxyTariff,
     ModelExecutionIdentity,
@@ -281,30 +280,30 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
         )
     )
 
-    learned = {name: result.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
+    learned = {name: result.run.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
     assert any(text.strip() for text in learned.values()), "GEPA produced no advisory at all"
     # GEPA checks its own budget between steps, so a completed run legitimately overshoots by up to one full
     # valset evaluation; the compiler allows exactly that and no more.
     # A completed run overshoots by whatever the step in flight consumed: one reflection minibatch plus, on
     # acceptance, one full valset evaluation. Derived, not guessed — this bound was wrong twice and each time
     # it destroyed a finished run after the work was done.
-    val_n = result.receipt_payloads.split["development_selection"]["case_n"]
-    minibatch = result.receipt_payloads.optimizer_config["constructor_scalar_arguments"]["reflection_minibatch_size"]
-    assert 0 < result.metric_calls <= 40 + val_n + minibatch
-    assert result.reflection_model_calls > 0, "the reflection endpoint was never used"
+    val_n = result.run.split["development_selection"]["case_n"]
+    minibatch = result.run.optimizer_config["constructor_scalar_arguments"]["reflection_minibatch_size"]
+    assert 0 < result.run.metric_calls <= 40 + val_n + minibatch
+    assert result.spend.reflection_model_calls > 0, "the reflection endpoint was never used"
 
     # `dspy.GEPA` only rewrites instructions — `build_program` never touches `predictor.demos`. That the
     # compile returned at all is the proof: `extract_optimizer_patch` runs `_validate_mutable_surface`, which
     # refuses `news_program_optimizer_demos_forbidden` for any Predictor carrying one.
-    assert result.receipt_payloads.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
-    assert set(result.receipt_payloads.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
+    assert result.run.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert set(result.run.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
-    receipt = result.receipt_payloads.optimizer_config
+    receipt = result.run.optimizer_config
     assert receipt["instruction_proposer"]["implementation"].endswith("RulePackAwareProposer")
     assert receipt["omitted_unset_arguments"] == ["wandb_api_key"]
     assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
-    split = result.receipt_payloads.split
+    split = result.run.split
     assert split["disjointness"]["shared_case_ids"] == 0
     assert split["train"]["case_n"] > 0 and split["development_selection"]["case_n"] > 0
 
@@ -399,7 +398,7 @@ def test_empty_advisory_survives_a_gepa_round_trip() -> None:
     the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
     """
 
-    from tracefold.news.learning.compiler.root import _generated_default_instruction, _restore_empty_advisories
+    from tracefold.news.learning.compiler.gepa import generated_default_instruction, restore_empty_advisories
 
     artifact = load_stable_program_artifact()
     program = _FeedbackCompileProgram(artifact)
@@ -410,10 +409,10 @@ def test_empty_advisory_survives_a_gepa_round_trip() -> None:
     for name, pred in program.named_predictors():
         pred.signature = pred.signature.with_instructions(seed[name])
     polluted = {name: pred.signature.instructions for name, pred in program.named_predictors()}
-    assert polluted["event_semantics"] == _generated_default_instruction(program.event_semantics)
+    assert polluted["event_semantics"] == generated_default_instruction(program.event_semantics)
     assert "produce the fields" in polluted["event_semantics"]
 
-    _restore_empty_advisories(program)
+    restore_empty_advisories(program)
     assert {name: pred.signature.instructions for name, pred in program.named_predictors()} == seed
 
 
@@ -428,7 +427,7 @@ def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() ->
     that disagrees with the artifact it attests to is not evidence.
     """
 
-    from tracefold.news.learning.compiler.root import _generated_default_instruction
+    from tracefold.news.learning.compiler.gepa import generated_default_instruction
 
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
@@ -454,15 +453,15 @@ def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() ->
         )
     )
 
-    shipped = {name: result.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    recorded = {name: state["instruction"] for name, state in result.receipt_payloads.checkpoint["predictors"].items()}
+    shipped = {name: result.run.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
+    recorded = {name: state["instruction"] for name, state in result.run.checkpoint["predictors"].items()}
     assert recorded == shipped
 
     untouched = [name for name, text in shipped.items() if text == ""]
     assert untouched, "this run rewrote both advisories, so it cannot exercise the untouched Predictor"
     program = _FeedbackCompileProgram(load_stable_program_artifact())
     for name in untouched:
-        boilerplate = _generated_default_instruction(getattr(program, name))
+        boilerplate = generated_default_instruction(getattr(program, name))
         # The exact text the receipt must not carry, so this test cannot pass vacuously.
         assert "produce the fields" in boilerplate
         assert recorded[name] == ""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -9,8 +10,18 @@ import pytest
 from tracefold.app import learning_runtime
 from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
+from tracefold.app.cli.commands.news_learning_baseline import (
+    _desk_lookback_hours,
+    _run_window,
+    _within_window,
+)
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.learning.experiment.run import (
+    ExperimentRun,
+    ExperimentRunManifest,
+    ExperimentWindow,
+)
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
@@ -479,3 +490,224 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
     # The genuinely forbidden pairing stays blocked.
     code, payload = _handle_learning(_baseline_args(mode="recorded", action_source="policy", all_cohorts=True))
     assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_decision"
+
+
+def _experiment_args(action: str, **overrides: Any) -> Any:
+    values: dict[str, Any] = {
+        "command": "news",
+        "news_command": "learning",
+        "learning_command": "experiment",
+        "experiment_action": action,
+        "config": "",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_the_experiment_group_parses_its_three_actions() -> None:
+    parser = build_parser()
+    snapshot = parser.parse_args(
+        ["news", "learning", "experiment", "snapshot", "--hours", "48", "--limit", "300", "--out", "runs/a"]
+    )
+    assert (snapshot.experiment_action, snapshot.hours, snapshot.limit, snapshot.out) == ("snapshot", 48, 300, "runs/a")
+
+    compare = parser.parse_args(
+        [
+            "news",
+            "learning",
+            "experiment",
+            "compare",
+            "--run",
+            "runs/a",
+            "--student",
+            "qwen3-30b",
+            "--max-model-cases",
+            "20",
+            "--resume",
+        ]
+    )
+    assert (compare.experiment_action, compare.max_model_cases, compare.resume) == ("compare", 20, True)
+    # The bound is required, not defaulted: the student route is the same single slot production Triage
+    # runs on, so an unbounded comparison is an unbounded load on the live path.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["news", "learning", "experiment", "compare", "--run", "runs/a", "--student", "q"])
+
+    optimize = parser.parse_args(
+        [
+            "news",
+            "learning",
+            "experiment",
+            "optimize",
+            "--run",
+            "runs/a",
+            "--student",
+            "qwen3-30b",
+            "--reflection",
+            "deepseek-v4-pro",
+            "--semantic-judge",
+            "deepseek-v4-pro",
+            "--max-metric-calls",
+            "60",
+            "--max-judge-model-calls",
+            "200",
+            "--seed",
+            "7",
+        ]
+    )
+    assert (optimize.experiment_action, optimize.max_metric_calls, optimize.seed) == ("optimize", 60, 7)
+    # The metric-call bound is not a spend bound: each metric call drives two task calls plus N judge
+    # calls, so the judge carries its own required ceiling.
+    assert optimize.max_judge_model_calls == 200
+
+
+def test_a_snapshot_ends_at_the_settlement_grace_and_closes_its_connection_first(monkeypatch: Any) -> None:
+    """Two properties of one command, both about when things happen.
+
+    A window whose tail is still settling is not closed: the outcome loop keeps writing prices for minutes
+    after an Event opens, so `to_ms = now` would freeze cases whose scores change after the file is
+    written. And freezing is up to 500 fsync'd files, so the `serve` connection has to be closed before
+    the first of them — `docs/DEVELOPMENT.md` forbids holding one across a file write.
+    """
+
+    seen: dict[str, Any] = {}
+    open_connections: list[str] = []
+
+    class _Evaluator:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+    def fake_project_window(_evaluator: Any, *, window: Any, limit: int) -> tuple[Any, ...]:
+        seen["window"] = window
+        seen["limit"] = limit
+        seen["connection_open_during_read"] = bool(open_connections)
+        return ()
+
+    def fake_freeze_window(cases: Any, **kwargs: Any) -> Any:
+        seen["connection_open_during_write"] = bool(open_connections)
+        seen["now_ms"] = kwargs["now_ms"]
+        return SimpleNamespace(
+            run_sha256="a" * 64,
+            case_count=len(cases),
+            accepted_case_count=0,
+            window=kwargs["window"],
+            parent_program_sha256="b" * 64,
+        )
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        open_connections.append(role)
+        try:
+            yield object()
+        finally:
+            open_connections.pop()
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.project_window", fake_project_window)
+    monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.freeze_window", fake_freeze_window)
+    monkeypatch.setattr("time.time", lambda: 1_787_086_400.0)
+
+    with tempfile.TemporaryDirectory() as directory:
+        code, payload = _handle_learning(_experiment_args("snapshot", hours=24, limit=500, out=f"{directory}/run"))
+
+    assert code == 0 and payload["ok"] is True
+    now_ms = 1_787_086_400_000
+    assert seen["window"].to_ms == now_ms - 10 * 60 * 1000
+    assert seen["window"].from_ms == seen["window"].to_ms - 24 * 3_600_000
+    assert seen["now_ms"] == now_ms
+    assert seen["connection_open_during_read"] is True
+    assert seen["connection_open_during_write"] is False
+
+
+def test_draft_reviews_takes_its_events_from_a_run_when_told_to() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "news",
+            "learning",
+            "draft-reviews",
+            "--model",
+            "deepseek-v4-pro",
+            "--out",
+            "d.json",
+            "--events-from",
+            "runs/a",
+        ]
+    )
+    assert args.events_from == "runs/a"
+    # Still optional: the queue-by-hours form is what a first corpus is grown with, before any run exists.
+    assert (
+        parser.parse_args(
+            ["news", "learning", "draft-reviews", "--model", "deepseek-v4-pro", "--out", "d.json"]
+        ).events_from
+        == ""
+    )
+
+
+def _run_with_window(root: Any, *, from_ms: int, to_ms: int) -> ExperimentRun:
+    run = ExperimentRun(root, create=True)
+    run.write_manifest(
+        ExperimentRunManifest.issue(
+            name="run",
+            window=ExperimentWindow(from_ms=from_ms, to_ms=to_ms),
+            parent_program_sha256=load_stable_program_artifact().program_sha256,
+            program_version="news_semantic_program_v5",
+            policy_sha256="b" * 64,
+            case_count=0,
+            accepted_case_count=0,
+            case_root_sha256="c" * 64,
+            created_at_ms=to_ms,
+        )
+    )
+    return run
+
+
+def test_draft_reviews_draws_its_lookback_from_the_run_window(tmp_path: Any) -> None:
+    """`--events-from` contributes the window; the ReviewDesk queue still does the selecting.
+
+    It used to read the run's *case list* and draft the ones marked unaccepted. There are none and there
+    never can be — `baseline_episodes` reaches a case through an acceptance row — so the bridge always
+    raised. Drafting is for the rest of the window, and the desk's stratified sampler picks which.
+    """
+
+    opened = 1_787_000_000_000
+    run = _run_with_window(tmp_path / "run", from_ms=opened, to_ms=opened + 24 * 3_600_000)
+
+    assert _run_window(str(run.root)) == (opened, opened + 24 * 3_600_000)
+    assert _desk_lookback_hours((opened, opened + 1), now_ms=opened + 48 * 3_600_000) == 48
+    # Rounded up, so the look-back covers the window's leading edge rather than stopping just inside it.
+    assert _desk_lookback_hours((opened, opened + 1), now_ms=opened + 48 * 3_600_000 + 1) == 49
+    # No run named leaves `--hours` exactly as it was.
+    assert _run_window("") is None
+
+
+def test_draft_reviews_keeps_only_the_events_inside_the_frozen_window(tmp_path: Any) -> None:
+    """The desk's look-back is a width ending at *now*; a run has two edges.
+
+    A snapshot stops at the settlement grace on purpose, so the look-back necessarily reaches past `to_ms`
+    and rounds up to an hour before `from_ms`. Without this bound the drafts would grow a corpus for a
+    window the run never froze while claiming to target exactly that window.
+    """
+
+    window = (1_000_000, 2_000_000)
+
+    assert _within_window({"opened_at_ms": 1_500_000}, window) is True
+    assert _within_window({"opened_at_ms": 1_000_000}, window) is True
+    assert _within_window({"opened_at_ms": 999_999}, window) is False
+    # Half-open at the top: `to_ms` is the settlement grace, and an Event opening exactly there is newer
+    # than the window the run froze.
+    assert _within_window({"opened_at_ms": 2_000_000}, window) is False
+    # No run named means no bound, which is the historical `--hours` behaviour untouched.
+    assert _within_window({"opened_at_ms": 0}, None) is True
+
+
+def test_draft_reviews_refuses_a_run_window_the_desk_cannot_reach(tmp_path: Any) -> None:
+    """The desk pages a look-back, and its own bound is 720 hours. Past that, say so."""
+
+    with pytest.raises(ValueError, match="news_review_drafter_run_window_exceeds_desk_lookback"):
+        _desk_lookback_hours((1_000, 2_000), now_ms=1_787_000_000_000)
+    with pytest.raises(ValueError, match="news_review_drafter_run_window_not_in_the_past"):
+        _desk_lookback_hours((1_000, 2_000), now_ms=0)

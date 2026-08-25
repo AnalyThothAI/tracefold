@@ -30,6 +30,12 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.compiler.security",
         "tracefold.news.learning.compiler.source_identity",
         "tracefold.news.learning.compiler.trusted",
+        # #193 PR-C, and the only two names here that run an optimizer in this process. `gepa` is the one
+        # bounded GEPA both planes share, and `experiment` is the operator's run directory around it. They
+        # are reachable from exactly one CLI module — `tests/architecture/test_news_compiler_boundary.py`
+        # asserts which — and neither can register a candidate or move a canary.
+        "tracefold.news.learning.compiler.gepa",
+        "tracefold.news.learning.experiment",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
         "tracefold.news.program.dspy_adapter",

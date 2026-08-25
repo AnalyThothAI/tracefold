@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from argparse import Namespace
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -193,6 +194,55 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
     )
 
 
+_DESK_MAX_LOOKBACK_HOURS = 720
+
+
+def _run_window(root: str) -> tuple[int, int] | None:
+    """The absolute window an experiment run froze, or `None` when no run was named.
+
+    This used to read the run's *case list* and draft the ones marked unaccepted. There are none, and
+    there never can be: `baseline_episodes` reaches a case through an acceptance row, so a snapshot holds
+    reviewed Events by construction. Drafting is for the rest of that same window — the Events the
+    comparison could not score because nobody has judged them.
+    """
+
+    if not root.strip():
+        return None
+    from pathlib import Path
+
+    from tracefold.news.learning.experiment.run import ExperimentRun
+
+    window = ExperimentRun(Path(root)).manifest().window
+    return int(window.from_ms), int(window.to_ms)
+
+
+def _desk_lookback_hours(window: tuple[int, int], *, now_ms: int) -> int:
+    """The look-back that reaches a run's window. The desk takes a width; a run has two edges."""
+
+    from_ms, _to_ms = window
+    if now_ms <= from_ms:
+        raise ValueError("news_review_drafter_run_window_not_in_the_past")
+    # Ceiling, so the look-back covers the window's leading edge rather than stopping just inside it.
+    hours = -(-(now_ms - from_ms) // 3_600_000)
+    if hours > _DESK_MAX_LOOKBACK_HOURS:
+        raise ValueError("news_review_drafter_run_window_exceeds_desk_lookback")
+    return int(hours)
+
+
+def _within_window(row: Mapping[str, Any], window: tuple[int, int] | None) -> bool:
+    """Whether one desk task belongs to the run's frozen window.
+
+    The desk's look-back is a width ending at *now*, so it necessarily reaches past `to_ms` — a snapshot
+    stops at the settlement grace on purpose — and rounds up to an hour before `from_ms`. Without this the
+    drafts would grow a corpus for a window the run never froze while claiming to target it.
+    """
+
+    if window is None:
+        return True
+    from_ms, to_ms = window
+    return from_ms <= int(row.get("opened_at_ms") or 0) < to_ms
+
+
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Propose `news_review_v4` rubrics with exact gold. The output is a file, never a review.
 
@@ -223,11 +273,17 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
     wanted = int(args.limit)
+    # `--events-from` narrows the queue to the run's own window; everything else about it — the stratified
+    # sampling, the cohort filter, the pending/all switch — is unchanged, because a corpus grown through
+    # the fast loop has to carry the same stratum mix as one grown through the queue.
+    window = _run_window(str(getattr(args, "events_from", "") or ""))
+    if window is not None:
+        hours = _desk_lookback_hours(window, now_ms=int(time.time() * 1000))
     with postgres_connection(settings, role="serve") as conn:
         desk = ReviewDesk(conn)
-        # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through it
-        # keeps that stratification — which is what makes a corpus carry the boundary/negative/retention mix
-        # the release thresholds require — instead of bypassing the desk with a raw query.
+        # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through
+        # it keeps that stratification — which is what makes a corpus carry the boundary/negative/retention
+        # mix the release thresholds require — instead of bypassing the desk with a raw query.
         rows: list[Mapping[str, Any]] = []
         cursor = ""
         while len(rows) < wanted:
@@ -243,7 +299,8 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
                 principal=principal,
             )
             page = list(queue.get("tasks") or ())
-            rows.extend(page)
+            # The desk chose them; the run's window decides which of them belong to it.
+            rows.extend(row for row in page if _within_window(row, window))
             cursor = str(queue.get("next_cursor") or "")
             if not page or not cursor:
                 break
@@ -312,6 +369,9 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "batch_sha256": batch.batch_sha256,
             "drafter": batch.drafter,
             "tasks": len(tasks),
+            # The look-back actually used, so a run-scoped draft says which window it drew from rather
+            # than leaving the reader to assume `--hours`.
+            "lookback_hours": hours,
             "drafted": len(drafted),
             "with_gold": len(with_gold),
             "failed": len(batch.drafts) - len(drafted),

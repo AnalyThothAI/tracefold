@@ -324,8 +324,15 @@ def build_judge(
     model_kwargs: Mapping[str, Any] | None = None,
     timeout: float = 120.0,
     max_tokens: int = 4_096,
+    max_model_calls: int | None = None,
 ) -> CardEquivalenceJudge:
-    """The semantic-equivalence judge, built here so the CLI layer never imports DSPy."""
+    """The semantic-equivalence judge, built here so the CLI layer never imports DSPy.
+
+    `max_model_calls` is the judge's own ceiling, admitted atomically before a slow provider call. A caller
+    that spends unattended — the experiment loop's `optimize`, which can run for hours — passes one; the
+    interactive baseline does not, because an operator watching a bounded `--max-model-cases` run is the
+    ceiling.
+    """
 
     return CardEquivalenceJudge(
         build_metric_lm(
@@ -337,6 +344,7 @@ def build_judge(
             max_tokens=max_tokens,
         ),
         max_tokens=int(max_tokens),
+        max_model_calls=max_model_calls,
     )
 
 

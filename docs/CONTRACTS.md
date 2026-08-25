@@ -901,6 +901,52 @@ evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
+`news learning experiment snapshot|compare|optimize` (#193) is the operator's
+fast research loop, and it is not part of the release plane. It reads the
+database once as `serve`, writes only into a run directory the operator names,
+and produces nothing any gate can accept:
+
+| Command | Reads | Writes | Spends |
+| --- | --- | --- | --- |
+| `snapshot --hours N --limit N --out DIR` | one closed window through `CandidateEvaluator.baseline_episodes` | `DIR/manifest.json`, `DIR/cases/<case>.json` | nothing |
+| `compare --run DIR --student MODEL [--teacher MODEL] --max-model-cases N [--resume]` | the frozen cases | `DIR/compare/<case>.json`, `DIR/report.json` | one live arm per named model |
+| `optimize --run DIR --student MODEL --reflection MODEL --semantic-judge MODEL --max-metric-calls N [--seed N]` | the frozen cases | `DIR/experiment_candidate.json` | task, reflection and judge endpoints |
+
+The window ends at a ten-minute settlement grace rather than at `now`: the
+outcome loop keeps writing prices for minutes after an Event opens, so a
+snapshot taken to the current instant measures a corpus that changes underneath
+the comparison. `run_sha256` is issued over the window, the parent Program, the
+policy, the case counts and a root over the frozen case ids, so a run cannot
+silently change what it measured. `case_sha256` is the evaluator's own case id,
+which is what makes `--resume` a directory listing rather than a stored cursor.
+
+`compare` scores three arms that are never averaged together — `recorded` is
+what production shipped, `student` is the local route that will ship, `teacher`
+is a larger reference — and each named model runs on the credentials of the
+route that serves that role. A case with no accepted review is listed in
+`unlabelled_case_ids` and scored by nobody; `failure_clusters` ranks by cluster
+size times mean regression, so a broad small regression outranks one bad case
+and an improvement never enters the queue.
+
+`optimize` runs `run_gepa` — literally the same function object the trusted
+compiler calls — in this process, against accepted reviews only. It is the one
+News CLI module that loads the optimizer, and it holds no promotion authority:
+no Docker, no compiler image, no sandbox, no proxy sidecar, no tariff. Its
+output is a `tracefold.news.experiment_candidate.v1` carrying `promotable:
+false` and no compile-record identity at all, so `CompileRecordV1` refuses it.
+Promoting a winner means re-running `learning compile` in the sealed container;
+this loop only says whether that container is worth spending.
+
+`news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
+[--include-reviewed] [--events-from DIR]` proposes `news_review_v4` rubrics for
+a human to accept and writes a file, never a review. `--events-from` closes the
+fast loop: it drafts exactly the unlabelled Events an experiment run froze, in
+the run's own fixed order, one ReviewDesk query per Event, and reports
+`requested_events` beside `tasks` so an Event whose desk task has been
+superseded is visible rather than read as judged. Without it the command keeps
+its queue-by-hours form, which is how a first corpus is grown before any run
+exists.
+
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
 the deployment-time `program_v7` epoch and accepts only `news_review_v4`;
@@ -921,7 +967,7 @@ identities, budget, tariff, per-call usage, the sandbox launch receipt, the
 unaccepted content-addressed Artifact from the exact stable root. The command
 writes `compile_record`, `compile_record_sha256` and the operator-facing
 `changed_predictors`. `learning propose` reads `spec["compile_record"]`,
-rebuilds the candidate from `record.patch`, and stores the record under kind
+rebuilds the candidate from `record.run.patch`, and stores the record under kind
 `compile_record` keyed by its own root. A Program `ProposalReceipt` carries
 that root as `compile_record_sha256`, and its `generator_execution_sha` equals
 it; `CandidateEvaluator` loads that one row rather than walking a chain. The

@@ -487,17 +487,17 @@ print(json.dumps(results, sort_keys=True))
 def test_sandbox_output_requires_exact_files_and_budget(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
-    (output / "patch.json").write_text('{"patch":"ok"}', encoding="utf-8")
+    # One file, since #193: the receipts carry the typed patch, so the runner no longer writes it twice.
     (output / "runner_receipts.json").write_text('{"receipts":"ok"}', encoding="utf-8")
     policy = CompilerSandboxPolicy.issue(max_output_bytes=1_024)
 
-    expected = canonical_sha(
-        {
-            "patch.json": canonical_sha({"document": '{"patch":"ok"}'}),
-            "runner_receipts.json": canonical_sha({"document": '{"receipts":"ok"}'}),
-        }
-    )
+    expected = canonical_sha({"runner_receipts.json": canonical_sha({"document": '{"receipts":"ok"}'})})
     assert verify_sandbox_output_directory(output, policy=policy) == expected
+
+    (output / "patch.json").write_text('{"patch":"ok"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="output_files_invalid"):
+        verify_sandbox_output_directory(output, policy=policy)
+    (output / "patch.json").unlink()
 
     (output / "unexpected.json").write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="output_files_invalid"):

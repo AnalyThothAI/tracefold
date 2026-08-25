@@ -85,6 +85,10 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return _handle_learning_baseline(args, settings, stable)
         if action == "draft-reviews":
             return _handle_learning_draft_reviews(args, settings, stable)
+        if action == "experiment":
+            from .news_learning_experiment import handle_experiment
+
+            return handle_experiment(args, settings, stable)
         if action == "compile":
             from tracefold.app.learning_runtime import compose_news_program_runtime
             from tracefold.app.llm import configured_lm_endpoint
@@ -113,7 +117,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 METRIC_JUDGE_TIMEOUT_SECONDS,
                 REFLECTION_MAX_TOKENS,
                 REFLECTION_TIMEOUT_SECONDS,
-                ProgramStrategyPatchV1,
                 apply_trusted_program_patch,
                 changed_predictors,
                 load_exact_stable_program,
@@ -263,16 +266,15 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 input_bundle_sha256=bundle.bundle_sha256,
                 proxy_secret_config=proxy_secrets,
             )
-            patch = _canonical_model_document(
-                launched.patch_document,
-                ProgramStrategyPatchV1,
-                code="news_learning_compile_patch_invalid",
-            )
             runner = _canonical_model_document(
                 launched.runner_receipts_document,
                 CompilerRunnerReceipts,
                 code="news_learning_compile_runner_receipt_invalid",
             )
+            # The one patch this compile produced, typed by the receipt that carries it. The runner used
+            # to write it out a second time as `patch.json` and the host parsed both, which is two
+            # documents making one claim across one trust boundary.
+            patch = runner.run.patch
             proxy_execution = launched.proxy_execution_receipt
             # What only this point can check: the untrusted runner's own counters against the trusted
             # sidecar's ledger. Two parties, two independent counts. Everything else the compile has to
@@ -284,16 +286,18 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 or runner.container_proxy_source_sha256 != proxy_source_sha
                 or patch.parent_program_sha256 != parent.program_sha256
                 or proxy_execution.grant_sha256 != proxy_grant.grant_sha256
-                or proxy_execution.task_model_calls != runner.task_model_calls
-                or proxy_execution.reflection_model_calls != runner.reflection_model_calls
-                or proxy_execution.metric_judge_model_calls != runner.metric_judge_model_calls
-                or proxy_execution.task_cost_microusd != runner.task_cost_microusd
-                or proxy_execution.reflection_cost_microusd != runner.reflection_cost_microusd
-                or proxy_execution.metric_judge_cost_microusd != runner.metric_judge_cost_microusd
-                or proxy_execution.actual_cost_microusd != runner.actual_cost_microusd
-                or proxy_execution.metric_judge_failures > runner.metric_judge_failures
+                or proxy_execution.task_model_calls != runner.spend.task_model_calls
+                or proxy_execution.reflection_model_calls != runner.spend.reflection_model_calls
+                or proxy_execution.metric_judge_model_calls != runner.spend.metric_judge_model_calls
+                or proxy_execution.task_cost_microusd != runner.spend.task_cost_microusd
+                or proxy_execution.reflection_cost_microusd != runner.spend.reflection_cost_microusd
+                or proxy_execution.metric_judge_cost_microusd != runner.spend.metric_judge_cost_microusd
+                or proxy_execution.actual_cost_microusd != runner.spend.actual_cost_microusd
+                or proxy_execution.metric_judge_failures > runner.spend.metric_judge_failures
                 or len(proxy_execution.calls)
-                < runner.task_model_calls + runner.reflection_model_calls + runner.metric_judge_model_calls
+                < runner.spend.task_model_calls
+                + runner.spend.reflection_model_calls
+                + runner.spend.metric_judge_model_calls
             ):
                 raise ValueError("news_learning_compile_receipt_cross_binding_mismatch")
             candidate_artifact = apply_trusted_program_patch(parent, patch)
@@ -309,17 +313,13 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 task_model=task_binding,
                 reflection_model=reflection_binding,
                 metric_judge_model=metric_judge_binding,
-                optimizer=runner.optimizer_config,
-                metric=runner.metric,
-                split=runner.split,
-                retrieval=runner.retrieval,
-                trajectory=runner.trajectory,
-                checkpoint=runner.checkpoint,
+                # Carried whole, not re-listed: the optimization the container produced and the spend it
+                # counted are the same two objects the runner receipt already holds.
+                run=runner.run,
                 budget=budget,
                 tariff=tariff,
                 usage=proxy_execution,
-                metric_calls=runner.metric_calls,
-                metric_judge_attempts=runner.metric_judge_attempts,
+                spend=runner.spend,
                 sandbox=launched.launch_receipt,
                 compiler_build=CompilerBuildAttestation(
                     compiler_image_digest=compiler_image,
@@ -333,9 +333,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     container_source_sha256=runner.container_source_sha256,
                     container_proxy_source_sha256=runner.container_proxy_source_sha256,
                 ),
-                patch=patch.model_dump(mode="json"),
-                failure_cluster_ids=runner.failure_cluster_ids,
-                target_dimensions=runner.target_dimensions,
                 created_at_ms=compiled_at_ms,
             )
             artifact_directory = write_program_candidate_artifact(
@@ -345,8 +342,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             payload = {
                 "target": "program",
                 "hypothesis": "Repair the accepted program_v7 failure clusters with bounded DSPy GEPA.",
-                "target_dimensions": list(runner.target_dimensions),
-                "failure_cluster_ids": list(runner.failure_cluster_ids),
+                "target_dimensions": list(runner.run.target_dimensions),
+                "failure_cluster_ids": list(runner.run.failure_cluster_ids),
                 "guardrails": [
                     "fixed_factory_v6",
                     "development_only",
@@ -381,7 +378,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "propose":
             from tracefold.news.learning.compiler.security import CompileRecordV1, validate_compile_record
             from tracefold.news.learning.compiler.trusted import (
-                ProgramStrategyPatchV1,
                 load_program_artifact,
                 reapply_exact_candidate,
             )
@@ -417,7 +413,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     raise ValueError("news_learning_program_development_reexport_mismatch")
                 # The record carries the write-set; rebuilding the candidate from it is what proves the
                 # artifact on disk is the one that compile produced.
-                patch = ProgramStrategyPatchV1.model_validate(record.patch)
+                patch = record.run.patch
                 reapply_exact_candidate(parent_artifact, patch, artifact)
                 arm_payload = stable.model_dump(mode="json")
                 arm_payload.update(program_sha256=artifact.program_sha256)

@@ -9,6 +9,7 @@ import dspy
 import pytest
 
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.gepa import optimizer_config_receipt as _optimizer_config_receipt
 from tracefold.news.learning.compiler.root import (
     CompileBudget,
     CompileRequest,
@@ -16,10 +17,6 @@ from tracefold.news.learning.compiler.root import (
     ProgramCompiler,
     _BudgetedLM,
     _BudgetMeter,
-    _honest_split,
-    _metric_receipt,
-    _optimizer_config_receipt,
-    _retrieval_receipt,
     accepted_review_metric,
 )
 from tracefold.news.learning.compiler.security import (
@@ -27,6 +24,7 @@ from tracefold.news.learning.compiler.security import (
     REFLECTION_TIMEOUT_SECONDS,
     ModelExecutionIdentity,
 )
+from tracefold.news.learning.metric import _honest_split, _metric_receipt, _retrieval_receipt
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.artifact import (
     ProgramStrategyArtifactV1,
@@ -406,18 +404,18 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
+    assert result.run.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     # The whole write-set: one bounded advisory per Predictor, carrying exactly what the optimizer wrote.
-    assert result.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
-    assert result.patch.reader_card_instruction == ""
-    assert result.metric_calls == 2
-    assert result.task_model_calls == 1
-    assert result.reflection_model_calls == 1
-    assert result.metric_judge_model_calls == 0
-    assert result.actual_cost_microusd == 5
-    assert result.failure_cluster_ids == ("cluster-1", "cluster-2")
-    assert result.target_dimensions == ("direction", "should_push")
-    receipts = result.receipt_payloads.model_dump(mode="json")
+    assert result.run.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
+    assert result.run.patch.reader_card_instruction == ""
+    assert result.run.metric_calls == 2
+    assert result.spend.task_model_calls == 1
+    assert result.spend.reflection_model_calls == 1
+    assert result.spend.metric_judge_model_calls == 0
+    assert result.spend.actual_cost_microusd == 5
+    assert result.run.failure_cluster_ids == ("cluster-1", "cluster-2")
+    assert result.run.target_dimensions == ("direction", "should_push")
+    receipts = result.run.model_dump(mode="json")
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
     assert "source" in receipts["metric"]["implementation"]
     assert "artifact" not in type(result).model_fields
@@ -439,8 +437,8 @@ def test_non_root_program_cannot_be_a_compiler_parent() -> None:
 def test_task_and_reflection_calls_have_independent_explicit_budgets() -> None:
     result = _compiler().compile(_request(max_calls=1))
 
-    assert result.task_model_calls == 1
-    assert result.reflection_model_calls == 1
+    assert result.spend.task_model_calls == 1
+    assert result.spend.reflection_model_calls == 1
 
 
 def test_non_json_trajectory_value_fails_closed() -> None:

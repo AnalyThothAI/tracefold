@@ -28,6 +28,8 @@ from tracefold.news.learning.compiler.security import (
     CompilerProxyCall,
     CompilerProxyExecution,
     CompilerProxyTariff,
+    CompileSpend,
+    GepaRunResult,
     ModelExecutionIdentity,
 )
 from tracefold.news.learning.evaluator import (
@@ -676,29 +678,57 @@ def _compile_record(
         "task_model": models["task"],
         "reflection_model": models["reflection"],
         "metric_judge_model": models["metric_judge"],
-        "optimizer": {
-            "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
-            "seed": budget.seed,
-            "constructor_scalar_arguments": {
-                "max_metric_calls": budget.max_metric_calls,
-                "reflection_minibatch_size": minibatch,
-            },
-            "compile_call": {
-                "example_count": episode_count,
-                "trainset_count": train_count,
-                "valset_count": val_count,
-            },
-        },
-        "metric": {"metric_id": "accepted_review_feedback_v1"},
-        # Computed in the container and now carried out: the winner was selected on clusters it never
-        # trained on, and the model saw the evidence it was scored against.
-        "split": {"schema": "tracefold.news.compile_split_receipt.v1", "disjoint": True},
-        "retrieval": {"schema": "tracefold.news.compile_retrieval_receipt.v1", "target_visible": True},
+        # One optimization, carried whole. The record embeds the object the runner produced; it used to
+        # restate ten of its fields and copy each one across the container boundary by hand.
+        "run": GepaRunResult.model_validate(
+            {
+                "patch": patch,
+                "metric": {"metric_id": "accepted_review_feedback_v1"},
+                "optimizer_config": {
+                    "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
+                    "seed": budget.seed,
+                    "constructor_scalar_arguments": {
+                        "max_metric_calls": budget.max_metric_calls,
+                        "reflection_minibatch_size": minibatch,
+                    },
+                    "compile_call": {
+                        "example_count": episode_count,
+                        "trainset_count": train_count,
+                        "valset_count": val_count,
+                    },
+                },
+                "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 0},
+                "checkpoint": {
+                    "schema": "tracefold.news.compile_checkpoint_receipt.v2",
+                    "factory": PROGRAM_FACTORY_ID,
+                },
+                # Computed in the container and now carried out: the winner was selected on clusters it
+                # never trained on, and the model saw the evidence it was scored against.
+                "split": {"schema": "tracefold.news.compile_split_receipt.v1", "disjoint": True},
+                "retrieval": {"schema": "tracefold.news.compile_retrieval_receipt.v1", "target_visible": True},
+                "failure_cluster_ids": ["cluster-fixture"],
+                "target_dimensions": ["why_support"],
+                "metric_calls": metric_calls,
+                "train_count": train_count,
+                "val_count": val_count,
+            }
+        ),
         "budget": budget,
         "tariff": tariff,
         "usage": usage,
-        "metric_calls": metric_calls,
-        "metric_judge_attempts": 2,
+        "spend": CompileSpend(
+            task_model_calls=usage.task_model_calls,
+            reflection_model_calls=usage.reflection_model_calls,
+            metric_judge_attempts=2,
+            metric_judge_model_calls=usage.metric_judge_model_calls,
+            metric_judge_failures=0,
+            task_cost_microusd=usage.task_cost_microusd,
+            reflection_cost_microusd=usage.reflection_cost_microusd,
+            metric_judge_cost_microusd=usage.metric_judge_cost_microusd,
+            actual_cost_microusd=(
+                usage.task_cost_microusd + usage.reflection_cost_microusd + usage.metric_judge_cost_microusd
+            ),
+        ),
         "sandbox": launch,
         # The one place two independent parties look at the same thing: the host's tree, the pinned
         # image's copy of it, and what the runner recomputed from inside the container.
@@ -714,11 +744,6 @@ def _compile_record(
             container_source_sha256=preflight["compiler_source_sha256"],
             container_proxy_source_sha256=preflight["proxy_source_sha256"],
         ),
-        "patch": patch,
-        "failure_cluster_ids": ["cluster-fixture"],
-        "target_dimensions": ["why_support"],
-        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 0},
-        "checkpoint": {"schema": "tracefold.news.compile_checkpoint_receipt.v2", "factory": PROGRAM_FACTORY_ID},
         "created_at_ms": NOW,
     }
     values.update(overrides)
@@ -1751,7 +1776,7 @@ def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receip
         program_sha256=_sha({"program": "candidate", "metric_calls": metric_call_ceiling}),
         metric_calls=metric_call_ceiling,
     )
-    assert allowed.metric_calls == metric_call_ceiling
+    assert allowed.run.metric_calls == metric_call_ceiling
 
     with pytest.raises(ValueError, match="news_program_compile_record_budget_exceeded"):
         _compile_record(
@@ -1802,7 +1827,7 @@ def test_program_candidate_requires_the_exact_persisted_compile_record(
         program_sha256=program_sha256,
     )
     payload = record.model_dump(mode="json")
-    tampered = dict(payload, metric_calls=payload["metric_calls"] + 1)
+    tampered = dict(payload, run=dict(payload["run"], metric_calls=payload["run"]["metric_calls"] + 1))
     overrides: dict[str, object] = {}
     if mode == "absent":
         overrides = {"persist_record": False}

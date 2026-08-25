@@ -204,7 +204,59 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
+    # #193 PR-C. Closes the fast loop: a snapshot holds the window's *reviewed* Events, so drafting is for
+    # the rest of that same window rather than for whatever the last N hours happen to contain. The queue
+    # still does the selecting, so this inherits its stratified sampling and its task identity.
+    learning_draft.add_argument(
+        "--events-from",
+        default="",
+        help="draft the unjudged Events in this experiment run's window (replaces --hours)",
+    )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
+    # The operator's fast research loop. Deliberately its own command group: it reads the database once,
+    # writes only into a run directory, and cannot propose, evaluate, arm or promote anything. That is also
+    # why it is the one News CLI module allowed to load the optimizer in process.
+    learning_experiment = learning_subcommands.add_parser(
+        "experiment",
+        help="closed-window snapshot / paired comparison / in-process GEPA; never writes to the database",
+    )
+    experiment_subcommands = learning_experiment.add_subparsers(dest="experiment_action", required=True)
+    experiment_snapshot = experiment_subcommands.add_parser(
+        "snapshot", help="freeze one closed window into a run directory"
+    )
+    experiment_snapshot.add_argument(
+        "--hours", type=_positive_int, default=24, help="width of the closed window ending at the settlement grace"
+    )
+    experiment_snapshot.add_argument("--limit", type=_positive_int, default=500)
+    experiment_snapshot.add_argument(
+        "--out", required=True, help="run directory to create, e.g. .tracefold/runs/news-24h"
+    )
+    experiment_compare = experiment_subcommands.add_parser(
+        "compare", help="score a frozen snapshot under recorded / student / teacher and report the differences"
+    )
+    experiment_compare.add_argument("--run", required=True, help="run directory created by `experiment snapshot`")
+    experiment_compare.add_argument("--student", required=True, help="student model, e.g. the local route")
+    experiment_compare.add_argument("--teacher", default="", help="optional reference model, e.g. deepseek-v4-pro")
+    experiment_compare.add_argument(
+        "--max-model-cases", type=_positive_int, required=True, help="hard bound on cases sent to a provider"
+    )
+    experiment_compare.add_argument("--semantic-judge", default="", help="equivalence judge model")
+    experiment_compare.add_argument(
+        "--resume", action="store_true", help="skip cases this run directory already answered"
+    )
+    experiment_optimize = experiment_subcommands.add_parser(
+        "optimize", help="run the shared GEPA core in process; produces a proposal that cannot be promoted"
+    )
+    experiment_optimize.add_argument("--run", required=True, help="run directory created by `experiment snapshot`")
+    experiment_optimize.add_argument("--student", required=True, help="task model GEPA optimizes against")
+    experiment_optimize.add_argument("--reflection", required=True, help="reflection model, e.g. deepseek-v4-pro")
+    experiment_optimize.add_argument("--semantic-judge", required=True, help="equivalence judge model")
+    experiment_optimize.add_argument("--max-metric-calls", type=_positive_int, required=True)
+    # The metric-call bound is not a spend bound: each metric call drives two task calls plus N judge
+    # calls. This is the judge's own ceiling, required for the same reason every other model-spending
+    # command in this plane makes its budget mandatory.
+    experiment_optimize.add_argument("--max-judge-model-calls", type=_positive_int, required=True)
+    experiment_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
     learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")
     learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_propose.add_argument("--file", required=True, help="candidate proposal JSON/YAML")

@@ -334,6 +334,20 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 uv run tracefold news learning baseline --from-ms START --to-ms END \
   --mode runtime_live --max-model-cases 30 --out /tmp/baseline-runtime.json
 
+# The fast loop (#193). Outside the release plane entirely: reads once as
+# `serve`, writes only into the run directory, and produces nothing promotable.
+# Freeze a closed window, see where the local route disagrees with what shipped,
+# draft the cases nobody has judged, and only then spend a container.
+uv run tracefold news learning experiment snapshot --hours 24 \
+  --limit 500 --out .tracefold/runs/news-24h
+uv run tracefold news learning experiment compare --run .tracefold/runs/news-24h \
+  --student qwen3-30b --teacher deepseek-v4-pro --max-model-cases 30 --resume
+uv run tracefold news learning draft-reviews --model deepseek-v4-pro \
+  --events-from .tracefold/runs/news-24h --out /tmp/drafts.json
+uv run tracefold news learning experiment optimize --run .tracefold/runs/news-24h \
+  --student qwen3-30b --reflection deepseek-v4-pro \
+  --semantic-judge deepseek-v4-pro --max-metric-calls 60 --seed 112
+
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out /tmp/development.json
 uv run tracefold news learning compile --development DATASET_SHA \
@@ -398,6 +412,23 @@ truth.
 and not a release gate. The trusted side seals the exact current development
 corpus; an isolated runner sees neither DB nor holdout and can write only a
 bounded `ProgramStrategyPatchV1` carrying the two advisory instructions.
+
+`learning experiment` (#193) is the loop that comes *before* spending that
+container, and it exists because the release plane's cycle is measured in days:
+freeze a closed window, compare arms on it, draft the cases nobody has judged,
+optimize against the accepted ones, and read whether a candidate is worth a
+compile at all. Three properties are what make it safe to run beside a release
+plane, and `tests/news/test_news_experiment_loop.py` asserts each one rather
+than arguing it: only an accepted review can score or train anything (a teacher
+draft is a proposal, never truth), a case nobody judged is named in the report
+rather than dropped from the denominator, and the winner carries `promotable:
+false` and no compile-record identity. The fourth is the reason any of it is
+worth reading — `optimize` calls `run_gepa`, the same function object
+`ProgramCompiler.compile` calls, so the number an operator reads is the number a
+trusted compile will maximize. `tests/architecture/test_news_compiler_boundary.py`
+names the one CLI module allowed to load the optimizer in process and holds the
+experiment package away from the launcher, the sandbox, the proxy, the trusted
+seam, the canary and every storage writer.
 
 `learning baseline` (#143) is the step that has to come first and did not exist
 until then: a cold, read-only `dspy.Evaluate` over the same graph, the same

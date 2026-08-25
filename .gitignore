@@ -33,3 +33,7 @@ web/test-results/
 *.swp
 .claire
 .claude/worktrees/
+
+# Operator-owned experiment run directories (#193). Never repository content: a run is a
+# notebook on the operator's disk, and an untracked one must not fail the evidence drift check.
+.tracefold/
