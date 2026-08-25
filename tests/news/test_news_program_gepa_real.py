@@ -15,6 +15,8 @@ import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.learning.contracts import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
     REFLECTION_MAX_TOKENS,
     REFLECTION_TIMEOUT_SECONDS,
     DevelopmentDatasetRef,
@@ -138,6 +140,24 @@ class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
 
 
 class _ScriptedJudgeLM(_ScriptedLM):
+    """The judge route, stamped like the real one.
+
+    `optimize` refuses an unstamped judge: the metric calls it directly, so without a role binding a
+    candidate would retain judge-derived scores with no record of the endpoint that produced them.
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(model)
+        self.tracefold_compiler_role_binding = ModelExecutionIdentity.issue(
+            role="metric_judge",
+            model=model,
+            api_base="https://scripted.test/v1",
+            max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
+            timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
+            temperature=0,
+            model_kwargs={},
+        )
+
     def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
         del prompt, messages, kwargs
         self.calls.append("metric_judge")
@@ -302,9 +322,11 @@ def _optimize_real(
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
 
     episodes = compiler_development_corpus()
+    dataset_payload = {"role": "development", "learning_epoch": "program_v7", "cases": []}
     dataset = FrozenDevelopmentDataset.bind(
+        dataset_payload=dataset_payload,
         ref=DevelopmentDatasetRef(
-            development_dataset_sha256="0" * 64,
+            development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": dataset_payload}),
             episode_projection_root_sha256=canonical_sha([e.model_dump(mode="json") for e in episodes]),
             episode_count=len(episodes),
             learning_epoch_started_at_ms=1,
@@ -321,7 +343,11 @@ def _optimize_real(
         OptimizationConfig(
             task_lm=task,
             reflection_lm=reflection,
-            judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
+            judge=CardEquivalenceJudge(
+                _ScriptedJudgeLM("scripted/judge"),
+                max_tokens=METRIC_JUDGE_MAX_TOKENS,
+                max_model_calls=400,
+            ),
             budget=budget or _budget(),
             **config_kwargs,
         ),

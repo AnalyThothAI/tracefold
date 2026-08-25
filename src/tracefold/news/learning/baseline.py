@@ -49,7 +49,7 @@ from ..program.contracts import TriageContext
 from ..program.dspy_adapter import DspyStrictJSONAdapter
 from ..program.graph import DspyCompileProgram
 from ..program.runtime import PROGRAM_VERSION
-from .compiler.security import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
+from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 from .judge import CardEquivalenceJudge
 from .metric import (
     COMPONENT_FIELDS,
