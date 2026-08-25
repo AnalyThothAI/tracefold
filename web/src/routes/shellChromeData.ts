@@ -123,6 +123,7 @@ export function topbarFigures(
   pathname: string,
   newsStatus?: NewsStatus,
   tradingStatus?: TradingStatus,
+  nowMs = Date.now(),
 ): CockpitTopbarFigure[] {
   if (pathname === "/trading") {
     const readiness = tradingStatus?.readiness;
@@ -148,11 +149,7 @@ export function topbarFigures(
         tone: "accent",
         value: newsStatus?.pipeline.telemetry_received_24h,
       },
-      {
-        label: "CASES TODAY",
-        // Sparse counter maps omit zeroes; once the status document exists, absence is the ledger's zero.
-        value: tradingStatus ? (tradingStatus.counts.funnel_today?.case_created ?? 0) : undefined,
-      },
+      oiCaseFigure(tradingStatus, nowMs),
     ];
   }
 
@@ -170,6 +167,30 @@ export function topbarFigures(
     { label: "PUSHED 24H", tone: "accent", value: newsStatus?.delivery.sent_24h },
     { label: "E2E P95", text: loadedDuration(newsStatus?.delivery.e2e_p95_ms) },
   ];
+}
+
+function oiCaseFigure(
+  tradingStatus: TradingStatus | undefined,
+  nowMs: number,
+): CockpitTopbarFigure {
+  if (!tradingStatus) return { label: "CASES TODAY", value: undefined };
+
+  const dayKey = tradingStatus.counts.funnel_day_key;
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  const stale = dayKey !== today;
+  return {
+    label: stale
+      ? `CASES · ${/^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey.slice(5) : "STALE"}`
+      : "CASES TODAY",
+    // Sparse counter maps omit zeroes; once the status document exists, absence is the ledger's zero.
+    value: tradingStatus.counts.funnel_today?.case_created ?? 0,
+    ...(stale
+      ? {
+          title: dayKey ? `UTC ${dayKey}` : "UTC 日期未知",
+          tone: "caution" as const,
+        }
+      : {}),
+  };
 }
 
 function loadedDuration(value: number | null | undefined): string | undefined {

@@ -27,6 +27,7 @@ const archetypes = [
     path: "/news/oi",
     ready: (page: Page) => page.locator(".news-oi-row").first(),
     settled: (page: Page) => page.locator(".news-oi-window-row").first(),
+    topbarFigure: "CASES · 08-25",
   },
   {
     // #207 PR-W4: the capital lane. Its ledger is empty on this deployment and probably will be for a
@@ -69,6 +70,9 @@ test("freezes representative news and case archetypes", async ({ page }) => {
     await page.goto(route.path);
     await expect(route.ready(page)).toBeVisible();
     await expect(route.settled(page)).toBeVisible();
+    if ("topbarFigure" in route && (page.viewportSize()?.width ?? 0) > 767) {
+      await expect(page.locator(".topbar-figures").getByText(route.topbarFigure)).toBeVisible();
+    }
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {

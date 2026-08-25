@@ -90,7 +90,8 @@ the route components into the eager shell chunk.
   no second search entry inside the News feed.
 - **Topbar context figures.** The right side identifies the active workbench with facts already present in
   the shared News and Trading status queries. News reading surfaces show `PUSHED 24H / E2E P95`, the OI
-  monitor shows `OI FRAMES 24H / CASES TODAY`, pipeline status shows `EVENTS 24H / QUEUE P95`, and Trading
+  monitor shows `OI FRAMES 24H / CASES TODAY` while the capital ledger day key is current (otherwise the
+  case figure names its UTC date and turns caution), pipeline status shows `EVENTS 24H / QUEUE P95`, and Trading
   shows `MODE / LIVE READY / ORDERS TODAY`. No route starts an extra request for chrome and the browser does
   not derive a rate, score, or readiness state. These figures leave the phone topbar; Trading repeats its
   three safety facts in the page header at that width.

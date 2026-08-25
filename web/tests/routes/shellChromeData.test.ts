@@ -24,7 +24,8 @@ describe("route-aware shell figures", () => {
   });
 
   it("uses the telemetry and capital ledgers on the OI monitor", () => {
-    expect(topbarFigures("/news/oi", news, trading)).toEqual([
+    const today = Date.parse("2026-08-25T12:00:00Z");
+    expect(topbarFigures("/news/oi", news, trading, today)).toEqual([
       { label: "OI FRAMES 24H", tone: "accent", value: 142 },
       { label: "CASES TODAY", value: 9 },
     ]);
@@ -36,8 +37,20 @@ describe("route-aware shell figures", () => {
         tradingStatusFixture({
           counts: { ...trading.counts, funnel_today: {} },
         }),
+        today,
       )[1],
     ).toEqual({ label: "CASES TODAY", value: 0 });
+  });
+
+  it("dates an OI case count when the capital ledger stopped before today", () => {
+    expect(topbarFigures("/news/oi", news, trading, Date.parse("2026-08-26T00:01:00Z"))[1]).toEqual(
+      {
+        label: "CASES · 08-25",
+        title: "UTC 2026-08-25",
+        tone: "caution",
+        value: 9,
+      },
+    );
   });
 
   it("uses operational latency on the status surface", () => {
