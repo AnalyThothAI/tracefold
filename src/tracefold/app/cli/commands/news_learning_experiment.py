@@ -169,12 +169,12 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     from tracefold.news.learning.objective import DevelopmentEpisode
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
     from tracefold.news.program.artifact import load_stable_program_artifact
-    from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
         PROGRAM_READER_CARD_MAX_TOKENS,
         PROGRAM_ROUTE_DEADLINE_SECONDS,
     )
+    from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
     from tracefold.platform.config.models import news_model_availability
 
     availability = news_model_availability(settings)
