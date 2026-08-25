@@ -158,6 +158,21 @@
   }
 
   /*
+   * A mode word rather than a volume (#207 PR-W4). Neutral grey on purpose: `PAPER` is a statement of what
+   * the lane is, not an alarm, and the moment it becomes something else the page — not this chip — is where
+   * a reader should be reading it.
+   */
+  .cockpit-app-sidebar-badge {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--surface-hover);
+    color: var(--text-subtle);
+    font: 700 8px/1.5 var(--font-mono);
+    letter-spacing: 0.04em;
+  }
+
+  /*
    * Health used to live here as a dot on the 流水线状态 entry. It is the topbar's lamp now (#207): the same
    * "only when it is not ok" rule, but visible in all three frames instead of only the widest, and carrying
    * the failing item's own sentence rather than a colour the reader has to go and decode.

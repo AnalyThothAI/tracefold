@@ -89,13 +89,19 @@ describe("GMGN lane hard cut", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the generated OpenAPI mirror to bootstrap, status, and News", () => {
+  it("keeps the generated OpenAPI mirror to bootstrap, status, News, and the trading reads", () => {
     const openapi = readFileSync(join(srcRoot, "lib/types/openapi.ts"), "utf8");
     const paths = [...openapi.matchAll(/^ {4}"(\/[^"]+)": \{$/gm)].map((match) => match[1]);
 
+    // The three `/api/trading/*` entries are named rather than matched by prefix (#207 PR-W4): the capital
+    // lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix would let a
+    // fourth route into the mirror without anyone reading this line.
     expect(paths.filter((path) => !path.startsWith("/api/news/"))).toEqual([
       "/api/bootstrap",
       "/api/status",
+      "/api/trading/events/{event_id}",
+      "/api/trading/orders",
+      "/api/trading/status",
       "/healthz",
       "/metrics",
       "/readyz",

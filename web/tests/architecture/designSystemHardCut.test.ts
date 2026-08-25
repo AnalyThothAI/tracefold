@@ -82,12 +82,13 @@ describe("Tracefold design-system hard cut", () => {
     expect(sharedUiCss).not.toMatch(/\.research-|\.token-case|\.case-file/);
   });
 
-  it("exposes the three News working surfaces with no nested tree", () => {
+  it("exposes the four working surfaces with no nested tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
     // Every destination is a working surface (#207). 流水线状态 left the tree because a healthy pipeline
     // makes it a click that answers "everything is fine"; it is reached from the topbar lamp instead. Event
-    // detail is not a destination either — it highlights the feed it came from.
-    expect(items.map((item) => item.to)).toEqual(["/news", "/news/oi", "/news/review"]);
+    // detail is not a destination either — it highlights the feed it came from, and neither is the token
+    // page, which is reached from any `base_symbol` on the console.
+    expect(items.map((item) => item.to)).toEqual(["/news", "/news/oi", "/trading", "/news/review"]);
     expect(items.find((item) => item.to === "/news")?.isActive("/news/events/ev-1")).toBe(true);
     expect(items.find((item) => item.to === "/news")?.isActive("/news/oi")).toBe(false);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);

@@ -5,6 +5,12 @@ import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
 export type AppNavigationCounts = { events?: number; oiFrames?: number };
+/**
+ * The words a destination can carry instead of a number (#207 PR-W4). `tradingMode` is the capital
+ * lane's ledger mode — `PAPER` today — because "is anything on that page real money" is the question a
+ * reader has before opening it, and a volume would not answer it.
+ */
+export type AppNavigationBadges = { tradingMode?: string };
 
 /**
  * The console's navigation, in the frame at desktop width and inside the tablet drawer below it. One
@@ -17,10 +23,12 @@ export type AppNavigationCounts = { events?: number; oiFrames?: number };
  * that something was wrong without saying what.
  */
 export function AppSidebar({
+  badges,
   counts,
   inDrawer = false,
   onNavigate,
 }: {
+  badges?: AppNavigationBadges;
   counts?: AppNavigationCounts;
   inDrawer?: boolean;
   onNavigate?: () => void;
@@ -32,7 +40,7 @@ export function AppSidebar({
       data-in-drawer={inDrawer || undefined}
     >
       {inDrawer ? null : <AppBrand />}
-      <AppNavigation counts={counts} onNavigate={onNavigate} />
+      <AppNavigation badges={badges} counts={counts} onNavigate={onNavigate} />
     </aside>
   );
 }
@@ -51,9 +59,11 @@ export function AppBrand() {
 }
 
 export function AppNavigation({
+  badges,
   counts,
   onNavigate,
 }: {
+  badges?: AppNavigationBadges;
   counts?: AppNavigationCounts;
   onNavigate?: () => void;
 }) {
@@ -67,6 +77,7 @@ export function AppNavigation({
             {group.items.map((item) => (
               <AppSidebarItem
                 active={item.isActive(pathname)}
+                badge={item.badge ? badges?.[item.badge] : undefined}
                 count={item.count ? counts?.[item.count] : undefined}
                 item={item}
                 key={item.to}
@@ -82,11 +93,13 @@ export function AppNavigation({
 
 function AppSidebarItem({
   active,
+  badge,
   count,
   item,
   onNavigate,
 }: {
   active: boolean;
+  badge?: string;
   count?: number;
   item: AppNavigationItem;
   onNavigate?: () => void;
@@ -118,6 +131,16 @@ function AppSidebarItem({
           {compactCount(count)}
         </span>
       )}
+      {/*
+       * `aria-hidden` for the same reason the count is: the destination is 交易 whether the ledger is on
+       * paper or not, and folding the mode into the link's name would rename it when configuration changed.
+       * The page itself states the mode in a labelled figure.
+       */}
+      {badge ? (
+        <span aria-hidden className="cockpit-app-sidebar-badge" title="资本通道当前模式">
+          {badge}
+        </span>
+      ) : null}
     </Link>
   );
 }

@@ -98,7 +98,7 @@ describe("frontend documentation contract", () => {
     // Every destination is a working surface; one navigation model drives every presentation. 流水线状态
     // is a page without a slot (#207) — the topbar lamp is the way in, and it exists only when it has
     // something to say.
-    expect(navigationTargets).toEqual(["/news", "/news/oi", "/news/review"]);
+    expect(navigationTargets).toEqual(["/news", "/news/oi", "/trading", "/news/review"]);
     expect(navigationTargets).not.toContain("/news/status");
     expect(navigationTargets).not.toContain("/");
     expect(frontendDoc).not.toMatch(/Token Radar|RadarPage|live-radar|features\/live/);

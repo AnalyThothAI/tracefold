@@ -1,0 +1,398 @@
+@layer app.features {
+  /*
+   * 模拟仓 (#207 PR-W4). One column: the mandate, what is exposed, then what closed beside where cases went.
+   *
+   * The lane's own hue is indigo like the rest of the console. Red and green appear only on a realised
+   * return, which is the one figure here that states a market outcome — an order state is a pipeline fact
+   * and never earns a market colour, which is why `AMBIGUOUS` is brick-amber rather than red.
+   */
+  .trading-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  /*
+   * The News shell's header shape, owned here rather than borrowed. `features/trading` reaching for
+   * `news-page-header` would be one feature styling another's internals — the thing `docs/FRONTEND.md`
+   * forbids — and it is nine lines to keep the two consoles looking like one product honestly.
+   */
+  .trading-page-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+
+  .trading-heading-copy {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+    min-width: 0;
+  }
+
+  .trading-heading-copy h1 {
+    margin: 0;
+    color: var(--text-primary);
+    font: var(--type-page-title);
+    letter-spacing: -0.025em;
+  }
+
+  .trading-heading-copy p {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 12px;
+  }
+
+  .trading-heading-aside {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: baseline;
+  }
+
+  .trading-stat {
+    display: grid;
+    gap: 1px;
+    text-align: right;
+  }
+
+  .trading-stat small {
+    color: var(--text-subtle);
+    font: 700 8.5px/12px var(--font-mono);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+
+  .trading-stat b {
+    color: var(--text-primary);
+    font: 640 14px/1.25 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .trading-stat[data-tone="caution"] b {
+    color: var(--signal-caution);
+  }
+
+  .trading-stat[data-tone="accent"] b {
+    color: var(--accent-primary);
+  }
+
+  .trading-banner {
+    margin: 0;
+    padding: 9px 14px;
+    border: 1px solid color-mix(in srgb, var(--signal-caution) 32%, transparent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--signal-caution) 8%, transparent);
+    color: var(--signal-caution);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .trading-banner code {
+    font: 600 11px/1.5 var(--font-mono);
+  }
+
+  .trading-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+
+  /* ------------------------------------------------------------------ tables */
+  .trading-table {
+    overflow-x: auto;
+  }
+
+  .trading-exposure-head,
+  .trading-exposure-row {
+    display: grid;
+    grid-template-columns: 96px 78px 168px 168px 128px 108px minmax(180px, 1fr);
+    gap: 10px;
+    align-items: center;
+    min-width: 1000px;
+    padding: 0 14px;
+  }
+
+  .trading-closed-head,
+  .trading-closed-row {
+    display: grid;
+    grid-template-columns: 84px 78px 150px minmax(140px, 1fr) 96px 84px;
+    gap: 10px;
+    align-items: center;
+    min-width: 680px;
+    padding: 0 14px;
+  }
+
+  .trading-case-head,
+  .trading-case-row {
+    display: grid;
+    grid-template-columns: 84px 78px 92px minmax(160px, 1fr);
+    gap: 10px;
+    align-items: center;
+    min-width: 460px;
+    padding: 0 14px;
+  }
+
+  .trading-exposure-head,
+  .trading-closed-head,
+  .trading-case-head {
+    min-height: 30px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: 700 8.5px/1.35 var(--font-mono);
+    letter-spacing: 0.06em;
+  }
+
+  .trading-exposure-row,
+  .trading-closed-row,
+  .trading-case-row {
+    min-height: 46px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  /* An unresolved provider write is the row that most needs an operator's eye; it gets the only tinted row. */
+  .trading-exposure-row[data-ambiguous] {
+    background: color-mix(in srgb, var(--signal-alert) 3%, transparent);
+  }
+
+  .trading-symbol {
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    min-width: 0;
+  }
+
+  .trading-symbol a {
+    color: var(--text-primary);
+    font: 620 12px/1 var(--font-mono);
+  }
+
+  .trading-symbol small[data-side="buy"] {
+    color: var(--dir-bullish);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+
+  .trading-symbol small[data-side="sell"] {
+    color: var(--dir-bearish);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+
+  .trading-kind {
+    justify-self: start;
+    padding: 2px 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    font: 600 9.5px/1.5 var(--font-mono);
+  }
+
+  .trading-state {
+    justify-self: start;
+    padding: 2px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    font: 600 10px/1.6 var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .trading-state[data-state="OPEN"] {
+    border-color: color-mix(in srgb, var(--accent-primary) 26%, transparent);
+    background: color-mix(in srgb, var(--accent-primary) 9%, transparent);
+    color: var(--accent-primary);
+  }
+
+  .trading-state[data-state="AWAITING_APPROVAL"],
+  .trading-state[data-state="POLICY_REJECTED"] {
+    border-color: color-mix(in srgb, var(--signal-caution) 32%, transparent);
+    background: color-mix(in srgb, var(--signal-caution) 8%, transparent);
+    color: var(--signal-caution);
+  }
+
+  .trading-state[data-state="AMBIGUOUS"],
+  .trading-state[data-state="UNPROTECTED"],
+  .trading-state[data-state="MANUAL_REVIEW_REQUIRED"] {
+    border-color: color-mix(in srgb, var(--signal-alert) 26%, transparent);
+    background: color-mix(in srgb, var(--signal-alert) 8%, transparent);
+    color: var(--signal-alert);
+  }
+
+  .trading-num {
+    color: var(--text-secondary);
+    font: 500 11px/1.4 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .trading-num b[data-tone="up"] {
+    color: var(--dir-bullish);
+    font-weight: 620;
+  }
+
+  .trading-num b[data-tone="down"] {
+    color: var(--dir-bearish);
+    font-weight: 620;
+  }
+
+  .trading-unmeasured {
+    color: var(--text-faint);
+  }
+
+  .trading-stop {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .trading-stop svg {
+    width: 11px;
+    height: 11px;
+    color: var(--accent-primary);
+    stroke-width: 2.4;
+  }
+
+  .trading-note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    align-items: baseline;
+    overflow: hidden;
+    color: var(--text-subtle);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .trading-note code {
+    font: 500 10px/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  /* ------------------------------------------------------------------ funnel */
+  .trading-funnel {
+    display: grid;
+    gap: 9px;
+    padding: 12px 14px;
+  }
+
+  .trading-funnel-row {
+    display: grid;
+    grid-template-columns: 110px minmax(0, 1fr) 32px;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .trading-funnel-row small {
+    color: var(--text-secondary);
+    font-size: 11.5px;
+  }
+
+  .trading-funnel-track {
+    position: relative;
+    height: 8px;
+    border-radius: 3px;
+    background: var(--surface-raised);
+    overflow: hidden;
+  }
+
+  .trading-funnel-track span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 3px;
+    background: var(--accent-primary);
+  }
+
+  .trading-funnel-row b {
+    color: var(--text-primary);
+    font: 620 11.5px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  .trading-funnel-note {
+    margin: 2px 0 0;
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .trading-funnel-note code {
+    font: 500 10px/1.5 var(--font-mono);
+  }
+
+  .trading-floors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    align-items: baseline;
+    padding: 0 14px 12px;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+  }
+
+  .trading-floors small {
+    color: var(--text-subtle);
+    font: 700 8.5px/1 var(--font-mono);
+    letter-spacing: 0.08em;
+  }
+
+  /* ------------------------------------------------------------------ shared chrome */
+  .trading-source-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    align-items: baseline;
+    margin: 0;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .trading-source-line code {
+    color: var(--text-secondary);
+    font: 500 10.5px/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .trading-source-line-label {
+    font: 700 8.5px/1 var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .trading-source-line-note {
+    flex: 1 1 220px;
+  }
+
+  .trading-empty-note {
+    margin: 0;
+    padding: 18px 14px;
+    color: var(--text-subtle);
+    font-size: 12px;
+  }
+
+  @media (max-width: 1023px) {
+    .trading-columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 767px) {
+    .trading-heading-aside {
+      gap: 12px;
+    }
+
+    .trading-stat {
+      text-align: left;
+    }
+  }
+}

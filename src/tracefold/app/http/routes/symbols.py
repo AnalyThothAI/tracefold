@@ -45,7 +45,10 @@ def get_news_symbol(request: Request, base: str) -> Response:
             "base_symbol": normalized,
             "known": bool(contracts),
             "tradeable": tradeable,
-            "venues": [contract["venue"] for contract in contracts],
+            # Distinct, in the contracts' own preferred order. A base commonly names several contracts on
+            # one venue — WIF is `WIFUSDT` and `WIFUSDC` on `binance.perp` — and `venues` answers "which
+            # venues", so one entry per contract read as a duplicate on the live console.
+            "venues": list(dict.fromkeys(contract["venue"] for contract in contracts)),
             "contracts": contracts,
             "normalization": group if group and len(group.get("aliases") or []) > 1 else None,
         },

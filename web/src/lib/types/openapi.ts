@@ -208,6 +208,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading/events/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Event Case
+         * @description Whether one News Event became a case — the Event detail's 成案 badge (#207 PR-W4).
+         *
+         *     Answers `joinable: false` for a model-lane Event rather than pretending the lane declined it. The
+         *     deterministic OI lane's source key is `oi:{event_id}:{metric_version}` and can be rebuilt here; the model
+         *     lane's is a content hash of an artifact and a fingerprint (#154), which no Event id reconstructs. Joining
+         *     by symbol and time instead would be the console recording a link the ledger does not have.
+         */
+        get: operations["get_trading_event_case_api_trading_events__event_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trading/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Orders
+         * @description Orders with the case that authored them, plus the cases that never got that far.
+         *
+         *     Both halves are needed to describe the lane honestly. A `POLICY_REJECTED` case is where the capital
+         *     floors actually bite and it has no order to join through, so listing orders alone would make the whole
+         *     rejected population invisible — the funnel would count them and nothing would be able to name them.
+         *
+         *     `underlying` accepts either the base symbol (`WIF`) or the full key (`crypto:WIF`); the response carries
+         *     both so a caller never has to build the key itself.
+         */
+        get: operations["get_trading_orders_api_trading_orders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trading/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Status
+         * @description The capital lane's mandate, readiness and 24 h funnel — the same facts as CLI `trading status`.
+         *
+         *     Read-only and configuration-derived. `live_ready` is reported and never offered: a serve process cannot
+         *     observe the Workers process's startup and canary result, so it says `not_proven` rather than guessing,
+         *     and there is no field here a page could render as a switch (#185 P1-2).
+         */
+        get: operations["get_trading_status_api_trading_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -356,6 +432,36 @@ export interface components {
         /** ApiEnvelope[StatusData] */
         ApiEnvelope_StatusData_: {
             data?: components["schemas"]["StatusData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingEventCaseData] */
+        ApiEnvelope_TradingEventCaseData_: {
+            data?: components["schemas"]["TradingEventCaseData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingOrdersData] */
+        ApiEnvelope_TradingOrdersData_: {
+            data?: components["schemas"]["TradingOrdersData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingStatusData] */
+        ApiEnvelope_TradingStatusData_: {
+            data?: components["schemas"]["TradingStatusData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2615,6 +2721,292 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
+        /**
+         * TradingBudgetData
+         * @description The mandate, as configured. Fixed size, fixed stop, fixed maximum hold — there is no sizing model.
+         */
+        TradingBudgetData: {
+            /** Max Hold Ms */
+            max_hold_ms: number;
+            /** Max Orders Per Day */
+            max_orders_per_day: number;
+            /** Nominal Daily Stop Loss Usd */
+            nominal_daily_stop_loss_usd: string;
+            /** Notional Usd */
+            notional_usd: string;
+            /** Orders Today */
+            orders_today: number;
+            /** Stop Loss Bps */
+            stop_loss_bps: number;
+        };
+        /**
+         * TradingCaseData
+         * @description A case that stopped before authoring an intent, and the rule it stopped on.
+         */
+        TradingCaseData: {
+            /** Base Symbol */
+            base_symbol: string;
+            /** Case Id */
+            case_id: string;
+            /** Case Kind */
+            case_kind: string;
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Decided At Ms */
+            decided_at_ms?: number | null;
+            /** Mode */
+            mode: string;
+            /** Observed At Ms */
+            observed_at_ms: number;
+            /** Policy Decision */
+            policy_decision?: string | null;
+            /** Policy Reason */
+            policy_reason?: string | null;
+            /** Regime */
+            regime?: string | null;
+            /** State */
+            state: string;
+            /** Underlying Key */
+            underlying_key: string;
+        };
+        /**
+         * TradingCountsData
+         * @description The 24 h funnel by the ledger's own grouping keys, plus the realised measure.
+         *
+         *     `closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a
+         *     position but nobody computed a return for it, and counting it turned one +150 bps winner beside three
+         *     resolutions into a reported mean of 37.5.
+         *
+         *     `funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count
+         *     over the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`
+         *     and is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader
+         *     can see that a Workers process stopped over midnight left yesterday's totals in place instead of having
+         *     to infer it.
+         */
+        TradingCountsData: {
+            /** Cases By Kind */
+            cases_by_kind?: {
+                [key: string]: number;
+            };
+            /** Cases By State */
+            cases_by_state?: {
+                [key: string]: number;
+            };
+            /**
+             * Closed Orders
+             * @default 0
+             */
+            closed_orders: number;
+            /**
+             * Closed Realized Bps
+             * @default 0
+             */
+            closed_realized_bps: number;
+            /**
+             * Funnel Day Key
+             * @default
+             */
+            funnel_day_key: string;
+            /** Funnel Today */
+            funnel_today?: {
+                [key: string]: number;
+            };
+            /** Orders By State */
+            orders_by_state?: {
+                [key: string]: number;
+            };
+        };
+        /**
+         * TradingEventCaseData
+         * @description Whether one News Event became a case, for the Event detail's 成案 badge (#207 PR-W4).
+         *
+         *     `joinable` is the field that keeps this honest. Only the deterministic OI lane's source key is
+         *     reconstructible from an `event_id` (`oi:{event_id}:{metric_version}`); the model lane's is a content hash
+         *     of an artifact and a fingerprint (#154), which no Event id rebuilds. For a model-lane Event the answer is
+         *     `joinable: false` — "this cannot be asked", which is a different fact from `case: null`, "it was asked
+         *     and the answer is no". Rendering them the same would tell a reader the lane declined an Event it never
+         *     saw.
+         */
+        TradingEventCaseData: {
+            case?: components["schemas"]["TradingCaseData"] | null;
+            /** Entry Reference */
+            entry_reference?: string | null;
+            /** Event Id */
+            event_id: string;
+            /** Exit Price */
+            exit_price?: string | null;
+            /** Exit Reason */
+            exit_reason?: string | null;
+            /** Joinable */
+            joinable: boolean;
+            /** Notional Usd */
+            notional_usd?: string | null;
+            /** Order Id */
+            order_id?: string | null;
+            /** Order State */
+            order_state?: string | null;
+            /** Order State Reason */
+            order_state_reason?: string | null;
+            /** Position Closed At Ms */
+            position_closed_at_ms?: number | null;
+            /** Position Opened At Ms */
+            position_opened_at_ms?: number | null;
+            /** Realized Bps */
+            realized_bps?: number | null;
+            /** Side */
+            side?: ("buy" | "sell") | null;
+            /** Stop Price */
+            stop_price?: string | null;
+        };
+        /**
+         * TradingFloorsData
+         * @description The capital lane's own thresholds — a different set from the News gates, never merged with them.
+         */
+        TradingFloorsData: {
+            /** Lookback Ms */
+            lookback_ms: number;
+            /** Max Price Move Bps */
+            max_price_move_bps: number;
+            /** Min Oi Value Usd */
+            min_oi_value_usd: string;
+            /** Min Price Move Bps */
+            min_price_move_bps: number;
+            /** Min Whale Long Profit Bps */
+            min_whale_long_profit_bps: number;
+        };
+        /**
+         * TradingOrderData
+         * @description One economic intent and the case that authored it. Money is an exact decimal string, never a float.
+         */
+        TradingOrderData: {
+            /** Average Price */
+            average_price?: string | null;
+            /** Base Symbol */
+            base_symbol: string;
+            /** Case Id */
+            case_id: string;
+            /** Case Kind */
+            case_kind: string;
+            /** Case Observed At Ms */
+            case_observed_at_ms?: number | null;
+            /** Case State */
+            case_state: string;
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Entry Reference */
+            entry_reference: string;
+            /** Exchange Id */
+            exchange_id: string;
+            /**
+             * Exit Attempt Total
+             * @default 0
+             */
+            exit_attempt_total: number;
+            /** Exit Price */
+            exit_price?: string | null;
+            /** Exit Reason */
+            exit_reason?: string | null;
+            /** Filled Quantity */
+            filled_quantity?: string | null;
+            /** Mode */
+            mode: string;
+            /** Must Close At Ms */
+            must_close_at_ms?: number | null;
+            /** Notional Usd */
+            notional_usd: string;
+            /** Order Id */
+            order_id: string;
+            /** Policy Decision */
+            policy_decision?: string | null;
+            /** Policy Reason */
+            policy_reason?: string | null;
+            /** Position Closed At Ms */
+            position_closed_at_ms?: number | null;
+            /** Position Opened At Ms */
+            position_opened_at_ms?: number | null;
+            /**
+             * Provider Attempt Count
+             * @default 0
+             */
+            provider_attempt_count: number;
+            /** Provider Symbol */
+            provider_symbol: string;
+            /** Quantity */
+            quantity: string;
+            /** Realized Bps */
+            realized_bps?: number | null;
+            /** Regime */
+            regime?: string | null;
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "buy" | "sell";
+            /** State */
+            state: string;
+            /** State Reason */
+            state_reason?: string | null;
+            /** Stop Price */
+            stop_price: string;
+            /** Take Profit Price */
+            take_profit_price?: string | null;
+            /** Underlying Key */
+            underlying_key: string;
+            /** Updated At Ms */
+            updated_at_ms: number;
+        };
+        /** TradingOrdersData */
+        TradingOrdersData: {
+            /** Cases Without Orders */
+            cases_without_orders?: components["schemas"]["TradingCaseData"][];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Orders */
+            orders?: components["schemas"]["TradingOrderData"][];
+            /** Window Hours */
+            window_hours: number;
+        };
+        /**
+         * TradingReadinessData
+         * @description Whether this deployment could trade for real, and how far that is from proven.
+         *
+         *     `live_ready` is never `true` from a read: a serve process cannot observe another process's startup and
+         *     canary result, so it reports `not_proven` rather than guessing. The console renders the word.
+         */
+        TradingReadinessData: {
+            /** Control */
+            control: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Execution Backend */
+            execution_backend: string;
+            /** Execution Configured */
+            execution_configured: boolean;
+            /** Live Mode Supported */
+            live_mode_supported: boolean;
+            /** Live Readiness */
+            live_readiness: string;
+            /** Live Ready */
+            live_ready: boolean;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "paper" | "live_reviewed" | "live_bounded";
+            /** Venues */
+            venues?: string[];
+        };
+        /** TradingStatusData */
+        TradingStatusData: {
+            budget: components["schemas"]["TradingBudgetData"];
+            counts: components["schemas"]["TradingCountsData"];
+            floors: components["schemas"]["TradingFloorsData"];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            readiness: components["schemas"]["TradingReadinessData"];
+            /** Window Hours */
+            window_hours: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -2998,6 +3390,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_StatusData_"];
+                };
+            };
+        };
+    };
+    get_trading_event_case_api_trading_events__event_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingEventCaseData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trading_orders_api_trading_orders_get: {
+        parameters: {
+            query?: {
+                underlying?: string;
+                state?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingOrdersData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trading_status_api_trading_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingStatusData_"];
                 };
             };
         };

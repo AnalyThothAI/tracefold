@@ -29,6 +29,14 @@ const archetypes = [
     settled: (page: Page) => page.locator(".news-oi-window-row").first(),
   },
   {
+    // #207 PR-W4: the capital lane. Its ledger is empty on this deployment and probably will be for a
+    // while, so the baseline is what keeps the empty states from drifting into looking like an outage.
+    name: "trading",
+    path: "/trading",
+    ready: (page: Page) => page.locator(".trading-exposure-row").first(),
+    settled: (page: Page) => page.locator(".trading-funnel-row").first(),
+  },
+  {
     // #207 PR-W1: the token page composes four endpoints into one column. The baseline is what keeps the
     // identity card, the rank window and the mixed events table from drifting apart at a viewport.
     name: "symbol",

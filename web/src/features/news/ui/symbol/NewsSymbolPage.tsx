@@ -1,3 +1,4 @@
+import { TradingSymbolSection } from "@features/trading";
 import { newsOiPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useMemo, useState } from "react";
@@ -35,9 +36,10 @@ import "./newsSymbol.css";
  *
  * Deliberately not built. There is no watchlist star: `watchlistHardCut.test.ts` keeps that vocabulary out
  * of production source, and it would be a third browser write besides. There is no price chart and no
- * open-interest curve — the same reason the OI monitor has none. And the 交易视角 / 交易复盘 sections the
- * design shows are PR-W4's: they need `/api/trading/*`, which does not exist yet, and an empty panel
- * promising them would be worse than their absence.
+ * open-interest curve — the same reason the OI monitor has none. The design's 交易视角 panel — the OI/price
+ * quadrant and the pre-frame 1 h move — is still absent for the reason the OI monitor's is: both need the
+ * price one hour before the frame, and the News price plane stores only the Event-anchored p0/p1/p4.
+ * 交易复盘 is here, reading the capital lane's own endpoint.
  */
 export function NewsSymbolPage({ base, token }: { base: string; token: string }) {
   const normalized = base.trim().toUpperCase().replace(/^XYZ-/, "");
@@ -130,6 +132,13 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
           onRetry={() => void feedQuery.refetch()}
           rows={rows}
         />
+
+        {/*
+         * The capital lane's own account of this token (#207 PR-W4). Owned by `features/trading` because
+         * every word in it — case state, order state, the rule a case stopped on — is that lane's
+         * vocabulary, and a copy of it here would be a second place those words could drift.
+         */}
+        <TradingSymbolSection base={normalized} token={token} />
       </div>
     </NewsPageShell>
   );

@@ -3917,3 +3917,56 @@ def test_the_case_row_records_the_two_upstream_stages_and_status_reports_them(co
     assert latency["case_created_to_case_decided"]["p50"] >= latency["case_created_to_order_prepared"]["p50"]
     # No position has opened yet, so that stage has no evidence rather than a fabricated zero.
     assert latency["order_prepared_to_position_opened"] == {"n": 0}
+
+
+def test_the_console_read_keeps_unresolved_exposure_outside_the_history_window(conn) -> None:
+    """#207 PR-W4 review: a 24 h *creation* window can hide capital that is still exposed.
+
+    Three rows a `created_at_ms >= since` predicate would have treated identically. The first is the whole
+    point: an order waiting two days for an operator to confirm what the venue did is the row that most
+    needs an eye on it, and 当前暴露 is where that eye looks. The second keeps this list agreeing with
+    `status_counts`, whose realised counts are bounded by `position_closed_at_ms` — an order created 30 h
+    ago and closed 2 h ago belongs to both or to neither. Only the third is genuinely history.
+    """
+
+    repos = _repos(conn)
+    since_ms = NOW - 24 * 3_600_000
+    stale = NOW - 40 * 3_600_000
+
+    for case_id, order_id, underlying in (
+        ("c-stuck", "o-stuck", "crypto:AAA"),
+        ("c-closed", "o-closed", "crypto:BBB"),
+        ("c-old", "o-old", "crypto:CCC"),
+    ):
+        _case(conn, case_id=case_id, source_key=f"k-{order_id}", underlying=underlying)
+        _order(
+            conn,
+            order_id=order_id,
+            case_id=case_id,
+            underlying=underlying,
+            exchange_id="paper",
+            state="PREPARED",
+        )
+
+    conn.execute(
+        "UPDATE trading_orders SET created_at_ms = %s, state = 'MANUAL_REVIEW_REQUIRED' WHERE order_id = 'o-stuck'",
+        (stale,),
+    )
+    conn.execute(
+        "UPDATE trading_orders SET created_at_ms = %s, state = 'CLOSED', position_closed_at_ms = %s"
+        " WHERE order_id = 'o-closed'",
+        (stale, NOW - 2 * 3_600_000),
+    )
+    # Terminal and genuinely old: nothing outstanding, nothing closed recently. This one falls out.
+    conn.execute(
+        "UPDATE trading_orders SET created_at_ms = %s, state = 'CLOSED', position_closed_at_ms = %s"
+        " WHERE order_id = 'o-old'",
+        (stale, stale),
+    )
+    conn.commit()
+
+    served = {row["order_id"] for row in repos.trading.console_orders(since_ms=since_ms)}
+    assert "o-stuck" in served, "an unresolved order two days old is still exposure"
+    assert "o-closed" in served, "a recent close is recent by when it closed, not by when it was written"
+    assert "o-old" not in served, "a terminal order that closed two days ago is history"
+    conn.commit()

@@ -26,3 +26,11 @@ export function newsSymbolPath(base: string): string {
 export function newsReviewPath(): string {
   return "/news/review";
 }
+
+/**
+ * 交易 · 模拟仓 (#207 PR-W4). A real ledger against a fake exchange; the page carries no live switch and the
+ * surface behind it has no write endpoint to offer one.
+ */
+export function tradingPath(): string {
+  return "/trading";
+}

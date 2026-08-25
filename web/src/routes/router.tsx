@@ -45,6 +45,10 @@ export function createAppRouteObjects(): RouteObject[] {
               lazy: () => import("./news.route"),
             },
             {
+              path: "trading",
+              lazy: () => import("./trading.route"),
+            },
+            {
               index: true,
               element: <Navigate replace to="/news" />,
             },

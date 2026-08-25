@@ -11,6 +11,7 @@ import {
   useNewsStatusWithToken,
   type NewsStatus,
 } from "@features/news/shell";
+import { useTradingStatusWithToken } from "@features/trading/shell";
 import { newsPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useQueryClient } from "@tanstack/react-query";
@@ -23,6 +24,7 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/status$/, "流水线状态"],
   [/^\/news\/oi$/, "持仓异动监控"],
   [/^\/news$/, "新闻事件流"],
+  [/^\/trading$/, "交易 · 模拟仓"],
 ];
 
 export type ShellRouteContext = {
@@ -44,6 +46,12 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   // The same query key the feed header and the status route use, so React Query serves all three from one
   // poll. The sidebar shows the 24 h intake behind the Event feed.
   const newsStatusQuery = useNewsStatusWithToken(session.token);
+  /*
+   * The capital lane's mode for the 交易 slot. Its own key and its own 15 s rhythm — the frame reads it
+   * so the badge is right on every route, and the trading page shares the same cache entry rather than
+   * opening a second poll of the same endpoint.
+   */
+  const tradingStatusQuery = useTradingStatusWithToken(session.token);
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
   const routeContext: ShellRouteContext = {
@@ -73,6 +81,11 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
         // #207: the deterministic OI lane's own 24 h intake, the same figure the monitor's telemetry band
         // leads with. Received, not pushed — the destination is the whole lane, not its output.
         oiFrames: newsStatusQuery.data?.pipeline?.telemetry_received_24h,
+      },
+      navBadges: {
+        // Uppercased because it is a mode word, not prose: `PAPER` beside 交易 answers "is any of this real
+        // money" before the reader spends a click finding out.
+        tradingMode: tradingStatusQuery.data?.readiness.mode?.toUpperCase(),
       },
       outletContext: routeContext,
       topbar: {

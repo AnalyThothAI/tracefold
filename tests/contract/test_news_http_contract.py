@@ -203,6 +203,15 @@ class _FakeInstrumentsRepository:
                 "quote_asset": "USDC",
                 "reference_only": False,
             },
+            # A second contract on the same venue, which is the ordinary case: WIF is `WIFUSDT` and
+            # `WIFUSDC` on `binance.perp`. `venues` answers "which venues", so it must not repeat one.
+            {
+                "venue": "hl.xyz",
+                "venue_symbol": "XYZ-COPPER-B",
+                "instrument_class": "commodity",
+                "quote_asset": "USDT",
+                "reference_only": False,
+            },
             {
                 "venue": "us.listed",
                 "venue_symbol": "HG",
@@ -723,9 +732,10 @@ def test_the_symbol_card_names_every_contract_and_keeps_the_reference_tier_visib
     assert data["base_symbol"] == "COPPER"
     assert data["known"] is True and data["tradeable"] is True
     assert data["venues"] == ["hl.xyz", "us.listed"]
+    assert len(data["contracts"]) == 3, "every contract is listed even when two share a venue"
     # #91: `us.listed` proves the ticker exists, not that anyone can trade it — the page renders both, so
     # the flag has to survive rather than being filtered out of the list.
-    assert [contract["reference_only"] for contract in data["contracts"]] == [False, True]
+    assert [contract["reference_only"] for contract in data["contracts"]] == [False, False, True]
     assert data["normalization"] == {"base_symbol": "COPPER", "aliases": ["COPPER", "HG"], "sources": ["seed"]}
 
 

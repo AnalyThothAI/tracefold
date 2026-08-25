@@ -1,3 +1,4 @@
+import { TradingCaseBadge } from "@features/trading";
 import { newsPath, newsReviewPath, newsSymbolPath } from "@shared/routing/paths";
 import { Card } from "@shared/ui/Card";
 import { FactGrid } from "@shared/ui/FactGrid";
@@ -71,7 +72,7 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
       {query.isError && !detail ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
-      {detail ? <EventDocument detail={detail} quotes={quotes} /> : null}
+      {detail ? <EventDocument detail={detail} quotes={quotes} token={token} /> : null}
     </NewsPageShell>
   );
 }
@@ -79,9 +80,11 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 function EventDocument({
   detail,
   quotes,
+  token,
 }: {
   detail: NewsEventDetail;
   quotes: Record<string, NewsQuote>;
+  token: string;
 }) {
   const { event, outcome, triage } = detail;
   const headline = triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event.leader_title;
@@ -99,6 +102,17 @@ function EventDocument({
           <span className="news-detail-hero-state">
             <NewsOutcomeBadge outcome={outcome} size="lg" variant="chip" />
             {outcome.reason_zh ? <span>{outcome.reason_zh}</span> : null}
+            {/*
+             * Did the capital lane take this? (#207 PR-W4) It renders nothing at all for a model-lane Event,
+             * because that question genuinely cannot be asked there — only the deterministic lane's source
+             * key is reconstructible from an `event_id`, and a 未成案 chip would report a refusal that never
+             * happened.
+             */}
+            <TradingCaseBadge
+              eventId={event.event_id}
+              lane={event.admission === "telemetry_deterministic" ? "oi" : "news"}
+              token={token}
+            />
           </span>
           <time
             className="news-detail-hero-time"
