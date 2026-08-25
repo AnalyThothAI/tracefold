@@ -469,11 +469,11 @@ it is one canonical JSON document — `schema_version`, `factory_id`, the
 image as `<program_sha256>.json` and selected by the code-owned registry. The
 stable root is
 `e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`.
-That SHA is behavior identity only: it holds no parent lineage, compile cost,
-trajectory, teacher endpoint or compile record, so two compiles that reach the
-same two instructions produce the same Program. Lineage belongs to the
-candidate's `ProposalReceipt`, compile provenance to the one `CompileRecordV1`
-that receipt names by `compile_record_sha256`.
+That SHA is behavior identity only: it holds no parent lineage, optimization
+cost, trajectory or teacher endpoint, so two runs that reach the same two
+instructions produce the same Program. Lineage belongs to the candidate's
+`ProposalReceipt`, and since #202 it is *derived* at registration by re-applying
+the patch to the running stable rather than declared by the candidate.
 The graph, schemas, ordered code-owned RulePacks, renderer, normalizer,
 assembler, model route and execution budget are code, versioned by `factory_id`;
 a semantic change to any of them is an explicit factory bump, not a cascade of
@@ -748,10 +748,10 @@ a retrieval miss averaged into the "before" number is movement a candidate can
 be credited for without repairing anything. `subsets` publishes three separate
 numbers — `train`, `development_selection` (the formal *before* value a Candidate
 is picked on) and `optimizer_union` (a diagnostic) — and `identity` carries the
-dataset SHA and the `episode_projection_root_sha256` that
-`CompileRecordV1` commits to and `CandidateEvaluator` re-derives, so readiness,
-this baseline, the trusted record and the release gate can be checked against
-each other. `--max-model-cases` must cover the whole optimizer corpus
+dataset SHA and the `episode_projection_root_sha256` that a candidate's
+`ProposalReceipt` records and `CandidateEvaluator` re-derives, so readiness,
+this baseline, the registration and the release gate can be checked against each
+other. `--max-model-cases` must cover the whole optimizer corpus
 (`news_program_baseline_dataset_requires_full_corpus_budget:N`): a truncated run
 would publish split roots describing cases it never scored. A blocked plan is
 refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)

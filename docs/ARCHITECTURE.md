@@ -807,13 +807,13 @@ and #190 this re-issues the sole v7 root rather than opening a generation; the
 old manifest/state root is not a second runtime option.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
-parent lineage, compile cost, trajectory, teacher endpoint or a compile
-record, so two compiles that reach the same two instructions are the same
-running Program however much they cost and whoever launched them. Lineage is a
-property of the candidate (`ProposalReceipt.program_parent_sha256` and
-`program_candidate_sha256`); compile provenance is a property of the one
-`CompileRecordV1` that receipt names. Folding them into the runtime root let
-"who compiled this" change what "this Program" meant.
+parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
+that reach the same two instructions are the same running Program however much
+they cost and whoever launched them. Lineage is a property of the candidate
+(`ProposalReceipt.program_parent_sha256` and `program_candidate_sha256`), and
+since #202 it is *derived* at registration by re-applying the patch rather than
+declared. Folding any of it into the runtime root let "who produced this" change
+what "this Program" meant.
 
 Everything else the Program needs — the two-Predictor graph, the typed
 schemas, the ordered code-owned RulePacks, the renderer, the normalizer, the
@@ -1185,43 +1185,46 @@ Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
 or production assignment.
 
-One trusted compile produces one `CompileRecordV1`. Issue #193 replaced seven
-content-addressed receipts, a chain root, a runner receipt, an optimizer
-provenance record and a machine diff — five kinds of document that between them
-carried the same four identities (parent Program, dataset, runtime manifest,
-patch) up to four times, cross-bound by hashes each party computed from a
-payload it already held. The record embeds the whole compile and is addressed
-by `compile_record_sha256`, which is also its key in `news_learning_artifacts`
-under the new `compile_record` kind. A digest survives only when it addresses
-independently stored bytes, crosses a real trust boundary, is a durable key,
-fingerprints an external mutable identity that cannot be stored whole, or
-serves a consumer that cannot read the parent payload. Everything the cut
-removed failed all five: it was a self-proof inside one package, verified by
-someone who already held the object being re-hashed.
+One optimization produces one `news_prompt_candidate_v1`, and only when it ends
+in `ADVANCE`. Every terminal state — `NO_OP`, `REJECTED`, `ADVANCE` — also
+writes a complete `news_optimization_run_report_v1`, so a run that spent a
+budget and shipped nothing is still readable. Issue #193 had already collapsed
+the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
+itself, and with it the record, the sealed input bundle, the sidecar's per-call
+ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
+*where* two advisory instructions were produced. Nothing downstream ever needed
+that: `dspy.GEPA` only assigns `predictor.signature.with_instructions(...)`, so
+the write-set is two bounded strings and `extract_optimizer_patch` refuses
+anything else. Rows written under the old chain stay in `news_learning_artifacts`
+as append-only audit and no longer parse, so they cannot be re-armed.
+
+What replaced provenance is binding, checked at registration by a party that did
+not produce the candidate. `learning register` re-applies the patch to the
+running stable Program to *derive* the arm's identity, re-projects the frozen
+corpus, records its own `development_episode_projection_root_sha256`, and
+re-derives the #199 Objective Plan rather than trusting the candidate's summary.
+A patch a person wrote and a patch GEPA wrote are admissible on exactly the same
+evidence.
 
 Each of the three roles — task, reflection (32k tokens) and `metric_judge` — is
 one `ModelExecutionIdentity` carrying the complete secret-free execution
 contract, in place of the `endpoint_sha256 -> model_sha256 -> binding_sha256`
 chain and the role binding above it. Its one surviving digest is
 `endpoint_fingerprint`, because the endpoint URL names the host a credential is
-presented to and therefore may not be stored. The judge is wired explicitly for
+presented to and therefore may not be stored. All three are required before a
+budget is spent, the judge included: it is called by the metric rather than
+through the metered LM, so its own admission ceiling is bound to the declared
+`max_metric_judge_model_calls` up front. The judge is wired explicitly for
 headline/why/factual semantic equivalence; its calls, cost and failures stay
-separate facts inside the record, and unavailable means failure-as-zero rather
-than byte equality, hidden retry or cache.
+separate facts, and unavailable means failure-as-zero rather than byte equality,
+hidden retry or cache.
 
-`CompilerBuildAttestation` is the one genuinely multi-party check in the
-compile: the host's hash of its own tree and lock, the same paths copied out of
-the pinned image and hashed again before any secret is staged, and the
-container's own recomputation from inside the running image. Three parties
-answer one question and must agree; that agreement *is* the attestation, which
-is why it is the only digest here that can meaningfully fail.
-
-Collapsing the chain changed no security property. The sealed input bundle, the
-container's own revalidation of policy, source and grant, the per-call
-worst-case reservation taken before every provider call, the sidecar owning the
-only credentials, the boundary evidence — commands, mounts, egress, cleanup,
-termination — and fail-closed on any tamper all stand unchanged. The record
-root is simply what makes them tamper-evident now.
+What bounds the offline job now is what it holds, not what surrounds it: a
+frozen corpus read once as `serve`, three model endpoints, and a typed in-process
+budget whose per-call ceiling is also the rate an unpriced call is charged at.
+No database write credential, no broker, no delivery, no canary, no promotion.
+If dynamic code generation ever becomes a candidate again, the sandbox threat
+model is rebuilt with it under a new Issue rather than kept warm for it.
 
 What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
 and every plane that needs the answer rebuilds the same plan from the same

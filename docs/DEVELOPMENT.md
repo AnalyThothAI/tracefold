@@ -421,7 +421,7 @@ ask to ship.
 
 Until #202 there were two generation paths and two candidate types, because
 release eligibility came from *where* a candidate was produced: a sealed
-compiler image against a metered proxy, or the fast loop behind
+sealed image against a metered proxy, or the fast loop behind
 `promotable=false`. The generator was never the authority for two strings.
 `learning register` now binds any Prompt patch — GEPA's or a person's — to the
 active stable Program and a frozen dataset, re-derives the #199 Objective Plan
@@ -590,23 +590,29 @@ trusted Program state, accept, deploy or promote — `learning register` is a
 separate command with a separate credential, and it re-derives the Objective
 Plan rather than trusting what the candidate declares.
 
-That record is the second half of #193. Seven content-addressed receipts, a
+The compile record was the second half of #193. Seven content-addressed receipts, a
 chain root, a runner receipt, an optimizer provenance record and a machine diff
 became one document, embedded whole and addressed by `compile_record_sha256`,
-which is also its `news_learning_artifacts` key under the new `compile_record`
-kind. The rule that decided each field: a digest survives only if it addresses
-independently stored bytes, crosses a real trust boundary, is a durable key,
-fingerprints an external mutable identity that cannot be stored whole, or
-serves a consumer that cannot read the parent payload. Everything else was
-being computed and verified by the same code in the same process over a payload
-sitting next to it. `CompilerBuildAttestation` is what a digest looks like when
-it does pass that rule: host tree, image payload copied out before any secret
-is staged, and the container's own recomputation, all three required to agree.
-`ProposalReceipt` carries the record root and repeats it as
-`generator_execution_sha` for a Program candidate; `CandidateEvaluator` reads
-that one row instead of walking a chain. Migration `20260825_0305` admits the
-new kind, keeps `compile_receipt` readable as audit history, and trips open
-canary activations whose candidate was registered against the old chain.
+which was also its `news_learning_artifacts` key. #202 removed the compile
+itself, and with it that record, the sealed input bundle, the sidecar ledger,
+the `CompilerBuildAttestation` and the tariff — documents that proved *where*
+two advisory instructions were produced, which is not what makes them safe to
+ship. The rule those cuts were decided by still holds and is worth keeping: a
+digest survives only if it addresses independently stored bytes, crosses a real
+trust boundary, is a durable key, fingerprints an external mutable identity that
+cannot be stored whole, or serves a consumer that cannot read the parent
+payload. Everything else is computed and verified by the same code in the same
+process over a payload sitting next to it — a self-proof, not an attestation.
+
+What replaced provenance is binding, checked by a party that did not produce the
+candidate. `ProposalReceipt` names the registered `news_prompt_candidate_v1` by
+`prompt_candidate_sha256` and carries the registrar's *own*
+`development_episode_projection_root_sha256`; `learning register` re-applies the
+patch to derive the arm's Program identity and re-derives the #199 Objective
+Plan rather than trusting the candidate's summary. Migration `20260825_0307`
+admits the new kind, keeps `compile_receipt` and `compile_record` readable as
+audit history, and trips open canary activations whose candidate was registered
+against the old contract.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,
