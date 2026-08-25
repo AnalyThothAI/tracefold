@@ -109,17 +109,24 @@ export function pnlLabel(mode: string): string {
 }
 
 /**
- * The configured maximum hold, in a unit that can express it.
+ * The configured maximum hold, exactly — no unit that can round it.
  *
- * `Math.round(ms / 3_600_000)` printed the shipped default — `max_holding_seconds: 1800` — as `0 h`, which
- * reads as "no ceiling at all", the exact opposite of a thirty-minute cap. A risk control the page states
- * has to be stated in a unit that survives the value: minutes below an hour, one decimal where the hours do
- * not divide, a whole number when they do.
+ * Two attempts got this wrong in the same direction. `Math.round(ms / 3_600_000)` printed the shipped
+ * default (`max_holding_seconds: 1800`) as `0 h`, which reads as no ceiling at all. One decimal then
+ * printed 23 h 59 m as `24.0 h`, which is worse: it states a limit *larger* than the one enforced, and a
+ * risk control that reads high is the one direction that cannot be allowed to round.
+ *
+ * So the remainder is carried rather than converted: minutes below an hour, `Xh YYm` when the hours do not
+ * divide, and a bare hour count only when they do. Seconds do not appear because
+ * `max_holding_seconds` is compared as milliseconds against a wall clock and no operator sets a hold to a
+ * granularity the venue could honour anyway; a value with a stray second still rounds to the minute, and
+ * that minute is never rounded up past the ceiling.
  */
 export function holdCeiling(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "—";
-  const minutes = ms / 60_000;
-  if (minutes < 60) return `${Math.round(minutes)} 分钟`;
-  const hours = minutes / 60;
-  return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(1)} h`;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes || 1} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours}h ${String(rest).padStart(2, "0")}m`;
 }

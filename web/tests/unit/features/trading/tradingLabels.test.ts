@@ -13,10 +13,23 @@ describe("holdCeiling", () => {
     expect(holdCeiling(1_800_000)).not.toContain("0 h");
   });
 
-  it("keeps whole hours whole and fractional hours legible", () => {
+  it("keeps whole hours whole and carries the remainder rather than converting it", () => {
     expect(holdCeiling(4 * 3_600_000)).toBe("4 h");
-    expect(holdCeiling(90 * 60_000)).toBe("1.5 h");
     expect(holdCeiling(60 * 60_000)).toBe("1 h");
+    expect(holdCeiling(90 * 60_000)).toBe("1h 30m");
+  });
+
+  it("never states a ceiling larger than the one enforced", () => {
+    /*
+     * One decimal printed 23 h 59 m as `24.0 h` and 61 minutes as `1.0 h` — the first overstates a risk
+     * limit by a minute, which is the one direction a control must not round. The remainder is carried, so
+     * a configured minute survives to the screen.
+     */
+    expect(holdCeiling(61 * 60_000)).toBe("1h 01m");
+    expect(holdCeiling((23 * 60 + 59) * 60_000)).toBe("23h 59m");
+    expect(holdCeiling((23 * 60 + 59) * 60_000)).not.toContain("24");
+    // A stray second rounds down to the minute it is inside, never up past the ceiling.
+    expect(holdCeiling(61 * 60_000 + 59_000)).toBe("1h 01m");
   });
 
   it("says nothing rather than zero when there is no ceiling to state", () => {
