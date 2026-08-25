@@ -40,10 +40,13 @@ from tracefold.trading.contracts import (
     Bar,
     ExecutionObservation,
     ExecutionReceipt,
+    FrozenMarketContext,
+    FrozenStrategyContext,
     InstrumentRef,
     LivePreflight,
     NativeProtection,
     NewsTradeCandidate,
+    OiMarketTrigger,
     OiTradeCandidate,
     PreparedOrder,
     RemoteExposure,
@@ -60,6 +63,7 @@ from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
 from tracefold.trading.pipeline.candidate import CandidateRunner
 from tracefold.trading.pipeline.reconcile import ReconcileRunner
 from tracefold.trading.pipeline.runtime import TradingConfig
+from tracefold.trading.strategy.root import strategies
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
@@ -169,11 +173,14 @@ def _case(
     created = _repos(conn).trading.insert_case(
         case_id=case_id,
         underlying_key=underlying,
-        case_kind="oi_only",
+        trigger_kind="oi",
+        strategy_id="oi_momentum_v1",
+        strategy_version="oi_momentum_v1",
+        strategy_config_digest="0" * 64,
         mode="paper",
         primary_source_key=source_key,
         supplemental_source_keys=(),
-        manifest={"case_kind": "oi_only"},
+        manifest={"trigger_kind": "oi", "strategy_id": "oi_momentum_v1"},
         manifest_sha256="sha",
         regime="buildup_up",
         observed_at_ms=NOW,
@@ -554,7 +561,8 @@ def _regime_bars(now: int) -> tuple[Bar, ...]:
 
 class _LiveDecisionProgram:
     async def decide(self, manifest: TradingCaseManifest) -> DecisionResult:
-        assert manifest.case_kind == "news_oi"
+        assert manifest.trigger_kind in {"oi", "news"}
+        assert manifest.strategy_id == "news_oi_alignment_v1"
         return DecisionResult(
             decision=TradeDecision(
                 decision="long",
@@ -1010,14 +1018,34 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     )
     assert isinstance(oi, OiTradeCandidate)
     assert isinstance(projected_news, NewsTradeCandidate)
+    regime = assess(oi_direction=oi.oi_direction, move=200)
+    market = FrozenMarketContext(
+        mark_price=Decimal("102"),
+        observed_at_ms=NOW,
+        pre_move_bps=200,
+        pre_move_lookback_ms=3_600_000,
+    )
+    strategy = strategies()["news_oi_alignment_v1"]
     manifest = TradingCaseManifest(
-        case_kind="news_oi",
+        primary_trigger=OiMarketTrigger(
+            source_key=oi.source_key,
+            observed_at_ms=oi.observed_at_ms,
+            persisted_at_ms=oi.verdict_created_at_ms,
+            venue=oi.venue,
+        ),
+        contexts=FrozenStrategyContext(
+            mode="paper",
+            oi=oi,
+            news=projected_news,
+            regime=regime,
+            market=market,
+        ),
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config_digest=strategy.config_digest,
         underlying_key="crypto:DOGE",
         base_symbol="DOGE",
         cutoff_ms=NOW,
-        oi=oi,
-        news=projected_news,
-        regime=assess(oi_direction=oi.oi_direction, move=200),
         instrument=InstrumentRef(
             exchange_id="binance",
             venue="binance.perp",
@@ -1027,14 +1055,13 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
             quote_asset="USDT",
             observed_at_ms=NOW,
         ),
-        mark_price=Decimal("102"),
-        pre_move_bps=200,
+        market_context=market,
     )
     # #162 PR8-B: the manifest binds the exact News generation, so bumping epoch/program moves its
     # content hash. That is the contract working — a case frozen under v6 must not read as a v7 case.
     # #211 moves it again: the OI projection now carries when its verdict became durable, and
-    # `trading_manifest_v3` says so, so a v2 case cannot be replayed as if it had that stamp.
-    assert manifest.digest() == "a2ce8fe82a82e3ff2f6d452a586e776f6745cdf9aa07e8e97584f2f03797f4c5"
+    # `trading_manifest_v4` also binds trigger and strategy identity, so older case shapes cannot replay.
+    assert manifest.digest() == "c370352fc88e9655168a862a939fee1c10a2a8f4a7defdb90628a920920a5371"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
@@ -1049,11 +1076,12 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     trading = _repos(conn).trading
     case = trading.cases()[0]
     assert case["manifest"]["manifest_version"] == TRADING_MANIFEST_VERSION
-    assert case["manifest"]["oi"]["learning_epoch"] == "program_v7"
-    assert case["manifest"]["oi"]["policy_version"] == "news_triage_policy_v10"
-    assert case["case_kind"] == "oi_only"
+    assert case["manifest"]["contexts"]["oi"]["learning_epoch"] == "program_v7"
+    assert case["manifest"]["contexts"]["oi"]["policy_version"] == "news_triage_policy_v10"
+    assert case["trigger_kind"] == "oi"
+    assert case["strategy_id"] == "oi_momentum_v1"
     assert case["state"] == "ORDER_PREPARED"
-    assert case["policy_reason"] == "oi_only_paper_regime"
+    assert case["policy_reason"] == "oi_momentum_regime"
     order = trading.order_for_case(case_id=case["case_id"])
     assert order is not None
     assert order["state"] == "ACKNOWLEDGED"
@@ -1063,6 +1091,57 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert order["must_close_at_ms"] is None
     assert int(order["provider_attempt_count"]) == 1
     assert adapter.attempts == 1
+
+
+def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_orders(conn) -> None:
+    received = NOW - MINUTE
+    conn.execute(
+        "INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms, "
+        "provider_metadata, provenance, first_ingest_mode, created_at_ms, updated_at_ms) "
+        "VALUES ('liq-item', 'opennews', 'liq-key', 'DOGE Large Short Liquidation 750K at $0.12', "
+        "%s, %s, '{\"source\":\"binance\"}'::jsonb, '{}'::jsonb, 'live', %s, %s)",
+        (received - 1_000, received, received, received),
+    )
+    conn.execute(
+        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, symbol, venue, "
+        "liquidated_position_side, forced_order_side, notional_usd, quantity, price, event_at_ms, "
+        "received_at_ms, parser_version, created_at_ms) VALUES (%s, 'liq-item', 'fact-1', 'DOGE', "
+        "'binance', 'short', 'buy', 750000, NULL, 0.12, %s, %s, 'liquidation_parser_v1', %s)",
+        ("a" * 64, received - 1_000, received, received),
+    )
+    conn.execute(
+        "INSERT INTO news_market_instruments (venue, venue_symbol, base_symbol, instrument_class, quote_asset, "
+        "status, last_seen_ms) VALUES ('binance.perp', 'DOGEUSDT', 'DOGE', 'crypto', 'USDT', "
+        "'trading', %s)",
+        (received,),
+    )
+    conn.commit()
+
+    first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 61 * MINUTE).turn())
+
+    rows = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
+    assert first["shadow_evaluated"] == 2
+    assert second["shadow_evaluated"] == 0
+    assert second["shadow_completed"] == 2
+    assert {row["strategy_id"] for row in rows} == {
+        "liquidation_continuation_shadow_v1",
+        "liquidation_exhaustion_shadow_v1",
+    }
+    assert {row["rule"] for row in rows} == {"source_contract_incomplete"}
+    assert {row["permission"] for row in rows} == {"shadow"}
+    assert all(row["market_outcome_version"] == "liquidation_forward_return_1h_v1" for row in rows)
+    assert all(row["market_outcome"] is not None for row in rows)
+    counts = _repos(conn).trading.status_counts(since_ms=NOW - 24 * 3_600_000)
+    assert counts["shadow_by_strategy"] == {
+        "liquidation_continuation_shadow_v1": 1,
+        "liquidation_exhaustion_shadow_v1": 1,
+    }
+    assert all(cohort["completed"] == 1 for cohort in counts["shadow_cohorts"].values())
+    assert counts["liquidation_promotion_ready"] is False
+    assert counts["liquidation_promotion_reason"] == "source_contract_incomplete"
+    assert _repos(conn).trading.cases() == []
+    assert _repos(conn).trading.console_orders(since_ms=NOW - 24 * 3_600_000) == []
 
 
 def test_an_acknowledged_paper_order_is_reconstructed_after_restart(conn) -> None:
@@ -2576,7 +2655,10 @@ def test_a_legacy_news_generation_case_is_blocked_before_model_or_order(
     assert trading.insert_case(
         case_id=f"legacy-{case_kind}-{starting_state}",
         underlying_key="crypto:DOGE",
-        case_kind=case_kind,
+        trigger_kind="oi" if case_kind == "oi_only" else "news",
+        strategy_id="oi_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
+        strategy_version="oi_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
+        strategy_config_digest="0" * 64,
         mode="paper",
         primary_source_key=f"legacy:{case_kind}:{starting_state}",
         supplemental_source_keys=(),
@@ -3882,10 +3964,11 @@ def test_the_scan_reaches_back_far_enough_for_a_forty_five_minute_old_verdict_to
 
     assert report["created"] == 1
     case = _repos(conn).trading.cases()[0]
-    assert case["case_kind"] == "news_oi"
+    assert case["trigger_kind"] == "oi"
+    assert case["strategy_id"] == "news_oi_alignment_v1"
     # The trigger is the frame that just fired; the verdict is the context it attached.
     assert int(case["observed_at_ms"]) == NOW - MINUTE
-    assert case["manifest"]["news"]["verdict_created_at_ms"] == NOW - 45 * MINUTE
+    assert case["manifest"]["contexts"]["news"]["verdict_created_at_ms"] == NOW - 45 * MINUTE
     assert len(case["supplemental_source_keys"]) == 1
     # A 45-minute-old verdict is context, never a trigger of its own: only one case exists.
     assert len(_repos(conn).trading.cases()) == 1

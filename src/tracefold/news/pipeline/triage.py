@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from .. import oi_signals
+from .. import liquidations, oi_signals
 from ..bus import (
     Q_TRIAGE,
     RK_VERDICT_PUSH,
@@ -192,6 +192,16 @@ class TriageConsumer:
             # after the judgment — decide(), the storyline lock, the verdict row, delivery, the receipt,
             # the outcome, the feed — is the ordinary path, because nothing after the judgment differs.
             await self._judge_telemetry(
+                event_id=event_id,
+                card=card,
+                facts=facts,
+                history=history,
+                stamp=stamp,
+                message=message,
+            )
+            return
+        if str(card.get("admission") or "") == "liquidation_deterministic":
+            await self._judge_liquidation(
                 event_id=event_id,
                 card=card,
                 facts=facts,
@@ -666,7 +676,7 @@ class TriageConsumer:
                 failure["parser_version"],
             )
             trace["oi_signal"] = failure
-            settle = self._telemetry_settle(
+            settle = self._deterministic_settle(
                 event_id=event_id,
                 card=card,
                 facts=facts,
@@ -675,6 +685,8 @@ class TriageConsumer:
                 trace=trace,
                 stamp=stamp,
                 error_code="oi_parse_failed",
+                program_version=oi_signals.PROGRAM_VERSION,
+                program_sha256=oi_signals.program_sha256(self.oi_policy),
             )
             outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
         else:
@@ -713,7 +725,7 @@ class TriageConsumer:
                 trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy)
                 return self._decide_and_persist(
                     repos,
-                    s=self._telemetry_settle(
+                    s=self._deterministic_settle(
                         event_id=event_id,
                         card=card,
                         facts=facts,
@@ -721,6 +733,8 @@ class TriageConsumer:
                         history=history,
                         trace=trace,
                         stamp=stamp,
+                        program_version=oi_signals.PROGRAM_VERSION,
+                        program_sha256=oi_signals.program_sha256(self.oi_policy),
                     ),
                 )
 
@@ -730,7 +744,96 @@ class TriageConsumer:
                 event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
             )
 
-    def _telemetry_settle(
+    async def _judge_liquidation(
+        self,
+        *,
+        event_id: str,
+        card: Mapping[str, Any],
+        facts: GateFacts,
+        history: ReaderHistorySnapshot,
+        stamp: int,
+        message: BusMessage,
+    ) -> None:
+        """Read the admission-time typed fact and persist one deterministic, direction-neutral verdict."""
+
+        provider_metadata = card.get("provider_metadata")
+        provider_source = str(provider_metadata.get("source") or "") if isinstance(provider_metadata, Mapping) else ""
+        base_trace: dict[str, Any] = {
+            "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
+            "attempt": message.attempt,
+            "program_version": liquidations.PROGRAM_VERSION,
+            "runtime_manifest_sha": self.runtime_manifest_sha,
+            "policy": self.policy.as_dict(),
+            "gate_policy_version": GATE_POLICY_VERSION,
+            "evidence_version": int(card.get("evidence_version") or 0),
+            "evidence_sha256": str(card.get("evidence_sha256") or ""),
+            "focus_fact_id": str(card.get("focus_fact_id") or ""),
+            "storyline_key_preliminary": str(card.get("storyline_key") or ""),
+            "told": [],
+            "told_count": 0,
+        }
+
+        def _settle(repos: Any) -> _TriageOutcome:
+            row = repos.news.market_liquidation(
+                item_id=str(card.get("leader_item_id") or ""),
+                fact_id=str(card.get("focus_fact_id") or ""),
+                parser_version=liquidations.PARSER_VERSION,
+            )
+            error_code = None
+            if row is None:
+                verdict, fact_trace = liquidations.parse_failure(
+                    str(card.get("leader_title") or ""), provider_source=provider_source
+                )
+                error_code = "liquidation_parse_failed"
+                log.warning(
+                    "news_liquidation_parse_failed event_id=%s strategy_id=2000 provider=opennews "
+                    "title_sha256=%s parser_version=%s failure_stage=source_contract",
+                    event_id,
+                    fact_trace["title_sha256"],
+                    fact_trace["parser_version"],
+                )
+            else:
+                fact = liquidations.LiquidationFact(
+                    source_key=str(row["source_key"]),
+                    item_id=str(row["item_id"]),
+                    fact_id=str(row["fact_id"]),
+                    symbol=str(row["symbol"]),
+                    venue=str(row["venue"]),  # type: ignore[arg-type]
+                    liquidated_position_side=str(row["liquidated_position_side"]),  # type: ignore[arg-type]
+                    forced_order_side=str(row["forced_order_side"]),  # type: ignore[arg-type]
+                    notional_usd=row["notional_usd"],
+                    quantity=row["quantity"],
+                    price=row["price"],
+                    event_at_ms=int(row["event_at_ms"]),
+                    received_at_ms=int(row["received_at_ms"]),
+                    parser_version=str(row["parser_version"]),
+                )
+                verdict = liquidations.verdict(fact)
+                fact_trace = liquidations.trace(fact)
+            trace = {**base_trace, "liquidation": fact_trace}
+            return self._decide_and_persist(
+                repos,
+                s=self._deterministic_settle(
+                    event_id=event_id,
+                    card=card,
+                    facts=facts,
+                    verdict=verdict,
+                    history=history,
+                    trace=trace,
+                    stamp=stamp,
+                    error_code=error_code,
+                    program_version=liquidations.PROGRAM_VERSION,
+                    program_sha256=liquidations.program_sha256(),
+                ),
+            )
+
+        outcome = await self.db.tx("news_liquidation_judge", _settle)
+        if outcome.final in {"push", "escalate"}:
+            await self._publish_decision(
+                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+            )
+
+    def _deterministic_settle(
         self,
         *,
         event_id: str,
@@ -741,6 +844,8 @@ class TriageConsumer:
         trace: dict[str, Any],
         stamp: int,
         error_code: str | None = None,
+        program_version: str,
+        program_sha256: str,
     ) -> _TriageSettle:
         return _TriageSettle(
             event_id=event_id,
@@ -773,8 +878,8 @@ class TriageConsumer:
             degraded=False,
             error_code=error_code,
             model_name=None,
-            program_version=oi_signals.PROGRAM_VERSION,
-            program_sha256=oi_signals.program_sha256(self.oi_policy),
+            program_version=program_version,
+            program_sha256=program_sha256,
             policy=self.policy,
             runtime_manifest_sha=self.runtime_manifest_sha,
             trace=trace,
@@ -816,10 +921,20 @@ class TriageConsumer:
             degraded=s.degraded,
             policy=s.policy,
         )
-        if s.error_code == "oi_parse_failed":
+        if s.facts.admission == "liquidation_deterministic":
+            # This is a new deterministic fact lane, not a v10 editorial-policy change. Keep the
+            # calibrated News policy identity byte-stable and settle the parser's explicit reader
+            # intent here, beside the existing parse-failure override below.
+            decision = replace(
+                decision,
+                final=s.verdict.decision,
+                override_rule="liquidation_deterministic",
+                throttled_by=None,
+            )
+        if s.error_code in {"oi_parse_failed", "liquidation_parse_failed"}:
             # The final action still comes from the one deterministic decision plane; this names the
             # provider-contract failure without changing the model policy helper's release identity.
-            decision = replace(decision, override_rule="oi_parse_failed")
+            decision = replace(decision, override_rule=s.error_code)
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
         trace["verdict_sha256"] = s.judgment.verdict_sha256

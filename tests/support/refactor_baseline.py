@@ -69,11 +69,14 @@ from tracefold.trading.contracts import (
     TRADING_PROGRAM_VERSION,
     Bar,
     ExecutionObservationState,
+    FrozenMarketContext,
+    FrozenStrategyContext,
     InstrumentRef,
     MarketContext,
     NewsCandidateRow,
     NewsTradeCandidate,
     OiCandidateRow,
+    OiMarketTrigger,
     OiTradeCandidate,
     OrderState,
     PreparedOrder,
@@ -81,13 +84,13 @@ from tracefold.trading.contracts import (
     TradeDecision,
     TradingCaseManifest,
 )
-from tracefold.trading.decision.policy import decide as trading_decide
 from tracefold.trading.decision.policy import side_to_order_side
 from tracefold.trading.decision.regime import assess, pre_move_bps
 from tracefold.trading.execution.order import DEFAULT_ORDER_POLICY, SizedOrder, build_payload, size_order
 from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
 from tracefold.trading.pipeline.root import build_pipeline
 from tracefold.trading.pipeline.runtime import TradingConfig
+from tracefold.trading.strategy.root import strategies
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "docs" / "generated" / "refactor-baseline-9441ce99.json"
@@ -121,8 +124,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # #193's compile-record convergence (0305/0306) and now #202's single Prompt candidate (0307). A dict
     # has one key, so the reason names them rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_175_index_then_issue_193_then_issue_202_then_issue_209_snapshot_then_issue_211_trigger_identity",
-        "20260825_0309",
+        "issue_213_versioned_strategy_kernel",
+        "20260826_0310",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
@@ -144,9 +147,10 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "program_v7",
     ),
     "news_to_trading.schema_sha256.manifest": (
-        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
-        "ad346cc65cee63e33d5b8f9f6b7e6785ee89c6e0441cc583998a6f531b86cb21",
+        "issue_213_versioned_strategy_kernel",
+        "455f50d6237112201c9279c3f228b99a81b1eed57030667ae3e3ee10d5734f74",
     ),
+    "news_to_trading.policy_version": ("issue_213_versioned_strategy_kernel", "trading_strategy_policy_v1"),
     "news_to_trading.schema_sha256.news": (
         "issue_162_pr8b_program_learning_identity_migration",
         "9cb007bf545af72e2ed847fc524101f57b1db06ea5a74554d53f18c4707e2a51",
@@ -221,21 +225,152 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_162_pr8b_program_learning_identity_migration",
         "news_semantic_program_v5",
     ),
-    "representative_trading_flow.flow.manifest.news.learning_epoch": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "program_v7",
-    ),
-    "representative_trading_flow.flow.manifest.news.program_version": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "news_semantic_program_v5",
-    ),
-    "representative_trading_flow.flow.manifest.oi.learning_epoch": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "program_v7",
-    ),
     "representative_trading_flow.flow.manifest_sha256": (
-        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
-        "0cabb951667813392307c0cbc9e40ebed05184991468e8e8fee60b3d18eccafe",
+        "issue_213_versioned_strategy_kernel",
+        "715bed39300d78b1b452a254de2d5534a3e4887a0310938d2ec3b5c8d193a22f",
+    ),
+    "representative_trading_flow.flow.manifest.case_kind": ("issue_213_versioned_strategy_kernel", _MISSING),
+    "representative_trading_flow.flow.manifest.mark_price": ("issue_213_versioned_strategy_kernel", _MISSING),
+    "representative_trading_flow.flow.manifest.news": ("issue_213_versioned_strategy_kernel", _MISSING),
+    "representative_trading_flow.flow.manifest.oi": ("issue_213_versioned_strategy_kernel", _MISSING),
+    "representative_trading_flow.flow.manifest.pre_move_bps": ("issue_213_versioned_strategy_kernel", _MISSING),
+    "representative_trading_flow.flow.manifest.regime": ("issue_213_versioned_strategy_kernel", _MISSING),
+    "representative_trading_flow.flow.manifest.primary_trigger": (
+        "issue_213_versioned_strategy_kernel",
+        {
+            "kind": "oi",
+            "source_key": "oi:event-oi-doge:oi_signal_v1",
+            "observed_at_ms": NOW_MS,
+            "persisted_at_ms": NOW_MS,
+            "venue": "hyperliquid",
+        },
+    ),
+    "representative_trading_flow.flow.manifest.market_context": (
+        "issue_213_versioned_strategy_kernel",
+        {
+            "mark_price": "103",
+            "observed_at_ms": NOW_MS,
+            "pre_move_bps": 300,
+            "pre_move_lookback_ms": 3_600_000,
+            "spread_bps": None,
+            "depth_notional_usd": None,
+            "funding_bps": None,
+        },
+    ),
+    "representative_trading_flow.flow.manifest.strategy_id": (
+        "issue_213_versioned_strategy_kernel",
+        "news_oi_alignment_v1",
+    ),
+    "representative_trading_flow.flow.manifest.strategy_version": (
+        "issue_213_versioned_strategy_kernel",
+        "news_oi_alignment_v1",
+    ),
+    "representative_trading_flow.flow.manifest.strategy_config_digest": (
+        "issue_213_versioned_strategy_kernel",
+        "3cfcec1cac2af3e17a012b39555c15d67dc78bac404fdd26fa149fc210aac05c",
+    ),
+    "representative_trading_flow.flow.manifest.contexts": (
+        "issue_213_versioned_strategy_kernel",
+        {
+            "mode": "paper",
+            "oi": {
+                "event_id": "event-oi-doge",
+                "observed_at_ms": NOW_MS,
+                "verdict_created_at_ms": NOW_MS,
+                "base_symbol": "DOGE",
+                "venue": "hyperliquid",
+                "oi_direction": "rise",
+                "oi_change_bps": 320,
+                "oi_value_usd": 73_010_000,
+                "whale_long_profit_bps": 9_900,
+                "whale_oi_ratio_bps": 21_097,
+                "rank_in_window": 1,
+                "metric_version": "oi_signal_v1",
+                "learning_epoch": "program_v7",
+                "program_version": "news_oi_signal_v1",
+                "program_sha256": "a" * 64,
+                "policy_version": "news_triage_policy_v10",
+                "editorial_origin": "telemetry_deterministic",
+                "editorial_sha256": "b" * 64,
+                "scored_judgment_sha256": "c" * 64,
+                "runtime_manifest_sha": "d" * 64,
+            },
+            "news": {
+                "event_id": "event-news-doge",
+                "verdict_created_at_ms": NOW_MS - 60_000,
+                "opened_at_ms": NOW_MS - 61_000,
+                "base_symbol": "DOGE",
+                "evidence_version": 3,
+                "evidence_sha256": "e" * 64,
+                "focus_fact_id": "fact-doge-1",
+                "comparison_fingerprint": "fp-doge",
+                "source_artifact_id": "x:123",
+                "source_published_at_ms": NOW_MS - 62_000,
+                "final_decision": "push",
+                "event_type": "partnership",
+                "risk_direction": "bullish",
+                "scope": "single_name",
+                "magnitude": 2,
+                "novelty": "new_fact",
+                "headline_zh": "狗狗币新增直接支付入口",
+                "why_zh": "新集成扩大可用渠道。",
+                "learning_epoch": "program_v7",
+                "program_version": "news_semantic_program_v5",
+                "program_sha256": "1" * 64,
+                "policy_version": "news_triage_policy_v10",
+                "editorial_origin": "model",
+                "editorial_sha256": "2" * 64,
+                "scored_judgment_sha256": "3" * 64,
+                "runtime_manifest_sha": "4" * 64,
+            },
+            "liquidation": None,
+            "liquidation_aggregate": None,
+            "regime": {
+                "regime": "buildup_up",
+                "reason": "quadrant",
+                "pre_move_bps": 300,
+                "oi_direction": "rise",
+            },
+            "market": {
+                "mark_price": "103",
+                "observed_at_ms": NOW_MS,
+                "pre_move_bps": 300,
+                "pre_move_lookback_ms": 3_600_000,
+                "spread_bps": None,
+                "depth_notional_usd": None,
+                "funding_bps": None,
+            },
+            "news_decision": None,
+            "source_contract_complete": False,
+            "intensity_decelerating": None,
+            "oi_collapsing": None,
+            "price_stopped_extreme": None,
+            "liquidity_recovered": None,
+        },
+    ),
+    "representative_trading_flow.flow.policy_outcome.expected_horizon": (
+        "issue_213_versioned_strategy_kernel",
+        "hours",
+    ),
+    "representative_trading_flow.flow.policy_outcome.invalidation": (
+        "issue_213_versioned_strategy_kernel",
+        "新增使用未出现。",
+    ),
+    "representative_trading_flow.flow.policy_outcome.permission": (
+        "issue_213_versioned_strategy_kernel",
+        "paper",
+    ),
+    "representative_trading_flow.flow.policy_outcome.policy_version": (
+        "issue_213_versioned_strategy_kernel",
+        "trading_strategy_policy_v1",
+    ),
+    "representative_trading_flow.flow.policy_outcome.rule": (
+        "issue_213_versioned_strategy_kernel",
+        "news_oi_aligned",
+    ),
+    "representative_trading_flow.flow.policy_outcome.setup": (
+        "issue_213_versioned_strategy_kernel",
+        "支付入口可能带来新增需求。",
     ),
     "representative_trading_flow.flow.news_projection.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
@@ -328,14 +463,10 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # OI projection now names when its deterministic verdict became durable — it always had the column
     # and always dropped it — so the manifest layout moves and says so. A case frozen under v2 has no
     # such stamp and must not be replayed as if it did.
-    "news_to_trading.manifest_version": ("issue_211_point_in_time_trigger_identity", "trading_manifest_v3"),
+    "news_to_trading.manifest_version": ("issue_213_versioned_strategy_kernel", "trading_manifest_v4"),
     "representative_trading_flow.flow.manifest.manifest_version": (
-        "issue_211_point_in_time_trigger_identity",
-        "trading_manifest_v3",
-    ),
-    "representative_trading_flow.flow.manifest.oi.verdict_created_at_ms": (
-        "issue_211_point_in_time_trigger_identity",
-        NOW_MS,
+        "issue_213_versioned_strategy_kernel",
+        "trading_manifest_v4",
     ),
     "representative_trading_flow.flow.oi_projection.verdict_created_at_ms": (
         "issue_211_point_in_time_trigger_identity",
@@ -357,8 +488,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         5,
     ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_185_observation_then_issue_209_exit_snapshot_then_issue_211_trigger_identity",
-        "5a091aaba579c838878538dff5c7e2b13ba56ec9f392e9b66de1d897f843e571",
+        "issue_213_versioned_strategy_kernel",
+        "714844cc22beb5143d7f180fdeacac5b24500c5738d5a7b07112d7c972b88ff3",
     ),
 }
 
@@ -847,17 +978,35 @@ def _trading_manifest() -> tuple[OiTradeCandidate, NewsTradeCandidate, TradingCa
     )
     move = pre_move_bps(bars, anchor_at_ms=NOW_MS)
     regime = assess(oi_direction=oi.oi_direction, move=move)
+    market = FrozenMarketContext(
+        mark_price=Decimal("103"),
+        observed_at_ms=NOW_MS,
+        pre_move_bps=move,
+        pre_move_lookback_ms=3_600_000,
+    )
+    strategy = strategies()["news_oi_alignment_v1"]
     manifest = TradingCaseManifest(
-        case_kind="news_oi",
+        primary_trigger=OiMarketTrigger(
+            source_key=oi.source_key,
+            observed_at_ms=oi.observed_at_ms,
+            persisted_at_ms=oi.verdict_created_at_ms,
+            venue=oi.venue,
+        ),
+        contexts=FrozenStrategyContext(
+            mode="paper",
+            oi=oi,
+            news=projected_news,
+            regime=regime,
+            market=market,
+        ),
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config_digest=strategy.config_digest,
         underlying_key="crypto:DOGE",
         base_symbol="DOGE",
         cutoff_ms=NOW_MS,
-        oi=oi,
-        news=projected_news,
-        regime=regime,
         instrument=instrument,
-        mark_price=Decimal("103"),
-        pre_move_bps=move,
+        market_context=market,
     )
     return oi, projected_news, manifest
 
@@ -877,13 +1026,8 @@ def _trading_order(
         thesis_zh="支付入口可能带来新增需求。",
         invalidation_zh="新增使用未出现。",
     )
-    outcome = trading_decide(
-        case_kind="news_oi",
-        mode="paper",
-        regime=manifest.regime.regime,
-        decision=model_decision,
-        whale_long_profit_bps=oi.whale_long_profit_bps,
-        oi_value_usd=oi.oi_value_usd,
+    outcome = strategies()["news_oi_alignment_v1"].evaluate(
+        manifest.contexts.model_copy(update={"news_decision": model_decision})
     )
     side = side_to_order_side(outcome.decision)
     assert side is not None

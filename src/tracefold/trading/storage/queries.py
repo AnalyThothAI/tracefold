@@ -71,8 +71,33 @@ class QueryStorage:
             "SELECT state, count(*) AS n FROM trading_orders WHERE created_at_ms >= %s GROUP BY state",
             (int(since_ms),),
         ).fetchall()
-        kinds = self.conn.execute(
-            "SELECT case_kind, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY case_kind",
+        triggers = self.conn.execute(
+            "SELECT trigger_kind, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY trigger_kind",
+            (int(since_ms),),
+        ).fetchall()
+        strategies = self.conn.execute(
+            "SELECT strategy_id, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY strategy_id",
+            (int(since_ms),),
+        ).fetchall()
+        shadow_strategies = self.conn.execute(
+            "SELECT strategy_id, count(*) AS n FROM trading_strategy_evaluations "
+            "WHERE created_at_ms >= %s GROUP BY strategy_id",
+            (int(since_ms),),
+        ).fetchall()
+        shadow_rules = self.conn.execute(
+            "SELECT rule, count(*) AS n FROM trading_strategy_evaluations WHERE created_at_ms >= %s GROUP BY rule",
+            (int(since_ms),),
+        ).fetchall()
+        shadow_cohorts = self.conn.execute(
+            """
+            SELECT strategy_id,
+                   count(*) AS evaluated,
+                   count(completed_at_ms) AS completed,
+                   round(avg((market_outcome ->> 'return_bps')::numeric)) AS mean_return_bps
+              FROM trading_strategy_evaluations
+             WHERE created_at_ms >= %s
+             GROUP BY strategy_id
+            """,
             (int(since_ms),),
         ).fetchall()
         # Only *measured* exits enter the realised-PnL denominator. An operator-resolved order closed
@@ -86,7 +111,20 @@ class QueryStorage:
         ).fetchone()
         return {
             "cases_by_state": {str(row["state"]): int(row["n"]) for row in cases},
-            "cases_by_kind": {str(row["case_kind"]): int(row["n"]) for row in kinds},
+            "cases_by_trigger": {str(row["trigger_kind"]): int(row["n"]) for row in triggers},
+            "cases_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in strategies},
+            "shadow_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in shadow_strategies},
+            "shadow_by_rule": {str(row["rule"]): int(row["n"]) for row in shadow_rules},
+            "shadow_cohorts": {
+                str(row["strategy_id"]): {
+                    "evaluated": int(row["evaluated"]),
+                    "completed": int(row["completed"]),
+                    "mean_return_bps": (None if row["mean_return_bps"] is None else int(row["mean_return_bps"])),
+                }
+                for row in shadow_cohorts
+            },
+            "liquidation_promotion_ready": False,
+            "liquidation_promotion_reason": "source_contract_incomplete",
             "orders_by_state": {str(row["state"]): int(row["n"]) for row in orders},
             "closed_orders": 0 if realized is None else int(realized["n"]),
             "closed_realized_bps": 0 if realized is None else int(realized["total_bps"]),
@@ -180,7 +218,8 @@ class QueryStorage:
                    o.exit_attempt_total, o.filled_quantity, o.average_price, o.exit_price,
                    o.exit_reason, o.realized_bps, o.position_opened_at_ms, o.position_closed_at_ms,
                    o.must_close_at_ms, o.created_at_ms, o.updated_at_ms,
-                   c.case_kind, c.regime, c.policy_decision, c.policy_reason, c.state AS case_state,
+                   c.trigger_kind, c.strategy_id, c.strategy_version,
+                   c.regime, c.policy_decision, c.policy_reason, c.state AS case_state,
                    c.observed_at_ms AS case_observed_at_ms
               FROM trading_orders o
               JOIN trading_cases c ON c.case_id = o.case_id
@@ -207,7 +246,8 @@ class QueryStorage:
 
         row = self.conn.execute(
             """
-            SELECT c.case_id, c.underlying_key, c.case_kind, c.mode, c.state, c.regime,
+            SELECT c.case_id, c.underlying_key, c.trigger_kind, c.strategy_id, c.strategy_version,
+                   c.mode, c.state, c.regime,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms,
                    o.order_id, o.state AS order_state, o.state_reason AS order_state_reason,
                    o.side, o.notional_usd, o.entry_reference, o.stop_price, o.exit_price,
@@ -238,7 +278,8 @@ class QueryStorage:
         params.append(int(limit))
         rows = self.conn.execute(
             f"""
-            SELECT c.case_id, c.underlying_key, c.case_kind, c.mode, c.state, c.regime,
+            SELECT c.case_id, c.underlying_key, c.trigger_kind, c.strategy_id, c.strategy_version,
+                   c.mode, c.state, c.regime,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms
               FROM trading_cases c
              WHERE {" AND ".join(where)}

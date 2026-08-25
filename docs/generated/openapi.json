@@ -6545,10 +6545,6 @@
             "title": "Case Id",
             "type": "string"
           },
-          "case_kind": {
-            "title": "Case Kind",
-            "type": "string"
-          },
           "created_at_ms": {
             "title": "Created At Ms",
             "type": "integer"
@@ -6609,6 +6605,18 @@
             "title": "State",
             "type": "string"
           },
+          "strategy_id": {
+            "title": "Strategy Id",
+            "type": "string"
+          },
+          "strategy_version": {
+            "title": "Strategy Version",
+            "type": "string"
+          },
+          "trigger_kind": {
+            "title": "Trigger Kind",
+            "type": "string"
+          },
           "underlying_key": {
             "title": "Underlying Key",
             "type": "string"
@@ -6618,7 +6626,9 @@
           "case_id",
           "underlying_key",
           "base_symbol",
-          "case_kind",
+          "trigger_kind",
+          "strategy_id",
+          "strategy_version",
           "mode",
           "state",
           "observed_at_ms",
@@ -6631,18 +6641,25 @@
         "additionalProperties": false,
         "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.\n\n`funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count\nover the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`\nand is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader\ncan see that a Workers process stopped over midnight left yesterday's totals in place instead of having\nto infer it.",
         "properties": {
-          "cases_by_kind": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Cases By Kind",
-            "type": "object"
-          },
           "cases_by_state": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Cases By State",
+            "type": "object"
+          },
+          "cases_by_strategy": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Cases By Strategy",
+            "type": "object"
+          },
+          "cases_by_trigger": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Cases By Trigger",
             "type": "object"
           },
           "closed_orders": {
@@ -6667,11 +6684,42 @@
             "title": "Funnel Today",
             "type": "object"
           },
+          "liquidation_promotion_ready": {
+            "default": false,
+            "title": "Liquidation Promotion Ready",
+            "type": "boolean"
+          },
+          "liquidation_promotion_reason": {
+            "default": "",
+            "title": "Liquidation Promotion Reason",
+            "type": "string"
+          },
           "orders_by_state": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Orders By State",
+            "type": "object"
+          },
+          "shadow_by_rule": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Shadow By Rule",
+            "type": "object"
+          },
+          "shadow_by_strategy": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Shadow By Strategy",
+            "type": "object"
+          },
+          "shadow_cohorts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TradingShadowCohortData"
+            },
+            "title": "Shadow Cohorts",
             "type": "object"
           }
         },
@@ -6902,10 +6950,6 @@
             "title": "Case Id",
             "type": "string"
           },
-          "case_kind": {
-            "title": "Case Kind",
-            "type": "string"
-          },
           "case_observed_at_ms": {
             "anyOf": [
               {
@@ -7100,6 +7144,14 @@
             "title": "Stop Price",
             "type": "string"
           },
+          "strategy_id": {
+            "title": "Strategy Id",
+            "type": "string"
+          },
+          "strategy_version": {
+            "title": "Strategy Version",
+            "type": "string"
+          },
           "take_profit_price": {
             "anyOf": [
               {
@@ -7110,6 +7162,10 @@
               }
             ],
             "title": "Take Profit Price"
+          },
+          "trigger_kind": {
+            "title": "Trigger Kind",
+            "type": "string"
           },
           "underlying_key": {
             "title": "Underlying Key",
@@ -7136,7 +7192,9 @@
           "state",
           "created_at_ms",
           "updated_at_ms",
-          "case_kind",
+          "trigger_kind",
+          "strategy_id",
+          "strategy_version",
           "case_state"
         ],
         "title": "TradingOrderData",
@@ -7235,6 +7293,36 @@
           "live_readiness"
         ],
         "title": "TradingReadinessData",
+        "type": "object"
+      },
+      "TradingShadowCohortData": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "evaluated": {
+            "title": "Evaluated",
+            "type": "integer"
+          },
+          "mean_return_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Return Bps"
+          }
+        },
+        "required": [
+          "evaluated",
+          "completed"
+        ],
+        "title": "TradingShadowCohortData",
         "type": "object"
       },
       "TradingStatusData": {

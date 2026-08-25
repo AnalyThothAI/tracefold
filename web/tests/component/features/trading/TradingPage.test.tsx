@@ -202,6 +202,21 @@ describe("TradingPage", () => {
     await waitFor(() => expect(screen.getByText(/鲸鱼盈利 ≥ 95%/)).toBeInTheDocument());
   });
 
+  it("shows real liquidation shadow cohorts without presenting them as orders", async () => {
+    renderTrading();
+
+    const continuation = await screen.findByText(/清算延续（影子） 2（完成 1） · 1h 均值 0.25%/);
+    const cohort = continuation.closest(".trading-floors") as HTMLElement;
+    expect(cohort).toHaveTextContent("清算衰竭（影子） 2（完成 1） · 1h 均值 0.25%");
+    expect(cohort).toHaveTextContent("来源契约不完整 4");
+    expect(cohort).toHaveTextContent("不可晋级：source_contract_incomplete");
+
+    // Shadow evaluations are evidence rows only. They must not become exposure or closed-order rows.
+    for (const row of document.querySelectorAll(".trading-exposure-row, .trading-closed-row")) {
+      expect(row).not.toHaveTextContent(/清算延续|清算衰竭/);
+    }
+  });
+
   it("shows an unmeasured close as — rather than a zero that would drag an average", async () => {
     server.use(
       http.get(/.*\/api\/trading\/orders$/, () =>

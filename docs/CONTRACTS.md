@@ -1206,6 +1206,12 @@ places, amends or cancels an order. `trading status` reports mode, control
 state, the day's counters and funnel, `stage_latency_ms` (p50/p95 and an
 evidence count `n` for each pipeline stage from `source_observed` to
 `position_opened`, keyed by stage and by nothing else),
+capital cases grouped by `trigger_kind` and `strategy_id`, and liquidation
+shadow evaluations grouped by strategy and rule. Each shadow cohort reports
+`evaluated`, `completed`, and nullable `mean_return_bps` for the versioned 1 h
+market outcome. `liquidation_promotion_ready` is currently always false with
+reason `source_contract_incomplete`; it is evidence, not a configuration
+switch.
 `nominal_daily_stop_loss_usd`, the configured `live_symbol`,
 `execution_backend`, `execution_configured`, `live_mode_supported`,
 `live_ready`, and `live_readiness`; `live_reviewed` reports
@@ -1223,14 +1229,30 @@ deterministic safety close), and `trading approve|reject <order-id> --digest`
 settles one order bound to its exact frozen payload digest, idempotent by state
 so a second approval of an already-approved order changes nothing.
 
-Trading's News projection contract is `program_v7` / policy v10 only.
-`trading_manifest_v3` freezes the learning epoch, lane-specific Program
+Trading consumes `news_trade_projection_v3`: separate editorial News,
+deterministic OI, and typed liquidation rows. The liquidation row preserves
+both `liquidated_position_side` and `forced_order_side`; callers must not infer
+one by treating the other as a forecast. Recovery rows are audit context and
+are not eligible triggers.
+
+Trading's editorial News projection contract is `program_v7` / policy v10
+only. `trading_manifest_v4` freezes the learning epoch, lane-specific Program
 version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
-and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211).
+and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211),
+the single primary trigger, point-in-time contexts, and strategy ID, version,
+and configuration digest (#213).
 Cases frozen under any earlier manifest version remain readable audit rows but
 cannot advance: an undecided case is terminalized as
 `BLOCKED/no_trade/news_generation_retired`; an already prepared order is not
 rewritten and remains owned by the reconciliation state machine.
+
+The HTTP shape uses `trigger_kind`, never the retired `case_kind`. Every case
+and order row carries `strategy_id` and `strategy_version`. `/api/trading/status`
+adds `counts.cases_by_strategy`, `counts.shadow_by_strategy`,
+`counts.shadow_by_rule`, `counts.shadow_cohorts`,
+`counts.liquidation_promotion_ready`, and
+`counts.liquidation_promotion_reason`. The two liquidation shadow strategies
+write only `trading_strategy_evaluations`; they cannot produce a case or order.
 
 The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded

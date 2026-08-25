@@ -16,6 +16,40 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
+### Paper Trading activation (#213)
+
+Paper mode uses real persisted News/OI/liquidation facts and real public venue
+bars, then writes simulated entries and exits to the production Trading ledger.
+It never sends an order to an exchange. The browser is therefore showing real
+production pipeline data and durable paper results, not fixture rows; paper
+fills still do **not** prove spread, precision, partial-fill, liquidation, or
+profitability behavior.
+
+Before enabling it, from the clean primary checkout:
+
+1. run `uv run tracefold config` and confirm the reported path is
+   `~/.tracefold/config.yaml`, `trading.mode=paper`, and no redacted config
+   error is present;
+2. deploy the exact reviewed image and migration `20260826_0310`, then require
+   `make status` to pass;
+3. set only `trading.enabled=true`, leaving the mode `paper`, and run
+   `make up` followed by `make status` again;
+4. require `uv run tracefold trading status` to report `enabled=true`,
+   `mode=paper`, and control `RUNNING`; inspect `/api/trading/status` and
+   `/api/trading/orders` without writing through HTTP;
+5. wait for an eligible production trigger. Do not seed a production Case or
+   Order to make the page non-empty. `oi_momentum_v1` and
+   `news_oi_alignment_v1` are the only capital strategies in paper.
+
+Every live Strategy 2000 liquidation frame should create two shadow evaluation
+rows and zero cases/orders. After one hour, status should move those cohorts
+from evaluated to completed as closed bars become available. Their promotion
+gate must remain `false/source_contract_incomplete`; changing the YAML cannot
+override the code-owned `shadow` permission. To stop new paper cases without
+losing audit history, restore `trading.enabled=false` and redeploy. Existing
+paper orders remain ledger facts and should be allowed to reconcile/close under
+the reviewed rollback procedure rather than being deleted.
+
 Before deploying #129, remove the retired
 `news.triage.deadline_seconds` key from the operator config. The typed schema
 rejects it; each route deadline is code-owned by the Program factory.
@@ -122,8 +156,8 @@ expose only post-epoch v10 judgments and new cases freeze the current
 blocked as `news_generation_retired` before model or order work; existing
 prepared orders remain owned by reconciliation and are never rewritten by the
 News migration. The manifest version is a constant in the deployed image, not a
-schema fact: #211 moves it to `trading_manifest_v3`, so the *image* retires
-every case frozen under v2 and rolling the image back retires everything frozen
+schema fact: #213 moves it to `trading_manifest_v4`, so the *image* retires
+every case frozen under v3 and rolling the image back retires everything frozen
 since. Schema `0309` is a separate thing — it adds the two upstream stage stamps
 and coalesces any undecided cases that share an underlying down to one (recorded
 with the same `news_generation_retired` reason the runner would write, since the
@@ -131,7 +165,12 @@ version bump retires them all anyway) before creating the partial unique index
 that keeps one undecided case per underlying from then on. A case that already
 authored an order is never the one coalesced away. `0309` has no downgrade: the
 coalescing cannot be told apart afterwards from any other block. Both statements
-are no-ops on a deployment where Trading has been disabled.
+are no-ops on a deployment where Trading has been disabled. Schema `0310`
+renames `case_kind` to `trigger_kind`, freezes strategy identity on every new
+case, and creates the typed liquidation fact and shadow-evaluation ledgers. It
+has no downgrade because those new material facts cannot be represented in the
+old schema. A rollback must therefore be a reviewed image that understands
+schema `0310`, never an Alembic downgrade.
 
 ```bash
 cd ~/Documents/Code/tracefold

@@ -56,6 +56,7 @@ NEWS_TABLES = {
     "news_quote_snapshots",
     "news_event_reactions",
     "news_oi_signals",
+    "news_market_liquidations",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }
@@ -705,6 +706,57 @@ def test_strategy_1019_format_drift_reaches_triage_instead_of_near_duplicate_mer
         event_ids.append(admitted.event_id)
 
     assert len(set(event_ids)) == 2
+
+
+def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recovery(conn) -> None:
+    repos = repositories_for_connection(conn)
+
+    def admit(hit_id: int, *, ingest_mode: str, side: str, venue: str) -> None:
+        params = _hit(
+            hit_id=hit_id,
+            text=f"SPCX Large {side} Liquidation 202.71K at $137.01",
+            engine="market",
+            score=90,
+            coins=[],
+            source=venue,
+            ts="2026-08-24T12:00:00+08:00",
+        )
+        params["strategy"] = {
+            "id": 2000,
+            "name": "Large Liquidations",
+            "engine_type": "market",
+            "source_type": "news",
+        }
+        event = parse_opennews_message({"method": "strategy.triggered", "params": params})
+        assert event is not None
+        stamp = int(event.entry.published_at_ms or 0) + 1_000
+        with repos.transaction():
+            result = admit_item(
+                repos,
+                event=event,
+                ingest_mode=ingest_mode,
+                observed_at_ms=stamp,
+                trace_id=f"liquidation-{hit_id}",
+                watchlist_symbols=frozenset(),
+                now_ms=stamp,
+            )
+        assert result.admission == "liquidation_deterministic"
+
+    admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
+    admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
+    admit(2_000_002, ingest_mode="recovery", side="Long", venue="hyperliquid")
+
+    rows = conn.execute(
+        "SELECT venue, liquidated_position_side, forced_order_side, notional_usd, quantity "
+        "FROM news_market_liquidations WHERE symbol = 'SPCX' ORDER BY venue"
+    ).fetchall()
+    assert [
+        (row["venue"], row["liquidated_position_side"], row["forced_order_side"], row["notional_usd"], row["quantity"])
+        for row in rows
+    ] == [
+        ("binance", "short", "buy", 202_710, None),
+        ("hyperliquid", "long", "sell", 202_710, None),
+    ]
 
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:

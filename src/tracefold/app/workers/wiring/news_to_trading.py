@@ -18,15 +18,21 @@ from collections.abc import Sequence
 from typing import Any
 
 from tracefold.news.storage.trade_projection import (
+    LiquidationTradeProjectionRow,
     NewsTradeProjectionRow,
     OiTradeProjectionRow,
     TradeInstrumentProjectionRow,
 )
-from tracefold.trading.contracts import InstrumentCandidateRow, NewsCandidateRow, OiCandidateRow
+from tracefold.trading.contracts import (
+    InstrumentCandidateRow,
+    LiquidationCandidateRow,
+    NewsCandidateRow,
+    OiCandidateRow,
+)
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v2"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v3"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
@@ -97,6 +103,25 @@ def to_news_candidate_row(row: NewsTradeProjectionRow) -> NewsCandidateRow:
     )
 
 
+def to_liquidation_candidate_row(row: LiquidationTradeProjectionRow) -> LiquidationCandidateRow:
+    return LiquidationCandidateRow(
+        source_key=row["source_key"],
+        item_id=row["item_id"],
+        fact_id=row["fact_id"],
+        symbol=row["symbol"],
+        venue=row["venue"],
+        liquidated_position_side=row["liquidated_position_side"],
+        forced_order_side=row["forced_order_side"],
+        notional_usd=row["notional_usd"],
+        quantity=row["quantity"],
+        price=row["price"],
+        event_at_ms=row["event_at_ms"],
+        received_at_ms=row["received_at_ms"],
+        parser_version=row["parser_version"],
+        ingest_mode=row["ingest_mode"],
+    )
+
+
 def to_instrument_candidate_row(row: TradeInstrumentProjectionRow) -> InstrumentCandidateRow:
     """Instrument universe row -> the venue resolver's input, in the reader's venue order."""
 
@@ -118,7 +143,7 @@ def news_trade_candidates(
     until_created_at_ms: int,
     max_rank_in_window: int,
     min_oi_value_usd: int,
-) -> tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow]]:
+) -> tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow], Sequence[LiquidationCandidateRow]]:
     """`CandidateProjectionReader`: one point-in-time News read per lane, mapped into Trading's input.
 
     The window, the ordering and the generation gate belong to the News projection; this reader adds no
@@ -143,6 +168,13 @@ def news_trade_candidates(
                 until_created_at_ms=until_created_at_ms,
             )
         ],
+        [
+            to_liquidation_candidate_row(row)
+            for row in repos.news.trade_candidate_liquidation_rows(
+                after_received_at_ms=after_created_at_ms,
+                until_received_at_ms=until_created_at_ms,
+            )
+        ],
     )
 
 
@@ -160,6 +192,7 @@ __all__ = [
     "news_trade_candidates",
     "news_trade_instruments",
     "to_instrument_candidate_row",
+    "to_liquidation_candidate_row",
     "to_news_candidate_row",
     "to_oi_candidate_row",
 ]

@@ -408,9 +408,11 @@ port it needs from the process — `NewsDatabasePort`, `MarketReviewDatabasePort
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v2` and Trading's own candidate
+row contracts, News's `news_trade_projection_v3` and Trading's own candidate
 input rows, translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner.
+either side fails at the seam rather than inside a runner. Version 3 publishes
+three independent lanes: editorial News, deterministic OI, and typed
+liquidation facts. The mapper never turns one into another.
 
 `tracefold.app` decides how capabilities are assembled and run, never what a
 business fact means. It reads business projections; it does not write business
@@ -1372,32 +1374,38 @@ See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 ## Trading core (#104)
 
 `tracefold.trading` is the second business capability and is disabled by
-default. It exists to turn a persisted judgement into at most one small,
-recoverable, auditable order — not to claim an edge.
+default. It exists to turn a persisted market trigger plus frozen context into
+at most one small, recoverable, auditable order — not to claim an edge.
 
 ```text
-persisted Triage verdict (model, or deterministic OI)
-  -> public News projection             owned by tracefold.news
+persisted market trigger (News, OI, or typed liquidation)
+  -> three public News projections      owned by tracefold.news
   -> canonical symbol + deny-list + freshness + active/cooldown
   -> exact native perp on one venue     binance.perp | hl.perp
-  -> deterministic OI/price regime      arithmetic, never a model
-  -> one dspy.Predict                   News-bearing cases only
-  -> pure policy                        no_trade | long | short, always a named rule
+  -> point-in-time context              OI + News + market + forced flow
+  -> one dspy.Predict                   News-bearing capital cases only
+  -> one pure versioned strategy        no_trade | long | short, always a named rule
   -> fixed notional / 1x / fixed stop / max holding
   -> reviewed order: AWAITING_APPROVAL -> re-preflight -> SUBMITTING -> one write
   -> ACK | AMBIGUOUS -> read-only provider reconciliation
   -> WORKING | PARTIAL | OPEN | UNPROTECTED | CLOSED | MANUAL_REVIEW_REQUIRED
 ```
 
-**The trigger is the persisted verdict, not delivery.** Feishu `sent` is
-notification transport success; capital must not depend on a notification
-channel being reachable.
+**Trigger and context are different types.** A trigger is the one persisted
+fact that starts an evaluation and fixes its cutoff. Context may enrich that
+evaluation only when it existed no later than the cutoff. Feishu `sent` is
+notification transport success, not a trigger; capital must not depend on a
+notification channel being reachable. The frozen manifest names exactly one
+`primary_trigger`, one `strategy_id` / `strategy_version` /
+`strategy_config_digest`, and a point-in-time `contexts` object. This prevents
+a later News, OI, or market observation from leaking backwards into the case.
 
 **The News input is one hard-cut generation.** The public projections emit
 only post-epoch `program_v7` / policy-v10 judgments with the complete Program,
 editorial, scored-judgment and runtime-manifest identity. Model judgments must
 come from executable v5; deterministic OI keeps its arithmetic Program v1.
-`trading_manifest_v3` freezes those identities with the case. A manifest frozen
+`trading_manifest_v4` freezes those identities and the selected strategy with
+the case. A manifest frozen
 under any earlier version that is still `PENDING`, or whose `RUNNING` lease
 expires, is blocked as `news_generation_retired` before a model call or order;
 prepared orders keep their immutable payload and continue through
@@ -1405,10 +1413,33 @@ reconciliation. The version is a Python constant in `tracefold.trading.contracts
 and is owned by the deployed image, never by the schema — rolling the image back
 retires every case frozen since the deploy, and no migration reverses that.
 
-**Three case kinds, three authorities.** `oi_only` is arithmetic and is the
-execution-kernel trial lane — it never reaches a live mode, and it never calls
-a model. `news_only` is shadow/paper. `news_oi` is the only kind a live mode may
-execute, and only when the model's read and the deterministic regime agree.
+**Strategies own decisions; triggers do not.** `oi_momentum_v1` is the
+paper-only arithmetic execution-kernel lane and never calls a model.
+`news_oi_alignment_v1` requires OI context and owns the only capital hypothesis
+that may eventually reach `live_reviewed`; in paper it uses the same immutable
+order kernel without real funds. A News trigger without OI context is evaluated
+by that strategy but fails closed. `liquidation_continuation_shadow_v1` and
+`liquidation_exhaustion_shadow_v1` are opposite, independently versioned
+hypotheses over the same forced-flow trigger. Both have `shadow` permission and
+can write only `trading_strategy_evaluations`: no Case and no Order exists for
+them.
+
+**Liquidation is a typed fact, not prose sentiment.** At News admission,
+Strategy 2000's exact wire template is parsed into
+`news_market_liquidations`. The ledger records the liquidated position side and
+the forced order side separately: a short liquidation is forced buying, while
+a long liquidation is forced selling. Venue is restricted to Binance or
+Hyperliquid, money uses decimal arithmetic, malformed units or timestamps fail
+closed, and recovery-origin facts remain in audit but cannot trigger Trading.
+The reader verdict is deliberately direction-neutral because an observed
+forced trade is not by itself a forecast.
+
+The current source contract supplies event time, receive time, venue, side,
+notional, and price, but not independently verified funding, spread, depth,
+throttle, or deceleration. The frozen strategy context therefore carries
+`source_contract_complete=false`. Both liquidation strategies deterministically
+return `no_trade/source_contract_incomplete`; this is an executable promotion
+gate, not an operator warning that can be clicked through.
 
 **Open-interest direction is not price direction.** The reader card maps
 `OI rise -> bullish` to fit the News delivery vocabulary; Trading pairs the
@@ -1634,10 +1665,12 @@ machine. It is a focused lane, not a substitute for `make test-evidence`; it is
 not a backtest, not a profitability claim, and not evidence about a real venue or
 real funds.
 
-**Three case kinds, three authorities for the side.** `oi_only` takes its side
-from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the
-**model** owns the side — tolerable only because the kind is paper-only. `news_oi`
-requires both to agree.
+**Two capital strategies, one order kernel.** `oi_momentum_v1` takes its side
+from the OI/price quadrant and is paper-only. `news_oi_alignment_v1` requires
+the model read and that same quadrant to agree; without OI context it returns a
+named no-trade. The strategy permission is checked before an Order can be
+authored. Strategy selection never changes sizing, approval, submission,
+reconciliation, or exit behavior: those remain the single execution kernel.
 
 **One trigger, one cutoff, at most one prior counterpart.** A new OI frame at
 `T` attaches the newest eligible News in `[T - news_lookback, T]`; a new News
@@ -1648,8 +1681,8 @@ rules make that hold, and each closes a specific defect (#211).
 reason to act **now**; `news_lookback_seconds` and `oi_lookback_seconds` say how
 far back of that row's own cutoff the other lane may be read for **context**.
 Applying the trigger budget to both sides is what made the configured 60 m / 30 m
-windows unreachable: nothing older than five minutes could attach, so `news_oi`
-was all but impossible at any configuration. An hour-old verdict is now perfectly
+windows unreachable: nothing older than five minutes could attach, so combined
+News/OI context was all but impossible at any configuration. An hour-old verdict is now perfectly
 good context and still cannot start a case on its own.
 
 *The query has to reach what fusion is allowed to use.* The scan reads
@@ -1691,8 +1724,9 @@ so an unroutable frame can neither win coalescing from an older frame that *is*
 routable nor be attached as context to a News trigger it would then take down
 with it. An issuer not listed at the signal venue is `no_perp_at_signal_venue`
 and is only knowable at the freeze. None of the three is a reason to pick a
-different book. `news_only` has no frame and therefore no signal venue, so it
-keeps the static priority.
+different book. A News trigger with no OI frame has no signal venue and uses
+the static priority for its frozen research context, but its strategy still
+fails closed before it can author an Order.
 
 Measured before shipping it: of the pushed OI frames in the last seven days,
 every one carried a venue tag and 36 of 38 named Hyperliquid. So the practical
@@ -1706,20 +1740,37 @@ of the chosen venue's own OI or funding, so the "confirm the trigger at the venu
 that will execute it" half of #211 is **not** implemented and `live_bounded`
 stays disabled.
 
-**Deterministic gates run before the model call.** `pre_model_reject()` holds
-every rejection that needs no model answer — quadrant, long-only, the whale and
-OI floors — and both the freeze step and the runner apply it before charging the
-daily budget. `decide()` re-applies all of it, so the ordering is an
-optimisation and never the thing that makes the policy correct.
+**Deterministic gates run before the model call.** The selected pure strategy
+evaluates the frozen context before any provider call. Quadrant, long-only,
+whale, OI, permission, and missing-context refusals therefore do not spend the
+daily model budget. For an eligible News-bearing case the runner freezes the
+single model result into a new context and evaluates the same strategy again;
+the strategy, never the model adapter, returns the final named decision.
 
-**Five tables**, all `trading_*`: `trading_symbol_blacklist`,
+**Six tables**, all `trading_*`: `trading_symbol_blacklist`,
 `trading_runtime_state` (control, daily counters, the day's funnel),
-`trading_cases`, `trading_orders`, `trading_order_observations`. `closed_at_ms`
+`trading_cases`, `trading_orders`, `trading_order_observations`, and
+`trading_strategy_evaluations`. `trading_cases` is the immutable capital
+research decision and freezes trigger plus strategy identity;
+`trading_strategy_evaluations` is the immutable shadow-decision ledger and may
+gain exactly one separately versioned market outcome after its horizon. It has
+no transition into Cases or Orders. `closed_at_ms`
 says a row is terminal and four paths write it; `position_closed_at_ms` is a
 real exit and is the only thing the symbol cooldown and the realised-PnL
 denominator read. The scanner keeps no cursor — it re-reads a bounded overlap window and lets
 `trading_cases.primary_source_key` reject what it has already seen, which is
 what makes a crash or a redeploy idempotent without a checkpoint to corrupt.
+
+For liquidation shadow research the idempotency key is the complete strategy
+identity `(trigger_source_key, strategy_id, strategy_version,
+strategy_config_digest)`. One typed liquidation trigger therefore produces
+exactly two immutable evaluations and zero orders. At one hour the outcome
+worker may attach `liquidation_forward_return_1h_v1` with forward return,
+maximum favorable move, and maximum adverse move from closed public bars. The
+24-hour API cohort reports evaluated and completed counts plus mean forward
+return; it always reports `liquidation_promotion_ready=false` with
+`source_contract_incomplete` until a later, evidence-gated source-contract
+migration changes that fact.
 
 `trading_cases` also carries the two upstream instants Trading does not own:
 `source_observed_at_ms` (when the provider fact was observed) and

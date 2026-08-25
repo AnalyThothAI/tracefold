@@ -3,7 +3,7 @@ import { Card } from "@shared/ui/Card";
 import { Link } from "react-router-dom";
 
 import type { TradingOrder } from "../api/tradingQueries";
-import { CASE_KIND_ZH, heldFor } from "../model/tradingLabels";
+import { heldFor, STRATEGY_ZH } from "../model/tradingLabels";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
@@ -38,7 +38,7 @@ export function TradingClosed({ rows }: { rows: readonly TradingOrder[] }) {
                 <Link to={newsSymbolPath(order.base_symbol)}>{order.base_symbol}</Link>
               </span>
               <span className="trading-kind">
-                {CASE_KIND_ZH[order.case_kind] ?? order.case_kind}
+                {STRATEGY_ZH[order.strategy_id] ?? order.strategy_id}
               </span>
               <span className="trading-num">
                 {order.average_price ?? order.entry_reference} → {order.exit_price ?? "—"}

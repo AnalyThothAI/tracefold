@@ -2748,8 +2748,6 @@ export interface components {
             base_symbol: string;
             /** Case Id */
             case_id: string;
-            /** Case Kind */
-            case_kind: string;
             /** Created At Ms */
             created_at_ms: number;
             /** Decided At Ms */
@@ -2766,6 +2764,12 @@ export interface components {
             regime?: string | null;
             /** State */
             state: string;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Strategy Version */
+            strategy_version: string;
+            /** Trigger Kind */
+            trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
         };
@@ -2784,12 +2788,16 @@ export interface components {
          *     to infer it.
          */
         TradingCountsData: {
-            /** Cases By Kind */
-            cases_by_kind?: {
-                [key: string]: number;
-            };
             /** Cases By State */
             cases_by_state?: {
+                [key: string]: number;
+            };
+            /** Cases By Strategy */
+            cases_by_strategy?: {
+                [key: string]: number;
+            };
+            /** Cases By Trigger */
+            cases_by_trigger?: {
                 [key: string]: number;
             };
             /**
@@ -2811,9 +2819,31 @@ export interface components {
             funnel_today?: {
                 [key: string]: number;
             };
+            /**
+             * Liquidation Promotion Ready
+             * @default false
+             */
+            liquidation_promotion_ready: boolean;
+            /**
+             * Liquidation Promotion Reason
+             * @default
+             */
+            liquidation_promotion_reason: string;
             /** Orders By State */
             orders_by_state?: {
                 [key: string]: number;
+            };
+            /** Shadow By Rule */
+            shadow_by_rule?: {
+                [key: string]: number;
+            };
+            /** Shadow By Strategy */
+            shadow_by_strategy?: {
+                [key: string]: number;
+            };
+            /** Shadow Cohorts */
+            shadow_cohorts?: {
+                [key: string]: components["schemas"]["TradingShadowCohortData"];
             };
         };
         /**
@@ -2885,8 +2915,6 @@ export interface components {
             base_symbol: string;
             /** Case Id */
             case_id: string;
-            /** Case Kind */
-            case_kind: string;
             /** Case Observed At Ms */
             case_observed_at_ms?: number | null;
             /** Case State */
@@ -2948,8 +2976,14 @@ export interface components {
             state_reason?: string | null;
             /** Stop Price */
             stop_price: string;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Strategy Version */
+            strategy_version: string;
             /** Take Profit Price */
             take_profit_price?: string | null;
+            /** Trigger Kind */
+            trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
             /** Updated At Ms */
@@ -2995,6 +3029,15 @@ export interface components {
             mode: "paper" | "live_reviewed" | "live_bounded";
             /** Venues */
             venues?: string[];
+        };
+        /** TradingShadowCohortData */
+        TradingShadowCohortData: {
+            /** Completed */
+            completed: number;
+            /** Evaluated */
+            evaluated: number;
+            /** Mean Return Bps */
+            mean_return_bps?: number | null;
         };
         /** TradingStatusData */
         TradingStatusData: {

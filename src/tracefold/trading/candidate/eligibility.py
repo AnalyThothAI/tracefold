@@ -20,10 +20,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from pydantic import ValidationError
 
 from ..contracts import (
     TRADING_MANIFEST_VERSION,
+    LiquidationCandidateRow,
+    LiquidationTradeCandidate,
     NewsCandidateRow,
     NewsTradeCandidate,
     OiCandidateRow,
@@ -292,15 +297,73 @@ def news_candidate(
     )
 
 
+def liquidation_candidate(
+    row: LiquidationCandidateRow,
+    *,
+    now_ms: int,
+    blacklist: Blacklist,
+    funnel: Funnel | None = None,
+) -> LiquidationTradeCandidate | Rejected:
+    """One typed forced-flow fact. Its forced side is preserved, never promoted to a forecast."""
+
+    def _no(rule: str, symbol: str = "") -> Rejected:
+        if funnel is not None:
+            funnel.count(f"liquidation_reject:{rule}")
+        return Rejected(rule=rule, symbol=symbol)
+
+    symbol = canonical_base_symbol(row.get("symbol"))
+    if not symbol:
+        return _no("symbol_not_canonicalisable")
+    if str(row.get("ingest_mode") or "") != "live":
+        return _no("not_live_ingest", symbol)
+    venue = str(row.get("venue") or "").strip().lower()
+    position_side = str(row.get("liquidated_position_side") or "").strip().lower()
+    forced_side = str(row.get("forced_order_side") or "").strip().lower()
+    if venue not in _KNOWN_VENUES:
+        return _no("venue_unknown", symbol)
+    if (position_side, forced_side) not in {("short", "buy"), ("long", "sell")}:
+        return _no("side_semantics_invalid", symbol)
+    blocked = blacklist.blocked(symbol, now_ms=now_ms)
+    if blocked is not None:
+        return _no(blacklist_rule(blocked.reason), symbol)
+    try:
+        candidate = LiquidationTradeCandidate(
+            source_key=str(row.get("source_key") or ""),
+            item_id=str(row.get("item_id") or ""),
+            fact_id=str(row.get("fact_id") or ""),
+            base_symbol=symbol,
+            venue=venue,
+            liquidated_position_side=position_side,
+            forced_order_side=forced_side,
+            notional_usd=Decimal(str(row.get("notional_usd"))),
+            quantity=(Decimal(str(row["quantity"])) if row.get("quantity") is not None else None),
+            price=Decimal(str(row.get("price"))),
+            event_at_ms=int(row.get("event_at_ms") or 0),
+            received_at_ms=int(row.get("received_at_ms") or 0),
+            parser_version=str(row.get("parser_version") or ""),
+        )
+    except (InvalidOperation, TypeError, ValueError, ValidationError):
+        return _no("typed_fact_invalid", symbol)
+    if candidate.received_at_ms < candidate.event_at_ms:
+        return _no("timestamp_order_invalid", symbol)
+    if funnel is not None:
+        funnel.count("liquidation_eligible")
+        funnel.count(f"liquidation_eligible_venue:{candidate.venue}")
+    return candidate
+
+
 def _uses_current_news_generation(raw: object) -> bool:
     """Whether an untrusted persisted manifest names the one executable News generation."""
 
     if not isinstance(raw, Mapping) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
         return False
+    contexts = raw.get("contexts")
+    if not isinstance(contexts, Mapping):
+        return False
     sources = (("oi", "news_oi_signal_v1"), ("news", "news_semantic_program_v5"))
     found = False
     for source_field, expected_program in sources:
-        source = raw.get(source_field)
+        source = contexts.get(source_field)
         if source is None:
             continue
         found = True
@@ -321,6 +384,7 @@ __all__ = [
     "Rejected",
     "blacklist_rule",
     "is_fresh_trigger",
+    "liquidation_candidate",
     "news_candidate",
     "oi_candidate",
 ]

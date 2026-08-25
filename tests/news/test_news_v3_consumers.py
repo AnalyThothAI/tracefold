@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from contextlib import contextmanager, nullcontext
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Literal
 
@@ -2268,3 +2269,83 @@ def test_a_redelivered_telemetry_verdict_republishes_through_the_existing_guard(
 
     assert "insert_verdict" not in news.names()
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
+
+
+# ---------------------------------------------------------------- liquidation telemetry lane (#213)
+def _liquidation_card(**overrides: Any) -> dict[str, Any]:
+    card = _card(
+        event_id="ev-liquidation",
+        leader_item_id="item-liquidation",
+        leader_title="SPCX Large Short Liquidation 202.71K at $137.01",
+        admission="liquidation_deterministic",
+        engine_type="market",
+        family="market_telemetry",
+        grounded_assets=[],
+        watchlist_hits=[],
+        queue_priority="normal",
+        provider_score_max=None,
+        storyline_key="macro:market_telemetry",
+        provider_metadata={"source": "binance", "coins": []},
+        opened_at_ms=NOW_MS,
+    )
+    card.update(overrides)
+    return card
+
+
+def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> None:
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_liquidation_card(),
+        insert_verdict=True,
+        market_liquidation={
+            "source_key": "a" * 64,
+            "item_id": "item-liquidation",
+            "fact_id": "fact-1",
+            "symbol": "SPCX",
+            "venue": "binance",
+            "liquidated_position_side": "short",
+            "forced_order_side": "buy",
+            "notional_usd": Decimal("202710"),
+            "quantity": None,
+            "price": Decimal("137.01"),
+            "event_at_ms": NOW_MS - 1_000,
+            "received_at_ms": NOW_MS,
+            "parser_version": "liquidation_parser_v1",
+        },
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+    bus = FakeBus()
+    judge = _RecordingJudge()
+
+    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-liquidation"})))
+
+    assert judge.calls == 0
+    assert "assign_agent_arm" not in news.names()
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["program_version"] == "news_liquidation_fact_v1"
+    assert inserted["degraded"] is False
+    assert inserted["verdict"]["event_type"] == "liquidation"
+    assert inserted["verdict"]["direction"] == "neutral"
+    assert inserted["verdict"]["actionable"] is False
+    assert inserted["trace"]["liquidation"]["forced_order_side"] == "buy"
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+
+
+def test_liquidation_missing_typed_fact_fails_closed_without_a_model_call() -> None:
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_liquidation_card(),
+        insert_verdict=True,
+        market_liquidation=None,
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+    judge = _RecordingJudge()
+
+    asyncio.run(_triage(news, FakeBus(), judge=judge).handle(_message("event", {"event_id": "ev-liquidation"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert judge.calls == 0
+    assert inserted["final_decision"] == "drop"
+    assert inserted["override_rule"] == "liquidation_parse_failed"
+    assert inserted["error_code"] == "liquidation_parse_failed"
+    assert inserted["trace"]["liquidation"]["failure_stage"] == "source_contract"

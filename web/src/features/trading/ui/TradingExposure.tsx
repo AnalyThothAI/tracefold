@@ -6,10 +6,10 @@ import { Link } from "react-router-dom";
 
 import type { TradingOrder } from "../api/tradingQueries";
 import {
-  CASE_KIND_ZH,
   holdRemaining,
   ORDER_STATE_NOTE,
   pnlLabel,
+  STRATEGY_ZH,
   stopVerified,
 } from "../model/tradingLabels";
 
@@ -75,7 +75,7 @@ export function TradingExposure({
                 <small data-side={order.side}>{order.side === "buy" ? "做多" : "做空"}</small>
               </span>
               <span className="trading-kind">
-                {CASE_KIND_ZH[order.case_kind] ?? order.case_kind}
+                {STRATEGY_ZH[order.strategy_id] ?? order.strategy_id}
               </span>
               {/* The ledger's own word, never translated into 已成交. */}
               <span className="trading-state" data-state={order.state}>

@@ -6,11 +6,12 @@ from typing import Any
 
 from .cases import CaseStorage
 from .control import ControlStorage
+from .evaluations import EvaluationStorage
 from .orders import OrderStorage
 from .queries import QueryStorage
 
 
-class TradingRepository(ControlStorage, CaseStorage, OrderStorage, QueryStorage):
+class TradingRepository(ControlStorage, CaseStorage, EvaluationStorage, OrderStorage, QueryStorage):
     """Connection-bound persistence facade; callers continue to own transactions."""
 
     def __init__(self, conn: Any) -> None:

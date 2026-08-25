@@ -191,11 +191,14 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     # as 1353 marks a listing notice — provenance, not configuration. Its frames are a fixed-format
     # telemetry template, so they are admitted and judged by a deterministic rule instead of the model.
     telemetry = "1019" in inp.strategy_ids
+    liquidation = "2000" in inp.strategy_ids
     if inp.ingest_mode == "recovery":
         admission: Admission = "recovery"
         reasons.append("recovery_never_delivers")
     elif listing:
         admission = "listing_deterministic"
+    elif liquidation:
+        admission = "liquidation_deterministic"
     elif telemetry:
         admission = "telemetry_deterministic"
     elif pr_strong or (pr_template and not grounded):

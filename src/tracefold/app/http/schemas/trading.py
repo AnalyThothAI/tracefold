@@ -62,6 +62,12 @@ class TradingFloorsData(ExactApiSchema):
     lookback_ms: int
 
 
+class TradingShadowCohortData(ExactApiSchema):
+    evaluated: int
+    completed: int
+    mean_return_bps: int | None = None
+
+
 class TradingCountsData(ExactApiSchema):
     """The 24 h funnel by the ledger's own grouping keys, plus the realised measure.
 
@@ -77,7 +83,13 @@ class TradingCountsData(ExactApiSchema):
     """
 
     cases_by_state: dict[str, int] = Field(default_factory=dict)
-    cases_by_kind: dict[str, int] = Field(default_factory=dict)
+    cases_by_trigger: dict[str, int] = Field(default_factory=dict)
+    cases_by_strategy: dict[str, int] = Field(default_factory=dict)
+    shadow_by_strategy: dict[str, int] = Field(default_factory=dict)
+    shadow_by_rule: dict[str, int] = Field(default_factory=dict)
+    shadow_cohorts: dict[str, TradingShadowCohortData] = Field(default_factory=dict)
+    liquidation_promotion_ready: bool = False
+    liquidation_promotion_reason: str = ""
     orders_by_state: dict[str, int] = Field(default_factory=dict)
     closed_orders: int = 0
     closed_realized_bps: int = 0
@@ -124,7 +136,9 @@ class TradingOrderData(ExactApiSchema):
     must_close_at_ms: int | None = None
     created_at_ms: int
     updated_at_ms: int
-    case_kind: str
+    trigger_kind: str
+    strategy_id: str
+    strategy_version: str
     case_state: str
     regime: str | None = None
     policy_decision: str | None = None
@@ -138,7 +152,9 @@ class TradingCaseData(ExactApiSchema):
     case_id: str
     underlying_key: str
     base_symbol: str
-    case_kind: str
+    trigger_kind: str
+    strategy_id: str
+    strategy_version: str
     mode: str
     state: str
     regime: str | None = None
@@ -193,5 +209,6 @@ __all__ = [
     "TradingOrderData",
     "TradingOrdersData",
     "TradingReadinessData",
+    "TradingShadowCohortData",
     "TradingStatusData",
 ]

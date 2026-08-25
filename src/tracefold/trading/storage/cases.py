@@ -16,7 +16,10 @@ class CaseStorage:
         *,
         case_id: str,
         underlying_key: str,
-        case_kind: str,
+        trigger_kind: str,
+        strategy_id: str,
+        strategy_version: str,
+        strategy_config_digest: str,
         mode: str,
         primary_source_key: str,
         supplemental_source_keys: Sequence[str],
@@ -40,16 +43,21 @@ class CaseStorage:
         cursor = self.conn.execute(
             """
             INSERT INTO trading_cases (
-              case_id, underlying_key, case_kind, mode, primary_source_key, supplemental_source_keys,
+              case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
+              strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
               manifest, manifest_sha256, state, regime, observed_at_ms, source_observed_at_ms,
               trigger_persisted_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, 'PENDING', %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+                      'PENDING', %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
                 case_id,
                 underlying_key,
-                case_kind,
+                trigger_kind,
+                strategy_id,
+                strategy_version,
+                strategy_config_digest,
                 mode,
                 primary_source_key,
                 _dumps(list(supplemental_source_keys)),

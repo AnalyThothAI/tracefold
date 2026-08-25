@@ -26,6 +26,8 @@ from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
 from ..events.titles import description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
+from ..liquidations import STRATEGY_ID as LIQUIDATION_STRATEGY_ID
+from ..liquidations import parse_liquidation
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from ..telemetry import NewsWorkSemantics
@@ -42,7 +44,9 @@ _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|tr
 # Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
 # provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
 # the model call the admission exists to avoid (#137).
-_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "telemetry_deterministic", "recovery"})
+_REGATE_ADMISSIONS = frozenset(
+    {"candidate", "listing_deterministic", "telemetry_deterministic", "liquidation_deterministic", "recovery"}
+)
 _STRONG_MEMBER_SCORE = 80.0
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
@@ -211,6 +215,32 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
+    if LIQUIDATION_STRATEGY_ID in strategy_ids:
+        liquidation = parse_liquidation(
+            title,
+            item_id=item_id,
+            fact_id=fact.fact_id,
+            provider_source=str(metadata.get("source") or ""),
+            event_at_ms=published_at_ms,
+            received_at_ms=int(observed_at_ms),
+        )
+        if liquidation is not None:
+            news.insert_market_liquidation(
+                source_key=liquidation.source_key,
+                item_id=liquidation.item_id,
+                fact_id=liquidation.fact_id,
+                symbol=liquidation.symbol,
+                venue=liquidation.venue,
+                liquidated_position_side=liquidation.liquidated_position_side,
+                forced_order_side=liquidation.forced_order_side,
+                notional_usd=liquidation.notional_usd,
+                quantity=liquidation.quantity,
+                price=liquidation.price,
+                event_at_ms=liquidation.event_at_ms,
+                received_at_ms=liquidation.received_at_ms,
+                parser_version=liquidation.parser_version,
+                now_ms=now_ms,
+            )
     existing_membership = news.fact_membership(item_id=item_id, fact_id=fact.fact_id)
     if existing_membership is not None:
         ev = news.event_admission(str(existing_membership["event_id"]))
@@ -317,7 +347,7 @@ def admit_item(
         # keeps the normal duplicate path.
         candidates = (
             ()
-            if gate.admission == "telemetry_deterministic"
+            if gate.admission in {"telemetry_deterministic", "liquidation_deterministic"}
             else news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms)
         )
         for cand in candidates:
