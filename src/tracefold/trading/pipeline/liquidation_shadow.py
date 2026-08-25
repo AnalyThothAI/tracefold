@@ -292,6 +292,10 @@ class LiquidationShadowRunner:
                     cutoff=cutoff,
                     horizon=EVENT_STUDY_SETTLEMENT_LAG_MS,
                 )
+                if bars is None:
+                    cache[key] = None
+                    funnel.count("liquidation_outcome_deferred:provider_error")
+                    continue
                 aggregate = manifest.contexts.liquidation_aggregate
                 side = hypothesis_side(
                     manifest.strategy_id,
@@ -307,7 +311,6 @@ class LiquidationShadowRunner:
                 )
             outcome = cache[key]
             if outcome is None:
-                funnel.count("liquidation_outcome_deferred:no_price")
                 continue
             resolved_outcome = outcome
 
@@ -362,7 +365,7 @@ class LiquidationShadowRunner:
             return []
         return sorted(bars, key=lambda bar: bar.close_at_ms)
 
-    async def _outcome_bars(self, instrument: InstrumentRef, *, cutoff: int, horizon: int) -> list[Bar]:
+    async def _outcome_bars(self, instrument: InstrumentRef, *, cutoff: int, horizon: int) -> list[Bar] | None:
         fetcher = self._bars(instrument.exchange_id)
         if fetcher is None:
             return []
@@ -379,7 +382,7 @@ class LiquidationShadowRunner:
             )
         except Exception:
             log.warning("trading liquidation outcome fetch failed")
-            return []
+            return None
         return sorted(bars, key=lambda bar: bar.close_at_ms)
 
 

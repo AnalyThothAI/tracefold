@@ -31,6 +31,7 @@ class EventStudyPolicy:
     taker_fee_bps_per_leg: int
     slippage_bps_per_leg: int = 2
     bar_interval_ms: int = BAR_INTERVAL_MS
+    fixed_timestamp_tolerance_ms: int = 0
 
     @property
     def snapshot(self) -> dict[str, int]:
@@ -41,6 +42,7 @@ class EventStudyPolicy:
             "taker_fee_bps_per_leg": self.taker_fee_bps_per_leg,
             "slippage_bps_per_leg": self.slippage_bps_per_leg,
             "bar_interval_ms": self.bar_interval_ms,
+            "fixed_timestamp_tolerance_ms": self.fixed_timestamp_tolerance_ms,
         }
 
 
@@ -76,13 +78,18 @@ def measure_event(
     research_side: Literal["long", "short"] | None,
     policy: EventStudyPolicy,
     gap_tolerance_ms: int,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Measure only closed bars at or after the cutoff; unsupported precision stays explicit."""
 
     ordered = sorted(bars, key=lambda bar: bar.close_at_ms)
     start = _select_bar_at_or_after(ordered, target_ms=cutoff_ms, gap_tolerance_ms=gap_tolerance_ms)
     if start is None:
-        return None
+        return _missing_entry_outcome(
+            cutoff_ms=cutoff_ms,
+            decision=decision,
+            research_side=research_side,
+            policy=policy,
+        )
     horizons: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
     for label, duration in HORIZONS_MS:
@@ -94,7 +101,11 @@ def measure_event(
             missing.append(f"horizon:{label}:source_bar_resolution_unsupported")
             continue
         target_at_ms = start.close_at_ms + duration
-        end = _select_bar_at_or_after(ordered, target_ms=target_at_ms, gap_tolerance_ms=gap_tolerance_ms)
+        end = _select_bar_at_or_after(
+            ordered,
+            target_ms=target_at_ms,
+            gap_tolerance_ms=policy.fixed_timestamp_tolerance_ms,
+        )
         if end is None or end.close_at_ms <= start.close_at_ms:
             horizons[label] = {"status": "missing", "reason": "closed_bar_unavailable"}
             missing.append(f"horizon:{label}:closed_bar_unavailable")
@@ -338,7 +349,11 @@ def _simulate_exit(
             return _measured_exit(
                 assumptions, entry=entry, selected=bar, side=side, reason="take_profit", policy=policy
             )
-    selected = _select_bar_at_or_after(path, target_ms=deadline_ms, gap_tolerance_ms=policy.bar_interval_ms)
+    selected = _select_bar_at_or_after(
+        path,
+        target_ms=deadline_ms,
+        gap_tolerance_ms=policy.fixed_timestamp_tolerance_ms,
+    )
     if selected is None:
         return {**assumptions, "status": "missing", "reason": "holding_deadline_unobserved"}
     return _measured_exit(assumptions, entry=entry, selected=selected, side=side, reason="max_holding", policy=policy)
@@ -375,6 +390,44 @@ def _select_bar_at_or_after(bars: Sequence[Bar], *, target_ms: int, gap_toleranc
     if selected is None or selected.close_at_ms - target_ms > gap_tolerance_ms:
         return None
     return selected
+
+
+def _missing_entry_outcome(
+    *,
+    cutoff_ms: int,
+    decision: PolicyDecision,
+    research_side: Literal["long", "short"] | None,
+    policy: EventStudyPolicy,
+) -> dict[str, Any]:
+    horizons: dict[str, dict[str, str]] = {}
+    missing = ["entry:closed_bar_unavailable", "exit:entry_bar_unavailable", "cost:funding_unavailable"]
+    for label, duration in HORIZONS_MS:
+        reason = "source_bar_resolution_unsupported" if duration < policy.bar_interval_ms else "entry_bar_unavailable"
+        horizons[label] = {"status": "missing", "reason": reason}
+        missing.append(f"horizon:{label}:{reason}")
+    return {
+        "schema": EVENT_STUDY_VERSION,
+        "cutoff_ms": cutoff_ms,
+        "start_price": None,
+        "start_bar_closed_at_ms": None,
+        "entry_lag_ms": None,
+        "entry_semantics": "first_closed_5m_trade_price_bar_at_or_after_cutoff",
+        "source_bar_interval_ms": policy.bar_interval_ms,
+        "event_study_policy": policy.snapshot,
+        "strategy_decision": decision,
+        "hypothesis_side": research_side,
+        "horizons": horizons,
+        "mfe_bps": None,
+        "mae_bps": None,
+        "path_bar_count": 0,
+        "exit_simulation": {
+            "path_semantics": "closed_5m_trade_price_bars",
+            **policy.snapshot,
+            "status": "missing",
+            "reason": "entry_bar_unavailable",
+        },
+        "missing_data": sorted(missing),
+    }
 
 
 def _outcome_complete(outcome: Mapping[str, Any]) -> bool:

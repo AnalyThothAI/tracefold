@@ -720,11 +720,15 @@ def _runner(
     now: int,
     config: TradingConfig | None = None,
     program: Any = None,
+    bars_result: Sequence[Bar] | None = None,
+    bars_error: Exception | None = None,
 ) -> CandidateRunner:
-    at_trigger = _regime_bars(now)
+    at_trigger = tuple(bars_result) if bars_result is not None else _regime_bars(now)
 
     def bars(_exchange_id: str) -> Any:
         async def fetch(_symbol: str, _start: int, _end: int) -> Any:
+            if bars_error is not None:
+                raise bars_error
             return at_trigger
 
         return fetch
@@ -1156,10 +1160,22 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     )
     conn.commit()
     first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 2 * MINUTE).turn())
-    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 67 * MINUTE).turn())
+    transient = asyncio.run(
+        _runner(
+            conn,
+            adapter=PaperAdapter(),
+            now=NOW + 67 * MINUTE,
+            bars_error=TimeoutError("temporary provider failure"),
+        ).turn()
+    )
+    deferred = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
+    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 68 * MINUTE, bars_result=()).turn())
 
     rows = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
     assert first["shadow_evaluated"] == 2
+    assert transient["shadow_completed"] == 0
+    assert transient["funnel"]["liquidation_outcome_deferred:provider_error"] == 2
+    assert all(row["completed_at_ms"] is None for row in deferred)
     assert second["shadow_evaluated"] == 0
     assert second["shadow_completed"] == 2
     assert {row["strategy_id"] for row in rows} == {
@@ -1170,13 +1186,17 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     assert {row["permission"] for row in rows} == {"shadow"}
     assert all(row["market_outcome_version"] == "liquidation_event_study_v3" for row in rows)
     assert all(row["market_outcome"] is not None for row in rows)
+    assert set(_repos(conn).trading.strategy_registrations().values()) == {NOW}
+    assert all(row["market_outcome"]["start_price"] is None for row in rows)
+    assert all(row["market_outcome"]["exit_simulation"]["reason"] == "entry_bar_unavailable" for row in rows)
     assert all(set(row["market_outcome"]["horizons"]) == {"5s", "30s", "1m", "5m", "15m", "1h"} for row in rows)
     counts = _repos(conn).trading.status_counts(since_ms=NOW - 24 * 3_600_000)
     assert counts["shadow_by_strategy"] == {
         "liquidation_continuation_shadow_v1": 1,
         "liquidation_exhaustion_shadow_v1": 1,
     }
-    assert all(cohort["completed"] == 1 for cohort in counts["shadow_cohorts"].values())
+    assert all(cohort["completed"] == 0 for cohort in counts["shadow_cohorts"].values())
+    assert _repos(conn).trading.pending_strategy_outcomes(before_cutoff_ms=NOW + 68 * MINUTE) == []
     assert counts["liquidation_promotion_ready"] is False
     assert counts["liquidation_promotion_reason"] == "source_contract_incomplete"
     assert _repos(conn).trading.cases() == []

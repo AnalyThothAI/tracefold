@@ -29,8 +29,7 @@ class EvaluationStorage:
               strategy_id, strategy_version, strategy_config_digest, strategy_config,
               permission, registered_at_ms
             ) VALUES (%s, %s, %s, %s::jsonb, %s, %s)
-            ON CONFLICT (strategy_id, strategy_version, strategy_config_digest) DO UPDATE
-               SET strategy_id = EXCLUDED.strategy_id
+            ON CONFLICT (strategy_id, strategy_version, strategy_config_digest) DO NOTHING
             RETURNING registered_at_ms, strategy_config, permission
             """,
             (
@@ -42,7 +41,14 @@ class EvaluationStorage:
                 int(now_ms),
             ),
         ).fetchone()
-        if row is None:  # pragma: no cover - INSERT .. RETURNING always returns one row
+        if row is None:
+            row = self.conn.execute(
+                "SELECT registered_at_ms, strategy_config, permission "
+                "FROM trading_strategy_registrations "
+                "WHERE strategy_id = %s AND strategy_version = %s AND strategy_config_digest = %s",
+                (strategy_id, strategy_version, strategy_config_digest),
+            ).fetchone()
+        if row is None:  # pragma: no cover - conflict row is visible to the following statement
             raise RuntimeError("trading_strategy_registration_missing")
         if dict(row["strategy_config"]) != dict(strategy_config) or str(row["permission"]) != permission:
             raise ValueError("trading_strategy_registration_identity_collision")

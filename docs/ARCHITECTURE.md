@@ -1795,6 +1795,11 @@ horizon and the next close have matured, the outcome worker may attach
 constant owned by that version, not current Order configuration. The first
 closed 5-minute bar at or after the trigger is the entry origin; every forward
 horizon starts there, so a mid-bar event never imports pre-trigger price action.
+Fixed horizons and the holding deadline require the exact normalized candle
+timestamp; a later candle never substitutes for a missing observation. A
+successful history response with no usable entry becomes a terminal,
+versioned missing-data outcome so it cannot block the bounded pending queue;
+provider errors remain pending and retry on a later turn.
 Coverage counts only rows with every supported 5m/15m/1h horizon and a proven
 terminal exit; a missing holding-deadline bar is not called max-holding. It also
 reports MFE/MAE, fees/slippage, funding availability, deterministic bootstrap

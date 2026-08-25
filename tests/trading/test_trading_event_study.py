@@ -182,4 +182,51 @@ def test_event_study_policy_is_version_owned_not_read_from_runtime_order_config(
         "taker_fee_bps_per_leg": 5,
         "slippage_bps_per_leg": 2,
         "bar_interval_ms": FIVE_MINUTES,
+        "fixed_timestamp_tolerance_ms": 0,
     }
+
+
+def test_fixed_horizon_does_not_substitute_the_next_available_candle() -> None:
+    bars = tuple(bar for index, bar in enumerate(_bars()) if index != 1)
+    outcome = measure_event(
+        bars,
+        cutoff_ms=NOW,
+        decision="no_trade",
+        research_side="long",
+        policy=EVENT_STUDY_POLICY,
+        gap_tolerance_ms=FIVE_MINUTES,
+    )
+
+    assert outcome["horizons"]["5m"] == {"status": "missing", "reason": "closed_bar_unavailable"}
+    assert outcome["horizons"]["15m"]["status"] == "measured"
+
+
+def test_max_holding_does_not_substitute_a_candle_after_the_deadline() -> None:
+    bars = tuple(bar for index, bar in enumerate(_bars()) if index != 6)
+    outcome = measure_event(
+        bars,
+        cutoff_ms=NOW,
+        decision="no_trade",
+        research_side="long",
+        policy=EVENT_STUDY_POLICY,
+        gap_tolerance_ms=FIVE_MINUTES,
+    )
+
+    assert outcome["exit_simulation"]["status"] == "missing"
+    assert outcome["exit_simulation"]["reason"] == "holding_deadline_unobserved"
+
+
+def test_successful_empty_history_becomes_a_terminal_missing_outcome() -> None:
+    outcome = measure_event(
+        (),
+        cutoff_ms=NOW,
+        decision="no_trade",
+        research_side="long",
+        policy=EVENT_STUDY_POLICY,
+        gap_tolerance_ms=FIVE_MINUTES,
+    )
+
+    assert outcome["start_price"] is None
+    assert outcome["exit_simulation"]["reason"] == "entry_bar_unavailable"
+    assert outcome["horizons"]["1h"] == {"status": "missing", "reason": "entry_bar_unavailable"}
+    assert "entry:closed_bar_unavailable" in outcome["missing_data"]
