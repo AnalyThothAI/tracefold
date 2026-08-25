@@ -269,11 +269,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-wall-clock-seconds", type=_positive_int, default=14_400, help="deadline checked before each call"
     )
     learning_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
+    # #202 §11 PR-E. Two command groups, because there are two lifecycles. `news learning` freezes a
+    # corpus, explains what GEPA may optimize, scores the stable Program and runs the one optimization —
+    # none of which can ship anything. `news release` admits a candidate, gathers release evidence and
+    # moves the canary. An operator reading `--help` sees the boundary the packages have.
+    news_release = news_subcommands.add_parser(
+        "release", help="register a Prompt candidate, gather release evidence, and control the canary"
+    )
+    release_subcommands = news_release.add_subparsers(dest="release_command", required=True)
+
     # One registration, whatever wrote the two instructions (#202 §7). A GEPA candidate and a patch a
     # person wrote enter here on identical terms: the parent must be the active stable, the dataset must be
     # the frozen development corpus, the Objective Plan is re-derived here rather than trusted, and what
     # comes out is a proposal — never a promotion.
-    learning_register = learning_subcommands.add_parser(
+    learning_register = release_subcommands.add_parser(
         "register", help="bind a Prompt candidate to the active stable and a frozen dataset"
     )
     learning_register.add_argument("--development", required=True, help="development dataset artifact SHA")
@@ -290,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     learning_freeze.add_argument("--candidate", default="", help="candidate manifest; required for validation")
     learning_freeze.add_argument("--out", required=True, help="write the dataset manifest")
     for action, stage in (("evaluate", None), ("shadow", "shadow")):
-        learning_eval = learning_subcommands.add_parser(action, help=f"run the {action} release-evidence gate")
+        learning_eval = release_subcommands.add_parser(action, help=f"run the {action} release-evidence gate")
         learning_eval.add_argument("--development", required=True, help="development dataset artifact SHA")
         learning_eval.add_argument("--validation", default="", help="validation dataset SHA")
         learning_eval.add_argument("--candidate", required=True, help="candidate manifest JSON/YAML")
@@ -329,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
                 help="cold-run the candidate Program over the closed validation window",
             )
         learning_eval.add_argument("--out", required=True, help="write the sealed evaluation report")
-    learning_canary = learning_subcommands.add_parser(
+    learning_canary = release_subcommands.add_parser(
         "canary", help="arm, inspect, or stop the durable one-arm production canary"
     )
     canary_subcommands = learning_canary.add_subparsers(dest="canary_command", required=True)

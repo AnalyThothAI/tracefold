@@ -134,7 +134,7 @@ disallow_incomplete_defs = false
 disallow_untyped_decorators = false
 disallow_any_generics = false
 disallow_subclassing_any = false
-disable_error_code = ["attr-defined", "index", "operator", "no-untyped-call"]
+disable_error_code = ["index", "operator", "no-untyped-call"]
 
 [[tool.mypy.overrides]]
 module = "tracefold.integrations.*"

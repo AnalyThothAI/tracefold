@@ -39,7 +39,7 @@ def handle_research(args: Any, settings: Any, stable: Any) -> tuple[int, dict[st
 def _snapshot(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.learning.contracts import ClosedWindow
-    from tracefold.news.learning.evaluator import SETTLEMENT_GRACE_MS, CandidateEvaluator
+    from tracefold.news.learning.dataset import SETTLEMENT_GRACE_MS, DevelopmentDatasetStore
     from tracefold.news.learning.experiment.run import ExperimentRun
     from tracefold.news.learning.experiment.snapshot import freeze_window, project_window
 
@@ -52,7 +52,7 @@ def _snapshot(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     # freezing a window is up to 500 fsync'd files, and `docs/DEVELOPMENT.md` forbids holding a connection
     # across one. The directory is created after the read, so a failed read leaves nothing behind.
     with postgres_connection(settings, role="serve") as conn:
-        cases = project_window(CandidateEvaluator(conn, stable=stable, judges={}), window=window, limit=int(args.limit))
+        cases = project_window(DevelopmentDatasetStore(conn, stable=stable), window=window, limit=int(args.limit))
     run = ExperimentRun(Path(str(args.out)), create=True)
     manifest = freeze_window(cases, run=run, name=run.root.name, window=window, stable=stable, now_ms=now_ms)
     return 0, {
@@ -165,7 +165,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         DevelopmentDatasetRef,
         OptimizationBudget,
     )
-    from tracefold.news.learning.evaluator import CandidateEvaluator
+    from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import DevelopmentEpisode
     from tracefold.news.learning.optimizer import (
         FrozenDevelopmentDataset,
@@ -191,7 +191,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     # The one database read, before anything is spent, as `serve`. Nothing after this line holds a
     # connection: the optimization has no write credential and no promotion authority (#202 §3.2).
     with postgres_connection(settings, role="serve") as conn:
-        export = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(str(args.development))
+        export = DevelopmentDatasetStore(conn, stable=stable).development_compile_export(str(args.development))
     dataset = FrozenDevelopmentDataset.bind(
         dataset_payload=export.dataset_payload,
         ref=DevelopmentDatasetRef(

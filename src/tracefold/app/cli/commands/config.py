@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from argparse import Namespace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -16,7 +17,7 @@ from tracefold.platform.paths import config_path
 _POSTGRES_ROLES: tuple[Literal["serve", "workers", "migrate"], ...] = ("serve", "workers", "migrate")
 
 
-def handle_init(args: object) -> tuple[int, dict[str, Any]]:
+def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists()
     path = write_default_config(force=args.force)
     password_paths = {
@@ -38,7 +39,7 @@ def handle_init(args: object) -> tuple[int, dict[str, Any]]:
     )
 
 
-def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
+def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
     model_availability = news_model_availability(settings)

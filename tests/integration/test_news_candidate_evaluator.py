@@ -12,19 +12,16 @@ from unittest.mock import patch
 
 import pytest
 
-import tracefold.news.learning.evaluator as candidate_evaluator_module
+import tracefold.news.learning.evaluate as candidate_evaluator_module
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.learning import dataset as dataset_module
 from tracefold.news.learning import ledger as ledger_module
-from tracefold.news.learning.canary import (
-    CANARY_ELIGIBILITY_PROFILE_SHA,
-    CANARY_ROLLING_PROFILE_SHA,
-    CANARY_SELECTOR_VERSION,
-)
 from tracefold.news.learning.contracts import PromptCandidateV1, PromptPatchV1
-from tracefold.news.learning.evaluator import (
+from tracefold.news.learning.dataset import DevelopmentDatasetStore
+from tracefold.news.learning.evaluate import (
     LEARNING_EPOCH,
     ArmManifest,
     CandidateManifest,
@@ -33,7 +30,7 @@ from tracefold.news.learning.evaluator import (
     EvaluationRequest,
     ProposalReceipt,
 )
-from tracefold.news.learning.evaluator import (
+from tracefold.news.learning.evaluate import (
     CandidateEvaluator as _CandidateEvaluator,
 )
 from tracefold.news.learning.ledger import LearningLedger
@@ -70,6 +67,11 @@ from tracefold.news.program.graph import (
 )
 from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_VERSION
 from tracefold.news.reader_history import assemble_reader_history
+from tracefold.news.release.canary import (
+    CANARY_ELIGIBILITY_PROFILE_SHA,
+    CANARY_ROLLING_PROFILE_SHA,
+    CANARY_SELECTOR_VERSION,
+)
 from tracefold.news.review.desk import (
     BlindPairwiseSubmission,
     DeskQuery,
@@ -91,6 +93,12 @@ class _PinnedLedger(LearningLedger):
 
     def now_ms(self) -> int:
         return NOW + 20 * 60_000
+
+
+def _datasets(conn: Any, stable: ArmManifest) -> DevelopmentDatasetStore:
+    """The dataset store with this suite's pinned clock, built the way production builds it."""
+
+    return DevelopmentDatasetStore(conn, stable=stable, ledger=_PinnedLedger(conn, stable=stable, principal="operator"))
 
 
 class CandidateEvaluator(_CandidateEvaluator):
@@ -535,7 +543,7 @@ def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
 def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaObjectivePlan:
     """The plan the release gate will rebuild, asked of the same frozen dataset the fixture froze."""
 
-    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
+    exported = _datasets(conn, stable).development_compile_export(development_sha)
     return build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
 
 
@@ -557,7 +565,7 @@ def _prompt_candidate(
     would be a fixture asserting its own fiction.
     """
 
-    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
+    exported = _datasets(conn, stable).development_compile_export(development_sha)
     plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
     values: dict[str, object] = {
         "parent_program_sha256": stable.program_sha256,
@@ -631,7 +639,7 @@ def _program_candidate(
             # catch rather than trusting the key.
             artifact_sha=registered.candidate_sha256,
         )
-    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
+    exported = _datasets(conn, stable).development_compile_export(development_sha)
     plan = _objective_plan(conn, stable=stable, development_sha=development_sha)
     receipt_values = {
         "development_dataset_sha": development_sha,
@@ -931,7 +939,7 @@ def _open_event(
         assert repos.news.insert_verdict(
             event_id=opened.event_id,
             stage="triage",
-            policy_version=candidate_evaluator_module.TRIAGE_POLICY_VERSION,
+            policy_version=dataset_module.TRIAGE_POLICY_VERSION,
             model_decision="push",
             rule_baseline_decision="push",
             final_decision="push",
@@ -1148,7 +1156,7 @@ def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None
     )
 
     development = asyncio.run(
-        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+        _datasets(conn, stable).freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1233,7 +1241,7 @@ def test_seed_receipts_match_production_latest_delivered_verdict_with_multiple_r
         now_ms=NOW,
         include_targeted=False,
     )
-    seed_rows = CandidateEvaluator(conn, stable=stable, judges={})._seed_receipts(
+    seed_rows = _datasets(conn, stable)._seed_receipts(
         NOW,
         epoch_started_at_ms=_epoch_started_at_ms(conn),
     )
@@ -1251,7 +1259,7 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
     epoch_started_at_ms = _epoch_started_at_ms(conn)
     with pytest.raises(ValueError, match="news_learning_window_precedes_program_epoch"):
         asyncio.run(
-            evaluator.freeze_dataset(
+            evaluator._datasets.freeze_dataset(
                 DatasetSpec(
                     role="development",
                     window=ClosedWindow(
@@ -1264,7 +1272,7 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
 
     _accepted_event(conn)
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1285,7 +1293,7 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
         (old_sha, json.dumps(old_payload, sort_keys=True), epoch_started_at_ms - 1),
     )
     with pytest.raises(ValueError, match="news_learning_epoch_mismatch"):
-        evaluator.development_compile_episodes(old_sha)
+        evaluator._datasets.development_compile_episodes(old_sha)
     assert (
         conn.execute(
             "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
@@ -1300,7 +1308,7 @@ def test_development_compile_episodes_is_current_epoch_read_only_interface(conn)
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1308,7 +1316,7 @@ def test_development_compile_episodes_is_current_epoch_read_only_interface(conn)
         )
     )
 
-    episodes = evaluator.development_compile_episodes(development.artifact_sha)
+    episodes = evaluator._datasets.development_compile_episodes(development.artifact_sha)
 
     assert len(episodes) == 1
     assert episodes[0]["case_id"] == development.cases[0].case_id
@@ -1328,7 +1336,7 @@ def test_development_compile_export_seals_exact_dataset_and_ordered_episodes(con
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1336,7 +1344,7 @@ def test_development_compile_export_seals_exact_dataset_and_ordered_episodes(con
         )
     )
 
-    exported = evaluator.development_compile_export(development.artifact_sha)
+    exported = evaluator._datasets.development_compile_export(development.artifact_sha)
 
     assert exported.dataset_sha == development.artifact_sha
     assert _sha({"kind": "dataset", "payload": exported.dataset_payload}) == exported.dataset_sha
@@ -1355,7 +1363,7 @@ def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) 
     _accepted_event(conn, why="pass")
     evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1375,7 +1383,7 @@ def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) 
     )
 
     with pytest.raises(ValueError, match="news_learning_dataset_artifact_hash_mismatch"):
-        evaluator.development_compile_export(forged_sha)
+        evaluator._datasets.development_compile_export(forged_sha)
 
 
 def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_names(conn) -> None:
@@ -1394,7 +1402,7 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
         )
     )
@@ -1428,7 +1436,7 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
         development_dataset_sha=development.artifact_sha,
         proposal_receipt=ProposalReceipt.issue(
             development_dataset_sha=development.artifact_sha,
-            development_episode_projection_root_sha256=evaluator.development_compile_export(
+            development_episode_projection_root_sha256=evaluator._datasets.development_compile_export(
                 development.artifact_sha
             ).episode_projection_root_sha256,
             failure_cluster_ids=("cluster-0",),
@@ -1442,7 +1450,7 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
         ),
     )
 
-    assert evaluator._prompt_candidate(candidate).candidate_sha256 == registered.candidate_sha256
+    assert evaluator._registry._prompt_candidate(candidate).candidate_sha256 == registered.candidate_sha256
 
 
 def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
@@ -1452,7 +1460,7 @@ def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
 
     with pytest.raises(ValueError, match="news_learning_active_stable_mismatch"):
         asyncio.run(
-            evaluator.freeze_dataset(
+            evaluator._datasets.freeze_dataset(
                 DatasetSpec(
                     role="development",
                     window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1477,7 +1485,7 @@ def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> No
 
     with pytest.raises(ValueError, match="news_learning_program_v1_unsupported"):
         asyncio.run(
-            evaluator.freeze_dataset(
+            evaluator._datasets.freeze_dataset(
                 DatasetSpec(
                     role="development",
                     window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1485,7 +1493,7 @@ def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> No
             )
         )
     with pytest.raises(ValueError, match="news_learning_program_v1_unsupported"):
-        evaluator.development_compile_episodes("f" * 64)
+        evaluator._datasets.development_compile_episodes("f" * 64)
 
 
 def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
@@ -1501,7 +1509,7 @@ def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1568,9 +1576,9 @@ def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
         (legacy_program, "news_learning_program_v1_unsupported"),
     ):
         with pytest.raises(ValueError, match=code):
-            evaluator._validate_candidate_static(candidate)
+            evaluator._registry.validate(candidate)
     # The one that must *not* raise. Provenance is audit, not permission.
-    evaluator._validate_candidate_static(human_written)
+    evaluator._registry.validate(human_written)
     assert human_written.proposal_receipt.generator_kind == "human"
     assert _judge_call_count(judges) == 0
 
@@ -1599,7 +1607,7 @@ def test_a_candidate_requires_the_exact_persisted_write_set(
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1666,7 +1674,7 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1726,11 +1734,11 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
     _accepted_compilable_event(conn, stable=stable)
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
         )
     )
-    export = evaluator.development_compile_export(development.artifact_sha)
+    export = evaluator._datasets.development_compile_export(development.artifact_sha)
     plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
     assert plan.split is not None
 
@@ -1779,7 +1787,7 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
 
     # The same corpus, seen by the other reader: what a candidate is registered against has to be what
     # the dataset-bound baseline scored, or the "before" number belongs to a different corpus.
-    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development.artifact_sha)
+    exported = _datasets(conn, stable).development_compile_export(development.artifact_sha)
     registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
@@ -1802,7 +1810,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
     _accepted_compilable_event(conn)
     stable = _arm()
     development = asyncio.run(
-        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+        _datasets(conn, stable).freeze_dataset(
             DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
         )
     )
@@ -1878,7 +1886,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -1983,7 +1991,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     _accepted_compilable_event(conn, stable=stable)
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2113,7 +2121,7 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
     _accepted_compilable_event(conn, stable=stable)
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2351,7 +2359,7 @@ def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:
     judges: dict[tuple[str, str], object] = {}
     evaluator = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
-        evaluator.freeze_dataset(
+        evaluator._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2391,7 +2399,7 @@ def test_record_replay_miss_is_explicit_unknown_without_live_fallback(conn) -> N
     stable = _arm()
     first = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        first.freeze_dataset(
+        first._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2437,7 +2445,7 @@ def test_common_provider_outage_is_unknown_not_a_vacuous_candidate_pass(conn) ->
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2484,7 +2492,7 @@ def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2532,7 +2540,7 @@ def test_blind_candidate_critical_error_is_a_release_failure(conn) -> None:
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2610,7 +2618,7 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2619,7 +2627,7 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
     )
     assert development.counts["independent_cluster_n"] == 30 + len(_COMPILABLE_CORPUS)
     cases_by_id = {case.case_id: case for case in development.cases}
-    episodes = bootstrap.development_compile_episodes(development.artifact_sha)
+    episodes = bootstrap._datasets.development_compile_episodes(development.artifact_sha)
     assert len(episodes) == 30 + len(_COMPILABLE_CORPUS)
     miss_ids = {case.case_id for case in development.cases if case.subject_kind == "external_miss"}
     assert len(miss_ids) == 30
@@ -2681,7 +2689,7 @@ def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> 
     judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2720,7 +2728,7 @@ def test_validation_window_must_begin_after_candidate_registration(conn) -> None
     judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2739,14 +2747,19 @@ def test_validation_window_must_begin_after_candidate_registration(conn) -> None
         judges=judges,
         candidate_catalog=(candidate,),
     )
+    # Admitted first, the way `learning freeze --role validation` does it: the release plane produces the
+    # `AdmittedCandidate`, and only then does the freeze get to refuse the *window*. Before #202 both
+    # checks lived inside `freeze_dataset`, which is what made it reach back into candidate validation.
+    admitted = evaluator._registry.admit_for_validation(candidate.candidate_sha)
     with pytest.raises(ValueError, match="news_learning_holdout_precedes_candidate_registration"):
         asyncio.run(
-            evaluator.freeze_dataset(
-                DatasetSpec(
+            evaluator._datasets.freeze_dataset(
+                admitted=admitted,
+                spec=DatasetSpec(
                     role="validation",
                     observation_ref=candidate.candidate_sha,
                     window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-                )
+                ),
             )
         )
     assert _judge_call_count(judges) == 0
@@ -2757,7 +2770,7 @@ def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2810,7 +2823,7 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     )
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
@@ -2923,7 +2936,7 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
-        bootstrap.freeze_dataset(
+        bootstrap._datasets.freeze_dataset(
             DatasetSpec(
                 role="development",
                 window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),

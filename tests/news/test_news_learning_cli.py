@@ -105,7 +105,7 @@ def test_learning_evaluation_exposes_program_live_opt_in_not_legacy_model_flag()
     args = parser.parse_args(
         [
             "news",
-            "learning",
+            "release",
             "evaluate",
             "--development",
             "d" * 64,
@@ -139,7 +139,7 @@ def test_learning_recording_verification_is_explicit_and_cannot_use_live_program
     parser = build_parser()
     base = [
         "news",
-        "learning",
+        "release",
         "evaluate",
         "--development",
         "d" * 64,
@@ -173,9 +173,9 @@ def test_learning_recording_verification_is_not_exposed_by_shadow_and_rejects_ca
     ]
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["news", "learning", "shadow", *shared])
+        parser.parse_args(["news", "release", "shadow", *shared])
 
-    args = parser.parse_args(["news", "learning", "evaluate", "--stage", "canary", *shared])
+    args = parser.parse_args(["news", "release", "evaluate", "--stage", "canary", *shared])
     assert args.verify_recordings is True
 
 
@@ -366,7 +366,7 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
 
     _readiness_settings(monkeypatch)
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 
     code, payload = _handle_learning(_readiness_args())
     data = payload["data"]
@@ -407,7 +407,7 @@ def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any)
 
     _readiness_settings(monkeypatch)
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 
     code, payload = _handle_learning(_readiness_args())
     assert code == 2
@@ -607,7 +607,7 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 
     _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", limit=500, max_model_cases=12))
     assert seen["limit"] == 12, "the smaller of the two bounds wins, so --limit cannot widen it"
@@ -632,7 +632,7 @@ def test_a_dataset_baseline_will_not_publish_split_roots_for_cases_it_did_not_sc
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", lambda *_a, **_k: object())
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", lambda *_a, **_k: object())
     monkeypatch.setattr(
         baseline_commands,
         "_dataset_corpus",
@@ -738,7 +738,7 @@ def test_a_blocked_objective_plan_does_not_become_an_empty_before_number(monkeyp
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", lambda *_a, **_k: object())
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", lambda *_a, **_k: object())
     monkeypatch.setattr(
         baseline_commands,
         "_dataset_corpus",
@@ -794,7 +794,7 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 
     code, payload = _handle_learning(
         _baseline_args(mode="runtime_live", action_source="policy", max_model_cases=5, all_cohorts=True)
@@ -895,7 +895,7 @@ def test_a_snapshot_ends_at_the_settlement_grace_and_closes_its_connection_first
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
     monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.project_window", fake_project_window)
     monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.freeze_window", fake_freeze_window)
     monkeypatch.setattr("time.time", lambda: 1_787_086_400.0)

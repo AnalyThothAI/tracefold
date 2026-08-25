@@ -930,11 +930,13 @@ def test_every_plane_reaches_the_objective_through_the_same_function() -> None:
 
     src = ROOT / "src" / "tracefold"
     readiness = src / "app" / "cli" / "commands" / "news_learning_baseline.py"
-    evaluator = src / "news" / "learning" / "evaluator.py"
+    # The release plane re-derives the plan when it admits a candidate; #202 §8 moved that out of the
+    # evaluator, which now only judges one.
+    registry = src / "news" / "release" / "candidate.py"
     optimizer = src / "news" / "learning" / "optimizer.py"
     research_cli = src / "app" / "cli" / "commands" / "news_learning_experiment.py"
 
-    for path in (readiness, evaluator, optimizer):
+    for path in (readiness, registry, optimizer):
         assert "build_gepa_objective_plan" in path.read_text(encoding="utf-8"), path
     cli_source = research_cli.read_text(encoding="utf-8")
     assert "optimizer import" in cli_source

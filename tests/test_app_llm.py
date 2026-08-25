@@ -11,17 +11,17 @@ from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.learning.canary import (
-    CANARY_ELIGIBILITY_PROFILE_SHA,
-    CANARY_ROLLING_PROFILE_SHA,
-    CANARY_SELECTOR_VERSION,
-)
-from tracefold.news.learning.evaluator import ArmManifest, CandidateManifest, ProposalReceipt
+from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.release.canary import (
+    CANARY_ELIGIBILITY_PROFILE_SHA,
+    CANARY_ROLLING_PROFILE_SHA,
+    CANARY_SELECTOR_VERSION,
+)
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings
 

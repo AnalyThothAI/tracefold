@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-import tracefold.news.learning.evaluator as candidate_evaluator_module
-from tracefold.news.learning.evaluator import ArmManifest
+import tracefold.news.learning.evaluate as candidate_evaluator_module
+from tracefold.news.learning.evaluate import ArmManifest
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.news.program.runtime import PROGRAM_FACTORY_ID

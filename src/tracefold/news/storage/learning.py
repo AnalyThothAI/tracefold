@@ -23,7 +23,7 @@ class LearningStorage:
     def validated_active_canary(self, *, now_ms: int) -> dict[str, Any] | None:
         """Trip a durable activation whose code-owned selector identities drifted."""
 
-        from ..learning.canary import (
+        from ..release.canary import (
             CANARY_ELIGIBILITY_PROFILE_SHA,
             CANARY_ROLLING_PROFILE_SHA,
             CANARY_SELECTOR_VERSION,
@@ -215,7 +215,7 @@ class LearningStorage:
     def evaluate_canary_rolling_slo(self, *, activation_id: str, now_ms: int) -> dict[str, Any]:
         """Evaluate one durable, pre-registered rolling candidate SLO bucket."""
 
-        from ..learning.canary import (
+        from ..release.canary import (
             CANARY_ELIGIBILITY_PROFILE_SHA,
             CANARY_ROLLING_PROFILE,
             CANARY_ROLLING_PROFILE_SHA,
@@ -337,7 +337,7 @@ class LearningStorage:
                 "eligibility_reason": "activation_tripped_baseline_mismatch",
             }
         else:
-            from ..learning.canary import select_canary_arm
+            from ..release.canary import select_canary_arm
 
             selected = select_canary_arm(
                 event_id=event_id,
@@ -393,7 +393,7 @@ class LearningStorage:
         executing the stale candidate Program.
         """
 
-        from ..learning.canary import (
+        from ..release.canary import (
             CANARY_ELIGIBILITY_PROFILE_SHA,
             CANARY_ROLLING_PROFILE_SHA,
             CANARY_SELECTOR_VERSION,

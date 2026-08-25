@@ -126,10 +126,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,instruments,review,learning,replay,why,dlq} ...
+                      {bus-check,instruments,review,learning,release,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,instruments,review,learning,replay,why,dlq}
+  {bus-check,instruments,review,learning,release,replay,why,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
     instruments         instrument universe: snapshot the venues, or inspect
@@ -137,6 +137,8 @@ positional arguments:
     review              ReviewDesk queue, evidence, and append-only judgments
     learning            freeze reviewed datasets and evaluate one-variable
                         Agent candidates
+    release             register a Prompt candidate, gather release evidence,
+                        and control the canary
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
     why                 print one Event's chain: item, gate, triage, decide,
@@ -300,10 +302,10 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,register,freeze,evaluate,shadow,canary} ...
+                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,snapshot,compare,optimize,register,freeze,evaluate,shadow,canary}
+  {readiness,baseline,draft-reviews,snapshot,compare,optimize,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
@@ -316,13 +318,7 @@ positional arguments:
                         teacher and report the differences
     optimize            run the one bounded GEPA optimization over a frozen
                         development dataset; ADVANCE is not a release
-    register            bind a Prompt candidate to the active stable and a
-                        frozen dataset
     freeze              freeze accepted reviews into a dataset
-    evaluate            run the evaluate release-evidence gate
-    shadow              run the shadow release-evidence gate
-    canary              arm, inspect, or stop the durable one-arm production
-                        canary
 
 options:
   -h, --help            show this help message and exit
@@ -484,29 +480,6 @@ options:
 
 ```
 
-## `news learning register`
-
-```
-usage: tracefold news learning register [-h] --development DEVELOPMENT
-                                        --candidate CANDIDATE
-                                        --artifact-root ARTIFACT_ROOT
-                                        [--hypothesis HYPOTHESIS] --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --candidate CANDIDATE
-                        news_prompt_candidate_v1 JSON/YAML
-  --artifact-root ARTIFACT_ROOT
-                        write the candidate <program-sha>.json artifact
-                        document
-  --hypothesis HYPOTHESIS
-                        what this candidate is expected to repair
-  --out OUT             write the sealed candidate manifest
-
-```
-
 ## `news learning freeze`
 
 ```
@@ -525,16 +498,58 @@ options:
 
 ```
 
-## `news learning evaluate`
+## `news release`
 
 ```
-usage: tracefold news learning evaluate [-h] --development DEVELOPMENT
-                                        [--validation VALIDATION]
-                                        --candidate CANDIDATE
-                                        [--stage {offline,holdout,canary}]
-                                        [--live-program | --verify-recordings]
-                                        [--observation-manifest OBSERVATION_MANIFEST]
-                                        --out OUT
+usage: tracefold news release [-h] {register,evaluate,shadow,canary} ...
+
+positional arguments:
+  {register,evaluate,shadow,canary}
+    register            bind a Prompt candidate to the active stable and a
+                        frozen dataset
+    evaluate            run the evaluate release-evidence gate
+    shadow              run the shadow release-evidence gate
+    canary              arm, inspect, or stop the durable one-arm production
+                        canary
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `news release register`
+
+```
+usage: tracefold news release register [-h] --development DEVELOPMENT
+                                       --candidate CANDIDATE
+                                       --artifact-root ARTIFACT_ROOT
+                                       [--hypothesis HYPOTHESIS] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --candidate CANDIDATE
+                        news_prompt_candidate_v1 JSON/YAML
+  --artifact-root ARTIFACT_ROOT
+                        write the candidate <program-sha>.json artifact
+                        document
+  --hypothesis HYPOTHESIS
+                        what this candidate is expected to repair
+  --out OUT             write the sealed candidate manifest
+
+```
+
+## `news release evaluate`
+
+```
+usage: tracefold news release evaluate [-h] --development DEVELOPMENT
+                                       [--validation VALIDATION]
+                                       --candidate CANDIDATE
+                                       [--stage {offline,holdout,canary}]
+                                       [--live-program | --verify-recordings]
+                                       [--observation-manifest OBSERVATION_MANIFEST]
+                                       --out OUT
 
 options:
   -h, --help            show this help message and exit
@@ -556,14 +571,14 @@ options:
 
 ```
 
-## `news learning shadow`
+## `news release shadow`
 
 ```
-usage: tracefold news learning shadow [-h] --development DEVELOPMENT
-                                      [--validation VALIDATION]
-                                      --candidate CANDIDATE
-                                      [--observation-manifest OBSERVATION_MANIFEST]
-                                      [--live-program] --out OUT
+usage: tracefold news release shadow [-h] --development DEVELOPMENT
+                                     [--validation VALIDATION]
+                                     --candidate CANDIDATE
+                                     [--observation-manifest OBSERVATION_MANIFEST]
+                                     [--live-program] --out OUT
 
 options:
   -h, --help            show this help message and exit
@@ -582,11 +597,11 @@ options:
 
 ```
 
-## `news learning canary`
+## `news release canary`
 
 ```
-usage: tracefold news learning canary [-h]
-                                      {arm,status,hold,resume,trip,close} ...
+usage: tracefold news release canary [-h]
+                                     {arm,status,hold,resume,trip,close} ...
 
 positional arguments:
   {arm,status,hold,resume,trip,close}
@@ -602,10 +617,10 @@ options:
 
 ```
 
-## `news learning canary arm`
+## `news release canary arm`
 
 ```
-usage: tracefold news learning canary arm [-h] --candidate CANDIDATE
+usage: tracefold news release canary arm [-h] --candidate CANDIDATE
 
 options:
   -h, --help            show this help message and exit
@@ -614,21 +629,21 @@ options:
 
 ```
 
-## `news learning canary status`
+## `news release canary status`
 
 ```
-usage: tracefold news learning canary status [-h]
+usage: tracefold news release canary status [-h]
 
 options:
   -h, --help  show this help message and exit
 
 ```
 
-## `news learning canary hold`
+## `news release canary hold`
 
 ```
-usage: tracefold news learning canary hold [-h] --activation ACTIVATION
-                                           --reason REASON
+usage: tracefold news release canary hold [-h] --activation ACTIVATION
+                                          --reason REASON
 
 options:
   -h, --help            show this help message and exit
@@ -637,37 +652,37 @@ options:
 
 ```
 
-## `news learning canary resume`
+## `news release canary resume`
 
 ```
-usage: tracefold news learning canary resume [-h] --activation ACTIVATION
-                                             --reason REASON
-
-options:
-  -h, --help            show this help message and exit
-  --activation ACTIVATION
-  --reason REASON
-
-```
-
-## `news learning canary trip`
-
-```
-usage: tracefold news learning canary trip [-h] --activation ACTIVATION
-                                           --reason REASON
-
-options:
-  -h, --help            show this help message and exit
-  --activation ACTIVATION
-  --reason REASON
-
-```
-
-## `news learning canary close`
-
-```
-usage: tracefold news learning canary close [-h] --activation ACTIVATION
+usage: tracefold news release canary resume [-h] --activation ACTIVATION
                                             --reason REASON
+
+options:
+  -h, --help            show this help message and exit
+  --activation ACTIVATION
+  --reason REASON
+
+```
+
+## `news release canary trip`
+
+```
+usage: tracefold news release canary trip [-h] --activation ACTIVATION
+                                          --reason REASON
+
+options:
+  -h, --help            show this help message and exit
+  --activation ACTIVATION
+  --reason REASON
+
+```
+
+## `news release canary close`
+
+```
+usage: tracefold news release canary close [-h] --activation ACTIVATION
+                                           --reason REASON
 
 options:
   -h, --help            show this help message and exit

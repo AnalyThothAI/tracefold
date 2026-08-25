@@ -21,7 +21,10 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         from .news_review import _handle_review
 
         return _handle_review(args)
-    if args.news_command == "learning":
+    if args.news_command in {"learning", "release"}:
+        # One handler, two groups (#202 §11 PR-E). The split is what an operator reads off `--help` and
+        # what the packages enforce; routing them separately here would only add a second place to keep
+        # in step with the parser.
         from .news_learning import _handle_learning
 
         return _handle_learning(args)

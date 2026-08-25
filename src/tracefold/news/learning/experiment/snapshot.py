@@ -11,12 +11,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..contracts import COMPILE_EPISODE_PROJECTION_SCHEMA, ArmManifest, ClosedWindow
-from ..evaluator import CandidateEvaluator
+from ..dataset import DevelopmentDatasetStore
 from .run import ExperimentCase, ExperimentRun, ExperimentRunManifest, ExperimentWindow, case_root_sha256
 
 
 def project_window(
-    evaluator: CandidateEvaluator,
+    store: DevelopmentDatasetStore,
     *,
     window: ClosedWindow,
     limit: int = 500,
@@ -33,7 +33,7 @@ def project_window(
     plane's question and is applied there, on a frozen dataset, not here.
     """
 
-    return tuple(_case(episode) for episode in evaluator.baseline_episodes(window, cohort=False, limit=limit))
+    return tuple(_case(episode) for episode in store.baseline_episodes(window, cohort=False, limit=limit))
 
 
 def freeze_window(

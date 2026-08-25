@@ -23,7 +23,6 @@ from ..bus import (
     now_ms,
 )
 from ..events.storyline import final_storyline_key
-from ..learning.canary import CanaryRuntimeArm
 from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, TriageVerdict, json_ready
 from ..program.contracts import (
     EditorialEnvelope,
@@ -34,6 +33,7 @@ from ..program.contracts import (
     TriageContext,
 )
 from ..reader_history import ReaderHistorySnapshot
+from ..release.canary import CanaryRuntimeArm
 from ..telemetry import NewsWorkSemantics
 from ..triage_rules import (
     DEFAULT_POLICY,

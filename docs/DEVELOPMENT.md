@@ -357,10 +357,10 @@ uv run tracefold news learning optimize --development DATASET_SHA \
   --max-metric-calls 100 --max-task-model-calls 150 \
   --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
-uv run tracefold news learning register --development DATASET_SHA \
+uv run tracefold news release register --development DATASET_SHA \
   --candidate artifacts/optimize-1/prompt_candidate.json \
   --artifact-root /tmp/programs --out /tmp/candidate.json
-uv run tracefold news learning evaluate --development DATASET_SHA \
+uv run tracefold news release evaluate --development DATASET_SHA \
   --candidate /tmp/candidate.json --stage offline --live-program \
   --out /tmp/offline-report.json
 ```
@@ -423,7 +423,7 @@ Until #202 there were two generation paths and two candidate types, because
 release eligibility came from *where* a candidate was produced: a sealed
 sealed image against a metered proxy, or the fast loop behind
 `promotable=false`. The generator was never the authority for two strings.
-`learning register` now binds any Prompt patch — GEPA's or a person's — to the
+`release register` now binds any Prompt patch — GEPA's or a person's — to the
 active stable Program and a frozen dataset, re-derives the #199 Objective Plan
 rather than trusting the candidate's own summary, and refuses anything that
 disagrees. An `ADVANCE` is still not a release: future holdout, blind pairwise,
@@ -586,7 +586,7 @@ and "the model was never shown the card" are different defects with different
 fixes.
 Every invocation states metric/model/total-cost limits, a per-call cost ceiling
 and a seed. The job cannot write accepted truth, register a candidate, alter
-trusted Program state, accept, deploy or promote — `learning register` is a
+trusted Program state, accept, deploy or promote — `release register` is a
 separate command with a separate credential, and it re-derives the Objective
 Plan rather than trusting what the candidate declares.
 
@@ -607,7 +607,7 @@ process over a payload sitting next to it — a self-proof, not an attestation.
 What replaced provenance is binding, checked by a party that did not produce the
 candidate. `ProposalReceipt` names the registered `news_prompt_candidate_v1` by
 `prompt_candidate_sha256` and carries the registrar's *own*
-`development_episode_projection_root_sha256`; `learning register` re-applies the
+`development_episode_projection_root_sha256`; `release register` re-applies the
 patch to derive the arm's Program identity and re-derives the #199 Objective
 Plan rather than trusting the candidate's summary. Migration `20260825_0307`
 admits the new kind, keeps `compile_receipt` and `compile_record` readable as
@@ -616,7 +616,7 @@ against the old contract.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,
-then stable deployment. `learning canary trip` is the fail-closed rollback
+then stable deployment. `release canary trip` is the fail-closed rollback
 control. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes recovery,
 listing and telemetry lanes, and validates selector/profile/runtime-manifest
 identity at startup, resume and assignment. The migration and tests establish this mechanism; they do not prove a

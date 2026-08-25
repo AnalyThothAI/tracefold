@@ -599,7 +599,7 @@ Diagnose News in this order:
    `REJECTED` or `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and
    all three write a complete `optimization_report.json`. Each of the three
    roles is one `ModelExecutionIdentity`, and calls/cost/failures are accounted
-   separately before they are summed. Then `learning register --candidate
+   separately before they are summed. Then `release register --candidate
    prompt_candidate.json` binds it to the active stable and that frozen dataset
    — re-applying the patch to derive the Program identity and re-deriving the
    #199 Objective Plan rather than trusting the candidate — and `learning
@@ -607,7 +607,7 @@ Diagnose News in this order:
    the generator is audit, never permission.
    Production promotion additionally requires a
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
-   observation, and then `learning canary arm`; inspect with `canary status`
+   observation, and then `release canary arm`; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
    breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
    telemetry, and trips on selector, eligibility-profile, rolling-profile or

@@ -30,15 +30,22 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # neither can register a candidate or move a canary.
         "tracefold.news.learning.optimizer",
         "tracefold.news.learning.experiment",
+        # #202 §8: freezing a corpus, admitting a candidate and judging one are three objects now, and
+        # the CLI composes them where the old evaluator hid the composition. `learning freeze --role
+        # validation` is the one command that needs both: the release plane admits the candidate, and only
+        # then does the freeze get to refuse the window.
+        "tracefold.news.learning.dataset",
+        "tracefold.news.learning.ledger",
+        "tracefold.news.release.candidate",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
         "tracefold.news.program.dspy_adapter",
         "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
-        "tracefold.news.learning.canary",
+        "tracefold.news.release.canary",
         "tracefold.news.learning.contracts",
-        "tracefold.news.learning.evaluator",
+        "tracefold.news.learning.evaluate",
         # #199. The framework-neutral objective: which accepted cases GEPA may optimize, which ones hold it
         # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
         # this is the one module here that is neither the optimizer nor the release plane.
@@ -59,7 +66,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
-        "tracefold.news.learning.evaluator",
+        "tracefold.news.learning.evaluate",
         "tracefold.news.market_review.storage",
         "tracefold.news.query_specs",
         "tracefold.news.program.contracts",
@@ -84,9 +91,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # The News transport error vocabulary. The composition root's database adapter is the one place
         # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
         "tracefold.news.bus",
-        "tracefold.news.learning.canary",
+        "tracefold.news.release.canary",
         "tracefold.news.learning.contracts",
-        "tracefold.news.learning.evaluator",
+        "tracefold.news.learning.evaluate",
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",

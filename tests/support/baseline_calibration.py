@@ -232,7 +232,8 @@ def write_calibration_corpus(path: Path, payload: dict[str, Any]) -> int:
 def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs the live database
     from tracefold.app.learning_runtime import active_arm_manifest
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.learning.evaluator import CandidateEvaluator, ClosedWindow
+    from tracefold.news.learning.contracts import ClosedWindow
+    from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.program.artifact import load_stable_program_artifact
     from tracefold.platform.config.loader import load_settings
 
@@ -241,8 +242,8 @@ def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs 
     artifact = load_stable_program_artifact()
     window = ClosedWindow(from_ms=1_786_000_000_000, to_ms=1_787_460_000_000)
     with postgres_connection(settings, role="serve") as conn:
-        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-        episodes = evaluator.baseline_episodes(window, cohort=False, limit=5000)
+        datasets = DevelopmentDatasetStore(conn, stable=stable)
+        episodes = datasets.baseline_episodes(window, cohort=False, limit=5000)
 
     payload = {
         "schema": CALIBRATION_SCHEMA,

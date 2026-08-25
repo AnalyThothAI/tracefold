@@ -109,8 +109,8 @@ def test_the_offline_entry_point_reaches_no_database_review_or_release_seam() ->
     """
 
     forbidden = {
-        "tracefold.news.learning.canary",
-        "tracefold.news.learning.evaluator",
+        "tracefold.news.release.canary",
+        "tracefold.news.learning.evaluate",
         "tracefold.news.learning.projection",
         "tracefold.news.learning.review",
         "tracefold.news.learning.review_drafter",
@@ -130,9 +130,128 @@ def test_the_research_package_cannot_reach_promotion_or_the_release_seam() -> No
     buys is that promoting a winner cannot be written here by accident.
     """
 
-    forbidden = {"tracefold.news.learning.canary", "tracefold.news.learning.optimizer"}
+    forbidden = {"tracefold.news.release.canary", "tracefold.news.learning.optimizer"}
     experiment = SRC / "news" / "learning" / "experiment"
     for path in sorted(experiment.rglob("*.py")):
         modules = _imports(path)
         assert not (modules & forbidden), (path, sorted(modules & forbidden))
         assert not any(module.startswith("tracefold.news.storage") for module in modules), path
+
+
+def test_the_learning_plane_never_reaches_into_the_release_plane() -> None:
+    """#202 §8, the direction that makes the split real rather than cosmetic.
+
+    Release reads frozen datasets; datasets never reach back. Before the cut, `freeze_dataset(role=
+    "validation")` called candidate validation, and candidate validation re-derived the Objective Plan
+    from `development_compile_export` — a cycle, and the reason freezing a corpus and admitting a
+    candidate could not be told apart. `freeze_dataset` now takes an `AdmittedCandidate` instead.
+
+    `evaluate.py` is the one exception and it is the right way round: judging a candidate needs to know
+    which candidate, so it composes the registry. It still decides no state — it returns evidence.
+    """
+
+    learning = SRC / "news" / "learning"
+    offenders = {
+        path.relative_to(ROOT).as_posix()
+        for path in sorted(learning.rglob("*.py"))
+        if path.name != "evaluate.py" and any(module.startswith("tracefold.news.release") for module in _imports(path))
+    }
+    assert offenders == set()
+
+
+def test_only_the_release_plane_can_admit_a_candidate() -> None:
+    """`AdmittedCandidate` is the token that keeps the dependency one-way.
+
+    A value anyone could construct would make the check it exists for a formality: `freeze_dataset` would
+    be back to trusting its caller that a candidate was admitted. Naming the one producer is what makes
+    "the release plane admitted this" a fact rather than an assertion in a docstring.
+    """
+
+    producers = {
+        path.relative_to(ROOT).as_posix()
+        for path in sorted(SRC.rglob("*.py"))
+        if "AdmittedCandidate(" in path.read_text(encoding="utf-8")
+    }
+    # Exactly one, and it is not the module that declares the type: `dataset.py` names
+    # `AdmittedCandidate` in a signature and never fills one in.
+    assert producers == {"src/tracefold/news/release/candidate.py"}
+
+
+def test_operator_scripts_call_methods_that_the_class_they_name_actually_has() -> None:
+    """The failure mode a three-way split creates, caught where a checker cannot reach.
+
+    `mypy src` guards production, and `attr-defined` is on for `tracefold.app.*` precisely so that a
+    method moved out of `CandidateEvaluator` cannot keep being called on it. `tests/support` is outside
+    that target, and the operator entry points there are `# pragma: no cover` because they need a live
+    database — so a call to a method that moved is caught by nobody until an operator runs the script
+    and gets an `AttributeError` instead of a regenerated fixture.
+
+    This resolves the same thing mypy would: names bound to a constructor call in one of those scripts,
+    and every attribute later read off them.
+    """
+
+    import importlib
+
+    offenders: list[str] = []
+    for path in sorted((ROOT / "tests" / "support").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # `from tracefold.x import C` — the only classes this can resolve, which is the point: a script
+        # reaching for a class it never imported by name is not a moved-method question.
+        imported = {
+            alias.asname or alias.name: (node.module, alias.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tracefold.")
+            for alias in node.names
+        }
+        # Only classes: `x = some_function(...)` binds a return value, whose type this walk cannot know.
+        classes = {
+            local: obj
+            for local, (module, original) in imported.items()
+            if isinstance(obj := getattr(importlib.import_module(module), original, None), type)
+        }
+        for scope in ast.walk(tree):
+            if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            bound: dict[str, str] = {}
+            for node in ast.walk(scope):
+                if (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)
+                    and node.value.func.id in classes
+                ):
+                    bound[node.targets[0].id] = node.value.func.id
+            for node in ast.walk(scope):
+                if not isinstance(node, ast.Attribute):
+                    continue
+                # `name.attr` where name is a local instance, and the chained `C(...).attr`.
+                if isinstance(node.value, ast.Name) and node.value.id in bound:
+                    class_name = bound[node.value.id]
+                elif (
+                    isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)
+                    and node.value.func.id in classes
+                ):
+                    class_name = node.value.func.id
+                else:
+                    continue
+                if not _resolves(classes[class_name], node.attr):
+                    offenders.append(f"{path.relative_to(ROOT).as_posix()}: {class_name}.{node.attr}")
+    assert offenders == []
+
+
+def _resolves(owner: type, name: str) -> bool:
+    """What an instance of `owner` answers to.
+
+    `hasattr` on the class is not that: a pydantic field and a dataclass field are declared on the class
+    and only materialise on an instance, so a check built on `hasattr` alone reports every `window.from_ms`
+    as missing and the guard becomes noise nobody reads.
+    """
+
+    if hasattr(owner, name):
+        return True
+    if name in getattr(owner, "model_fields", {}) or name in getattr(owner, "__dataclass_fields__", {}):
+        return True
+    return any(name in vars(base).get("__annotations__", {}) for base in owner.__mro__)
