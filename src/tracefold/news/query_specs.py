@@ -32,10 +32,14 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_feed_symbol_filter",
             sql="""
                 SELECT e.event_id FROM news_events e
-                 WHERE EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = %s)
+                 WHERE EXISTS (SELECT 1 FROM news_event_assets a
+                                WHERE a.event_id = e.event_id
+                                  AND (a.symbol = %s
+                                       OR COALESCE((SELECT n.base_symbol FROM news_symbol_aliases n
+                                                     WHERE n.alias = a.symbol), '') = %s))
                  ORDER BY e.opened_at_ms DESC LIMIT 51
             """,
-            params=("BTC",),
+            params=("BTC", "BTC"),
         ),
         ReadQuerySpec(
             name="news_feed_search",
@@ -132,6 +136,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="SELECT venue, venue_symbol, instrument_class, quote_asset FROM news_market_instruments"
             " WHERE base_symbol = %s AND status = 'trading' ORDER BY venue, venue_symbol LIMIT 24",
             params=("BTC",),
+        ),
+        ReadQuerySpec(
+            name="news_symbol_tradeable",
+            sql="SELECT 1 FROM news_market_instruments WHERE base_symbol = %s AND status = 'trading'"
+            " AND NOT (venue = ANY(%s)) LIMIT 1",
+            params=("BTC", ["us.listed"]),
         ),
         ReadQuerySpec(
             name="news_symbol_aliases",

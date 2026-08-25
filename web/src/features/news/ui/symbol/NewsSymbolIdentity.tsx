@@ -25,7 +25,6 @@ export function NewsSymbolIdentity({
   symbol: NewsSymbol | undefined;
 }) {
   const contracts = symbol?.contracts ?? [];
-  const tradeable = contracts.filter((contract) => !contract.reference_only);
   const aliases = symbol?.normalization?.aliases ?? [];
   return (
     <Card flush title="标的身份" titleStyle="eyebrow">
@@ -72,7 +71,12 @@ export function NewsSymbolIdentity({
         </div>
       </div>
 
-      {tradeable.length ? (
+      {/*
+       * Gated on every contract, not on the tradeable ones. A base whose only row is `us.listed` is exactly
+       * the case the reference tier exists for, and suppressing the block there left the card saying "no
+       * tradeable contract" without naming the contract that established the identity at all.
+       */}
+      {contracts.length ? (
         <div className="news-symbol-contracts">
           {contracts.map((contract) => (
             <span

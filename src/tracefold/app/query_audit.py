@@ -27,7 +27,10 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_reaction_attach",
     ),
     "/api/news/quotes": ("news_quote_snapshot_read",),
-    "/api/news/symbols/{base}": ("news_symbol_contracts", "news_symbol_aliases"),
+    # Three reads per request, and all three are named: `is_tradeable` runs its own statement and a
+    # manifest that omitted it would let `db query-audit --analyze` report full coverage of a public route
+    # while never planning one of its queries.
+    "/api/news/symbols/{base}": ("news_symbol_contracts", "news_symbol_tradeable", "news_symbol_aliases"),
     "/api/news/review": (
         "news_review_task_queue",
         "news_review_task_evidence",

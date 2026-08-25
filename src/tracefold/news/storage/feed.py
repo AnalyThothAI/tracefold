@@ -105,8 +105,22 @@ class FeedStorage:
             where.append("e.admission = %s")
             params.append(admission)
         if symbol:
-            where.append("EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = %s)")
-            params.append(symbol.upper())
+            # The filter names an *identity*, not one spelling. `news_event_assets` stores the normalized
+            # provider tag, so an Event the Gate grounded on `SKHX` carries `SKHX` — but #87 collapsed SKHX,
+            # SKHY and SKHYNIX into one base, the asset chip renders that base, and the token page is keyed
+            # on it. Matching the tag exactly would leave the Event that supplied the link missing from its
+            # own symbol page.
+            #
+            # The alias lookup is a primary-key probe on `news_symbol_aliases` per candidate row, which is
+            # why it sits inside the same EXISTS rather than expanding to a list the caller has to build.
+            where.append(
+                "EXISTS (SELECT 1 FROM news_event_assets a"
+                " WHERE a.event_id = e.event_id"
+                "   AND (a.symbol = %s"
+                "        OR COALESCE((SELECT n.base_symbol FROM news_symbol_aliases n WHERE n.alias = a.symbol), '')"
+                "            = %s))"
+            )
+            params.extend([symbol.upper(), symbol.upper()])
         if q:
             where.append("(e.search_doc @@ plainto_tsquery('simple', %s) OR e.leader_title ILIKE %s)")
             params.extend([q, f"%{q}%"])

@@ -1233,3 +1233,53 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
     assert telemetry_id in served_ids
     assert other_id not in served_ids
     conn.commit()
+
+
+def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> None:
+    """#87/#207 PR-W1: the asset chip renders the collapsed base, so the filter behind it has to match it.
+
+    `news_event_assets` stores the normalized provider tag. An Event grounded on `SKHX` carries `SKHX`, the
+    chip renders `SKHY` because that is the identity the aliases collapse to, and the token page is keyed on
+    `SKHY` — so matching the tag exactly left the Event that supplied the link missing from its own page.
+    """
+
+    repos = repositories_for_connection(conn)
+    tagged_id, plain_id = _admit_test_events(
+        conn,
+        hit_base=1_796_000,
+        titles=("SK Hynix raises its capex guidance", "An unrelated company reports"),
+        hour=12,
+    )
+    with repos.transaction():
+        conn.execute(
+            "INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)"
+            " VALUES (%s, %s, 'seed', 0) ON CONFLICT (alias) DO NOTHING",
+            ("SKHX", "SKHY"),
+        )
+        for event_id, tag in ((tagged_id, "SKHX"), (plain_id, "ZZTOP")):
+            conn.execute(
+                "INSERT INTO news_event_assets (event_id, symbol, opened_at_ms) "
+                "SELECT %s, %s, opened_at_ms FROM news_events WHERE event_id = %s"
+                " ON CONFLICT DO NOTHING",
+                (event_id, tag, event_id),
+            )
+
+    def _served(symbol: str) -> set[str]:
+        page = repos.news.list_feed(
+            family=None,
+            admission=None,
+            decision=None,
+            symbol=symbol,
+            q=None,
+            limit=10_000,
+            cursor=None,
+        )
+        return {event["event_id"] for event in page["events"]}
+
+    # The canonical base finds the Event tagged with an alias of it...
+    assert tagged_id in _served("SKHY")
+    # ...the alias itself still finds it, since a reader can arrive from either spelling...
+    assert tagged_id in _served("SKHX")
+    # ...and neither pulls in an Event that answers to a different identity.
+    assert plain_id not in _served("SKHY")
+    conn.commit()

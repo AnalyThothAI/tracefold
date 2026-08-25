@@ -133,6 +133,10 @@ describe("NewsSymbolPage", () => {
     renderSymbol("/news/symbols/COPPER", "COPPER");
 
     expect(await screen.findByText("仅参考行情，无可交易合约")).toBeInTheDocument();
+    // And the contract that established the identity is on screen: saying "no tradeable contract" while
+    // naming none of them answers half the question the reader came with.
+    expect(screen.getByText("us.listed:HG")).toBeInTheDocument();
+    expect(screen.getByText("仅参考")).toBeInTheDocument();
   });
 
   it("mixes news and OI frames on one clock and filters them by channel", async () => {
