@@ -34,7 +34,7 @@ class OrderStorage:
             (order_id,),
         ).fetchone()
         # The same claim transaction charges the daily ceiling. Lock its singleton before sampling
-        # too, so contention on that UPDATE cannot carry a valid sample across a UTC-day boundary.
+        # too, so daily-counter contention cannot carry a valid sample across a UTC-day boundary.
         self.conn.execute("SELECT id FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
         return row is not None
 
