@@ -798,16 +798,15 @@ def _persist_compile_record(
     payload: dict[str, object],
     artifact_sha: str | None = None,
 ) -> str:
-    """Store one record the way `learning propose` does, parented by the dataset it compiled against.
+    """Stage one record row directly, so a test can plant an address the document does not answer to.
 
-    The ledger addresses every row as `sha({kind, payload})`, which is deliberately not the record's own
-    root. Writing the record's root into `artifact_sha` here — as this fixture first did — made the
-    evaluator's lookup pass in tests while failing against every real candidate.
+    `append_proposal_artifact` stores this kind under the record's own root, because the document already
+    carries an identity and a second address would force every reader to know both. This fixture writes
+    the row by hand precisely so the tamper cases can put something *else* in `artifact_sha` — which is
+    also why it proves nothing about the real writer, and why
+    `test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names` exists beside it.
     """
 
-    # `append_proposal_artifact` stores this kind under the record's own root: the document already has
-    # an identity, and giving it a second address would force every reader to know both. Callers may
-    # override the address to stage a row that does not answer to the identity it carries.
     address = artifact_sha or str(payload["compile_record_sha256"])
     conn.execute(
         "INSERT INTO news_learning_artifacts "
@@ -1531,6 +1530,68 @@ def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) 
 
     with pytest.raises(ValueError, match="news_learning_dataset_artifact_hash_mismatch"):
         evaluator.development_compile_export(forged_sha)
+
+
+def test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names(conn) -> None:
+    """The real writer against the real reader, with no fixture standing between them.
+
+    Every other test here stages the row by hand so it can plant a wrong address, which is exactly how the
+    writer and the reader came to disagree without a single test noticing: `append_proposal_artifact`
+    addressed the row as `sha({kind, payload})` while `_compile_record` looked it up by
+    `receipt.compile_record_sha256`. Every record written through `learning propose` was reported missing,
+    and no compiled Program candidate could be evaluated. This drives both sides.
+    """
+
+    # Two, because the record's own budget check requires a non-empty validation split: a corpus of one
+    # cannot be split, and a record over it is refused before it is ever written.
+    _accepted_event(conn, why="pass")
+    _accepted_event(conn, why="pass", hit_id=112042, title="A second reviewed Event, so the split is real")
+    stable = _arm()
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        evaluator.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    record = _compile_record(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        program_sha256=_sha({"program": "written-through-the-repository"}),
+    )
+    written = repositories_for_connection(conn).news.append_proposal_artifact(
+        kind="compile_record",
+        payload=record.model_dump(mode="json"),
+        parent_sha=development.artifact_sha,
+        created_at_ms=NOW,
+    )
+
+    assert written == record.compile_record_sha256
+
+    candidate = CandidateManifest(
+        target="program",
+        parent_stable_sha=stable.bundle_sha,
+        candidate_arm=ArmManifest.model_validate(
+            {**stable.model_dump(mode="json"), "program_sha256": record.program_sha256}
+        ),
+        hypothesis="Name the comparison base the reader needs.",
+        target_dimensions=("why_support",),
+        development_dataset_sha=development.artifact_sha,
+        proposal_receipt=ProposalReceipt.issue(
+            development_dataset_sha=development.artifact_sha,
+            failure_cluster_ids=("cluster-0",),
+            generator_kind="model",
+            generator_execution_sha=record.compile_record_sha256,
+            registered_at_ms=NOW,
+            declared_target_dimensions=("why_support",),
+            guardrails=("must_push_recall", "reader_load"),
+            program_parent_sha256=stable.program_sha256,
+            program_candidate_sha256=record.program_sha256,
+            compile_record_sha256=record.compile_record_sha256,
+        ),
+    )
+
+    assert evaluator._compile_record(candidate).compile_record_sha256 == record.compile_record_sha256
 
 
 def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
