@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
+from ..contracts import ACTIVE_ORDER_STATES
 from .sql_values import _dumps
 
 # The pipeline stages #211 asks to be able to report, each as the difference between two durable
@@ -148,13 +149,22 @@ class QueryStorage:
         state that has proven both a position and a native stop covering it (#185). A caller that collapses
         them is asserting something the ledger does not.
 
-        Bounded three ways: a window, an optional underlying, and a hard limit. `since_ms` bounds by
-        `created_at_ms` so an order opened yesterday and still carrying exposure stays visible when the
-        caller asks for active states.
+        **The window is not a creation window.** An order that still holds, or may yet turn out to hold,
+        exposure is current no matter when it was written: a `MANUAL_REVIEW_REQUIRED` order waiting two days
+        for an operator is exactly the row that must not vanish from 当前暴露, and bounding it by
+        `created_at_ms` would have hidden unresolved capital. Active states are therefore unbounded in time —
+        the unique-underlying index keeps that set to at most one row per underlying — and everything else is
+        bounded by the lifecycle timestamp that makes it recent: `position_closed_at_ms` for a close, and
+        `created_at_ms` only for a row that never opened a position and never will.
+
+        That also keeps this list agreeing with `status_counts`, whose realised counts are bounded by
+        `position_closed_at_ms`: an order created 30 h ago and closed 2 h ago is in both, or in neither.
         """
 
-        where = ["o.created_at_ms >= %s"]
-        params: list[Any] = [int(since_ms)]
+        # `PREPARED` … `SAFETY_CLOSING`, verbatim from `ux_trading_active_underlying` (`20260823_0300`).
+        recency = "(o.state = ANY(%s) OR coalesce(o.position_closed_at_ms, o.closed_at_ms, o.created_at_ms) >= %s)"
+        where = [recency]
+        params: list[Any] = [list(ACTIVE_ORDER_STATES), int(since_ms)]
         if underlying_key:
             where.append("o.underlying_key = %s")
             params.append(str(underlying_key))

@@ -28,7 +28,10 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       cases_by_state: { NO_TRADE: 2, ORDER_PREPARED: 3, POLICY_REJECTED: 4 },
       closed_orders: 2,
       closed_realized_bps: 12,
-      funnel_24h: { case_created: 9 },
+      // A UTC calendar-day counter, named for the interval it covers — `merge_funnel` resets it
+      // on `day_key`, unlike every rolling count beside it.
+      funnel_day_key: "2026-08-25",
+      funnel_today: { case_created: 9 },
       orders_by_state: { CLOSED: 2, OPEN: 1 },
     },
     floors: {

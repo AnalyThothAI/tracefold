@@ -6629,7 +6629,7 @@
       },
       "TradingCountsData": {
         "additionalProperties": false,
-        "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.",
+        "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.\n\n`funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count\nover the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`\nand is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader\ncan see that a Workers process stopped over midnight left yesterday's totals in place instead of having\nto infer it.",
         "properties": {
           "cases_by_kind": {
             "additionalProperties": {
@@ -6655,11 +6655,16 @@
             "title": "Closed Realized Bps",
             "type": "integer"
           },
-          "funnel_24h": {
+          "funnel_day_key": {
+            "default": "",
+            "title": "Funnel Day Key",
+            "type": "string"
+          },
+          "funnel_today": {
             "additionalProperties": {
               "type": "integer"
             },
-            "title": "Funnel 24H",
+            "title": "Funnel Today",
             "type": "object"
           },
           "orders_by_state": {

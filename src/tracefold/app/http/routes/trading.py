@@ -89,7 +89,16 @@ def get_trading_status(request: Request) -> Response:
                 "min_price_move_bps": settings.trading.regime.min_price_move_bps,
                 "min_whale_long_profit_bps": settings.trading.policy.min_whale_long_profit_bps,
             },
-            "counts": {**counts, "funnel_24h": _int_map(state.get("funnel"))},
+            # `merge_funnel` resets the document on `day_key`, so this is the current UTC *calendar day*,
+            # not a rolling window — publishing it as `funnel_24h` beside genuinely rolling counts made two
+            # different intervals look like one, and a Workers process stopped over midnight would leave
+            # yesterday's totals sitting under a 24 h label. The counter is worth keeping; the name was the
+            # lie. `funnel_day_key` rides beside it so a stale document is visible rather than inferred.
+            "counts": {
+                **counts,
+                "funnel_today": _int_map(state.get("funnel")),
+                "funnel_day_key": str(state.get("day_key") or ""),
+            },
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
@@ -134,10 +143,12 @@ def get_trading_orders(
             limit=_ORDER_LIMIT,
         )
         # An explicit order-state filter is a question about orders; listing cases that authored none beside
-        # it would answer a question the caller did not ask.
+        # it would answer a question the caller did not ask. Keyed on whether `state` was *supplied*, not on
+        # whether it translated to a non-empty tuple: `state=all` is an explicit filter that narrows to
+        # nothing, and testing the tuple let it fall through to the case list.
         cases = (
             []
-            if states
+            if state
             else repos.trading.console_cases_without_orders(
                 since_ms=since_ms, underlying_key=underlying_key, limit=_ORDER_LIMIT
             )

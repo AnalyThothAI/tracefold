@@ -2776,6 +2776,12 @@ export interface components {
          *     `closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a
          *     position but nobody computed a return for it, and counting it turned one +150 bps winner beside three
          *     resolutions into a reported mean of 37.5.
+         *
+         *     `funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count
+         *     over the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`
+         *     and is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader
+         *     can see that a Workers process stopped over midnight left yesterday's totals in place instead of having
+         *     to infer it.
          */
         TradingCountsData: {
             /** Cases By Kind */
@@ -2796,8 +2802,13 @@ export interface components {
              * @default 0
              */
             closed_realized_bps: number;
-            /** Funnel 24H */
-            funnel_24h?: {
+            /**
+             * Funnel Day Key
+             * @default
+             */
+            funnel_day_key: string;
+            /** Funnel Today */
+            funnel_today?: {
                 [key: string]: number;
             };
             /** Orders By State */

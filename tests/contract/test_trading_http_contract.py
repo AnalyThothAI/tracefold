@@ -66,7 +66,12 @@ class _FakeTradingRepository:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def runtime_state(self) -> dict[str, Any]:
-        return {"control": "RUNNING", "orders_today": 3, "funnel": {"cases": 9, "orders": 3, "bad": "x"}}
+        return {
+            "control": "RUNNING",
+            "day_key": "2026-08-25",
+            "funnel": {"cases": 9, "orders": 3, "bad": "x"},
+            "orders_today": 3,
+        }
 
     def status_counts(self, *, since_ms: int) -> dict[str, Any]:
         self.calls.append(("status_counts", {"since_ms": since_ms}))
@@ -146,7 +151,11 @@ def test_status_reports_the_mandate_and_never_claims_live_readiness(client) -> N
     assert data["floors"]["min_whale_long_profit_bps"] == 9_500
     assert data["floors"]["min_oi_value_usd"] == "20000000"
     # A non-integer funnel value is dropped rather than crashing the read or reaching the browser as a string.
-    assert data["counts"]["funnel_24h"] == {"cases": 9, "orders": 3}
+    # And it is named for the interval it actually covers: `merge_funnel` resets on `day_key`, so this is a
+    # UTC calendar day, not the rolling 24 h the counts beside it are.
+    assert data["counts"]["funnel_today"] == {"cases": 9, "orders": 3}
+    assert data["counts"]["funnel_day_key"] == "2026-08-25"
+    assert "funnel_24h" not in data["counts"]
 
 
 def test_orders_carry_the_ledgers_own_state_and_no_frozen_payload(client) -> None:
@@ -189,6 +198,17 @@ def test_an_order_state_filter_asks_only_about_orders(client) -> None:
     # unresolved is *more* likely to be carrying a position than one that is merely open.
     assert {"AMBIGUOUS", "MANUAL_REVIEW_REQUIRED", "UNPROTECTED", "OPEN"} <= set(states)
     assert "CLOSED" not in states
+
+
+def test_every_explicit_state_filter_asks_only_about_orders(client) -> None:
+    """`all` included. It narrows to nothing, but it is still a question about orders."""
+
+    api, trading = client
+
+    api.get("/api/trading/orders", params={"token": TOKEN, "state": "all"})
+
+    assert [call[0] for call in trading.calls] == ["console_orders"]
+    assert trading.calls[0][1]["states"] == ()
 
 
 def test_bad_query_values_are_refused_by_name(client) -> None:

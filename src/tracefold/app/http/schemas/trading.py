@@ -68,6 +68,12 @@ class TradingCountsData(ExactApiSchema):
     `closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a
     position but nobody computed a return for it, and counting it turned one +150 bps winner beside three
     resolutions into a reported mean of 37.5.
+
+    `funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count
+    over the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`
+    and is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader
+    can see that a Workers process stopped over midnight left yesterday's totals in place instead of having
+    to infer it.
     """
 
     cases_by_state: dict[str, int] = Field(default_factory=dict)
@@ -75,7 +81,8 @@ class TradingCountsData(ExactApiSchema):
     orders_by_state: dict[str, int] = Field(default_factory=dict)
     closed_orders: int = 0
     closed_realized_bps: int = 0
-    funnel_24h: dict[str, int] = Field(default_factory=dict)
+    funnel_today: dict[str, int] = Field(default_factory=dict)
+    funnel_day_key: str = ""
 
 
 class TradingStatusData(ExactApiSchema):
