@@ -1186,6 +1186,7 @@ def _accepted_event(
     title: str = "Micron says DRAM contract prices rose again in August",
     should_push: str = "must_push",
     first_bad_owner: str | None = "triage_prompt",
+    magnitude: str | None = None,
     published_at_ms: int | None = None,
     relevance: TradeRelevanceV1 | None = None,
 ) -> str:
@@ -1217,9 +1218,10 @@ def _accepted_event(
             _rubric(
                 why=why,
                 should_push=should_push,
+                magnitude=magnitude,
                 # A failing case only becomes a GEPA target when a human wrote the owner into the
                 # submission; a passing one has nothing to attribute.
-                first_bad_owner=first_bad_owner if why != "pass" else None,
+                first_bad_owner=first_bad_owner if (why != "pass" or magnitude == "fail") else None,
             ),
             principal=PRINCIPAL,
             idempotency_key=str(uuid.uuid4()),
@@ -1276,10 +1278,15 @@ def _accepted_compilable_event(
     selected_stable = stable or _arm()
     event_ids: list[str] = []
     for index, (role, hit_id, title, should_push, held) in enumerate(_COMPILABLE_CORPUS):
+        # A typed `magnitude` failure with a stated correct value, not a copy complaint: #199 keeps a
+        # failed `why_support` as an excluded diagnostic because the metric has no value to score the
+        # repair against, so a corpus of those produces no targets at all.
+        is_target = role == "target" and why != "pass"
         event_ids.append(
             _accepted_event(
                 conn,
-                why=why if role == "target" else "pass",
+                why="pass",
+                magnitude="fail" if is_target else None,
                 stale_reask=stale_reask and index == 0,
                 stable=selected_stable,
                 hit_id=hit_id,

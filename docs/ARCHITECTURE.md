@@ -1226,8 +1226,16 @@ a Program candidate's corpus. A case is a **target** only when an operator wrote
 `first_bad_owner = triage_prompt` into the submission itself — a ReviewDesk-derived
 owner routes queue work and grants nothing — and the failure belongs to
 EventSemantics or ReaderCard with something checkable behind it: an exact typed
-gold value, or evidence refs plus a stated correction, or a novelty prior that
-reached the ToldContext the model actually saw. A **control** is a case the
+gold value, or a `factual_fidelity` failure with evidence refs plus a stated
+correction, or a novelty prior that reached the ToldContext the model actually
+saw. A failed `headline_fidelity` / `why_support` / `why_value` is *not* a target
+however well attributed: `ExpectedCorrection` holds no value for a copy
+dimension — "the correct Chinese sentence" is not a label — so `_component` files
+it as `not_scored_no_gold` and drops it from the denominator, and a target the
+ruler cannot see lets GEPA pick a winner without ever scoring the repair it was
+pointed at. `factual_fidelity` is the exception because a failed one arms the
+`factual_contradiction` hard gate, which zeroes the case until the judge verifies
+the candidate's facts against the frozen evidence. A **control** is a case the
 stable Program already answers correctly under the accepted review and that
 trips no hard gate. Everything else is an **excluded diagnostic** — retrieval,
 Gate, storyline, policy, delivery, taxonomy, provider failures, derived-only

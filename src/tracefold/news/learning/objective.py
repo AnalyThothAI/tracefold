@@ -11,8 +11,9 @@ were answered in three different places that disagreed:
                 low-scoring trajectory the reflection model reads and tries to fix by rewriting an
                 instruction it cannot fix anything with.
 ``excluded``    everything else — retrieval, Gate, storyline, policy, delivery, taxonomy, provider
-                failures, derived-only owners, failed dimensions with no stated correct value. They stay
-                visible in readiness and baseline diagnostics and never enter a reflective minibatch.
+                failures, derived-only owners, failed dimensions with no stated correct value, and copy
+                failures the metric has no way to score. They stay visible in readiness and baseline
+                diagnostics and never enter a reflective minibatch.
 
 The module is framework-neutral on purpose: no DSPy, no database, no provider, no promotion, no
 container. `readiness`, the dataset-bound baseline, `run_gepa`, the experiment loop and
@@ -383,7 +384,19 @@ PROMPT_OWNER: Final = "triage_prompt"
 # check. `asset_grounding` is absent on purpose — the canonical ReviewDesk owner map calls it a Gate defect,
 # so a reviewer who fails it is not blaming the Prompt even when the Prompt is what emitted the symbol.
 _EVENT_SEMANTICS_TARGET_DIMENSIONS: Final[tuple[str, ...]] = ("direction", "magnitude", *_RELEVANCE_DIMENSIONS)
-_READER_CARD_TARGET_DIMENSIONS: Final[tuple[str, ...]] = _CARD_DIMENSIONS
+# The only ReaderCard failure the metric can measure a repair of. `_GOLD_KEY` holds no copy dimension —
+# `ExpectedCorrection` says why in as many words, "the correct Chinese sentence is not a label" — so
+# `_component` files a failed `headline_fidelity` / `why_support` / `why_value` as `not_scored_no_gold`
+# and drops it from the denominator, and `_retains` only ever runs on a dimension the reviewer *passed*.
+# `factual_fidelity` is different: a failed one arms the `factual_contradiction` hard gate, which zeroes
+# the case until the judge can verify the candidate's facts against the frozen evidence. That is a real,
+# checkable repair, and it is the whole of "verifiable objective" on the ReaderCard side today.
+_READER_CARD_TARGET_DIMENSIONS: Final[tuple[str, ...]] = ("factual_fidelity",)
+# Prompt-owned, evidenced, corrected — and still unmeasurable. Excluded rather than optimized toward,
+# because a target the ruler cannot see lets GEPA pick a winner without ever scoring the repair it was
+# pointed at. They stay visible in readiness under their own reason; giving them a scoring path needs a
+# judge-backed correction anchor, which is a Metric change and not this Issue's.
+_UNSCORABLE_CARD_DIMENSIONS: Final[tuple[str, ...]] = ("headline_fidelity", "why_support", "why_value")
 _PUSH_ACTIONS: Final = frozenset({"push", "escalate"})
 _OBJECTIVE_GUARD_ADMISSIONS: Final = frozenset({"listing_deterministic", "telemetry_deterministic"})
 
@@ -736,6 +749,8 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
         return _case("excluded", reason="failed_typed_dimension_without_exact_gold")
     if failed & set(_READER_CARD_TARGET_DIMENSIONS):
         return _case("excluded", reason="reader_card_failure_without_evidence_and_correction")
+    if failed & set(_UNSCORABLE_CARD_DIMENSIONS):
+        return _case("excluded", reason="reader_card_failure_not_scorable")
     if failed:
         return _case("excluded", reason="failed_dimension_not_prompt_repairable")
     if decision_failed:

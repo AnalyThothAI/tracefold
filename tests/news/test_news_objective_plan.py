@@ -186,30 +186,85 @@ def test_explicit_prompt_owner_with_exact_typed_gold_is_an_event_semantics_targe
 
 
 def test_explicit_prompt_owner_with_evidence_and_correction_is_a_reader_card_target() -> None:
+    """`factual_fidelity` is the one ReaderCard failure the metric can measure a repair of.
+
+    A failed one arms the `factual_contradiction` hard gate, which zeroes the case until the judge can
+    verify the candidate's facts against the frozen evidence.
+    """
+
     disposition, _reason, predictors, dimensions = _disposition(
         _episode(
             1,
-            dimensions={"factual_fidelity": "pass", "headline_fidelity": "fail"},
-            evidence_refs=("card#headline",),
-            expected_correction="The headline states a filing date the evidence does not contain.",
+            dimensions={"factual_fidelity": "fail"},
+            evidence_refs=("card#fact",),
+            expected_correction="The card states a filing date the evidence does not contain.",
             explicit_owner="triage_prompt",
         )
     )
-    assert (disposition, predictors, dimensions) == ("target", ("reader_card",), ("headline_fidelity",))
+    assert (disposition, predictors, dimensions) == ("target", ("reader_card",), ("factual_fidelity",))
 
 
-def test_a_reader_card_failure_without_evidence_or_a_correction_is_not_a_target() -> None:
+@pytest.mark.parametrize("dimension", ["headline_fidelity", "why_support", "why_value"])
+def test_a_copy_failure_the_metric_cannot_score_is_not_a_target(dimension: str) -> None:
+    """Prompt-owned, evidenced, corrected — and still unmeasurable, so still not a target.
+
+    `_GOLD_KEY` holds no copy dimension, so `_component` files the failure as `not_scored_no_gold` and
+    drops it from the denominator; `_retains` only runs on dimensions the reviewer passed. GEPA would
+    select a winner without ever scoring the repair it was pointed at.
+    """
+
+    assert _disposition(
+        _episode(
+            1,
+            dimensions={"factual_fidelity": "pass", dimension: "fail"},
+            evidence_refs=("card#copy",),
+            expected_correction="Do not claim priced-in without source evidence.",
+            explicit_owner="triage_prompt",
+        )
+    )[:2] == ("excluded", "reader_card_failure_not_scorable")
+
+
+def test_a_factual_failure_without_evidence_or_a_correction_is_not_a_target() -> None:
     """ "Write it better" is not a checkable objective, however confident the owner assignment is."""
 
     assert _disposition(
         _episode(
             1,
-            dimensions={"factual_fidelity": "pass", "why_support": "fail"},
+            dimensions={"factual_fidelity": "fail"},
             evidence_refs=(),
             expected_correction="",
             explicit_owner="triage_prompt",
         )
     )[:2] == ("excluded", "reader_card_failure_without_evidence_and_correction")
+
+
+def test_the_metric_really_cannot_score_a_failed_copy_dimension() -> None:
+    """The premise the exclusion rests on, asserted against the metric rather than described.
+
+    If a gold key ever appears for a copy dimension, or `_component` starts scoring a failed one, this
+    fails and `_UNSCORABLE_CARD_DIMENSIONS` is wrong.
+    """
+
+    from tracefold.news.learning.metric import _component
+    from tracefold.news.learning.objective import _CARD_DIMENSIONS, _NO_GOLD, _gold_value
+
+    for dimension in ("headline_fidelity", "why_support", "why_value", "factual_fidelity"):
+        assert _gold_value({dimension: "anything", "magnitude": 2}, dimension) is _NO_GOLD
+
+    outcomes: list[tuple[str, str]] = []
+    scored = _component(
+        {"why_support": "fail"},
+        _CARD_DIMENSIONS,
+        {"why_zh": "候选写了别的"},
+        {"why_zh": "生产写的"},
+        {},
+        None,
+        outcomes,
+    )
+    assert scored is not None
+    _score, _gold_n, effective_n, labelled_n = scored
+    assert (effective_n, labelled_n) == (0, 1), "a failed copy dimension is labelled but never scored"
+    assert outcomes == [("why_support", "not_scored_no_gold")]
 
 
 def test_a_typed_failure_without_exact_gold_is_excluded_not_optimized_toward_change() -> None:
