@@ -107,3 +107,19 @@ export function heldFor(order: TradingOrder): string {
 export function pnlLabel(mode: string): string {
   return mode === "paper" ? "未实现（纸面）" : "未实现";
 }
+
+/**
+ * The configured maximum hold, in a unit that can express it.
+ *
+ * `Math.round(ms / 3_600_000)` printed the shipped default — `max_holding_seconds: 1800` — as `0 h`, which
+ * reads as "no ceiling at all", the exact opposite of a thirty-minute cap. A risk control the page states
+ * has to be stated in a unit that survives the value: minutes below an hour, one decimal where the hours do
+ * not divide, a whole number when they do.
+ */
+export function holdCeiling(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const minutes = ms / 60_000;
+  if (minutes < 60) return `${Math.round(minutes)} 分钟`;
+  const hours = minutes / 60;
+  return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(1)} h`;
+}
