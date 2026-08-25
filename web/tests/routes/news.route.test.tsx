@@ -56,16 +56,14 @@ describe("news route", () => {
     await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(endpoint, expect.any(Object)));
   });
 
-  it("keeps the topbar health lamp dark while the pipeline is ok, on every route", async () => {
-    // The lamp is a frame control now (#207), so its silence has to hold across routes rather than only on
-    // the one page that used to carry a pill.
-    for (const path of ["/news", "/news/oi", "/news/review"]) {
-      cleanup();
-      setupAppRouteTest(mockAppRoutes);
-      renderAppRoute(path);
-      await screen.findByRole("heading", { level: 1 });
-      expect(screen.queryByRole("button", { name: /流水线健康/ })).not.toBeInTheDocument();
-    }
+  it("keeps the topbar health lamp dark while the pipeline is ok", async () => {
+    // One route is enough to pin the wiring: the lamp lives in `CockpitTopbar`, which `CockpitShell`
+    // renders once for every route, and the navigation tests already prove that shell is shared. What is
+    // route-specific — the rule that `ok` draws nothing at all — is pinned in `CockpitTopbarHealth`.
+    renderAppRoute("/news/oi");
+
+    await screen.findByRole("heading", { level: 1, name: "持仓异动监控" });
+    expect(screen.queryByRole("button", { name: /流水线健康/ })).not.toBeInTheDocument();
   });
 
   it("lights the topbar lamp with the failing item's own sentence when health degrades", async () => {

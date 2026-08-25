@@ -68,15 +68,15 @@ export function oiTabCount(
   return OI_WITHHELD_RULES.reduce((total, rule) => total + (rules[rule] ?? 0), 0);
 }
 
-/** Basis points as a percentage. Signed only where the sign is part of the measurement. */
-export function oiPercent(
-  bps: number | null | undefined,
-  { digits = 2, signed = false }: { digits?: number; signed?: boolean } = {},
-): string {
+/**
+ * Basis points as a percentage.
+ *
+ * Unsigned on purpose: every value this renders — a whale ratio, a profit, a threshold — is a magnitude,
+ * and the one measurement whose sign carries meaning is the OI change, which `oiChangeLabel` writes itself.
+ */
+export function oiPercent(bps: number | null | undefined, digits = 2): string {
   if (bps == null || !Number.isFinite(bps)) return "—";
-  const pct = bps / 100;
-  const sign = signed && pct > 0 ? "+" : "";
-  return `${sign}${pct.toFixed(digits)}%`;
+  return `${(bps / 100).toFixed(digits)}%`;
 }
 
 /**
@@ -132,7 +132,7 @@ export function oiWindowHours(windowMs: number | null | undefined): number {
  * one hour *before* the frame, which the News price plane does not store: `news_event_reactions` is anchored
  * at the Event and keeps p0/p1/p4 only. They are deliberately absent rather than approximated.
  */
-export type OiBucketTone = "positive" | "best" | "worst" | "plain";
+export type OiBucketTone = "positive" | "best" | "worst";
 export type OiBucket = { label: string; title: string; tone: OiBucketTone };
 
 /** §1.5: >200M is the best-performing open-interest bucket, 10–50M the worst. */
@@ -169,16 +169,4 @@ export function oiBuckets(
     });
   }
   return buckets;
-}
-
-/** Whether this frame clears the capital lane's own floors. Says nothing about whether News pushed it. */
-export function clearsTradeFloors(
-  oi: NewsFeedOi | null | undefined,
-  floors: NewsOiTradeFloors,
-): boolean | null {
-  if (!oi?.parsed || oi.whale_long_profit_bps == null || oi.oi_value_usd == null) return null;
-  return (
-    oi.whale_long_profit_bps >= floors.min_whale_long_profit_bps &&
-    oi.oi_value_usd >= floors.min_oi_value_usd
-  );
 }
