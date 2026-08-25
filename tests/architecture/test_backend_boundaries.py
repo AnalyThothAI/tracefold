@@ -23,7 +23,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # where they were optimizer-shaped state they never were, and into the factory that versions them.
         "tracefold.news.program.runtime",
         "tracefold.news.learning.baseline",
-        "tracefold.news.learning.review_drafter",
+        "tracefold.news.review.drafter",
         "tracefold.news.learning.compiler.launcher",
         "tracefold.news.learning.compiler.proxy",
         "tracefold.news.learning.compiler.sandbox",
@@ -52,7 +52,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.learning.replay",
-        "tracefold.news.learning.review",
+        "tracefold.news.review.desk",
         "tracefold.news.program.contracts",
     ),
     "app.composition": (
@@ -76,7 +76,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.health",
         "tracefold.news.market_review.instruments",
         "tracefold.news.market_review.pricing",
-        "tracefold.news.learning.review",
+        "tracefold.news.review.desk",
     ),
     "app.trading_cli": ("tracefold.trading.contracts",),
     "app.workers": (
@@ -242,7 +242,7 @@ def test_private_business_import_rules_follow_consumer_families() -> None:
         "tracefold.news.learning.baseline",
     )
     assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.storage.root")
-    assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.learning.review")
+    assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.review.desk")
     assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.storage.root")
 
 

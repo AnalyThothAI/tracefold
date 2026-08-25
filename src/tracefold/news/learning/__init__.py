@@ -1,5 +1,7 @@
-"""The News learning plane: evidence, evaluation, review, canary, and the cold compiler.
+"""The News learning plane: frozen datasets, the cold compiler, evaluation, and canary control.
 
-Nothing here runs on the online Event route. The Program the route executes lives in
-`tracefold.news.program` until PR8-B moves it to `tracefold.news.program`.
+Nothing here runs on the online Event route. Human truth acquisition is not here either: #202 moved the
+ReviewDesk and its drafter to `tracefold.news.review`, because a queue served over HTTP against production
+and an offline optimization over a frozen export are two lifecycles, and naming them one package made one
+set of permissions stand for both.
 """

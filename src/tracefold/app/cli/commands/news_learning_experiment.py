@@ -151,13 +151,13 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     )
     from tracefold.news.learning.experiment.optimize import optimize_snapshot
     from tracefold.news.learning.experiment.run import ExperimentRun
-    from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
     from tracefold.news.program.artifact import load_program_artifact, load_stable_program_artifact
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
         PROGRAM_READER_CARD_MAX_TOKENS,
         PROGRAM_ROUTE_DEADLINE_SECONDS,
     )
+    from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
     run = ExperimentRun(Path(str(args.run)))
     manifest = run.manifest()

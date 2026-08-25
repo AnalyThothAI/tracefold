@@ -9,8 +9,8 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
-from tracefold.news.learning.review import EventRubricSubmission
-from tracefold.news.learning.review_drafter import (
+from tracefold.news.review.desk import EventRubricSubmission
+from tracefold.news.review.drafter import (
     DRAFTER_ID,
     ReviewDraft,
     ReviewDrafter,
@@ -121,7 +121,7 @@ def test_the_drafter_writes_nothing_to_the_review_plane() -> None:
 
     import ast
 
-    import tracefold.news.learning.review_drafter as drafter_module
+    import tracefold.news.review.drafter as drafter_module
 
     tree = ast.parse(pathlib.Path(drafter_module.__file__).read_text(encoding="utf-8"))
     imported: set[str] = set()
@@ -148,7 +148,7 @@ def test_the_drafter_cannot_judge_the_dimensions_it_disagrees_with_humans_on() -
     """Measured, not assumed: over 25 Events both saw, agreement was 43%/42% on `why_*` against 70-88%
     elsewhere, and those two produced 27 of the 46 "human passed it, the draft failed it" disagreements."""
 
-    from tracefold.news.learning.review_drafter import DRAFTABLE_DIMENSIONS
+    from tracefold.news.review.drafter import DRAFTABLE_DIMENSIONS
 
     assert "why_support" not in DRAFTABLE_DIMENSIONS
     assert "why_value" not in DRAFTABLE_DIMENSIONS

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
 
-from .learning.review import review_read_statements
 from .market_review.pricing import REACTION_METRIC_VERSION
+from .review.desk import review_read_statements
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:

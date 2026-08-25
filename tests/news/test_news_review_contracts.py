@@ -1,6 +1,6 @@
 import pytest
 
-from tracefold.news.learning.review import EventRubricSubmission
+from tracefold.news.review.desk import EventRubricSubmission
 
 
 def test_evidence_refs_are_bounded_per_entry() -> None:

@@ -43,7 +43,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         EvaluationRequest,
         ProposalReceipt,
     )
-    from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
+    from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
     settings = load_settings(require_ws_token=False)
     action = str(args.learning_command)

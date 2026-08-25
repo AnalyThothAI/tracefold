@@ -13,7 +13,11 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.learning.evaluator import LEARNING_EPOCH
-from tracefold.news.learning.review import (
+from tracefold.news.models import TriageVerdict
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
+from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.review.desk import (
     BlindPairwiseSubmission,
     DeskQuery,
     EventRubricSubmission,
@@ -23,10 +27,6 @@ from tracefold.news.learning.review import (
     ReviewDesk,
     TaskRef,
 )
-from tracefold.news.models import TriageVerdict
-from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.platform.config.models import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]

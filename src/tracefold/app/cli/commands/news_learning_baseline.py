@@ -131,8 +131,8 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         build_gepa_objective_plan,
         build_readiness_report,
     )
-    from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
     from tracefold.news.program.runtime import PROGRAM_FACTORY_ID
+    from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
     dataset_sha = str(args.development).strip()
     identity: dict[str, Any] = {
@@ -450,9 +450,9 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.learning.baseline import build_metric_lm
-    from tracefold.news.learning.review import DeskQuery, Principal, ReviewDesk, TaskRef
-    from tracefold.news.learning.review_drafter import ReviewDrafter, build_draft_batch
     from tracefold.news.program.artifact import render_model_evidence_json
+    from tracefold.news.review.desk import DeskQuery, Principal, ReviewDesk, TaskRef
+    from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch
 
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback

@@ -502,7 +502,7 @@ def _coverage_statement(*, lower_ms: int, upper_ms: int, learning_epoch: str) ->
 def _current_learning_epoch() -> str:
     # CandidateEvaluator imports the reader/rubric contract from this module,
     # so resolve its epoch lazily rather than creating an import cycle.
-    from .contracts import LEARNING_EPOCH
+    from ..learning.contracts import LEARNING_EPOCH
 
     return LEARNING_EPOCH
 

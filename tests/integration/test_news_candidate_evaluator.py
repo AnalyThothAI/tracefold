@@ -52,16 +52,6 @@ from tracefold.news.learning.objective import (
     build_gepa_objective_plan,
 )
 from tracefold.news.learning.replay import ReplayArmSpec, load_recording_replay_capability
-from tracefold.news.learning.review import (
-    REVIEW_RUBRIC_VERSION,
-    BlindPairwiseSubmission,
-    DeskQuery,
-    ExternalMissSubmission,
-    TaskRef,
-)
-from tracefold.news.learning.review import (
-    ReviewDesk as _ReviewDesk,
-)
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -88,6 +78,16 @@ from tracefold.news.program.graph import (
 )
 from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_VERSION
 from tracefold.news.reader_history import assemble_reader_history
+from tracefold.news.review.desk import (
+    REVIEW_RUBRIC_VERSION,
+    BlindPairwiseSubmission,
+    DeskQuery,
+    ExternalMissSubmission,
+    TaskRef,
+)
+from tracefold.news.review.desk import (
+    ReviewDesk as _ReviewDesk,
+)
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
