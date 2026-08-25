@@ -163,7 +163,10 @@ class ControlStorage:
         return int(row["orders_today"])
 
     def release_order_day_charge(self, *, day_key: str, now_ms: int) -> int:
-        """Release a claimed entry only after a definitive provider rejection."""
+        """Release only after provider rejection or proof that its call never started.
+
+        Crashes after the call boundary, ambiguous answers, and restarts remain charged.
+        """
 
         row = self.conn.execute(
             """

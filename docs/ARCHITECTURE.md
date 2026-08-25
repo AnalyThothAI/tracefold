@@ -1468,8 +1468,9 @@ so nothing downstream can deduplicate a resend. The ledger row moves to
 `provider_attempt_count` is CHECKed at one, so a second attempt cannot even be
 recorded. The same transaction charges `orders_today`, so process death cannot
 make a second same-day entry admissible; only a definitive provider rejection
-releases that conservative charge in its receipt transaction. A timeout,
-reset, malformed answer or restart terminalises as
+in its receipt transaction, or local control flow that proves the provider call
+never started, releases that conservative charge. A timeout, reset, malformed
+answer, crash after the call boundary or restart terminalises as
 `AMBIGUOUS`, whose only legal successor is a read. Never a resend, and never a
 resend routed at the other venue.
 
