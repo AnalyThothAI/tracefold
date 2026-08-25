@@ -12,7 +12,7 @@ TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 PROPERTY_REQUIREMENTS := requirements/property.lock
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-compiler-smoke test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -86,9 +86,6 @@ test-e2e: ## run only tests/e2e/ (running service boundary)
 
 test-golden: ## run only tests/golden/ (real Postgres golden corpus)
 	@uv run python -m pytest tests/golden -m golden
-
-test-compiler-smoke: ## build and exercise the real compiler image with no runtime network
-	@uv run python -m pytest tests/compiler_smoke -m compiler_smoke
 
 test-architecture: ## run only tests/architecture/ (AST/grep checks)
 	@uv run python -m pytest tests/architecture -m architecture

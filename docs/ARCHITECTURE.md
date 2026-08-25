@@ -316,10 +316,9 @@ tracefold.news
   review/
     desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
     drafter.py        model-proposed rubrics a human accepts or rewrites; writes a file, never the DB
-  learning/           content-addressed program_v7 datasets, compiler, and stable/candidate evaluation
+  learning/           content-addressed program_v7 datasets, offline optimization, and stable/candidate evaluation
   learning/objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or must exclude
-  learning/optimizer.py      the one offline entry: Objective Plan, metered GEPA run, NO_OP/REJECTED/ADVANCE
-  learning/compiler/gepa.py  the bounded GEPA core the entry point drives
+  learning/optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
   learning/experiment/       operator run directories: frozen window and arm comparison
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
@@ -1170,15 +1169,18 @@ arm output is inspected, permits at most 100 human judgments, and returns
 or injection obedience) is a release failure. Mean and peak delivery load are
 reported for operator impact analysis but are not candidate-release quotas;
 correctly recognizing many distinct facts cannot fail a release by count alone.
-The optional DSPy GEPA compiler is a cold, manual development tool, never a
-Workers loop. A trusted exporter seals current-epoch accepted development into
-an ordered corpus root; an untrusted, resource-bounded runner receives no DB,
-holdout or application credentials and can emit only `ProgramStrategyPatchV1`.
-That patch carries the two advisory instructions and nothing else: RulePacks,
-the graph, the Signatures, the execution budget, the model slots and the policy
-are code under `factory_id` and are outside the write set, and a demo is
-refused rather than banked. GEPA cannot accept a review, register/deploy its
-output, move a stable pointer, or promote a candidate.
+The optional DSPy GEPA optimization is a cold, manual development tool, never a
+Workers loop. `news learning optimize` reads a frozen development corpus once
+and then holds three model endpoints and a typed budget — no DB write, broker,
+delivery, canary or promotion credential — and can emit only a bounded
+`PromptPatchV1`. That patch carries the two advisory instructions and nothing
+else: RulePacks, the graph, the Signatures, the execution budget, the model
+slots and the policy are code under `factory_id` and are outside the write set,
+and a demo is refused rather than banked. GEPA cannot accept a review,
+register/deploy its output, move a stable pointer, or promote a candidate.
+#202 deleted the container platform that used to surround it — image, launcher,
+metered proxy sidecar, sandbox policy, tariff, build attestation — because it
+proved *where* two strings came from, which was never what made them safe.
 Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
 or production assignment.
@@ -1224,8 +1226,8 @@ root is simply what makes them tamper-evident now.
 What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
 and every plane that needs the answer rebuilds the same plan from the same
 frozen episodes: `news learning readiness`, `news learning baseline --dataset`,
-`run_gepa` (so both the trusted compiler and the experiment loop), and
-`CandidateEvaluator` when it re-projects a Program candidate's corpus. A case is a **target** only when an operator wrote
+`run_gepa` through the one offline entry point, and `CandidateEvaluator` when it
+re-projects a registered candidate's corpus. A case is a **target** only when an operator wrote
 `first_bad_owner = triage_prompt` into the submission itself — a ReviewDesk-derived
 owner routes queue work and grants nothing — and the failure belongs to
 EventSemantics or ReaderCard with something checkable behind it: an exact typed
@@ -1248,8 +1250,8 @@ without ever entering a reflective minibatch. `run_gepa` splits `target +
 control` and nothing else; before #199 it scoped targets owner-blind and split
 the whole corpus, so a retrieval miss became an instruction to repair.
 `news learning readiness --development SHA` publishes the plan with zero model
-calls, and the trusted compiler rebuilds it and fails closed on the same
-conditions.
+calls, and `optimize` rebuilds it and refuses on the same conditions before any
+endpoint is touched.
 
 Metric v4 (`tracefold.news.production_action_trade_relevance_v4`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster

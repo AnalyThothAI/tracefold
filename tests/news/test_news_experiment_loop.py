@@ -19,9 +19,7 @@ from pydantic import ValidationError
 
 from tracefold.news.learning import optimizer
 from tracefold.news.learning.baseline import BaselineReport, CaseResult
-from tracefold.news.learning.compiler import gepa as gepa_core
-from tracefold.news.learning.compiler import root as compiler_root
-from tracefold.news.learning.compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
+from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.experiment import snapshot as snapshot_module
 from tracefold.news.learning.experiment.compare import (
     answered_case_scores,
@@ -409,9 +407,8 @@ def test_the_one_optimization_core_keeps_the_student_that_makes_reflection_possi
     and since #202 there is one caller of it.
     """
 
-    assert gepa_core.run_gepa is compiler_root.run_gepa is optimizer.run_gepa
-    default = inspect.signature(gepa_core.run_gepa).parameters["student_factory"].default
-    assert default is gepa_core._FeedbackCompileProgram
+    default = inspect.signature(optimizer.run_gepa).parameters["student_factory"].default
+    assert default is optimizer._FeedbackCompileProgram
     assert callable(getattr(default, "_rekey_trace", None))
 
 

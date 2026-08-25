@@ -10,8 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
-from ..contracts import ArmManifest, ClosedWindow
+from ..contracts import COMPILE_EPISODE_PROJECTION_SCHEMA, ArmManifest, ClosedWindow
 from ..evaluator import CandidateEvaluator
 from .run import ExperimentCase, ExperimentRun, ExperimentRunManifest, ExperimentWindow, case_root_sha256
 

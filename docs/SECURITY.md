@@ -147,81 +147,46 @@ must pass normal code review and be shipped in the registry.
 There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
-The DSPy GEPA compiler is a cold manual development workflow, not a runtime
-Worker. A trusted read-only exporter recomputes the current `program_v7`
-development artifact and ordered case/cluster/episode roots. An untrusted
-resource-bounded runner receives a read-only input bundle, no DB/holdout/
-application credentials, no ambient HOME or arbitrary egress, and provider
-access only through a metered proxy sidecar over a fresh named-volume Unix
-socket. The runner uses `--network none`; only the sidecar has provider egress
-and the short-lived provider secret. Before that secret is mounted, the trusted
-host verifies the exact local Docker image ID and independently hashes the
-image's News source tree and dependency lock without executing image code. The
-expected lock identity is
-`tracefold.news.learning.compiler.source_identity.COMPILER_DEPENDENCY_LOCK_SHA256`,
-which lives next to the attestation that reads it instead of in the Program
-artifact: it crosses a real trust boundary — host to container — and says
-nothing about how the Program behaves. A drift test keeps it equal to the
-source `uv.lock`, and a wheel that has no `uv.lock` still runs the Program.
-Tags and registry manifest references are rejected.
+The DSPy GEPA optimizer is a cold manual development workflow, not a runtime
+Worker. Issue #202 deleted the container platform that used to surround it: the
+sealed image, the launcher, the metered proxy sidecar, the seccomp policy, the
+tariff, the three-party `CompilerBuildAttestation` and the runner. That platform
+answered one question — *where were these two strings produced* — and its threat
+model was "the optimizer might return code". It cannot: `dspy.GEPA` only assigns
+`predictor.signature.with_instructions(...)`, so the write-set is two bounded
+advisory strings and `extract_optimizer_patch` refuses anything else. Proving
+provenance was never what made a candidate safe to ship.
 
-`CompilerBuildAttestation` is that boundary written down as three independent
-answers to one question: the host's hash of its own tree and lock, the hash of
-the payload copied out of the pinned image before any secret is staged, and the
-container's own recomputation from inside the running image. All three must
-agree, and their agreement *is* the attestation. It is the only check in this
-workflow where producer and verifier sit in different trust domains, which is
-the only condition under which a digest can meaningfully fail.
+What actually bounds the job is what it holds, and that is now a short list.
+`news learning optimize` reads a frozen development corpus once as `serve` and
+then holds three model endpoints and a typed in-process budget: no database
+write credential, no broker, no delivery, no canary, no promotion, no artifact
+writer. Every physical provider call passes a meter that reserves the operator's
+declared per-call cost before the request and settles after it, and a wall-clock
+deadline is checked before each call rather than reported after the last. Task,
+reflection and `metric_judge` are each one `ModelExecutionIdentity` — the
+complete secret-free execution contract — whose single digest is
+`endpoint_fingerprint`: the endpoint URL names the host a credential is
+presented to, so it is fingerprinted rather than stored. Reflection alone owns
+its 32k-token ceiling; the judge has its own endpoint, instruction/schema/adapter
+identity, budget, calls, cost and failure facts. Judge failure is explicit
+unavailable and scores the affected free-text dimension as failure-as-zero; it
+never falls back to byte equality, hidden retry, or a cached failure.
 
-Issue #193 collapsed the compile's evidence without touching its enforcement.
-One trusted compile now produces one `CompileRecordV1`, embedded whole and
-addressed by `compile_record_sha256`, which is also its key in
-`news_learning_artifacts` under the new `compile_record` kind. It replaces
-seven content-addressed receipts, a chain root, a runner receipt, an optimizer
-provenance record and a machine diff that between them carried the same four
-identities up to four times. A digest survives that cut only if it addresses
-independently stored bytes, crosses a real trust boundary, is a durable key,
-fingerprints an external mutable identity that cannot be stored whole, or
-serves a consumer that cannot read the parent payload. Nothing else was doing
-security work: a hash computed and checked inside one package, over a payload
-printed directly beside it, detects that package's own accidental drift and
-nothing an attacker would have to defeat. Calling that an attestation is how a
-self-proof gets mistaken for one.
+A run ends in `NO_OP`, `REJECTED` or `ADVANCE`, and every one of the three writes
+a complete `news_optimization_run_report_v1`. Only `ADVANCE` also writes a
+`news_prompt_candidate_v1`, which carries the two instructions and cannot name a
+stage, an activation or an artifact root. Registration re-applies that patch to
+the running stable to derive the candidate's Program identity, re-projects the
+corpus and re-derives the #199 Objective Plan rather than trusting the
+candidate's own summary — so a patch a person wrote and a patch GEPA wrote are
+admissible on exactly the same evidence. Nothing downstream moved: future
+holdout, blind pairwise, shadow, canary and manual promotion are unchanged, and
+an `ADVANCE` is still not a release.
 
-The sidecar reserves each call from the complete positive
-`llm.news_compiler_tariff`. Task, reflection and `metric_judge` are each one
-`ModelExecutionIdentity` — the complete secret-free execution contract, from
-which grant, bundle and proxy enforcement derive — in place of the
-`endpoint_sha256 -> model_sha256 -> binding_sha256` chain and the role binding
-that sat above it. Its single digest is `endpoint_fingerprint`: the endpoint
-URL names the host a credential is presented to, so it is fingerprinted rather
-than stored.
-Reflection alone owns its 32k-token ceiling; the judge has its own endpoint,
-instruction/schema/adapter identity, budget, tariff, calls, cost and failure
-facts. The proxy forces each role's output/cache/retry/timeout/temperature/LM
-parameters and records canonical per-call usage/cost/finish/error observations.
-Judge failure is explicit unavailable and scores the affected free-text
-dimension as failure-as-zero; it never falls back to byte equality, hidden
-retry, or a cached failure. Missing actual provider cost or any mismatch fails
-before candidate construction. The optimizer can emit only a typed
-`ProgramStrategyPatchV1` containing the two advisory instructions. It cannot
-modify RulePacks, the graph, Signatures, execution, routes, policy or
-stable identity, and it has no demo surface to write to at all. The trusted
-side cross-checks the untrusted runner's own counters against the sidecar's
-ledger — two parties, two independent counts — then issues the record, applies
-the patch to the exact active stable root, and emits an unaccepted candidate.
-Timeout, denied access, missing cost, quota breach, invalid patch or extra
-output produces no Artifact. Bounded stdout/stderr capture and exact-name
-container/network/volume cleanup are part of the launch receipt the record
-embeds; a Docker transport failure is never interpreted as proof of cleanup.
-
-Every property that was actually load-bearing is unchanged: the sealed input
-bundle, the container revalidating policy, source and grant for itself, the
-per-call worst-case reservation taken before every provider call, the sidecar
-owning the only credentials, the boundary evidence — commands, mounts, egress,
-cleanup, termination — and fail-closed on any tamper. What moved is where the
-tamper-evidence comes from: one record root, checked once, instead of a chain
-of digests each party computed over bytes it already held.
+If dynamic code generation or an agent graph ever becomes a candidate again, the
+sandbox threat model has to be rebuilt with it, under a new Issue. It is not
+kept warm for a hypothetical (#202 §6.3).
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293`, `0294` and `0295` append the corrected semantic, expert-quality

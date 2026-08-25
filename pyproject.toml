@@ -56,7 +56,6 @@ markers = [
   "golden: deterministic corpus checks against real Postgres (lives in tests/golden/)",
   "live: opt-in tests that call external provider APIs",
   "slow: real-process runtime tests bounded by wall-clock deadlines (excluded from make test)",
-  "compiler_smoke: real production compiler image/package/proxy/receipt seam",
   "property: bounded Hypothesis properties over pure state and typed boundaries",
 ]
 

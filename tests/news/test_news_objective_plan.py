@@ -808,7 +808,7 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
 
     import dspy
 
-    from tracefold.news.learning.compiler.gepa import run_gepa
+    from tracefold.news.learning.optimizer import run_gepa
     from tracefold.news.program.artifact import load_stable_program_artifact
 
     corpus = _mixed_corpus()
@@ -844,12 +844,12 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
         def retains(self, *_args: Any, **_kwargs: Any) -> bool:
             return False
 
-    from tracefold.news.learning.compiler.gepa import build_compile_lm
+    from tracefold.news.learning.optimizer import build_optimizer_lm
 
-    lm = build_compile_lm(
+    lm = build_optimizer_lm(
         model_name="test/task", api_key="k", api_base="http://127.0.0.1:1", timeout=1.0, max_tokens=128
     )
-    reflection = build_compile_lm(
+    reflection = build_optimizer_lm(
         model_name="test/reflection",
         api_key="k",
         api_base="http://127.0.0.1:1",
@@ -913,7 +913,6 @@ def test_no_second_implementation_guesses_failure_clusters() -> None:
         # purpose, in this list, rather than by writing one more `if "fail" in dimensions` somewhere.
         "src/tracefold/app/cli/commands/news_learning_experiment.py",
         "src/tracefold/news/learning/baseline.py",
-        "src/tracefold/news/learning/compiler/security.py",
         "src/tracefold/news/learning/contracts.py",
         "src/tracefold/news/learning/experiment/compare.py",
         "src/tracefold/news/learning/experiment/run.py",
@@ -922,7 +921,7 @@ def test_no_second_implementation_guesses_failure_clusters() -> None:
 
 
 def test_every_plane_reaches_the_objective_through_the_same_function() -> None:
-    """Readiness, the offline optimizer, the GEPA core and the release evaluator, structurally.
+    """Readiness, the offline optimizer and the release evaluator, structurally.
 
     Four readers, one function. The CLI that starts an optimization reaches the plan through
     `optimizer.optimize`, which is why it is not on this list: a fifth caller building its own plan is
@@ -931,12 +930,11 @@ def test_every_plane_reaches_the_objective_through_the_same_function() -> None:
 
     src = ROOT / "src" / "tracefold"
     readiness = src / "app" / "cli" / "commands" / "news_learning_baseline.py"
-    gepa = src / "news" / "learning" / "compiler" / "gepa.py"
     evaluator = src / "news" / "learning" / "evaluator.py"
     optimizer = src / "news" / "learning" / "optimizer.py"
     research_cli = src / "app" / "cli" / "commands" / "news_learning_experiment.py"
 
-    for path in (readiness, gepa, evaluator, optimizer):
+    for path in (readiness, evaluator, optimizer):
         assert "build_gepa_objective_plan" in path.read_text(encoding="utf-8"), path
     cli_source = research_cli.read_text(encoding="utf-8")
     assert "optimizer import" in cli_source

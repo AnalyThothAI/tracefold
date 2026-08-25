@@ -132,41 +132,6 @@ class LlmCompilerReflectionConfig(_LlmEndpointConfig):
         return "llm_compiler_reflection_configuration_incomplete"
 
 
-class LlmCompilerTariffConfig(BaseModel):
-    """Trusted, secret-free worst-case rates for the optional cold compiler."""
-
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    tariff_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-    input_token_overhead: int | None = Field(default=None, gt=0, le=100_000)
-    task_input_microusd_per_million: int | None = Field(default=None, gt=0)
-    task_output_microusd_per_million: int | None = Field(default=None, gt=0)
-    reflection_input_microusd_per_million: int | None = Field(default=None, gt=0)
-    reflection_output_microusd_per_million: int | None = Field(default=None, gt=0)
-    metric_judge_input_microusd_per_million: int | None = Field(default=None, gt=0)
-    metric_judge_output_microusd_per_million: int | None = Field(default=None, gt=0)
-
-    @model_validator(mode="after")
-    def require_complete_tariff(self) -> LlmCompilerTariffConfig:
-        values = (
-            self.tariff_id,
-            self.input_token_overhead,
-            self.task_input_microusd_per_million,
-            self.task_output_microusd_per_million,
-            self.reflection_input_microusd_per_million,
-            self.reflection_output_microusd_per_million,
-            self.metric_judge_input_microusd_per_million,
-            self.metric_judge_output_microusd_per_million,
-        )
-        if any(value is not None for value in values) and not all(value is not None for value in values):
-            raise ValueError("llm_news_compiler_tariff_incomplete")
-        return self
-
-    @property
-    def configured(self) -> bool:
-        return self.tariff_id is not None
-
-
 class LlmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -178,7 +143,6 @@ class LlmConfig(BaseModel):
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
     news_compiler_reflection: LlmCompilerReflectionConfig = Field(default_factory=LlmCompilerReflectionConfig)
-    news_compiler_tariff: LlmCompilerTariffConfig = Field(default_factory=LlmCompilerTariffConfig)
 
     @field_validator("api_key", "news_triage_model", "trading_decision_model", mode="before")
     @classmethod

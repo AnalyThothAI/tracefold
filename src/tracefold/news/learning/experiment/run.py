@@ -27,7 +27,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...artifact_identity import canonical_json, canonical_sha
-from ..compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
+from ..contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 
 # v2 (#199): the manifest names the episode projection its cases were frozen under. A run frozen before
 # the Objective Plan existed carries no `first_bad_owner_explicit`, so every failure case in it now

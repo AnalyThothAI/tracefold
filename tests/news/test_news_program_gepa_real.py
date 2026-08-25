@@ -14,21 +14,16 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
-from tracefold.news.learning.compiler.gepa import _FeedbackCompileProgram, build_compile_lm
-from tracefold.news.learning.compiler.root import (
-    CompileBudget,
-    CompileRequest,
-    ProgramCompiler,
-)
-from tracefold.news.learning.compiler.security import (
+from tracefold.news.learning.contracts import (
     REFLECTION_MAX_TOKENS,
     REFLECTION_TIMEOUT_SECONDS,
-    CompilerProxyTariff,
+    DevelopmentDatasetRef,
     ModelExecutionIdentity,
+    OptimizationBudget,
 )
 from tracefold.news.learning.judge import CardEquivalenceJudge
 from tracefold.news.learning.objective import DevelopmentEpisode
-from tracefold.news.learning.proposer import RulePackAwareProposer
+from tracefold.news.learning.optimizer import RulePackAwareProposer, _FeedbackCompileProgram, build_optimizer_lm
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import (
     code_owned_rule_packs,
@@ -55,17 +50,6 @@ def _frozen_policy_projection() -> dict[str, object]:
         "policy_sha256": canonical_sha(values),
     }
 
-
-_TARIFF = CompilerProxyTariff(
-    tariff_id="test",
-    input_token_overhead=1_000,
-    task_input_microusd_per_million=1,
-    task_output_microusd_per_million=1,
-    reflection_input_microusd_per_million=1,
-    reflection_output_microusd_per_million=1,
-    metric_judge_input_microusd_per_million=1,
-    metric_judge_output_microusd_per_million=1,
-)
 
 _SEMANTICS = {
     "novelty": "new_fact",
@@ -285,59 +269,108 @@ def compiler_development_corpus() -> tuple[DevelopmentEpisode, ...]:
     )
 
 
+def _budget(**overrides: Any) -> OptimizationBudget:
+    values: dict[str, Any] = {
+        "max_metric_calls": 40,
+        "max_task_model_calls": 400,
+        "max_reflection_model_calls": 40,
+        "max_metric_judge_model_calls": 400,
+        "max_cost_microusd": 400_000,
+        "max_call_cost_microusd": 1_000,
+        "max_wall_clock_seconds": 3_600.0,
+        "seed": 143,
+    }
+    values.update(overrides)
+    return OptimizationBudget(**values)
+
+
+def _optimize_real(
+    task: Any,
+    reflection: Any,
+    *,
+    budget: OptimizationBudget | None = None,
+    optimizer_factory: Any = None,
+) -> Any:
+    """One real GEPA run through the one entry point, over the scripted corpus.
+
+    Until #202 this went through `ProgramCompiler` inside a sealed image against a metered proxy. The
+    algorithm, the budget arithmetic and the corpus are unchanged; what is gone is the container that used
+    to prove where the two instructions came from.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
+
+    episodes = compiler_development_corpus()
+    dataset = FrozenDevelopmentDataset.bind(
+        ref=DevelopmentDatasetRef(
+            development_dataset_sha256="0" * 64,
+            episode_projection_root_sha256=canonical_sha([e.model_dump(mode="json") for e in episodes]),
+            episode_count=len(episodes),
+            learning_epoch_started_at_ms=1,
+            review_rubric_version="news_review_v4",
+        ),
+        episodes=episodes,
+        target_runtime_manifest_sha256="a" * 64,
+    )
+    config_kwargs: dict[str, Any] = {}
+    if optimizer_factory is not None:
+        config_kwargs["optimizer_factory"] = optimizer_factory
+    return optimize(
+        dataset,
+        OptimizationConfig(
+            task_lm=task,
+            reflection_lm=reflection,
+            judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
+            budget=budget or _budget(),
+            **config_kwargs,
+        ),
+    )
+
+
 def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> None:
     task = _ScriptedLM("scripted/task")
     reflection = _ScriptedLM("scripted/reflection", reflection=True)
-    compiler = ProgramCompiler(
-        base_artifact=load_stable_program_artifact(),
-        task_lm=task,  # type: ignore[arg-type]
-        reflection_lm=reflection,  # type: ignore[arg-type]
-        judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
-        tariff=_TARIFF,
-    )
-    result = compiler.compile(
-        CompileRequest(
-            development_dataset_sha="0" * 64,
-            review_rubric_version="news_review_v4",
-            episodes=compiler_development_corpus(),
-            # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
-            # `max_cost / max_call_cost`. Sizing those two independently is how a run silently starves.
-            budget=CompileBudget(
-                max_metric_calls=40,
-                max_task_model_calls=400,
-                max_reflection_model_calls=40,
-                max_metric_judge_model_calls=400,
-                max_cost_microusd=400_000,
-                max_call_cost_microusd=1_000,
-                seed=143,
-            ),
-        )
+    result = _optimize_real(
+        task,
+        reflection,
+        # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
+        # `max_cost / max_call_cost`. Sizing those two independently is how a run silently starves.
+        budget=_budget(
+            max_metric_calls=40,
+            max_task_model_calls=400,
+            max_reflection_model_calls=40,
+            max_metric_judge_model_calls=400,
+            max_cost_microusd=400_000,
+            max_call_cost_microusd=1_000,
+            seed=143,
+        ),
     )
 
-    learned = {name: result.run.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
+    learned = {name: result.candidate.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
     assert any(text.strip() for text in learned.values()), "GEPA produced no advisory at all"
     # GEPA checks its own budget between steps, so a completed run legitimately overshoots by up to one full
     # valset evaluation; the compiler allows exactly that and no more.
     # A completed run overshoots by whatever the step in flight consumed: one reflection minibatch plus, on
     # acceptance, one full valset evaluation. Derived, not guessed — this bound was wrong twice and each time
     # it destroyed a finished run after the work was done.
-    val_n = result.run.split["development_selection"]["case_n"]
-    minibatch = result.run.optimizer_config["constructor_scalar_arguments"]["reflection_minibatch_size"]
-    assert 0 < result.run.metric_calls <= 40 + val_n + minibatch
-    assert result.spend.reflection_model_calls > 0, "the reflection endpoint was never used"
+    val_n = result.report.split["development_selection"]["case_n"]
+    minibatch = result.report.optimizer["constructor_scalar_arguments"]["reflection_minibatch_size"]
+    assert 0 < result.report.usage["metric_calls"] <= 40 + val_n + minibatch
+    assert result.report.usage["reflection_model_calls"] > 0, "the reflection endpoint was never used"
 
     # `dspy.GEPA` only rewrites instructions — `build_program` never touches `predictor.demos`. That the
     # compile returned at all is the proof: `extract_optimizer_patch` runs `_validate_mutable_surface`, which
     # refuses `news_program_optimizer_demos_forbidden` for any Predictor carrying one.
-    assert result.run.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
-    assert set(result.run.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
+    assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
-    receipt = result.run.optimizer_config
+    receipt = result.report.optimizer
     assert receipt["instruction_proposer"]["implementation"].endswith("RulePackAwareProposer")
     assert receipt["omitted_unset_arguments"] == ["wandb_api_key"]
     assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
-    split = result.run.split
+    split = result.report.split
     assert split["disjointness"]["shared_case_ids"] == 0
     assert split["train"]["case_n"] > 0 and split["development_selection"]["case_n"] > 0
 
@@ -377,10 +410,10 @@ def test_advisory_rejection_becomes_scorable_feedback_not_a_silent_zero() -> Non
 
 
 def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
-    task = build_compile_lm(
+    task = build_optimizer_lm(
         model_name="openai/x", api_key="k", api_base="http://h/v1", timeout=20.0, max_tokens=1200, role="task"
     )
-    reflection = build_compile_lm(
+    reflection = build_optimizer_lm(
         model_name="openai/y", api_key="k", api_base="http://h/v1", timeout=20.0, max_tokens=1200, role="reflection"
     )
     assert task.kwargs["temperature"] == 0 and task.kwargs["max_tokens"] == 1200
@@ -394,10 +427,10 @@ def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
 
 @pytest.mark.parametrize("cost", [None, 7])
 def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) -> None:
-    from tracefold.news.learning.compiler.root import _BudgetMeter
+    from tracefold.news.learning.optimizer import _BudgetMeter
     from tracefold.news.program.dspy_adapter import ExactProviderMetadata
 
-    budget = CompileBudget(
+    budget = _budget(
         max_metric_calls=10,
         max_task_model_calls=10,
         max_reflection_model_calls=10,
@@ -406,7 +439,7 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
         max_call_cost_microusd=1_000_000,
         seed=1,
     )
-    meter = _BudgetMeter(budget, tariff=_TARIFF)
+    meter = _BudgetMeter(budget, imputed_call_cost_microusd=budget.max_call_cost_microusd)
     meter.before("task")
     meter.after(
         ExactProviderMetadata(
@@ -432,7 +465,7 @@ def test_empty_advisory_survives_a_gepa_round_trip() -> None:
     the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
     """
 
-    from tracefold.news.learning.compiler.gepa import generated_default_instruction, restore_empty_advisories
+    from tracefold.news.learning.optimizer import generated_default_instruction, restore_empty_advisories
 
     artifact = load_stable_program_artifact()
     program = _FeedbackCompileProgram(artifact)
@@ -461,34 +494,12 @@ def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() ->
     that disagrees with the artifact it attests to is not evidence.
     """
 
-    from tracefold.news.learning.compiler.gepa import generated_default_instruction
+    from tracefold.news.learning.optimizer import generated_default_instruction
 
-    compiler = ProgramCompiler(
-        base_artifact=load_stable_program_artifact(),
-        task_lm=_ScriptedLM("scripted/task"),  # type: ignore[arg-type]
-        reflection_lm=_ScriptedLM("scripted/reflection", reflection=True),  # type: ignore[arg-type]
-        judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
-        tariff=_TARIFF,
-    )
-    result = compiler.compile(
-        CompileRequest(
-            development_dataset_sha="0" * 64,
-            review_rubric_version="news_review_v4",
-            episodes=compiler_development_corpus(),
-            budget=CompileBudget(
-                max_metric_calls=40,
-                max_task_model_calls=400,
-                max_reflection_model_calls=40,
-                max_metric_judge_model_calls=400,
-                max_cost_microusd=400_000,
-                max_call_cost_microusd=1_000,
-                seed=143,
-            ),
-        )
-    )
+    result = _optimize_real(_ScriptedLM("scripted/task"), _ScriptedLM("scripted/reflection", reflection=True))
 
-    shipped = {name: result.run.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    recorded = {name: state["instruction"] for name, state in result.run.checkpoint["predictors"].items()}
+    shipped = {name: result.candidate.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
+    recorded = {name: state["instruction"] for name, state in result.report.checkpoint["predictors"].items()}
     assert recorded == shipped
 
     untouched = [name for name, text in shipped.items() if text == ""]
@@ -518,28 +529,13 @@ def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
             student.detailed_results = self.detailed_results
             return student
 
-    compiler = ProgramCompiler(
-        base_artifact=load_stable_program_artifact(),
-        task_lm=_ScriptedLM("scripted/task"),  # type: ignore[arg-type]
-        reflection_lm=_ScriptedLM("scripted/reflection", reflection=True),  # type: ignore[arg-type]
+    result = _optimize_real(
+        _ScriptedLM("scripted/task"),
+        _ScriptedLM("scripted/reflection", reflection=True),
         optimizer_factory=_SeedOnlyGEPA,
-        judge=CardEquivalenceJudge(_ScriptedJudgeLM("scripted/judge"), max_model_calls=400),
-        tariff=_TARIFF,
     )
-    with pytest.raises(ValueError, match="news_program_compile_no_program_change"):
-        compiler.compile(
-            CompileRequest(
-                development_dataset_sha="0" * 64,
-                review_rubric_version="news_review_v4",
-                episodes=compiler_development_corpus(),
-                budget=CompileBudget(
-                    max_metric_calls=40,
-                    max_task_model_calls=400,
-                    max_reflection_model_calls=40,
-                    max_metric_judge_model_calls=400,
-                    max_cost_microusd=400_000,
-                    max_call_cost_microusd=1_000,
-                    seed=143,
-                ),
-            )
-        )
+
+    # A terminal answer, not a traceback: the run happened, it kept the seed, and the report says so.
+    assert result.outcome == "NO_OP"
+    assert result.candidate is None
+    assert result.report.reasons == ("news_program_compile_no_program_change",)
