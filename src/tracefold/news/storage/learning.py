@@ -710,10 +710,10 @@ class LearningStorage:
          source.final_decision IN ('push', 'escalate')
          AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
        )
-       AND NOT (
+       AND (
          source.delivery_state = 'terminal'
          AND source.delivery_error_code = 'ambiguous_after_crash'
-       )
+       ) IS NOT TRUE
     """,
             (
                 epoch_started_at_ms,
