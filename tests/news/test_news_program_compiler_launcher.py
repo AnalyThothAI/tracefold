@@ -7,11 +7,11 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from tracefold.app.cli.parser import build_parser
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.learning.compiler import launcher as launcher_module
 from tracefold.news.learning.compiler.launcher import (
@@ -212,32 +212,15 @@ def test_launch_rejects_mismatched_secret_binding_before_docker(tmp_path: Path) 
         )
 
 
-def test_cli_bundle_launcher_and_runner_keep_all_three_role_bindings_end_to_end(tmp_path: Path) -> None:
-    args = build_parser().parse_args(
-        [
-            "news",
-            "learning",
-            "compile",
-            "--development",
-            "d" * 64,
-            "--artifact-root",
-            str(tmp_path / "artifacts"),
-            "--out",
-            str(tmp_path / "compile.json"),
-            "--compiler-image",
-            "sha256:" + "3" * 64,
-            "--max-metric-calls",
-            "3",
-            "--max-task-model-calls",
-            "7",
-            "--max-reflection-model-calls",
-            "5",
-            "--max-metric-judge-model-calls",
-            "11",
-            "--max-cost-microusd",
-            "100",
-        ]
-    )
+def test_bundle_launcher_and_runner_keep_all_three_role_bindings_end_to_end(tmp_path: Path) -> None:
+    """The three role budgets survive the host-to-container round trip.
+
+    It used to parse them off the retired `news learning compile` command line; the numbers are literal
+    now, because the subject is the launcher and the runner, not the CLI that once carried them (#202).
+    """
+
+    del tmp_path
+    args = SimpleNamespace(max_task_model_calls=7, max_reflection_model_calls=5, max_metric_judge_model_calls=11)
     document, bundle_sha, _ = _input(
         max_task_model_calls=args.max_task_model_calls,
         max_reflection_model_calls=args.max_reflection_model_calls,

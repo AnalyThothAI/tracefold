@@ -107,12 +107,17 @@ def test_the_one_offline_entry_point_has_named_importers() -> None:
 
     The trusted compiler is on this list because #202 PR-A moved the budget meter it always used into the
     entry point rather than leaving two copies; PR-C removes the compiler and this list shrinks with it.
+    The research CLI is the one command that starts a run, and it holds no promotion authority — the test
+    below asserts what the entry point itself can reach.
     """
 
     importers = {
         path.relative_to(ROOT).as_posix() for path in SRC.rglob("*.py") if OFFLINE_ENTRY_MODULE in _imports(path)
     }
-    assert importers == {"src/tracefold/news/learning/compiler/root.py"}
+    assert importers == {
+        "src/tracefold/app/cli/commands/news_learning_experiment.py",
+        "src/tracefold/news/learning/compiler/root.py",
+    }
 
 
 def test_the_offline_entry_point_reaches_no_database_review_or_release_seam() -> None:

@@ -881,7 +881,9 @@ def test_prompt_era_proposal_remains_readable_as_audit_history(conn) -> None:
 
     proposals = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"]
 
-    assert [(item["target"], item["target_zh"]) for item in proposals] == [("prompt", "提示词（历史审计）")]
+    # #202 made the two advisory instructions the one candidate kind, so `prompt` is the live label again.
+    # What marks this row as history is `evidence_disposition` and its epoch, not the variable's name.
+    assert [(item["target"], item["target_zh"]) for item in proposals] == [("prompt", "两段提示词")]
 
 
 def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn) -> None:
@@ -1349,7 +1351,7 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         ),
     )
     proposals = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"]
-    assert [(item["target"], item["target_zh"]) for item in proposals] == [("program", "DSPy Program")]
+    assert [(item["target"], item["target_zh"]) for item in proposals] == [("program", "DSPy Program（历史审计）")]
     second_case_id = "a" * 64
     conn.execute(
         """

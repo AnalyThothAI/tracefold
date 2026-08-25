@@ -316,8 +316,9 @@ tracefold.news
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
   learning/           content-addressed program_v7 datasets, reviews, compiler, and stable/candidate evaluation
   learning/objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or must exclude
-  learning/compiler/gepa.py  the one bounded GEPA run, shared by the trusted compiler and the fast loop
-  learning/experiment/       operator run directories: frozen window, arm comparison, unpromotable proposal
+  learning/optimizer.py      the one offline entry: Objective Plan, metered GEPA run, NO_OP/REJECTED/ADVANCE
+  learning/compiler/gepa.py  the bounded GEPA core the entry point drives
+  learning/experiment/       operator run directories: frozen window and arm comparison
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback

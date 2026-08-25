@@ -537,13 +537,16 @@ class LearningStorage:
         """
 
         public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
-        # A compile record already has a root, and that root is what the candidate's receipt names. Wrapping
-        # it in `sha({kind, payload})` would give one object two addresses and force every reader to know
-        # both; the row is instead stored under the identity the document carries, and the read-back below
-        # still refuses a second document landing on it.
+        # A Prompt candidate already has a root, and that root is what the registration receipt names.
+        # Wrapping it in `sha({kind, payload})` would give one object two addresses and force every reader
+        # to know both; the row is instead stored under the identity the document carries, and the
+        # read-back below still refuses a second document landing on it. `compile_record` keeps the same
+        # rule so pre-#202 rows stay resolvable as audit history.
+        self_addressed = {"prompt_candidate": "candidate_sha256", "compile_record": "compile_record_sha256"}
+        own_root = self_addressed.get(kind)
         artifact_sha = (
-            str(public["compile_record_sha256"])
-            if kind == "compile_record" and isinstance(public.get("compile_record_sha256"), str)
+            str(public[own_root])
+            if own_root is not None and isinstance(public.get(own_root), str)
             else canonical_sha({"kind": kind, "payload": public})
         )
         self.conn.execute(

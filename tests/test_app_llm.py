@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
@@ -356,19 +358,27 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
     )
 
 
-def test_policy_canary_reuses_stable_artifact_without_becoming_a_program_candidate(monkeypatch: Any) -> None:
+def test_a_candidate_whose_parent_is_not_the_running_stable_never_resolves_an_artifact(monkeypatch: Any) -> None:
+    """#202 §1.3 removed the policy candidate, and with it the branch that reused the stable artifact.
+
+    What is left is one rule: a candidate resolves to the image-carried artifact its own receipt says
+    descends from the running stable, or it resolves to nothing. A mismatch must be refused before the
+    artifact is loaded, not after — loading is what an unverified lineage would smuggle behavior through.
+    """
+
     stable = SimpleNamespace(program_sha256="a" * 64)
     candidate = SimpleNamespace(
-        target="policy",
-        candidate_arm=SimpleNamespace(program_version=PROGRAM_VERSION, program_sha256="a" * 64),
+        candidate_arm=SimpleNamespace(program_version=PROGRAM_VERSION, program_sha256="c" * 64),
+        proposal_receipt=SimpleNamespace(program_parent_sha256="b" * 64, program_candidate_sha256="c" * 64),
     )
 
     def unexpected_load(_sha: str) -> Any:
-        raise AssertionError("policy candidate must not load a child artifact")
+        raise AssertionError("a mismatched parent must be refused before any artifact is loaded")
 
     monkeypatch.setattr(learning_runtime, "load_program_artifact", unexpected_load)
 
-    assert learning_runtime.candidate_program_artifact(candidate, stable) is stable
+    with pytest.raises(ValueError, match="news_candidate_program_parent_mismatch"):
+        learning_runtime.candidate_program_artifact(candidate, stable)
 
 
 class _StartupNewsRepository:
@@ -499,12 +509,12 @@ def _program_candidate_document() -> CandidateManifest:
         generator_kind="human",
         registered_at_ms=1,
         declared_target_dimensions=("why_support",),
+        development_episode_projection_root_sha256="e" * 64,
         program_parent_sha256="b" * 64,
         program_candidate_sha256=candidate_arm.program_sha256,
-        compile_record_sha256="1" * 64,
+        prompt_candidate_sha256="1" * 64,
     )
     return CandidateManifest(
-        target="program",
         parent_stable_sha="a" * 64,
         candidate_arm=candidate_arm,
         hypothesis="Test an image-carried child Program.",

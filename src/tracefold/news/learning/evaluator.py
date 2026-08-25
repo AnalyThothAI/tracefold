@@ -23,9 +23,9 @@ from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
 from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
+from ..program.artifact import apply_program_patch, load_stable_program_artifact
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.runtime import PROGRAM_FACTORY_ID
-from .compiler.security import CompileRecordV1, validate_compile_record
 from .contracts import (
     LEARNING_EPOCH,
     LEARNING_PROFILE_ID,
@@ -34,6 +34,7 @@ from .contracts import (
     CandidateManifest,
     ClosedWindow,
     DatasetCaseRef,
+    PromptCandidateV1,
     ProposalReceipt,
 )
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
@@ -41,7 +42,6 @@ from .objective import (
     DevelopmentEpisode,
     _expected_delivery,
     build_gepa_objective_plan,
-    policy_candidate_failure_clusters,
     production_decision,
 )
 from .projection import (
@@ -112,7 +112,8 @@ _PROFILE: dict[str, Any] = {
         "critical_regressions": 0,
     },
     "bootstrap": {"seed": 112, "replicates": 2_000, "confidence": 0.95},
-    "supported_candidates": ["program", "policy"],
+    # One kind, since #202: a bounded Prompt patch. A policy change is a configuration release.
+    "supported_candidates": ["prompt"],
 }
 TRUSTED_ROOT_SHA = hashlib.sha256(
     json.dumps(
@@ -161,13 +162,26 @@ class DatasetManifest(BaseModel):
 
 
 class DevelopmentCompileExport(BaseModel):
-    """Exact trusted corpus projection handed to the cold compiler seam."""
+    """Exact read-only corpus projection handed to the offline optimizer.
+
+    It carries the projection root and the epoch it was taken under, rather than leaving each caller to
+    recompute them: the export *is* the corpus receipt, and two callers deriving the same identity two ways
+    is how the two stopped agreeing before.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     dataset_payload: dict[str, Any]
     episodes: tuple[dict[str, Any], ...] = Field(min_length=1)
+    episode_projection_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    learning_epoch_started_at_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _root_addresses_these_episodes(self) -> DevelopmentCompileExport:
+        if self.episode_projection_root_sha256 != _sha(list(self.episodes)):
+            raise ValueError("news_learning_compile_export_projection_root_mismatch")
+        return self
 
 
 class EvaluationRequest(BaseModel):
@@ -327,6 +341,8 @@ class CandidateEvaluator:
             dataset_sha=dataset_sha,
             dataset_payload=dataset_payload,
             episodes=frozen_episodes,
+            episode_projection_root_sha256=_sha(list(frozen_episodes)),
+            learning_epoch_started_at_ms=self._learning_epoch_started_at_ms(),
         )
 
     def baseline_episodes(
@@ -659,8 +675,6 @@ class CandidateEvaluator:
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
         candidate = self._candidate(request.candidate_sha)
         self._validate_candidate_static(candidate)
-        if recording_replay is not None and candidate.target != "program":
-            raise ValueError("news_learning_recording_verification_target_unsupported:policy")
         self._persist_candidate(candidate)
         prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
         if prior_stage and not self._has_passed_stage(candidate.candidate_sha, prior_stage):
@@ -833,90 +847,70 @@ class CandidateEvaluator:
             raise ValueError("news_learning_program_v1_unsupported")
         if candidate.parent_stable_sha != self._stable.bundle_sha:
             raise ValueError("news_learning_candidate_parent_stable_mismatch")
-        if candidate.target == "program" and candidate.candidate_arm.program_version != LEARNING_PROGRAM_VERSION:
+        if candidate.candidate_arm.program_version != LEARNING_PROGRAM_VERSION:
             raise ValueError("news_learning_program_v1_unsupported")
         stable = self._stable.model_dump(mode="json")
         proposed = candidate.candidate_arm.model_dump(mode="json")
         changed = {key for key in stable if stable[key] != proposed[key]}
-        allowed = {"program_sha256"} if candidate.target == "program" else {"policy", "policy_sha256"}
+        allowed = {"program_sha256"}
         if not changed or not changed <= allowed:
             raise ValueError(f"news_learning_exact_one_variable_violation:{','.join(sorted(changed))}")
         development = self._load_dataset(candidate.development_dataset_sha)
         if development.role != "development":
             raise ValueError("news_learning_proposal_requires_development_dataset")
         receipt = candidate.proposal_receipt
-        if candidate.target == "program":
-            if receipt.generator_kind != "model":
-                raise ValueError("news_learning_program_generator_must_be_model")
-            if candidate.candidate_arm.program_sha256 == self._stable.program_sha256:
-                raise ValueError("news_learning_program_sha_unchanged")
-            if receipt.program_parent_sha256 != self._stable.program_sha256:
-                raise ValueError("news_learning_program_parent_mismatch")
-            if receipt.program_candidate_sha256 != candidate.candidate_arm.program_sha256:
-                raise ValueError("news_learning_program_candidate_mismatch")
-            # One record, checked once. This was five documents cross-bound by hash — a provenance record,
-            # a machine diff, a receipt chain, seven content-addressed receipts and a runner receipt — and
-            # the same four identities appeared in most of them. What the compile actually has to prove is
-            # unchanged: it ran against this parent, this dataset, this runtime target, and produced this
-            # Program.
-            record = self._compile_record(candidate)
-            if record.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
-                raise ValueError("news_learning_program_compile_epoch_mismatch")
-            # Re-projected once, and only for a Program candidate: the corpus binding below and the
-            # Objective Plan are the same question asked of the same episodes, and projecting them twice
-            # would let a review edited between the two reads pass one check and fail the other. A policy
-            # candidate never reaches this — replaying `decide()` over the whole corpus to screen a policy
-            # proposal would import failure modes its own gate never meets.
-            episodes = list(self.development_compile_export(candidate.development_dataset_sha).episodes)
-            plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
-            # Not the count: the episodes themselves. `development_compile_export` re-projects them from
-            # live reviews and recorded decisions, so a review edited between compile and evaluate leaves
-            # the count identical and the corpus different — and the candidate would then be judged
-            # against evidence it never compiled on.
-            if record.episode_count != len(episodes) or record.episode_projection_root_sha256 != _sha(episodes):
-                raise ValueError("news_learning_program_compile_corpus_mismatch")
-            if receipt.generator_execution_sha != record.compile_record_sha256:
-                raise ValueError("news_learning_program_generator_execution_mismatch")
-            # The Objective Plan, rebuilt from the same frozen corpus the compile ran on. A candidate that
-            # declares clusters the plan does not call targets was optimized against something else.
-            if set(candidate.proposal_receipt.failure_cluster_ids) != set(plan.target_failure_cluster_ids):
-                unknown = ",".join(
-                    sorted(set(candidate.proposal_receipt.failure_cluster_ids) ^ set(plan.target_failure_cluster_ids))
-                )
-                raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
-            if tuple(candidate.target_dimensions) != plan.target_dimensions:
-                raise ValueError("news_learning_proposal_target_dimensions_unverified")
-            # The split roots, not the split's shape: `readiness`, this record and this re-projection must
-            # all name the same train and development-selection halves, or the winner was picked on a
-            # different corpus than the one this gate is about to judge it against.
-            if record.run.split != plan.split:
-                raise ValueError("news_learning_proposal_split_roots_unverified")
-        elif any(
-            value is not None
-            for value in (
-                receipt.program_parent_sha256,
-                receipt.program_candidate_sha256,
-                receipt.compile_record_sha256,
-            )
-        ):
-            raise ValueError("news_learning_policy_receipt_contains_program_change")
+        if candidate.candidate_arm.program_sha256 == self._stable.program_sha256:
+            raise ValueError("news_learning_program_sha_unchanged")
+        if receipt.program_parent_sha256 != self._stable.program_sha256:
+            raise ValueError("news_learning_program_parent_mismatch")
+        if receipt.program_candidate_sha256 != candidate.candidate_arm.program_sha256:
+            raise ValueError("news_learning_program_candidate_mismatch")
+        # The write-set itself, re-applied. Until #202 this position held a `CompileRecordV1` carrying a
+        # sandbox launch receipt, a proxy call ledger, a three-party build attestation and a tariff — a
+        # proof about *where* two strings were produced. What actually has to hold is that these two
+        # strings, applied to the running stable Program, are the Program this arm will execute; a patch a
+        # person wrote and a patch GEPA wrote are then admissible on identical terms (§7).
+        prompt = self._prompt_candidate(candidate)
+        if prompt.parent_program_sha256 != self._stable.program_sha256:
+            raise ValueError("news_learning_prompt_candidate_parent_mismatch")
+        if prompt.development_dataset_sha256 != candidate.development_dataset_sha:
+            raise ValueError("news_learning_prompt_candidate_dataset_mismatch")
+        if prompt.target_runtime_manifest_sha256 != self._stable.runtime_model_bindings_sha256:
+            raise ValueError("news_learning_prompt_candidate_runtime_manifest_mismatch")
+        parent_artifact = load_stable_program_artifact()
+        rebuilt = apply_program_patch(parent_artifact, prompt.patch.applied_to(parent_artifact))
+        if rebuilt.program_sha256 != candidate.candidate_arm.program_sha256:
+            raise ValueError("news_learning_prompt_candidate_program_identity_mismatch")
+        episodes = list(self.development_compile_export(candidate.development_dataset_sha).episodes)
+        plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
+        # Not the count: the episodes themselves. `development_compile_export` re-projects them from live
+        # reviews and recorded decisions, so a review edited between registration and evaluation leaves the
+        # dataset SHA and the case count identical and the corpus different — and the candidate would then
+        # be judged against evidence nobody generated it from.
+        if receipt.development_episode_projection_root_sha256 != _sha(episodes):
+            raise ValueError("news_learning_candidate_corpus_mismatch")
+        # A GEPA candidate names the projection it optimized on; an external proposal names none, and is
+        # bound to whatever registration re-projected. Disagreement is the one case that must fail.
+        declared_root = str(prompt.objective_summary.get("episode_projection_root_sha256") or "")
+        if declared_root and declared_root != receipt.development_episode_projection_root_sha256:
+            raise ValueError("news_learning_candidate_corpus_mismatch")
+        # The Objective Plan, rebuilt from the same frozen corpus. A candidate that declares clusters the
+        # plan does not call targets was optimized against something else.
+        if set(receipt.failure_cluster_ids) != set(plan.target_failure_cluster_ids):
+            unknown = ",".join(sorted(set(receipt.failure_cluster_ids) ^ set(plan.target_failure_cluster_ids)))
+            raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
+        if tuple(candidate.target_dimensions) != plan.target_dimensions:
+            raise ValueError("news_learning_proposal_target_dimensions_unverified")
+        # The split roots, not the split's shape: `readiness`, the optimization and this re-projection must
+        # all name the same train and development-selection halves, or the winner was picked on a different
+        # corpus than the one this gate is about to judge it against.
+        declared_split = prompt.objective_summary.get("split")
+        if declared_split and declared_split != plan.split:
+            raise ValueError("news_learning_proposal_split_roots_unverified")
         if candidate.development_dataset_sha != candidate.proposal_receipt.development_dataset_sha:
             raise ValueError("news_learning_proposal_dataset_mismatch")
         if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):
             raise ValueError("news_learning_target_dimensions_mismatch")
-        if candidate.target != "program":
-            # A policy candidate is not GEPA's output, so the Prompt-owner question is the wrong one to hold
-            # it to. It keeps the rule it always had — a failed dimension, a stated correction, or frozen
-            # delivery disagreeing with the accepted action — which now lives in `objective.py` under its
-            # own name instead of being a second inline heuristic here.
-            admissible = policy_candidate_failure_clusters(
-                development.cases, self._reviews_by_id([case.review_id for case in development.cases])
-            )
-            declared = set(candidate.proposal_receipt.failure_cluster_ids)
-            if not declared <= admissible:
-                raise ValueError(
-                    f"news_learning_proposal_failure_cluster_unverified:{','.join(sorted(declared - admissible))}"
-                )
         self._verify_registration_receipt(candidate.proposal_receipt)
 
     def _accepted_cases(
@@ -1171,48 +1165,31 @@ class CandidateEvaluator:
                 # A hidden holdout must call the same SemanticJudge separately
                 # for each arm because their simulated reader ledgers can
                 # diverge and therefore change the next model input.
-                frozen_policy_screen = (
-                    candidate.target == "policy"
-                    and dataset.role == "development"
-                    and case.get("production_judgment") is not None
-                )
-                # Both branches need it: the policy screen skips the model, not the told context, because
-                # `decide()` reads the same selected ledger the model would have been shown.
                 context = self._build_context(case, state)
-                if frozen_policy_screen:
-                    scored_judgment = case.get("production_judgment")
-                    program_observations: list[dict[str, Any]] = []
-                    if scored_judgment is None:
-                        case_outputs[arm_name] = {
-                            "error_code": "frozen_scored_judgment_missing",
-                            "delivered": False,
-                        }
-                        continue
-                else:
-                    first = await self._invoke_and_record(
-                        run_sha=run_sha,
-                        case_id=case_ref.case_id,
-                        arm_name=arm_name,
-                        arm=arm,
-                        context=context,
-                        trial=1,
-                        persist_recordings=recording_replay is None,
-                        recording_replay=recording_replay,
-                    )
-                    program_observations = [first]
-                    scored_judgment = first.get("scored_judgment")
-                    if scored_judgment is None:
-                        case_outputs[arm_name] = {
-                            "error_code": first.get("error_code") or "program_output_missing",
-                            "delivered": False,
-                            "program": [first],
-                        }
-                        continue
+                first = await self._invoke_and_record(
+                    run_sha=run_sha,
+                    case_id=case_ref.case_id,
+                    arm_name=arm_name,
+                    arm=arm,
+                    context=context,
+                    trial=1,
+                    persist_recordings=recording_replay is None,
+                    recording_replay=recording_replay,
+                )
+                program_observations = [first]
+                scored_judgment = first.get("scored_judgment")
+                if scored_judgment is None:
+                    case_outputs[arm_name] = {
+                        "error_code": first.get("error_code") or "program_output_missing",
+                        "delivered": False,
+                        "program": [first],
+                    }
+                    continue
                 result = self._apply_policy(case, scored_judgment, state, arm, context)
                 result["program"] = list(program_observations)
                 case_outputs[arm_name] = result
             # A pre-registered stability subset plus every first-trial disagreement gets k=3.
-            if candidate.target != "policy" and self._needs_stability_trials(case_ref.case_id, case_outputs):
+            if self._needs_stability_trials(case_ref.case_id, case_outputs):
                 for arm_name in order:
                     if not case_outputs.get(arm_name, {}).get("scored_judgment"):
                         continue
@@ -1369,8 +1346,6 @@ class CandidateEvaluator:
         truth directly and do not create copy-preference work.
         """
 
-        if candidate.target != "program":
-            return frozenset()
         by_cluster: dict[str, DatasetCaseRef] = {}
         for case in dataset.cases:
             current = by_cluster.get(case.cluster_id)
@@ -2130,17 +2105,9 @@ class CandidateEvaluator:
             ):
                 for program_obs in output.get("program") or []:
                     metric = _program_metric(program_obs)
-                    if (
-                        candidate.target == "program"
-                        and request.stage in {"offline", "holdout"}
-                        and not _provider_cost_observation_complete(program_obs)
-                    ):
+                    if request.stage in {"offline", "holdout"} and not _provider_cost_observation_complete(program_obs):
                         provider_cost_observation_incomplete = True
-                    if (
-                        candidate.target == "program"
-                        and request.stage in {"offline", "holdout"}
-                        and not _program_call_provenance_complete(program_obs)
-                    ):
+                    if request.stage in {"offline", "holdout"} and not _program_call_provenance_complete(program_obs):
                         program_call_provenance_incomplete = True
                     if metric["total_tokens"] is not None:
                         tokens.append(int(metric["total_tokens"]))
@@ -2220,7 +2187,7 @@ class CandidateEvaluator:
         # not fail merely because an hour happened to contain many real events.
 
         primary = self._primary_result(run_sha, candidate, observations)
-        if request.stage == "offline" and candidate.target == "program":
+        if request.stage == "offline":
             if int(primary.get("planned_cluster_n") or 0) == 0:
                 blockers.append("development_pairwise_review_empty")
             elif int(primary.get("resolved_cluster_n") or 0) < int(primary["planned_cluster_n"]):
@@ -2274,7 +2241,7 @@ class CandidateEvaluator:
             "trusted_root_sha": self._trusted_root_sha,
             "stable_sha": self._stable.bundle_sha,
             "candidate_sha": candidate.candidate_sha,
-            "target": candidate.target,
+            "candidate_kind": "prompt",
             "development_dataset_sha": development.artifact_sha,
             "validation_dataset_sha": validation.artifact_sha,
             "observation_n": len(observations),
@@ -2360,57 +2327,43 @@ class CandidateEvaluator:
         candidate_critical: dict[str, set[str]] = {}
         stable_critical: dict[str, set[str]] = {}
         resolved_cluster_ids: set[str] = set()
-        if candidate.target == "policy":
-            reviews = self._reviews_by_id([str(item["case_ref"]["review_id"]) for item in observations])
-            for item in observations:
-                expected = _expected_delivery(
-                    str(reviews.get(str(item["case_ref"]["review_id"]), {}).get("should_push") or "uncertain")
+        pairwise = self._conn.execute(
+            """
+            SELECT DISTINCT ON (j.pairwise_case_id) j.pairwise_case_id, j.payload
+              FROM news_reviews a
+              JOIN news_reviews j ON j.review_id = a.accepts_review_id
+             WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
+               AND j.pairwise_case_id LIKE %s
+             ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
+            """,
+            (f"{run_sha}:%",),
+        ).fetchall()
+        by_id = {str(item["case_ref"]["case_id"]): item for item in observations}
+        for row in pairwise:
+            case_id = str(row["pairwise_case_id"]).split(":", 1)[-1]
+            pair_item = by_id.get(case_id)
+            if pair_item is None:
+                continue
+            preference = str((row["payload"] or {}).get("preference") or "uncertain")
+            order = pair_item["comparison"]["pair_order"]
+            cluster_id = str(pair_item["case_ref"].get("cluster_id") or case_id)
+            candidate_side = "A" if order == "candidate_A" else "B"
+            for tagged_error in (row["payload"] or {}).get("critical_errors") or []:
+                side, _, error = str(tagged_error).partition(":")
+                if not error or side not in {"A", "B"}:
+                    continue
+                target = candidate_critical if side == candidate_side else stable_critical
+                target.setdefault(cluster_id, set()).add(error)
+            if preference == "uncertain":
+                continue
+            resolved_cluster_ids.add(cluster_id)
+            if preference in {"tie", "both_bad"}:
+                cluster_values.setdefault(cluster_id, []).append(0)
+            elif preference in {"A", "B"}:
+                candidate_won = (preference == "A" and order == "candidate_A") or (
+                    preference == "B" and order == "stable_A"
                 )
-                if expected is None:
-                    continue
-                stable_ok = bool(item["stable"].get("delivered")) == expected
-                candidate_ok = bool(item["candidate"].get("delivered")) == expected
-                cluster_id = str(item["case_ref"].get("cluster_id") or item["case_ref"]["case_id"])
-                cluster_values.setdefault(cluster_id, []).append(int(candidate_ok) - int(stable_ok))
-                resolved_cluster_ids.add(cluster_id)
-        else:
-            pairwise = self._conn.execute(
-                """
-                SELECT DISTINCT ON (j.pairwise_case_id) j.pairwise_case_id, j.payload
-                  FROM news_reviews a
-                  JOIN news_reviews j ON j.review_id = a.accepts_review_id
-                 WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
-                   AND j.pairwise_case_id LIKE %s
-                 ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
-                """,
-                (f"{run_sha}:%",),
-            ).fetchall()
-            by_id = {str(item["case_ref"]["case_id"]): item for item in observations}
-            for row in pairwise:
-                case_id = str(row["pairwise_case_id"]).split(":", 1)[-1]
-                pair_item = by_id.get(case_id)
-                if pair_item is None:
-                    continue
-                preference = str((row["payload"] or {}).get("preference") or "uncertain")
-                order = pair_item["comparison"]["pair_order"]
-                cluster_id = str(pair_item["case_ref"].get("cluster_id") or case_id)
-                candidate_side = "A" if order == "candidate_A" else "B"
-                for tagged_error in (row["payload"] or {}).get("critical_errors") or []:
-                    side, _, error = str(tagged_error).partition(":")
-                    if not error or side not in {"A", "B"}:
-                        continue
-                    target = candidate_critical if side == candidate_side else stable_critical
-                    target.setdefault(cluster_id, set()).add(error)
-                if preference == "uncertain":
-                    continue
-                resolved_cluster_ids.add(cluster_id)
-                if preference in {"tie", "both_bad"}:
-                    cluster_values.setdefault(cluster_id, []).append(0)
-                elif preference in {"A", "B"}:
-                    candidate_won = (preference == "A" and order == "candidate_A") or (
-                        preference == "B" and order == "stable_A"
-                    )
-                    cluster_values.setdefault(cluster_id, []).append(1 if candidate_won else -1)
+                cluster_values.setdefault(cluster_id, []).append(1 if candidate_won else -1)
         # The pre-registered primary sampling unit is one independent fact
         # cluster.  Several provider rows or repeated pairwise cases from the
         # same fact get one equal-weight vote, never an inflated N.
@@ -2427,8 +2380,8 @@ class CandidateEvaluator:
             (f"{run_sha}:%",),
         ).fetchone()
         return {
-            "endpoint": "paired_delivery_correctness" if candidate.target == "policy" else "blind_net_preference",
-            "planned_cluster_n": len(planned_cluster_ids) if candidate.target == "program" else len(cluster_values),
+            "endpoint": "blind_net_preference",
+            "planned_cluster_n": len(planned_cluster_ids),
             "resolved_cluster_n": len(resolved_cluster_ids),
             "review_budget_used": int(review_budget["n"] or 0),
             "review_budget_max": int(_PROFILE["validation"]["max_review_budget"]),
@@ -2624,7 +2577,6 @@ class CandidateEvaluator:
             "exact_diff": _arm_exact_diff(
                 self._stable,
                 candidate.candidate_arm,
-                target=candidate.target,
                 proposal=candidate.proposal_receipt,
             ),
         }
@@ -2643,38 +2595,36 @@ class CandidateEvaluator:
         if _sha({"kind": "candidate_registration", "payload": payload}) != receipt.registration_receipt_sha:
             raise ValueError("news_learning_candidate_registration_hash_mismatch")
 
-    def _compile_record(self, candidate: CandidateManifest) -> CompileRecordV1:
-        """Load the one persisted record this candidate names, and re-verify it against the candidate."""
+    def _prompt_candidate(self, candidate: CandidateManifest) -> PromptCandidateV1:
+        """Load the typed write-set this candidate names, and re-verify it against the candidate.
+
+        Stored under its own hash, so a byte changed in the payload either stops the document validating
+        or stops it answering to the key the receipt points at. That is the whole provenance requirement
+        now: the document is the two instructions, and what makes them admissible is what registration and
+        evaluation check about them — not the process that emitted them.
+        """
 
         receipt = candidate.proposal_receipt
         rows = self._conn.execute(
             "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
-            "WHERE kind = 'compile_record' AND artifact_sha = %s",
-            (receipt.compile_record_sha256,),
+            "WHERE kind = 'prompt_candidate' AND artifact_sha = %s",
+            (receipt.prompt_candidate_sha256,),
         ).fetchall()
         if not rows:
-            raise ValueError("news_learning_program_compile_record_missing")
+            raise ValueError("news_learning_prompt_candidate_missing")
         row = rows[0]
         payload = dict(row["payload"] or {})
         if str(row.get("parent_sha") or "") != candidate.development_dataset_sha:
-            raise ValueError("news_learning_program_compile_record_parent_mismatch")
+            raise ValueError("news_learning_prompt_candidate_parent_mismatch")
         try:
-            record = validate_compile_record(
-                payload,
-                parent_program_sha256=str(receipt.program_parent_sha256),
-                program_sha256=str(receipt.program_candidate_sha256),
-                development_dataset_sha256=candidate.development_dataset_sha,
-                target_runtime_manifest_sha256=candidate.candidate_arm.runtime_model_bindings_sha256,
-            )
+            prompt = PromptCandidateV1.model_validate(payload)
         except (TypeError, ValueError) as exc:
-            raise ValueError("news_learning_program_compile_record_invalid") from exc
-        # The record is stored under its own root, so a byte changed in the payload either stops the
-        # document validating or stops it answering to the key the receipt points at.
-        if record.compile_record_sha256 != str(row["artifact_sha"]):
-            raise ValueError("news_learning_program_compile_record_identity_mismatch")
-        if record.model_dump(mode="json") != payload:
-            raise ValueError("news_learning_program_compile_record_noncanonical")
-        return record
+            raise ValueError("news_learning_prompt_candidate_invalid") from exc
+        if prompt.candidate_sha256 != str(row["artifact_sha"]):
+            raise ValueError("news_learning_prompt_candidate_identity_mismatch")
+        if prompt.model_dump(mode="json") != payload:
+            raise ValueError("news_learning_prompt_candidate_noncanonical")
+        return prompt
 
     def _candidate(self, candidate_sha: str) -> CandidateManifest:
         candidate = self._candidates.get(candidate_sha)
