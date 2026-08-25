@@ -35,6 +35,7 @@ from ..program.dspy_adapter import (
     _is_retryable_exception,
 )
 from .compiler.gepa import GepaNoProgramChange, GepaRunResult, OptimizerFactory, require_model_identity, run_gepa
+from .compiler.security import ModelExecutionIdentity
 from .contracts import (
     DevelopmentDatasetRef,
     OptimizationBudget,
@@ -280,6 +281,7 @@ class FrozenDevelopmentDataset:
     episodes: tuple[DevelopmentEpisode, ...]
     parent_program: ProgramStrategyArtifactV1
     target_runtime_manifest_sha256: str
+    dataset_payload: Mapping[str, Any]
 
     def __post_init__(self) -> None:
         if not self.episodes:
@@ -289,6 +291,12 @@ class FrozenDevelopmentDataset:
         projection = canonical_sha([episode.model_dump(mode="json") for episode in self.episodes])
         if projection != self.ref.episode_projection_root_sha256:
             raise ValueError("news_learning_optimize_dataset_projection_root_mismatch")
+        # The durable artifact identity, recomputed rather than trusted. A matching projection root beside
+        # an unrelated `development_dataset_sha256` would produce a candidate naming a dataset it was never
+        # built from, and the evaluator that later loads that SHA would score a different corpus — or fail
+        # to find one — while the report claimed the run was dataset-bound.
+        if self.ref.development_dataset_sha256 != canonical_sha({"kind": "dataset", "payload": self.dataset_payload}):
+            raise ValueError("news_learning_optimize_dataset_artifact_hash_mismatch")
 
     @classmethod
     def bind(
@@ -296,6 +304,7 @@ class FrozenDevelopmentDataset:
         *,
         ref: DevelopmentDatasetRef,
         episodes: Sequence[DevelopmentEpisode],
+        dataset_payload: Mapping[str, Any],
         target_runtime_manifest_sha256: str,
         parent_program: ProgramStrategyArtifactV1 | None = None,
     ) -> FrozenDevelopmentDataset:
@@ -308,6 +317,7 @@ class FrozenDevelopmentDataset:
             episodes=tuple(episodes),
             parent_program=parent,
             target_runtime_manifest_sha256=target_runtime_manifest_sha256,
+            dataset_payload=dict(dataset_payload),
         )
 
 
@@ -374,6 +384,34 @@ def plan_blockers(plan: GepaObjectivePlan) -> tuple[str, ...]:
     return tuple(reasons)
 
 
+def require_judge_identity(judge: Any, *, budget: OptimizationBudget) -> dict[str, Any]:
+    """The judge's complete role contract, and its own admission ceiling bound to this budget.
+
+    The metric calls the judge directly, so `_BudgetedLM` never sees those requests: the judge admits them
+    itself, atomically, before each provider call. That is a real pre-call bound — but only if the ceiling
+    it admits against is the one the operator declared here, which is what this checks. Without it a judge
+    built with a larger ceiling could outspend `max_metric_judge_model_calls` and be discovered afterwards,
+    which is a report, not a budget.
+
+    The role binding is required for the same reason `require_model_identity` is required of the other two:
+    a candidate that retains judge-derived scores without naming the endpoint and execution contract that
+    produced them makes two runs judged by different models indistinguishable in provenance.
+    """
+
+    identity = dict(getattr(judge, "identity", {}) or {})
+    execution = identity.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ValueError("news_program_compile_metric_judge_identity_unavailable")
+    binding = execution.get("role_binding")
+    if not isinstance(binding, Mapping) or binding.get("role") != "metric_judge":
+        raise ValueError("news_program_compile_metric_judge_identity_unavailable")
+    ModelExecutionIdentity.model_validate(dict(binding))
+    admitted = execution.get("max_model_calls")
+    if type(admitted) is not int or admitted <= 0 or admitted > budget.max_metric_judge_model_calls:
+        raise ValueError("news_program_compile_metric_judge_call_budget_unbound")
+    return identity
+
+
 def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> OptimizationResult:
     """Run the one bounded GEPA optimization over a frozen corpus and return its terminal state."""
 
@@ -381,11 +419,27 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         raise ValueError("news_program_compile_metric_judge_required")
     # Before anything is spent: the three roles answer under identities they were stamped with, or the run
     # does not start. Reconstructing an identity from the object it describes would attest nothing.
+    task_identity = require_model_identity(config.task_lm, role="task")
+    reflection_identity = require_model_identity(config.reflection_lm, role="reflection")
+    judge_identity = require_judge_identity(config.judge, budget=config.budget)
     identities = {
-        "task": require_model_identity(config.task_lm, role="task").model_dump(mode="json"),
-        "reflection": require_model_identity(config.reflection_lm, role="reflection").model_dump(mode="json"),
-        "metric_judge": dict(getattr(config.judge, "identity", {})),
+        "task": task_identity.model_dump(mode="json"),
+        "reflection": reflection_identity.model_dump(mode="json"),
+        "metric_judge": judge_identity,
     }
+    # The wall clock is checked before each call, not during one: a request already in flight runs to its
+    # own attested deadline, and clamping that deadline would break the very role contract
+    # `ModelExecutionIdentity` exists to attest. So the worst case is `max_wall_clock_seconds` plus one
+    # call, and a budget that cannot even bound one call is not a bound — a 60 s budget that still waits
+    # 300 s for a reflection response would be a number, not a deadline. Refused here, before anything is
+    # spent, against the deadlines these three roles actually carry.
+    longest_call_seconds = max(
+        float(task_identity.timeout_seconds),
+        float(reflection_identity.timeout_seconds),
+        float(judge_identity["execution"].get("timeout_seconds") or 0.0),
+    )
+    if config.budget.max_wall_clock_seconds < longest_call_seconds:
+        raise ValueError(f"news_learning_optimize_wall_clock_below_call_deadline:{longest_call_seconds:g}")
     started_at_ms = config.now_ms()
     plan = build_gepa_objective_plan(dataset.episodes)
     objective = objective_summary(plan)
@@ -397,7 +451,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             config=config,
             objective=objective,
             identities=identities,
-            usage=_usage(meter=None, judge=config.judge, metric_calls=0, budgeted=()),
+            usage=_usage(meter=None, judge=config.judge, metric_calls=0, budgeted=(), budget=config.budget),
             reasons=blockers,
             started_at_ms=started_at_ms,
         )
@@ -439,7 +493,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             raise
 
     metric_calls = run.metric_calls if run is not None else 0
-    usage = _usage(meter=meter, judge=config.judge, metric_calls=metric_calls, budgeted=budgeted)
+    usage = _usage(meter=meter, judge=config.judge, metric_calls=metric_calls, budgeted=budgeted, budget=config.budget)
     # The split and the recall receipt are corpus facts, known before the first call. A run the budget cut
     # short still publishes them, so "which halves was this scored on" is answerable for every terminal
     # state past the pre-flight — only the run's own outputs are absent when there was no run.
@@ -591,10 +645,16 @@ def _usage(
     judge: Any,
     metric_calls: int,
     budgeted: Sequence[_BudgetedLM],
+    budget: OptimizationBudget,
 ) -> dict[str, Any]:
     stats = dict(getattr(judge, "stats", {}) or {})
     judge_calls = int(stats.get("model_calls", 0))
-    judge_cost = int(stats.get("actual_cost_microusd", 0))
+    # Charged the same way an unpriced task call is: neither endpoint this project runs on returns a
+    # resolvable price, so a judge that reports zero cost for real calls would make the run's total spend
+    # look free and let `_overspend` pass a run that was not within budget.
+    reported = int(stats.get("actual_cost_microusd", 0))
+    imputed = judge_calls * budget.max_call_cost_microusd
+    judge_cost = max(reported, imputed) if judge_calls else reported
     return {
         "schema": USAGE_SCHEMA,
         "task_model_calls": meter.task_model_calls if meter else 0,
@@ -606,6 +666,7 @@ def _usage(
         "metric_judge_model_calls": judge_calls,
         "metric_judge_failures": int(stats.get("failures", 0)),
         "metric_judge_cost_microusd": judge_cost,
+        "metric_judge_cost_imputed": judge_calls > 0 and judge_cost > reported,
         "actual_cost_microusd": (meter.actual_cost_microusd if meter else 0) + judge_cost,
         "metric_calls": metric_calls,
         "transport_failures": sum(lm.transport_failures for lm in budgeted),
