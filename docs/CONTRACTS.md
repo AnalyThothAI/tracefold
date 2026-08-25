@@ -70,15 +70,13 @@ EventSemantics and ReaderCard still receive separate Adapters and their own
 code-owned `max_tokens` (1,200 and 600); changing this endpoint changes only the
 secret-free `reader_card.primary` runtime binding identity, not Program
 identity.
-`llm.news_compiler_tariff` is an optional, secret-free contract used only by
-the manual cold compiler. Its `tariff_id`, positive `input_token_overhead`, and
-positive task/reflection/metric-judge input/output micro-USD-per-million-token rates are all
-required together; a partial or zero-rate tariff fails configuration. It does
-not affect Workers or hot-path model calls. `tracefold config` reports only
-whether this tariff is configured and its non-secret ID. It is unused by
-`learning optimize`, which meters an unpriced call at the operator's declared
-`--max-call-cost-microusd` instead; #202 removes it along with the proxy that
-reserved against it. Each of the three compiler roles —
+`llm.news_compiler_tariff` is gone (#202 §6.2). It was the trusted worst-case
+rate table the proxy sidecar reserved against, and the sidecar went with the
+compiler platform; `learning optimize` charges an unpriced provider call at the
+operator's declared `--max-call-cost-microusd` instead. `LlmConfig` forbids
+unknown keys, so an operator YAML still carrying the block fails to load with
+the key named — remove it before deploying this revision. Each of the three
+optimizer roles —
 task, reflection and `metric_judge` — is one `ModelExecutionIdentity` holding
 the complete secret-free execution contract; its only digest is
 `endpoint_fingerprint` over the canonical endpoint URL, which is fingerprinted
@@ -762,7 +760,7 @@ zero — `readiness` explains the same blockers for free.
 
 `--dataset` runs `--mode compile_live` and nothing else
 (`news_program_baseline_dataset_requires_compile_live`), and requires
-`--semantic-judge` on the compiler reflection route
+`--semantic-judge` on the configured reflection route
 (`news_program_baseline_dataset_requires_semantic_judge`,
 `..._requires_compiler_reflection_judge`). `subsets.development_selection` is
 published as the formal *before* value a Candidate is picked against, so it has
@@ -919,7 +917,7 @@ eligibility — for the seed sent ledger too, not only the cases — so a retire
 arm's corpus is measured against the ledger `decide()` would actually have read.
 `--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
 byte equality (#148) through the same `CardEquivalenceJudge` contract that the
-hermetic compiler wires through its separate `metric_judge` role. Judge failure is explicit unavailable, enters the affected
+the optimization wires through its separate `metric_judge` role. Judge failure is explicit unavailable, enters the affected
 free-text dimension as zero, and is counted/costed with no byte-equality fallback,
 hidden retry or cache. Magnitude, direction, assets, novelty and every
 TradeRelevance field stay exact; the strict byte-equality mean is reported

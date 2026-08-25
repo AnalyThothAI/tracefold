@@ -39,7 +39,8 @@ from tracefold.news.learning.optimizer import (
 )
 from tracefold.news.program.artifact import ProgramStrategyArtifactV1, load_stable_program_artifact
 
-from .test_news_program_compiler import _FakeGEPA, _MeteredFakeLM, _NoopJudge, _request
+from .test_news_gepa_core import _episodes as _corpus
+from .test_news_gepa_core import _FakeGEPA, _MeteredFakeLM, _NoopJudge
 
 _DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v7", "cases": []}
 
@@ -95,7 +96,7 @@ def _budget(**overrides: Any) -> OptimizationBudget:
 def _episodes(**review_overrides: Any) -> tuple[DevelopmentEpisode, ...]:
     """The compiler suite's corpus, optionally with the operator's explicit owner removed."""
 
-    episodes = _request().episodes
+    episodes = _corpus()
     if not review_overrides:
         return episodes
     rebuilt = []
@@ -150,20 +151,29 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
     """Characterization: same corpus, same split, same metric, same optimizer construction.
 
     Not "similar": the split receipt, the metric receipt and the scalar constructor arguments are compared
-    byte for byte against a direct `ProgramCompiler.compile` of the same episodes. #202 keeps exactly one
-    GEPA construction in the repository, and this is what makes that claim checkable rather than asserted.
+    byte for byte against a direct `run_gepa` over the same episodes. #202 keeps exactly one GEPA
+    construction in the repository, and this is what makes that claim checkable rather than asserted.
     """
 
-    from tracefold.news.learning.compiler.root import ProgramCompiler
+    from tracefold.news.learning.optimizer import _BudgetedLM, _BudgetMeter, run_gepa
 
     _FakeGEPA.calls.clear()
-    compiled = ProgramCompiler(
-        base_artifact=load_stable_program_artifact(),
-        task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_FakeGEPA,
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+    compiled = run_gepa(
+        base_program=load_stable_program_artifact(),
+        episodes=_corpus(),
+        task_lm=_BudgetedLM(_MeteredFakeLM("task/model", cost=0.000002), role="task", meter=meter),
+        reflection_lm=_BudgetedLM(
+            _MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),
+            role="reflection",
+            meter=meter,
+        ),
         judge=_StampedJudge(),
-    ).compile(_request())
+        max_metric_calls=3,
+        seed=17,
+        review_rubric_version="news_review_v4",
+        optimizer_factory=_FakeGEPA,
+    )
     compiler_constructor = dict(_FakeGEPA.calls[-1])
 
     _FakeGEPA.calls.clear()
@@ -171,20 +181,20 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
     entry_constructor = dict(_FakeGEPA.calls[-1])
 
     assert result.outcome == "ADVANCE"
-    assert result.report.split == compiled.run.split
-    assert result.report.retrieval == compiled.run.retrieval
-    assert result.report.metric == compiled.run.metric
-    assert result.report.trajectory == compiled.run.trajectory
-    assert result.report.optimizer == compiled.run.optimizer_config
-    assert result.report.objective["target_failure_cluster_ids"] == list(compiled.run.failure_cluster_ids)
-    assert result.report.objective["target_dimensions"] == list(compiled.run.target_dimensions)
+    assert result.report.split == compiled.split
+    assert result.report.retrieval == compiled.retrieval
+    assert result.report.metric == compiled.metric
+    assert result.report.trajectory == compiled.trajectory
+    assert result.report.optimizer == compiled.optimizer_config
+    assert result.report.objective["target_failure_cluster_ids"] == list(compiled.failure_cluster_ids)
+    assert result.report.objective["target_dimensions"] == list(compiled.target_dimensions)
     assert entry_constructor["max_metric_calls"] == compiler_constructor["max_metric_calls"]
     assert entry_constructor["reflection_minibatch_size"] == compiler_constructor["reflection_minibatch_size"]
     assert entry_constructor["component_selector"] == compiler_constructor["component_selector"]
     assert entry_constructor["seed"] == compiler_constructor["seed"]
     assert result.candidate is not None
-    assert result.candidate.patch.event_semantics_instruction == compiled.run.patch.event_semantics_instruction
-    assert result.candidate.patch.reader_card_instruction == compiled.run.patch.reader_card_instruction
+    assert result.candidate.patch.event_semantics_instruction == compiled.patch.event_semantics_instruction
+    assert result.candidate.patch.reader_card_instruction == compiled.patch.reader_card_instruction
 
 
 def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promote() -> None:

@@ -24,19 +24,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.runtime",
         "tracefold.news.learning.baseline",
         "tracefold.news.review.drafter",
-        "tracefold.news.learning.compiler.launcher",
-        "tracefold.news.learning.compiler.proxy",
-        "tracefold.news.learning.compiler.sandbox",
-        "tracefold.news.learning.compiler.security",
-        "tracefold.news.learning.compiler.source_identity",
-        "tracefold.news.learning.compiler.trusted",
-        # The only three names here that run an optimizer in this process. `optimizer` is the one offline
-        # entry point (#202), `gepa` is the bounded GEPA core it drives, and `experiment` is the operator's
-        # research run directory. They are reachable from exactly one CLI module —
-        # `tests/architecture/test_news_compiler_boundary.py` asserts which — and none of them can register
-        # a candidate or move a canary.
+        # The two names here that run an optimizer in this process. `optimizer` is the one offline entry
+        # point (#202) and `experiment` is the operator's research run directory. They are reachable from
+        # exactly one CLI module — `tests/architecture/test_news_optimizer_boundary.py` asserts which — and
+        # neither can register a candidate or move a canary.
         "tracefold.news.learning.optimizer",
-        "tracefold.news.learning.compiler.gepa",
         "tracefold.news.learning.experiment",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",

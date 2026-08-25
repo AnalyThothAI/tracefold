@@ -25,7 +25,7 @@ from ..program.dspy_adapter import (
     ExactProviderCallCapture,
     PredictorAdapterError,
 )
-from .compiler.security import METRIC_JUDGE_MAX_TOKENS, ModelExecutionIdentity
+from .contracts import METRIC_JUDGE_MAX_TOKENS, ModelExecutionIdentity
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"
 

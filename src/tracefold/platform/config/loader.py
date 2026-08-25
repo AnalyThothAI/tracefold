@@ -74,17 +74,6 @@ llm:
     api_key:
     base_url:
     model:
-  # Optional, secret-free provider contract used only by `news learning compile`.
-  # Every value is required together; rates are micro-USD per million tokens.
-  news_compiler_tariff:
-    tariff_id:
-    input_token_overhead:
-    task_input_microusd_per_million:
-    task_output_microusd_per_million:
-    reflection_input_microusd_per_million:
-    reflection_output_microusd_per_million:
-    metric_judge_input_microusd_per_million:
-    metric_judge_output_microusd_per_million:
 
 news:
   enabled: true

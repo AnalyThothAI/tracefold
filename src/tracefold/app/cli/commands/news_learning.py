@@ -90,12 +90,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
 
             return handle_research(args, settings, stable)
         if action == "register":
-            from tracefold.news.learning.compiler.trusted import write_program_candidate_artifact
             from tracefold.news.learning.contracts import PromptCandidateV1
             from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
             from tracefold.news.program.artifact import (
                 apply_program_patch,
                 load_stable_program_artifact,
+                write_program_candidate_artifact,
             )
 
             prompt = PromptCandidateV1.model_validate(_read_json_or_yaml(str(args.candidate)))

@@ -19,7 +19,7 @@ from tracefold.app.cli.commands.news_learning_baseline import (
 )
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
-from tracefold.news.learning.compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
+from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.experiment.run import (
     ExperimentRun,
     ExperimentRunManifest,
