@@ -185,12 +185,17 @@ test("a News row is one link and one conclusion, with no competing controls", as
 
   /*
    * #87 removed copy-title, copy-label and open-original from the row: three hover-only targets that led
-   * somewhere better one tap away and meant nothing under a thumb. The row is still exactly one *link* — the
-   * stretched headline — and the one expand control carries its own name without competing with it. Bulk
-   * labelling moved to ReviewDesk, so the old row-selection control is gone.
+   * somewhere better one tap away and meant nothing under a thumb. The row still has exactly one *stretched*
+   * link — the headline, whose `::after` covers the whole row — and one expand control that carries its own
+   * name. Bulk labelling moved to ReviewDesk, so the old row-selection control is gone.
+   *
+   * #207 PR-W1 adds the asset chips as links. They are inline text inside the meta line, not hover-only
+   * targets, and each one is a destination the reader can name. But they sit *under* the stretched overlay
+   * unless lifted, so the check that matters is not how many links exist — it is that clicking a chip
+   * reaches the token page instead of opening the Event.
    */
   const row = page.locator(".news-event-row").first();
-  await expect(row.getByRole("link")).toHaveCount(1);
+  await expect(row.locator(".news-event-headline a")).toHaveCount(1);
   await expect(row.getByRole("button")).toHaveCount(1);
   await expect(row.locator(".news-event-select")).toHaveCount(0);
   await expect(row.locator(".news-event-expand")).toHaveCount(1);
@@ -204,6 +209,15 @@ test("a News row is one link and one conclusion, with no competing controls", as
   await row.locator(".news-event-expand").click();
   await expect(row.locator(".news-event-verdict")).toBeVisible();
   await expect(row.locator(".news-event-why")).not.toBeEmpty();
+
+  /*
+   * The chip has to actually win the click. A link under the headline's stretched `::after` renders, reads
+   * and passes every DOM assertion while doing nothing at all — the overlay takes the click and opens the
+   * Event. This is the only check that can tell the two apart.
+   */
+  await row.locator(".news-asset-symbol").first().click();
+  await expect(page).toHaveURL(/\/news\/symbols\/BTC$/);
+  await expect(page.getByRole("region", { name: "代币 BTC" })).toBeVisible();
 });
 
 async function routeNewsFeed(page: Page, titles: string[]) {

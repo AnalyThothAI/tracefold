@@ -9,6 +9,7 @@ import {
   newsFeedEventFixture,
   newsFeedFixture,
   newsOutcomeFixture,
+  newsReactionFixture,
   newsStatusFixture,
   newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
@@ -132,6 +133,76 @@ describe("NewsPage", () => {
     for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
+  });
+
+  it("puts what the market did in its own column, on held rows too", async () => {
+    /*
+     * #207 PR-W1. The verdict and the move are two different claims, so they get two columns — and the
+     * column is rendered for a held row as well: "the pipeline dropped it and it moved 3%" is precisely
+     * what the conclusion cannot tell you, and it is the input the learning loop is fed on.
+     */
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                delivery: null,
+                outcome: newsOutcomeFixture({
+                  group: "held",
+                  kind: "dropped",
+                  reason_zh: "判为噪声",
+                  text_zh: "未推送",
+                }),
+                reaction: newsReactionFixture({ return_1h_bps: -118, return_4h_bps: 262 }),
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const row = (
+      await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
+    ).closest("article");
+    const move = row!.querySelector(".news-event-move");
+    expect(move).toHaveTextContent("1H-1.18%");
+    expect(move).toHaveTextContent("4H+2.62%");
+  });
+
+  it("says 未到期 for a horizon that has not matured, never 0.00%", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                reaction: newsReactionFixture({
+                  return_1h_bps: 152,
+                  return_4h_bps: null,
+                  state: "partial",
+                  state_zh: "部分完成",
+                }),
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const row = (
+      await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
+    ).closest("article");
+    const move = row!.querySelector(".news-event-move");
+    expect(move).toHaveTextContent("+1.52%");
+    expect(move).toHaveTextContent("未到期");
+    expect(move).not.toHaveTextContent("0.00%");
   });
 
   it("drops the badge on a held Event and leaves its Chinese reason alone", async () => {

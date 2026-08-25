@@ -167,6 +167,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/symbols/{base}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Symbol
+         * @description What one `base_symbol` is: the names it answers to, and the contracts it names (#207 PR-W1).
+         *
+         *     A base no venue we poll has ever listed is `known: false` with empty lists, not a 404. The provider tags
+         *     symbols the universe has never seen — that is exactly what the struck-through chip means — and every one
+         *     of those chips is now a link, so 404 would be the ordinary outcome of a reader following one.
+         */
+        get: operations["get_news_symbol_api_news_symbols__base__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -312,6 +336,16 @@ export interface components {
         /** ApiEnvelope[NewsStatusData] */
         ApiEnvelope_NewsStatusData_: {
             data?: components["schemas"]["NewsStatusData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsSymbolData] */
+        ApiEnvelope_NewsSymbolData_: {
+            data?: components["schemas"]["NewsSymbolData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2307,6 +2341,47 @@ export interface components {
             workers_state?: string | null;
         };
         /**
+         * NewsSymbolContractData
+         * @description One contract the base names on one venue.
+         *
+         *     `reference_only` is the #91 distinction kept visible rather than filtered away: `us.listed` proves a
+         *     ticker exists, not that anyone can trade it, and the page is where an operator asks the first question.
+         */
+        NewsSymbolContractData: {
+            /** Instrument Class */
+            instrument_class: string;
+            /** Quote Asset */
+            quote_asset?: string | null;
+            /**
+             * Reference Only
+             * @default false
+             */
+            reference_only: boolean;
+            /** Venue */
+            venue: string;
+            /** Venue Symbol */
+            venue_symbol: string;
+        };
+        /**
+         * NewsSymbolData
+         * @description The identity card. `known` is false for a base no venue we poll has ever listed — a real answer, and
+         *     not the same as an error: the provider tags symbols the universe has never seen, and the page says so
+         *     rather than 404-ing on a name the reader just clicked.
+         */
+        NewsSymbolData: {
+            /** Base Symbol */
+            base_symbol: string;
+            /** Contracts */
+            contracts?: components["schemas"]["NewsSymbolContractData"][];
+            /** Known */
+            known: boolean;
+            normalization?: components["schemas"]["NewsSymbolNormalizationData"] | null;
+            /** Tradeable */
+            tradeable: boolean;
+            /** Venues */
+            venues?: string[];
+        };
+        /**
          * NewsSymbolNormalizationData
          * @description #87: the several names one issuer trades under, collapsed to one stable storyline identity.
          */
@@ -2872,6 +2947,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsStatusData_"];
+                };
+            };
+        };
+    };
+    get_news_symbol_api_news_symbols__base__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                base: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsSymbolData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

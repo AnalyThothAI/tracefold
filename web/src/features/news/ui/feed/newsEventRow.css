@@ -1,8 +1,12 @@
 @layer app.features {
   /*
-   * `54 / 1fr / 150` with a 3px rail. Two grounds and nothing else: white at rest, `#f8f9fb` under the
-   * pointer. Selection tints with the accent wash, which is the only place the pipeline's own colour lands
-   * on a whole row.
+   * `54 / 1fr / 150 / 140` with a 3px rail. Two grounds and nothing else: white at rest, `#f8f9fb` under
+   * the pointer. Selection tints with the accent wash, which is the only place the pipeline's own colour
+   * lands on a whole row.
+   *
+   * The last column is the Event Reaction (#207 PR-W1). It sits outside the conclusion column on purpose:
+   * the pipeline's verdict and what the market did are two different claims, and stacking them in one
+   * column would read as one.
    */
   .news-event-row {
     --rail: var(--border-strong);
@@ -10,9 +14,9 @@
     position: relative;
     display: grid;
     grid-template-areas:
-      "time main badge"
-      "time main reason";
-    grid-template-columns: 54px minmax(0, 1fr) 150px;
+      "time main badge move"
+      "time main reason move";
+    grid-template-columns: 54px minmax(0, 1fr) 150px 140px;
     grid-template-rows: auto 1fr;
     gap: 3px 14px;
     align-items: start;
@@ -24,9 +28,9 @@
 
   .news-event-row[data-selectable] {
     grid-template-areas:
-      "select time main badge"
-      "select time main reason";
-    grid-template-columns: 18px 54px minmax(0, 1fr) 150px;
+      "select time main badge move"
+      "select time main reason move";
+    grid-template-columns: 18px 54px minmax(0, 1fr) 150px 140px;
   }
 
   .news-event-row:last-child {
@@ -152,6 +156,17 @@
     font-weight: 600;
   }
 
+  /*
+   * The asset chips became links in #207 PR-W1, which puts them under the headline's stretched `::after`
+   * unless they are lifted the same way the row controls are. Without this the chip renders as a link,
+   * passes every DOM test, and does nothing when clicked — the row's overlay swallows it and opens the
+   * Event instead.
+   */
+  .news-event-meta .news-asset-chips {
+    position: relative;
+    z-index: 1;
+  }
+
   /* ------------------------------------------------------------------ row controls (pointer widths only) */
   .news-event-select,
   .news-event-expand {
@@ -252,6 +267,21 @@
     padding-top: 1px;
   }
 
+  /*
+   * The fixed post-Event measurement, anchored at publication (#88). Never a current price: a figure that
+   * ticks beside a decision invites reading the decision as a trade call, and a horizon that has not
+   * matured says 未到期 rather than 0.00%.
+   */
+  .news-event-move {
+    display: flex;
+    grid-area: move;
+    gap: 10px;
+    justify-content: flex-end;
+    align-items: baseline;
+    align-self: center;
+    min-width: 0;
+  }
+
   .news-event-reason {
     grid-area: reason;
     align-self: start;
@@ -272,7 +302,8 @@
       grid-template-areas:
         "time badge"
         "main main"
-        "reason reason";
+        "reason reason"
+        "move move";
       grid-template-columns: auto minmax(0, 1fr);
       grid-template-rows: none;
       gap: 6px 8px;
@@ -315,6 +346,10 @@
 
     .news-event-reason {
       text-align: left;
+    }
+
+    .news-event-move {
+      justify-content: flex-start;
     }
 
     /* Three quarters of a day's Events are held; a grey capsule on each of those cards is noise. */

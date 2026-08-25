@@ -33,6 +33,9 @@ export const queryKeys = {
   newsOiFeedHistory: (outcome: string, firstCursor: string) =>
     ["news-oi-feed-history", outcome, firstCursor] as const,
   newsStatus: () => ["news-status"] as const,
+  // #207 PR-W1: identity only, and identity does not change on a poll — the token page's Events, price and
+  // rank window each keep their own key and their own rhythm.
+  newsSymbol: (base: string) => ["news-symbol", base] as const,
   // #88: the quote key is the sorted symbol batch, so the feed and an open Event share one poll.
   newsQuotes: (symbols: readonly string[]) => ["news-quotes", symbols.join(",")] as const,
   newsReview: (identity: string) => ["news-review", identity] as const,

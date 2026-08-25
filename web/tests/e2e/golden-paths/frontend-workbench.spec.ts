@@ -28,6 +28,14 @@ const archetypes = [
     ready: (page: Page) => page.locator(".news-oi-row").first(),
     settled: (page: Page) => page.locator(".news-oi-window-row").first(),
   },
+  {
+    // #207 PR-W1: the token page composes four endpoints into one column. The baseline is what keeps the
+    // identity card, the rank window and the mixed events table from drifting apart at a viewport.
+    name: "symbol",
+    path: "/news/symbols/WIF",
+    ready: (page: Page) => page.locator(".news-symbol-row").first(),
+    settled: (page: Page) => page.locator(".news-symbol-contract").first(),
+  },
 ] as const;
 
 test.beforeEach(async ({ page }) => {

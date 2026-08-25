@@ -259,7 +259,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review`, `/api/news/review/tasks/{task_id}/evidence`, `/api/news/review/tasks/{task_id}/responses`, `/api/news/review/external-misses` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and ReviewDesk reads/writes |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/review`, `/api/news/review/tasks/{task_id}/evidence`, `/api/news/review/tasks/{task_id}/responses`, `/api/news/review/external-misses` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, one symbol's identity, and ReviewDesk reads/writes |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -313,7 +313,11 @@ projections; there is no public alias.
   on the judged rule: `pushed` is the one qualifying rule, `withheld` the three
   threshold rules, `parse_failed` the unparseable frame. `decision` cannot
   express that split — a threshold withhold and a parse failure are both
-  `drop` and both carry `override_rule = telemetry_deterministic`.
+  `drop` and both carry `override_rule = telemetry_deterministic`. The filter
+  also constrains `admission = telemetry_deterministic`, which is the only lane
+  that can write the key it reads: without it the predicate has to detoast
+  `news_verdicts.trace` for every candidate row, and a rare rule with no early
+  exit walked the whole retention into the serve role's 1 s statement timeout.
 
   Unknown query parameters, invalid admission,
   decision or `oi` values, malformed cursors, and the retired `priority`/`sort`
@@ -681,6 +685,23 @@ reader/writer.
   between day reads). Current quotes are deliberately **not** feed
   fields — a price that changed must not invalidate the Feed ETag or re-run its
   count query every three seconds.
+- `GET /api/news/symbols/{base}` returns what one `base_symbol` *is* (#207
+  PR-W1): `known`, `tradeable`, `venues`, the `contracts` it names, and the
+  operator-alias `normalization` group when one collapses more than the base
+  itself. Identity only — the token page's Events, price and rank window each
+  keep their own endpoint, so nothing here is a second answer to a question one
+  of them already answers. `base` is normalized (uppercased, `XYZ-` stripped)
+  and must match `[A-Z0-9._-]{1,24}` or the request is
+  `news_symbol_invalid`. `known` and `tradeable` are different answers: `known`
+  says some venue we poll lists the name, `tradeable` excludes the reference
+  tier, because a `us.listed` contract proves a ticker exists and not that
+  anyone can trade it (#91). A reference-only contract is returned with
+  `reference_only: true` rather than filtered out. A base no venue lists is
+  `known: false` with empty lists and **200**, not 404: every asset chip on the
+  console links here, including tags that resolved to nothing, and that answer
+  is what a reader following one came for. `underlying_key` is deliberately
+  absent — `crypto:{BASE}` is a Trading identity owned by
+  `tracefold.trading.contracts`, and a News route must not assert it.
 - `GET /api/news/review` is the ReviewDesk read surface. Query fields are
   `view=queue|coverage|proposals|market`, `mode=event|pairwise`, exact
   `cohort`, `stratum`, `event`, `status`, `hours`, `limit`, and opaque

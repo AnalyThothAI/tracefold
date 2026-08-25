@@ -146,6 +146,13 @@ function healthLamp(status: NewsStatus | undefined, failed: boolean): CockpitHea
 }
 
 function pageTitle(pathname: string): string {
+  /*
+   * The token page names the token (#207 PR-W1). It is the one route whose title is data rather than a
+   * label, and a static entry would have left every symbol's topbar reading 新闻事件流 — which is what the
+   * regenerated baseline caught.
+   */
+  const symbol = /^\/news\/symbols\/([^/]+)$/.exec(pathname);
+  if (symbol) return `代币 · ${decodeURIComponent(symbol[1]).toUpperCase().replace(/^XYZ-/, "")}`;
   return PAGE_TITLES.find(([pattern]) => pattern.test(pathname))?.[1] ?? "新闻事件流";
 }
 

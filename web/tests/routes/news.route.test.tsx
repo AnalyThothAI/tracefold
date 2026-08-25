@@ -137,4 +137,22 @@ describe("news route", () => {
     fireEvent.click(within(drawer).getByRole("link", { name: "打开整页" }));
     expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
   });
+
+  it("reaches the token page from an asset chip on a hard-refreshable URL", async () => {
+    /*
+     * #207 principle 9. The chip is the entry point every surface shares, and `/news/symbols/:base` is a
+     * real route rather than in-page state — a reader who lands on it by refresh or by a shared link gets
+     * the page, not the SPA's 404.
+     */
+    renderAppRoute("/news");
+    await screen.findByRole("heading", { name: "新闻事件流" });
+
+    fireEvent.click((await screen.findAllByRole("link", { name: "BTC" }))[0]);
+
+    expect(await screen.findByRole("region", { name: "代币 BTC" })).toBeInTheDocument();
+
+    cleanup();
+    renderAppRoute("/news/symbols/BTC");
+    expect(await screen.findByRole("region", { name: "代币 BTC" })).toBeInTheDocument();
+  });
 });

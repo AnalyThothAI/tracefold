@@ -14,10 +14,10 @@ import {
 import { absoluteTime, formatCount, percent } from "../../model/newsLabels";
 import { oiTabCount, oiWindowLabel, parseOiTab } from "../../model/oiSignals";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
+import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 import { NewsOiFrameTable } from "./NewsOiFrameTable";
 import { NewsOiGates } from "./NewsOiGates";
-import { NewsOiSource } from "./NewsOiSource";
 import { NewsOiWindow } from "./NewsOiWindow";
 
 import "./newsOi.css";
@@ -140,7 +140,7 @@ export function NewsOiPage({ token }: { token: string }) {
                   value={count(failed)}
                 />
               </MetricRow>
-              <NewsOiSource path="GET /api/news/status → pipeline.telemetry_*_24h · oi.by_rule_24h" />
+              <NewsSourceLine path="GET /api/news/status → pipeline.telemetry_*_24h · oi.by_rule_24h" />
             </Card>
 
             <div className="news-oi-columns">

@@ -1,4 +1,4 @@
-import { newsPath, newsReviewPath } from "@shared/routing/paths";
+import { newsPath, newsReviewPath, newsSymbolPath } from "@shared/routing/paths";
 import { Card } from "@shared/ui/Card";
 import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
@@ -381,7 +381,10 @@ function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) 
               ))}
             </span>
             <ArrowRight aria-hidden />
-            <code className="news-normalization-base">{group.base_symbol}</code>
+            {/* The collapsed identity is the one the token page is keyed on (#207 principle 9). */}
+            <Link className="news-normalization-base" to={newsSymbolPath(group.base_symbol)}>
+              <code>{group.base_symbol}</code>
+            </Link>
           </li>
         ))}
       </ul>

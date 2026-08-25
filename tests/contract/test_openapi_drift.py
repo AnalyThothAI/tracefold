@@ -94,6 +94,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         # #88: current quotes and 命中复盘 are separate response types on purpose — a current rolling change
         # and a fixed post-Event return must never arrive in a field the browser could mistake for the other.
         "/api/news/quotes": ("get", "ApiEnvelope_NewsQuotesData_"),
+        # #207 PR-W1: identity only. The token page's Events, price and rank window each keep their own
+        # endpoint, so nothing here is a second answer to a question one of them already answers.
+        "/api/news/symbols/{base}": ("get", "ApiEnvelope_NewsSymbolData_"),
         "/api/news/review": ("get", "ApiEnvelope_NewsReviewData_"),
         "/api/news/review/tasks/{task_id}/evidence": ("get", "ApiEnvelope_NewsReviewEvidenceData_"),
         "/api/news/review/tasks/{task_id}/responses": ("post", "ApiEnvelope_NewsReviewSubmitData_"),

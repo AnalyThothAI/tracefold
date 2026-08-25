@@ -108,6 +108,46 @@ class InstrumentsRepository:
         ).fetchall()
         return tuple(str(row["venue"]) for row in rows)
 
+    def contracts_for(self, base_symbol: str, *, limit: int = 24) -> list[dict[str, Any]]:
+        """Every contract one base names, in the preferred order the chips already use (#87).
+
+        `venues_for` answers "which venues" and drops everything else; the symbol page shows a contract row,
+        so it needs the ticker the venue calls it, what kind of instrument it is, and what it is quoted in.
+        Reference venues stay in — this page is where an operator goes to ask what a symbol *is*, which is the
+        question `is_tradeable` deliberately separates from "can anyone trade it" (#91) — and both answers are
+        rendered, so the page can say `us.listed` under a heading that does not claim a market.
+
+        Bounded: a base names a handful of contracts, but a bad alias could point thousands of rows at one
+        heading, and a page is not the place to discover that.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT venue, venue_symbol, instrument_class, quote_asset
+              FROM news_market_instruments
+             WHERE base_symbol = %s AND status = 'trading'
+             ORDER BY CASE venue
+                        WHEN 'binance.perp' THEN 0
+                        WHEN 'binance.spot' THEN 1
+                        WHEN 'hl.perp' THEN 2
+                        WHEN 'hl.spot' THEN 3
+                        ELSE 4
+                      END, venue, venue_symbol
+             LIMIT %s
+            """,
+            (str(base_symbol).upper(), int(limit)),
+        ).fetchall()
+        return [
+            {
+                "venue": str(row["venue"]),
+                "venue_symbol": str(row["venue_symbol"]),
+                "instrument_class": str(row["instrument_class"]),
+                "quote_asset": str(row["quote_asset"]) if row["quote_asset"] else None,
+                "reference_only": str(row["venue"]) in REFERENCE_VENUES,
+            }
+            for row in rows
+        ]
+
     def asset_refs(self, symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Provider coin tags -> what each one actually names on a venue, for one bounded batch (#87).
 

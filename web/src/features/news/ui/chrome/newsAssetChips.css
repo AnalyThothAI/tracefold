@@ -21,8 +21,19 @@
     font-weight: 400;
   }
 
+  /*
+   * The chip's symbol is a link to the token page (#207 principle 9), but it keeps the meta line's ink: an
+   * accent-coloured word on every asset chip would turn each feed row into a row of links competing with the
+   * headline. The affordance is the underline on hover, not a permanent colour.
+   */
   .news-asset-symbol {
     color: var(--text-secondary);
+  }
+
+  a.news-asset-symbol:hover,
+  a.news-asset-symbol:focus-visible {
+    color: var(--accent-primary);
+    text-decoration: underline;
   }
 
   /*

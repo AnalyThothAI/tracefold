@@ -191,6 +191,30 @@ class _FakeInstrumentsRepository:
             for base in base_symbols
         }
 
+    def contracts_for(self, base_symbol: str, *, limit: int = 24) -> list[dict[str, Any]]:
+        del limit
+        if str(base_symbol).upper() != "COPPER":
+            return []
+        return [
+            {
+                "venue": "hl.xyz",
+                "venue_symbol": "XYZ-COPPER",
+                "instrument_class": "commodity",
+                "quote_asset": "USDC",
+                "reference_only": False,
+            },
+            {
+                "venue": "us.listed",
+                "venue_symbol": "HG",
+                "instrument_class": "commodity",
+                "quote_asset": None,
+                "reference_only": True,
+            },
+        ]
+
+    def is_tradeable(self, base_symbol: str) -> bool:
+        return str(base_symbol).upper() == "COPPER"
+
     def universe_summary(self) -> dict[str, object]:
         return {
             "trading": 0,
@@ -351,6 +375,8 @@ def test_news_exposes_read_routes_and_only_the_two_review_mutations() -> None:
         # #88: current quotes and 命中复盘. Both are read-only and bounded; quotes stay off the feed so a
         # price tick cannot invalidate the feed's ETag every three seconds.
         ("GET", "/api/news/quotes"),
+        # #207 PR-W1: what one base_symbol *is*, for the token page every asset chip now links to.
+        ("GET", "/api/news/symbols/{base}"),
         ("GET", "/api/news/review"),
         ("GET", "/api/news/review/tasks/{task_id}/evidence"),
         ("POST", "/api/news/review/tasks/{task_id}/responses"),
@@ -685,6 +711,49 @@ def test_quotes_returns_one_result_per_requested_symbol(client) -> None:
     assert [quote["requested_symbol"] for quote in payload["data"]["quotes"]] == ["BTC", "ETH"]
     assert {quote["state"] for quote in payload["data"]["quotes"]} == {"unlisted"}
     assert payload["data"]["quotes"][0]["price"] is None  # never a fabricated zero
+
+
+def test_the_symbol_card_names_every_contract_and_keeps_the_reference_tier_visible(client) -> None:
+    api, _ = client
+    response = api.get("/api/news/symbols/xyz-copper", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    # The provider's `XYZ-` spelling and the reader's lowercase URL both resolve to the one base.
+    assert data["base_symbol"] == "COPPER"
+    assert data["known"] is True and data["tradeable"] is True
+    assert data["venues"] == ["hl.xyz", "us.listed"]
+    # #91: `us.listed` proves the ticker exists, not that anyone can trade it — the page renders both, so
+    # the flag has to survive rather than being filtered out of the list.
+    assert [contract["reference_only"] for contract in data["contracts"]] == [False, True]
+    assert data["normalization"] == {"base_symbol": "COPPER", "aliases": ["COPPER", "HG"], "sources": ["seed"]}
+
+
+def test_a_symbol_no_venue_lists_is_an_answer_not_a_404(client) -> None:
+    """Every asset chip is a link now, including the struck-through ones that resolved to nothing."""
+
+    api, _ = client
+    response = api.get("/api/news/symbols/NEAR", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data == {
+        "base_symbol": "NEAR",
+        "known": False,
+        "tradeable": False,
+        "venues": [],
+        "contracts": [],
+        "normalization": None,
+    }
+
+
+def test_the_symbol_route_rejects_a_path_segment_that_is_not_a_base_symbol(client) -> None:
+    api, _ = client
+    for bad in ("../../etc", "A" * 25, "BTC USD"):
+        response = api.get(f"/api/news/symbols/{bad}", params={"token": TOKEN})
+        assert response.status_code in {400, 404}, bad
+        if response.status_code == 400:
+            assert response.json()["error"] == "news_symbol_invalid"
 
 
 def test_quotes_rejects_an_oversized_or_malformed_symbol_batch(client) -> None:

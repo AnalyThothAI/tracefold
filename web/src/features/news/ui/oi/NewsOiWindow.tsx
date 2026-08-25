@@ -2,8 +2,8 @@ import { Card, CardNote } from "@shared/ui/Card";
 
 import type { NewsOiWindowSymbol } from "../../api/newsQueries";
 import { NewsEmptyNote } from "../chrome/NewsChrome";
+import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
-import { NewsOiSource } from "./NewsOiSource";
 
 /**
  * Which symbols have already spent their rank slots inside the live window.
@@ -54,7 +54,7 @@ export function NewsOiWindow({
       <CardNote>
         满格的标的，接下来窗口内再来的合格帧会被 <code>beyond_window_rank</code> 拦下。
       </CardNote>
-      <NewsOiSource path="GET /api/news/status → oi.window_occupancy" />
+      <NewsSourceLine path="GET /api/news/status → oi.window_occupancy" />
     </Card>
   );
 }

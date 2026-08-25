@@ -27,6 +27,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_reaction_attach",
     ),
     "/api/news/quotes": ("news_quote_snapshot_read",),
+    "/api/news/symbols/{base}": ("news_symbol_contracts", "news_symbol_aliases"),
     "/api/news/review": (
         "news_review_task_queue",
         "news_review_task_evidence",

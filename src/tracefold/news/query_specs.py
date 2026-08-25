@@ -125,6 +125,20 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_quote_snapshot_read",
             sql="SELECT source_key, quotes, received_at_ms FROM news_quote_snapshots",
         ),
+        # #207 PR-W1 token page identity. Both are one indexed base lookup, but every asset chip on the
+        # console is now a link into them, so they are in the registry with their real predicates.
+        ReadQuerySpec(
+            name="news_symbol_contracts",
+            sql="SELECT venue, venue_symbol, instrument_class, quote_asset FROM news_market_instruments"
+            " WHERE base_symbol = %s AND status = 'trading' ORDER BY venue, venue_symbol LIMIT 24",
+            params=("BTC",),
+        ),
+        ReadQuerySpec(
+            name="news_symbol_aliases",
+            sql="SELECT alias, base_symbol, source FROM news_symbol_aliases"
+            " WHERE base_symbol = ANY(%s) AND source = ANY(%s) ORDER BY base_symbol, alias",
+            params=(["BTC"], ["seed"]),
+        ),
         ReadQuerySpec(
             name="news_reaction_due_scan",
             sql="""

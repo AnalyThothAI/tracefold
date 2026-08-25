@@ -15,6 +15,7 @@ import {
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
+import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import "./newsEventRow.css";
 
@@ -173,6 +174,15 @@ export function NewsEventRow({
       ) : event.outcome.reason_zh ? (
         <span className="news-event-reason">{event.outcome.reason_zh}</span>
       ) : null}
+      {/*
+       * What the market did after this Event, in its own column (#207 PR-W1). Rendered for every row, held
+       * ones included: "the pipeline dropped it and it moved 3%" is the one thing a reader cannot learn from
+       * the conclusion, and hiding it on held rows would make the column a second delivery badge.
+       */}
+      <span className="news-event-move">
+        <NewsReactionValue horizon="1h" reaction={event.reaction} />
+        <NewsReactionValue horizon="4h" reaction={event.reaction} />
+      </span>
     </article>
   );
 }
