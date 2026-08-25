@@ -801,8 +801,17 @@ def _oi_summary(value: Any) -> dict[str, Any] | None:
     parser to keep in step with the judge. The two thresholds come from the trace's own `policy`, so a stored
     frame keeps saying what it ran under after an operator retunes `news.oi`.
 
+    `symbol` is here because this lane is the one place nothing else carries it. The Gate grounds
+    `news_event_assets` from the provider's coin tags at admission, and a strategy-1019 frame ships none —
+    the symbol exists only in the title, and `evaluate_oi` parses it into the verdict's `TriageAsset` at
+    Triage time, after the Gate has already written its rows. So on a live telemetry Event both
+    `grounded_assets` and `assets` are empty and `triage.assets` is absent from the feed's slim summary:
+    verified against production on 2026-08-25, where every row's symbol column read `—`. The judge's own
+    trace is the only place the feed can reach it. `direction` is not folded here — the slim triage summary
+    does carry that one.
+
     `strategy_id`, `provider` and `provider_source` stay behind: the console does not display provider
-    Strategy IDs. The symbol and the direction are already on `triage.assets[]` / `triage.direction`.
+    Strategy IDs.
     """
 
     if not isinstance(value, Mapping):
@@ -812,6 +821,7 @@ def _oi_summary(value: Any) -> dict[str, Any] | None:
     return {
         "parsed": bool(value.get("parsed")),
         "rule": str(value.get("rule") or ""),
+        "symbol": str(value.get("symbol") or "") or None,
         "oi_change_bps": _optional_int(value.get("oi_change_bps")),
         "oi_value_usd": _optional_int(value.get("oi_value_usd")),
         "whale_long_profit_bps": _optional_int(value.get("whale_long_profit_bps")),

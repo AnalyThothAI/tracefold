@@ -2410,6 +2410,17 @@
             "title": "Rule",
             "type": "string"
           },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          },
           "title_sha256": {
             "anyOf": [
               {

@@ -200,37 +200,15 @@ describe("NewsOiPage", () => {
     expect(screen.getByTestId("location").textContent).toBe("/news/oi?oi=parse_failed");
   });
 
-  it("reads the symbol from the Event, which is the only place the feed puts it", async () => {
+  it("reads the symbol from the judge's trace, the only place this lane carries it", async () => {
     /*
-     * `_triage_summary` builds the slim shape for feed rows; only the Event detail's `full=True` shape
-     * carries `assets`. Reading the symbol from `triage.assets` left every production row showing `—`
-     * while the fixture — which carried the detail shape — looked right, so this asserts against a row
-     * whose `triage.assets` is empty, exactly as the server sends it.
+     * The row's subject is on none of the three fields a reader would reach for first. `triage.assets` is
+     * the Event detail's `full=True` shape and the feed sends the slim one; `assets` and `grounded_assets`
+     * come from the Gate, which grounds provider coin tags at admission — and a strategy-1019 frame ships
+     * none, so on a live telemetry Event both are `[]`. Two successive fixes read those instead and the
+     * column stayed `—` on the deployed console both times, because the fixture filled what production
+     * leaves empty. This asserts the production shape: nothing but `oi.symbol`.
      */
-    server.use(
-      http.get(/.*\/api\/news\/feed$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsFeedFixture({
-            events: [
-              newsOiFrameFixture({
-                assets: [{ base_symbol: "S", listed: true, symbol: "S", venue: "binance.perp" }],
-                grounded_assets: ["S"],
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
-
-    renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
-    await waitFor(() => expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("S"));
-  });
-
-  it("says nothing for the symbol of a frame that grounded on nothing", async () => {
-    // An unparseable frame produced no symbol, so the Gate grounded no tag. `—` is the honest cell; the
-    // provider's own line is in the expansion.
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
@@ -240,7 +218,39 @@ describe("NewsOiPage", () => {
               newsOiFrameFixture({
                 assets: [],
                 grounded_assets: [],
-                oi: { ...newsOiFrameFixture().oi!, parsed: false, rule: "oi_parse_failed" },
+                oi: { ...newsOiFrameFixture().oi!, symbol: "HOLO" },
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderOi();
+    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await waitFor(() =>
+      expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("HOLO"),
+    );
+  });
+
+  it("says nothing for the symbol of a frame that never parsed", async () => {
+    // `oi_parse_failure` records no symbol, because the template never matched and nothing was read out of
+    // the title. `—` is the honest cell; the provider's own line is in the expansion.
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                assets: [],
+                grounded_assets: [],
+                oi: {
+                  ...newsOiFrameFixture().oi!,
+                  parsed: false,
+                  rule: "oi_parse_failed",
+                  symbol: null,
+                },
               }),
             ],
           }),
@@ -341,9 +351,13 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    const row = await screen.findByRole("button", { name: /WIF/ });
+    await screen.findByRole("heading", { name: "持仓异动监控" });
+    const row = await screen.findByRole("button", { name: /14:/ });
+    // Every column the block would have answered says nothing — including the symbol, which for this lane
+    // lives only in the block. The wire line is right there in the expansion; the page does not read it.
     expect(row).not.toHaveTextContent("6.71%");
-    expect(row).toHaveTextContent("—");
+    expect(row).not.toHaveTextContent("WIF");
+    expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("—");
 
     fireEvent.click(row);
     expect(await screen.findByText(/这条事件没有/)).toBeInTheDocument();

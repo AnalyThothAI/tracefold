@@ -1034,6 +1034,8 @@ export interface components {
             rank_semantics?: string | null;
             /** Rule */
             rule: string;
+            /** Symbol */
+            symbol?: string | null;
             /** Title Sha256 */
             title_sha256?: string | null;
             /** Whale Long Profit Bps */
