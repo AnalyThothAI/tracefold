@@ -121,11 +121,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # factory source closure is addressed by logical file name, so the move re-issues the Program root
     # with no prompt, RulePack, policy, model route or call budget changed — and the epoch, program and
     # factory identities are bumped explicitly to say so. Every leaf below is that one migration.
-    # Two migrations moved the head: #175's reader-history index (0302) and PR8-B's epoch (0303). A dict
-    # has one key, so the reason names both rather than letting the later declaration silently win.
+    # Several migrations have moved the head: #175's reader-history index (0302), PR8-B's epoch (0303),
+    # #193's compile-record convergence (0305/0306) and now #202's single Prompt candidate (0307). A dict
+    # has one key, so the reason names them rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_175_reader_history_index_then_issue_193_compile_record_convergence",
-        "20260825_0306",
+        "issue_175_index_then_issue_193_compile_record_then_issue_202_prompt_candidate",
+        "20260825_0307",
     ),
     # #190 adds the dedicated real-package compiler target and moves the web-dist copy to the final
     # runtime stage. Program source, dependency lock, prompts, routes and call budgets stay unchanged;

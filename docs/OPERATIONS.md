@@ -591,25 +591,20 @@ Diagnose News in this order:
    Before starting an evidence run, confirm Workers `/readyz` reports a real
    `image_digest` and `runtime_revision` — an `unversioned` deployment still
    serves News correctly but cannot close a promotion.
-7. A change is a sealed candidate, not an edited production artifact. Freeze a
-   post-epoch development dataset; for a Program candidate optionally run the
-   manual `learning compile` with explicit metric, task, reflection and
-   metric-judge call limits,
-   provider-cost limits, an exact local `--compiler-image sha256:<64 hex>`, and
-   a seed. The operator YAML must also carry one complete positive
-   `llm.news_compiler_tariff`; then `learning propose` exactly one
-   `program` or `policy` variable and run `learning evaluate`. Each of the three
+7. A change is a registered candidate, not an edited production artifact.
+   Freeze a post-epoch development dataset, check it with `learning readiness`
+   (zero model calls), then run `learning optimize --development SHA --out DIR`
+   with explicit metric, task, reflection and metric-judge call limits, a total
+   and a per-call provider-cost limit, and a seed. It ends in `NO_OP`,
+   `REJECTED` or `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and
+   all three write a complete `optimization_report.json`. Each of the three
    roles is one `ModelExecutionIdentity`, and calls/cost/failures are accounted
-   separately before they are summed. The trusted
-   exporter seals accepted development only; the isolated compiler runner has
-   no DB/holdout/application credentials and can emit only a bounded
-   `ProgramStrategyPatchV1` of the two advisory instructions; the trusted
-   applier cross-checks the runner's counters against the sidecar ledger and
-   issues one `CompileRecordV1` before creating an unaccepted candidate.
-   `learning compile` writes that record under `compile_record` /
-   `compile_record_sha256` alongside the operator-facing `changed_predictors`,
-   and `learning propose` persists it as a `compile_record` learning artifact
-   keyed by its own root — that root is what the evaluator later loads.
+   separately before they are summed. Then `learning register --candidate
+   prompt_candidate.json` binds it to the active stable and that frozen dataset
+   — re-applying the patch to derive the Program identity and re-deriving the
+   #199 Objective Plan rather than trusting the candidate — and `learning
+   evaluate` runs the gate. A patch a person wrote registers on identical terms:
+   the generator is audit, never permission.
    Production promotion additionally requires a
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
    observation, and then `learning canary arm`; inspect with `canary status`

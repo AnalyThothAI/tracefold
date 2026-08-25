@@ -114,29 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
         "learning", help="freeze reviewed datasets and evaluate one-variable Agent candidates"
     )
     learning_subcommands = news_learning.add_subparsers(dest="learning_command", required=True)
-    learning_compile = learning_subcommands.add_parser(
-        "compile", help="compile a bounded DSPy Program candidate from accepted development evidence"
-    )
-    learning_compile.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_compile.add_argument(
-        "--artifact-root", required=True, help="write the candidate <program-sha>.json artifact document"
-    )
-    learning_compile.add_argument("--out", required=True, help="write compile receipt and proposal input JSON")
-    learning_compile.add_argument(
-        "--compiler-image",
-        required=True,
-        help="exact local compiler image ID (sha256:<64 hex>)",
-    )
-    learning_compile.add_argument("--max-metric-calls", type=_positive_int, required=True)
-    learning_compile.add_argument("--max-task-model-calls", type=_positive_int, required=True)
-    learning_compile.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
-    learning_compile.add_argument("--max-metric-judge-model-calls", type=_positive_int, required=True)
-    learning_compile.add_argument("--max-cost-microusd", type=_positive_int, required=True)
-    learning_compile.add_argument("--seed", type=_nonnegative_int, default=129)
     # #199 P0. The one formal answer to "what would GEPA actually optimize on this corpus, and why is
     # everything else out" — read-only, and it makes no task, reflection or judge call at all. It is an
-    # explanation in advance, not a bypass: the trusted compiler rebuilds the same Objective Plan and
-    # refuses on the same conditions, so a blocked corpus costs nothing instead of costing a container.
+    # explanation in advance, not a bypass: `optimize` rebuilds the same Objective Plan and refuses on
+    # the same conditions, so a blocked corpus is answered for free instead of for a model budget.
     learning_readiness = learning_subcommands.add_parser(
         "readiness",
         help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
@@ -150,9 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # Two corpora, one command, and the receipt says which. `--from-ms/--to-ms` is a moving window and is
     # discovery: the population changes with the clock, so a before/after taken across two of them compares
-    # two different corpora. `--dataset` is the exact frozen development dataset a trusted compile would
-    # seal, scored under the same Objective Plan and publishing the same split roots — that one is release
-    # evidence. They are mutually exclusive because a run can only be one of the two (#199 §5).
+    # two different corpora. `--dataset` is the exact frozen development dataset `optimize` reads, scored
+    # under the same Objective Plan and publishing the same split roots — that one is release evidence.
+    # They are mutually exclusive because a run can only be one of the two (#199 §5).
     learning_baseline.add_argument("--from-ms", type=_nonnegative_int, default=None)
     learning_baseline.add_argument("--to-ms", type=_positive_int, default=None)
     learning_baseline.add_argument(
@@ -239,16 +220,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="draft the unjudged Events in this experiment run's window (replaces --hours)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
-    # The operator's fast research loop. Deliberately its own command group: it reads the database once,
-    # writes only into a run directory, and cannot propose, evaluate, arm or promote anything. That is also
-    # why it is the one News CLI module allowed to load the optimizer in process.
-    learning_experiment = learning_subcommands.add_parser(
-        "experiment",
-        help="closed-window snapshot / paired comparison / in-process GEPA; never writes to the database",
-    )
-    experiment_subcommands = learning_experiment.add_subparsers(dest="experiment_action", required=True)
-    experiment_snapshot = experiment_subcommands.add_parser(
-        "snapshot", help="freeze one closed window into a run directory"
+    # The operator's research loop, flattened out of its own `experiment` group (#202 §7). It kept a
+    # second command namespace because it used to produce a second kind of candidate; it does not any more,
+    # so a snapshot is simply a closed window an operator can score, and nothing here can propose anything.
+    experiment_snapshot = learning_subcommands.add_parser(
+        "snapshot", help="freeze one closed window into a run directory; never writes to the database"
     )
     experiment_snapshot.add_argument(
         "--hours", type=_positive_int, default=24, help="width of the closed window ending at the settlement grace"
@@ -257,10 +233,10 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_snapshot.add_argument(
         "--out", required=True, help="run directory to create, e.g. .tracefold/runs/news-24h"
     )
-    experiment_compare = experiment_subcommands.add_parser(
+    experiment_compare = learning_subcommands.add_parser(
         "compare", help="score a frozen snapshot under recorded / student / teacher and report the differences"
     )
-    experiment_compare.add_argument("--run", required=True, help="run directory created by `experiment snapshot`")
+    experiment_compare.add_argument("--run", required=True, help="run directory created by `snapshot`")
     experiment_compare.add_argument("--student", required=True, help="student model, e.g. the local route")
     experiment_compare.add_argument("--teacher", default="", help="optional reference model, e.g. deepseek-v4-pro")
     experiment_compare.add_argument(
@@ -270,23 +246,43 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_compare.add_argument(
         "--resume", action="store_true", help="skip cases this run directory already answered"
     )
-    experiment_optimize = experiment_subcommands.add_parser(
-        "optimize", help="run the shared GEPA core in process; produces a proposal that cannot be promoted"
+    # #202. The one optimization entry point. It replaces `compile` (a sealed container against a metered
+    # proxy) and `experiment optimize` (the same algorithm in process, behind `promotable=false`), which
+    # produced two candidate lifecycles for one two-string write-set. It holds no database write, broker,
+    # delivery, canary or promotion authority, and it ends in NO_OP, REJECTED or ADVANCE.
+    learning_optimize = learning_subcommands.add_parser(
+        "optimize",
+        help="run the one bounded GEPA optimization over a frozen development dataset; ADVANCE is not a release",
     )
-    experiment_optimize.add_argument("--run", required=True, help="run directory created by `experiment snapshot`")
-    experiment_optimize.add_argument("--student", required=True, help="task model GEPA optimizes against")
-    experiment_optimize.add_argument("--reflection", required=True, help="reflection model, e.g. deepseek-v4-pro")
-    experiment_optimize.add_argument("--semantic-judge", required=True, help="equivalence judge model")
-    experiment_optimize.add_argument("--max-metric-calls", type=_positive_int, required=True)
-    # The metric-call bound is not a spend bound: each metric call drives two task calls plus N judge
-    # calls. This is the judge's own ceiling, required for the same reason every other model-spending
-    # command in this plane makes its budget mandatory.
-    experiment_optimize.add_argument("--max-judge-model-calls", type=_positive_int, required=True)
-    experiment_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
-    learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")
-    learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_propose.add_argument("--file", required=True, help="candidate proposal JSON/YAML")
-    learning_propose.add_argument("--out", required=True, help="write the sealed candidate manifest")
+    learning_optimize.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_optimize.add_argument("--out", required=True, help="directory for the run report and any candidate")
+    learning_optimize.add_argument("--max-metric-calls", type=_positive_int, required=True)
+    learning_optimize.add_argument("--max-task-model-calls", type=_positive_int, required=True)
+    learning_optimize.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
+    learning_optimize.add_argument("--max-metric-judge-model-calls", type=_positive_int, required=True)
+    learning_optimize.add_argument("--max-cost-microusd", type=_positive_int, required=True)
+    # The per-call ceiling is also the rate an unpriced call is charged at: neither endpoint this project
+    # runs on reports a resolvable price, and the proxy tariff that used to answer that is gone with the
+    # proxy. Over-charging stops a run early rather than late.
+    learning_optimize.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
+    learning_optimize.add_argument(
+        "--max-wall-clock-seconds", type=_positive_int, default=14_400, help="deadline checked before each call"
+    )
+    learning_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
+    # One registration, whatever wrote the two instructions (#202 §7). A GEPA candidate and a patch a
+    # person wrote enter here on identical terms: the parent must be the active stable, the dataset must be
+    # the frozen development corpus, the Objective Plan is re-derived here rather than trusted, and what
+    # comes out is a proposal — never a promotion.
+    learning_register = learning_subcommands.add_parser(
+        "register", help="bind a Prompt candidate to the active stable and a frozen dataset"
+    )
+    learning_register.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_register.add_argument("--candidate", required=True, help="news_prompt_candidate_v1 JSON/YAML")
+    learning_register.add_argument(
+        "--artifact-root", required=True, help="write the candidate <program-sha>.json artifact document"
+    )
+    learning_register.add_argument("--hypothesis", default="", help="what this candidate is expected to repair")
+    learning_register.add_argument("--out", required=True, help="write the sealed candidate manifest")
     learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
     learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)
     learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)

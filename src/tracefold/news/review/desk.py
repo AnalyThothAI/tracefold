@@ -168,7 +168,9 @@ _PROPOSAL_STATUS_ZH = {
     "promotion_ready": "等待人工发布",
     "rolled_back": "已回滚",
 }
-_TARGET_ZH = {"prompt": "提示词（历史审计）", "program": "DSPy Program", "policy": "确定性策略"}
+# One kind since #202. `program` and `policy` stay so audit rows registered under the two-lifecycle
+# contract still render a label instead of "未知变更"; neither can be re-armed.
+_TARGET_ZH = {"prompt": "两段提示词", "program": "DSPy Program（历史审计）", "policy": "确定性策略（历史审计）"}
 _DIMENSION_ZH = {
     "should_push": "是否应送达",
     "asset_grounding": "标的对应",
@@ -933,8 +935,8 @@ class ReviewDesk:
                     "candidate_sha": candidate_sha,
                     "candidate_bundle_sha": candidate_arm.get("bundle_sha"),
                     "parent_stable_sha": manifest.get("parent_stable_sha"),
-                    "target": manifest.get("target"),
-                    "target_zh": _TARGET_ZH.get(str(manifest.get("target") or ""), "未知变更"),
+                    "target": manifest.get("target", "prompt"),
+                    "target_zh": _TARGET_ZH.get(str(manifest.get("target") or "prompt"), "未知变更"),
                     "hypothesis": manifest.get("hypothesis"),
                     "target_dimensions": manifest.get("target_dimensions", []),
                     "target_dimensions_zh": [
@@ -945,7 +947,7 @@ class ReviewDesk:
                     "development_dataset_sha": manifest.get("development_dataset_sha"),
                     "learning_epoch": learning_epoch,
                     "evidence_disposition": evidence_disposition,
-                    "compile_record_sha256": receipt.get("compile_record_sha256"),
+                    "prompt_candidate_sha256": receipt.get("prompt_candidate_sha256"),
                     "exact_diff": payload.get("exact_diff") if reveal_diff else None,
                     "diff_withheld_reason": None if reveal_diff else "hidden_validation_in_progress",
                     "created_at_ms": int(row["created_at_ms"]),
@@ -1011,7 +1013,7 @@ class ReviewDesk:
             "accepted_preference": preference,
             "preferred_arm": preferred_arm,
             "candidate_sha": candidate_sha or None,
-            "target": manifest.get("target"),
+            "target": manifest.get("target", "prompt"),
             "hypothesis": manifest.get("hypothesis"),
             "exact_diff": candidate_payload.get("exact_diff"),
         }

@@ -339,7 +339,7 @@ class OptimizationConfig:
     monotonic: Callable[[], float] = time.monotonic
 
 
-def objective_summary(plan: GepaObjectivePlan) -> dict[str, Any]:
+def objective_summary(plan: GepaObjectivePlan, *, episode_projection_root_sha256: str = "") -> dict[str, Any]:
     """What the Objective Plan decided, in the shape a candidate and a report both carry.
 
     Per-case dispositions are not here: `readiness` publishes those, and a candidate that embedded them
@@ -349,6 +349,10 @@ def objective_summary(plan: GepaObjectivePlan) -> dict[str, Any]:
 
     return {
         "schema": OBJECTIVE_SUMMARY_SCHEMA,
+        # Which projection of the corpus this plan was built from. The frozen dataset pins the case set;
+        # the reviews behind those cases can still be edited, so registration re-projects and compares
+        # this rather than a count (#202 PR-B).
+        "episode_projection_root_sha256": episode_projection_root_sha256,
         "case_n": plan.case_n,
         "cluster_n": plan.cluster_n,
         "target_case_ids": list(plan.target_case_ids),
@@ -363,6 +367,10 @@ def objective_summary(plan: GepaObjectivePlan) -> dict[str, Any]:
         "exact_gold_coverage": dict(plan.exact_gold_coverage),
         "owner_distribution": dict(plan.owner_distribution),
         "blocking_reasons": list(plan.blocking_reasons),
+        # The halves the winner was picked on. Registration re-derives the plan from the frozen corpus and
+        # compares this, which is the one thing in the summary a second party can disagree with — the rest
+        # is membership the re-derivation reproduces by construction.
+        "split": dict(plan.split or {}),
     }
 
 
@@ -442,7 +450,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         raise ValueError(f"news_learning_optimize_wall_clock_below_call_deadline:{longest_call_seconds:g}")
     started_at_ms = config.now_ms()
     plan = build_gepa_objective_plan(dataset.episodes)
-    objective = objective_summary(plan)
+    objective = objective_summary(plan, episode_projection_root_sha256=dataset.ref.episode_projection_root_sha256)
     blockers = plan_blockers(plan)
     if blockers:
         return _terminal(

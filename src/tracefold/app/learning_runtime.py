@@ -196,18 +196,14 @@ def candidate_program_artifact(
 ) -> ProgramStrategyArtifactV1:
     """Resolve and validate the Program executable carried by one candidate.
 
-    Policy candidates reuse the stable artifact identity. Program candidates must resolve to an
-    image-carried artifact whose parent, recorded on the candidate's own proposal receipt, is that exact
-    stable Program — lineage belongs to the candidate, not to the running behavior. This resolver is
-    shared by worker composition and the canary control CLI so an artifact rejected at startup cannot
-    later be armed from its manifest alone.
+    A candidate must resolve to an image-carried artifact whose parent, recorded on the candidate's own
+    proposal receipt, is that exact stable Program — lineage belongs to the candidate, not to the running
+    behavior. This resolver is shared by worker composition and the canary control CLI so an artifact
+    rejected at startup cannot later be armed from its manifest alone. The policy-candidate branch is gone
+    with the policy candidate itself (#202 §1.3).
     """
 
     arm = candidate.candidate_arm
-    if candidate.target == "policy":
-        if arm.program_version != PROGRAM_VERSION or arm.program_sha256 != stable_artifact.program_sha256:
-            raise ValueError("news_policy_candidate_program_identity_changed")
-        return stable_artifact
     if (
         arm.program_version != PROGRAM_VERSION
         or candidate.proposal_receipt.program_parent_sha256 != stable_artifact.program_sha256

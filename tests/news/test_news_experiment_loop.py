@@ -1,4 +1,4 @@
-"""The operator's fast loop: a frozen run directory, a paired comparison, and an unpromotable proposal.
+"""The operator's research loop: a frozen run directory and a paired comparison.
 
 Every fixture here builds its cases through `snapshot._case`, the projection the real command uses. The
 first version of this file constructed `ExperimentCase(...)` by hand, and so tested a shape the snapshot
@@ -17,16 +17,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from tracefold.news.learning import optimizer
 from tracefold.news.learning.baseline import BaselineReport, CaseResult
 from tracefold.news.learning.compiler import gepa as gepa_core
 from tracefold.news.learning.compiler import root as compiler_root
-from tracefold.news.learning.compiler.security import (
-    COMPILE_EPISODE_PROJECTION_SCHEMA,
-    CompileRecordV1,
-    GepaRunResult,
-    validate_compile_record,
-)
-from tracefold.news.learning.experiment import optimize as optimize_module
+from tracefold.news.learning.compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
+from tracefold.news.learning.experiment import snapshot as snapshot_module
 from tracefold.news.learning.experiment.compare import (
     answered_case_scores,
     baseline_cases,
@@ -36,11 +32,6 @@ from tracefold.news.learning.experiment.compare import (
     pending_cases,
     score_arm,
 )
-from tracefold.news.learning.experiment.optimize import (
-    ExperimentCandidate,
-    accepted_episodes,
-    optimize_snapshot,
-)
 from tracefold.news.learning.experiment.run import (
     ExperimentCase,
     ExperimentRun,
@@ -49,7 +40,7 @@ from tracefold.news.learning.experiment.run import (
     case_root_sha256,
 )
 from tracefold.news.learning.experiment.snapshot import _case as _snapshot_case
-from tracefold.news.program.artifact import ProgramStrategyPatchV1, load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_artifact
 
 from .test_news_baseline_modes import _case as _baseline_case
 
@@ -396,183 +387,48 @@ def test_a_snapshot_case_is_accepted_by_construction() -> None:
     assert _case(0, accepted_review={}).accepted is True
 
 
-def test_both_the_metric_and_the_optimizer_see_one_projection() -> None:
+def test_the_metric_and_the_comparison_see_one_projection() -> None:
     cases = [_case(0), _case(1)]
     scored = baseline_cases(cases)
 
-    assert [case.episode.case_id for case in scored] == [episode.case_id for episode in accepted_episodes(cases)]
+    assert [case.episode.case_id for case in scored] == [case.case_sha256 for case in cases]
     # Threaded, not dropped: this is the field whose absence made the recorded arm unrunnable.
     assert all(case.recorded_decision_result for case in scored)
 
 
-def test_optimizing_a_snapshot_nobody_reviewed_is_refused() -> None:
-    with pytest.raises(ValueError, match="news_experiment_optimize_requires_accepted_reviews"):
-        optimize_snapshot(
-            run_sha256="a" * 64,
-            base_program=load_stable_program_artifact(),
-            cases=[],
-            task_lm=None,
-            reflection_lm=None,
-            judge=object(),
-            max_metric_calls=4,
-            seed=7,
-            review_rubric_version="news_review_v4",
-        )
+# --- one optimization core, one student -------------------------------------------------------------
 
 
-# --- failure clusters are a work queue ----------------------------------------------------------------
-
-
-def test_failure_clusters_rank_a_broad_regression_above_a_single_bad_case() -> None:
-    cluster_of = {"a": "broad", "b": "broad", "c": "broad", "d": "broad", "e": "single"}
-    report = compare_report(
-        run_sha256="a" * 64,
-        arms={
-            "recorded": _arm({"a": 1.0, "b": 1.0, "c": 1.0, "d": 1.0, "e": 1.0}, cluster_of=cluster_of),
-            "student": _arm({"a": 0.8, "b": 0.8, "c": 0.8, "d": 0.8, "e": 0.3}, cluster_of=cluster_of),
-        },
-    )
-    assert [row["cluster_id"] for row in report["failure_clusters"]] == ["broad", "single"]
-
-
-def test_an_improvement_never_climbs_the_work_queue() -> None:
-    cluster_of = {"a": "better", "b": "worse"}
-    report = compare_report(
-        run_sha256="a" * 64,
-        arms={
-            "recorded": _arm({"a": 0.2, "b": 1.0}, cluster_of=cluster_of),
-            "student": _arm({"a": 0.9, "b": 0.4}, cluster_of=cluster_of),
-        },
-    )
-    ranked = {row["cluster_id"]: row["attention"] for row in report["failure_clusters"]}
-    assert ranked["better"] == 0.0 and ranked["worse"] < 0.0
-
-
-# --- both planes optimize through one core ------------------------------------------------------------
-
-
-def test_both_planes_hold_the_same_optimization_core_and_the_same_student() -> None:
-    """Function identity was not enough, and the gap it missed falsified the PR's headline claim.
+def test_the_one_optimization_core_keeps_the_student_that_makes_reflection_possible() -> None:
+    """Function identity was not enough, and the gap it missed falsified an earlier PR's headline claim.
 
     `run_gepa` defaulted `student_factory` to the plain `DspyCompileProgram`; the trusted compiler passed
     `_FeedbackCompileProgram`, whose `_rekey_trace` is what lets GEPA's reflective dataset find anything at
-    all. Same function, different student — the fast loop would have burned its whole budget proposing
-    nothing while reporting the same algorithm. The student is the core's own default now.
+    all. Same function, different student — a plane running the plain student would have burned its whole
+    budget proposing nothing while reporting the same algorithm. The student is the core's own default now,
+    and since #202 there is one caller of it.
     """
 
-    assert optimize_module.run_gepa is gepa_core.run_gepa is compiler_root.run_gepa
+    assert gepa_core.run_gepa is compiler_root.run_gepa is optimizer.run_gepa
     default = inspect.signature(gepa_core.run_gepa).parameters["student_factory"].default
     assert default is gepa_core._FeedbackCompileProgram
     assert callable(getattr(default, "_rekey_trace", None))
 
 
-def _stub_result(**overrides: Any) -> GepaRunResult:
-    values: dict[str, Any] = {
-        "patch": ProgramStrategyPatchV1(
-            parent_program_sha256=load_stable_program_artifact().program_sha256,
-            event_semantics_instruction="Name the comparison base.",
-            reader_card_instruction="",
-        ),
-        "metric": {"schema": "tracefold.news.compile_metric_receipt.v1"},
-        "optimizer_config": {
-            "schema": "tracefold.news.compile_optimizer_config_receipt.v1",
-            "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
-        },
-        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1"},
-        "checkpoint": {"schema": "tracefold.news.compile_checkpoint_receipt.v2"},
-        "split": {"schema": "tracefold.news.compile_split_receipt.v1"},
-        "retrieval": {"schema": "tracefold.news.compile_retrieval_receipt.v1"},
-        "failure_cluster_ids": ("cluster-0",),
-        "target_dimensions": ("factual_fidelity",),
-        "metric_calls": 12,
-        "train_count": 2,
-        "val_count": 1,
-    }
-    values.update(overrides)
-    return GepaRunResult(**values)
+def test_the_research_package_can_no_longer_produce_a_candidate_of_its_own() -> None:
+    """#202 §7: one candidate contract, so a research winner is registered rather than reproduced.
 
+    The `promotable=False` marker was honest about what it was, and it was still a second lifecycle: an
+    experiment that found a better instruction had to be re-run inside a container before any gate would
+    look at it, because release eligibility came from where the text was generated.
+    """
 
-def test_optimize_hands_the_core_the_projection_the_metric_scores(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, Any] = {}
-
-    def _fake(**kwargs: Any) -> GepaRunResult:
-        seen.update(kwargs)
-        return _stub_result()
-
-    monkeypatch.setattr(optimize_module, "run_gepa", _fake)
-    candidate = optimize_snapshot(
-        run_sha256="a" * 64,
-        base_program=load_stable_program_artifact(),
-        cases=[_case(0), _case(2)],
-        task_lm=None,
-        reflection_lm=None,
-        judge=object(),
-        max_metric_calls=12,
-        seed=7,
-        review_rubric_version="news_review_v4",
-    )
-
-    assert [episode.case_id for episode in seen["episodes"]] == [f"{0:064x}", f"{2:064x}"]
-    assert seen["review_rubric_version"] == "news_review_v4"
-    assert candidate.event_semantics_instruction == "Name the comparison base."
-
-
-# --- the winner is not release evidence ---------------------------------------------------------------
-
-
-def _candidate(**overrides: Any) -> ExperimentCandidate:
-    result = _stub_result()
-    values: dict[str, Any] = {
-        "run_sha256": "a" * 64,
-        "parent_program_sha256": load_stable_program_artifact().program_sha256,
-        "event_semantics_instruction": result.patch.event_semantics_instruction,
-        "reader_card_instruction": result.patch.reader_card_instruction,
-        "task_model": {"role": "task"},
-        "reflection_model": {"role": "reflection"},
-        "metric_judge_model": {"role": "metric_judge"},
-        "optimizer": result.optimizer_config,
-        "metric": result.metric,
-        "split": result.split,
-        "trajectory": result.trajectory,
-        "failure_cluster_ids": result.failure_cluster_ids,
-        "target_dimensions": result.target_dimensions,
-        "metric_calls": result.metric_calls,
-        "train_count": result.train_count,
-        "val_count": result.val_count,
-    }
-    values.update(overrides)
-    return ExperimentCandidate.issue(**values)
-
-
-def test_an_experiment_candidate_says_it_cannot_be_promoted() -> None:
-    payload = _candidate().model_dump(mode="json")
-    assert payload["promotable"] is False
-    assert "compile_record_sha256" not in payload
-
-
-def test_an_experiment_candidate_cannot_be_read_as_a_compile_record() -> None:
-    payload = _candidate().model_dump(mode="json")
-    with pytest.raises(ValidationError):
-        CompileRecordV1.model_validate(payload)
-    with pytest.raises(ValidationError):
-        validate_compile_record(
-            payload,
-            parent_program_sha256=str(payload["parent_program_sha256"]),
-            program_sha256="c" * 64,
-            development_dataset_sha256="d" * 64,
-            target_runtime_manifest_sha256="e" * 64,
-        )
-
-
-def test_a_candidate_whose_instruction_was_edited_is_refused() -> None:
-    payload = _candidate().model_dump(mode="json")
-    payload["event_semantics_instruction"] = "Say whatever you like."
-    with pytest.raises(ValidationError, match="news_experiment_candidate_hash_mismatch"):
-        ExperimentCandidate.model_validate(payload)
-
-
-def test_a_candidate_that_names_no_failure_it_targeted_is_refused() -> None:
-    with pytest.raises(ValidationError):
-        _candidate(failure_cluster_ids=())
-    with pytest.raises(ValidationError):
-        _candidate(target_dimensions=())
+    experiment = Path(inspect.getfile(snapshot_module)).parent
+    assert sorted(path.name for path in experiment.glob("*.py")) == [
+        "__init__.py",
+        "compare.py",
+        "run.py",
+        "snapshot.py",
+    ]
+    with pytest.raises(ImportError):
+        __import__("tracefold.news.learning.experiment.optimize")
