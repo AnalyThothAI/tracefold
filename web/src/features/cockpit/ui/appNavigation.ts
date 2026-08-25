@@ -1,8 +1,15 @@
-import { newsOiPath, newsPath, newsReviewPath } from "@shared/routing/paths";
-import { EventStreamIcon, OpenInterestIcon, ReviewCheckIcon } from "@shared/ui/icons";
+import { newsOiPath, newsPath, newsReviewPath, tradingPath } from "@shared/routing/paths";
+import {
+  EventStreamIcon,
+  OpenInterestIcon,
+  ReviewCheckIcon,
+  TradeFlowIcon,
+} from "@shared/ui/icons";
 import type { LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
+  /** A short word beside the label rather than a number: the capital lane's mode, not a volume (#207). */
+  badge?: "tradingMode";
   children?: AppNavigationItem[];
   /** Which count from `AppNavigationCounts` this destination shows, if any. */
   count?: "events" | "oiFrames";
@@ -31,6 +38,10 @@ export type AppNavigationGroup = {
  * `admission=telemetry_deterministic` — #137's rule-judged open-interest lane, which is roughly a fifth of
  * daily volume and has never had a surface of its own.
  *
+ * 交易 is the capital lane (#104). Its slot carries the ledger's `mode` as a word rather than a count: what
+ * a reader needs to know before opening it is whether anything on that page is real money, and the honest
+ * answer today is `PAPER`.
+ *
  * One model, three presentations: the desktop sidebar, the tablet drawer and the phone tab bar all read this
  * list, so a destination cannot exist in one and be missing from another.
  */
@@ -51,6 +62,13 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         isActive: (pathname) => pathname === "/news/oi",
         label: "持仓异动",
         to: newsOiPath(),
+      },
+      {
+        badge: "tradingMode",
+        icon: TradeFlowIcon,
+        isActive: (pathname) => pathname === "/trading",
+        label: "交易",
+        to: tradingPath(),
       },
       {
         icon: ReviewCheckIcon,

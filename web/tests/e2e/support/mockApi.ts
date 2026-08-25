@@ -12,6 +12,7 @@ import {
   newsSymbolFixture,
   newsTriageFixture,
 } from "@tests/fixtures/newsFixture";
+import { tradingOrdersFixture, tradingStatusFixture } from "@tests/fixtures/tradingFixture";
 
 const NOW = 1_777_746_300_000;
 const unhandledApiRequests = new WeakMap<Page, string[]>();
@@ -65,6 +66,13 @@ export async function installMockApi(
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     // #207 PR-W1: identity is keyed on the path segment, so the token page's baseline names the base the
     // URL asked for rather than the fixture's default.
+    // #207 PR-W4: the shell reads trading status on every route for the 交易 badge, so every e2e page
+    // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
+    if (path === "/api/trading/status") return fulfill(route, tradingStatusFixture());
+    if (path === "/api/trading/orders") return fulfill(route, tradingOrdersFixture());
+    if (path.startsWith("/api/trading/events/")) {
+      return fulfill(route, { event_id: path.split("/").pop() ?? "", joinable: false });
+    }
     if (path.startsWith("/api/news/symbols/")) {
       return fulfill(
         route,

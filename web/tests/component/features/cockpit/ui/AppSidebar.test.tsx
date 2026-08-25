@@ -16,8 +16,11 @@ describe("AppSidebar", () => {
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Workbench"]);
   });
 
-  it("renders the three supported primary destinations", () => {
-    renderSidebar({ counts: { events: 1463, oiFrames: 188 } });
+  it("renders the four supported primary destinations", () => {
+    renderSidebar({
+      badges: { tradingMode: "PAPER" },
+      counts: { events: 1463, oiFrames: 188 },
+    });
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
@@ -26,14 +29,27 @@ describe("AppSidebar", () => {
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/news",
       "/news/oi",
+      "/trading",
       "/news/review",
     ]);
-    // Both lanes carry their own 24 h intake, compacted to fit beside the label; review has no count.
+    // Both News lanes carry their own 24 h intake, compacted to fit beside the label; review has no count.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
     expect(links[1].textContent).toContain("持仓异动");
     expect(links[1].textContent).toContain("188");
-    expect(links[2].textContent?.trim()).toBe("学习复盘");
+    // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before opening
+    // it, and a count of orders would not answer that.
+    expect(links[2].textContent).toContain("交易");
+    expect(links[2].textContent).toContain("PAPER");
+    expect(links[3].textContent?.trim()).toBe("学习复盘");
+  });
+
+  it("keeps the mode out of the accessible name, as it keeps the counts out", () => {
+    // The destination is 交易 whether the ledger is on paper or not; folding the mode into the link's name
+    // would rename it when configuration changed.
+    renderSidebar({ badges: { tradingMode: "PAPER" } });
+
+    expect(screen.getByRole("link", { name: "交易" })).toHaveAttribute("href", "/trading");
   });
 
   it("keeps the count out of the accessible name", () => {
@@ -86,15 +102,17 @@ describe("AppSidebar", () => {
 });
 
 function renderSidebar({
+  badges,
   counts,
   route = "/",
 }: {
+  badges?: { tradingMode?: string };
   counts?: { events?: number; oiFrames?: number };
   route?: string;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={[route]}>
-      <AppSidebar counts={counts} />
+      <AppSidebar badges={badges} counts={counts} />
     </MemoryRouter>,
   );
 }

@@ -46,8 +46,13 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
 
 
 @pytest.mark.contract
-def test_public_api_is_status_news_and_macro_only() -> None:
-    """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain."""
+def test_public_api_is_status_news_trading_and_macro_only() -> None:
+    """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain.
+
+    `/api/trading/*` joined the surface in #207 PR-W4 as two reads. They are named here individually rather
+    than by prefix: the capital lane's one hard rule is that no browser can place, amend or cancel an order,
+    and a prefix wildcard would let a third route join without anyone reading this line.
+    """
 
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.models import Settings
@@ -59,7 +64,15 @@ def test_public_api_is_status_news_and_macro_only() -> None:
     assert {path for path in api_paths if not path.startswith(("/api/news/", "/api/macro/"))} == {
         "/api/bootstrap",
         "/api/status",
+        "/api/trading/status",
+        "/api/trading/orders",
+        "/api/trading/events/{event_id}",
     }
+    # Reads only. `trading` has three operator mutations and every one of them stays on the CLI, where it
+    # runs as `workers` — `tracefold_serve` carries `default_transaction_read_only = on` precisely so the
+    # internet-facing role cannot reach them.
+    for path in ("/api/trading/status", "/api/trading/orders", "/api/trading/events/{event_id}"):
+        assert set(schema["paths"][path]) == {"get"}, path
     for retired in (
         "/api/token-radar",
         "/api/stocks-radar",

@@ -6,6 +6,7 @@ import {
   newsStatusFixture,
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
+import { tradingOrdersFixture, tradingStatusFixture } from "@tests/fixtures/tradingFixture";
 
 import type { ApiMock } from "./fixtures";
 import { defaultBootstrap, ok } from "./fixtures";
@@ -24,6 +25,10 @@ export function mockAppRoutes(apiMock: ApiMock) {
     if (path === "/api/news/review") return ok(newsReviewFixture());
     if (path.startsWith("/api/news/events/")) return ok(newsEventDetailFixture());
     // #207 PR-W1: keyed on the path segment so a route test that visits `/news/symbols/WIF` gets WIF back.
+    // #207 PR-W4: the shell reads trading status on every route for the 交易 badge.
+    if (path === "/api/trading/status") return ok(tradingStatusFixture());
+    if (path === "/api/trading/orders") return ok(tradingOrdersFixture());
+    if (path.startsWith("/api/trading/events/")) return ok({ event_id: "evt", joinable: false });
     if (path.startsWith("/api/news/symbols/"))
       return ok(
         newsSymbolFixture({ base_symbol: decodeURIComponent(path.split("/").pop() ?? "WIF") }),

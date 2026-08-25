@@ -264,6 +264,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/review`, `/api/news/review/tasks/{task_id}/evidence`, `/api/news/review/tasks/{task_id}/responses`, `/api/news/review/external-misses` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, one symbol's identity, and ReviewDesk reads/writes |
+| Trading | `/api/trading/status`, `/api/trading/orders`, `/api/trading/events/{event_id}` | the capital lane's mandate and readiness, its orders and the cases that authored none, and whether one News Event became a case. Reads only — there is no HTTP write anywhere on this surface |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -706,6 +707,37 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
+- `GET /api/trading/status` returns the capital lane's `budget` (fixed
+  notional, fixed stop bps, max hold, `nominal_daily_stop_loss_usd`, the daily
+  order ceiling and today's count), `readiness` (`enabled`, `mode`, `control`,
+  `execution_backend`, `execution_configured`, `live_mode_supported`,
+  `live_ready`, `live_readiness`, `venues`), `floors` (the capital lane's own
+  thresholds, never the News gates) and `counts` (the 24 h funnel by the ledger's
+  own grouping keys). Same facts as CLI `trading status`, from the same reads.
+  `live_ready` is never `true` from a read: a serve process cannot observe the
+  Workers process's startup and canary result, so it reports `not_proven` rather
+  than guessing (#185 P1-2). Money is an exact decimal string end to end.
+- `GET /api/trading/orders?underlying={base|crypto:BASE}&state={active|closed|all}`
+  returns `orders[]` — one economic intent each, with the case that authored it —
+  and `cases_without_orders[]`, the cases that stopped before authoring one and
+  the rule they stopped on. Both halves, because a `POLICY_REJECTED` case is
+  where the capital floors bite and has no order to join through. An explicit
+  `state` filter suppresses the second list: it is a question about orders.
+  `underlying` accepts either spelling and the response carries both. **Neither
+  `trading_orders.payload` nor `trading_cases.manifest` is ever returned**, and
+  neither is `account_ref` or `remote_order_id`; the frozen provider request body
+  and the frozen decision input do not reach a browser. `state` is the ledger's
+  own string, returned verbatim: `ACKNOWLEDGED` is the venue answering, `OPEN` is
+  the only state that has proven both a position and a native stop covering it,
+  and a caller that collapses them asserts something the ledger does not.
+- `GET /api/trading/events/{event_id}?lane=oi` answers whether one News Event
+  became a case. `joinable` is the honest half: only the deterministic OI lane's
+  source key (`oi:{event_id}:{metric_version}`) is reconstructible from an Event
+  id, the model lane's is a content hash of an artifact and a fingerprint (#154),
+  and for anything but `lane=oi` the answer is `joinable: false` — "this cannot
+  be asked", which is a different fact from `case: null`, "it was asked and the
+  answer is no". Joining by symbol and time instead would record a link the
+  ledger does not have.
 - `GET /api/news/review` is the ReviewDesk read surface. Query fields are
   `view=queue|coverage|proposals|market`, `mode=event|pairwise`, exact
   `cohort`, `stratum`, `event`, `status`, `hours`, `limit`, and opaque

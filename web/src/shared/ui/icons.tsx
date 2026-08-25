@@ -86,6 +86,23 @@ export const OpenInterestIcon = forwardRef<SVGSVGElement, LucideProps>((props, r
 OpenInterestIcon.displayName = "OpenInterestIcon";
 
 /**
+ * 交易. Two arrows, one down and one up, side by side (#207 PR-W4).
+ *
+ * Direction-neutral by construction: the destination is the capital lane itself, not a position, and a
+ * navigation icon that leaned bullish would be a market call on a link. Like every icon here it is
+ * `currentColor` only, so it takes the sidebar's three states and never red or green.
+ */
+export const TradeFlowIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
+  <TracefoldIcon ref={ref} {...props}>
+    <path d="M8 3.5v13" />
+    <path d="M4.5 13 8 16.5 11.5 13" />
+    <path d="M16 20.5v-13" />
+    <path d="M12.5 11 16 7.5 19.5 11" />
+  </TracefoldIcon>
+));
+TradeFlowIcon.displayName = "TradeFlowIcon";
+
+/**
  * 鲸鱼占比. One slice cut out of the whole. The wedge is filled because it *is* the share; it takes
  * `currentColor` like every stroke here, so it never carries a hue of its own.
  */

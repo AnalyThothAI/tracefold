@@ -7,7 +7,7 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 
 /**
  * The sidebar is part of the frame from 1280px up (#82) and the drawer the topbar trigger opens below that
- * (#70). Both widths reach the same three News destinations, and both read one navigation model.
+ * (#70). Both widths reach the same four destinations, and both read one navigation model.
  */
 async function openSidebar(page: Page) {
   await page.getByRole("button", { name: "切换侧栏" }).click();
@@ -30,7 +30,7 @@ test.describe("desktop sidebar navigation", () => {
     test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
   });
 
-  test("keeps all three News destinations in the desktop frame and folds away on demand", async ({
+  test("keeps all four destinations in the desktop frame and folds away on demand", async ({
     page,
   }) => {
     await installMockApi(page);
@@ -48,8 +48,11 @@ test.describe("desktop sidebar navigation", () => {
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "持仓异动" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
+    // The mode rides beside the label without renaming the destination (#207 PR-W4).
+    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText("PAPER");
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 

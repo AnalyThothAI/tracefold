@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from .routes import events, feed, review, status, symbols, system
+from .routes import events, feed, review, status, symbols, system, trading
 
 
 def create_api_router(status_payload: Callable[[Any], dict[str, Any]]) -> APIRouter:
@@ -16,4 +16,5 @@ def create_api_router(status_payload: Callable[[Any], dict[str, Any]]) -> APIRou
     router.include_router(symbols.router)
     router.include_router(review.router)
     router.include_router(status.router)
+    router.include_router(trading.router)
     return router

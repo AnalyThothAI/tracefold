@@ -6,7 +6,12 @@ import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 
 import { AppBottomNav } from "./AppBottomNav";
-import { AppBrand, AppSidebar, type AppNavigationCounts } from "./AppSidebar";
+import {
+  AppBrand,
+  AppSidebar,
+  type AppNavigationBadges,
+  type AppNavigationCounts,
+} from "./AppSidebar";
 import { CockpitTopbar, type CockpitTopbarProps } from "./CockpitTopbar";
 import "./cockpitShell.css";
 import "./cockpitShellContract.css";
@@ -17,6 +22,7 @@ const DESKTOP_QUERY = "(min-width: 1280px)";
 const PHONE_QUERY = "(max-width: 767px)";
 
 export type CockpitShellProps = {
+  navBadges?: AppNavigationBadges;
   navCounts?: AppNavigationCounts;
   outletContext?: unknown;
   topbar: CockpitTopbarProps;
@@ -30,7 +36,7 @@ export type CockpitShellProps = {
  *   ≤767   no sidebar in either form: a drawer charges a tap before the reader can even see where they could
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
  */
-export function CockpitShell({ navCounts, outletContext, topbar }: CockpitShellProps) {
+export function CockpitShell({ navBadges, navCounts, outletContext, topbar }: CockpitShellProps) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
   // One control, two meanings: at desktop it folds the in-frame sidebar away for readers who want the whole
@@ -45,7 +51,7 @@ export function CockpitShell({ navCounts, outletContext, topbar }: CockpitShellP
 
   return (
     <div className="cockpit-shell">
-      {desktop && sidebarOpen ? <AppSidebar counts={navCounts} /> : null}
+      {desktop && sidebarOpen ? <AppSidebar badges={navBadges} counts={navCounts} /> : null}
       <div className="cockpit-main">
         <CockpitTopbar
           {...topbar}
@@ -85,7 +91,12 @@ export function CockpitShell({ navCounts, outletContext, topbar }: CockpitShellP
           title="导航"
           width={260}
         >
-          <AppSidebar counts={navCounts} inDrawer onNavigate={() => setDrawerOpen(false)} />
+          <AppSidebar
+            badges={navBadges}
+            counts={navCounts}
+            inDrawer
+            onNavigate={() => setDrawerOpen(false)}
+          />
         </Drawer>
       )}
     </div>

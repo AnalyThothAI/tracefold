@@ -77,6 +77,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.health",
         "tracefold.news.market_review.instruments",
         "tracefold.news.market_review.pricing",
+        # #207 PR-W4: the measurement version that is half of `OiTradeCandidate.source_key`. The 成案 badge
+        # rebuilds `oi:{event_id}:{metric_version}` to ask whether one Event became a case, and a literal
+        # here would stop matching the day `oi_signals` bumps it — silently, as "no case".
+        "tracefold.news.oi_signals",
         "tracefold.news.review.desk",
     ),
     "app.trading_cli": ("tracefold.trading.contracts",),

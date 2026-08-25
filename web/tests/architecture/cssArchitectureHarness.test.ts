@@ -21,6 +21,9 @@ const globalStyleFiles = new Set(["styles/base.css", "styles/tailwind.css", "sty
 const featureClassPrefixes: Record<string, string[]> = {
   cockpit: ["brand", "brand-", "center-column", "cockpit-", "searchbar", "topbar", "topbar-"],
   news: ["news-"],
+  // #207 PR-W4: the capital lane is its own feature with its own namespace. The 成案 badge is rendered on a
+  // News surface but keeps `trading-` — the words in it are the ledger's, and so is the ownership.
+  trading: ["trading-"],
 };
 
 const modifierClassNames = new Set([
