@@ -455,7 +455,8 @@ def _protected_live_order() -> PreparedOrder:
         entry_reference=Decimal("10"),
         stop_price=Decimal("9.8"),
         take_profit_price=None,
-        must_close_after_ms=900_000,
+        max_holding_ms=900_000,
+        taker_fee_bps=5,
         payload={},
     )
 
@@ -511,7 +512,7 @@ def test_native_stop_protection_requires_every_exact_provider_fact(mismatch: dic
 # ---------------------------------------------------------------------------- paper exit
 def test_the_clock_closes_a_paper_position_without_news_or_a_model() -> None:
     opened = NOW
-    deadline = must_close_at(opened_at_ms=opened, policy=OrderPolicy(max_holding_ms=900_000))
+    deadline = must_close_at(opened_at_ms=opened, max_holding_ms=900_000)
     bars = _bars([(opened + 300_000, "101"), (opened + 600_000, "101"), (opened + 900_000, "101")])
     exit_at = evaluate_paper_exit(
         side="buy",

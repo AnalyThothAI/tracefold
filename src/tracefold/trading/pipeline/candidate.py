@@ -819,6 +819,10 @@ class CandidateRunner:
                     entry_reference=str(sized.entry_reference),
                     stop_price=str(sized.stop_price),
                     take_profit_price=None if sized.take_profit_price is None else str(sized.take_profit_price),
+                    # #209: the two exits that are not prices are frozen here too, so a later config
+                    # edit or redeploy changes the next order and never this one.
+                    max_holding_ms=self._config.order.max_holding_ms,
+                    taker_fee_bps=self._config.order.taker_fee_bps,
                     payload=payload,
                     payload_sha256=canonical_sha256(payload),
                     state=state.value,
@@ -863,7 +867,8 @@ class CandidateRunner:
             entry_reference=sized.entry_reference,
             stop_price=sized.stop_price,
             take_profit_price=sized.take_profit_price,
-            must_close_after_ms=self._config.order.max_holding_ms,
+            max_holding_ms=self._config.order.max_holding_ms,
+            taker_fee_bps=self._config.order.taker_fee_bps,
             payload=payload,
         )
         return await commit_order(

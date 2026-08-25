@@ -12,7 +12,7 @@ TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 PROPERTY_REQUIREMENTS := requirements/property.lock
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -77,6 +77,13 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow"
+
+trading-smoke: ## paper exit acceptance on real PostgreSQL: SL / TP / MAX_HOLDING reach CLOSED + flat (#209)
+	@echo "paper exits are priced off CLOSED bar closes only: no intrabar wick, no venue-native stop,"
+	@echo "no spread, precision, partial fill, position mode or external order. What this proves is the"
+	@echo "execution kernel, the ledger and the state machine - not a backtest and not exchange truth."
+	@echo "A focused lane, not a substitute for test-evidence; SKIP_INTEGRATION=1 makes it prove nothing."
+	@uv run python -m pytest tests/integration/test_trading_ledger.py -m integration -k paper_exit_acceptance
 
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
 	@uv run python -m pytest tests/deploy -m deploy

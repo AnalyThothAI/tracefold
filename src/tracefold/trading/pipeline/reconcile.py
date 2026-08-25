@@ -144,7 +144,16 @@ class ReconcileRunner:
     async def _reconcile(self, row: dict[str, Any], *, control: str, now: int) -> bool:
         order_id = str(row["order_id"])
         state = str(row["state"])
-        order = _order_from_row(row, max_holding_ms=self._config.order.max_holding_ms)
+        if row.get("max_holding_ms") is None or row.get("taker_fee_bps") is None:
+            # A pre-#209 row whose exit policy the migration could not prove: it never opened a
+            # position, so no `must_close_at_ms` records the budget that governed it, and nothing in
+            # the database says what `max_holding_seconds` was when it was approved. Reading today's
+            # configuration for it is the drift #209 closes, so it goes to the drain every other
+            # unprovable outcome uses. This runs before `_order_from_row` on purpose — building the
+            # frozen intent from a row that has no frozen exit policy is the thing to avoid.
+            await self._escalate(order_id, "legacy_execution_snapshot_missing", now)
+            return True
+        order = _order_from_row(row)
 
         if state in (OrderState.AMBIGUOUS.value, OrderState.RECONCILING.value):
             return await self._resolve_ambiguity(order, row, now=now)
@@ -501,7 +510,7 @@ class ReconcileRunner:
         opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
         deadline = _conservative_deadline(
             row,
-            must_close_at(opened_at_ms=opened, policy=self._config.order),
+            must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
         )
         next_state = {
             "PARTIAL": OrderState.PARTIAL,
@@ -649,7 +658,7 @@ class ReconcileRunner:
                 side=order.side,
                 entry=observation.average_price,
                 exit_price=observation.exit_price,
-                fee_bps=self._config.order.taker_fee_bps,
+                fee_bps=order.taker_fee_bps,
             )
             content = observation.model_dump(mode="json")
 
@@ -738,7 +747,7 @@ class ReconcileRunner:
         )
         deadline = _conservative_deadline(
             row,
-            must_close_at(opened_at_ms=opened, policy=self._config.order),
+            must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
         )
         content = observation.model_dump(mode="json")
 
@@ -948,7 +957,7 @@ class ReconcileRunner:
             opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
             deadline = _conservative_deadline(
                 row,
-                must_close_at(opened_at_ms=opened, policy=self._config.order),
+                must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
             )
 
             def _promote(repos: Any) -> None:
@@ -979,7 +988,7 @@ class ReconcileRunner:
             opened = _conservative_opened_at(row, first_fill_at_ms=None, now=now)
             deadline = _conservative_deadline(
                 row,
-                must_close_at(opened_at_ms=opened, policy=self._config.order),
+                must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
             )
 
         fetcher = self._bars(str(row["exchange_id"]))
@@ -1061,7 +1070,7 @@ class ReconcileRunner:
             side=cast(OrderSide, row["side"]),
             entry=Decimal(str(row["entry_reference"])),
             exit_price=exit_at.exit_price,
-            fee_bps=self._config.order.taker_fee_bps,
+            fee_bps=order.taker_fee_bps,
         )
 
         def _close(repos: Any) -> None:
@@ -1172,7 +1181,9 @@ def _conservative_deadline(row: dict[str, Any], candidate: int) -> int:
     return min(int(persisted), candidate) if persisted is not None else candidate
 
 
-def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrder:
+def _order_from_row(row: dict[str, Any]) -> PreparedOrder:
+    """Rebuild the frozen intent from the ledger alone. No runtime configuration enters here (#209)."""
+
     return PreparedOrder(
         order_id=str(row["order_id"]),
         case_id=str(row["case_id"]),
@@ -1195,7 +1206,8 @@ def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrde
         entry_reference=Decimal(str(row["entry_reference"])),
         stop_price=Decimal(str(row["stop_price"])),
         take_profit_price=None if row.get("take_profit_price") is None else Decimal(str(row["take_profit_price"])),
-        must_close_after_ms=max_holding_ms,
+        max_holding_ms=int(row["max_holding_ms"]),
+        taker_fee_bps=int(row["taker_fee_bps"]),
         payload=dict(row.get("payload") or {}),
     )
 

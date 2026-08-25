@@ -74,21 +74,30 @@ class OrderStorage:
         entry_reference: str,
         stop_price: str,
         take_profit_price: str | None,
+        max_holding_ms: int,
+        taker_fee_bps: int,
         payload: Mapping[str, Any],
         payload_sha256: str,
         state: str,
         must_close_at_ms: int | None,
         now_ms: int,
     ) -> bool:
-        """Freeze the intent. The partial unique index is the authority on "one active per underlying"."""
+        """Freeze the intent. The partial unique index is the authority on "one active per underlying".
+
+        The whole exit policy is frozen here, in the same statement as the intent it governs (#209):
+        two absolute prices plus the holding budget and the fee assumption the realised return will be
+        charged at. Everything the reconciler needs to end this order is now on the row, so a restart,
+        a redeploy or a configuration edit cannot rewrite what an approved order will do.
+        """
 
         cursor = self.conn.execute(
             """
             INSERT INTO trading_orders (
               order_id, case_id, underlying_key, exchange_id, provider_symbol, account_ref, mode, side,
-              notional_usd, quantity, entry_reference, stop_price, take_profit_price, payload,
-              payload_sha256, state, must_close_at_ms, next_reconcile_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+              notional_usd, quantity, entry_reference, stop_price, take_profit_price, max_holding_ms,
+              taker_fee_bps, payload, payload_sha256, state, must_close_at_ms, next_reconcile_at_ms,
+              created_at_ms, updated_at_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (case_id) DO NOTHING
             """,
             (
@@ -105,6 +114,8 @@ class OrderStorage:
                 entry_reference,
                 stop_price,
                 take_profit_price,
+                int(max_holding_ms),
+                int(taker_fee_bps),
                 _dumps(dict(payload)),
                 payload_sha256,
                 state,

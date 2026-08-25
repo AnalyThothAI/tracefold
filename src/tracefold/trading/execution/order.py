@@ -251,10 +251,15 @@ def next_state_for(receipt: ExecutionReceipt) -> OrderState:
     return OrderState.ACKNOWLEDGED
 
 
-def must_close_at(*, opened_at_ms: int, policy: OrderPolicy = DEFAULT_ORDER_POLICY) -> int:
-    """The deterministic lifecycle end. Reached without another News event and without a model."""
+def must_close_at(*, opened_at_ms: int, max_holding_ms: int) -> int:
+    """The deterministic lifecycle end. Reached without another News event and without a model.
 
-    return int(opened_at_ms) + int(policy.max_holding_ms)
+    `max_holding_ms` is the order's own frozen snapshot, never `config.order.max_holding_ms` (#209):
+    the deadline is first written when an acknowledged order is promoted to OPEN, which can be a
+    restart and a redeploy after the intent was approved.
+    """
+
+    return int(opened_at_ms) + int(max_holding_ms)
 
 
 def realized_bps(*, side: OrderSide, entry: Decimal, exit_price: Decimal, fee_bps: int) -> int:
