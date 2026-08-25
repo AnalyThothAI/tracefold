@@ -1105,12 +1105,12 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
         (received - 1_000, received, received, received),
     )
     conn.execute(
-        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, symbol, venue, "
+        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, ingest_mode, symbol, venue, "
         "liquidated_position_side, forced_order_side, notional_usd, quantity, price, event_at_ms, "
         "received_at_ms, parser_version, provider_record_identity, symbol_contract_identity, "
         "position_side_semantics, quantity_semantics, notional_semantics, price_semantics, "
         "completeness_assumption, throttle_assumption, source_contract_version, "
-        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item', 'fact-1', 'DOGE', "
+        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item', 'fact-1', 'live', 'DOGE', "
         "'binance', 'short', 'buy', 750000, NULL, 0.12, %s, %s, 'liquidation_parser_v1', "
         "'liq-key', 'unresolved:binance:DOGE', 'short=>forced_buy;long=>forced_sell', "
         "'not_provided', 'provider_reported_usd_notional', 'provider_reported_unspecified_price', "
@@ -1141,12 +1141,12 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
         (new_received - 1_000, new_received, new_received, new_received),
     )
     conn.execute(
-        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, symbol, venue, "
+        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, ingest_mode, symbol, venue, "
         "liquidated_position_side, forced_order_side, notional_usd, quantity, price, event_at_ms, "
         "received_at_ms, parser_version, provider_record_identity, symbol_contract_identity, "
         "position_side_semantics, quantity_semantics, notional_semantics, price_semantics, "
         "completeness_assumption, throttle_assumption, source_contract_version, "
-        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item-2', 'fact-2', 'DOGE', "
+        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item-2', 'fact-2', 'live', 'DOGE', "
         "'binance', 'short', 'buy', 900000, NULL, 0.13, %s, %s, 'liquidation_parser_v1', "
         "'liq-key-2', 'unresolved:binance:DOGE', 'short=>forced_buy;long=>forced_sell', "
         "'not_provided', 'provider_reported_usd_notional', 'provider_reported_unspecified_price', "
