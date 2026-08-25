@@ -478,9 +478,13 @@ class ReconcileRunner:
             await self._escalate(order.order_id, f"observed_{observed_state.lower()}", now)
             return True
 
-        # A precise provider fill time wins. Otherwise submission/creation is the conservative lower
-        # bound; reconciliation time must never extend the holding period.
-        opened = int(observation.first_fill_at_ms or row.get("created_at_ms") or now)
+        # A precise provider fill time wins on first adoption. Once an earlier durable lower bound
+        # exists, later evidence may move it earlier but must never extend the holding period.
+        opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
+        deadline = _conservative_deadline(
+            row,
+            must_close_at(opened_at_ms=opened, policy=self._config.order),
+        )
         next_state = {
             "PARTIAL": OrderState.PARTIAL,
             "OPEN_PROTECTED": OrderState.OPEN,
@@ -508,7 +512,7 @@ class ReconcileRunner:
                 filled_quantity=None if observation.filled_quantity is None else str(observation.filled_quantity),
                 average_price=None if observation.average_price is None else str(observation.average_price),
                 position_opened_at_ms=opened,
-                must_close_at_ms=must_close_at(opened_at_ms=opened, policy=self._config.order),
+                must_close_at_ms=deadline,
                 next_reconcile_at_ms=now,
                 now_ms=now,
             )
@@ -615,8 +619,10 @@ class ReconcileRunner:
                 await self._record_and_escalate(order.order_id, observation, "live_closed_evidence_incomplete", now)
                 return True
             closed_at = int(observation.closed_at_ms)
-            opened_at = int(
-                observation.first_fill_at_ms or row.get("position_opened_at_ms") or row.get("created_at_ms") or now
+            opened_at = _conservative_opened_at(
+                row,
+                first_fill_at_ms=observation.first_fill_at_ms,
+                now=now,
             )
             if opened_at > closed_at:
                 await self._record_and_escalate(order.order_id, observation, "live_closed_time_invalid", now)
@@ -707,10 +713,15 @@ class ReconcileRunner:
         next_state = (
             OrderState.PARTIAL if partial and protected else (OrderState.OPEN if protected else OrderState.UNPROTECTED)
         )
-        opened = int(
-            observation.first_fill_at_ms or row.get("position_opened_at_ms") or row.get("created_at_ms") or now
+        opened = _conservative_opened_at(
+            row,
+            first_fill_at_ms=observation.first_fill_at_ms,
+            now=now,
         )
-        deadline = must_close_at(opened_at_ms=opened, policy=self._config.order)
+        deadline = _conservative_deadline(
+            row,
+            must_close_at(opened_at_ms=opened, policy=self._config.order),
+        )
         content = observation.model_dump(mode="json")
 
         def _position(repos: Any) -> None:
@@ -916,8 +927,11 @@ class ReconcileRunner:
             ):
                 await self._escalate(order_id, f"paper_observed_{str(observation.state).lower()}", now)
                 return True
-            opened = int(observation.first_fill_at_ms or row.get("created_at_ms") or now)
-            deadline = must_close_at(opened_at_ms=opened, policy=self._config.order)
+            opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
+            deadline = _conservative_deadline(
+                row,
+                must_close_at(opened_at_ms=opened, policy=self._config.order),
+            )
 
             def _promote(repos: Any) -> None:
                 repos.trading.record_observation(
@@ -944,8 +958,11 @@ class ReconcileRunner:
             )
             current_state = OrderState.OPEN.value
         else:
-            opened = int(row.get("position_opened_at_ms") or row.get("created_at_ms") or now)
-            deadline = int(row.get("must_close_at_ms") or must_close_at(opened_at_ms=opened, policy=self._config.order))
+            opened = _conservative_opened_at(row, first_fill_at_ms=None, now=now)
+            deadline = _conservative_deadline(
+                row,
+                must_close_at(opened_at_ms=opened, policy=self._config.order),
+            )
 
         fetcher = self._bars(str(row["exchange_id"]))
         bars: Sequence[Bar] = ()
@@ -1123,6 +1140,18 @@ def _observation_time_invalid(observation: ExecutionObservation) -> bool:
     if closed is not None and (closed <= 0 or closed > observation.observed_at_ms):
         return True
     return first_fill is not None and closed is not None and first_fill > closed
+
+
+def _conservative_opened_at(row: dict[str, Any], *, first_fill_at_ms: int | None, now: int) -> int:
+    persisted = row.get("position_opened_at_ms")
+    if persisted is not None:
+        return min(int(persisted), int(first_fill_at_ms)) if first_fill_at_ms is not None else int(persisted)
+    return int(first_fill_at_ms or row.get("created_at_ms") or now)
+
+
+def _conservative_deadline(row: dict[str, Any], candidate: int) -> int:
+    persisted = row.get("must_close_at_ms")
+    return min(int(persisted), candidate) if persisted is not None else candidate
 
 
 def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrder:

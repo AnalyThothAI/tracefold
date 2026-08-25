@@ -1659,6 +1659,55 @@ def test_unchanged_live_snapshot_bumps_seen_count_instead_of_growing_the_ledger(
     assert int(rows[0]["seen_count"]) == 2
 
 
+def test_later_fill_time_evidence_never_extends_a_persisted_live_deadline(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        _live_position_observation(row).model_copy(
+            update={
+                "observed_at_ms": NOW + 1_000,
+                "first_fill_at_ms": None,
+                "evidence": {"provider": "opentrade", "snapshot": "incomplete-time"},
+            }
+        )
+    ]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    first = _order_row(conn, str(row["order_id"]))
+    conservative_opened = int(first["position_opened_at_ms"])
+    conservative_deadline = int(first["must_close_at_ms"])
+    assert conservative_opened == int(row["created_at_ms"])
+
+    adapter.observations = [
+        _live_position_observation(row, first_fill_at_ms=NOW + 500).model_copy(
+            update={
+                "observed_at_ms": NOW + 31_001,
+                "evidence": {"provider": "opentrade", "snapshot": "later-complete-time"},
+            }
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+    current = _order_row(conn, str(row["order_id"]))
+    assert int(current["position_opened_at_ms"]) == conservative_opened
+    assert int(current["must_close_at_ms"]) == conservative_deadline
+
+
 @pytest.mark.parametrize("regressed_state", ["WORKING", "REJECTED", "ABSENT_CONFIRMED", "UNKNOWN"])
 def test_a_known_live_position_is_never_released_by_a_regressed_provider_snapshot(conn, regressed_state: str) -> None:
     adapter = _LiveLifecycleAdapter()
