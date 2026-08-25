@@ -44,6 +44,18 @@ const archetypes = [
     ready: (page: Page) => page.locator(".news-symbol-row").first(),
     settled: (page: Page) => page.locator(".news-symbol-contract").first(),
   },
+  {
+    name: "review",
+    path: "/news/review",
+    ready: (page: Page) => page.locator(".news-review-task-list"),
+    settled: (page: Page) => page.getByText("外部漏召回"),
+  },
+  {
+    name: "status",
+    path: "/news/status",
+    ready: (page: Page) => page.locator(".news-health-card").first(),
+    settled: (page: Page) => page.getByLabel("过去 24 小时漏斗"),
+  },
 ] as const;
 
 test.beforeEach(async ({ page }) => {
@@ -70,7 +82,7 @@ test("freezes representative news and case archetypes", async ({ page }) => {
        * chip that gains a venue prefix, a row that loses its badge) is orders of magnitude larger and still
        * fails. Raise it only with a crop showing the difference is genuinely invisible.
        */
-      maxDiffPixelRatio: 0.002,
+      maxDiffPixelRatio: 0.0005,
     });
   }
 

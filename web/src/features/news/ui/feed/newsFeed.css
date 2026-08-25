@@ -44,14 +44,14 @@
 
   .news-hour-group-label {
     color: var(--text-secondary);
-    font: 700 9.5px/1.4 var(--font-mono);
+    font: 700 var(--font-size-eyebrow)/1.4 var(--font-mono);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.08em;
   }
 
   .news-hour-group-meta {
     color: var(--text-subtle);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
     white-space: nowrap;
   }
 
@@ -67,18 +67,18 @@
     min-height: 28px;
     padding: 0 13px;
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--accent-primary);
     background: var(--accent-soft);
     box-shadow: var(--shadow-pill);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     font-weight: 600;
   }
 
   .news-new-events-dot {
     width: 5px;
     height: 5px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--accent-primary);
     animation: tf-pulse 1.6s ease-in-out infinite;
   }
@@ -101,7 +101,7 @@
 
   .news-selection-count {
     color: var(--text-primary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     font-weight: 560;
     font-variant-numeric: tabular-nums;
   }
@@ -130,7 +130,7 @@
       display: grid;
       gap: 7px;
       overflow: visible;
-      border-radius: 0;
+      border-radius: var(--radius-none);
       background: transparent;
       box-shadow: none;
     }

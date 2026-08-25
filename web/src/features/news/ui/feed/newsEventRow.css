@@ -54,11 +54,11 @@
   }
 
   .news-event-row[data-outcome-group="held"][data-direction="bullish"] {
-    --rail: color-mix(in srgb, var(--dir-bullish) 45%, transparent);
+    --rail: var(--dir-bullish-muted);
   }
 
   .news-event-row[data-outcome-group="held"][data-direction="bearish"] {
-    --rail: color-mix(in srgb, var(--dir-bearish) 45%, transparent);
+    --rail: var(--dir-bearish-muted);
   }
 
   .news-event-row:hover {
@@ -82,7 +82,7 @@
     grid-area: time;
     padding-top: 1px;
     color: var(--text-secondary);
-    font: 500 11.5px/1.6 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.6 var(--font-mono);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -125,7 +125,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--text-subtle);
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.45;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
@@ -138,13 +138,13 @@
     align-items: center;
     margin: 0;
     min-width: 0;
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.4;
   }
 
   .news-event-origin {
     color: var(--text-subtle);
-    font: 500 10.5px/1.5 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
   }
 
   .news-event-divider {
@@ -184,7 +184,7 @@
     width: 15px;
     height: 15px;
     margin-top: 3px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--surface-panel);
     box-shadow: inset 0 0 0 1px var(--border-strong);
     opacity: 0.25;
@@ -253,7 +253,7 @@
   .news-event-why {
     margin: 0;
     color: var(--text-primary);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     line-height: 1.55;
     text-wrap: pretty;
   }
@@ -287,7 +287,7 @@
     align-self: start;
     overflow: hidden;
     color: var(--text-subtle);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.45;
     text-align: right;
   }
@@ -328,7 +328,7 @@
     }
 
     .news-event-headline {
-      font-size: 15px;
+      font-size: var(--font-size-item-title);
     }
 
     .news-event-headline a {
@@ -341,7 +341,7 @@
     }
 
     .news-event-meta {
-      font-size: 11.5px;
+      font-size: var(--font-size-mono-meta);
     }
 
     .news-event-reason {

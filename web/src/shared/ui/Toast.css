@@ -9,10 +9,10 @@
     align-items: center;
     max-width: calc(100vw - 32px);
     padding: 9px 15px;
-    border-radius: 7px;
+    border-radius: var(--radius-md);
     color: var(--primary-foreground);
     background: var(--text-primary);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     font-weight: 560;
     transform: translateX(-50%);
   }

@@ -52,10 +52,11 @@ export function Empty({
 }
 
 export function Error({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const detail = errorDetail(error);
   return (
     <div className="page-state-error" role="alert">
-      <b>请求失败</b>
-      <span>{errorMessage(error)}</span>
+      <b>{detail.title}</b>
+      <span>{detail.message}</span>
       {onRetry ? (
         <ActionButton onClick={onRetry} size="sm">
           重试
@@ -110,8 +111,21 @@ export function TableSkeleton({
   );
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof globalThis.Error) return error.message;
-  if (typeof error === "string") return error;
-  return "未知错误";
+function errorDetail(error: unknown): { message: string; title: string } {
+  const status =
+    typeof error === "object" && error && "status" in error && typeof error.status === "number"
+      ? error.status
+      : null;
+  if (status === 401) {
+    return { message: "当前凭证无效或已过期，请刷新页面后重试。", title: "无权限访问" };
+  }
+  if (status === 403) {
+    return { message: "当前凭证无权访问此数据。", title: "无权限访问" };
+  }
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return { message: "无法连接服务，请检查网络后重试。", title: "请求失败" };
+  }
+  if (error instanceof globalThis.Error) return { message: error.message, title: "请求失败" };
+  if (typeof error === "string") return { message: error, title: "请求失败" };
+  return { message: "未知错误", title: "请求失败" };
 }

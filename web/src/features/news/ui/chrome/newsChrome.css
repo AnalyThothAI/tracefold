@@ -51,7 +51,7 @@
   .news-heading-copy p {
     margin: 0;
     color: var(--text-subtle);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
   }
 
   .news-heading-aside {
@@ -63,7 +63,7 @@
 
   .news-page-stamp {
     color: var(--text-subtle);
-    font: 500 11px/1 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -82,7 +82,7 @@
     padding: 10px 14px;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     list-style: none;
   }
 
@@ -93,7 +93,7 @@
   .news-technical > summary::before {
     content: "▸";
     color: var(--text-faint);
-    font-size: 10px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-technical[open] > summary {
@@ -126,14 +126,14 @@
     border-radius: var(--radius-sm);
     background: var(--surface-raised);
     color: var(--text-secondary);
-    font: 11px/1.5 var(--font-mono);
+    font: var(--font-size-mono-meta)/1.5 var(--font-mono);
   }
 
   /* One sentence where a section has nothing to show — never an empty grid or a row of dashes. */
   .news-empty-note {
     margin: 0;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     line-height: 1.5;
   }
 
@@ -149,7 +149,7 @@
     }
 
     .news-heading-copy h1 {
-      font-size: 18px;
+      font-size: var(--font-size-page-title);
     }
 
     .news-page-header {

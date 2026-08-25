@@ -35,7 +35,7 @@
       padding: 6px 0 4px;
       border-radius: var(--radius-sm);
       color: var(--text-subtle);
-      font-size: 10.5px;
+      font-size: var(--font-size-mono-meta);
       font-weight: 500;
       text-decoration: none;
     }

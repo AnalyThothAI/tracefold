@@ -9,6 +9,7 @@ import {
   HEALTH_ITEM_KEYS,
   healthItemEyebrow,
   healthLevelLabel,
+  optionalDuration,
   useNewsStatusWithToken,
   type NewsStatus,
 } from "@features/news/shell";
@@ -30,7 +31,9 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
 
 export type ShellRouteContext = {
   bootstrapError: boolean;
+  bootstrapFailure: unknown;
   bootstrapLoading: boolean;
+  retryBootstrap: () => unknown;
   token: string;
 };
 
@@ -57,7 +60,9 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const token = session.token;
   const routeContext: ShellRouteContext = {
     bootstrapError: session.bootstrapError,
+    bootstrapFailure: session.bootstrapFailure,
     bootstrapLoading: session.bootstrapLoading,
+    retryBootstrap: session.retryBootstrap,
     token,
   };
   const currentSearchQuery = isNewsRoute(location.pathname)
@@ -126,9 +131,8 @@ export function topbarFigures(
       { label: "MODE", text: readiness?.mode.toUpperCase() },
       {
         label: "LIVE READY",
-        text: readiness ? (readiness.live_ready ? "YES" : "NO") : undefined,
+        text: readiness?.live_readiness.toUpperCase(),
         tone: readiness?.live_ready === false ? "caution" : undefined,
-        title: readiness?.live_readiness,
       },
       {
         label: "ORDERS TODAY",
@@ -157,20 +161,20 @@ export function topbarFigures(
       { label: "EVENTS 24H", tone: "accent", value: newsStatus?.pipeline.events_24h },
       {
         label: "QUEUE P95",
-        text: durationText(newsStatus?.pipeline.queue_lag_p95_ms),
+        text: loadedDuration(newsStatus?.pipeline.queue_lag_p95_ms),
       },
     ];
   }
 
   return [
     { label: "PUSHED 24H", tone: "accent", value: newsStatus?.delivery.sent_24h },
-    { label: "E2E P95", text: durationText(newsStatus?.delivery.e2e_p95_ms) },
+    { label: "E2E P95", text: loadedDuration(newsStatus?.delivery.e2e_p95_ms) },
   ];
 }
 
-function durationText(value: number | null | undefined): string | undefined {
+function loadedDuration(value: number | null | undefined): string | undefined {
   if (value == null) return undefined;
-  return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} s`;
+  return optionalDuration(value);
 }
 
 /**

@@ -12,4 +12,9 @@ export type { NewsHealthLevel, NewsReview, NewsStatus } from "./api/newsQueries"
  * each is called, and what `warn` reads as in Chinese. The shell maps the server's `health` onto the frame's
  * structural prop with these, so neither the frame nor the route invents a second vocabulary (#207).
  */
-export { HEALTH_ITEM_KEYS, healthItemEyebrow, healthLevelLabel } from "./model/newsLabels";
+export {
+  HEALTH_ITEM_KEYS,
+  healthItemEyebrow,
+  healthLevelLabel,
+  optionalDuration,
+} from "./model/newsLabels";

@@ -32,14 +32,14 @@
   .ui-fact dt {
     margin: 0;
     color: var(--text-muted);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.4;
   }
 
   .ui-fact dd {
     margin: 0;
     color: var(--text-primary);
-    font-size: 13.5px;
+    font-size: var(--font-size-body);
     font-weight: 620;
     font-variant-numeric: tabular-nums;
     line-height: 1.35;
@@ -56,7 +56,7 @@
     }
 
     .ui-fact dd {
-      font-size: 13px;
+      font-size: var(--font-size-meta);
     }
   }
 }

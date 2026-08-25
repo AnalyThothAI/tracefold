@@ -71,9 +71,11 @@
   --dir-bullish: #d32029;
   --dir-bullish-soft: rgba(211, 32, 41, 0.09);
   --dir-bullish-border: rgba(211, 32, 41, 0.32);
+  --dir-bullish-muted: rgba(211, 32, 41, 0.45);
   --dir-bearish: #0a7d4a;
   --dir-bearish-soft: rgba(10, 125, 74, 0.09);
   --dir-bearish-border: rgba(10, 125, 74, 0.3);
+  --dir-bearish-muted: rgba(10, 125, 74, 0.45);
 
   /*
    * Axis 2 — pipeline outcome. Deliberately no red and no green: "已推送" is a completed step, not a market
@@ -102,10 +104,12 @@
   --signal-neutral-border: #e4e8ee;
 
   /* Shape. Panels 10, wells and cards 8, controls 6, chips 3. */
+  --radius-none: 0;
   --radius-xs: 3px;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
+  --radius-pill: 999px;
 
   /*
    * Depth. `ring` is the panel edge — an inset hairline, so a panel never grows by a pixel when it gains one.
@@ -139,13 +143,20 @@
    * and duration is monospace with tabular numerals, so a number that changes on a poll never re-flows the
    * ones beside it. Tracking is applied at the call site because `font:` shorthand resets it.
    */
-  --type-page-title: 650 19px/1.28 var(--font-sans);
-  --type-item-title: 640 14.5px/1.42 var(--font-sans);
-  --type-body: 400 13.5px/1.6 var(--font-sans);
-  --type-meta: 400 12px/1.45 var(--font-sans);
-  --type-mono-meta: 600 11px/1.5 var(--font-mono);
-  --type-metric: 660 21px/1.15 var(--font-mono);
-  --type-eyebrow: 700 8.5px/1 var(--font-mono);
+  --font-size-page-title: 19px;
+  --font-size-item-title: 14.5px;
+  --font-size-body: 0.8125rem;
+  --font-size-meta: 12px;
+  --font-size-mono-meta: 11px;
+  --font-size-metric: 21px;
+  --font-size-eyebrow: 8.5px;
+  --type-page-title: 650 var(--font-size-page-title) / 1.28 var(--font-sans);
+  --type-item-title: 640 var(--font-size-item-title) / 1.42 var(--font-sans);
+  --type-body: 400 var(--font-size-body) / 1.6 var(--font-sans);
+  --type-meta: 400 var(--font-size-meta) / 1.45 var(--font-sans);
+  --type-mono-meta: 600 var(--font-size-mono-meta) / 1.5 var(--font-mono);
+  --type-metric: 660 var(--font-size-metric) / 1.15 var(--font-mono);
+  --type-eyebrow: 700 var(--font-size-eyebrow) / 1 var(--font-mono);
 
   /* Radix/shadcn integration */
   --background: var(--surface-root);
@@ -172,4 +183,11 @@
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
   --sidebar-ring: var(--focus-ring);
+}
+
+@media (max-width: 767px) {
+  :root {
+    /* Han glyphs need more absolute size than Latin to stay legible on a phone. */
+    --font-size-body: 0.875rem;
+  }
 }

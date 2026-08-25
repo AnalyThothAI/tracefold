@@ -52,8 +52,7 @@ describe("route-aware shell figures", () => {
       { label: "MODE", text: "PAPER" },
       {
         label: "LIVE READY",
-        text: "NO",
-        title: "not_applicable",
+        text: "NOT_APPLICABLE",
         tone: "caution",
       },
       { label: "ORDERS TODAY", text: "3 / 4" },

@@ -32,4 +32,14 @@
     scrollbar-gutter: stable;
     background: var(--surface-canvas);
   }
+
+  .cockpit-session-state {
+    padding: 16px;
+  }
+
+  @media (max-width: 767px) {
+    .cockpit-session-state {
+      padding: 12px;
+    }
+  }
 }

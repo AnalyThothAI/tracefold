@@ -7,13 +7,13 @@
 
   .news-quote-price {
     color: var(--text-secondary);
-    font: 500 12px/1 var(--font-mono);
+    font: 500 var(--font-size-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .news-quote-state {
     color: var(--text-faint);
-    font: 500 11px/1 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
   }
 
   /*
@@ -51,13 +51,13 @@
 
   .news-reaction b {
     color: var(--text-primary);
-    font: 640 12px/1 var(--font-mono);
+    font: 640 var(--font-size-body)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   /* Nothing missing is ever drawn as 0.00%: a horizon that has not matured says so, in words. */
   .news-reaction-empty {
     color: var(--text-faint);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
   }
 }

@@ -179,6 +179,57 @@ describe("CSS architecture harness", () => {
     ).toEqual([]);
   });
 
+  it("keeps semantic colour derivation in the token stylesheet", () => {
+    const offenders = collectFiles(srcRoot)
+      .filter(isCssFile)
+      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
+      .flatMap((path) => {
+        const css = sanitizeCss(readFileSync(path, "utf8"));
+        return [...css.matchAll(/\bcolor-mix\([^;]+/g)].map(
+          (match) => `${relativeToSrc(path)}:${lineNumber(css, match.index)} derives ${match[0]}`,
+        );
+      });
+
+    expect(
+      offenders,
+      "Components consume semantic colour tokens; they do not create new shades at the call site.",
+    ).toEqual([]);
+  });
+
+  it("keeps type sizes and radii on the global scale", () => {
+    const typographyOffenders: string[] = [];
+    const radiusOffenders: string[] = [];
+
+    for (const path of collectFiles(srcRoot)
+      .filter(isCssFile)
+      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")) {
+      const css = sanitizeCss(readFileSync(path, "utf8"));
+      for (const match of css.matchAll(/\bfont(?:-size)?\s*:\s*([^;]+);/g)) {
+        if (/\b\d*\.?\d+(?:px|rem)\b/.test(match[1])) {
+          typographyOffenders.push(
+            `${relativeToSrc(path)}:${lineNumber(css, match.index)} uses ${match[0]}`,
+          );
+        }
+      }
+      for (const match of css.matchAll(/\bborder-radius\s*:\s*([^;]+);/g)) {
+        if (!match[1].trim().startsWith("var(")) {
+          radiusOffenders.push(
+            `${relativeToSrc(path)}:${lineNumber(css, match.index)} uses ${match[0]}`,
+          );
+        }
+      }
+    }
+
+    expect(
+      typographyOffenders,
+      "Production type sizes must consume one of the seven steps from styles/tokens.css.",
+    ).toEqual([]);
+    expect(
+      radiusOffenders,
+      "Production radii must consume the shape scale from styles/tokens.css.",
+    ).toEqual([]);
+  });
+
   it("does not reference undefined CSS custom properties", () => {
     const cssFiles = collectFiles(srcRoot).filter(isCssFile);
     const defined = new Set(
