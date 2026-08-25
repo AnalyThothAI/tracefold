@@ -16,6 +16,11 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.compiler.security import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
+    ModelExecutionIdentity,
+)
 from tracefold.news.learning.contracts import (
     DevelopmentDatasetRef,
     OptimizationBudget,
@@ -35,6 +40,38 @@ from tracefold.news.learning.optimizer import (
 from tracefold.news.program.artifact import ProgramStrategyArtifactV1, load_stable_program_artifact
 
 from .test_news_program_compiler import _FakeGEPA, _MeteredFakeLM, _NoopJudge, _request
+
+_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v7", "cases": []}
+
+
+class _StampedJudge(_NoopJudge):
+    """A judge carrying the identity and the admission ceiling the entry point requires.
+
+    `_NoopJudge` deliberately carries neither: the metric calls the judge directly, so a judge without a
+    stamped role binding and without a ceiling bound to the declared budget is exactly the hole the review
+    of #205 found — judge-derived scores with no endpoint provenance, and calls no pre-flight bounded.
+    """
+
+    def __init__(self, *, max_model_calls: int = 16, role: str = "metric_judge") -> None:
+        super().__init__()
+        binding = ModelExecutionIdentity.issue(
+            role=role,  # type: ignore[arg-type]
+            model="judge/model",
+            api_base="https://judge.test/v1",
+            max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
+            timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
+            temperature=0.0,
+            model_kwargs={},
+        )
+        self.identity = {
+            "judge_id": "test/stamped",
+            "execution": {
+                "role_binding": binding.model_dump(mode="json"),
+                "max_model_calls": max_model_calls,
+                "timeout_seconds": METRIC_JUDGE_TIMEOUT_SECONDS,
+            },
+        }
+
 
 _RUNTIME_MANIFEST_SHA = "a" * 64
 _NOW_MS = 1_800_000_123_456
@@ -76,7 +113,7 @@ def _episodes(**review_overrides: Any) -> tuple[DevelopmentEpisode, ...]:
 def _dataset(episodes: tuple[DevelopmentEpisode, ...] | None = None) -> FrozenDevelopmentDataset:
     cases = episodes if episodes is not None else _episodes()
     ref = DevelopmentDatasetRef(
-        development_dataset_sha256="d" * 64,
+        development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
         episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in cases]),
         episode_count=len(cases),
         learning_epoch_started_at_ms=1_787_549_907_739,
@@ -85,6 +122,7 @@ def _dataset(episodes: tuple[DevelopmentEpisode, ...] | None = None) -> FrozenDe
     return FrozenDevelopmentDataset.bind(
         ref=ref,
         episodes=cases,
+        dataset_payload=_DATASET_PAYLOAD,
         target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
     )
 
@@ -95,11 +133,12 @@ def _config(
     budget: OptimizationBudget | None = None,
     monotonic: Any = None,
     task_lm: Any = None,
+    judge: Any = None,
 ) -> OptimizationConfig:
     return OptimizationConfig(
         task_lm=task_lm or _MeteredFakeLM("task/model", cost=0.000002),
         reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),
-        judge=_NoopJudge(),
+        judge=judge or _StampedJudge(),
         budget=budget or _budget(),
         optimizer_factory=optimizer_factory,
         now_ms=lambda: _NOW_MS,
@@ -123,7 +162,7 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
         task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
-        judge=_NoopJudge(),
+        judge=_StampedJudge(),
     ).compile(_request())
     compiler_constructor = dict(_FakeGEPA.calls[-1])
 
@@ -156,7 +195,7 @@ def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promot
     assert candidate is not None
     assert candidate.schema_version == "news_prompt_candidate_v1"
     assert candidate.parent_program_sha256 == load_stable_program_artifact().program_sha256
-    assert candidate.development_dataset_sha256 == "d" * 64
+    assert candidate.development_dataset_sha256 == canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD})
     assert candidate.target_runtime_manifest_sha256 == _RUNTIME_MANIFEST_SHA
     assert candidate.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
     assert candidate.patch.reader_card_instruction == ""
@@ -237,11 +276,12 @@ def test_an_exhausted_call_budget_is_rejected_and_never_produces_a_candidate() -
 
 
 def test_an_exhausted_wall_clock_stops_the_next_call_rather_than_reporting_the_last() -> None:
-    ticks = iter([0.0, 0.0, 1_000.0, 1_000.0, 1_000.0, 1_000.0])
+    ticks = iter([0.0, 0.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0])
 
     result = optimize(
         _dataset(),
-        _config(budget=_budget(max_wall_clock_seconds=60.0), monotonic=lambda: next(ticks)),
+        # Above the longest role deadline, so the budget is admissible — and then exceeded mid-run.
+        _config(budget=_budget(max_wall_clock_seconds=600.0), monotonic=lambda: next(ticks)),
     )
 
     assert result.outcome == "REJECTED"
@@ -262,14 +302,44 @@ def test_the_same_frozen_corpus_and_the_same_run_produce_a_byte_stable_report() 
 def test_a_dataset_ref_that_describes_a_different_projection_fails_closed() -> None:
     episodes = _episodes()
     ref = DevelopmentDatasetRef(
-        development_dataset_sha256="d" * 64,
+        development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
         episode_projection_root_sha256="b" * 64,
         episode_count=len(episodes),
         learning_epoch_started_at_ms=1,
         review_rubric_version="news_review_v4",
     )
     with pytest.raises(ValueError, match="projection_root_mismatch"):
-        FrozenDevelopmentDataset.bind(ref=ref, episodes=episodes, target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA)
+        FrozenDevelopmentDataset.bind(
+            ref=ref,
+            episodes=episodes,
+            dataset_payload=_DATASET_PAYLOAD,
+            target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
+        )
+
+
+def test_a_dataset_ref_naming_an_artifact_it_was_not_built_from_fails_closed() -> None:
+    """#202 review: a matching projection root beside an unrelated artifact hash is still a lie.
+
+    A candidate issued from it would name a dataset it was never built from, and the evaluator that later
+    loads that SHA would score a different corpus — or find nothing — while the report claimed the run was
+    dataset-bound. The durable identity is recomputed here, not accepted.
+    """
+
+    episodes = _episodes()
+    ref = DevelopmentDatasetRef(
+        development_dataset_sha256="c" * 64,
+        episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in episodes]),
+        episode_count=len(episodes),
+        learning_epoch_started_at_ms=1,
+        review_rubric_version="news_review_v4",
+    )
+    with pytest.raises(ValueError, match="dataset_artifact_hash_mismatch"):
+        FrozenDevelopmentDataset.bind(
+            ref=ref,
+            episodes=episodes,
+            dataset_payload=_DATASET_PAYLOAD,
+            target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
+        )
 
 
 def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() -> None:
@@ -279,7 +349,7 @@ def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() ->
     )
     episodes = _episodes()
     ref = DevelopmentDatasetRef(
-        development_dataset_sha256="d" * 64,
+        development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
         episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in episodes]),
         episode_count=len(episodes),
         learning_epoch_started_at_ms=1,
@@ -289,6 +359,7 @@ def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() ->
         FrozenDevelopmentDataset.bind(
             ref=ref,
             episodes=episodes,
+            dataset_payload=_DATASET_PAYLOAD,
             target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
             parent_program=descendant,
         )
@@ -409,3 +480,50 @@ def test_the_offline_jobs_powers_are_the_fields_of_its_config() -> None:
         "now_ms",
         "monotonic",
     }
+
+
+def test_an_unbounded_or_unstamped_judge_is_refused_before_anything_is_spent() -> None:
+    """#205 review, both halves.
+
+    The metric calls the judge directly, so `_BudgetedLM` never sees those requests — the judge admits them
+    itself, atomically, before each provider call. That is a real pre-call bound only if the ceiling it
+    admits against is the one declared here. And a judge with no stamped role binding produces scores a
+    candidate would retain without naming the endpoint that produced them.
+    """
+
+    task_lm = _MeteredFakeLM("task/model", cost=0.000002)
+
+    with pytest.raises(ValueError, match="metric_judge_identity_unavailable"):
+        optimize(_dataset(), _config(task_lm=task_lm, judge=_NoopJudge()))
+    with pytest.raises(ValueError, match="metric_judge_identity_unavailable"):
+        optimize(_dataset(), _config(task_lm=task_lm, judge=_StampedJudge(role="task")))
+    # A ceiling above the declared budget is not a ceiling this run set.
+    with pytest.raises(ValueError, match="metric_judge_call_budget_unbound"):
+        optimize(_dataset(), _config(task_lm=task_lm, judge=_StampedJudge(max_model_calls=17)))
+    assert task_lm.history == []
+
+
+def test_a_wall_clock_that_cannot_bound_one_call_is_refused() -> None:
+    """A 60 s budget that still waits 300 s for a reflection response is a number, not a deadline.
+
+    The clock is checked before each call, never during one: a request in flight runs to its own attested
+    deadline, and clamping that would break the role contract `ModelExecutionIdentity` exists to attest.
+    So the worst case is the budget plus one call, and the budget has to be able to cover that one call.
+    """
+
+    with pytest.raises(ValueError, match="wall_clock_below_call_deadline"):
+        optimize(_dataset(), _config(budget=_budget(max_wall_clock_seconds=60.0)))
+
+
+def test_an_unpriced_judge_call_is_charged_rather_than_counted_as_free() -> None:
+    judge = _StampedJudge()
+    judge.stats = {**judge.stats, "attempts": 4, "model_calls": 4, "actual_cost_microusd": 0}
+
+    result = optimize(_dataset(), _config(judge=judge))
+
+    # 4 calls x the declared per-call ceiling, not the zero the provider reported.
+    assert result.report.usage["metric_judge_cost_microusd"] == 4 * 5
+    assert result.report.usage["metric_judge_cost_imputed"] is True
+    # And the run is rejected for it, because the total now exceeds `max_cost_microusd`.
+    assert result.outcome == "REJECTED"
+    assert "news_program_compile_cost_budget_exceeded" in result.report.reasons
