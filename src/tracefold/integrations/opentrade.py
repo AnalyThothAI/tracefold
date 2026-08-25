@@ -815,11 +815,12 @@ def _all_explicit_zero_fills(rows: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def _first_timestamp(rows: Sequence[Mapping[str, Any]], *, server_time: int) -> int | None:
-    timestamps = [
-        value
-        for row in rows
-        if (value := _bounded_optional_timestamp(row.get("timestamp"), server_time=server_time)) is not None
-    ]
+    timestamps: list[int] = []
+    for row in rows:
+        value = _bounded_optional_timestamp(row.get("timestamp"), server_time=server_time)
+        if value is None:
+            return None
+        timestamps.append(value)
     return min(timestamps) if timestamps else None
 
 

@@ -1224,6 +1224,7 @@ def test_non_json_4xx_write_is_an_explicit_rejection(status: int, reason: str) -
         ("protected_conflicting_parent", "UNKNOWN"),
         ("protected_external_order", "UNKNOWN"),
         ("unprotected", "OPEN_UNPROTECTED"),
+        ("multi_fill_missing_timestamp", "OPEN_UNPROTECTED"),
         ("future_fill", "UNKNOWN"),
         ("external_scale_in_trade", "UNKNOWN"),
         ("external_scale_in_missing_timestamp", "UNKNOWN"),
@@ -1280,6 +1281,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
                     "protected_conflicting_parent",
                     "protected_external_order",
                     "unprotected",
+                    "multi_fill_missing_timestamp",
                     "future_fill",
                     "external_scale_in_trade",
                     "external_scale_in_missing_timestamp",
@@ -1417,6 +1419,7 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "protected_conflicting_parent",
             "protected_external_order",
             "unprotected",
+            "multi_fill_missing_timestamp",
             "future_fill",
             "external_scale_in_trade",
             "external_scale_in_missing_timestamp",
@@ -1429,6 +1432,31 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
             "historical_closing_trade",
             "mixed_order_history_with_position",
         }:
+            if scenario == "multi_fill_missing_timestamp":
+                return httpx.Response(
+                    200,
+                    json={
+                        "success": True,
+                        "data": [
+                            {
+                                "exchange": "binance",
+                                "tradeId": "trade-1",
+                                "orderId": "remote-1",
+                                "symbol": "DOGE/USDT:USDT",
+                                "amount": "0.4",
+                            },
+                            {
+                                "exchange": "binance",
+                                "tradeId": "trade-2",
+                                "orderId": "remote-1",
+                                "symbol": "DOGE/USDT:USDT",
+                                "amount": "0.6",
+                                "timestamp": NOW - 500,
+                            },
+                        ],
+                    },
+                    request=request,
+                )
             amount = "0.5" if scenario in {"partial", "partial_working"} else "1"
             return httpx.Response(
                 200,
@@ -1611,6 +1639,8 @@ def test_explicit_provider_lifecycle_mapping(scenario: str, expected: str) -> No
     if scenario == "missing_open_timestamp":
         assert observation.first_fill_at_ms is None
         assert observation.closed_at_ms == NOW - 1_000
+    if scenario == "multi_fill_missing_timestamp":
+        assert observation.first_fill_at_ms is None
     if scenario in {"future_fill", "missing_close_timestamp", "reversed_close"}:
         assert observation.evidence["error_code"] == "opentrade_timestamp_invalid"
     if scenario in {
