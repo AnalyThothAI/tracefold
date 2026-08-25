@@ -276,7 +276,7 @@ class LiquidationShadowRunner:
             timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
         )
         completed = 0
-        cache: dict[tuple[str, str, int, str], dict[str, Any] | None] = {}
+        bar_cache: dict[tuple[str, str, int], list[Bar] | None] = {}
         for row in pending:
             try:
                 manifest = TradingCaseManifest.model_validate(row["manifest"])
@@ -295,39 +295,35 @@ class LiquidationShadowRunner:
                 funnel.count("liquidation_outcome_terminal:manifest_invalid")
                 continue
             cutoff = int(row["cutoff_ms"])
-            key = (
+            bar_key = (
                 manifest.instrument.exchange_id,
                 manifest.instrument.provider_symbol,
                 cutoff,
-                str(row["strategy_id"]),
             )
-            if key not in cache:
-                bars = await self._outcome_bars(
+            if bar_key not in bar_cache:
+                bar_cache[bar_key] = await self._outcome_bars(
                     manifest.instrument,
                     cutoff=cutoff,
                     horizon=EVENT_STUDY_SETTLEMENT_LAG_MS,
                 )
-                if bars is None:
-                    cache[key] = None
-                else:
-                    aggregate = manifest.contexts.liquidation_aggregate
-                    side = hypothesis_side(
-                        manifest.strategy_id,
-                        None if aggregate is None else aggregate.dominant_liquidated_side,
-                    )
-                    cache[key] = measure_event(
-                        bars,
-                        cutoff_ms=cutoff,
-                        decision=str(row["decision"]),  # type: ignore[arg-type]
-                        research_side=side,
-                        policy=EVENT_STUDY_POLICY,
-                        gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms,
-                    )
-            outcome = cache[key]
-            if outcome is None:
+            bars = bar_cache[bar_key]
+            if bars is None:
                 await self._defer_outcome(row, now=now)
                 funnel.count("liquidation_outcome_deferred:provider_unavailable")
                 continue
+            aggregate = manifest.contexts.liquidation_aggregate
+            side = hypothesis_side(
+                manifest.strategy_id,
+                None if aggregate is None else aggregate.dominant_liquidated_side,
+            )
+            outcome = measure_event(
+                bars,
+                cutoff_ms=cutoff,
+                decision=str(row["decision"]),  # type: ignore[arg-type]
+                research_side=side,
+                policy=EVENT_STUDY_POLICY,
+                gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms,
+            )
             completed += int(await self._persist_outcome(row, outcome=outcome, now=now))
         funnel.count("liquidation_outcome_completed", completed)
         return completed

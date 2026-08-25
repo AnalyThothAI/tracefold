@@ -1163,6 +1163,29 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
         "'opennews_liquidation_source_v1', false, %s)",
         ("b" * 64, new_received - 1_000, new_received, new_received),
     )
+    # Same instrument and cutoff, but an older event window with the opposite dominant side. Outcome
+    # measurement may share fetched bars, never the side/decision frozen by an individual evaluation.
+    conn.execute(
+        "INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms, "
+        "provider_metadata, provenance, first_ingest_mode, created_at_ms, updated_at_ms) "
+        "VALUES ('liq-item-3', 'opennews', 'liq-key-3', 'DOGE Large Long Liquidation 750K at $0.13', "
+        "%s, %s, '{\"source\":\"binance\"}'::jsonb, '{}'::jsonb, 'live', %s, %s)",
+        (new_received - 59_000, new_received, new_received, new_received),
+    )
+    conn.execute(
+        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, ingest_mode, symbol, venue, "
+        "liquidated_position_side, forced_order_side, notional_usd, quantity, price, event_at_ms, "
+        "received_at_ms, parser_version, provider_record_identity, symbol_contract_identity, "
+        "position_side_semantics, quantity_semantics, notional_semantics, price_semantics, "
+        "completeness_assumption, throttle_assumption, source_contract_version, "
+        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item-3', 'fact-3', 'live', 'DOGE', "
+        "'binance', 'long', 'sell', 750000, NULL, 0.13, %s, %s, 'liquidation_parser_v1', "
+        "'liq-key-3', 'unresolved:binance:DOGE', 'short=>forced_buy;long=>forced_sell', "
+        "'not_provided', 'provider_reported_usd_notional', 'provider_reported_unspecified_price', "
+        "'selected_events_without_heartbeat', 'provider_throttle_unknown', "
+        "'opennews_liquidation_source_v1', false, %s)",
+        ("e" * 64, new_received - 59_000, new_received, new_received),
+    )
     conn.commit()
     first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 2 * MINUTE).turn())
     unavailable = asyncio.run(
@@ -1192,30 +1215,23 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
         "SELECT outcome_attempt_count, outcome_next_attempt_at_ms, outcome_last_error "
         "FROM trading_strategy_evaluations ORDER BY evaluation_id"
     ).fetchall()
-    assert [dict(row) for row in retry_rows] == [
-        {
-            "outcome_attempt_count": 2,
-            "outcome_next_attempt_at_ms": NOW + 70 * MINUTE,
-            "outcome_last_error": "provider_unavailable",
-        },
-        {
-            "outcome_attempt_count": 2,
-            "outcome_next_attempt_at_ms": NOW + 70 * MINUTE,
-            "outcome_last_error": "provider_unavailable",
-        },
-    ]
+    assert len(retry_rows) == 4
+    assert {
+        (row["outcome_attempt_count"], row["outcome_next_attempt_at_ms"], row["outcome_last_error"])
+        for row in retry_rows
+    } == {(2, NOW + 70 * MINUTE, "provider_unavailable")}
     deferred = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
     second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 70 * MINUTE, bars_result=()).turn())
 
     rows = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
-    assert first["shadow_evaluated"] == 2
+    assert first["shadow_evaluated"] == 4
     assert unavailable["shadow_completed"] == 0
-    assert unavailable["funnel"]["liquidation_outcome_deferred:provider_unavailable"] == 2
+    assert unavailable["funnel"]["liquidation_outcome_deferred:provider_unavailable"] == 4
     assert transient["shadow_completed"] == 0
-    assert transient["funnel"]["liquidation_outcome_deferred:provider_unavailable"] == 2
+    assert transient["funnel"]["liquidation_outcome_deferred:provider_unavailable"] == 4
     assert all(row["completed_at_ms"] is None for row in deferred)
     assert second["shadow_evaluated"] == 0
-    assert second["shadow_completed"] == 2
+    assert second["shadow_completed"] == 4
     assert {row["strategy_id"] for row in rows} == {
         "liquidation_continuation_shadow_v1",
         "liquidation_exhaustion_shadow_v1",
@@ -1227,11 +1243,21 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     assert set(_repos(conn).trading.strategy_registrations().values()) == {NOW}
     assert all(row["market_outcome"]["start_price"] is None for row in rows)
     assert all(row["market_outcome"]["exit_simulation"]["reason"] == "entry_bar_unavailable" for row in rows)
+    assert {
+        strategy_id: {row["market_outcome"]["hypothesis_side"] for row in rows if row["strategy_id"] == strategy_id}
+        for strategy_id in (
+            "liquidation_continuation_shadow_v1",
+            "liquidation_exhaustion_shadow_v1",
+        )
+    } == {
+        "liquidation_continuation_shadow_v1": {"long", "short"},
+        "liquidation_exhaustion_shadow_v1": {"long", "short"},
+    }
     assert all(set(row["market_outcome"]["horizons"]) == {"5s", "30s", "1m", "5m", "15m", "1h"} for row in rows)
     counts = _repos(conn).trading.status_counts(since_ms=NOW - 24 * 3_600_000)
     assert counts["shadow_by_strategy"] == {
-        "liquidation_continuation_shadow_v1": 1,
-        "liquidation_exhaustion_shadow_v1": 1,
+        "liquidation_continuation_shadow_v1": 2,
+        "liquidation_exhaustion_shadow_v1": 2,
     }
     assert all(cohort["completed"] == 0 for cohort in counts["shadow_cohorts"].values())
     assert (
