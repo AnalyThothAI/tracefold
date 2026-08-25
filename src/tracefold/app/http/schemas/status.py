@@ -73,6 +73,9 @@ class NewsPipelineStatusData(ExactApiSchema):
     telemetry_received_24h: int = 0
     telemetry_parsed_24h: int = 0
     telemetry_parse_failed_24h: int = 0
+    # #207: Events on the deterministic admission, which is the 持仓异动 table's own universe. `received`
+    # counts provider items before the Gate and so names frames no row can reach.
+    telemetry_events_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None

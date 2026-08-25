@@ -992,7 +992,7 @@ export interface components {
             /** Limit */
             limit: number;
             /** Oi */
-            oi?: ("pushed" | "withheld" | "parse_failed") | null;
+            oi?: ("all" | "pushed" | "withheld" | "parse_failed") | null;
             /** Outcome */
             outcome?: ("pushed" | "held" | "pending") | null;
             /** Q */
@@ -1468,6 +1468,11 @@ export interface components {
              * @default 0
              */
             tagged_24h: number;
+            /**
+             * Telemetry Events 24H
+             * @default 0
+             */
+            telemetry_events_24h: number;
             /**
              * Telemetry Parse Failed 24H
              * @default 0

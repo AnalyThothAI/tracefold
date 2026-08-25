@@ -17,14 +17,14 @@ import { NewsOiSource } from "./NewsOiSource";
  * whose earlier frames fell off the page would read as having slots it does not have.
  */
 export function NewsOiWindow({
-  hours,
   rows,
+  windowLabel,
 }: {
-  hours: number;
   rows: readonly NewsOiWindowSymbol[];
+  windowLabel: string;
 }) {
   return (
-    <Card flush hint={hours ? `过去 ${hours} 小时` : undefined} title="窗口占用">
+    <Card flush hint={windowLabel ? `过去 ${windowLabel}` : undefined} title="窗口占用">
       {rows.length === 0 ? (
         <NewsEmptyNote>窗口内还没有合格帧，下一帧的名次是第 1 次。</NewsEmptyNote>
       ) : (

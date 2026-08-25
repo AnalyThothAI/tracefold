@@ -49,8 +49,9 @@ describe("NewsOiPage", () => {
 
     await waitFor(() => expect(observed.admission).toBe("telemetry_deterministic"));
     expect(observed.hours).toBe("24");
-    // `全部` is the absence of the filter, not a server value.
-    expect(observed.oi).toBeNull();
+    // `all` is sent even though it narrows nothing: it is how the request identifies itself as the monitor,
+    // which is what lets the server skip the outcome-group aggregate this page never reads.
+    expect(observed.oi).toBe("all");
   });
 
   it("takes every tab count from the server's 24 h aggregate, never from the page", async () => {
@@ -65,12 +66,12 @@ describe("NewsOiPage", () => {
     expect(within(tabs).getByRole("tab", { name: /未达阈值/ })).toHaveTextContent("136");
     expect(within(tabs).getByRole("tab", { name: /解析失败/ })).toHaveTextContent("1");
     /*
-     * 全部 is the sum of the three judged buckets (106 + 30 + 3 + 1), **not** `telemetry_received_24h`
-     * (142). They count different things: `received` counts provider items before the Gate, so the two the
-     * Gate folded into an existing Event are in it and in no row this table can ever show. `received` keeps
-     * its own tile in the band above, where it is the lane's intake and nothing else.
+     * 全部 is `telemetry_events_24h` (141) — Events on this admission, which is exactly the row universe.
+     * It is neither of the numbers beside it: `telemetry_received_24h` (142) counts provider items *before*
+     * the Gate, so it names frames no row can show; the judged buckets sum to 140, so they miss the frame
+     * still awaiting a verdict that the table renders with no `oi` block.
      */
-    expect(within(tabs).getByRole("tab", { name: /全部/ })).toHaveTextContent("140");
+    expect(within(tabs).getByRole("tab", { name: /全部/ })).toHaveTextContent("141");
     expect(screen.getByText("telemetry_received_24h").closest(".ui-metric")).toHaveTextContent(
       "142",
     );
@@ -197,6 +198,59 @@ describe("NewsOiPage", () => {
 
     await waitFor(() => expect(observed).toContain("parse_failed"));
     expect(screen.getByTestId("location").textContent).toBe("/news/oi?oi=parse_failed");
+  });
+
+  it("reads the symbol from the Event, which is the only place the feed puts it", async () => {
+    /*
+     * `_triage_summary` builds the slim shape for feed rows; only the Event detail's `full=True` shape
+     * carries `assets`. Reading the symbol from `triage.assets` left every production row showing `—`
+     * while the fixture — which carried the detail shape — looked right, so this asserts against a row
+     * whose `triage.assets` is empty, exactly as the server sends it.
+     */
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                assets: [{ base_symbol: "S", listed: true, symbol: "S", venue: "binance.perp" }],
+                grounded_assets: ["S"],
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderOi();
+    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await waitFor(() => expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("S"));
+  });
+
+  it("says nothing for the symbol of a frame that grounded on nothing", async () => {
+    // An unparseable frame produced no symbol, so the Gate grounded no tag. `—` is the honest cell; the
+    // provider's own line is in the expansion.
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                assets: [],
+                grounded_assets: [],
+                oi: { ...newsOiFrameFixture().oi!, parsed: false, rule: "oi_parse_failed" },
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderOi();
+    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await waitFor(() => expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("—"));
   });
 
   it("renders the judged measurements from the server's own trace", async () => {

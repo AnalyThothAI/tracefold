@@ -21,7 +21,7 @@ from tracefold.news.oi_signals import (
     parse_oi_signal,
 )
 from tracefold.news.similarity import similarity
-from tracefold.news.storage.feed import OI_FILTERS, _oi_summary
+from tracefold.news.storage.feed import OI_FILTERS, OI_OUTCOMES, _oi_summary
 from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, storyline_status
 from tracefold.news.triage_rules import decide as production_decide
 
@@ -362,3 +362,16 @@ def test_the_feed_oi_filter_groups_exactly_the_rules_the_judge_can_write() -> No
     assert produced == set(grouped)
     # The groups partition the rules: no rule may appear under two tabs.
     assert len(grouped) == len(set(grouped))
+
+
+def test_the_monitors_unfiltered_tab_is_a_value_the_caller_sends_not_an_omission() -> None:
+    """`all` is an accepted `oi` value that narrows nothing, and that is the point.
+
+    Omitting the parameter is indistinguishable from any other feed request, so the server would keep
+    paying for the outcome-group aggregate on the tab the monitor displays most — a count describing the
+    feed's task tabs, which this page does not have and never reads.
+    """
+
+    assert "all" in OI_OUTCOMES
+    assert "all" not in OI_FILTERS
+    assert set(OI_OUTCOMES) == {"all"} | set(OI_FILTERS)

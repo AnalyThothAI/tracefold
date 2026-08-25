@@ -3,7 +3,7 @@ import { ThresholdIcon, WhaleShareIcon, WindowClockIcon } from "@shared/ui/icons
 
 import type { NewsOiPolicy, NewsOiTradeFloors } from "../../api/newsQueries";
 import { formatCount } from "../../model/newsLabels";
-import { oiPercent, oiRuleLabel, oiValueZh, oiWindowHours } from "../../model/oiSignals";
+import { oiPercent, oiRuleLabel, oiValueZh, oiWindowLabel } from "../../model/oiSignals";
 
 import { NewsOiSource } from "./NewsOiSource";
 
@@ -24,7 +24,7 @@ export function NewsOiGates({
   floors: NewsOiTradeFloors;
   policy: NewsOiPolicy | null;
 }) {
-  const hours = oiWindowHours(policy?.window_ms);
+  const windowLabel = oiWindowLabel(policy?.window_ms);
   const changeFloorOn = (policy?.oi_change_at_least_bps ?? 0) > 0;
   return (
     <>
@@ -42,7 +42,7 @@ export function NewsOiGates({
             icon={<WindowClockIcon aria-hidden />}
             rule="beyond_window_rank"
             threshold={policy ? `前 ${policy.max_rank_in_window} 次` : "—"}
-            title={hours ? `${hours}h 窗口内只放前几次` : "窗口内只放前几次"}
+            title={windowLabel ? `${windowLabel}窗口内只放前几次` : "窗口内只放前几次"}
           />
           <GateRow
             count={byRule.oi_change_below_threshold}

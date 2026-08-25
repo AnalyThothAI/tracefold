@@ -45,6 +45,10 @@ OI_FILTERS: Final[dict[str, tuple[str, ...]]] = {
     "withheld": _OI_WITHHELD_RULES,
     "parse_failed": (_OI_PARSE_FAILED_RULE,),
 }
+# `all` is the monitor's fourth tab and narrows nothing, so it is not in `OI_FILTERS`. It still has to be a
+# value the caller can send: it is how a request says "I am the 持仓异动 monitor", which is what lets the
+# outcome-group count be skipped for the tab that is displayed most.
+OI_OUTCOMES: Final[frozenset[str]] = frozenset({"all", *OI_FILTERS})
 # Both feed laterals expose the judged rule under this one alias, so the page query and the tab-count query
 # share the predicate verbatim. A count that filtered differently from the rows it counts is the whole bug
 # this alias exists to prevent.
@@ -109,11 +113,11 @@ class FeedStorage:
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
         # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
         #
-        # An `oi` request skips it too. `counts` describes the three *outcome* groups, which are the feed's
-        # task tabs; the OI monitor's tabs are gates and it takes their counts from `status.oi.by_rule_24h`,
-        # so on a 5 s poll this would be the file's own "19 ms over the entire table" aggregate run for a
-        # field nobody reads.
-        wants_counts = cursor_opened is None and oi not in OI_FILTERS
+        # Any `oi` request skips it too — including `all`, which narrows nothing but still identifies the
+        # caller as the OI monitor. `counts` describes the three *outcome* groups, which are the feed's task
+        # tabs; the monitor's tabs are gates and it takes their counts from `status.oi`, so on a 5 s poll
+        # this would be the file's own "19 ms over the entire table" aggregate run for a field nobody reads.
+        wants_counts = cursor_opened is None and oi not in OI_OUTCOMES
         counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
         if outcome in _OUTCOME_GROUP_SQL:
             where.append(_OUTCOME_GROUP_SQL[outcome])
@@ -165,7 +169,7 @@ class FeedStorage:
                 "limit": int(limit),
                 "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
-                "oi": oi if oi in OI_FILTERS else None,
+                "oi": oi if oi in OI_OUTCOMES else None,
             },
         }
 
@@ -353,9 +357,17 @@ class FeedStorage:
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s
-                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h
+                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
+              -- #207: Events, not provider items. `telemetry_received_24h` counts 1019 items *before* the
+              -- Gate, so it names frames the monitor's table can never show; the three by-rule buckets
+              -- count judged verdicts, so together they miss a frame still waiting for one. This is the
+              -- table's own universe — exactly the rows `admission=telemetry_deterministic&hours=24`
+              -- serves — and it is what the 全部 tab counts.
+              (SELECT count(*) FROM news_events
+                WHERE opened_at_ms >= %s
+                  AND admission = 'telemetry_deterministic') AS telemetry_events_24h
             """,
-            (day_ago, day_ago, day_ago, day_ago),
+            (day_ago, day_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         return {key: int(value or 0) for key, value in dict(row or {}).items()}
 

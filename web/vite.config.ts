@@ -27,5 +27,13 @@ export default defineConfig({
     environment: "jsdom",
     exclude: [...configDefaults.exclude, "tests/e2e/**"],
     setupFiles: "./tests/setup.ts",
+    /*
+     * Strictly above the 5 s `asyncUtilTimeout` in `tests/setup.ts`. Equal to it, a `findBy*` that is about
+     * to fail is killed by the test timeout first, so the failure reports "Test timed out" with no DOM
+     * dump instead of Testing Library's "Unable to find…" — and a route test doing several sequential
+     * `findBy` calls fails on a loaded suite while passing alone, which reads as flake rather than load.
+     * A real missing element still fails in ~5 s; only the queueing has room now.
+     */
+    testTimeout: 15_000,
   },
 });

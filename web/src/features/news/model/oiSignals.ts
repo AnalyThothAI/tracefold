@@ -50,25 +50,25 @@ export function parseOiTab(value: string | null): NewsOiTab {
 }
 
 /**
- * Each tab's count, all four from the same server aggregate over judged verdicts.
+ * Each tab's count. Three server fields, and they do not all count the same thing on purpose.
  *
- * `all` is the sum of the other three rather than `telemetry_received_24h`. They count different things:
- * `received` counts provider *items* carrying strategy 1019 before the Gate, while every row this table can
- * show is an Event that reached a verdict. A 1019 item the Gate folded into an existing Event, or one still
- * awaiting judgment, is in `received` and in no row — so labelling the tab with it would state a number the
- * table structurally cannot reach. `received` keeps its own tile in the telemetry band, where it is the
- * lane's intake and nothing else.
+ * The three judged tabs come from `oi.by_rule_24h`, keyed on the gate that decided. `all` cannot: those
+ * buckets hold *judged verdicts*, and a frame that arrived and has not been judged yet renders as a row —
+ * with no `oi` block — while belonging to none of them, so summing them would advertise fewer than the tab
+ * can reach. Nor is `all` `telemetry_received_24h`, which counts provider items *before* the Gate and so
+ * names frames no row can ever show. It is `telemetry_events_24h`: Events on this admission, which is the
+ * table's own universe. `received` keeps its tile in the band above, where it is the lane's intake.
  */
 export function oiTabCount(
   tab: NewsOiTab,
   byRule: Record<string, number> | undefined,
+  events24h: number | undefined,
 ): number | null {
+  if (tab === "all") return events24h ?? null;
   if (!byRule) return null;
   if (tab === "pushed") return byRule[OI_PUSH_RULE] ?? 0;
   if (tab === "parse_failed") return byRule[OI_PARSE_FAILED_RULE] ?? 0;
-  const withheld = OI_WITHHELD_RULES.reduce((total, rule) => total + (byRule[rule] ?? 0), 0);
-  if (tab === "withheld") return withheld;
-  return withheld + (byRule[OI_PUSH_RULE] ?? 0) + (byRule[OI_PARSE_FAILED_RULE] ?? 0);
+  return OI_WITHHELD_RULES.reduce((total, rule) => total + (byRule[rule] ?? 0), 0);
 }
 
 /**
@@ -141,9 +141,22 @@ export function oiRankLabel(oi: NewsFeedOi | null | undefined): string {
     : `${oi.eligible_rank_in_window} / ${max}`;
 }
 
-export function oiWindowHours(windowMs: number | null | undefined): number {
-  if (!windowMs || !Number.isFinite(windowMs)) return 0;
-  return Math.max(1, Math.round(windowMs / 3_600_000));
+/**
+ * The rank window as the operator configured it, exactly — `4 小时`, `30 分钟`, `1.5 小时`.
+ *
+ * `news.oi.window_ms` is a duration, and its bounds admit anything from five minutes up, so rounding it to
+ * whole hours would print `1 小时` beside a live 30-minute threshold on both the gate row and the occupancy
+ * card. Returns `""` when there is no policy yet, so a caller can drop the label rather than print a zero.
+ */
+export function oiWindowLabel(windowMs: number | null | undefined): string {
+  if (!windowMs || !Number.isFinite(windowMs) || windowMs <= 0) return "";
+  const minutes = windowMs / 60_000;
+  if (minutes < 60) return `${trimZeros(minutes)} 分钟`;
+  return `${trimZeros(minutes / 60)} 小时`;
+}
+
+function trimZeros(value: number): string {
+  return value.toFixed(2).replace(/\.?0+$/, "");
 }
 
 /**

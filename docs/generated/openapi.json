@@ -2252,6 +2252,7 @@
             "anyOf": [
               {
                 "enum": [
+                  "all",
                   "pushed",
                   "withheld",
                   "parse_failed"
@@ -3219,6 +3220,11 @@
           "tagged_24h": {
             "default": 0,
             "title": "Tagged 24H",
+            "type": "integer"
+          },
+          "telemetry_events_24h": {
+            "default": 0,
+            "title": "Telemetry Events 24H",
             "type": "integer"
           },
           "telemetry_parse_failed_24h": {

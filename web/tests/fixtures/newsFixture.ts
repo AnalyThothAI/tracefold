@@ -416,10 +416,13 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       telemetry_parse_failed_24h: 1,
       telemetry_parsed_24h: 139,
       telemetry_push_24h: 3,
-      // Deliberately larger than the 140 judged verdicts in `oi.by_rule_24h`: `received` counts provider
-      // items before the Gate, and two of them folded into an existing Event rather than opening one. A
-      // fixture where the two agreed would let the 全部 tab read either field and still pass.
+      // Three numbers that must not agree, because they count three different things and the 全部 tab has
+      // to read the right one: `received` counts provider items before the Gate (142), `events` counts the
+      // Events those became and is the table's own universe (141 — one of them is still awaiting a
+      // verdict), and `oi.by_rule_24h` sums to 140 judged verdicts. A fixture where they matched would let
+      // the tab read any of the three and still pass.
       telemetry_received_24h: 142,
+      telemetry_events_24h: 141,
       dropped_by_rule: { noise: 60, below_threshold: 20 },
       events_1h: 12,
       events_24h: 320,
@@ -518,7 +521,12 @@ export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): News
     reaction: newsReactionFixture({ return_1h_bps: 203, return_4h_bps: 145, state: "complete" }),
     title_zh: null,
     triage: newsTriageFixture({
-      assets: [{ role: "primary", symbol: "WIF" }],
+      /*
+       * Empty, because that is what the feed serves. `_triage_summary` builds the slim shape for a feed
+       * row and only the Event detail's `full=True` shape carries `assets`. A fixture that filled it here
+       * let `/news/oi` read its SYMBOL column from a field production never sends, and the tests passed.
+       */
+      assets: [],
       // `evaluate_oi` maps a rising frame to `bullish`. Keeping the fixture self-consistent matters here:
       // the direction word and the OI change are two different measurements and a test that let them
       // disagree would be asserting a screen the pipeline cannot produce.

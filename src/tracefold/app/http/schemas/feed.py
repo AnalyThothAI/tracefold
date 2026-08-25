@@ -61,7 +61,7 @@ class NewsFeedFiltersData(ExactApiSchema):
     limit: int
     outcome: Literal["pushed", "held", "pending"] | None = None
     hours: int | None = None
-    oi: Literal["pushed", "withheld", "parse_failed"] | None = None
+    oi: Literal["all", "pushed", "withheld", "parse_failed"] | None = None
 
 
 class NewsFeedCountsData(ExactApiSchema):

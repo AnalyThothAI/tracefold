@@ -8,7 +8,7 @@ import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent, NewsOiTab, NewsOiTradeFloors } from "../../api/newsQueries";
 import { NEWS_OI_TABS } from "../../api/newsQueries";
-import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
+import { clockTime, displayAssetRefs, displayTime, formatCount } from "../../model/newsLabels";
 import { formatBps, priceTone, reactionPlaceholder, reactionValue } from "../../model/newsPrice";
 import {
   OI_TAB_LABELS,
@@ -145,7 +145,15 @@ function FrameRow({ event, floors }: { event: NewsFeedEvent; floors: NewsOiTrade
   const [open, setOpen] = useState(false);
   const oi = event.oi ?? null;
   const triage = event.triage ?? null;
-  const symbol = triage?.assets?.find((asset) => asset.role === "primary")?.symbol ?? "";
+  /*
+   * From the Event, not from `triage.assets`. `_triage_summary` builds the slim shape for feed rows and
+   * only the Event detail's `full=True` shape carries `assets` — reading it here left every row's SYMBOL
+   * as `—` in production while the fixture, which carried the detail shape, showed the right thing.
+   *
+   * `displayAssetRefs` is what the Event row uses: the Gate's grounded tags resolved against the #75
+   * instrument universe, `XYZ-` stripped. A telemetry frame grounds on exactly the symbol it parsed.
+   */
+  const symbol = displayAssetRefs(event.grounded_assets ?? [], event.assets)[0]?.base_symbol ?? "";
   const buckets = oiBuckets(oi, floors);
   const withheld = event.outcome.group !== "pushed";
   return (

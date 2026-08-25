@@ -6,7 +6,7 @@ import {
   oiRankLabel,
   oiTabCount,
   oiValueZh,
-  oiWindowHours,
+  oiWindowLabel,
   parseOiTab,
 } from "@features/news/model/oiSignals";
 import { describe, expect, it } from "vitest";
@@ -76,18 +76,26 @@ describe("oiSignals", () => {
       oi_parse_failed: 1,
     };
 
-    it("counts every tab from the same judged aggregate", () => {
-      expect(oiTabCount("pushed", byRule)).toBe(3);
-      expect(oiTabCount("withheld", byRule)).toBe(136);
-      expect(oiTabCount("parse_failed", byRule)).toBe(1);
-      // 全部 sums the three; it is not `telemetry_received_24h`, which counts provider items before the
-      // Gate and so can name frames no row will ever show.
-      expect(oiTabCount("all", byRule)).toBe(140);
+    it("counts the three judged tabs from the gate that decided them", () => {
+      expect(oiTabCount("pushed", byRule, 141)).toBe(3);
+      expect(oiTabCount("withheld", byRule, 141)).toBe(136);
+      expect(oiTabCount("parse_failed", byRule, 141)).toBe(1);
+    });
+
+    it("counts 全部 as Events, which is neither the intake nor the sum of the judged", () => {
+      /*
+       * The three buckets hold judged verdicts and sum to 140; a frame still awaiting one renders as a row
+       * with no `oi` block and belongs to none of them, so the sum would advertise fewer than the tab can
+       * reach. `telemetry_received_24h` (142) is the other wrong answer — it counts provider items before
+       * the Gate, so it names frames no row can ever show.
+       */
+      expect(oiTabCount("all", byRule, 141)).toBe(141);
+      expect(oiTabCount("all", byRule, 141)).not.toBe(140);
     });
 
     it("has no number at all until the aggregate arrives", () => {
       for (const tab of ["all", "pushed", "withheld", "parse_failed"] as const) {
-        expect(oiTabCount(tab, undefined)).toBeNull();
+        expect(oiTabCount(tab, undefined, undefined)).toBeNull();
       }
     });
   });
@@ -145,9 +153,15 @@ describe("oiSignals", () => {
       expect(oiPercent(null)).toBe("—");
     });
 
-    it("reads the window as whole hours, and zero when there is no policy", () => {
-      expect(oiWindowHours(14_400_000)).toBe(4);
-      expect(oiWindowHours(null)).toBe(0);
+    it("spells the rank window exactly, including the sub-hour ones config admits", () => {
+      // `news.oi.window_ms` is a duration and its bounds start at five minutes. Rounding to whole hours
+      // printed `1 小时` beside a live 30-minute threshold on both the gate row and the occupancy card.
+      expect(oiWindowLabel(14_400_000)).toBe("4 小时");
+      expect(oiWindowLabel(1_800_000)).toBe("30 分钟");
+      expect(oiWindowLabel(5_400_000)).toBe("1.5 小时");
+      expect(oiWindowLabel(300_000)).toBe("5 分钟");
+      // No policy yet: the caller drops the label rather than printing a zero.
+      expect(oiWindowLabel(null)).toBe("");
     });
 
     it("falls back to the whole lane for an unknown tab in the URL", () => {

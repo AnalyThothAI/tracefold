@@ -12,7 +12,7 @@ import {
   type NewsOiTab,
 } from "../../api/newsQueries";
 import { absoluteTime, formatCount, percent } from "../../model/newsLabels";
-import { oiTabCount, oiWindowHours, parseOiTab } from "../../model/oiSignals";
+import { oiTabCount, oiWindowLabel, parseOiTab } from "../../model/oiSignals";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
 
 import { NewsOiFrameTable } from "./NewsOiFrameTable";
@@ -41,17 +41,25 @@ export function NewsOiPage({ token }: { token: string }) {
   const tab = parseOiTab(searchParams.get("oi"));
   const statusQuery = useNewsStatusWithToken(token);
   const feedQuery = useNewsOiFeedWithToken(token, tab);
-  // Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
-  // which is what the reader means by switching tabs.
+  /*
+   * Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
+   * which is what the reader means by switching tabs.
+   *
+   * The anchor is captured once per tab and then held, the way the Event feed holds its own. Feeding the
+   * polled first page's `next_cursor` straight in would move it every time a frame lands, changing the
+   * infinite query's key — which discards every page the reader loaded and silently refetches only the
+   * first of them.
+   */
   const [moreRequested, setMoreRequested] = useState(false);
-  useEffect(() => setMoreRequested(false), [tab]);
+  const [anchor, setAnchor] = useState<{ cursor: string | null; tab: NewsOiTab } | null>(null);
   const firstPage = feedQuery.data;
-  const historyQuery = useNewsOiFeedHistoryWithToken(
-    token,
-    tab,
-    firstPage?.next_cursor ?? null,
-    moreRequested,
-  );
+  useEffect(() => {
+    if (!firstPage || anchor?.tab === tab) return;
+    setAnchor({ cursor: firstPage.next_cursor ?? null, tab });
+    setMoreRequested(false);
+  }, [anchor?.tab, firstPage, tab]);
+  const anchorCursor = anchor?.tab === tab ? anchor.cursor : null;
+  const historyQuery = useNewsOiFeedHistoryWithToken(token, tab, anchorCursor, moreRequested);
   const pages = historyQuery.data?.pages ?? [];
   const rows = Array.from(
     new Map(
@@ -60,9 +68,7 @@ export function NewsOiPage({ token }: { token: string }) {
         .map((event) => [event.event_id, event]),
     ).values(),
   );
-  const hasMore = Boolean(
-    moreRequested ? historyQuery.hasNextPage : (firstPage?.next_cursor ?? null),
-  );
+  const hasMore = Boolean(moreRequested ? historyQuery.hasNextPage : anchorCursor);
 
   const status = statusQuery.data;
   const pipeline = status?.pipeline;
@@ -73,9 +79,9 @@ export function NewsOiPage({ token }: { token: string }) {
   const pushed = pipeline?.telemetry_push_24h;
   const byRule = oi?.by_rule_24h;
   const counts = Object.fromEntries(
-    NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule)]),
+    NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
   ) as Record<NewsOiTab, number | null>;
-  const hours = oiWindowHours(oi?.policy?.window_ms);
+  const windowLabel = oiWindowLabel(oi?.policy?.window_ms);
 
   return (
     <NewsPageShell archetype="scan" className="news-oi-shell" label="持仓异动监控">
@@ -143,7 +149,7 @@ export function NewsOiPage({ token }: { token: string }) {
                 floors={oi?.trade_floors ?? EMPTY_FLOORS}
                 policy={oi?.policy ?? null}
               />
-              <NewsOiWindow hours={hours} rows={oi?.window_occupancy ?? []} />
+              <NewsOiWindow rows={oi?.window_occupancy ?? []} windowLabel={windowLabel} />
             </div>
 
             {/*

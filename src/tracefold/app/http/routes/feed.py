@@ -29,7 +29,7 @@ _DECISIONS = {"push", "escalate", "drop", "throttled", "degraded"}
 # a frame held by a threshold and one whose provider template stopped parsing are both `drop` — and the
 # browser must not split them by filtering a loaded page, which would leave the tab counts describing the
 # whole window while the rows below described one page of it.
-_OI_OUTCOMES = {"pushed", "withheld", "parse_failed"}
+_OI_OUTCOMES = {"all", "pushed", "withheld", "parse_failed"}
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)

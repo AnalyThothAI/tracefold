@@ -175,7 +175,9 @@ const fetchNewsOiFeed = async (token: string, tab: NewsOiTab, cursor: string | n
         cursor,
         hours: NEWS_OI_HOURS,
         limit: NEWS_OI_PAGE_SIZE,
-        oi: tab === "all" ? undefined : tab,
+        // `all` is sent, not omitted: it narrows nothing, but it is how the request identifies itself as
+        // the monitor, which is what lets the server skip the outcome-group aggregate this page never reads.
+        oi: tab,
       },
       token,
     })
