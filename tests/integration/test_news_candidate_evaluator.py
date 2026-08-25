@@ -17,6 +17,7 @@ from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.learning import ledger as ledger_module
 from tracefold.news.learning.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
@@ -35,6 +36,7 @@ from tracefold.news.learning.evaluator import (
 from tracefold.news.learning.evaluator import (
     CandidateEvaluator as _CandidateEvaluator,
 )
+from tracefold.news.learning.ledger import LearningLedger
 from tracefold.news.learning.objective import (
     DevelopmentEpisode,
     GepaObjectivePlan,
@@ -84,11 +86,18 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 NOW = 1_800_000_000_000
 
 
-class CandidateEvaluator(_CandidateEvaluator):
+class _PinnedLedger(LearningLedger):
     """Pin the DB clock beyond this immutable epoch fixture's closed window."""
 
-    def _db_now_ms(self) -> int:
+    def now_ms(self) -> int:
         return NOW + 20 * 60_000
+
+
+class CandidateEvaluator(_CandidateEvaluator):
+    def __init__(self, conn: Any, **kwargs: Any) -> None:
+        stable = kwargs["stable"]
+        principal = kwargs.get("principal", "operator")
+        super().__init__(conn, ledger=_PinnedLedger(conn, stable=stable, principal=principal), **kwargs)
 
 
 class ReviewDesk(_ReviewDesk):
@@ -148,17 +157,17 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
     ).fetchone()
 
     assert LEARNING_EPOCH == "program_v7"
-    assert candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == "program_learning_package_split_identity_migration"
+    assert ledger_module.LEARNING_EPOCH_RESET_REASON == "program_learning_package_split_identity_migration"
     # The three columns the evaluator validates, and nothing else about identity.
     assert row["baseline_program_version"] == PROGRAM_VERSION
     assert row["prior_evidence_disposition"] == "audit_only"
-    assert row["reset_reason"] == candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON
+    assert row["reset_reason"] == ledger_module.LEARNING_EPOCH_RESET_REASON
     # The two that name what #162 opened the epoch with, and are validated against exactly those.
     assert (
         (row["program_factory_id"], row["artifact_schema_version"])
         == (
-            candidate_evaluator_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
-            candidate_evaluator_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+            ledger_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
+            ledger_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
         )
         == ("tracefold.news.program.factory_v5", "news_semantic_program_artifact_v2")
     )
@@ -168,7 +177,7 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
         == ("tracefold.news.program.factory_v6")
     )
     evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
-    assert evaluator._learning_epoch_started_at_ms() > 0
+    assert evaluator._ledger.epoch_started_at_ms() > 0
 
     # A drifted or corrupted row must not be treated as an eligible epoch. The table is append-only by
     # trigger, so the corruption is staged by making the evaluator read a different epoch id.
@@ -181,18 +190,18 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
         (
             row["starts_at_ms"],
             "https://github.com/AnalyThothAI/tracefold/issues/193",
-            candidate_evaluator_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+            ledger_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
             PROGRAM_VERSION,
             "a" * 64,
-            candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
+            ledger_module.LEARNING_EPOCH_RESET_REASON,
             row["starts_at_ms"],
         ),
     )
     with (
-        patch.object(candidate_evaluator_module, "LEARNING_EPOCH", "program_v7_corrupted"),
+        patch.object(ledger_module, "LEARNING_EPOCH", "program_v7_corrupted"),
         pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"),
     ):
-        CandidateEvaluator(conn, stable=_arm(), judges={})._learning_epoch_started_at_ms()
+        CandidateEvaluator(conn, stable=_arm(), judges={})._ledger.epoch_started_at_ms()
 
 
 def _arm(

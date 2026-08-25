@@ -564,6 +564,75 @@ class LearningStorage:
             raise ValueError("news_learning_artifact_collision")
         return artifact_sha
 
+    def learning_artifact_read_back(
+        self,
+        kind: str,
+        payload: Mapping[str, Any],
+        *,
+        parent_sha: str | None,
+        created_by: str,
+        now_ms: int,
+    ) -> str:
+        """Append one content-addressed learning artifact and re-read it before it counts.
+
+        Distinct from `_append_learning_artifact` because the release plane needs the read-back: two
+        different documents landing on one `artifact_sha` would otherwise make the second silently
+        invisible instead of failing the registration a receipt chain later verifies.
+        """
+
+        artifact_sha = canonical_sha({"kind": kind, "payload": payload})
+        self.conn.execute(
+            """
+            INSERT INTO news_learning_artifacts (artifact_sha, kind, parent_sha, payload, created_by, created_at_ms)
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s) ON CONFLICT (artifact_sha) DO NOTHING
+            """,
+            (artifact_sha, kind, parent_sha, _dumps(dict(payload)), created_by, int(now_ms)),
+        )
+        row = self.conn.execute(
+            "SELECT kind, payload FROM news_learning_artifacts WHERE artifact_sha = %s", (artifact_sha,)
+        ).fetchone()
+        if (
+            row is None
+            or row["kind"] != kind
+            or canonical_sha({"kind": kind, "payload": row["payload"]}) != artifact_sha
+        ):
+            raise ValueError("news_learning_artifact_collision")
+        return artifact_sha
+
+    def active_stable_agent_sha(self) -> str | None:
+        """The stable bundle the last deployment appointed, or None when no runtime receipt exists.
+
+        Only worker startup/deployment may appoint the active Agent, so the absence is returned rather
+        than invented: a reader that needs one raises, and none of them may create one.
+        """
+
+        row = self.conn.execute(
+            "SELECT payload ->> 'stable_sha' AS stable_sha FROM news_learning_artifacts "
+            "WHERE kind = 'active_agent' ORDER BY created_at_ms DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else str(row["stable_sha"])
+
+    def reviews_by_id(self, review_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        if not review_ids:
+            return {}
+        rows = self.conn.execute("SELECT * FROM news_reviews WHERE review_id = ANY(%s)", (list(review_ids),)).fetchall()
+        return {str(row["review_id"]): dict(row) for row in rows}
+
+    def learning_epoch_row(self, epoch_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
+            "baseline_program_version, prior_evidence_disposition, reset_reason "
+            "FROM news_learning_epochs WHERE epoch_id = %s",
+            (epoch_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def db_now_ms(self) -> int:
+        row = self.conn.execute(
+            "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
+        ).fetchone()
+        return int(row["now_ms"])
+
     def _append_learning_artifact(
         self,
         kind: str,

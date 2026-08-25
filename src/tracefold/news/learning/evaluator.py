@@ -44,6 +44,7 @@ from .contracts import (
     ProposalReceipt,
 )
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
+from .ledger import LearningLedger
 from .objective import (
     DevelopmentEpisode,
     _expected_delivery,
@@ -65,17 +66,6 @@ from .projection import (
 
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-# Must equal the `reset_reason` migration 0302 wrote for `program_v7`. The evaluator validates the
-# epoch row field by field, so a bumped epoch with a stale reason here fails every evaluation.
-LEARNING_EPOCH_RESET_REASON = "program_learning_package_split_identity_migration"
-# What migration 0303 wrote when it opened `program_v7` — deliberately not the runtime constants. The
-# Program root is re-issued *inside* an epoch whenever its serialization or factory changes without
-# changing which evidence is eligible (#173/#174, #190, #193), so the row keeps naming what it was
-# opened with, exactly as `baseline_program_sha256` already did. Asserting these still detects migration
-# drift and ledger corruption; asserting today's values against them would fail a correctly migrated
-# database on every in-epoch re-issue.
-LEARNING_EPOCH_OPENED_FACTORY_ID = "tracefold.news.program.factory_v5"
-LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating, and it would drift silently the first time the factory is bumped.
 LEARNING_PROGRAM_FACTORY_ID = PROGRAM_FACTORY_ID
@@ -251,6 +241,7 @@ class CandidateEvaluator:
         candidate_catalog: Sequence[CandidateManifest] = (),
         principal: str = "operator",
         trusted_root_sha: str = TRUSTED_ROOT_SHA,
+        ledger: LearningLedger | None = None,
     ) -> None:
         if not trusted_root_sha or trusted_root_sha != TRUSTED_ROOT_SHA:
             raise ValueError("news_learning_trusted_root_invalid")
@@ -259,17 +250,25 @@ class CandidateEvaluator:
         self._judges = dict(judges)
         self._candidates = {candidate.candidate_sha: candidate for candidate in candidate_catalog}
         self._principal = principal
+        # Every read and write against `news_learning_*` and `news_reviews` goes through one object
+        # (#202 §8). It is composed rather than inherited: freezing a dataset, evaluating a candidate and
+        # moving a release stage are three lifecycles, and while they shared a class they shared
+        # everything — which is why a change to any objective, dataset, metric or release boundary edited
+        # this one file.
+        # Injectable so a caller that needs a different clock — a fixture pinning "now" beyond a closed
+        # window — swaps one object rather than subclassing the evaluator to override a private method.
+        self._ledger = ledger or LearningLedger(conn, stable=stable, principal=principal)
         self._trusted_root_sha = trusted_root_sha
         self._history = EvaluationReaderHistory(conn)
 
     async def freeze_dataset(self, spec: DatasetSpec) -> DatasetManifest:
-        self._assert_active_stable()
+        self._ledger.assert_active_stable()
         if spec.learning_epoch != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
-        epoch_started_at_ms = self._learning_epoch_started_at_ms()
+        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
         if spec.window.from_ms < epoch_started_at_ms:
             raise ValueError("news_learning_window_precedes_program_epoch")
-        freeze_as_of_ms = self._db_now_ms()
+        freeze_as_of_ms = self._ledger.now_ms()
         if spec.window.to_ms > freeze_as_of_ms - SETTLEMENT_GRACE_MS:
             raise ValueError("news_learning_window_not_settled")
         if spec.role == "validation":
@@ -304,7 +303,7 @@ class CandidateEvaluator:
             "freeze_as_of_ms": freeze_as_of_ms,
             "settlement_grace_ms": SETTLEMENT_GRACE_MS,
             "reader_contract_version": READER_CONTRACT_VERSION,
-            "agent_cohort": self._agent_cohort(),
+            "agent_cohort": self._ledger.agent_cohort(),
             "observation_ref": spec.observation_ref,
             "cases": [case.model_dump(mode="json") for case in cases],
             "seed_receipts": seed,
@@ -318,18 +317,18 @@ class CandidateEvaluator:
                 "extraction_sha": _text_sha("news_learning_freeze_query_v1"),
             },
         }
-        artifact_sha = self._persist_artifact("dataset", payload)
+        artifact_sha = self._ledger.persist_artifact("dataset", payload)
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
 
     def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
         """Seal the sole read-only development export for the cold compiler."""
 
-        self._assert_active_stable()
+        self._ledger.assert_active_stable()
         dataset_payload = self._load_dataset_payload(dataset_sha)
         dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
         if dataset.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
-        if dataset.agent_cohort != self._agent_cohort():
+        if dataset.agent_cohort != self._ledger.agent_cohort():
             raise ValueError("news_learning_dataset_agent_cohort_mismatch")
 
         episodes = self._project_episodes(
@@ -342,7 +341,7 @@ class CandidateEvaluator:
             dataset_payload=dataset_payload,
             episodes=frozen_episodes,
             episode_projection_root_sha256=_sha(list(frozen_episodes)),
-            learning_epoch_started_at_ms=self._learning_epoch_started_at_ms(),
+            learning_epoch_started_at_ms=self._ledger.epoch_started_at_ms(),
         )
 
     def baseline_episodes(
@@ -367,9 +366,9 @@ class CandidateEvaluator:
 
         if limit <= 0:
             raise ValueError("news_program_baseline_limit_invalid")
-        epoch_started_at_ms = self._learning_epoch_started_at_ms() if cohort else 0
+        epoch_started_at_ms = self._ledger.epoch_started_at_ms() if cohort else 0
         cases = (
-            self._accepted_cases(window, freeze_as_of_ms=self._db_now_ms(), epoch_started_at_ms=epoch_started_at_ms)
+            self._accepted_cases(window, freeze_as_of_ms=self._ledger.now_ms(), epoch_started_at_ms=epoch_started_at_ms)
             if cohort
             else self._baseline_cases(window)
         )
@@ -658,15 +657,15 @@ class CandidateEvaluator:
         # Reject a stale constructor arm before loading data or spending one
         # model call. Re-read after execution as well, because a deployment can
         # legitimately change the active root while a long evaluation runs.
-        self._assert_active_stable()
+        self._ledger.assert_active_stable()
         development = self._load_dataset(request.development_dataset_sha)
         validation = (
             development if request.stage == "offline" else self._load_dataset(str(request.validation_dataset_sha))
         )
         if development.role != "development" or (request.stage != "offline" and validation.role != "validation"):
             raise ValueError("news_learning_dataset_role_invalid")
-        if development.agent_cohort != self._agent_cohort() or (
-            request.stage != "offline" and validation.agent_cohort != self._agent_cohort()
+        if development.agent_cohort != self._ledger.agent_cohort() or (
+            request.stage != "offline" and validation.agent_cohort != self._ledger.agent_cohort()
         ):
             raise ValueError("news_learning_dataset_agent_cohort_mismatch")
         if development.reader_contract_version != READER_CONTRACT_VERSION or (
@@ -795,7 +794,7 @@ class CandidateEvaluator:
             evidence["execution_incomplete"] = True
             evidence["gate_outcome"] = "unknown"
         outcome = str(evidence["gate_outcome"])
-        active_sha = self._active_stable_sha()
+        active_sha = self._ledger.active_stable_sha()
         eligibility = "current" if active_sha == candidate.parent_stable_sha else "stale"
         if eligibility == "stale":
             outcome = "unknown"
@@ -827,8 +826,10 @@ class CandidateEvaluator:
             "recommended_action": action,
             "evidence": evidence,
         }
-        report_sha = self._persist_artifact("evaluation_report", report_payload, parent_sha=candidate.candidate_sha)
-        self._persist_artifact(
+        report_sha = self._ledger.persist_artifact(
+            "evaluation_report", report_payload, parent_sha=candidate.candidate_sha
+        )
+        self._ledger.persist_artifact(
             "release_evidence",
             {
                 "report_sha": report_sha,
@@ -1054,7 +1055,7 @@ class CandidateEvaluator:
         return tuple(cases)
 
     def _dataset_counts(self, spec: DatasetSpec, cases: Sequence[DatasetCaseRef]) -> dict[str, Any]:
-        reviews = self._reviews_by_id([case.review_id for case in cases])
+        reviews = self._ledger.reviews_by_id([case.review_id for case in cases])
         boundary: set[str] = set()
         retention: set[str] = set()
         negative: set[str] = set()
@@ -1614,7 +1615,7 @@ class CandidateEvaluator:
                 for field in ("closed_at_ms", "tripped_at_ms")
                 if activation.get(field) is not None
             ),
-            self._db_now_ms(),
+            self._ledger.now_ms(),
         )
         observed_from = max(
             int(activation["activated_at_ms"] or activation["created_at_ms"]),
@@ -1972,7 +1973,7 @@ class CandidateEvaluator:
                 call.get("provider_cost_microusd"),
                 call.get("finish_reason"),
                 call.get("error_code"),
-                self._db_now_ms(),
+                self._ledger.now_ms(),
             ),
         )
         persisted = self._conn.execute(
@@ -2032,7 +2033,7 @@ class CandidateEvaluator:
                 blockers.append(f"prior_{prior}_evidence_not_passed")
         if execution_errors:
             blockers.extend(execution_errors)
-        reviews = self._reviews_by_id(
+        reviews = self._ledger.reviews_by_id(
             [str(item["case_ref"]["review_id"]) for item in observations if item["case_ref"].get("review_id")]
         )
         correctness = {"stable": 0, "candidate": 0, "scored": 0}
@@ -2250,7 +2251,7 @@ class CandidateEvaluator:
             "reader_load": load,
             "reader_contract_version": READER_CONTRACT_VERSION,
             "reader_contract_sha256": READER_CONTRACT_SHA256,
-            "agent_cohort": self._agent_cohort(),
+            "agent_cohort": self._ledger.agent_cohort(),
             "stable_error_n": stable_errors,
             "candidate_error_n": candidate_errors,
             "common_error_n": common_errors,
@@ -2300,19 +2301,6 @@ class CandidateEvaluator:
                     "outcome_revealed": False,
                 }
             ),
-        }
-
-    def _agent_cohort(self) -> dict[str, str]:
-        return {
-            "bundle_sha": self._stable.bundle_sha,
-            "learning_epoch": LEARNING_EPOCH,
-            "program_version": self._stable.program_version,
-            "program_sha256": self._stable.program_sha256,
-            "runtime_model_bindings_sha256": self._stable.runtime_model_bindings_sha256,
-            "retrieval_sha256": self._stable.retrieval_sha256,
-            "policy_sha256": self._stable.policy_sha256,
-            "reader_contract_version": READER_CONTRACT_VERSION,
-            "reader_contract_sha256": READER_CONTRACT_SHA256,
         }
 
     def _primary_result(
@@ -2502,7 +2490,7 @@ class CandidateEvaluator:
         *,
         stage: str,
     ) -> None:
-        now_ms = self._db_now_ms()
+        now_ms = self._ledger.now_ms()
         for item in observations:
             case = item["case_ref"]
             self._conn.execute(
@@ -2568,7 +2556,7 @@ class CandidateEvaluator:
     def _persist_candidate(self, candidate: CandidateManifest) -> None:
         self._verify_registration_receipt(candidate.proposal_receipt)
         proposal = candidate.proposal_receipt.model_dump(mode="json")
-        proposal_sha = self._persist_artifact("proposal", proposal, parent_sha=candidate.development_dataset_sha)
+        proposal_sha = self._ledger.persist_artifact("proposal", proposal, parent_sha=candidate.development_dataset_sha)
         payload = {
             "candidate_sha": candidate.candidate_sha,
             "candidate_bundle_sha": candidate.candidate_arm.bundle_sha,
@@ -2580,7 +2568,7 @@ class CandidateEvaluator:
                 proposal=candidate.proposal_receipt,
             ),
         }
-        self._persist_artifact("candidate", payload, parent_sha=candidate.parent_stable_sha)
+        self._ledger.persist_artifact("candidate", payload, parent_sha=candidate.parent_stable_sha)
 
     def _verify_registration_receipt(self, receipt: ProposalReceipt) -> None:
         row = self._conn.execute(
@@ -2667,7 +2655,7 @@ class CandidateEvaluator:
         exact_payload = dict(payload)
         if exact_payload.get("learning_epoch") != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
-        epoch_started_at_ms = self._learning_epoch_started_at_ms()
+        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
         if exact_payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
             raise ValueError("news_learning_epoch_deployment_mismatch")
         hashes = dict(exact_payload.get("hashes") or {})
@@ -2773,7 +2761,7 @@ class CandidateEvaluator:
             "case_n": len(observations),
             "evidence_dimensions": dict(dimensions),
         }
-        return self._persist_artifact(kind, payload, parent_sha=candidate.candidate_sha)
+        return self._ledger.persist_artifact(kind, payload, parent_sha=candidate.candidate_sha)
 
     def _generated_observation_manifest(
         self,
@@ -2821,78 +2809,6 @@ class CandidateEvaluator:
             (candidate_sha, stage),
         ).fetchone()
         return bool(row)
-
-    def _persist_artifact(self, kind: str, payload: Mapping[str, Any], *, parent_sha: str | None = None) -> str:
-        artifact_sha = _sha({"kind": kind, "payload": payload})
-        self._conn.execute(
-            """
-            INSERT INTO news_learning_artifacts (artifact_sha, kind, parent_sha, payload, created_by, created_at_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s, %s) ON CONFLICT (artifact_sha) DO NOTHING
-            """,
-            (artifact_sha, kind, parent_sha, _json(payload), self._principal, self._db_now_ms()),
-        )
-        row = self._conn.execute(
-            "SELECT kind, payload FROM news_learning_artifacts WHERE artifact_sha = %s", (artifact_sha,)
-        ).fetchone()
-        if row is None or row["kind"] != kind or _sha({"kind": kind, "payload": row["payload"]}) != artifact_sha:
-            raise ValueError("news_learning_artifact_collision")
-        return artifact_sha
-
-    def _active_stable_sha(self) -> str:
-        # Only worker startup/deployment may appoint the active Agent. The
-        # evaluator receives a candidate comparator, not authority to create a
-        # production root when the runtime receipt is absent.
-        row = self._conn.execute(
-            "SELECT payload ->> 'stable_sha' AS stable_sha FROM news_learning_artifacts "
-            "WHERE kind = 'active_agent' ORDER BY created_at_ms DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            raise ValueError("news_learning_active_stable_receipt_missing")
-        return str(row["stable_sha"])
-
-    def _assert_active_stable(self) -> str:
-        if self._stable.program_version != LEARNING_PROGRAM_VERSION:
-            raise ValueError("news_learning_program_v1_unsupported")
-        active_sha = self._active_stable_sha()
-        if active_sha != self._stable.bundle_sha:
-            raise ValueError("news_learning_active_stable_mismatch")
-        return active_sha
-
-    def _reviews_by_id(self, review_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
-        if not review_ids:
-            return {}
-        rows = self._conn.execute(
-            "SELECT * FROM news_reviews WHERE review_id = ANY(%s)", (list(review_ids),)
-        ).fetchall()
-        return {str(row["review_id"]): dict(row) for row in rows}
-
-    def _learning_epoch_started_at_ms(self) -> int:
-        row = self._conn.execute(
-            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
-            "baseline_program_version, prior_evidence_disposition, reset_reason "
-            "FROM news_learning_epochs WHERE epoch_id = %s",
-            (LEARNING_EPOCH,),
-        ).fetchone()
-        if row is None:
-            raise ValueError("news_learning_epoch_not_deployed")
-        # Compared against what the epoch was opened with, not against today's runtime constants. Both
-        # still prove the persisted epoch identity before its evidence is treated as eligible, which is
-        # what catches migration drift or a corrupted ledger row.
-        if (
-            str(row["program_factory_id"]) != LEARNING_EPOCH_OPENED_FACTORY_ID
-            or str(row["artifact_schema_version"]) != LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION
-            or str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
-            or str(row["prior_evidence_disposition"]) != "audit_only"
-            or str(row["reset_reason"]) != LEARNING_EPOCH_RESET_REASON
-        ):
-            raise ValueError("news_learning_epoch_contract_mismatch")
-        return int(row["starts_at_ms"])
-
-    def _db_now_ms(self) -> int:
-        row = self._conn.execute(
-            "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
-        ).fetchone()
-        return int(row["now_ms"])
 
     @staticmethod
     def _needs_stability_trials(case_id: str, outputs: Mapping[str, Mapping[str, Any]]) -> bool:
@@ -3014,9 +2930,6 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "LEARNING_EPOCH",
-    "LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION",
-    "LEARNING_EPOCH_OPENED_FACTORY_ID",
-    "LEARNING_EPOCH_RESET_REASON",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "CandidateEvaluator",
