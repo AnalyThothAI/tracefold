@@ -20,7 +20,13 @@ COMPARE_REPORT_SCHEMA = "tracefold.news.experiment_compare_report.v1"
 
 
 def pending_cases(run: ExperimentRun, *, resume: bool) -> tuple[ExperimentCase, ...]:
-    """What still needs answering. `--resume` is a directory listing, not a stored cursor."""
+    """What still needs answering. `--resume` is a directory listing, not a stored cursor.
+
+    It resumes *between* invocations, not inside one: an arm scores its whole batch in a single
+    `run_baseline` call, so a run that dies halfway leaves nothing behind and starts that batch over. What
+    `--max-model-cases 20 --resume` buys is the loop an operator actually runs on a single-slot local
+    route — twenty cases now, the next twenty later, and neither pass re-spending the other's calls.
+    """
 
     done = set(run.compared()) if resume else set()
     return tuple(case for case in run.cases() if case.case_sha256 not in done)
@@ -88,6 +94,17 @@ def compare_report(
     }
 
 
+def answered_case_scores(report: Mapping[str, Any]) -> dict[str, dict[str, float | None]]:
+    """The cases an arm actually answered, and only those.
+
+    This is what `--resume` is allowed to remember. Recording an empty result for a case nobody could
+    score would make the next resumed pass skip it forever — including after `draft-reviews` produced a
+    rubric for it and a human accepted one, which is the whole point of the loop.
+    """
+
+    return {case_id: scores for case_id, scores in dict(report.get("cases") or {}).items() if scores}
+
+
 def score_arm(
     cases: Sequence[ExperimentCase],
     *,
@@ -99,4 +116,11 @@ def score_arm(
     return run_baseline(baseline_cases(cases), mode=mode, **kwargs)
 
 
-__all__ = ["COMPARE_REPORT_SCHEMA", "baseline_cases", "compare_report", "pending_cases", "score_arm"]
+__all__ = [
+    "COMPARE_REPORT_SCHEMA",
+    "answered_case_scores",
+    "baseline_cases",
+    "compare_report",
+    "pending_cases",
+    "score_arm",
+]

@@ -21,7 +21,12 @@ from tracefold.news.learning.compiler import root as compiler_root
 from tracefold.news.learning.compiler.gepa import GepaRunResult
 from tracefold.news.learning.compiler.security import CompileRecordV1, validate_compile_record
 from tracefold.news.learning.experiment import optimize as optimize_module
-from tracefold.news.learning.experiment.compare import baseline_cases, compare_report, pending_cases
+from tracefold.news.learning.experiment.compare import (
+    answered_case_scores,
+    baseline_cases,
+    compare_report,
+    pending_cases,
+)
 from tracefold.news.learning.experiment.optimize import (
     ExperimentCandidate,
     accepted_episodes,
@@ -246,6 +251,43 @@ def test_unlabelled_cases_are_named_in_the_report() -> None:
     assert report["unlabelled_case_ids"] == ["c", "d"]
     # Both means survive the trip. Reporting only the answered-only mean is what turned 0.482 into 0.587.
     assert set(report["scores"]["student"]) >= {"mean", "mean_with_failures_as_zero"}
+
+
+def test_resume_never_remembers_a_case_nobody_scored(tmp_path: Path) -> None:
+    """The loop's own step: draft, accept, compare again. An empty result would break exactly that.
+
+    `compare` writes what an arm answered so a resumed pass does not re-spend those calls. If it also
+    wrote an empty record for the unlabelled cases, the next `--resume` would skip them — including the
+    ones `draft-reviews --events-from` had a rubric written for and a human accepted in between.
+    """
+
+    cluster_of = {"scored": "c0"}
+    report = compare_report(
+        run_sha256="a" * 64,
+        arms={
+            "recorded": _report({"scored": 1.0}, cluster_of=cluster_of),
+            "student": _report({"scored": 0.5}, cluster_of=cluster_of),
+        },
+        unlabelled_case_ids=["unscored"],
+    )
+    assert set(answered_case_scores(report)) == {"scored"}
+
+    run = ExperimentRun(tmp_path / "run")
+    for case_sha256 in ("scored", "unscored"):
+        run.write_case(
+            ExperimentCase(
+                case_sha256=case_sha256,
+                cluster_id="c0",
+                stratum="delivered",
+                event_id=f"event-{case_sha256}",
+                episode={},
+                accepted=case_sha256 == "scored",
+            )
+        )
+    for case_sha256, scores in answered_case_scores(report).items():
+        run.write_compared(case_sha256, {"case_sha256": case_sha256, "scores": scores})
+
+    assert [case.case_sha256 for case in pending_cases(run, resume=True)] == ["unscored"]
 
 
 def test_failure_clusters_rank_a_broad_regression_above_a_single_bad_case() -> None:

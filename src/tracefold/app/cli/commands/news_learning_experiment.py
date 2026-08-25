@@ -71,7 +71,12 @@ def _snapshot(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
 def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     del stable
     from tracefold.news.learning.baseline import BaselineReport, build_runtime_lm
-    from tracefold.news.learning.experiment.compare import compare_report, pending_cases, score_arm
+    from tracefold.news.learning.experiment.compare import (
+        answered_case_scores,
+        compare_report,
+        pending_cases,
+        score_arm,
+    )
     from tracefold.news.learning.experiment.run import ExperimentRun
     from tracefold.news.program.artifact import load_program_artifact
     from tracefold.news.program.runtime import (
@@ -117,10 +122,8 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
             cohort_scope="experiment_run",
         )
     report = compare_report(run_sha256=manifest.run_sha256, arms=arms, unlabelled_case_ids=unlabelled)
-    for case in bounded:
-        run.write_compared(
-            case.case_sha256, {"case_sha256": case.case_sha256, "scores": report["cases"].get(case.case_sha256, {})}
-        )
+    for case_sha256, scores in answered_case_scores(report).items():
+        run.write_compared(case_sha256, {"case_sha256": case_sha256, "scores": scores})
     path = run.write_report("report", report)
     return 0, {
         "ok": True,
