@@ -81,6 +81,7 @@ TRADING_TABLES = (
     "trading_symbol_blacklist",
     "trading_runtime_state",
     "trading_cases",
+    "trading_strategy_registrations",
     "trading_strategy_evaluations",
     "trading_orders",
     "trading_order_observations",

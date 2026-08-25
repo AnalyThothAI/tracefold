@@ -419,8 +419,11 @@ the route components into the eager shell chunk.
   the retired `oi_only | news_only | news_oi` case-kind vocabulary. The funnel
   also shows the real 24 h counts for
   `liquidation_continuation_shadow_v1` and
-  `liquidation_exhaustion_shadow_v1`, their completed 1 h outcomes and mean
-  return when measured, plus the ledger's promotion reason. A shadow evaluation
+  `liquidation_exhaustion_shadow_v1`, registration-valid holdout and completed
+  counts, coverage/source latency, 5m/15m/1h measured return and bootstrap
+  interval, MFE/MAE, exit/cost facts and named 5s/30s/1m/funding gaps, plus the
+  ledger's promotion reasons. The detailed rows remain separated by strategy,
+  source venue and liquidity bucket. A shadow evaluation
   is not rendered as a case, position, or order, and
   `source_contract_incomplete` is shown as a refusal, not as a warning the
   browser can override.

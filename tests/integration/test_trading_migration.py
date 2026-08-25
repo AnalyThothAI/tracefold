@@ -293,10 +293,15 @@ def test_0310_hard_cuts_case_kind_and_adds_immutable_strategy_ledgers() -> None:
             for row in conn.execute(
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = 'public' AND table_name IN "
-                "('news_market_liquidations', 'trading_strategy_evaluations')"
+                "('news_market_liquidations', 'trading_strategy_registrations', "
+                "'trading_strategy_evaluations')"
             ).fetchall()
         }
-        assert tables == {"news_market_liquidations", "trading_strategy_evaluations"}
+        assert tables == {
+            "news_market_liquidations",
+            "trading_strategy_registrations",
+            "trading_strategy_evaluations",
+        }
     finally:
         if conn is not None:
             conn.close()

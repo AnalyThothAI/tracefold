@@ -41,10 +41,16 @@ Before enabling it, from the clean primary checkout:
    Order to make the page non-empty. `oi_momentum_v1` and
    `news_oi_alignment_v1` are the only capital strategies in paper.
 
-Every live Strategy 2000 liquidation frame should create two shadow evaluation
-rows and zero cases/orders. After one hour, status should move those cohorts
-from evaluated to completed as closed bars become available. Their promotion
-gate must remain `false/source_contract_incomplete`; changing the YAML cannot
+The first enabled worker turn durably registers both liquidation strategy
+identities; any older frame is refused from the holdout. Every later live
+Strategy 2000 frame should create two shadow evaluation rows and zero
+cases/orders. After one hour, status should move those cohorts from evaluated
+to completed as closed bars become available. The report must show all six
+horizons; 5s/30s/1m and funding currently appear as named missing data because
+the source is 5-minute trade-price closes. Cohorts are separated by strategy,
+venue and liquidity bucket and include bootstrap, MFE/MAE and cost assumptions.
+Their promotion gate must remain false with source/coverage/cost reasons;
+changing the YAML cannot
 override the code-owned `shadow` permission. To stop new paper cases without
 losing audit history, restore `trading.enabled=false` and redeploy. Existing
 paper orders remain ledger facts and should be allowed to reconcile/close under
@@ -167,7 +173,8 @@ authored an order is never the one coalesced away. `0309` has no downgrade: the
 coalescing cannot be told apart afterwards from any other block. Both statements
 are no-ops on a deployment where Trading has been disabled. Schema `0310`
 renames `case_kind` to `trigger_kind`, freezes strategy identity on every new
-case, and creates the typed liquidation fact and shadow-evaluation ledgers. It
+case, and creates the typed liquidation fact, exact strategy-registration and
+shadow-evaluation ledgers. It
 has no downgrade because those new material facts cannot be represented in the
 old schema. A rollback must therefore be a reviewed image that understands
 schema `0310`, never an Alembic downgrade.

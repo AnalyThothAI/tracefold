@@ -2311,6 +2311,16 @@ def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> No
             "event_at_ms": NOW_MS - 1_000,
             "received_at_ms": NOW_MS,
             "parser_version": "liquidation_parser_v1",
+            "provider_record_identity": "provider-1",
+            "symbol_contract_identity": "unresolved:binance:SPCX",
+            "position_side_semantics": "short=>forced_buy;long=>forced_sell",
+            "quantity_semantics": "not_provided",
+            "notional_semantics": "provider_reported_usd_notional",
+            "price_semantics": "provider_reported_unspecified_price",
+            "completeness_assumption": "selected_events_without_heartbeat",
+            "throttle_assumption": "provider_throttle_unknown",
+            "source_contract_version": "opennews_liquidation_source_v1",
+            "source_contract_complete": False,
         },
         latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
     )
@@ -2323,11 +2333,14 @@ def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> No
     assert "assign_agent_arm" not in news.names()
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["program_version"] == "news_liquidation_fact_v1"
+    assert inserted["policy_version"] == "news_liquidation_policy_v1"
     assert inserted["degraded"] is False
     assert inserted["verdict"]["event_type"] == "liquidation"
     assert inserted["verdict"]["direction"] == "neutral"
     assert inserted["verdict"]["actionable"] is False
     assert inserted["trace"]["liquidation"]["forced_order_side"] == "buy"
+    assert inserted["trace"]["gate_policy_version"] == "news_liquidation_admission_v1"
+    assert inserted["trace"]["liquidation"]["source_contract"]["complete"] is False
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -2349,3 +2362,21 @@ def test_liquidation_missing_typed_fact_fails_closed_without_a_model_call() -> N
     assert inserted["override_rule"] == "liquidation_parse_failed"
     assert inserted["error_code"] == "liquidation_parse_failed"
     assert inserted["trace"]["liquidation"]["failure_stage"] == "source_contract"
+
+
+def test_liquidation_redelivery_uses_its_independent_policy_identity() -> None:
+    news = RecordingNews(
+        get_verdict=lambda **kwargs: (
+            {"final_decision": "push", "published_at_ms": None}
+            if kwargs["policy_version"] == "news_liquidation_policy_v1"
+            else None
+        ),
+        event_card=_liquidation_card(),
+    )
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-liquidation"})))
+
+    assert "insert_verdict" not in news.names()
+    assert news.kwargs_of("mark_verdict_published")["policy_version"] == "news_liquidation_policy_v1"
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]

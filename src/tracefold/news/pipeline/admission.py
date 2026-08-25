@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from .. import liquidations
 from ..bus import (
     Q_RAW,
     RK_EVENT,
@@ -26,8 +27,6 @@ from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
 from ..events.titles import description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
-from ..liquidations import STRATEGY_ID as LIQUIDATION_STRATEGY_ID
-from ..liquidations import parse_liquidation
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from ..telemetry import NewsWorkSemantics
@@ -215,14 +214,15 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
-    if LIQUIDATION_STRATEGY_ID in strategy_ids:
-        liquidation = parse_liquidation(
+    if liquidations.STRATEGY_ID in strategy_ids:
+        liquidation = liquidations.parse_liquidation(
             title,
             item_id=item_id,
             fact_id=fact.fact_id,
             provider_source=str(metadata.get("source") or ""),
             event_at_ms=published_at_ms,
             received_at_ms=int(observed_at_ms),
+            provider_record_identity=event.provider_record_id,
         )
         if liquidation is not None:
             news.insert_market_liquidation(
@@ -239,6 +239,16 @@ def admit_item(
                 event_at_ms=liquidation.event_at_ms,
                 received_at_ms=liquidation.received_at_ms,
                 parser_version=liquidation.parser_version,
+                provider_record_identity=liquidation.provider_record_identity,
+                symbol_contract_identity=liquidation.symbol_contract_identity,
+                position_side_semantics=liquidation.position_side_semantics,
+                quantity_semantics=liquidation.quantity_semantics,
+                notional_semantics=liquidation.notional_semantics,
+                price_semantics=liquidation.price_semantics,
+                completeness_assumption=liquidation.completeness_assumption,
+                throttle_assumption=liquidation.throttle_assumption,
+                source_contract_version=liquidation.source_contract_version,
+                source_contract_complete=liquidation.source_contract_complete,
                 now_ms=now_ms,
             )
     existing_membership = news.fact_membership(item_id=item_id, fact_id=fact.fact_id)
@@ -279,6 +289,8 @@ def admit_item(
             instrument_classes=instrument_classes,
         )
     )
+    if liquidations.STRATEGY_ID in strategy_ids:
+        gate = liquidations.admission_verdict(gate)
     tokens = comparison_tokens(comparison)
     window_ms = event_window_ms(family)
     shareable = len(tokens) >= 3

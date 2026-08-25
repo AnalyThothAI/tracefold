@@ -32,6 +32,7 @@ from tracefold.trading.decision.program import (
     build_inputs,
     program_sha256,
 )
+from tracefold.trading.strategy.root import strategies
 
 NOW = 1_787_000_000_000
 
@@ -121,6 +122,7 @@ def _manifest(*, news: NewsTradeCandidate | None = None) -> TradingCaseManifest:
         instrument_class="crypto",
         observed_at_ms=NOW,
     )
+    strategy = strategies()["news_oi_alignment_v1" if news is not None else "oi_momentum_v1"]
     return TradingCaseManifest(
         primary_trigger=OiMarketTrigger(
             source_key=oi.source_key,
@@ -135,14 +137,14 @@ def _manifest(*, news: NewsTradeCandidate | None = None) -> TradingCaseManifest:
             regime=regime,
             market=market,
         ),
-        strategy_id="news_oi_alignment_v1" if news is not None else "oi_momentum_v1",
-        strategy_version="news_oi_alignment_v1" if news is not None else "oi_momentum_v1",
-        strategy_config_digest="e" * 64,
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config=strategy.config_snapshot,
+        strategy_config_digest=strategy.config_digest,
         underlying_key="crypto:DOGE",
         base_symbol="DOGE",
         cutoff_ms=NOW,
         instrument=instrument,
-        market_context=market,
     )
 
 

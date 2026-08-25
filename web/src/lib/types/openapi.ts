@@ -2721,6 +2721,15 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
+        /** TradingBootstrapData */
+        TradingBootstrapData: {
+            /** Lower 95 Bps */
+            lower_95_bps: number;
+            /** Mean Bps */
+            mean_bps: number;
+            /** Upper 95 Bps */
+            upper_95_bps: number;
+        };
         /**
          * TradingBudgetData
          * @description The mandate, as configured. Fixed size, fixed stop, fixed maximum hold — there is no sizing model.
@@ -2810,6 +2819,8 @@ export interface components {
              * @default 0
              */
             closed_realized_bps: number;
+            /** Event Study Cohorts */
+            event_study_cohorts?: components["schemas"]["TradingEventStudyCohortData"][];
             /**
              * Funnel Day Key
              * @default
@@ -2888,6 +2899,66 @@ export interface components {
             /** Stop Price */
             stop_price?: string | null;
         };
+        /** TradingEventStudyCohortData */
+        TradingEventStudyCohortData: {
+            /** Cohort Key */
+            cohort_key: string;
+            /** Completed */
+            completed: number;
+            /**
+             * Coverage Bps
+             * @default 0
+             */
+            coverage_bps: number;
+            /** Duplicate Rate Bps */
+            duplicate_rate_bps?: number | null;
+            /** Evaluated */
+            evaluated: number;
+            /** Exit By Reason */
+            exit_by_reason?: {
+                [key: string]: number;
+            };
+            /**
+             * Holdout
+             * @default 0
+             */
+            holdout: number;
+            /** Horizons */
+            horizons?: {
+                [key: string]: components["schemas"]["TradingHorizonData"];
+            };
+            /** Liquidity Bucket */
+            liquidity_bucket: string;
+            /** Mae Mean Bps */
+            mae_mean_bps?: number | null;
+            /** Mean Return Bps */
+            mean_return_bps?: number | null;
+            /** Mean Source Latency Ms */
+            mean_source_latency_ms?: number | null;
+            /** Mfe Mean Bps */
+            mfe_mean_bps?: number | null;
+            /** Missing Data */
+            missing_data?: {
+                [key: string]: number;
+            };
+            net_ex_funding_bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            /**
+             * Promotion Ready
+             * @default false
+             */
+            promotion_ready: boolean;
+            /** Promotion Reasons */
+            promotion_reasons?: string[];
+            /**
+             * Source Contract Complete
+             * @default 0
+             */
+            source_contract_complete: number;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Venue */
+            venue: string;
+        };
         /**
          * TradingFloorsData
          * @description The capital lane's own thresholds — a different set from the News gates, never merged with them.
@@ -2903,6 +2974,20 @@ export interface components {
             min_price_move_bps: number;
             /** Min Whale Long Profit Bps */
             min_whale_long_profit_bps: number;
+        };
+        /** TradingHorizonData */
+        TradingHorizonData: {
+            bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            /**
+             * Measured
+             * @default 0
+             */
+            measured: number;
+            /**
+             * Missing
+             * @default 0
+             */
+            missing: number;
         };
         /**
          * TradingOrderData
@@ -3034,10 +3119,53 @@ export interface components {
         TradingShadowCohortData: {
             /** Completed */
             completed: number;
+            /**
+             * Coverage Bps
+             * @default 0
+             */
+            coverage_bps: number;
+            /** Duplicate Rate Bps */
+            duplicate_rate_bps?: number | null;
             /** Evaluated */
             evaluated: number;
+            /** Exit By Reason */
+            exit_by_reason?: {
+                [key: string]: number;
+            };
+            /**
+             * Holdout
+             * @default 0
+             */
+            holdout: number;
+            /** Horizons */
+            horizons?: {
+                [key: string]: components["schemas"]["TradingHorizonData"];
+            };
+            /** Mae Mean Bps */
+            mae_mean_bps?: number | null;
             /** Mean Return Bps */
             mean_return_bps?: number | null;
+            /** Mean Source Latency Ms */
+            mean_source_latency_ms?: number | null;
+            /** Mfe Mean Bps */
+            mfe_mean_bps?: number | null;
+            /** Missing Data */
+            missing_data?: {
+                [key: string]: number;
+            };
+            net_ex_funding_bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            /**
+             * Promotion Ready
+             * @default false
+             */
+            promotion_ready: boolean;
+            /** Promotion Reasons */
+            promotion_reasons?: string[];
+            /**
+             * Source Contract Complete
+             * @default 0
+             */
+            source_contract_complete: number;
         };
         /** TradingStatusData */
         TradingStatusData: {

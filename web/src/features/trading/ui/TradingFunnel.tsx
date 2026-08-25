@@ -82,6 +82,42 @@ export function TradingFunnel({
       </div>
 
       <div className="trading-floors">
+        <small>清算事件研究</small>
+        <span>
+          {(counts.event_study_cohorts ?? []).length === 0
+            ? "注册后的真实 holdout 尚未形成完成样本"
+            : (counts.event_study_cohorts ?? [])
+                .map((cohort) => {
+                  const horizons = ["5m", "15m", "1h"]
+                    .map((label) => {
+                      const measured = cohort.horizons?.[label];
+                      const interval = measured?.bootstrap;
+                      return interval == null
+                        ? `${label} 未到期/缺失`
+                        : `${label} ${(interval.mean_bps / 100).toFixed(2)}% [${(
+                            interval.lower_95_bps / 100
+                          ).toFixed(2)}%, ${(interval.upper_95_bps / 100).toFixed(2)}%]`;
+                    })
+                    .join(" · ");
+                  const missing = Object.entries(cohort.missing_data ?? {})
+                    .filter(([, value]) => value > 0)
+                    .map(([reason, value]) => `${reason} ${value}`)
+                    .join("、");
+                  return `${STRATEGY_ZH[cohort.strategy_id] ?? cohort.strategy_id} · ${cohort.venue}/${
+                    cohort.liquidity_bucket
+                  } · holdout ${cohort.holdout}/${cohort.evaluated} · 覆盖 ${(
+                    cohort.coverage_bps / 100
+                  ).toFixed(0)}% · ${horizons} · MFE/MAE ${
+                    cohort.mfe_mean_bps == null ? "—" : (cohort.mfe_mean_bps / 100).toFixed(2)
+                  }%/${cohort.mae_mean_bps == null ? "—" : (cohort.mae_mean_bps / 100).toFixed(2)}%${
+                    missing ? ` · 缺失：${missing}` : ""
+                  }`;
+                })
+                .join(" ｜ ")}
+        </span>
+      </div>
+
+      <div className="trading-floors">
         <small>交易地板</small>
         <span>
           鲸鱼盈利 ≥ {(floors.min_whale_long_profit_bps / 100).toFixed(0)}% · 持仓 ≥{" "}

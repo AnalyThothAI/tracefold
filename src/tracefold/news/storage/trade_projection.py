@@ -28,7 +28,7 @@ from ..opennews import source_artifact_identity
 # actually visible, and with an ascending `LIMIT` a busy hour of that wider window would have been
 # answered entirely with its oldest rows — spending the whole budget on context and returning none of
 # the fresh triggers the scan exists to find.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v3"
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v4"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -115,6 +115,16 @@ class LiquidationTradeProjectionRow(TypedDict):
     event_at_ms: int
     received_at_ms: int
     parser_version: str
+    provider_record_identity: str
+    symbol_contract_identity: str
+    position_side_semantics: str
+    quantity_semantics: str
+    notional_semantics: str
+    price_semantics: str
+    completeness_assumption: str
+    throttle_assumption: str
+    source_contract_version: str
+    source_contract_complete: bool
     ingest_mode: str
 
 
@@ -302,6 +312,10 @@ class TradeProjectionStorage:
             SELECT l.source_key, l.item_id, l.fact_id, l.symbol, l.venue,
                    l.liquidated_position_side, l.forced_order_side, l.notional_usd,
                    l.quantity, l.price, l.event_at_ms, l.received_at_ms, l.parser_version,
+                   l.provider_record_identity, l.symbol_contract_identity,
+                   l.position_side_semantics, l.quantity_semantics, l.notional_semantics,
+                   l.price_semantics, l.completeness_assumption, l.throttle_assumption,
+                   l.source_contract_version, l.source_contract_complete,
                    i.first_ingest_mode AS ingest_mode
               FROM news_market_liquidations l
               JOIN news_items i ON i.item_id = l.item_id
@@ -440,5 +454,15 @@ def _liquidation_projection_row(row: Any) -> LiquidationTradeProjectionRow:
         event_at_ms=row["event_at_ms"],
         received_at_ms=row["received_at_ms"],
         parser_version=row["parser_version"],
+        provider_record_identity=row["provider_record_identity"],
+        symbol_contract_identity=row["symbol_contract_identity"],
+        position_side_semantics=row["position_side_semantics"],
+        quantity_semantics=row["quantity_semantics"],
+        notional_semantics=row["notional_semantics"],
+        price_semantics=row["price_semantics"],
+        completeness_assumption=row["completeness_assumption"],
+        throttle_assumption=row["throttle_assumption"],
+        source_contract_version=row["source_contract_version"],
+        source_contract_complete=row["source_contract_complete"],
         ingest_mode=row["ingest_mode"],
     )

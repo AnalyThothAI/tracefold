@@ -5,20 +5,28 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from tracefold.trading.contracts import (
     FrozenMarketContext,
     FrozenStrategyContext,
+    InstrumentRef,
     LiquidationAggregate,
+    LiquidationMarketTrigger,
+    LiquidationSourceContract,
     LiquidationTradeCandidate,
     OiRegime,
+    OiTradeCandidate,
     RegimeAssessment,
+    TradingCaseManifest,
 )
 from tracefold.trading.strategy.liquidation_burst import (
     LiquidationContinuationConfig,
     LiquidationContinuationStrategy,
 )
 from tracefold.trading.strategy.liquidation_exhaustion import LiquidationExhaustionStrategy
-from tracefold.trading.strategy.root import capital_strategy_id, strategies
+from tracefold.trading.strategy.root import capital_strategy_id, strategies, strategy_from_manifest
 
 NOW = 1_900_000_000_000
 
@@ -37,12 +45,27 @@ def _liquidation_context(*, complete: bool, exhaustion_features: bool = False) -
         event_at_ms=NOW - 1_000,
         received_at_ms=NOW,
         parser_version="liquidation_parser_v1",
+        source_contract=LiquidationSourceContract(
+            provider_record_identity="provider-1",
+            symbol_contract_identity="binance:DOGEUSDT",
+            position_side_semantics="short=>forced_buy;long=>forced_sell",
+            quantity_semantics="base_asset",
+            notional_semantics="usd_execution_notional",
+            price_semantics="execution_price",
+            completeness_assumption="sequenced_complete_stream",
+            throttle_assumption="none",
+            source_contract_version="test_complete_v1",
+            complete=complete,
+        ),
     )
     market = FrozenMarketContext(
         mark_price=fact.price,
         observed_at_ms=NOW,
         pre_move_bps=250,
         pre_move_lookback_ms=3_600_000,
+        spread_bps=5,
+        depth_notional_usd=Decimal("2000000"),
+        funding_bps=10,
     )
     return FrozenStrategyContext(
         mode="paper",
@@ -53,6 +76,11 @@ def _liquidation_context(*, complete: bool, exhaustion_features: bool = False) -
             notional_usd=Decimal("1500000"),
             long_notional_usd=Decimal("0"),
             short_notional_usd=Decimal("1500000"),
+            long_count=0,
+            short_count=3,
+            dominant_liquidated_side="short",
+            dominant_share_bps=10_000,
+            acceleration_bps=1_000,
             source_refs=("a" * 64, "b" * 64, "c" * 64),
         ),
         regime=RegimeAssessment(
@@ -62,7 +90,28 @@ def _liquidation_context(*, complete: bool, exhaustion_features: bool = False) -
             oi_direction=None,
         ),
         market=market,
-        source_contract_complete=complete,
+        oi=OiTradeCandidate(
+            event_id="oi-1",
+            observed_at_ms=NOW - 5_000,
+            verdict_created_at_ms=NOW - 4_000,
+            base_symbol="DOGE",
+            venue="binance",
+            oi_direction="rise",
+            oi_change_bps=200,
+            oi_value_usd=50_000_000,
+            whale_long_profit_bps=9_900,
+            whale_oi_ratio_bps=5_000,
+            rank_in_window=1,
+            metric_version="oi_signal_v1",
+            learning_epoch="program_v7",
+            program_version="news_oi_signal_v1",
+            program_sha256="1" * 64,
+            policy_version="news_triage_policy_v10",
+            editorial_origin="telemetry_deterministic",
+            editorial_sha256="2" * 64,
+            scored_judgment_sha256="3" * 64,
+            runtime_manifest_sha="4" * 64,
+        ),
         intensity_decelerating=exhaustion_features,
         oi_collapsing=exhaustion_features,
         price_stopped_extreme=exhaustion_features,
@@ -83,6 +132,44 @@ def test_strategy_config_change_moves_the_content_digest() -> None:
     assert baseline.config_digest != stricter.config_digest
 
 
+def test_manifest_freezes_replayable_config_values_not_only_a_digest() -> None:
+    strategy = LiquidationContinuationStrategy()
+    context = _liquidation_context(complete=True)
+    manifest = TradingCaseManifest(
+        primary_trigger=LiquidationMarketTrigger(
+            source_key="a" * 64,
+            observed_at_ms=NOW - 1_000,
+            persisted_at_ms=NOW,
+            venue="binance",
+        ),
+        contexts=context,
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config=strategy.config_snapshot,
+        strategy_config_digest=strategy.config_digest,
+        underlying_key="crypto:DOGE",
+        base_symbol="DOGE",
+        cutoff_ms=NOW,
+        instrument=InstrumentRef(
+            exchange_id="binance",
+            venue="binance.perp",
+            provider_symbol="DOGEUSDT",
+            base_symbol="DOGE",
+            instrument_class="crypto",
+            observed_at_ms=NOW,
+        ),
+    )
+    rebuilt = strategy_from_manifest(manifest)
+    assert rebuilt is not None
+    assert rebuilt.evaluate(context) == strategy.evaluate(context)
+    assert rebuilt.config_snapshot == strategy.config_snapshot
+
+    with pytest.raises(ValidationError, match="trading_strategy_config_digest_mismatch"):
+        TradingCaseManifest.model_validate(
+            {**manifest.model_dump(mode="json"), "strategy_config": {**strategy.config_snapshot, "min_count": 99}}
+        )
+
+
 def test_opennews_liquidation_contract_fails_closed_before_directional_hypotheses() -> None:
     context = _liquidation_context(complete=False)
     for strategy in (LiquidationContinuationStrategy(), LiquidationExhaustionStrategy()):
@@ -101,6 +188,30 @@ def test_continuation_and_exhaustion_are_opposite_named_hypotheses_when_evidence
     assert (continuation.decision, exhaustion.decision) == ("long", "short")
     assert continuation.rule != exhaustion.rule
     assert continuation.permission == exhaustion.permission == "shadow"
+
+
+@pytest.mark.parametrize(
+    ("aggregate_update", "market_update", "rule"),
+    [
+        ({"dominant_share_bps": 5_000}, {}, "burst_not_one_sided"),
+        ({"acceleration_bps": None}, {}, "burst_acceleration_missing"),
+        ({}, {"pre_move_bps": -100}, "price_momentum_not_confirmed"),
+        ({}, {"pre_move_bps": 251}, "pre_move_above_ceiling"),
+    ],
+)
+def test_continuation_requires_the_declared_setup_features(
+    aggregate_update: dict[str, object], market_update: dict[str, object], rule: str
+) -> None:
+    context = _liquidation_context(complete=True)
+    aggregate = context.liquidation_aggregate
+    assert aggregate is not None
+    changed = context.model_copy(
+        update={
+            "liquidation_aggregate": aggregate.model_copy(update=aggregate_update),
+            "market": context.market.model_copy(update=market_update),
+        }
+    )
+    assert LiquidationContinuationStrategy().evaluate(changed).rule == rule
 
 
 def test_liquidation_trigger_can_never_select_a_capital_strategy() -> None:

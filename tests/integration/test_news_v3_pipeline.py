@@ -747,7 +747,10 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
     admit(2_000_002, ingest_mode="recovery", side="Long", venue="hyperliquid")
 
     rows = conn.execute(
-        "SELECT venue, liquidated_position_side, forced_order_side, notional_usd, quantity "
+        "SELECT venue, liquidated_position_side, forced_order_side, notional_usd, quantity, "
+        "provider_record_identity, symbol_contract_identity, position_side_semantics, "
+        "quantity_semantics, notional_semantics, price_semantics, completeness_assumption, "
+        "throttle_assumption, source_contract_version, source_contract_complete "
         "FROM news_market_liquidations WHERE symbol = 'SPCX' ORDER BY venue"
     ).fetchall()
     assert [
@@ -757,6 +760,15 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
         ("binance", "short", "buy", 202_710, None),
         ("hyperliquid", "long", "sell", 202_710, None),
     ]
+    assert all(row["provider_record_identity"] for row in rows)
+    assert all(str(row["symbol_contract_identity"]).startswith("unresolved:") for row in rows)
+    assert all(row["position_side_semantics"] for row in rows)
+    assert all(row["quantity_semantics"] == "not_provided" for row in rows)
+    assert all(row["notional_semantics"] == "provider_reported_usd_notional" for row in rows)
+    assert all(row["price_semantics"] == "provider_reported_unspecified_price" for row in rows)
+    assert all(row["completeness_assumption"] and row["throttle_assumption"] for row in rows)
+    assert all(row["source_contract_version"] == "opennews_liquidation_source_v1" for row in rows)
+    assert all(row["source_contract_complete"] is False for row in rows)
 
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:

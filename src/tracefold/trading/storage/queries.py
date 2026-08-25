@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 from ..contracts import ACTIVE_ORDER_STATES
+from ..research.event_study import summarize_evaluation_rows
 from .sql_values import _dumps
 
 # The pipeline stages #211 asks to be able to report, each as the difference between two durable
@@ -88,18 +89,16 @@ class QueryStorage:
             "SELECT rule, count(*) AS n FROM trading_strategy_evaluations WHERE created_at_ms >= %s GROUP BY rule",
             (int(since_ms),),
         ).fetchall()
-        shadow_cohorts = self.conn.execute(
+        evaluation_rows = self.conn.execute(
             """
-            SELECT strategy_id,
-                   count(*) AS evaluated,
-                   count(completed_at_ms) AS completed,
-                   round(avg((market_outcome ->> 'return_bps')::numeric)) AS mean_return_bps
+            SELECT strategy_id, underlying_key, research_partition, manifest,
+                   market_outcome, completed_at_ms
               FROM trading_strategy_evaluations
              WHERE created_at_ms >= %s
-             GROUP BY strategy_id
             """,
             (int(since_ms),),
         ).fetchall()
+        shadow_cohorts, event_study_cohorts = summarize_evaluation_rows([dict(row) for row in evaluation_rows])
         # Only *measured* exits enter the realised-PnL denominator. An operator-resolved order closed
         # a position — so it cools the symbol down — but nobody computed a return for it, and counting
         # it turned one +150 bps winner beside three resolutions into a reported mean of 37.5.
@@ -115,14 +114,8 @@ class QueryStorage:
             "cases_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in strategies},
             "shadow_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in shadow_strategies},
             "shadow_by_rule": {str(row["rule"]): int(row["n"]) for row in shadow_rules},
-            "shadow_cohorts": {
-                str(row["strategy_id"]): {
-                    "evaluated": int(row["evaluated"]),
-                    "completed": int(row["completed"]),
-                    "mean_return_bps": (None if row["mean_return_bps"] is None else int(row["mean_return_bps"])),
-                }
-                for row in shadow_cohorts
-            },
+            "shadow_cohorts": shadow_cohorts,
+            "event_study_cohorts": event_study_cohorts,
             "liquidation_promotion_ready": False,
             "liquidation_promotion_reason": "source_contract_incomplete",
             "orders_by_state": {str(row["state"]): int(row["n"]) for row in orders},

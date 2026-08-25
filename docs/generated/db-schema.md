@@ -323,6 +323,16 @@
 | `event_at_ms` | `BIGINT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `parser_version` | `TEXT` | False | `None` |
+| `provider_record_identity` | `TEXT` | False | `None` |
+| `symbol_contract_identity` | `TEXT` | False | `None` |
+| `position_side_semantics` | `TEXT` | False | `None` |
+| `quantity_semantics` | `TEXT` | False | `None` |
+| `notional_semantics` | `TEXT` | False | `None` |
+| `price_semantics` | `TEXT` | False | `None` |
+| `completeness_assumption` | `TEXT` | False | `None` |
+| `throttle_assumption` | `TEXT` | False | `None` |
+| `source_contract_version` | `TEXT` | False | `None` |
+| `source_contract_complete` | `BOOLEAN` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_model_recordings`
@@ -587,11 +597,24 @@
 | `invalidation` | `TEXT` | False | `None` |
 | `expected_horizon` | `TEXT` | False | `None` |
 | `permission` | `TEXT` | False | `None` |
+| `strategy_registered_at_ms` | `BIGINT` | False | `None` |
+| `research_partition` | `TEXT` | False | `None` |
 | `cutoff_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `market_outcome` | `JSONB` | True | `None` |
 | `market_outcome_version` | `TEXT` | True | `None` |
 | `completed_at_ms` | `BIGINT` | True | `None` |
+
+## `trading_strategy_registrations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `strategy_id` | `TEXT` | False | `None` |
+| `strategy_version` | `TEXT` | False | `None` |
+| `strategy_config_digest` | `TEXT` | False | `None` |
+| `strategy_config` | `JSONB` | False | `None` |
+| `permission` | `TEXT` | False | `None` |
+| `registered_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_symbol_blacklist`
 

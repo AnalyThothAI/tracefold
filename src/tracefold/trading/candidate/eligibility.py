@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from ..contracts import (
     TRADING_MANIFEST_VERSION,
     LiquidationCandidateRow,
+    LiquidationSourceContract,
     LiquidationTradeCandidate,
     NewsCandidateRow,
     NewsTradeCandidate,
@@ -341,6 +342,18 @@ def liquidation_candidate(
             event_at_ms=int(row.get("event_at_ms") or 0),
             received_at_ms=int(row.get("received_at_ms") or 0),
             parser_version=str(row.get("parser_version") or ""),
+            source_contract=LiquidationSourceContract(
+                provider_record_identity=str(row.get("provider_record_identity") or ""),
+                symbol_contract_identity=str(row.get("symbol_contract_identity") or ""),
+                position_side_semantics=str(row.get("position_side_semantics") or ""),
+                quantity_semantics=str(row.get("quantity_semantics") or ""),
+                notional_semantics=str(row.get("notional_semantics") or ""),
+                price_semantics=str(row.get("price_semantics") or ""),
+                completeness_assumption=str(row.get("completeness_assumption") or ""),
+                throttle_assumption=str(row.get("throttle_assumption") or ""),
+                source_contract_version=str(row.get("source_contract_version") or ""),
+                complete=bool(row.get("source_contract_complete")),
+            ),
         )
     except (InvalidOperation, TypeError, ValueError, ValidationError):
         return _no("typed_fact_invalid", symbol)

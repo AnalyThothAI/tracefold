@@ -245,6 +245,16 @@ class DecisionStorage:
         event_at_ms: int,
         received_at_ms: int,
         parser_version: str,
+        provider_record_identity: str,
+        symbol_contract_identity: str,
+        position_side_semantics: str,
+        quantity_semantics: str,
+        notional_semantics: str,
+        price_semantics: str,
+        completeness_assumption: str,
+        throttle_assumption: str,
+        source_contract_version: str,
+        source_contract_complete: bool,
         now_ms: int,
     ) -> None:
         """Append one normalized Strategy 2000 fact. Provider replays are idempotent by source key."""
@@ -254,8 +264,14 @@ class DecisionStorage:
             INSERT INTO news_market_liquidations (
               source_key, item_id, fact_id, symbol, venue, liquidated_position_side,
               forced_order_side, notional_usd, quantity, price, event_at_ms,
-              received_at_ms, parser_version, created_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              received_at_ms, parser_version, provider_record_identity,
+              symbol_contract_identity, position_side_semantics, quantity_semantics,
+              notional_semantics, price_semantics, completeness_assumption,
+              throttle_assumption, source_contract_version, source_contract_complete, created_at_ms
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
             ON CONFLICT (source_key) DO NOTHING
             """,
             (
@@ -272,6 +288,16 @@ class DecisionStorage:
                 int(event_at_ms),
                 int(received_at_ms),
                 parser_version,
+                provider_record_identity,
+                symbol_contract_identity,
+                position_side_semantics,
+                quantity_semantics,
+                notional_semantics,
+                price_semantics,
+                completeness_assumption,
+                throttle_assumption,
+                source_contract_version,
+                bool(source_contract_complete),
                 int(now_ms),
             ),
         )
@@ -283,7 +309,10 @@ class DecisionStorage:
             """
             SELECT source_key, item_id, fact_id, symbol, venue, liquidated_position_side,
                    forced_order_side, notional_usd, quantity, price, event_at_ms,
-                   received_at_ms, parser_version
+                   received_at_ms, parser_version, provider_record_identity,
+                   symbol_contract_identity, position_side_semantics, quantity_semantics,
+                   notional_semantics, price_semantics, completeness_assumption,
+                   throttle_assumption, source_contract_version, source_contract_complete
               FROM news_market_liquidations
              WHERE item_id = %s AND fact_id = %s AND parser_version = %s
             """,

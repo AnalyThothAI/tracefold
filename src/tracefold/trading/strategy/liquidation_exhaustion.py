@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from decimal import Decimal
 
 from ..contracts import (
     FrozenStrategyContext,
@@ -17,10 +18,24 @@ from ..contracts import (
 @dataclass(frozen=True, slots=True)
 class LiquidationExhaustionConfig:
     min_count: int = 3
+    min_notional_usd: Decimal = Decimal("1000000")
+    min_dominant_share_bps: int = 8_500
+    min_extreme_displacement_bps: int = 100
+    max_source_latency_ms: int = 10_000
+
+    @property
+    def snapshot(self) -> dict[str, bool | int | str]:
+        return {
+            "min_count": self.min_count,
+            "min_notional_usd": str(self.min_notional_usd),
+            "min_dominant_share_bps": self.min_dominant_share_bps,
+            "min_extreme_displacement_bps": self.min_extreme_displacement_bps,
+            "max_source_latency_ms": self.max_source_latency_ms,
+        }
 
     @property
     def digest(self) -> str:
-        return canonical_sha256(asdict(self))
+        return canonical_sha256(self.snapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,15 +50,34 @@ class LiquidationExhaustionStrategy:
     def config_digest(self) -> str:
         return self.config.digest
 
+    @property
+    def config_snapshot(self) -> dict[str, bool | int | str]:
+        return self.config.snapshot
+
     def evaluate(self, context: FrozenStrategyContext) -> StrategyOutcome:
         fact = context.liquidation
         aggregate = context.liquidation_aggregate
         if fact is None or aggregate is None:
             return _no_trade("liquidation_context_missing")
-        if not context.source_contract_complete:
+        if not fact.source_contract.complete:
             return _no_trade("source_contract_incomplete")
+        if fact.source_latency_ms > self.config.max_source_latency_ms:
+            return _no_trade("source_latency_above_bound")
         if aggregate.count < self.config.min_count:
             return _no_trade("exhaustion_burst_count_below_floor")
+        if aggregate.notional_usd < self.config.min_notional_usd:
+            return _no_trade("exhaustion_burst_notional_below_floor")
+        if aggregate.dominant_liquidated_side is None:
+            return _no_trade("exhaustion_burst_side_tied")
+        if aggregate.dominant_share_bps < self.config.min_dominant_share_bps:
+            return _no_trade("exhaustion_burst_not_one_sided")
+        move = context.market.pre_move_bps
+        if move is None:
+            return _no_trade("extreme_displacement_missing")
+        forced_buy = aggregate.dominant_liquidated_side == "short"
+        signed_move = move if forced_buy else -move
+        if signed_move < self.config.min_extreme_displacement_bps:
+            return _no_trade("extreme_displacement_below_floor")
         required = {
             "intensity_decelerating": context.intensity_decelerating,
             "oi_collapsing": context.oi_collapsing,
@@ -54,7 +88,7 @@ class LiquidationExhaustionStrategy:
         if missing is not None:
             return _no_trade(f"exhaustion_requires:{missing}")
         return StrategyOutcome(
-            decision="short" if fact.forced_order_side == "buy" else "long",
+            decision="short" if forced_buy else "long",
             rule="liquidation_post_cascade_exhaustion",
             setup="forced flow decelerates while price stops extending and liquidity recovers",
             invalidation="price resumes in the forced-flow direction",

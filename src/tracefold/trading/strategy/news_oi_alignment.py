@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from ..contracts import (
     FrozenStrategyContext,
@@ -25,8 +25,18 @@ class NewsOiAlignmentConfig:
     live_max_price_in: int = 1
 
     @property
+    def snapshot(self) -> dict[str, bool | int | str]:
+        return {
+            "allow_short": self.allow_short,
+            "min_whale_long_profit_bps": self.min_whale_long_profit_bps,
+            "min_oi_value_usd": self.min_oi_value_usd,
+            "live_min_surprise": self.live_min_surprise,
+            "live_max_price_in": self.live_max_price_in,
+        }
+
+    @property
     def digest(self) -> str:
-        return canonical_sha256(asdict(self))
+        return canonical_sha256(self.snapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +50,10 @@ class NewsOiAlignmentStrategy:
     @property
     def config_digest(self) -> str:
         return self.config.digest
+
+    @property
+    def config_snapshot(self) -> dict[str, bool | int | str]:
+        return self.config.snapshot
 
     def evaluate(self, context: FrozenStrategyContext) -> StrategyOutcome:
         if context.news is None:

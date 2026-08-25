@@ -148,7 +148,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     ),
     "news_to_trading.schema_sha256.manifest": (
         "issue_213_versioned_strategy_kernel",
-        "455f50d6237112201c9279c3f228b99a81b1eed57030667ae3e3ee10d5734f74",
+        "4186192feb186a260a5631974088d842fddfcbcbcf3bd8077d50c76563e0f2a4",
     ),
     "news_to_trading.policy_version": ("issue_213_versioned_strategy_kernel", "trading_strategy_policy_v1"),
     "news_to_trading.schema_sha256.news": (
@@ -227,7 +227,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     ),
     "representative_trading_flow.flow.manifest_sha256": (
         "issue_213_versioned_strategy_kernel",
-        "715bed39300d78b1b452a254de2d5534a3e4887a0310938d2ec3b5c8d193a22f",
+        "0b8b0dff52f3d3195d39bc77d23287101f0b5730267e859d5ca9b6d4f57cab42",
     ),
     "representative_trading_flow.flow.manifest.case_kind": ("issue_213_versioned_strategy_kernel", _MISSING),
     "representative_trading_flow.flow.manifest.mark_price": ("issue_213_versioned_strategy_kernel", _MISSING),
@@ -245,18 +245,6 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
             "venue": "hyperliquid",
         },
     ),
-    "representative_trading_flow.flow.manifest.market_context": (
-        "issue_213_versioned_strategy_kernel",
-        {
-            "mark_price": "103",
-            "observed_at_ms": NOW_MS,
-            "pre_move_bps": 300,
-            "pre_move_lookback_ms": 3_600_000,
-            "spread_bps": None,
-            "depth_notional_usd": None,
-            "funding_bps": None,
-        },
-    ),
     "representative_trading_flow.flow.manifest.strategy_id": (
         "issue_213_versioned_strategy_kernel",
         "news_oi_alignment_v1",
@@ -268,6 +256,16 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     "representative_trading_flow.flow.manifest.strategy_config_digest": (
         "issue_213_versioned_strategy_kernel",
         "3cfcec1cac2af3e17a012b39555c15d67dc78bac404fdd26fa149fc210aac05c",
+    ),
+    "representative_trading_flow.flow.manifest.strategy_config": (
+        "issue_213_freeze_exact_strategy_config",
+        {
+            "allow_short": False,
+            "min_whale_long_profit_bps": 9_500,
+            "min_oi_value_usd": 20_000_000,
+            "live_min_surprise": 2,
+            "live_max_price_in": 1,
+        },
     ),
     "representative_trading_flow.flow.manifest.contexts": (
         "issue_213_versioned_strategy_kernel",
@@ -341,7 +339,6 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
                 "funding_bps": None,
             },
             "news_decision": None,
-            "source_contract_complete": False,
             "intensity_decelerating": None,
             "oi_collapsing": None,
             "price_stopped_extreme": None,
@@ -489,7 +486,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     ),
     "representative_trading_flow.snapshot_sha256": (
         "issue_213_versioned_strategy_kernel",
-        "714844cc22beb5143d7f180fdeacac5b24500c5738d5a7b07112d7c972b88ff3",
+        "6b0824d793dbdf7d6d09c8f692278f5ca1df9bc73f342105ca66ff209a600cfb",
     ),
 }
 
@@ -1001,12 +998,12 @@ def _trading_manifest() -> tuple[OiTradeCandidate, NewsTradeCandidate, TradingCa
         ),
         strategy_id=strategy.strategy_id,
         strategy_version=strategy.strategy_version,
+        strategy_config=strategy.config_snapshot,
         strategy_config_digest=strategy.config_digest,
         underlying_key="crypto:DOGE",
         base_symbol="DOGE",
         cutoff_ms=NOW_MS,
         instrument=instrument,
-        market_context=market,
     )
     return oi, projected_news, manifest
 

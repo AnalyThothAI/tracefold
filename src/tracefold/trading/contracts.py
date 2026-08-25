@@ -21,7 +21,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Protocol, TypedDict, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
@@ -124,6 +124,16 @@ class LiquidationCandidateRow(TypedDict):
     event_at_ms: int
     received_at_ms: int
     parser_version: str
+    provider_record_identity: str
+    symbol_contract_identity: str
+    position_side_semantics: str
+    quantity_semantics: str
+    notional_semantics: str
+    price_semantics: str
+    completeness_assumption: str
+    throttle_assumption: str
+    source_contract_version: str
+    source_contract_complete: bool
     ingest_mode: str
 
 
@@ -365,6 +375,21 @@ class NewsTradeCandidate(_Frozen):
         return canonical_sha256({"artifact": artifact, "fingerprint": self.comparison_fingerprint})
 
 
+class LiquidationSourceContract(_Frozen):
+    """What the upstream feed proves about one normalized liquidation record."""
+
+    provider_record_identity: str
+    symbol_contract_identity: str
+    position_side_semantics: str
+    quantity_semantics: str
+    notional_semantics: str
+    price_semantics: str
+    completeness_assumption: str
+    throttle_assumption: str
+    source_contract_version: str
+    complete: bool
+
+
 class LiquidationTradeCandidate(_Frozen):
     """One normalized forced-flow fact. Its side fields describe the fill, never a forecast."""
 
@@ -381,6 +406,7 @@ class LiquidationTradeCandidate(_Frozen):
     event_at_ms: int = Field(gt=0)
     received_at_ms: int = Field(gt=0)
     parser_version: str
+    source_contract: LiquidationSourceContract
 
     @property
     def source_latency_ms(self) -> int:
@@ -485,6 +511,10 @@ class LiquidationAggregate(_Frozen):
     notional_usd: Decimal = Field(gt=0)
     long_notional_usd: Decimal = Field(ge=0)
     short_notional_usd: Decimal = Field(ge=0)
+    long_count: int = Field(ge=0)
+    short_count: int = Field(ge=0)
+    dominant_liquidated_side: Literal["long", "short"] | None
+    dominant_share_bps: int = Field(ge=0, le=10_000)
     acceleration_bps: int | None = None
     source_refs: tuple[str, ...] = ()
 
@@ -510,7 +540,6 @@ class FrozenStrategyContext(_Frozen):
     regime: RegimeAssessment
     market: FrozenMarketContext
     news_decision: TradeDecision | None = None
-    source_contract_complete: bool = False
     intensity_decelerating: bool | None = None
     oi_collapsing: bool | None = None
     price_stopped_extreme: bool | None = None
@@ -535,12 +564,18 @@ class TradingCaseManifest(_Frozen):
     contexts: FrozenStrategyContext
     strategy_id: StrategyId
     strategy_version: str
+    strategy_config: dict[str, bool | int | str]
     strategy_config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     underlying_key: str
     base_symbol: str
     cutoff_ms: int
     instrument: InstrumentRef
-    market_context: FrozenMarketContext
+
+    @model_validator(mode="after")
+    def _config_digest_matches_snapshot(self) -> TradingCaseManifest:
+        if canonical_sha256(self.strategy_config) != self.strategy_config_digest:
+            raise ValueError("trading_strategy_config_digest_mismatch")
+        return self
 
     @property
     def trigger_kind(self) -> TriggerKind:
@@ -557,6 +592,12 @@ class TradingCaseManifest(_Frozen):
     @property
     def regime(self) -> RegimeAssessment:
         return self.contexts.regime
+
+    @property
+    def market_context(self) -> FrozenMarketContext:
+        """Compatibility accessor over the manifest's single market-truth object."""
+
+        return self.contexts.market
 
     @property
     def mark_price(self) -> Decimal:

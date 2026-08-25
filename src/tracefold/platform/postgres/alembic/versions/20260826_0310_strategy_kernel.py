@@ -31,6 +31,16 @@ def upgrade() -> None:
           event_at_ms               BIGINT  NOT NULL,
           received_at_ms            BIGINT  NOT NULL,
           parser_version            TEXT    NOT NULL,
+          provider_record_identity  TEXT    NOT NULL,
+          symbol_contract_identity  TEXT    NOT NULL,
+          position_side_semantics   TEXT    NOT NULL,
+          quantity_semantics        TEXT    NOT NULL,
+          notional_semantics        TEXT    NOT NULL,
+          price_semantics           TEXT    NOT NULL,
+          completeness_assumption   TEXT    NOT NULL,
+          throttle_assumption       TEXT    NOT NULL,
+          source_contract_version   TEXT    NOT NULL,
+          source_contract_complete  BOOLEAN NOT NULL,
           created_at_ms             BIGINT  NOT NULL,
           CONSTRAINT news_market_liquidations_item_fk
             FOREIGN KEY (item_id) REFERENCES news_items (item_id) ON DELETE CASCADE,
@@ -49,6 +59,12 @@ def upgrade() -> None:
           CONSTRAINT news_market_liquidations_quantity_positive CHECK (quantity IS NULL OR quantity > 0),
           CONSTRAINT news_market_liquidations_price_positive CHECK (price > 0),
           CONSTRAINT news_market_liquidations_time_order CHECK (received_at_ms >= event_at_ms)
+          ,CONSTRAINT news_market_liquidations_source_contract_check CHECK (
+            source_contract_version <> '' AND provider_record_identity <> ''
+            AND symbol_contract_identity <> '' AND position_side_semantics <> ''
+            AND quantity_semantics <> '' AND notional_semantics <> '' AND price_semantics <> ''
+            AND completeness_assumption <> '' AND throttle_assumption <> ''
+          )
         )
         """
     )
@@ -99,6 +115,28 @@ def upgrade() -> None:
 
     op.execute(
         """
+        CREATE TABLE trading_strategy_registrations (
+          strategy_id            TEXT    NOT NULL,
+          strategy_version       TEXT    NOT NULL,
+          strategy_config_digest TEXT    NOT NULL,
+          strategy_config        JSONB   NOT NULL,
+          permission             TEXT    NOT NULL,
+          registered_at_ms       BIGINT  NOT NULL,
+          PRIMARY KEY (strategy_id, strategy_version, strategy_config_digest),
+          CONSTRAINT trading_strategy_registrations_digest_check
+            CHECK (strategy_config_digest ~ '^[0-9a-f]{64}$'),
+          CONSTRAINT trading_strategy_registrations_config_check
+            CHECK (jsonb_typeof(strategy_config) = 'object'),
+          CONSTRAINT trading_strategy_registrations_permission_check
+            CHECK (permission IN ('shadow', 'paper', 'live_reviewed'))
+        )
+        """
+    )
+    op.execute("GRANT SELECT ON trading_strategy_registrations TO tracefold_serve")
+    op.execute("GRANT SELECT, INSERT ON trading_strategy_registrations TO tracefold_workers")
+
+    op.execute(
+        """
         CREATE TABLE trading_strategy_evaluations (
           evaluation_id          TEXT    PRIMARY KEY,
           trigger_source_key     TEXT    NOT NULL,
@@ -115,6 +153,8 @@ def upgrade() -> None:
           invalidation           TEXT    NOT NULL,
           expected_horizon       TEXT    NOT NULL,
           permission             TEXT    NOT NULL,
+          strategy_registered_at_ms BIGINT NOT NULL,
+          research_partition     TEXT    NOT NULL,
           cutoff_ms              BIGINT  NOT NULL,
           created_at_ms          BIGINT  NOT NULL,
           market_outcome         JSONB,
@@ -139,8 +179,15 @@ def upgrade() -> None:
           CONSTRAINT trading_strategy_evaluations_horizon_check
             CHECK (expected_horizon IN ('minutes', 'hours', 'none')),
           CONSTRAINT trading_strategy_evaluations_permission_check CHECK (permission = 'shadow'),
+          CONSTRAINT trading_strategy_evaluations_partition_check CHECK (research_partition = 'holdout'),
+          CONSTRAINT trading_strategy_evaluations_registration_fk FOREIGN KEY (
+            strategy_id, strategy_version, strategy_config_digest
+          ) REFERENCES trading_strategy_registrations (
+            strategy_id, strategy_version, strategy_config_digest
+          ),
           CONSTRAINT trading_strategy_evaluations_time_check CHECK (
-            created_at_ms >= cutoff_ms AND (completed_at_ms IS NULL OR completed_at_ms >= created_at_ms)
+            cutoff_ms >= strategy_registered_at_ms AND created_at_ms >= cutoff_ms
+            AND (completed_at_ms IS NULL OR completed_at_ms >= created_at_ms)
           ),
           CONSTRAINT trading_strategy_evaluations_outcome_check CHECK (
             (market_outcome IS NULL AND market_outcome_version IS NULL AND completed_at_ms IS NULL) OR

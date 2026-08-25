@@ -1397,7 +1397,10 @@ evaluation only when it existed no later than the cutoff. Feishu `sent` is
 notification transport success, not a trigger; capital must not depend on a
 notification channel being reachable. The frozen manifest names exactly one
 `primary_trigger`, one `strategy_id` / `strategy_version` /
-`strategy_config_digest`, and a point-in-time `contexts` object. This prevents
+exact typed `strategy_config` / `strategy_config_digest`, and a point-in-time
+`contexts` object. `contexts.market` is the sole market truth; the manifest does
+not serialize a second market copy. A restart rebuilds the exact strategy from
+the frozen values instead of comparing the Case with today's thresholds. This prevents
 a later News, OI, or market observation from leaking backwards into the case.
 
 **The News input is one hard-cut generation.** The public projections emit
@@ -1422,7 +1425,12 @@ by that strategy but fails closed. `liquidation_continuation_shadow_v1` and
 `liquidation_exhaustion_shadow_v1` are opposite, independently versioned
 hypotheses over the same forced-flow trigger. Both have `shadow` permission and
 can write only `trading_strategy_evaluations`: no Case and no Order exists for
-them.
+them. Continuation requires a same-venue one-sided burst, count/notional and
+acceleration floors, aligned price momentum below a pre-move ceiling, OI and
+funding context, healthy spread/depth and bounded source latency. Exhaustion
+requires a large one-sided burst and aligned extreme displacement before the
+separate deceleration, OI-collapse, stopped-extreme and liquidity-recovery facts.
+Every missing prerequisite returns a named `no_trade`.
 
 **Liquidation is a typed fact, not prose sentiment.** At News admission,
 Strategy 2000's exact wire template is parsed into
@@ -1434,10 +1442,12 @@ closed, and recovery-origin facts remain in audit but cannot trigger Trading.
 The reader verdict is deliberately direction-neutral because an observed
 forced trade is not by itself a forecast.
 
-The current source contract supplies event time, receive time, venue, side,
-notional, and price, but not independently verified funding, spread, depth,
-throttle, or deceleration. The frozen strategy context therefore carries
-`source_contract_complete=false`. Both liquidation strategies deterministically
+The current source contract supplies provider-record identity, event time,
+receive time, venue, side, notional, and price, while explicitly recording an
+unresolved exact contract, no quantity, unspecified price semantics, selected-
+event completeness and unknown throttle. It does not independently verify
+funding, spread, depth, sequence, coverage or deceleration. The typed fact
+therefore carries `source_contract.complete=false`. Both liquidation strategies deterministically
 return `no_trade/source_contract_incomplete`; this is an executable promotion
 gate, not an operator warning that can be clicked through.
 
@@ -1747,11 +1757,14 @@ daily model budget. For an eligible News-bearing case the runner freezes the
 single model result into a new context and evaluates the same strategy again;
 the strategy, never the model adapter, returns the final named decision.
 
-**Six tables**, all `trading_*`: `trading_symbol_blacklist`,
+**Seven tables**, all `trading_*`: `trading_symbol_blacklist`,
 `trading_runtime_state` (control, daily counters, the day's funnel),
 `trading_cases`, `trading_orders`, `trading_order_observations`, and
-`trading_strategy_evaluations`. `trading_cases` is the immutable capital
+`trading_strategy_registrations` plus `trading_strategy_evaluations`.
+`trading_cases` is the immutable capital
 research decision and freezes trigger plus strategy identity;
+`trading_strategy_registrations` freezes the first durable instant and typed
+configuration for an exact strategy identity;
 `trading_strategy_evaluations` is the immutable shadow-decision ledger and may
 gain exactly one separately versioned market outcome after its horizon. It has
 no transition into Cases or Orders. `closed_at_ms`
@@ -1763,14 +1776,19 @@ what makes a crash or a redeploy idempotent without a checkpoint to corrupt.
 
 For liquidation shadow research the idempotency key is the complete strategy
 identity `(trigger_source_key, strategy_id, strategy_version,
-strategy_config_digest)`. One typed liquidation trigger therefore produces
-exactly two immutable evaluations and zero orders. At one hour the outcome
-worker may attach `liquidation_forward_return_1h_v1` with forward return,
-maximum favorable move, and maximum adverse move from closed public bars. The
-24-hour API cohort reports evaluated and completed counts plus mean forward
-return; it always reports `liquidation_promotion_ready=false` with
-`source_contract_incomplete` until a later, evidence-gated source-contract
-migration changes that fact.
+strategy_config_digest)`. The first worker turn registers that identity; an
+event whose cutoff precedes `registered_at_ms` is refused as
+`holdout_precedes_strategy_registration`. A later typed trigger produces
+exactly two immutable holdout evaluations and zero orders. Once the longest
+horizon closes, the outcome worker may attach `liquidation_event_study_v2`.
+It reports the six required horizons, MFE/MAE, close-only stop/TP/max-holding,
+fees/slippage, funding availability, deterministic bootstrap intervals and
+failure/missing counts. The current 5-minute public candle contract marks
+5s/30s/1m and funding missing. The provider does not expose a durable duplicate
+denominator, so duplicate rate remains null and is itself a named evidence gap.
+API cohorts remain separate by strategy, venue and liquidity bucket, and
+promotion stays false until source, coverage, cost, holdout and diversity
+evidence all pass.
 
 `trading_cases` also carries the two upstream instants Trading does not own:
 `source_observed_at_ms` (when the provider fact was observed) and

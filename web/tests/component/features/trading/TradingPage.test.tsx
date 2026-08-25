@@ -211,6 +211,13 @@ describe("TradingPage", () => {
     expect(cohort).toHaveTextContent("来源契约不完整 4");
     expect(cohort).toHaveTextContent("不可晋级：source_contract_incomplete");
 
+    const study = screen.getByText("清算事件研究").closest(".trading-floors") as HTMLElement;
+    expect(study).toHaveTextContent("清算延续（影子） · binance/unknown");
+    expect(study).toHaveTextContent("holdout 2/2 · 覆盖 50%");
+    expect(study).toHaveTextContent("5m 0.25% [0.25%, 0.25%]");
+    expect(study).toHaveTextContent("MFE/MAE 0.80%/-0.20%");
+    expect(study).toHaveTextContent("horizon:5s:source_bar_resolution_unsupported 1");
+
     // Shadow evaluations are evidence rows only. They must not become exposure or closed-order rows.
     for (const row of document.querySelectorAll(".trading-exposure-row, .trading-closed-row")) {
       expect(row).not.toHaveTextContent(/清算延续|清算衰竭/);

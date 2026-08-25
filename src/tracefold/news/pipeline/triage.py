@@ -176,13 +176,16 @@ class TriageConsumer:
         if not event_id:
             raise PermanentError("news_event_id_missing")
         stamp = now_ms()
-        published = await self._republish_settled_verdict(event_id, message)
-        if published:
+        if await self._republish_settled_verdict(event_id, message, policy_version=TRIAGE_POLICY_VERSION):
             return
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
         card, history = bundle
+        if str(card.get("admission") or "") == "liquidation_deterministic" and await self._republish_settled_verdict(
+            event_id, message, policy_version=liquidations.TRIAGE_POLICY_VERSION
+        ):
+            return
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
             raise PermanentError("news_event_evidence_v2_required")
         facts = _gate_facts(card, self.watchlist_symbols)
@@ -255,23 +258,29 @@ class TriageConsumer:
             break
         if outcome.final in {"push", "escalate"}:
             await self._publish_decision(
-                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+                event_id,
+                outcome.final,
+                trace_id=message.trace_id,
+                amqp_priority=message.priority,
+                policy_version=TRIAGE_POLICY_VERSION,
             )
 
-    async def _republish_settled_verdict(self, event_id: str, message: BusMessage) -> bool:
+    async def _republish_settled_verdict(self, event_id: str, message: BusMessage, *, policy_version: str) -> bool:
         """Whether this Event already has a verdict. A push that never left the process is re-published."""
 
         existing = await self.db.read(
             "news_triage_existing",
-            lambda repos: repos.news.get_verdict(
-                event_id=event_id, stage="triage", policy_version=TRIAGE_POLICY_VERSION
-            ),
+            lambda repos: repos.news.get_verdict(event_id=event_id, stage="triage", policy_version=policy_version),
         )
         if existing is None:
             return False
         if existing.get("published_at_ms") is None and existing["final_decision"] in {"push", "escalate"}:
             await self._publish_decision(
-                event_id, existing["final_decision"], trace_id=message.trace_id, amqp_priority=message.priority
+                event_id,
+                existing["final_decision"],
+                trace_id=message.trace_id,
+                amqp_priority=message.priority,
+                policy_version=policy_version,
             )
         return True
 
@@ -558,6 +567,7 @@ class TriageConsumer:
             model_name=attempts.model_name,
             program_version=arm.program_version,
             program_sha256=arm.program_sha256,
+            policy_version=TRIAGE_POLICY_VERSION,
             policy=arm.policy,
             runtime_manifest_sha=self.runtime_manifest_sha,
             trace=trace,
@@ -741,7 +751,11 @@ class TriageConsumer:
             outcome = await self.db.tx("news_signal_judge", _rank_and_settle)
         if outcome.final in {"push", "escalate"}:
             await self._publish_decision(
-                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+                event_id,
+                outcome.final,
+                trace_id=message.trace_id,
+                amqp_priority=message.priority,
+                policy_version=TRIAGE_POLICY_VERSION,
             )
 
     async def _judge_liquidation(
@@ -763,8 +777,8 @@ class TriageConsumer:
             "attempt": message.attempt,
             "program_version": liquidations.PROGRAM_VERSION,
             "runtime_manifest_sha": self.runtime_manifest_sha,
-            "policy": self.policy.as_dict(),
-            "gate_policy_version": GATE_POLICY_VERSION,
+            "policy": {"policy_version": liquidations.TRIAGE_POLICY_VERSION},
+            "gate_policy_version": liquidations.ADMISSION_POLICY_VERSION,
             "evidence_version": int(card.get("evidence_version") or 0),
             "evidence_sha256": str(card.get("evidence_sha256") or ""),
             "focus_fact_id": str(card.get("focus_fact_id") or ""),
@@ -806,6 +820,16 @@ class TriageConsumer:
                     price=row["price"],
                     event_at_ms=int(row["event_at_ms"]),
                     received_at_ms=int(row["received_at_ms"]),
+                    provider_record_identity=str(row["provider_record_identity"]),
+                    symbol_contract_identity=str(row["symbol_contract_identity"]),
+                    position_side_semantics=str(row["position_side_semantics"]),
+                    quantity_semantics=str(row["quantity_semantics"]),
+                    notional_semantics=str(row["notional_semantics"]),
+                    price_semantics=str(row["price_semantics"]),
+                    completeness_assumption=str(row["completeness_assumption"]),
+                    throttle_assumption=str(row["throttle_assumption"]),
+                    source_contract_version=str(row["source_contract_version"]),
+                    source_contract_complete=bool(row["source_contract_complete"]),
                     parser_version=str(row["parser_version"]),
                 )
                 verdict = liquidations.verdict(fact)
@@ -824,13 +848,18 @@ class TriageConsumer:
                     error_code=error_code,
                     program_version=liquidations.PROGRAM_VERSION,
                     program_sha256=liquidations.program_sha256(),
+                    policy_version=liquidations.TRIAGE_POLICY_VERSION,
                 ),
             )
 
         outcome = await self.db.tx("news_liquidation_judge", _settle)
         if outcome.final in {"push", "escalate"}:
             await self._publish_decision(
-                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+                event_id,
+                outcome.final,
+                trace_id=message.trace_id,
+                amqp_priority=message.priority,
+                policy_version=liquidations.TRIAGE_POLICY_VERSION,
             )
 
     def _deterministic_settle(
@@ -846,6 +875,7 @@ class TriageConsumer:
         error_code: str | None = None,
         program_version: str,
         program_sha256: str,
+        policy_version: str = TRIAGE_POLICY_VERSION,
     ) -> _TriageSettle:
         return _TriageSettle(
             event_id=event_id,
@@ -880,6 +910,7 @@ class TriageConsumer:
             model_name=None,
             program_version=program_version,
             program_sha256=program_sha256,
+            policy_version=policy_version,
             policy=self.policy,
             runtime_manifest_sha=self.runtime_manifest_sha,
             trace=trace,
@@ -914,24 +945,17 @@ class TriageConsumer:
             return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
         status = storyline_status(s.final_key, told=s.told, seen=seen)
         trace = s.trace
-        decision = decide(
-            s.judgment,
-            s.facts,
-            status,
-            degraded=s.degraded,
-            policy=s.policy,
-        )
-        if s.facts.admission == "liquidation_deterministic":
-            # This is a new deterministic fact lane, not a v10 editorial-policy change. Keep the
-            # calibrated News policy identity byte-stable and settle the parser's explicit reader
-            # intent here, beside the existing parse-failure override below.
-            decision = replace(
-                decision,
-                final=s.verdict.decision,
-                override_rule="liquidation_deterministic",
-                throttled_by=None,
+        if s.policy_version == liquidations.TRIAGE_POLICY_VERSION:
+            decision = liquidations.reader_decision(s.verdict, error_code=s.error_code)
+        else:
+            decision = decide(
+                s.judgment,
+                s.facts,
+                status,
+                degraded=s.degraded,
+                policy=s.policy,
             )
-        if s.error_code in {"oi_parse_failed", "liquidation_parse_failed"}:
+        if s.error_code == "oi_parse_failed":
             # The final action still comes from the one deterministic decision plane; this names the
             # provider-contract failure without changing the model policy helper's release identity.
             decision = replace(decision, override_rule=s.error_code)
@@ -969,7 +993,7 @@ class TriageConsumer:
         repos.news.insert_verdict(
             event_id=s.event_id,
             stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
+            policy_version=s.policy_version,
             model_decision=(s.verdict.decision if s.judgment.editorial.editorial_origin == "model" else None),
             rule_baseline_decision=decision.rule_baseline,
             final_decision=final,
@@ -1021,7 +1045,15 @@ class TriageConsumer:
             return None
         return card, _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp)
 
-    async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:
+    async def _publish_decision(
+        self,
+        event_id: str,
+        final: str,
+        *,
+        trace_id: str,
+        amqp_priority: int,
+        policy_version: str,
+    ) -> None:
         stamp = now_ms()
         await self.bus.publish(
             BusMessage(
@@ -1038,7 +1070,7 @@ class TriageConsumer:
             await self.db.tx(
                 "news_triage_mark_published",
                 lambda repos: repos.news.mark_verdict_published(
-                    event_id=event_id, stage="triage", policy_version=TRIAGE_POLICY_VERSION, now_ms=stamp
+                    event_id=event_id, stage="triage", policy_version=policy_version, now_ms=stamp
                 ),
                 timeout_seconds=1.0,
             )

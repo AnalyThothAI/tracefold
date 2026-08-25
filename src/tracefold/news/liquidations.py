@@ -5,15 +5,20 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from .events.gate import GateVerdict
 from .models import TriageAsset, TriageVerdict
+from .triage_rules import DecisionResult
 
 PARSER_VERSION: Final = "liquidation_parser_v1"
 PROGRAM_VERSION: Final = "news_liquidation_fact_v1"
 READER_CONTRACT_VERSION: Final = "liquidation_card_v1"
+ADMISSION_POLICY_VERSION: Final = "news_liquidation_admission_v1"
+TRIAGE_POLICY_VERSION: Final = "news_liquidation_policy_v1"
+SOURCE_CONTRACT_VERSION: Final = "opennews_liquidation_source_v1"
 STRATEGY_ID: Final = "2000"
 
 _FRAME = re.compile(
@@ -46,6 +51,16 @@ class LiquidationFact:
     price: Decimal
     event_at_ms: int
     received_at_ms: int
+    provider_record_identity: str
+    symbol_contract_identity: str
+    position_side_semantics: str
+    quantity_semantics: str
+    notional_semantics: str
+    price_semantics: str
+    completeness_assumption: str
+    throttle_assumption: str
+    source_contract_version: str = SOURCE_CONTRACT_VERSION
+    source_contract_complete: bool = False
     parser_version: str = PARSER_VERSION
 
 
@@ -63,6 +78,7 @@ def parse_liquidation(
     provider_source: str,
     event_at_ms: int,
     received_at_ms: int,
+    provider_record_identity: str | None = None,
 ) -> LiquidationFact | None:
     """Parse the Strategy 2000 wire template, failing closed on ambiguous units or venue."""
 
@@ -94,6 +110,15 @@ def parse_liquidation(
         price=price,
         event_at_ms=int(event_at_ms),
         received_at_ms=int(received_at_ms),
+        provider_record_identity=str(provider_record_identity or item_id),
+        # OpenNews names a base symbol and venue but not the exact listed contract.
+        symbol_contract_identity=f"unresolved:{venue}:{symbol}",
+        position_side_semantics="template_position_side;short=>forced_buy;long=>forced_sell",
+        quantity_semantics="not_provided",
+        notional_semantics="provider_reported_usd_notional",
+        price_semantics="provider_reported_unspecified_price",
+        completeness_assumption="selected_events_without_heartbeat_sequence_or_coverage_sla",
+        throttle_assumption="provider_throttle_unknown",
     )
 
 
@@ -125,6 +150,23 @@ def parse_failure(title: str, *, provider_source: str) -> tuple[TriageVerdict, d
             headline_zh=(str(title or "")[:60] or "强平遥测帧无法解析"),
         ),
         failure,
+    )
+
+
+def admission_verdict(gate: GateVerdict) -> GateVerdict:
+    """Compose Strategy 2000 after generic Gate v5 without changing v5's policy surface."""
+
+    return gate if gate.admission == "recovery" else replace(gate, admission="liquidation_deterministic")
+
+
+def reader_decision(verdict: TriageVerdict, *, error_code: str | None = None) -> DecisionResult:
+    """The independent liquidation reader policy; it never calls News editorial policy v10."""
+
+    return DecisionResult(
+        final=verdict.decision,
+        override_rule=error_code or "liquidation_deterministic",
+        throttled_by=None,
+        rule_baseline=verdict.decision,
     )
 
 
@@ -164,6 +206,18 @@ def trace(fact: LiquidationFact) -> dict[str, Any]:
         "received_at_ms": fact.received_at_ms,
         "source_latency_ms": max(0, fact.received_at_ms - fact.event_at_ms),
         "parser_version": fact.parser_version,
+        "source_contract": {
+            "provider_record_identity": fact.provider_record_identity,
+            "symbol_contract_identity": fact.symbol_contract_identity,
+            "position_side_semantics": fact.position_side_semantics,
+            "quantity_semantics": fact.quantity_semantics,
+            "notional_semantics": fact.notional_semantics,
+            "price_semantics": fact.price_semantics,
+            "completeness_assumption": fact.completeness_assumption,
+            "throttle_assumption": fact.throttle_assumption,
+            "source_contract_version": fact.source_contract_version,
+            "complete": fact.source_contract_complete,
+        },
         "rule": "liquidation_fact_only",
     }
 
@@ -174,7 +228,10 @@ def program_sha256() -> str:
             {
                 "program": PROGRAM_VERSION,
                 "reader_contract": READER_CONTRACT_VERSION,
+                "admission_policy": ADMISSION_POLICY_VERSION,
+                "triage_policy": TRIAGE_POLICY_VERSION,
                 "parser": PARSER_VERSION,
+                "source_contract": SOURCE_CONTRACT_VERSION,
                 "side_semantics": {"short": "buy", "long": "sell"},
             },
             sort_keys=True,
@@ -191,14 +248,19 @@ def _compact_usd(value: Decimal) -> str:
 
 
 __all__ = [
+    "ADMISSION_POLICY_VERSION",
     "PARSER_VERSION",
     "PROGRAM_VERSION",
     "READER_CONTRACT_VERSION",
+    "SOURCE_CONTRACT_VERSION",
     "STRATEGY_ID",
+    "TRIAGE_POLICY_VERSION",
     "LiquidationFact",
+    "admission_verdict",
     "parse_failure",
     "parse_liquidation",
     "program_sha256",
+    "reader_decision",
     "source_key",
     "trace",
     "verdict",

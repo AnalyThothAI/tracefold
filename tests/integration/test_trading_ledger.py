@@ -1042,6 +1042,7 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
         ),
         strategy_id=strategy.strategy_id,
         strategy_version=strategy.strategy_version,
+        strategy_config=strategy.config_snapshot,
         strategy_config_digest=strategy.config_digest,
         underlying_key="crypto:DOGE",
         base_symbol="DOGE",
@@ -1055,13 +1056,12 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
             quote_asset="USDT",
             observed_at_ms=NOW,
         ),
-        market_context=market,
     )
     # #162 PR8-B: the manifest binds the exact News generation, so bumping epoch/program moves its
     # content hash. That is the contract working — a case frozen under v6 must not read as a v7 case.
     # #211 moves it again: the OI projection now carries when its verdict became durable, and
     # `trading_manifest_v4` also binds trigger and strategy identity, so older case shapes cannot replay.
-    assert manifest.digest() == "c370352fc88e9655168a862a939fee1c10a2a8f4a7defdb90628a920920a5371"
+    assert manifest.digest() == "588cfda818dfeb3e220d2e7947a4d4d81a4141e678046a4084626e80bffe687d"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
@@ -1105,8 +1105,15 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     conn.execute(
         "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, symbol, venue, "
         "liquidated_position_side, forced_order_side, notional_usd, quantity, price, event_at_ms, "
-        "received_at_ms, parser_version, created_at_ms) VALUES (%s, 'liq-item', 'fact-1', 'DOGE', "
-        "'binance', 'short', 'buy', 750000, NULL, 0.12, %s, %s, 'liquidation_parser_v1', %s)",
+        "received_at_ms, parser_version, provider_record_identity, symbol_contract_identity, "
+        "position_side_semantics, quantity_semantics, notional_semantics, price_semantics, "
+        "completeness_assumption, throttle_assumption, source_contract_version, "
+        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item', 'fact-1', 'DOGE', "
+        "'binance', 'short', 'buy', 750000, NULL, 0.12, %s, %s, 'liquidation_parser_v1', "
+        "'liq-key', 'unresolved:binance:DOGE', 'short=>forced_buy;long=>forced_sell', "
+        "'not_provided', 'provider_reported_usd_notional', 'provider_reported_unspecified_price', "
+        "'selected_events_without_heartbeat', 'provider_throttle_unknown', "
+        "'opennews_liquidation_source_v1', false, %s)",
         ("a" * 64, received - 1_000, received, received),
     )
     conn.execute(
@@ -1117,8 +1124,37 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     )
     conn.commit()
 
-    first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
-    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 61 * MINUTE).turn())
+    # The first turn durably registers the exact strategy identity. The older trigger is refused as
+    # holdout rather than quietly evaluated with a strategy that did not exist at its cutoff.
+    registration = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    assert registration["shadow_evaluated"] == 0
+    assert registration["funnel"]["liquidation_shadow_reject:holdout_precedes_strategy_registration"] == 2
+
+    new_received = NOW + MINUTE
+    conn.execute(
+        "INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms, "
+        "provider_metadata, provenance, first_ingest_mode, created_at_ms, updated_at_ms) "
+        "VALUES ('liq-item-2', 'opennews', 'liq-key-2', 'DOGE Large Short Liquidation 900K at $0.13', "
+        "%s, %s, '{\"source\":\"binance\"}'::jsonb, '{}'::jsonb, 'live', %s, %s)",
+        (new_received - 1_000, new_received, new_received, new_received),
+    )
+    conn.execute(
+        "INSERT INTO news_market_liquidations (source_key, item_id, fact_id, symbol, venue, "
+        "liquidated_position_side, forced_order_side, notional_usd, quantity, price, event_at_ms, "
+        "received_at_ms, parser_version, provider_record_identity, symbol_contract_identity, "
+        "position_side_semantics, quantity_semantics, notional_semantics, price_semantics, "
+        "completeness_assumption, throttle_assumption, source_contract_version, "
+        "source_contract_complete, created_at_ms) VALUES (%s, 'liq-item-2', 'fact-2', 'DOGE', "
+        "'binance', 'short', 'buy', 900000, NULL, 0.13, %s, %s, 'liquidation_parser_v1', "
+        "'liq-key-2', 'unresolved:binance:DOGE', 'short=>forced_buy;long=>forced_sell', "
+        "'not_provided', 'provider_reported_usd_notional', 'provider_reported_unspecified_price', "
+        "'selected_events_without_heartbeat', 'provider_throttle_unknown', "
+        "'opennews_liquidation_source_v1', false, %s)",
+        ("b" * 64, new_received - 1_000, new_received, new_received),
+    )
+    conn.commit()
+    first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 2 * MINUTE).turn())
+    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 63 * MINUTE).turn())
 
     rows = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
     assert first["shadow_evaluated"] == 2
@@ -1130,8 +1166,9 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     }
     assert {row["rule"] for row in rows} == {"source_contract_incomplete"}
     assert {row["permission"] for row in rows} == {"shadow"}
-    assert all(row["market_outcome_version"] == "liquidation_forward_return_1h_v1" for row in rows)
+    assert all(row["market_outcome_version"] == "liquidation_event_study_v2" for row in rows)
     assert all(row["market_outcome"] is not None for row in rows)
+    assert all(set(row["market_outcome"]["horizons"]) == {"5s", "30s", "1m", "5m", "15m", "1h"} for row in rows)
     counts = _repos(conn).trading.status_counts(since_ms=NOW - 24 * 3_600_000)
     assert counts["shadow_by_strategy"] == {
         "liquidation_continuation_shadow_v1": 1,
