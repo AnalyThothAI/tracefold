@@ -17,20 +17,18 @@ that are already budget-metered, and the experiment hands in plain ones.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Literal, Protocol
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import Field
 
 from ...artifact_identity import canonical_sha
-from ...program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1
-from ...program.dspy_adapter import DspyStrictJSONAdapter
+from ...program.artifact import ProgramStrategyArtifactV1
+from ...program.dspy_adapter import DspyStrictJSONAdapter, ExactMetadataDspyLM
 from ...program.graph import DspyCompileProgram, extract_optimizer_patch
 from ..metric import (
     DevelopmentEpisode,
     _compile_example,
-    _ExactModel,
     _honest_split,
     _metric_receipt,
     _retrieval_receipt,
@@ -38,7 +36,24 @@ from ..metric import (
     production_decision,
 )
 from ..proposer import RulePackAwareProposer
-from .security import ModelExecutionIdentity, gepa_metric_call_ceiling
+from .security import (
+    REFLECTION_MAX_TOKENS,
+    REFLECTION_TIMEOUT_SECONDS,
+    GepaRunResult,
+    ModelExecutionIdentity,
+    gepa_metric_call_ceiling,
+)
+
+_OWNED_LM_KWARGS = frozenset(
+    {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
+)
+# The task LM answers the Program's own signatures, so it keeps the production route's determinism: temperature
+# 0 and the route's own token ceiling. The reflection LM does something else entirely — it reads a minibatch of
+# failures and writes a whole new instruction — and DSPy's guidance for it is the opposite on every axis. Until
+# #143 both were built from the task route's numbers, which capped a proposed instruction at 1,200 tokens (below
+# what the advisory slot itself accepts) and gave a reflection call the 20 s route deadline.
+_REFLECTION_TEMPERATURE = 1.0
+_TASK_TEMPERATURE = 0
 
 
 class _Optimizer(Protocol):
@@ -53,23 +68,6 @@ class _Optimizer(Protocol):
 
 
 OptimizerFactory = Callable[..., _Optimizer]
-
-
-class GepaRunResult(_ExactModel):
-    """Everything one optimization run produced, and nothing about who paid for it."""
-
-    patch: ProgramStrategyPatchV1
-    metric: dict[str, Any]
-    optimizer_config: dict[str, Any]
-    trajectory: dict[str, Any]
-    checkpoint: dict[str, Any]
-    split: dict[str, Any]
-    retrieval: dict[str, Any]
-    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
-    target_dimensions: tuple[str, ...] = Field(min_length=1)
-    metric_calls: int = Field(ge=0)
-    train_count: int = Field(gt=0)
-    val_count: int = Field(gt=0)
 
 
 def run_gepa(
@@ -270,6 +268,56 @@ def optimizer_config_receipt(
     }
 
 
+def build_compile_lm(
+    *,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    timeout: float,
+    max_tokens: int,
+    role: Literal["task", "reflection"] = "task",
+    model_kwargs: Mapping[str, Any] | None = None,
+) -> dspy.LM:
+    """Build one of the two roles `run_gepa` consumes, stamped with the identity it will be held to.
+
+    It lives beside `require_model_identity` because that function is the only reader of what this writes:
+    a role whose stamp is attached anywhere else is a role nothing verified.
+    """
+
+    extras = dict(model_kwargs or {})
+    overlap = _OWNED_LM_KWARGS.intersection(extras)
+    if overlap:
+        raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
+    reflection = role == "reflection"
+    lm = ExactMetadataDspyLM(
+        str(model_name),
+        api_key=str(api_key),
+        api_base=str(api_base),
+        # The reflection role's budget is exact, not a floor. `ModelExecutionIdentity` holds the role to
+        # these values, so a `max()` here would silently accept a caller's larger timeout or token ceiling
+        # and then fail the identity contract that is supposed to attest them.
+        timeout=REFLECTION_TIMEOUT_SECONDS if reflection else float(timeout),
+        max_tokens=REFLECTION_MAX_TOKENS if reflection else int(max_tokens),
+        temperature=_REFLECTION_TEMPERATURE if reflection else _TASK_TEMPERATURE,
+        cache=False,
+        # Stays zero. `_BudgetedLM` counts every physical attempt against the operator's budget, and a retry
+        # hidden inside the provider client would be a request the receipt never saw. The retry that #143 adds
+        # lives one layer up, where it is metered.
+        num_retries=0,
+        **extras,
+    )
+    lm.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
+        role="reflection" if reflection else "task",
+        model=str(model_name),
+        api_base=str(api_base),
+        max_output_tokens=lm.kwargs["max_tokens"],
+        timeout_seconds=lm.kwargs["timeout"],
+        temperature=lm.kwargs["temperature"],
+        model_kwargs=extras,
+    )
+    return lm
+
+
 def require_model_identity(lm: dspy.LM, *, role: str) -> ModelExecutionIdentity:
     """The identity this LM will answer under, or a refusal before anything is spent.
 
@@ -392,6 +440,7 @@ def _json_scalars(value: Any) -> Any:
 __all__ = [
     "GepaRunResult",
     "OptimizerFactory",
+    "build_compile_lm",
     "checkpoint_receipt",
     "failure_scope",
     "generated_default_instruction",

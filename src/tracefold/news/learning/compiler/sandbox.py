@@ -731,11 +731,11 @@ def install_compiler_sandbox_guards(
 
 
 def verify_sandbox_output_directory(output_root: Path, *, policy: CompilerSandboxPolicy) -> str:
-    """Accept exactly patch.json and runner_receipts.json under declared bounds."""
+    """Accept exactly runner_receipts.json under declared bounds."""
 
     root = _resolved_directory(output_root, code="sandbox_output_root")
     children = tuple(root.iterdir())
-    if {child.name for child in children} != {"patch.json", "runner_receipts.json"}:
+    if {child.name for child in children} != {"runner_receipts.json"}:
         raise ValueError("news_program_compile_sandbox_output_files_invalid")
     total_bytes = 0
     identities: dict[str, str] = {}

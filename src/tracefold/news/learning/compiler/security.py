@@ -18,6 +18,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...artifact_identity import canonical_sha
+from ...program.artifact import ProgramStrategyPatchV1
 from .sandbox import CompilerSandboxLaunchReceipt
 
 COMPILER_INPUT_SCHEMA: Literal["tracefold.news.compile_input_bundle.v3"] = "tracefold.news.compile_input_bundle.v3"
@@ -32,8 +33,8 @@ COMPILE_RECORD_SCHEMA: Literal["news_program_compile_record_v1"] = "news_program
 PROXY_EXECUTION_SCHEMA: Literal["tracefold.news.compiler_proxy_execution.v4"] = (
     "tracefold.news.compiler_proxy_execution.v4"
 )
-COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipts.v4"] = (
-    "tracefold.news.compiler_runner_receipts.v4"
+COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipts.v5"] = (
+    "tracefold.news.compiler_runner_receipts.v5"
 )
 LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 # v3 (#150): the projection now carries `policy_values`/`policy_sha256`/`policy_source`, and the metric
@@ -555,19 +556,19 @@ class CompileInputBundle(_ExactModel):
         return self
 
 
-class CompilerRunnerReceipts(_ExactModel):
-    """The untrusted runner's own counters and payloads, cross-checked by the host.
+class GepaRunResult(_ExactModel):
+    """Everything one optimization run produced, and nothing about who paid for it.
 
-    It no longer restates the compiler source, lock, sandbox policy or endpoint identities the sealed
-    input already fixed and the record commits to once. What it uniquely knows is what the optimizer
-    did: the metric it ran, the configuration GEPA was constructed with, the trajectory it walked, the
-    checkpoint it ended on, and how much of the budget it believes it spent.
+    Both planes produce one of these: the trusted compiler inside its container, and the operator's
+    experiment loop in process. It lives here rather than beside `run_gepa` so that the host — which must
+    never import DSPy — can hold the same object the runner produced instead of a second model of it.
+
+    Three documents used to restate these ten fields: the runner's own result, the receipts the host
+    parsed out of the container, and the compile record built around them, with a field-by-field copy
+    between each pair. They are one object now, carried whole.
     """
 
-    schema_version: Literal["tracefold.news.compiler_runner_receipts.v4"] = COMPILER_RUNNER_RECEIPTS_SCHEMA
-    input_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
-    container_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    container_proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    patch: ProgramStrategyPatchV1
     metric: dict[str, Any]
     optimizer_config: dict[str, Any]
     trajectory: dict[str, Any]
@@ -581,6 +582,17 @@ class CompilerRunnerReceipts(_ExactModel):
     failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
     target_dimensions: tuple[str, ...] = Field(min_length=1)
     metric_calls: int = Field(ge=0)
+    train_count: int = Field(gt=0)
+    val_count: int = Field(gt=0)
+
+
+class CompileSpend(_ExactModel):
+    """What the metered plane counted. Deliberately not part of the optimization it paid for.
+
+    `run_gepa` is shared with the experiment loop, which runs against unmetered endpoints; keeping the
+    spend beside the run rather than inside it is what lets one algorithm serve both planes.
+    """
+
     task_model_calls: int = Field(ge=0)
     reflection_model_calls: int = Field(ge=0)
     metric_judge_attempts: int = Field(ge=0)
@@ -592,14 +604,36 @@ class CompilerRunnerReceipts(_ExactModel):
     actual_cost_microusd: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def _accounting_is_coherent(self) -> CompilerRunnerReceipts:
+    def _accounting_is_coherent(self) -> CompileSpend:
+        """The arithmetic, checked once. It used to be written out twice, byte for byte."""
+
         if (
             self.metric_judge_model_calls > self.metric_judge_attempts
             or self.metric_judge_failures > self.metric_judge_attempts
             or self.actual_cost_microusd
             != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
         ):
-            raise ValueError("news_program_compile_runner_receipt_accounting_mismatch")
+            raise ValueError("news_program_compile_result_accounting_mismatch")
+        return self
+
+
+class CompilerRunnerReceipts(_ExactModel):
+    """What the untrusted runner produced, and what it says it spent, cross-checked by the host.
+
+    It no longer restates the compiler source, lock, sandbox policy or endpoint identities the sealed
+    input already fixed and the record commits to once — nor the optimization itself, which is carried
+    whole rather than copied field by field out of the runner's own result.
+    """
+
+    schema_version: Literal["tracefold.news.compiler_runner_receipts.v5"] = COMPILER_RUNNER_RECEIPTS_SCHEMA
+    input_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
+    container_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    container_proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
+    run: GepaRunResult
+    spend: CompileSpend
+
+    @model_validator(mode="after")
+    def _carries_no_secret(self) -> CompilerRunnerReceipts:
         _reject_secret_material(self.model_dump(mode="json"), path="compiler_runner_receipts")
         return self
 
@@ -631,25 +665,19 @@ class CompileRecordV1(_ExactModel):
     task_model: ModelExecutionIdentity
     reflection_model: ModelExecutionIdentity
     metric_judge_model: ModelExecutionIdentity
-    optimizer: dict[str, Any]
-    metric: dict[str, Any]
-    split: dict[str, Any]
-    retrieval: dict[str, Any]
-    # The search path that produced the patch. Carried whole rather than as a blob digest: nothing stores
-    # them separately, so a digest here would address nothing and the record would commit to no evidence
-    # about how the winner was found.
-    trajectory: dict[str, Any]
-    checkpoint: dict[str, Any]
+    # The optimization, exactly as the runner produced it: the patch, the metric, the GEPA configuration,
+    # the search path it walked and the checkpoint it ended on. Carried whole rather than as digests —
+    # nothing stores these separately, so a digest here would address nothing and the record would commit
+    # to no evidence about how the winner was found.
+    run: GepaRunResult
     budget: CompileBudgetV3
     tariff: CompilerProxyTariff
+    # Two independent accountings of one compile: what the sidecar metered at the wire, and what the
+    # runner counted inside the container. The host compares them; neither is trusted alone.
     usage: CompilerProxyExecution
-    metric_calls: int = Field(ge=0)
-    metric_judge_attempts: int = Field(ge=0)
+    spend: CompileSpend
     sandbox: CompilerSandboxLaunchReceipt
     compiler_build: CompilerBuildAttestation
-    patch: dict[str, Any]
-    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
-    target_dimensions: tuple[str, ...] = Field(min_length=1)
     created_at_ms: int = Field(ge=0)
     compile_record_sha256: str = Field(pattern=_SHA256_PATTERN)
 
@@ -679,26 +707,14 @@ class CompileRecordV1(_ExactModel):
             raise ValueError("news_program_compile_record_role_order_invalid")
         if self.parent_program_sha256 == self.program_sha256:
             raise ValueError("news_program_compile_record_no_program_change")
-        self._patch_is_the_whole_write_set()
+        # The patch is the whole write set by construction now: `ProgramStrategyPatchV1` forbids extra
+        # keys and pins its own schema, so what used to be a four-key spelling check over an untyped dict
+        # is left with the one thing typing cannot say — which parent this patch was written against.
+        if self.run.patch.parent_program_sha256 != self.parent_program_sha256:
+            raise ValueError("news_program_compile_record_patch_parent_mismatch")
         self._budget_held()
         _reject_secret_material(values, path="compile_record")
         return self
-
-    def _patch_is_the_whole_write_set(self) -> None:
-        expected = {
-            "schema_version",
-            "parent_program_sha256",
-            "event_semantics_instruction",
-            "reader_card_instruction",
-        }
-        if (
-            set(self.patch) != expected
-            or self.patch.get("schema_version") != "news_program_strategy_patch_v1"
-            or self.patch.get("parent_program_sha256") != self.parent_program_sha256
-            or not isinstance(self.patch.get("event_semantics_instruction"), str)
-            or not isinstance(self.patch.get("reader_card_instruction"), str)
-        ):
-            raise ValueError("news_program_compile_record_patch_write_set_invalid")
 
     def _budget_held(self) -> None:
         """Every physical call was reserved at the trusted worst-case rate and stayed inside the budget.
@@ -750,11 +766,11 @@ class CompileRecordV1(_ExactModel):
         if (
             usage.actual_cost_microusd > budget.max_cost_microusd
             or usage.reserved_cost_microusd > budget.max_cost_microusd
-            or usage.metric_judge_model_calls > self.metric_judge_attempts
-            or self.metric_calls
+            or usage.metric_judge_model_calls > self.spend.metric_judge_attempts
+            or self.run.metric_calls
             > gepa_metric_call_ceiling(
                 max_metric_calls=budget.max_metric_calls,
-                optimizer_config=self.optimizer,
+                optimizer_config=self.run.optimizer_config,
                 expected_example_count=self.episode_count,
             )
         ):
@@ -984,12 +1000,14 @@ __all__ = [
     "CompileCorpusReceipt",
     "CompileInputBundle",
     "CompileRecordV1",
+    "CompileSpend",
     "CompilerBuildAttestation",
     "CompilerProxyCall",
     "CompilerProxyExecution",
     "CompilerProxyTariff",
     "CompilerRole",
     "CompilerRunnerReceipts",
+    "GepaRunResult",
     "ModelExecutionIdentity",
     "endpoint_fingerprint",
     "gepa_metric_call_ceiling",

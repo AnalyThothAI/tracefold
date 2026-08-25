@@ -300,16 +300,18 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {compile,baseline,draft-reviews,propose,freeze,evaluate,shadow,canary} ...
+                               {compile,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary} ...
 
 positional arguments:
-  {compile,baseline,draft-reviews,propose,freeze,evaluate,shadow,canary}
+  {compile,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary}
     compile             compile a bounded DSPy Program candidate from accepted
                         development evidence
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
     draft-reviews       propose news_review_v4 rubrics with exact gold for a
                         human to accept (writes a file, never the DB)
+    experiment          closed-window snapshot / paired comparison / in-
+                        process GEPA; never writes to the database
     propose             seal a Program or policy candidate manifest
     freeze              freeze accepted reviews into a dataset
     evaluate            run the evaluate release-evidence gate
@@ -405,16 +407,99 @@ options:
 ```
 usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
                                              --model MODEL [--limit LIMIT]
-                                             [--include-reviewed] --out OUT
+                                             [--include-reviewed]
+                                             [--events-from EVENTS_FROM]
+                                             --out OUT
 
 options:
-  -h, --help          show this help message and exit
-  --hours HOURS       look back this many hours from now (max 720)
-  --model MODEL       drafting model, e.g. deepseek-v4-pro
+  -h, --help            show this help message and exit
+  --hours HOURS         look back this many hours from now (max 720)
+  --model MODEL         drafting model, e.g. deepseek-v4-pro
   --limit LIMIT
-  --include-reviewed  also draft Events that already carry an accepted review
-                      (default: only unjudged ones)
-  --out OUT           write the draft batch JSON for human review
+  --include-reviewed    also draft Events that already carry an accepted
+                        review (default: only unjudged ones)
+  --events-from EVENTS_FROM
+                        draft only the unlabelled Events frozen in this
+                        experiment run directory (ignores --hours)
+  --out OUT             write the draft batch JSON for human review
+
+```
+
+## `news learning experiment`
+
+```
+usage: tracefold news learning experiment [-h] {snapshot,compare,optimize} ...
+
+positional arguments:
+  {snapshot,compare,optimize}
+    snapshot            freeze one closed window into a run directory
+    compare             score a frozen snapshot under recorded / student /
+                        teacher and report the differences
+    optimize            run the shared GEPA core in process; produces a
+                        proposal that cannot be promoted
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `news learning experiment snapshot`
+
+```
+usage: tracefold news learning experiment snapshot [-h] [--hours HOURS]
+                                                   [--limit LIMIT] --out OUT
+
+options:
+  -h, --help     show this help message and exit
+  --hours HOURS  width of the closed window ending at the settlement grace
+  --limit LIMIT
+  --out OUT      run directory to create, e.g. .tracefold/runs/news-24h
+
+```
+
+## `news learning experiment compare`
+
+```
+usage: tracefold news learning experiment compare [-h] --run RUN
+                                                  --student STUDENT
+                                                  [--teacher TEACHER]
+                                                  --max-model-cases MAX_MODEL_CASES
+                                                  [--semantic-judge SEMANTIC_JUDGE]
+                                                  [--resume]
+
+options:
+  -h, --help            show this help message and exit
+  --run RUN             run directory created by `experiment snapshot`
+  --student STUDENT     student model, e.g. the local route
+  --teacher TEACHER     optional reference model, e.g. deepseek-v4-pro
+  --max-model-cases MAX_MODEL_CASES
+                        hard bound on cases sent to a provider
+  --semantic-judge SEMANTIC_JUDGE
+                        equivalence judge model
+  --resume              skip cases this run directory already answered
+
+```
+
+## `news learning experiment optimize`
+
+```
+usage: tracefold news learning experiment optimize [-h] --run RUN
+                                                   --student STUDENT
+                                                   --reflection REFLECTION
+                                                   --semantic-judge SEMANTIC_JUDGE
+                                                   --max-metric-calls MAX_METRIC_CALLS
+                                                   [--seed SEED]
+
+options:
+  -h, --help            show this help message and exit
+  --run RUN             run directory created by `experiment snapshot`
+  --student STUDENT     task model GEPA optimizes against
+  --reflection REFLECTION
+                        reflection model, e.g. deepseek-v4-pro
+  --semantic-judge SEMANTIC_JUDGE
+                        equivalence judge model
+  --max-metric-calls MAX_METRIC_CALLS
+  --seed SEED
 
 ```
 

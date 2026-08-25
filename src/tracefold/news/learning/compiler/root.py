@@ -8,7 +8,7 @@ and content-addressable optimizer receipt payloads.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
@@ -16,11 +16,9 @@ from pydantic import Field, ValidationError, model_validator
 
 from ...program.artifact import (
     ProgramStrategyArtifactV1,
-    ProgramStrategyPatchV1,
     load_stable_program_artifact,
 )
 from ...program.dspy_adapter import (
-    ExactMetadataDspyLM,
     ExactProviderCallCapture,
     ExactProviderMetadata,
     PredictorAdapterError,
@@ -36,17 +34,13 @@ from ..metric import (
     _json_safe,
     accepted_review_metric,
 )
-from .gepa import OptimizerFactory, require_model_identity, run_gepa
+from .gepa import GepaRunResult, OptimizerFactory, build_compile_lm, require_model_identity, run_gepa
 from .security import (
     CompileBudgetV3,
     CompilerProxyTariff,
-    ModelExecutionIdentity,
+    CompileSpend,
 )
-from .trusted import REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_SECONDS
 
-_OWNED_LM_KWARGS = frozenset(
-    {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
-)
 LEARNING_EPOCH = "program_v7"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v3"
 _PROPOSAL_GUARDRAILS = (
@@ -72,66 +66,34 @@ class CompileRequest(_ExactModel):
     budget: CompileBudget
 
 
-class CompileReceiptPayloads(_ExactModel):
-    """Canonical, secret-free evidence behind every compile provenance hash."""
+class ProgramCompileResult(_ExactModel):
+    """What one bounded compile produced, and what it cost. Two things, kept apart on purpose.
 
-    metric: dict[str, Any]
-    optimizer_config: dict[str, Any]
-    trajectory: dict[str, Any]
-    checkpoint: dict[str, Any]
-    # The two things a scalar score cannot answer: was the winner picked on examples it never trained on,
-    # and did the model even see the card it was supposed to recognise.
-    split: dict[str, Any] = Field(default_factory=dict)
-    retrieval: dict[str, Any] = Field(default_factory=dict)
+    `run` is the optimization, owned by the shared core both planes call. `spend` is what this plane
+    uniquely knows: how many physical provider calls the meter counted and what they cost. Metering is
+    deliberately not `run_gepa`'s business — the experiment loop runs the same optimization against
+    unmetered endpoints.
+
+    Both halves are the same objects the host receives and the record embeds. There used to be a
+    `CompileReceiptPayloads` wrapper here restating the six receipts `GepaRunResult` already carries,
+    seven more fields restating the rest of it, a byte-identical copy of the accounting validator, and a
+    field-by-field copy in the runner turning all of it into a third model of the same document.
+    """
+
+    run: GepaRunResult
+    spend: CompileSpend
 
     @model_validator(mode="after")
-    def _all_payloads_are_finite_json(self) -> CompileReceiptPayloads:
+    def _every_retained_payload_is_finite_json(self) -> ProgramCompileResult:
         for payload in (
-            self.metric,
-            self.optimizer_config,
-            self.trajectory,
-            self.checkpoint,
-            self.split,
-            self.retrieval,
+            self.run.metric,
+            self.run.optimizer_config,
+            self.run.trajectory,
+            self.run.checkpoint,
+            self.run.split,
+            self.run.retrieval,
         ):
             _json_safe(payload)
-        return self
-
-
-class ProgramCompileResult(_ExactModel):
-    """Untrusted runner output; trusted host still validates and applies it."""
-
-    patch: ProgramStrategyPatchV1
-    receipt_payloads: CompileReceiptPayloads
-    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
-    target_dimensions: tuple[str, ...] = Field(min_length=1)
-    metric_calls: int = Field(ge=0)
-    task_model_calls: int = Field(ge=0)
-    reflection_model_calls: int = Field(ge=0)
-    metric_judge_attempts: int = Field(ge=0)
-    metric_judge_model_calls: int = Field(ge=0)
-    metric_judge_failures: int = Field(ge=0)
-    task_cost_microusd: int = Field(ge=0)
-    reflection_cost_microusd: int = Field(ge=0)
-    metric_judge_cost_microusd: int = Field(ge=0)
-    actual_cost_microusd: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def _accounting_is_coherent(self) -> ProgramCompileResult:
-        """Check the arithmetic. There is nothing here to cross-bind.
-
-        This used to hash each of six payloads and compare the result against a hash of the same payload,
-        which is a comparison that cannot fail. Everything these payloads have to be bound to lives in the
-        record the trusted host builds around them.
-        """
-
-        if (
-            self.metric_judge_model_calls > self.metric_judge_attempts
-            or self.metric_judge_failures > self.metric_judge_attempts
-            or self.actual_cost_microusd
-            != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
-        ):
-            raise ValueError("news_program_compile_result_accounting_mismatch")
         return self
 
 
@@ -354,63 +316,9 @@ def _require_compile_metadata(capture: ExactProviderCallCapture) -> ExactProvide
         raise CompileBudgetExceeded("news_program_compile_provider_metadata_unavailable") from exc
 
 
-# The task LM answers the Program's own signatures, so it keeps the production route's determinism: temperature
-# 0 and the route's own token ceiling. The reflection LM does something else entirely — it reads a minibatch of
-# failures and writes a whole new instruction — and DSPy's guidance for it is the opposite on every axis. Until
-# #143 both were built from the task route's numbers, which capped a proposed instruction at 1,200 tokens (below
-# what `LearnedStrategy` itself accepts) and gave a reflection call the 20 s route deadline.
-_REFLECTION_TEMPERATURE = 1.0
-_TASK_TEMPERATURE = 0
-# Aligned with the reflection settings DSPy documents for GEPA.
 # One transient 5xx from a single-slot local server is not evidence that a candidate is bad, but with
 # `num_retries=0` GEPA scored it as `failure_score` and moved on. The production route keeps retries off.
 _COMPILE_NUM_RETRIES = 2
-
-
-def build_compile_lm(
-    *,
-    model_name: str,
-    api_key: str,
-    api_base: str,
-    timeout: float,
-    max_tokens: int,
-    role: Literal["task", "reflection"] = "task",
-    model_kwargs: Mapping[str, Any] | None = None,
-) -> dspy.LM:
-    """Build the cold compiler LM while keeping DSPy out of the CLI layer."""
-
-    extras = dict(model_kwargs or {})
-    overlap = _OWNED_LM_KWARGS.intersection(extras)
-    if overlap:
-        raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
-    reflection = role == "reflection"
-    lm = ExactMetadataDspyLM(
-        str(model_name),
-        api_key=str(api_key),
-        api_base=str(api_base),
-        # The reflection role's budget is exact, not a floor. `ModelExecutionIdentity` holds the role to
-        # these values, so a `max()` here would silently accept a caller's larger timeout or token ceiling
-        # and then fail the identity contract that is supposed to attest them.
-        timeout=REFLECTION_TIMEOUT_SECONDS if reflection else float(timeout),
-        max_tokens=REFLECTION_MAX_TOKENS if reflection else int(max_tokens),
-        temperature=_REFLECTION_TEMPERATURE if reflection else _TASK_TEMPERATURE,
-        cache=False,
-        # Stays zero. `_BudgetedLM` counts every physical attempt against the operator's budget, and a retry
-        # hidden inside the provider client would be a request the receipt never saw. The retry that #143 adds
-        # lives one layer up, where it is metered.
-        num_retries=0,
-        **extras,
-    )
-    lm.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
-        role="reflection" if reflection else "task",
-        model=str(model_name),
-        api_base=str(api_base),
-        max_output_tokens=lm.kwargs["max_tokens"],
-        timeout_seconds=lm.kwargs["timeout"],
-        temperature=lm.kwargs["temperature"],
-        model_kwargs=extras,
-    )
-    return lm
 
 
 class ProgramCompiler:
@@ -483,27 +391,18 @@ class ProgramCompiler:
         if total_cost_microusd > request.budget.max_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
         return ProgramCompileResult(
-            patch=result.patch,
-            receipt_payloads=CompileReceiptPayloads(
-                metric=result.metric,
-                optimizer_config=result.optimizer_config,
-                trajectory=result.trajectory,
-                checkpoint=result.checkpoint,
-                split=result.split,
-                retrieval=result.retrieval,
+            run=result,
+            spend=CompileSpend(
+                task_model_calls=meter.task_model_calls,
+                reflection_model_calls=meter.reflection_model_calls,
+                metric_judge_attempts=metric_judge_attempts,
+                metric_judge_model_calls=metric_judge_model_calls,
+                metric_judge_failures=metric_judge_failures,
+                task_cost_microusd=meter.task_cost_microusd,
+                reflection_cost_microusd=meter.reflection_cost_microusd,
+                metric_judge_cost_microusd=metric_judge_cost_microusd,
+                actual_cost_microusd=total_cost_microusd,
             ),
-            failure_cluster_ids=result.failure_cluster_ids,
-            target_dimensions=result.target_dimensions,
-            metric_calls=result.metric_calls,
-            task_model_calls=meter.task_model_calls,
-            reflection_model_calls=meter.reflection_model_calls,
-            metric_judge_attempts=metric_judge_attempts,
-            metric_judge_model_calls=metric_judge_model_calls,
-            metric_judge_failures=metric_judge_failures,
-            task_cost_microusd=meter.task_cost_microusd,
-            reflection_cost_microusd=meter.reflection_cost_microusd,
-            metric_judge_cost_microusd=metric_judge_cost_microusd,
-            actual_cost_microusd=total_cost_microusd,
         )
 
 
@@ -513,7 +412,6 @@ __all__ = [
     "METRIC_ID",
     "CompileBudget",
     "CompileBudgetExceeded",
-    "CompileReceiptPayloads",
     "CompileRequest",
     "DevelopmentEpisode",
     "ProgramCompileResult",

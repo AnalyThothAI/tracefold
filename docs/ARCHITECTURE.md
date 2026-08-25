@@ -280,6 +280,16 @@ with; the running image is `tracefold.news.program.factory_v6` on the
 remains append-only audit history. Only accepted `news_review_v4` evidence
 created in the v7 epoch is eligible for metric v4, compiler, replay or release
 gates.
+Beside that plane, and deliberately not in it, sits the operator's fast loop
+(`tracefold.news.learning.experiment`, #193). It freezes one closed window into
+a run directory on disk, compares arms on the frozen cases, and runs the same
+`run_gepa` core a trusted compile runs — in process, against endpoints named on
+the command line. It reads the database once as `serve` and writes nothing back:
+no verdict, no review, no dataset, no candidate, no activation. A run directory
+is not a second truth, and the release plane cannot read one. What it produces
+is a `tracefold.news.experiment_candidate.v1` marked `promotable: false`, which
+exists to tell an operator whether a sealed compile is worth spending.
+
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
 and previous distinct stable release chains. The exact `news_*` base-table set
@@ -305,6 +315,8 @@ tracefold.news
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
   learning/           content-addressed program_v7 datasets, reviews, compiler, and stable/candidate evaluation
+  learning/compiler/gepa.py  the one bounded GEPA run, shared by the trusted compiler and the fast loop
+  learning/experiment/       operator run directories: frozen window, arm comparison, unpromotable proposal
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback

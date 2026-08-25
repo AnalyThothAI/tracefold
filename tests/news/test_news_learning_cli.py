@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -9,8 +10,15 @@ import pytest
 from tracefold.app import learning_runtime
 from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
+from tracefold.app.cli.commands.news_learning_baseline import _unlabelled_events_from_run
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.learning.experiment.run import (
+    ExperimentCase,
+    ExperimentRun,
+    ExperimentRunManifest,
+    ExperimentWindow,
+)
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
@@ -479,3 +487,201 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
     # The genuinely forbidden pairing stays blocked.
     code, payload = _handle_learning(_baseline_args(mode="recorded", action_source="policy", all_cohorts=True))
     assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_decision"
+
+
+def _experiment_args(action: str, **overrides: Any) -> Any:
+    values: dict[str, Any] = {
+        "command": "news",
+        "news_command": "learning",
+        "learning_command": "experiment",
+        "experiment_action": action,
+        "config": "",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_the_experiment_group_parses_its_three_actions() -> None:
+    parser = build_parser()
+    snapshot = parser.parse_args(
+        ["news", "learning", "experiment", "snapshot", "--hours", "48", "--limit", "300", "--out", "runs/a"]
+    )
+    assert (snapshot.experiment_action, snapshot.hours, snapshot.limit, snapshot.out) == ("snapshot", 48, 300, "runs/a")
+
+    compare = parser.parse_args(
+        [
+            "news",
+            "learning",
+            "experiment",
+            "compare",
+            "--run",
+            "runs/a",
+            "--student",
+            "qwen3-30b",
+            "--max-model-cases",
+            "20",
+            "--resume",
+        ]
+    )
+    assert (compare.experiment_action, compare.max_model_cases, compare.resume) == ("compare", 20, True)
+    # The bound is required, not defaulted: the student route is the same single slot production Triage
+    # runs on, so an unbounded comparison is an unbounded load on the live path.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["news", "learning", "experiment", "compare", "--run", "runs/a", "--student", "q"])
+
+    optimize = parser.parse_args(
+        [
+            "news",
+            "learning",
+            "experiment",
+            "optimize",
+            "--run",
+            "runs/a",
+            "--student",
+            "qwen3-30b",
+            "--reflection",
+            "deepseek-v4-pro",
+            "--semantic-judge",
+            "deepseek-v4-pro",
+            "--max-metric-calls",
+            "60",
+            "--seed",
+            "7",
+        ]
+    )
+    assert (optimize.experiment_action, optimize.max_metric_calls, optimize.seed) == ("optimize", 60, 7)
+
+
+def test_a_snapshot_ends_at_the_settlement_grace_not_at_now(monkeypatch: Any) -> None:
+    """A window whose tail is still settling is not closed, and a snapshot of it is not reproducible.
+
+    The outcome loop keeps writing price outcomes for minutes after an Event opens, so `to_ms = now` would
+    freeze cases whose scores change after the file is written — and the comparison an operator reads would
+    not be the comparison they could rerun.
+    """
+
+    seen: dict[str, Any] = {}
+
+    class _Evaluator:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+    def fake_snapshot_window(_evaluator: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        window = kwargs["window"]
+        return SimpleNamespace(
+            run_sha256="a" * 64,
+            case_count=0,
+            accepted_case_count=0,
+            window=window,
+            parent_program_sha256="b" * 64,
+        )
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+    monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.snapshot_window", fake_snapshot_window)
+    monkeypatch.setattr("time.time", lambda: 1_787_086_400.0)
+
+    with tempfile.TemporaryDirectory() as directory:
+        code, payload = _handle_learning(_experiment_args("snapshot", hours=24, limit=500, out=f"{directory}/run"))
+
+    assert code == 0 and payload["ok"] is True
+    now_ms = 1_787_086_400_000
+    assert seen["window"].to_ms == now_ms - 10 * 60 * 1000
+    assert seen["window"].from_ms == seen["window"].to_ms - 24 * 3_600_000
+    assert seen["now_ms"] == now_ms
+
+
+def test_draft_reviews_takes_its_events_from_a_run_when_told_to() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "news",
+            "learning",
+            "draft-reviews",
+            "--model",
+            "deepseek-v4-pro",
+            "--out",
+            "d.json",
+            "--events-from",
+            "runs/a",
+        ]
+    )
+    assert args.events_from == "runs/a"
+    # Still optional: the queue-by-hours form is what a first corpus is grown with, before any run exists.
+    assert (
+        parser.parse_args(
+            ["news", "learning", "draft-reviews", "--model", "deepseek-v4-pro", "--out", "d.json"]
+        ).events_from
+        == ""
+    )
+
+
+def test_draft_reviews_targets_exactly_the_unlabelled_cases_a_run_froze(tmp_path: Any) -> None:
+    run = ExperimentRun(tmp_path / "run")
+    run.write_manifest(
+        ExperimentRunManifest.issue(
+            name="run",
+            window=ExperimentWindow(from_ms=1, to_ms=2),
+            parent_program_sha256=load_stable_program_artifact().program_sha256,
+            program_version="news_semantic_program_v5",
+            policy_sha256="b" * 64,
+            case_count=3,
+            accepted_case_count=1,
+            case_root_sha256="c" * 64,
+            created_at_ms=2,
+        )
+    )
+    for index, accepted in ((0, False), (1, True), (2, False)):
+        run.write_case(
+            ExperimentCase(
+                case_sha256=f"{index:064x}",
+                cluster_id="c",
+                stratum="delivered",
+                event_id=f"event-{index}",
+                episode={},
+                accepted=accepted,
+            )
+        )
+
+    # Only the cases nobody judged, in the run's own fixed order: two operators pointing `--limit` at one
+    # run must draft the same cases, or each of them grows a different corpus.
+    assert _unlabelled_events_from_run(str(run.root)) == ["event-0", "event-2"]
+    # No run named is the historical behaviour, untouched.
+    assert _unlabelled_events_from_run("") is None
+
+
+def test_draft_reviews_refuses_a_run_with_nothing_left_to_judge(tmp_path: Any) -> None:
+    run = ExperimentRun(tmp_path / "run")
+    run.write_manifest(
+        ExperimentRunManifest.issue(
+            name="run",
+            window=ExperimentWindow(from_ms=1, to_ms=2),
+            parent_program_sha256=load_stable_program_artifact().program_sha256,
+            program_version="news_semantic_program_v5",
+            policy_sha256="b" * 64,
+            case_count=1,
+            accepted_case_count=1,
+            case_root_sha256="c" * 64,
+            created_at_ms=2,
+        )
+    )
+    run.write_case(
+        ExperimentCase(
+            case_sha256="0" * 64,
+            cluster_id="c",
+            stratum="delivered",
+            event_id="event-0",
+            episode={},
+            accepted=True,
+        )
+    )
+    with pytest.raises(ValueError, match="news_review_drafter_run_has_no_unlabelled_events"):
+        _unlabelled_events_from_run(str(run.root))

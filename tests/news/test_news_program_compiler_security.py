@@ -17,6 +17,8 @@ from tracefold.news.learning.compiler.security import (
     CompilerProxyExecution,
     CompilerProxyTariff,
     CompilerRole,
+    CompileSpend,
+    GepaRunResult,
     ModelExecutionIdentity,
     endpoint_fingerprint,
     gepa_metric_call_ceiling,
@@ -398,6 +400,62 @@ def _attestation(**overrides: Any) -> CompilerBuildAttestation:
     )
 
 
+def _run_result(**overrides: Any) -> GepaRunResult:
+    """One optimization, carried whole. The record embeds this object; it does not restate its fields."""
+
+    values: dict[str, Any] = {
+        "patch": _patch_payload(),
+        "metric": {
+            "schema": "tracefold.news.compile_metric_receipt.v1",
+            "metric_version": "news_compile_metric_v3",
+            "review_rubric_version": "news_review_v4",
+        },
+        "optimizer_config": _optimizer_payload(),
+        # The search path that produced the patch, and the checkpoint it ended on.
+        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 1},
+        "checkpoint": {
+            "schema": "tracefold.news.compile_checkpoint_receipt.v2",
+            "factory": "tracefold.news.program.factory_v6",
+        },
+        # The winner was picked on examples it never trained on, and the model saw the card it was
+        # supposed to recognise. Both proofs are computed in the container and now reach the record.
+        "split": {
+            "schema": "tracefold.news.compile_split_receipt.v1",
+            "train_cluster_count": 2,
+            "val_cluster_count": 1,
+            "disjoint": True,
+        },
+        "retrieval": {
+            "schema": "tracefold.news.compile_retrieval_receipt.v1",
+            "episodes": 3,
+            "target_visible": 3,
+        },
+        "failure_cluster_ids": ("cluster-a",),
+        "target_dimensions": ("recall",),
+        "metric_calls": 4,
+        "train_count": 1,
+        "val_count": 1,
+    }
+    values.update(overrides)
+    return GepaRunResult.model_validate(values)
+
+
+def _spend(**overrides: Any) -> CompileSpend:
+    values: dict[str, Any] = {
+        "task_model_calls": 1,
+        "reflection_model_calls": 1,
+        "metric_judge_attempts": 2,
+        "metric_judge_model_calls": 1,
+        "metric_judge_failures": 0,
+        "task_cost_microusd": 1,
+        "reflection_cost_microusd": 1,
+        "metric_judge_cost_microusd": 1,
+        "actual_cost_microusd": 3,
+    }
+    values.update(overrides)
+    return CompileSpend.model_validate(values)
+
+
 def _record_values(**overrides: Any) -> dict[str, Any]:
     """Exactly what the CLI hands `CompileRecordV1.issue`: nested models, not pre-dumped JSON.
 
@@ -418,41 +476,13 @@ def _record_values(**overrides: Any) -> dict[str, Any]:
         "task_model": _identity("task"),
         "reflection_model": _identity("reflection"),
         "metric_judge_model": _identity("metric_judge"),
-        "optimizer": _optimizer_payload(),
-        "metric": {
-            "schema": "tracefold.news.compile_metric_receipt.v1",
-            "metric_version": "news_compile_metric_v3",
-            "review_rubric_version": "news_review_v4",
-        },
-        # The winner was picked on examples it never trained on, and the model saw the card it was
-        # supposed to recognise. Both proofs are computed in the container and now reach the record.
-        "split": {
-            "schema": "tracefold.news.compile_split_receipt.v1",
-            "train_cluster_count": 2,
-            "val_cluster_count": 1,
-            "disjoint": True,
-        },
-        "retrieval": {
-            "schema": "tracefold.news.compile_retrieval_receipt.v1",
-            "episodes": 3,
-            "target_visible": 3,
-        },
-        # The search path that produced the patch, and the root that binds the corpus by content.
-        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 1},
-        "checkpoint": {
-            "schema": "tracefold.news.compile_checkpoint_receipt.v2",
-            "factory": "tracefold.news.program.factory_v6",
-        },
+        "run": _run_result(),
         "budget": _budget(),
         "tariff": _tariff(),
         "usage": _usage(_proxy_call("task"), _proxy_call("reflection"), _proxy_call("metric_judge")),
-        "metric_calls": 4,
-        "metric_judge_attempts": 2,
+        "spend": _spend(),
         "sandbox": _sandbox_receipt(),
         "compiler_build": _attestation(),
-        "patch": _patch_payload(),
-        "failure_cluster_ids": ("cluster-a",),
-        "target_dimensions": ("recall",),
         "created_at_ms": 1_800_000_000_500,
     }
     values.update(overrides)
@@ -497,12 +527,12 @@ def test_compile_record_retains_every_payload_the_receipt_chain_used_to_carry() 
     assert record.development_dataset_sha256 == canonical_sha({"kind": "dataset", "payload": _dataset_payload()})
     assert record.episode_count == 2
     assert record.review_rubric_version == "news_review_v4"
-    assert record.metric["metric_version"] == "news_compile_metric_v3"
-    assert record.optimizer == _optimizer_payload()
-    assert record.patch == _patch_payload()
+    assert record.run.metric["metric_version"] == "news_compile_metric_v3"
+    assert record.run.optimizer_config == _optimizer_payload()
+    assert record.run.patch.model_dump(mode="json") == _patch_payload()
     # The search path is carried whole, not as a digest of bytes nothing stores.
-    assert record.trajectory["schema"] == "tracefold.news.compile_trajectory_receipt.v1"
-    assert record.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert record.run.trajectory["schema"] == "tracefold.news.compile_trajectory_receipt.v1"
+    assert record.run.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
     assert record.episode_projection_root_sha256 == "e" * 64
     assert record.sandbox.boundary_command["schema"] == "tracefold.news.compiler_boundary_commands.v2"
     assert record.sandbox.policy["schema_version"] == "tracefold.news.compiler_sandbox_policy.v2"
@@ -518,12 +548,9 @@ def test_compile_record_retains_every_payload_the_receipt_chain_used_to_carry() 
     [
         "budget",
         "compiler_build",
-        "failure_cluster_ids",
-        "metric",
-        "optimizer",
-        "patch",
+        "run",
         "sandbox",
-        "target_dimensions",
+        "spend",
         "tariff",
         "usage",
     ],
@@ -541,11 +568,11 @@ def test_compile_record_cannot_omit_a_payload_the_chain_used_to_require(field: s
     ("path", "value"),
     [
         # was `receipt_sha256` over the patch receipt
-        (("patch", "reader_card_instruction"), "Lead with something else."),
+        (("run", "patch", "reader_card_instruction"), "Lead with something else."),
         # was `receipt_sha256` over the metric receipt
-        (("metric", "metric_version"), "news_compile_metric_v2"),
+        (("run", "metric", "metric_version"), "news_compile_metric_v2"),
         # was `receipt_sha256` over the optimizer_config receipt
-        (("optimizer", "constructor_scalar_arguments", "reflection_minibatch_size"), 2),
+        (("run", "optimizer_config", "constructor_scalar_arguments", "reflection_minibatch_size"), 2),
         # was `launch_receipt_sha256` (an edited `exit_code` never reaches here: the sandbox receipt's own
         # success invariant rejects it one layer down)
         (("sandbox", "stdout_sha256"), "0" * 64),
@@ -560,7 +587,7 @@ def test_compile_record_cannot_omit_a_payload_the_chain_used_to_require(field: s
         # was `tariff_sha256`, restated in four documents
         (("tariff", "task_output_microusd_per_million"), 1),
         (("budget", "seed"), 18),
-        (("trajectory", "best_idx"), 99),
+        (("run", "trajectory", "best_idx"), 99),
         (("created_at_ms",), 1_800_000_000_600),
         (("compile_record_sha256",), "0" * 64),
     ],
@@ -588,11 +615,11 @@ def test_compile_record_rejects_a_dropped_proxy_call_the_call_root_used_to_cover
 
 def test_compile_record_rejects_secret_material_in_any_embedded_payload() -> None:
     with pytest.raises(ValidationError, match="secret_key"):
-        _compile_record(metric={"api_key": "must-not-persist"})
+        _compile_record(run=_run_result(metric={"api_key": "must-not-persist"}))
     with pytest.raises(ValidationError, match="secret_value"):
-        _compile_record(metric={"note": "Bearer abcdefghijklmnopqrstuvwxyz"})
+        _compile_record(run=_run_result(metric={"note": "Bearer abcdefghijklmnopqrstuvwxyz"}))
     with pytest.raises(ValidationError, match="secret_key"):
-        _compile_record(optimizer=_optimizer_payload(headers={"authorization": "redacted"}))
+        _compile_record(run=_run_result(optimizer_config=_optimizer_payload(headers={"authorization": "redacted"})))
 
 
 def test_compile_record_rejects_a_write_set_or_role_order_the_optimizer_chose() -> None:
@@ -600,12 +627,15 @@ def test_compile_record_rejects_a_write_set_or_role_order_the_optimizer_chose() 
         _compile_record(task_model=_identity("reflection"))
     with pytest.raises(ValidationError, match="record_no_program_change"):
         _compile_record(program_sha256=_PARENT_PROGRAM_SHA256)
-    with pytest.raises(ValidationError, match="patch_write_set_invalid"):
-        _compile_record(patch={**_patch_payload(), "quality_kernel": "smuggled"})
-    with pytest.raises(ValidationError, match="patch_write_set_invalid"):
-        _compile_record(patch={**_patch_payload(), "parent_program_sha256": "0" * 64})
-    with pytest.raises(ValidationError, match="patch_write_set_invalid"):
-        _compile_record(patch={**_patch_payload(), "reader_card_instruction": None})
+    # The write set is the patch model's own contract now, so a smuggled key and a non-string body are
+    # refused by the type rather than by a spelling check the record had to carry.
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        _compile_record(run=_run_result(patch={**_patch_payload(), "quality_kernel": "smuggled"}))
+    with pytest.raises(ValidationError):
+        _compile_record(run=_run_result(patch={**_patch_payload(), "reader_card_instruction": None}))
+    # What typing cannot say, and the record still must: which parent this patch was written against.
+    with pytest.raises(ValidationError, match="patch_parent_mismatch"):
+        _compile_record(run=_run_result(patch={**_patch_payload(), "parent_program_sha256": "0" * 64}))
 
 
 def test_compiler_build_attestation_accepts_only_a_host_image_and_container_that_agree() -> None:
@@ -704,10 +734,10 @@ def test_compile_record_rejects_call_counts_and_metric_calls_over_their_ceilings
         == 5
     )
     with pytest.raises(ValidationError, match="record_budget_exceeded"):
-        _compile_record(metric_calls=6)
+        _compile_record(run=_run_result(metric_calls=6))
     # A judged call the runner never admitted to attempting.
     with pytest.raises(ValidationError, match="record_budget_exceeded"):
-        _compile_record(metric_judge_attempts=0)
+        _compile_record(spend=_spend(metric_judge_attempts=0, metric_judge_model_calls=0))
 
 
 @pytest.mark.parametrize(
@@ -793,4 +823,4 @@ def test_validate_compile_record_rejects_a_record_bound_to_another_candidate() -
         with pytest.raises(ValueError, match="record_identity_mismatch"):
             validate_compile_record(record, **{**identity, field: "0" * 64})
     with pytest.raises(ValidationError, match="compile_record_hash_mismatch"):
-        validate_compile_record(_tampered("metric", "metric_version", value="forged"), **identity)
+        validate_compile_record(_tampered("run", "metric", "metric_version", value="forged"), **identity)

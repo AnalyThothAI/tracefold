@@ -34,7 +34,7 @@ from tracefold.news.learning.compiler.security import (
 )
 from tracefold.news.learning.compiler.source_identity import compiler_source_sha256, proxy_source_sha256
 from tracefold.news.learning.compiler.trusted import apply_trusted_program_patch
-from tracefold.news.program.artifact import ProgramStrategyPatchV1, load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.runtime import PROGRAM_VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -284,9 +284,9 @@ def _assert_every_runner_call_has_a_proxy_leaf(
     runner: CompilerRunnerReceipts, *, proxy_task: int, proxy_reflection: int, proxy_judge: int
 ) -> None:
     if (
-        runner.task_model_calls,
-        runner.reflection_model_calls,
-        runner.metric_judge_model_calls,
+        runner.spend.task_model_calls,
+        runner.spend.reflection_model_calls,
+        runner.spend.metric_judge_model_calls,
     ) != (proxy_task, proxy_reflection, proxy_judge):
         raise ValueError("compiler smoke found an unrecorded model request")
 
@@ -320,8 +320,10 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
         input_bundle_sha256=bundle.bundle_sha256,
         proxy_secret_config=secrets,
     )
-    patch = ProgramStrategyPatchV1.model_validate_json(result.patch_document)
     runner = CompilerRunnerReceipts.model_validate_json(result.runner_receipts_document)
+    # The one patch this compile produced, typed by the receipt that carries it. The container used to
+    # write it out a second time as `patch.json`, which is two documents making one claim across one seam.
+    patch = runner.run.patch
     proxy = result.proxy_execution_receipt
     parent = load_stable_program_artifact()
 
@@ -351,14 +353,14 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     assert runner.container_proxy_source_sha256 == proxy_source_sha256()
     # Both proofs are produced inside the container and must survive the boundary: a winner selected on
     # clusters it also trained on, or a case whose evidence the model never saw, is not evidence at all.
-    assert runner.split["schema"] == "tracefold.news.compile_split_receipt.v1"
-    assert runner.retrieval["schema"] == "tracefold.news.compile_retrieval_receipt.v1"
+    assert runner.run.split["schema"] == "tracefold.news.compile_split_receipt.v1"
+    assert runner.run.retrieval["schema"] == "tracefold.news.compile_retrieval_receipt.v1"
     # How the winner was reached and what it ended up saying. Both are produced inside the container, and
     # the record is the only place they are ever read from, so a boundary that dropped them would leave a
     # merged candidate whose search history exists nowhere.
-    assert runner.trajectory["schema"] == "tracefold.news.compile_trajectory_receipt.v1"
-    assert runner.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
-    assert set(runner.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
+    assert runner.run.trajectory["schema"] == "tracefold.news.compile_trajectory_receipt.v1"
+    assert runner.run.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert set(runner.run.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     candidate = apply_trusted_program_patch(parent, patch)
     assert candidate.program_sha256 != parent.program_sha256
@@ -374,17 +376,12 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
         task_model=bundle.task,
         reflection_model=bundle.reflection,
         metric_judge_model=bundle.metric_judge,
-        optimizer=runner.optimizer_config,
-        metric=runner.metric,
-        split=runner.split,
-        retrieval=runner.retrieval,
-        trajectory=runner.trajectory,
-        checkpoint=runner.checkpoint,
+        # Carried whole, exactly as the container produced them.
+        run=runner.run,
         budget=bundle.budget,
         tariff=bundle.proxy_tariff,
         usage=proxy,
-        metric_calls=runner.metric_calls,
-        metric_judge_attempts=runner.metric_judge_attempts,
+        spend=runner.spend,
         sandbox=result.launch_receipt,
         compiler_build=CompilerBuildAttestation(
             compiler_image_digest=result.launch_receipt.compiler_image_digest,
@@ -398,9 +395,6 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
             container_source_sha256=runner.container_source_sha256,
             container_proxy_source_sha256=runner.container_proxy_source_sha256,
         ),
-        patch=patch.model_dump(mode="json"),
-        failure_cluster_ids=runner.failure_cluster_ids,
-        target_dimensions=runner.target_dimensions,
         created_at_ms=int(time.time() * 1000),
     )
     assert (
@@ -433,7 +427,9 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     with pytest.raises(ValidationError, match="build_attestation_mismatch"):
         CompileRecordV1.model_validate(disagreeing)
 
-    forged = runner.model_copy(update={"task_model_calls": runner.task_model_calls + 1})
+    forged = runner.model_copy(
+        update={"spend": runner.spend.model_copy(update={"task_model_calls": runner.spend.task_model_calls + 1})}
+    )
     with pytest.raises(ValueError, match="unrecorded model request"):
         _assert_every_runner_call_has_a_proxy_leaf(
             forged,

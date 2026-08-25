@@ -188,9 +188,11 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_193_compile_record_convergence",
         "tracefold.news.compiler_proxy_execution.v4",
     ),
+    # v5 (#193 PR-C): the receipt carries the optimization and the spend whole, rather than restating
+    # sixteen fields the runner's own result already held on the other side of a field-by-field copy.
     "program_learning.compiler_schemas[5]": (
         "issue_193_compile_record_convergence",
-        "tracefold.news.compiler_runner_receipts.v4",
+        "tracefold.news.compiler_runner_receipts.v5",
     ),
     "program_learning.compiler_schemas[6]": (
         "issue_193_compile_record_convergence",

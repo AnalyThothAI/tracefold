@@ -70,7 +70,6 @@ class _ExactModel(BaseModel):
 
 
 class CompilerLauncherResult(_ExactModel):
-    patch_document: str = Field(repr=False)
     runner_receipts_document: str = Field(repr=False)
     output_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     proxy_execution_receipt: CompilerProxyExecution
@@ -481,7 +480,6 @@ class ProgramCompilerLauncher:
             ):
                 raise CompilerSandboxFailure(failure_code, receipt=receipt) from boundary_cause
             return CompilerLauncherResult(
-                patch_document=(paths.output / "patch.json").read_text(encoding="utf-8"),
                 runner_receipts_document=(paths.output / "runner_receipts.json").read_text(encoding="utf-8"),
                 output_root_sha256=output_root_sha,
                 proxy_execution_receipt=proxy_execution,

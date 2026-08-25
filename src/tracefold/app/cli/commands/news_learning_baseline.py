@@ -193,6 +193,27 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
     )
 
 
+def _unlabelled_events_from_run(root: str) -> list[str] | None:
+    """The Events an experiment run froze and nobody has judged, or `None` when no run was named.
+
+    Ordered by the run's own case identity rather than by recency: two operators pointing `--limit 20` at
+    the same run must draft the same twenty cases, or the corpus each of them grows is a different corpus.
+    """
+
+    if not root.strip():
+        return None
+    from pathlib import Path
+
+    from tracefold.news.learning.experiment.run import ExperimentRun
+
+    run = ExperimentRun(Path(root))
+    run.manifest()  # a directory without a manifest is not a run, and its cases are not a corpus
+    events = [case.event_id for case in run.cases() if not case.accepted]
+    if not events:
+        raise ValueError("news_review_drafter_run_has_no_unlabelled_events")
+    return events
+
+
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Propose `news_review_v4` rubrics with exact gold. The output is a file, never a review.
 
@@ -223,30 +244,42 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
     wanted = int(args.limit)
+    targeted = _unlabelled_events_from_run(str(getattr(args, "events_from", "") or ""))
     with postgres_connection(settings, role="serve") as conn:
         desk = ReviewDesk(conn)
-        # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through it
-        # keeps that stratification — which is what makes a corpus carry the boundary/negative/retention mix
-        # the release thresholds require — instead of bypassing the desk with a raw query.
         rows: list[Mapping[str, Any]] = []
-        cursor = ""
-        while len(rows) < wanted:
-            queue = desk.open(
-                DeskQuery(
-                    view="queue",
-                    mode="event",
-                    status="all" if bool(args.include_reviewed) else "pending",
-                    hours=hours,
-                    limit=min(100, wanted - len(rows)),
-                    cursor=cursor,
-                ),
-                principal=principal,
-            )
-            page = list(queue.get("tasks") or ())
-            rows.extend(page)
-            cursor = str(queue.get("next_cursor") or "")
-            if not page or not cursor:
-                break
+        if targeted is not None:
+            # One desk query per Event, because the point of `--events-from` is *these* cases and no others.
+            # Paging the time-windowed queue and filtering would drop any case whose Event has aged out of
+            # the look-back — which is most of them, since a snapshot is taken after the window closes.
+            for event_id in targeted[:wanted]:
+                queue = desk.open(
+                    DeskQuery(view="queue", mode="event", status="all", event=event_id, limit=1),
+                    principal=principal,
+                )
+                rows.extend(list(queue.get("tasks") or ())[:1])
+        else:
+            # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through
+            # it keeps that stratification — which is what makes a corpus carry the boundary/negative/retention
+            # mix the release thresholds require — instead of bypassing the desk with a raw query.
+            cursor = ""
+            while len(rows) < wanted:
+                queue = desk.open(
+                    DeskQuery(
+                        view="queue",
+                        mode="event",
+                        status="all" if bool(args.include_reviewed) else "pending",
+                        hours=hours,
+                        limit=min(100, wanted - len(rows)),
+                        cursor=cursor,
+                    ),
+                    principal=principal,
+                )
+                page = list(queue.get("tasks") or ())
+                rows.extend(page)
+                cursor = str(queue.get("next_cursor") or "")
+                if not page or not cursor:
+                    break
         for row in rows:
             view = desk.evidence(
                 TaskRef(task_id=str(row["task_id"]), task_version=str(row["task_version"])), principal=principal
@@ -312,6 +345,9 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "batch_sha256": batch.batch_sha256,
             "drafter": batch.drafter,
             "tasks": len(tasks),
+            # Named when a run was targeted: the desk answers per Event, and an Event whose task has since
+            # been superseded returns nothing. Reporting only `tasks` would read as if the rest were judged.
+            "requested_events": len(targeted[:wanted]) if targeted is not None else None,
             "drafted": len(drafted),
             "with_gold": len(with_gold),
             "failed": len(batch.drafts) - len(drafted),

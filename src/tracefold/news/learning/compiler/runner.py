@@ -139,28 +139,10 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         input_bundle_sha256=bundle.bundle_sha256,
         container_source_sha256=compiler_source_sha256(),
         container_proxy_source_sha256=proxy_source_sha256(),
-        metric=result.receipt_payloads.metric,
-        optimizer_config=result.receipt_payloads.optimizer_config,
-        trajectory=result.receipt_payloads.trajectory,
-        checkpoint=result.receipt_payloads.checkpoint,
-        split=result.receipt_payloads.split,
-        retrieval=result.receipt_payloads.retrieval,
-        failure_cluster_ids=result.failure_cluster_ids,
-        target_dimensions=result.target_dimensions,
-        metric_calls=result.metric_calls,
-        task_model_calls=result.task_model_calls,
-        reflection_model_calls=result.reflection_model_calls,
-        metric_judge_attempts=result.metric_judge_attempts,
-        metric_judge_model_calls=result.metric_judge_model_calls,
-        metric_judge_failures=result.metric_judge_failures,
-        task_cost_microusd=result.task_cost_microusd,
-        reflection_cost_microusd=result.reflection_cost_microusd,
-        metric_judge_cost_microusd=result.metric_judge_cost_microusd,
-        actual_cost_microusd=result.actual_cost_microusd,
-    )
-    (output_path / "patch.json").write_text(
-        canonical_json(result.patch.model_dump(mode="json")),
-        encoding="utf-8",
+        # Carried whole. What the host reads is the object the compiler produced, not a copy of it made
+        # one field at a time — which is how `split` and `retrieval` were silently dropped before #193.
+        run=result.run,
+        spend=result.spend,
     )
     (output_path / "runner_receipts.json").write_text(
         canonical_json(receipts.model_dump(mode="json")),
