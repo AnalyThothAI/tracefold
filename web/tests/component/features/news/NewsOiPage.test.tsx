@@ -352,7 +352,10 @@ describe("NewsOiPage", () => {
 
     renderOi();
     await screen.findByRole("heading", { name: "持仓异动监控" });
-    const row = await screen.findByRole("button", { name: /14:/ });
+    // By structure, not by rendered text: with no `oi` block the row has no symbol and no measurement to
+    // name it by, and its clock is local time — which is a different hour in CI than on this machine.
+    await waitFor(() => expect(document.querySelector(".news-oi-row-main")).toBeInTheDocument());
+    const row = document.querySelector(".news-oi-row-main") as HTMLElement;
     // Every column the block would have answered says nothing — including the symbol, which for this lane
     // lives only in the block. The wire line is right there in the expansion; the page does not read it.
     expect(row).not.toHaveTextContent("6.71%");
