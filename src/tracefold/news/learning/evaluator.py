@@ -361,15 +361,19 @@ class CandidateEvaluator:
         if not cases:
             return ()
         seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms, cohort=cohort)
+        return self._with_recorded_decisions(cases, self._project_episodes(cases, seed))
+
+    def _with_recorded_decisions(
+        self, cases: Sequence[DatasetCaseRef], episodes: Sequence[Mapping[str, Any]]
+    ) -> tuple[dict[str, Any], ...]:
+        """Attach the Event id and the persisted ``DecisionResult`` the ``recorded`` arm scores against."""
+
         decisions = self._recorded_decisions([case.event_id for case in cases if case.event_id])
         return tuple(
-            {
-                **episode,
-                "recorded_decision_result": decisions.get(str(episode.get("event_id") or "")),
-            }
+            {**episode, "recorded_decision_result": decisions.get(str(episode.get("event_id") or ""))}
             if episode.get("event_id")
             else episode
-            for episode in self._with_event_ids(cases, self._project_episodes(cases, seed))
+            for episode in self._with_event_ids(cases, episodes)
         )
 
     @staticmethod

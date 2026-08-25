@@ -727,14 +727,59 @@ per-queue message/consumer counts.
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
-`news learning baseline --from-ms N --to-ms N [--mode
-recorded|compile_live|runtime_live] [--action-source recorded|policy]
-[--max-model-cases N] [--all-cohorts] [--semantic-judge MODEL] [--limit N]
+`news learning baseline (--dataset SHA | --from-ms N --to-ms N [--all-cohorts])
+[--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
+[--max-model-cases N] [--semantic-judge MODEL] [--limit N]
 [--out FILE]` scores the
 stable Program over accepted reviews and returns one content-addressed
-`tracefold.news.program_baseline_report.v2`. It is read-only — no dataset,
+`tracefold.news.program_baseline_report.v3`. It is read-only — no dataset write,
 sandbox, tariff or container, no write to any table, and the only database
 contact is one `serve` connection that closes before the first model call.
+
+The two corpus forms are mutually exclusive because a run can only measure one
+of them (#199 §5). `--from-ms/--to-ms` is a moving window anchored to the clock:
+the population changes underneath it, so a before/after taken across two of them
+compares two different corpora, and the receipt says `cohort_scope: current` or
+`all` — discovery, never release evidence. `--dataset SHA` is the exact frozen
+development dataset a trusted compile would seal. It re-projects the sealed
+corpus once, builds the same `GepaObjectivePlan` readiness and `run_gepa` build,
+and scores **only** `target + control`: excluded diagnostics are counted and
+named in the report's `objective` section and never enter a denominator, because
+a retrieval miss averaged into the "before" number is movement a candidate can
+be credited for without repairing anything. `subsets` publishes three separate
+numbers — `train`, `development_selection` (the formal *before* value a Candidate
+is picked on) and `optimizer_union` (a diagnostic) — and `identity` carries the
+dataset SHA and the `episode_projection_root_sha256` that
+`CompileRecordV1` commits to and `CandidateEvaluator` re-derives, so readiness,
+this baseline, the trusted record and the release gate can be checked against
+each other. `--max-model-cases` must cover the whole optimizer corpus
+(`news_program_baseline_dataset_requires_full_corpus_budget:N`): a truncated run
+would publish split roots describing cases it never scored. A blocked plan is
+refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
+rather than published with an empty `subsets` block that reads as a measured
+zero — `readiness` explains the same blockers for free.
+
+`--dataset` runs `--mode compile_live` and nothing else
+(`news_program_baseline_dataset_requires_compile_live`), and requires
+`--semantic-judge` on the compiler reflection route
+(`news_program_baseline_dataset_requires_semantic_judge`,
+`..._requires_compiler_reflection_judge`). `subsets.development_selection` is
+published as the formal *before* value a Candidate is picked against, so it has
+to measure what the optimizer measures — `DspyCompileProgram` on one task
+endpoint, judged by the ruler `run_gepa` refuses to run without. `recorded`
+scores the action that actually shipped while the Objective Plan classifies under
+a replayed `decide()`, so the two disagree on any case whose ledger state
+differed at ingest and the report would call a case a control and zero it in the
+same document; `runtime_live` measures the four-slot production route with retry,
+fallback, deadline and circuit, which is a reliability question and not
+comparable to a candidate selected on the cold graph; and `bind_metric(None)`
+compares free-text retention byte-for-byte and fires `factual_contradiction` on
+every failed `factual_fidelity`. All three remain available in the moving-window
+form, which names itself discovery. For the same
+reason the retrieval receipt in a dataset-bound report is computed over the
+**whole** sealed export rather than the scored subset: the plan excludes exactly
+the cases `_retrieval_receipt` counts as misses, so a receipt over
+`target + control` would report a recall biased toward 1.0 by construction.
 
 The three modes answer three different questions and are never interchangeable
 (#150 removed the single ambiguous `live`, with no alias):

@@ -61,12 +61,13 @@ from .metric import (
 )
 from .objective import (
     DevelopmentEpisode,
+    GepaObjectivePlan,
     retrieval_receipt,
     verify_policy_projection,
 )
 
 BaselineMode = Literal["recorded", "compile_live", "runtime_live"]
-BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v2"] = "tracefold.news.program_baseline_report.v2"
+BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v3"] = "tracefold.news.program_baseline_report.v3"
 # Bootstrap convention shared with the release evaluator, so a cluster interval here means the same
 # thing it means there.
 _BOOTSTRAP = {"seed": 112, "replicates": 2_000, "confidence": 0.95}
@@ -148,7 +149,7 @@ class BaselineReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal["tracefold.news.program_baseline_report.v2"] = BASELINE_SCHEMA
+    schema_id: Literal["tracefold.news.program_baseline_report.v3"] = BASELINE_SCHEMA
     mode: BaselineMode
     identity: dict[str, Any]
     execution_scope: tuple[str, ...]
@@ -164,6 +165,16 @@ class BaselineReport(BaseModel):
     prediction_dimensions: dict[str, Any]
     gold_coverage: dict[str, Any]
     retrieval: dict[str, Any]
+    # #199. Empty for a moving-window run, which is discovery and says so. For `--dataset` it is the
+    # Objective Plan this baseline was scored under: what was target, what was control, why every other
+    # case is out, and the split roots readiness, the trusted CompileRecord and `CandidateEvaluator` must
+    # all agree with.
+    objective: dict[str, Any] = Field(default_factory=dict)
+    # The three numbers #199 §5 asks for, kept apart because they answer different questions: `train` is
+    # what GEPA optimizes against, `development_selection` is the formal *before* value a candidate is
+    # picked on, and `optimizer_union` is the diagnostic over both. A single mean over the union would let
+    # a gain on the half the optimizer already saw stand in for a gain on the half it did not.
+    subsets: dict[str, Any] = Field(default_factory=dict)
     semantic_judge: dict[str, Any] = Field(default_factory=dict)
     latency_ms: dict[str, Any] = Field(default_factory=dict)
     route: dict[str, Any] = Field(default_factory=dict)
@@ -394,6 +405,57 @@ def _cluster_macro(results: Sequence[CaseResult], *, failure_as_zero: bool) -> t
     return round(statistics.fmean(per_cluster), 6), len(per_cluster), per_cluster
 
 
+def _subset(results: Sequence[CaseResult], case_ids: frozenset[str]) -> dict[str, Any]:
+    """One half of the honest split, scored on its own.
+
+    Deliberately the same two means the whole report publishes — answered-only and failure-as-zero — over
+    a named subset, rather than a new statistic. A `development_selection` number that is not comparable
+    to the report's own headline number would be worse than not publishing one.
+    """
+
+    selected = [result for result in results if result.case_id in case_ids]
+    answered = [result for result in selected if result.answered]
+    cluster_answered, cluster_n, _values = _cluster_macro(selected, failure_as_zero=False)
+    cluster_zero, _n, _zero_values = _cluster_macro(selected, failure_as_zero=True)
+    return {
+        "case_n": len(selected),
+        "answered_n": len(answered),
+        "cluster_n": cluster_n,
+        "case_macro_answered": round(statistics.fmean(r.score for r in answered), 6) if answered else None,
+        "case_macro_failure_as_zero": (
+            round(statistics.fmean(r.score if r.answered else 0.0 for r in selected), 6) if selected else None
+        ),
+        "cluster_macro_answered": cluster_answered,
+        "cluster_macro_failure_as_zero": cluster_zero,
+        "hard_gate_n": sum(1 for result in answered if result.hard_gate),
+        "failure_n": len(selected) - len(answered),
+    }
+
+
+def _objective_receipt(plan: GepaObjectivePlan) -> dict[str, Any]:
+    """What this baseline was scored under, in the plan's own bounded vocabulary."""
+
+    return {
+        "schema": plan.schema_version,
+        "target_case_n": len(plan.target_case_ids),
+        "target_cluster_n": len(plan.target_failure_cluster_ids),
+        "target_failure_cluster_ids": list(plan.target_failure_cluster_ids),
+        "target_dimensions": list(plan.target_dimensions),
+        "target_predictors": list(plan.target_predictors),
+        "control_case_n": len(plan.control_case_ids),
+        "control_cluster_n": len(plan.control_cluster_ids),
+        # Counted and named, never scored: an excluded diagnostic that entered the denominator would be
+        # the owner-blind corpus back under a different heading.
+        "excluded_case_n": len(plan.excluded_case_ids),
+        "exclusion_reasons": dict(plan.exclusion_reasons),
+        "owner_distribution": dict(plan.owner_distribution),
+        "exact_gold_coverage": dict(plan.exact_gold_coverage),
+        "observed_failure_cluster_n": len(plan.observed_failure_cluster_ids),
+        "split": plan.split,
+        "blocking_reasons": list(plan.blocking_reasons),
+    }
+
+
 def _action_confusion(results: Sequence[CaseResult]) -> dict[str, Any]:
     """Split by the reviewer's own label. A single agreement rate hides which direction the errors run."""
 
@@ -540,9 +602,26 @@ def run_baseline(
     semantic_judge: Any = None,
     runtime_identity: Mapping[str, Any] | None = None,
     cohort_scope: str = "unknown",
+    objective: GepaObjectivePlan | None = None,
+    dataset_identity: Mapping[str, Any] | None = None,
+    retrieval_population: Sequence[DevelopmentEpisode] | None = None,
     num_threads: int = 1,
 ) -> BaselineReport:
-    """Score `cases` and return one content-addressable report. Never writes, never delivers, never promotes."""
+    """Score `cases` and return one content-addressable report. Never writes, never delivers, never promotes.
+
+    `objective` is the Objective Plan the caller scored under, and it is present exactly when the corpus is
+    a frozen development dataset. The caller is what restricts `cases` to `target + control`; this function
+    does not filter, and refuses a mismatch rather than publishing a plan it did not measure.
+
+    `retrieval_population` is the corpus the retrieval receipt is computed over, which for a dataset-bound
+    run is deliberately *not* the scored subset: the Objective Plan excludes exactly the cases
+    `retrieval_receipt` counts as misses — priors that never reached the ToldContext, and anything an
+    operator labelled `first_bad_owner=retrieval` — so a receipt over `target + control` would report a
+    recall biased toward 1.0 by construction.
+    """
+
+    if objective is not None and {case.episode.case_id for case in cases} != set(objective.optimizer_case_ids):
+        raise ValueError("news_program_baseline_objective_corpus_mismatch")
 
     if not cases:
         raise ValueError("news_program_baseline_requires_cases")
@@ -767,6 +846,9 @@ def run_baseline(
         route=route,
         runtime_identity=runtime_identity,
         cohort_scope=cohort_scope,
+        objective=objective,
+        dataset_identity=dataset_identity,
+        retrieval_population=retrieval_population,
     )
 
 
@@ -782,6 +864,9 @@ def _build_report(
     route: Mapping[str, Any],
     runtime_identity: Mapping[str, Any] | None,
     cohort_scope: str = "unknown",
+    objective: GepaObjectivePlan | None = None,
+    dataset_identity: Mapping[str, Any] | None = None,
+    retrieval_population: Sequence[DevelopmentEpisode] | None = None,
 ) -> BaselineReport:
     answered = [result for result in results if result.answered]
     failed = [result for result in results if not result.answered]
@@ -839,9 +924,23 @@ def _build_report(
         if relevant:
             scores["case_macro_answered_byte_equality"] = round(statistics.fmean(relevant), 6)
 
+    subsets: dict[str, Any] = {}
+    if objective is not None:
+        train_ids = frozenset(episode.case_id for episode in objective.train_episodes)
+        selection_ids = frozenset(episode.case_id for episode in objective.development_selection_episodes)
+        subsets = {
+            "train": _subset(results, train_ids),
+            "development_selection": _subset(results, selection_ids),
+            "optimizer_union": _subset(results, train_ids | selection_ids),
+            "note": (
+                "development_selection is the formal before value a Candidate is picked on; train is what "
+                "GEPA optimizes against; the union is a diagnostic and is not release evidence on its own"
+            ),
+        }
     return BaselineReport(
         mode=mode,
         identity={
+            **dict(dataset_identity or {}),
             "program_version": PROGRAM_VERSION,
             "program_sha256": artifact.program_sha256,
             "factory_id": artifact.factory_id,
@@ -888,7 +987,11 @@ def _build_report(
             "rate": round(gold_n / labelled_n, 6) if labelled_n else None,
             "note": "share of scored dimensions decided against a stated correct value, not against 'any change'",
         },
-        retrieval=retrieval_receipt([case.episode for case in cases]),
+        retrieval=retrieval_receipt(
+            list(retrieval_population) if retrieval_population is not None else [case.episode for case in cases]
+        ),
+        objective=_objective_receipt(objective) if objective is not None else {},
+        subsets=subsets,
         semantic_judge=({**judge.stats, **judge.identity} if judge is not None else {}),
         latency_ms=dict(latency),
         route=dict(route),

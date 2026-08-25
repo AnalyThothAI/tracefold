@@ -148,8 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
     learning_baseline = learning_subcommands.add_parser(
         "baseline", help="score the stable Program over accepted reviews (no sandbox, no tariff, no writes)"
     )
-    learning_baseline.add_argument("--from-ms", type=_nonnegative_int, required=True)
-    learning_baseline.add_argument("--to-ms", type=_positive_int, required=True)
+    # Two corpora, one command, and the receipt says which. `--from-ms/--to-ms` is a moving window and is
+    # discovery: the population changes with the clock, so a before/after taken across two of them compares
+    # two different corpora. `--dataset` is the exact frozen development dataset a trusted compile would
+    # seal, scored under the same Objective Plan and publishing the same split roots — that one is release
+    # evidence. They are mutually exclusive because a run can only be one of the two (#199 §5).
+    learning_baseline.add_argument("--from-ms", type=_nonnegative_int, default=None)
+    learning_baseline.add_argument("--to-ms", type=_positive_int, default=None)
+    learning_baseline.add_argument(
+        "--dataset",
+        default="",
+        metavar="SHA",
+        help=(
+            "score the exact frozen development dataset instead of a moving window; "
+            "mutually exclusive with --from-ms/--to-ms/--all-cohorts"
+        ),
+    )
     # `live` is gone, not aliased. It answered two different questions under one name: the graph GEPA
     # optimizes, and the production route's reliability. Keeping an alias would keep the ambiguity alive.
     learning_baseline.add_argument(

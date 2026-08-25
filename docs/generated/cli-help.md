@@ -376,7 +376,8 @@ options:
 ## `news learning baseline`
 
 ```
-usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
+usage: tracefold news learning baseline [-h] [--from-ms FROM_MS]
+                                        [--to-ms TO_MS] [--dataset SHA]
                                         [--mode {recorded,compile_live,runtime_live}]
                                         [--action-source {recorded,policy}]
                                         [--max-model-cases MAX_MODEL_CASES]
@@ -388,6 +389,9 @@ options:
   -h, --help            show this help message and exit
   --from-ms FROM_MS
   --to-ms TO_MS
+  --dataset SHA         score the exact frozen development dataset instead of
+                        a moving window; mutually exclusive with --from-
+                        ms/--to-ms/--all-cohorts
   --mode {recorded,compile_live,runtime_live}
                         recorded: score the persisted verdict against the
                         action that shipped, no model call; compile_live: the

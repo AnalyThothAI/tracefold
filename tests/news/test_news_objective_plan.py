@@ -913,6 +913,7 @@ def test_no_second_implementation_guesses_failure_clusters() -> None:
         # purpose, in this list, rather than by writing one more `if "fail" in dimensions` somewhere.
         "src/tracefold/app/cli/commands/news_learning.py",
         "src/tracefold/app/cli/commands/news_learning_experiment.py",
+        "src/tracefold/news/learning/baseline.py",
         "src/tracefold/news/learning/compiler/security.py",
         "src/tracefold/news/learning/contracts.py",
         "src/tracefold/news/learning/experiment/compare.py",
