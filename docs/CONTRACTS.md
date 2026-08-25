@@ -157,7 +157,11 @@ ceiling is rejected at startup); `trading.policy.*` gates the pure mapping
 `take_profit_bps`, `max_holding_seconds`, `max_spread_bps`,
 `max_open_underlyings`, `max_orders_per_day`), so
 the nominal planned-stop daily envelope is the multiplication
-`fixed_notional x fixed_stop_bps x max_orders_per_day`;
+`fixed_notional x fixed_stop_bps x max_orders_per_day`. Editing
+`trading.order.*` changes the *next* order only: an order that has reached
+`PREPARED` carries its own frozen stop, take-profit, `max_holding_ms` and taker
+fee on its ledger row, and reconciliation reads the row rather than the running
+configuration (#209);
 `trading.opentrade.*` is the provider contract (`base_url`, `token_file`,
 `request_timeout_seconds`); `base_url` must be credential-free HTTPS. A live
 mode without a configured OpenTrade contract

@@ -120,8 +120,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # #193's compile-record convergence (0305/0306) and now #202's single Prompt candidate (0307). A dict
     # has one key, so the reason names them rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_175_index_then_issue_193_compile_record_then_issue_202_prompt_candidate",
-        "20260825_0307",
+        "issue_175_index_then_issue_193_compile_record_then_issue_202_prompt_candidate_then_issue_209_snapshot",
+        "20260825_0308",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
@@ -276,9 +276,24 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_185_attempt_scoped_close_identity",
         None,
     ),
+    # #209 freezes the exit policy on the order row. `must_close_after_ms` was a duration nothing read —
+    # the deadline was recomputed from the running configuration at every promotion — and it is replaced
+    # by the two numbers the reconciler now reads off the row instead of off the config.
+    "representative_trading_flow.flow.prepared_order.must_close_after_ms": (
+        "issue_209_frozen_exit_policy_snapshot",
+        _MISSING,
+    ),
+    "representative_trading_flow.flow.prepared_order.max_holding_ms": (
+        "issue_209_frozen_exit_policy_snapshot",
+        1_800_000,
+    ),
+    "representative_trading_flow.flow.prepared_order.taker_fee_bps": (
+        "issue_209_frozen_exit_policy_snapshot",
+        5,
+    ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_185_execution_observation_and_attempt_scoped_close_identity",
-        "44bb85b0951da2c0cf30c2dfe2c29b8921c7ddcc0a54a4a211252e7110d5a897",
+        "issue_185_execution_observation_then_issue_209_frozen_exit_policy_snapshot",
+        "a388dc48636c473f9766152002b3869ed778b66ebb12c2d8c01ceee96cad5884",
     ),
 }
 
@@ -830,7 +845,8 @@ def _trading_order(
         entry_reference=sized.entry_reference,
         stop_price=sized.stop_price,
         take_profit_price=sized.take_profit_price,
-        must_close_after_ms=1_800_000,
+        max_holding_ms=1_800_000,
+        taker_fee_bps=5,
         payload=payload,
     )
     return model_decision, outcome, order

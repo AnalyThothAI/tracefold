@@ -529,6 +529,8 @@
 | `closed_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `max_holding_ms` | `BIGINT` | True | `None` |
+| `taker_fee_bps` | `INTEGER` | True | `None` |
 
 ## `trading_runtime_state`
 

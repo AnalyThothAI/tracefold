@@ -419,7 +419,14 @@ class TradingCaseManifest(_Frozen):
 
 
 class PreparedOrder(_Frozen):
-    """The immutable economic intent. The payload is frozen before any network call exists."""
+    """The immutable economic intent. The payload is frozen before any network call exists.
+
+    The four exit numbers are all here, and all of them come from the order row rather than from the
+    running configuration (#209). Two were already absolute prices; `max_holding_ms` and
+    `taker_fee_bps` are the snapshot that makes the other two exits — the clock and the realised
+    return — replayable. An order that has been approved may not have its execution semantics
+    rewritten by a later deploy, so a config edit changes the next order and never this one.
+    """
 
     order_id: str
     case_id: str
@@ -435,7 +442,8 @@ class PreparedOrder(_Frozen):
     entry_reference: Decimal
     stop_price: Decimal
     take_profit_price: Decimal | None
-    must_close_after_ms: int
+    max_holding_ms: int = Field(gt=0)
+    taker_fee_bps: int = Field(ge=0)
     payload: dict[str, Any]
 
     @property

@@ -144,7 +144,8 @@ class ReconcileRunner:
     async def _reconcile(self, row: dict[str, Any], *, control: str, now: int) -> bool:
         order_id = str(row["order_id"])
         state = str(row["state"])
-        order = _order_from_row(row, max_holding_ms=self._config.order.max_holding_ms)
+        row = await self._ensure_execution_snapshot(row, now=now)
+        order = _order_from_row(row)
 
         if state in (OrderState.AMBIGUOUS.value, OrderState.RECONCILING.value):
             return await self._resolve_ambiguity(order, row, now=now)
@@ -274,6 +275,51 @@ class ReconcileRunner:
 
         await self._defer(order_id, state, now)
         return False
+
+    async def _ensure_execution_snapshot(self, row: dict[str, Any], *, now: int) -> dict[str, Any]:
+        """Give one pre-#209 active order its exit-policy snapshot before anything reads the row.
+
+        Orders written before the snapshot columns existed carry no `max_holding_ms` and no
+        `taker_fee_bps`. Reading today's configuration for them every turn is exactly the drift #209
+        closes, and refusing to manage them would leave an open position with no clock exit. So the
+        first turn that meets one freezes the configuration then in force, records that as its own
+        `legacy_runtime_snapshot` observation — the row then says which numbers governed it and nobody
+        has to reconstruct them from a deploy history — and every later turn reads the row.
+        """
+
+        if row.get("max_holding_ms") is not None and row.get("taker_fee_bps") is not None:
+            return row
+        order_id = str(row["order_id"])
+        requested_holding = int(self._config.order.max_holding_ms)
+        requested_fee = int(self._config.order.taker_fee_bps)
+
+        def _freeze(repos: Any) -> tuple[int, int]:
+            frozen: tuple[int, int] = repos.trading.freeze_legacy_execution_snapshot(
+                order_id=order_id,
+                max_holding_ms=requested_holding,
+                taker_fee_bps=requested_fee,
+                now_ms=now,
+            )
+            content = {
+                "schema": "tracefold.trading.legacy_runtime_snapshot.v1",
+                "max_holding_ms": frozen[0],
+                "taker_fee_bps": frozen[1],
+                "frozen_at_ms": int(now),
+            }
+            repos.trading.record_observation(
+                order_id=order_id,
+                observation_kind="legacy_runtime_snapshot",
+                content_sha256=canonical_sha256(content),
+                content=content,
+                now_ms=now,
+            )
+            return frozen
+
+        holding, fee = await self._db.tx(
+            "trading_legacy_execution_snapshot", _freeze, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS
+        )
+        log.info("trading froze a legacy execution snapshot order=%s max_holding_ms=%s", order_id, holding)
+        return {**row, "max_holding_ms": holding, "taker_fee_bps": fee}
 
     async def _commit(
         self,
@@ -501,7 +547,7 @@ class ReconcileRunner:
         opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
         deadline = _conservative_deadline(
             row,
-            must_close_at(opened_at_ms=opened, policy=self._config.order),
+            must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
         )
         next_state = {
             "PARTIAL": OrderState.PARTIAL,
@@ -649,7 +695,7 @@ class ReconcileRunner:
                 side=order.side,
                 entry=observation.average_price,
                 exit_price=observation.exit_price,
-                fee_bps=self._config.order.taker_fee_bps,
+                fee_bps=order.taker_fee_bps,
             )
             content = observation.model_dump(mode="json")
 
@@ -738,7 +784,7 @@ class ReconcileRunner:
         )
         deadline = _conservative_deadline(
             row,
-            must_close_at(opened_at_ms=opened, policy=self._config.order),
+            must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
         )
         content = observation.model_dump(mode="json")
 
@@ -948,7 +994,7 @@ class ReconcileRunner:
             opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
             deadline = _conservative_deadline(
                 row,
-                must_close_at(opened_at_ms=opened, policy=self._config.order),
+                must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
             )
 
             def _promote(repos: Any) -> None:
@@ -979,7 +1025,7 @@ class ReconcileRunner:
             opened = _conservative_opened_at(row, first_fill_at_ms=None, now=now)
             deadline = _conservative_deadline(
                 row,
-                must_close_at(opened_at_ms=opened, policy=self._config.order),
+                must_close_at(opened_at_ms=opened, max_holding_ms=order.max_holding_ms),
             )
 
         fetcher = self._bars(str(row["exchange_id"]))
@@ -1061,7 +1107,7 @@ class ReconcileRunner:
             side=cast(OrderSide, row["side"]),
             entry=Decimal(str(row["entry_reference"])),
             exit_price=exit_at.exit_price,
-            fee_bps=self._config.order.taker_fee_bps,
+            fee_bps=order.taker_fee_bps,
         )
 
         def _close(repos: Any) -> None:
@@ -1172,7 +1218,9 @@ def _conservative_deadline(row: dict[str, Any], candidate: int) -> int:
     return min(int(persisted), candidate) if persisted is not None else candidate
 
 
-def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrder:
+def _order_from_row(row: dict[str, Any]) -> PreparedOrder:
+    """Rebuild the frozen intent from the ledger alone. No runtime configuration enters here (#209)."""
+
     return PreparedOrder(
         order_id=str(row["order_id"]),
         case_id=str(row["case_id"]),
@@ -1195,7 +1243,8 @@ def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrde
         entry_reference=Decimal(str(row["entry_reference"])),
         stop_price=Decimal(str(row["stop_price"])),
         take_profit_price=None if row.get("take_profit_price") is None else Decimal(str(row["take_profit_price"])),
-        must_close_after_ms=max_holding_ms,
+        max_holding_ms=int(row["max_holding_ms"]),
+        taker_fee_bps=int(row["taker_fee_bps"]),
         payload=dict(row.get("payload") or {}),
     )
 

@@ -78,6 +78,12 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow"
 
+trading-smoke: ## paper exit acceptance on real PostgreSQL: SL / TP / MAX_HOLDING reach CLOSED + flat (#209)
+	@echo "paper exits are priced off CLOSED bar closes only: no intrabar wick, no venue-native stop,"
+	@echo "no spread, precision, partial fill, position mode or external order. What this proves is the"
+	@echo "execution kernel, the ledger and the state machine - not a backtest and not exchange truth."
+	@uv run python -m pytest tests/integration/test_trading_ledger.py -m integration -k paper_exit_acceptance
+
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
 	@uv run python -m pytest tests/deploy -m deploy
 

@@ -1586,6 +1586,37 @@ and therefore a symbol cooldown — only when `position_opened_at_ms` had alread
 established that a position existed. Confirming a timed-out entry never filled
 does not fabricate an exit.
 
+**The exit policy is frozen on the order row, not read from configuration.**
+`stop_price` and `take_profit_price` were always absolute prices on the row. The
+other two numbers were not: `must_close_at_ms` is first written when
+reconciliation promotes an acknowledged order to `OPEN`, and that promotion can
+be a restart and a redeploy after the intent was approved — so before #209 an
+already-approved order took its holding deadline from whatever
+`max_holding_seconds` said at promotion time, and its realised return from
+whatever taker fee was in force at close time. `trading_orders.max_holding_ms`
+and `trading_orders.taker_fee_bps` are written in the same transaction as the
+intent they govern, and the reconciler reads the row. A configuration edit
+changes the next order and never an approved one. Both columns are nullable
+because terminal history is not backfilled; the one shape that can still be met
+— an active order written before the columns existed — is frozen once at its next
+reconcile turn against the configuration then in force and recorded as a
+`legacy_runtime_snapshot` observation, so the row says which numbers governed it
+instead of leaving it to a deploy history.
+
+**What a paper exit proves, and what it does not.** Paper prices its exits off
+**closed bars, and only their close**. It does not simulate the intrabar path, so
+a stop is not the venue's native stop and a wick through the level is not a fill;
+it does not simulate spread, contract precision, partial fills, position mode or
+externally-created orders. `take_profit_bps` defaults to `0`, which disables that
+exit entirely — a default paper run demonstrates the stop and the clock, and
+calling it a take-profit proof would describe a branch the deployed configuration
+never enters. `make trading-smoke` drives all three exits — stop, explicitly
+enabled take-profit, and max-holding — end to end on real PostgreSQL to
+`CLOSED` and flat, with exactly one entry write and one close write each. What
+that establishes is the execution kernel, the durable ledger and the state
+machine. It is not a backtest, not a profitability claim, and not evidence about
+a real venue or real funds.
+
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the
 **model** owns the side — tolerable only because the kind is paper-only. `news_oi`

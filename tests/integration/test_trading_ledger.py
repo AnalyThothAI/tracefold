@@ -16,7 +16,7 @@ adapter, so the ambiguous branch — the one that matters and that a always-succ
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -245,6 +245,8 @@ def _order(conn: Any, *, order_id: str, case_id: str, underlying: str, exchange_
         entry_reference="100",
         stop_price="98",
         take_profit_price=None,
+        max_holding_ms=900_000,
+        taker_fee_bps=5,
         payload={"symbol": "DOGEUSDT"},
         payload_sha256="digest",
         state=state,
@@ -279,6 +281,8 @@ def test_one_case_authors_at_most_one_order(conn) -> None:
         entry_reference="100",
         stop_price="98",
         take_profit_price=None,
+        max_holding_ms=900_000,
+        taker_fee_bps=5,
         payload={},
         payload_sha256="d",
         state="PREPARED",
@@ -1138,6 +1142,8 @@ def test_read_only_c1_never_claims_or_submits_an_approved_live_order(conn) -> No
         entry_reference="10",
         stop_price="9.8",
         take_profit_price=None,
+        max_holding_ms=900_000,
+        taker_fee_bps=5,
         payload={"symbol": "DOGE/USDT:USDT"},
         payload_sha256="digest",
         state="AWAITING_APPROVAL",
@@ -1181,6 +1187,8 @@ def test_read_only_c1_records_a_live_ack_observation_without_calling_it_a_fill(c
         entry_reference="10",
         stop_price="9.8",
         take_profit_price=None,
+        max_holding_ms=900_000,
+        taker_fee_bps=5,
         payload={"symbol": "DOGE/USDT:USDT"},
         payload_sha256="digest",
         state="ACKNOWLEDGED",
@@ -3381,3 +3389,279 @@ def test_a_live_paper_position_is_reported_as_open_not_acknowledged(conn) -> Non
     assert row["average_price"] == Decimal("102")
     assert row["position_opened_at_ms"] == now
     assert row["must_close_at_ms"] == now + _config().order.max_holding_ms
+
+
+# ------------------------------------------------------- #209 paper exit acceptance on real PostgreSQL
+# Every test below is named `test_paper_exit_acceptance_*` because `make trading-smoke` selects them by
+# that prefix. It is the acceptance contract for the three paper exits, not an incidental grouping:
+# renaming one silently drops it out of the smoke lane.
+class _CountedPaperAdapter(PaperAdapter):
+    """Paper, with the two capital writes counted apart.
+
+    `PaperAdapter.attempts` is one number for both legs, and the acceptance contract below is about
+    each leg separately: a resent entry doubles a position and a resent close double-closes it. One
+    shared counter cannot tell a passing run from either failure.
+    """
+
+    def __init__(self, *, faults: PaperFaults | None = None) -> None:
+        super().__init__(faults=faults or PaperFaults())
+        self.submits = 0
+        self.closes = 0
+
+    async def submit(self, order: PreparedOrder) -> ExecutionReceipt:
+        self.submits += 1
+        return await super().submit(order)
+
+    async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
+        self.closes += 1
+        return await super().close(order, quantity=quantity)
+
+
+def _exit_bars(*, opened_at_ms: int, closes: Sequence[str]) -> tuple[Bar, ...]:
+    """Consecutive closed five-minute bars from the instant the position opened."""
+
+    return tuple(
+        Bar(
+            open_at_ms=opened_at_ms + index * 300_000,
+            close_at_ms=opened_at_ms + (index + 1) * 300_000,
+            close=Decimal(value),
+        )
+        for index, value in enumerate(closes)
+    )
+
+
+def _drive_paper_exit(
+    conn: Any,
+    *,
+    order_policy: OrderPolicy,
+    closes: Sequence[str],
+    reconcile_at_ms: int,
+) -> _CountedPaperAdapter:
+    """One qualifying OI frame through the whole paper loop, on the real ledger.
+
+    `BUY -> ACK -> OPEN -> exit -> close/SELL -> CLOSED`, driven by the two real runners over the two
+    real tables. Promotion and the exit land in the same reconcile turn because that is what the
+    runner does when an acknowledged order already has closed bars behind it; the ledger, not the
+    turn count, is what the assertions read.
+    """
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    adapter = _CountedPaperAdapter()
+    config = _config(order=order_policy)
+    asyncio.run(_runner(conn, adapter=adapter, now=NOW, config=config).turn())
+    assert _order_row_only(conn)["state"] == "ACKNOWLEDGED"
+
+    bars = _exit_bars(opened_at_ms=NOW, closes=closes)
+
+    async def feed(_symbol: str, _start: int, _end: int) -> Any:
+        return bars
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: feed,
+            adapter=adapter,
+            clock=lambda: reconcile_at_ms,
+        ).turn()
+    )
+    return adapter
+
+
+def _order_row_only(conn: Any) -> Any:
+    return conn.execute("SELECT * FROM trading_orders").fetchone()
+
+
+def _assert_closed_and_flat(
+    conn: Any,
+    adapter: _CountedPaperAdapter,
+    *,
+    exit_reason: str,
+    exit_price: str,
+    realized_bps: int,
+    closed_at_ms: int,
+) -> None:
+    """The whole #209 happy-path contract, asserted the same way for all three exits."""
+
+    row = _order_row_only(conn)
+    assert (adapter.submits, adapter.closes) == (1, 1)
+    assert row["state"] == "CLOSED"
+    assert row["exit_reason"] == exit_reason
+    assert row["exit_price"] == Decimal(exit_price)
+    assert int(row["realized_bps"]) == realized_bps
+    assert int(row["position_closed_at_ms"]) == closed_at_ms
+    # The ledger's own record of how many times each leg was written, independent of the adapter.
+    assert (int(row["provider_attempt_count"]), int(row["exit_attempt_total"])) == (1, 1)
+
+    trading = _repos(conn).trading
+    assert trading.active_underlyings() == []
+    # Nothing left to do: a nonterminal row that stayed due would hold the slot and re-enter the loop.
+    assert trading.due_orders(now_ms=closed_at_ms + 86_400_000) == []
+    states = {str(item["state"]) for item in conn.execute("SELECT state FROM trading_orders").fetchall()}
+    assert states == {"CLOSED"}
+
+
+def test_paper_exit_acceptance_stop_loss_reaches_closed_and_flat(conn) -> None:
+    """`fixed_stop_bps=200` on a 102 entry stops at 99.96; the first bar closes through it."""
+
+    adapter = _drive_paper_exit(
+        conn,
+        order_policy=OrderPolicy(max_holding_ms=900_000),
+        closes=["99"],
+        reconcile_at_ms=NOW + 300_000,
+    )
+    # (99/102 - 1) * 10_000 = -294.1 bps gross, minus both taker legs at the frozen 5 bps.
+    _assert_closed_and_flat(
+        conn,
+        adapter,
+        exit_reason="stop_loss",
+        exit_price="99",
+        realized_bps=-304,
+        closed_at_ms=NOW + 300_000,
+    )
+
+
+def test_paper_exit_acceptance_take_profit_reaches_closed_and_flat_when_enabled(conn) -> None:
+    """The default `take_profit_bps=0` disables this exit, so the case has to enable it explicitly.
+
+    A default paper run proves the stop and the clock. Reporting it as a take-profit proof would be
+    describing a branch the deployed configuration never enters.
+    """
+
+    adapter = _drive_paper_exit(
+        conn,
+        order_policy=OrderPolicy(max_holding_ms=900_000, take_profit_bps=400),
+        closes=["107"],
+        reconcile_at_ms=NOW + 300_000,
+    )
+    # 102 * 1.04 = 106.08 take-profit; the bar closes above it. +490.2 bps gross, minus both legs.
+    _assert_closed_and_flat(
+        conn,
+        adapter,
+        exit_reason="take_profit",
+        exit_price="107",
+        realized_bps=480,
+        closed_at_ms=NOW + 300_000,
+    )
+
+
+def test_paper_exit_acceptance_max_holding_reaches_closed_and_flat(conn) -> None:
+    """Flat bars: no stop, no take-profit, and the frozen deadline is what ends the position."""
+
+    adapter = _drive_paper_exit(
+        conn,
+        order_policy=OrderPolicy(max_holding_ms=600_000, take_profit_bps=400),
+        closes=["102", "102"],
+        reconcile_at_ms=NOW + 600_000,
+    )
+    _assert_closed_and_flat(
+        conn,
+        adapter,
+        exit_reason="max_holding",
+        exit_price="102",
+        realized_bps=-10,
+        closed_at_ms=NOW + 600_000,
+    )
+
+
+def test_paper_exit_acceptance_deadline_survives_a_restart_under_a_new_configuration(conn) -> None:
+    """#209: the order row, not the running configuration, owns the exit semantics.
+
+    `must_close_at_ms` is first written when reconciliation promotes an acknowledged order to OPEN.
+    That promotion can be a restart and a redeploy after the intent was approved, so before the
+    snapshot the deadline of an already-approved order was whatever `max_holding_seconds` said at
+    promotion time. The realised return had the same problem through the taker fee.
+    """
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    approved_policy = OrderPolicy(max_holding_ms=900_000)
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW, config=_config(order=approved_policy)).turn())
+    prepared = _order_row_only(conn)
+    assert prepared["state"] == "ACKNOWLEDGED"
+    assert prepared["must_close_at_ms"] is None
+    assert int(prepared["max_holding_ms"]) == 900_000
+    assert int(prepared["taker_fee_bps"]) == 5
+
+    # The process dies and comes back under a configuration that would both shorten the hold and
+    # charge fifty times the fee.
+    restarted = _config(order=OrderPolicy(max_holding_ms=60_000, taker_fee_bps=250))
+    bars = _exit_bars(opened_at_ms=NOW, closes=["99"])
+
+    async def feed(_symbol: str, _start: int, _end: int) -> Any:
+        return bars
+
+    adapter = _CountedPaperAdapter()
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=restarted,
+            bars=lambda _venue: feed,
+            adapter=adapter,
+            clock=lambda: NOW + 300_000,
+        ).turn()
+    )
+
+    row = _order_row_only(conn)
+    assert int(row["must_close_at_ms"]) == NOW + 900_000
+    assert row["exit_reason"] == "stop_loss"
+    assert int(row["realized_bps"]) == -304
+    assert (adapter.submits, adapter.closes) == (0, 1)
+
+
+def test_paper_exit_acceptance_freezes_a_pre_snapshot_order_once_and_records_it(conn) -> None:
+    """The one legacy row shape the snapshot columns can meet, and what happens to it.
+
+    Terminal history is not backfilled, so an active order written before #209 carries neither number.
+    Reading today's configuration for it every turn is the drift this issue closes and refusing to
+    manage it would leave a position with no clock exit — so the first turn freezes what is in force,
+    says so in the observation ledger, and every later turn reads the row like any other order.
+    """
+
+    _case(conn, case_id="c1", source_key="k1")
+    # `binance`, not `paper`: the pipeline records the venue the case actually routed to, and the
+    # paper adapter's native-protection proof is typed to a real venue.
+    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="binance", state="ACKNOWLEDGED")
+    # The exact pre-#209 row: a durable paper acknowledgement, no snapshot, no deadline yet.
+    conn.execute(
+        "UPDATE trading_orders SET max_holding_ms = NULL, taker_fee_bps = NULL, must_close_at_ms = NULL, "
+        "remote_order_id = 'paper-o1', provider_attempt_count = 1"
+    )
+    conn.commit()
+
+    config = _config(order=OrderPolicy(max_holding_ms=1_200_000, taker_fee_bps=7))
+    adapter = _CountedPaperAdapter()
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW,
+        ).turn()
+    )
+
+    row = _order_row_only(conn)
+    assert (int(row["max_holding_ms"]), int(row["taker_fee_bps"])) == (1_200_000, 7)
+    assert int(row["must_close_at_ms"]) == NOW + 1_200_000
+    frozen = [
+        item
+        for item in _repos(conn).trading.observations(order_id="o1")
+        if item["observation_kind"] == "legacy_runtime_snapshot"
+    ]
+    assert len(frozen) == 1
+    assert frozen[0]["content"]["max_holding_ms"] == 1_200_000
+    assert frozen[0]["content"]["taker_fee_bps"] == 7
+
+    # A later turn under a different configuration reads the row, not the configuration.
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=_config(order=OrderPolicy(max_holding_ms=60_000, taker_fee_bps=99)),
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 60_000,
+        ).turn()
+    )
+    after = _order_row_only(conn)
+    assert (int(after["max_holding_ms"]), int(after["taker_fee_bps"])) == (1_200_000, 7)
+    assert int(after["must_close_at_ms"]) == NOW + 1_200_000

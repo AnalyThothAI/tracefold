@@ -616,7 +616,8 @@ def _order(*, remote_order_id: str | None = "remote-1") -> PreparedOrder:
         entry_reference=Decimal("10"),
         stop_price=Decimal("9.8"),
         take_profit_price=None,
-        must_close_after_ms=1_800_000,
+        max_holding_ms=1_800_000,
+        taker_fee_bps=5,
         payload={
             "exchangeId": "binance",
             "symbol": "DOGE/USDT:USDT",
