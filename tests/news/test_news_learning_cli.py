@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -908,6 +910,41 @@ def test_a_snapshot_ends_at_the_settlement_grace_and_closes_its_connection_first
     assert seen["now_ms"] == now_ms
     assert seen["connection_open_during_read"] is True
     assert seen["connection_open_during_write"] is False
+
+
+def test_a_non_advance_rerun_clears_an_earlier_candidate_from_the_output_directory() -> None:
+    """#212 review: the output directory is the record of *one* optimization.
+
+    Driving the real writer, not a re-statement of it: an operator reusing `--out` would otherwise end up
+    with this run's rejection report sitting beside a registrable candidate from a previous run, which
+    nothing downstream would catch — that stale candidate is perfectly valid on its own terms.
+    """
+
+    from tracefold.app.cli.commands.news_learning_experiment import write_run_outputs
+
+    def _result(outcome: str, candidate: Any) -> Any:
+        return SimpleNamespace(
+            outcome=outcome,
+            report=SimpleNamespace(model_dump=lambda mode="json": {"outcome": outcome}),
+            candidate=candidate,
+        )
+
+    advanced = _result("ADVANCE", SimpleNamespace(model_dump=lambda mode="json": {"schema_version": "x"}))
+    rejected = _result("REJECTED", None)
+
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory) / "run"
+
+        report_path, candidate_path = write_run_outputs(out, advanced)
+        assert candidate_path is not None and Path(candidate_path).exists()
+        assert report_path.exists()
+
+        report_path, candidate_path = write_run_outputs(out, rejected)
+        assert candidate_path is None
+        assert not (out / "prompt_candidate.json").exists()
+        assert json.loads(report_path.read_text(encoding="utf-8"))["outcome"] == "REJECTED"
+        # 0600, because a run report names the endpoints and the corpus a candidate was built from.
+        assert oct(report_path.stat().st_mode)[-3:] == "600"
 
 
 def test_draft_reviews_takes_its_events_from_a_run_when_told_to() -> None:

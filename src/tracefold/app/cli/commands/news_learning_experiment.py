@@ -258,15 +258,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
             ),
         ),
     )
-    out = Path(str(args.out))
-    out.mkdir(parents=True, exist_ok=True)
-    report_path = out / "optimization_report.json"
-    _write_exact_json(report_path, result.report.model_dump(mode="json"))
-    candidate_path: str | None = None
-    if result.candidate is not None:
-        candidate_file = out / "prompt_candidate.json"
-        _write_exact_json(candidate_file, result.candidate.model_dump(mode="json"))
-        candidate_path = str(candidate_file)
+    report_path, candidate_path = write_run_outputs(Path(str(args.out)), result)
     # Only `ADVANCE` exits 0. `NO_OP` and `REJECTED` are complete, retained answers rather than crashes —
     # but an operator scripting this is asking "did I get a candidate", and the exit code answers that.
     return (0 if result.outcome == "ADVANCE" else 1), {
@@ -282,6 +274,26 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
             "usage": result.report.usage,
         },
     }
+
+
+def write_run_outputs(out: Path, result: Any) -> tuple[Path, str | None]:
+    """Write one optimization's terminal artifacts into the operator's directory.
+
+    The directory is the record of *one* run. An operator reusing `--out` would otherwise end up with a
+    current rejection report sitting beside a registrable candidate from an earlier run — the easiest
+    possible way to register the wrong two instructions, and one nothing downstream would catch, because
+    that stale candidate is perfectly valid on its own terms.
+    """
+
+    out.mkdir(parents=True, exist_ok=True)
+    report_path = out / "optimization_report.json"
+    _write_exact_json(report_path, result.report.model_dump(mode="json"))
+    candidate_file = out / "prompt_candidate.json"
+    if result.candidate is None:
+        candidate_file.unlink(missing_ok=True)
+        return report_path, None
+    _write_exact_json(candidate_file, result.candidate.model_dump(mode="json"))
+    return report_path, str(candidate_file)
 
 
 def _write_exact_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -366,4 +378,4 @@ def _endpoint_identity(endpoint: Any) -> dict[str, Any]:
     }
 
 
-__all__ = ["handle_research"]
+__all__ = ["handle_research", "write_run_outputs"]
