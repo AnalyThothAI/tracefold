@@ -9,15 +9,21 @@ connection or authority to manufacture those identities.
 
 from __future__ import annotations
 
-import math
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ...artifact_identity import canonical_sha
+from ...artifact_identity import (
+    canonical_sha,
+)
+from ...artifact_identity import (
+    reject_nonfinite_json as _reject_nonfinite_json,
+)
+from ...artifact_identity import (
+    reject_secret_material as _reject_secret_material,
+)
 from ...program.artifact import ProgramStrategyPatchV1
 from .sandbox import CompilerSandboxLaunchReceipt
 
@@ -66,33 +72,6 @@ _REQUIRED_RECEIPT_KINDS = frozenset(
         "checkpoint",
         "sandbox_launch",
         "patch",
-    }
-)
-_FORBIDDEN_KEY_PARTS = frozenset(
-    {
-        ("api", "key"),
-        ("authorization",),
-        ("base", "url"),
-        ("credential",),
-        ("credentials",),
-        ("endpoint", "url"),
-        ("header",),
-        ("headers",),
-        ("password",),
-        ("private", "key"),
-        ("secret",),
-    }
-)
-_SECRET_VALUE_PATTERNS = (
-    re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"),
-    re.compile(r"(?i)\b(?:sk|ghp|github_pat|xox[abprs])[-_][a-z0-9_-]{12,}"),
-    re.compile(r"(?i)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-)
-_SAFE_NEGATIVE_ATTESTATIONS = frozenset(
-    {
-        "ambient_credentials_present",
-        "db_credentials_present",
-        "holdout_mounted",
     }
 )
 
@@ -942,46 +921,6 @@ def _model_or_mapping_payload(value: BaseModel | Mapping[str, Any]) -> dict[str,
 
 def _ceil_million(value: int) -> int:
     return (value + 999_999) // 1_000_000
-
-
-def _reject_nonfinite_json(value: Any, *, path: str = "payload") -> None:
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"news_program_compile_nonfinite_value:{path}")
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"news_program_compile_non_string_key:{path}")
-            _reject_nonfinite_json(child, path=f"{path}.{key}")
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(value):
-            _reject_nonfinite_json(child, path=f"{path}[{index}]")
-    elif value is not None and not isinstance(value, (str, int, float, bool)):
-        raise TypeError(f"news_program_compile_non_json_value:{path}:{type(value).__name__}")
-
-
-def _reject_secret_material(value: Any, *, path: str) -> None:
-    if isinstance(value, Mapping):
-        for raw_key, child in value.items():
-            parts = _key_parts(raw_key)
-            safe_negative = str(raw_key) in _SAFE_NEGATIVE_ATTESTATIONS and child is False
-            if not safe_negative and any(_contains_parts(parts, forbidden) for forbidden in _FORBIDDEN_KEY_PARTS):
-                raise ValueError(f"news_program_compile_secret_key:{path}.{raw_key}")
-            _reject_secret_material(child, path=f"{path}.{raw_key}")
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(value):
-            _reject_secret_material(child, path=f"{path}[{index}]")
-    elif isinstance(value, str) and any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS):
-        raise ValueError(f"news_program_compile_secret_value:{path}")
-
-
-def _key_parts(value: object) -> tuple[str, ...]:
-    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(value))
-    return tuple(part for part in re.split(r"[^a-z0-9]+", separated.casefold()) if part)
-
-
-def _contains_parts(parts: tuple[str, ...], forbidden: tuple[str, ...]) -> bool:
-    width = len(forbidden)
-    return any(parts[index : index + width] == forbidden for index in range(len(parts) - width + 1))
 
 
 __all__ = [

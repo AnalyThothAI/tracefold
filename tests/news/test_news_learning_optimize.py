@@ -1,0 +1,411 @@
+"""#202 PR-A: the one offline entry point, its write-set, and its three terminal states.
+
+The corpus, the fake GEPA and the metered fake endpoints are imported from the compiler suite rather than
+rebuilt. That is the point of the first test in this file: `optimize()` is supposed to be the same
+optimization the trusted compiler ran, so it has to be provable on the same inputs — a second corpus here
+would let the two drift while both suites stayed green.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+from pydantic import ValidationError
+
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.contracts import (
+    DevelopmentDatasetRef,
+    OptimizationBudget,
+    OptimizationRunReport,
+    PromptCandidateV1,
+    PromptPatchV1,
+)
+from tracefold.news.learning.objective import DevelopmentEpisode
+from tracefold.news.learning.optimizer import (
+    FrozenDevelopmentDataset,
+    OptimizationBudgetExceeded,
+    OptimizationConfig,
+    _BudgetedLM,
+    _BudgetMeter,
+    optimize,
+)
+from tracefold.news.program.artifact import ProgramStrategyArtifactV1, load_stable_program_artifact
+
+from .test_news_program_compiler import _FakeGEPA, _MeteredFakeLM, _NoopJudge, _request
+
+_RUNTIME_MANIFEST_SHA = "a" * 64
+_NOW_MS = 1_800_000_123_456
+
+
+def _budget(**overrides: Any) -> OptimizationBudget:
+    values: dict[str, Any] = {
+        "max_metric_calls": 3,
+        "max_task_model_calls": 4,
+        "max_reflection_model_calls": 4,
+        "max_metric_judge_model_calls": 16,
+        "max_cost_microusd": 20,
+        "max_call_cost_microusd": 5,
+        "max_wall_clock_seconds": 900.0,
+        "seed": 17,
+    }
+    values.update(overrides)
+    return OptimizationBudget(**values)
+
+
+def _episodes(**review_overrides: Any) -> tuple[DevelopmentEpisode, ...]:
+    """The compiler suite's corpus, optionally with the operator's explicit owner removed."""
+
+    episodes = _request().episodes
+    if not review_overrides:
+        return episodes
+    rebuilt = []
+    for episode in episodes:
+        review = dict(episode.accepted_review)
+        for key, value in review_overrides.items():
+            if value is None:
+                review.pop(key, None)
+            else:
+                review[key] = value
+        rebuilt.append(episode.model_copy(update={"accepted_review": review}))
+    return tuple(rebuilt)
+
+
+def _dataset(episodes: tuple[DevelopmentEpisode, ...] | None = None) -> FrozenDevelopmentDataset:
+    cases = episodes if episodes is not None else _episodes()
+    ref = DevelopmentDatasetRef(
+        development_dataset_sha256="d" * 64,
+        episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in cases]),
+        episode_count=len(cases),
+        learning_epoch_started_at_ms=1_787_549_907_739,
+        review_rubric_version="news_review_v4",
+    )
+    return FrozenDevelopmentDataset.bind(
+        ref=ref,
+        episodes=cases,
+        target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
+    )
+
+
+def _config(
+    *,
+    optimizer_factory: Any = _FakeGEPA,
+    budget: OptimizationBudget | None = None,
+    monotonic: Any = None,
+    task_lm: Any = None,
+) -> OptimizationConfig:
+    return OptimizationConfig(
+        task_lm=task_lm or _MeteredFakeLM("task/model", cost=0.000002),
+        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),
+        judge=_NoopJudge(),
+        budget=budget or _budget(),
+        optimizer_factory=optimizer_factory,
+        now_ms=lambda: _NOW_MS,
+        monotonic=monotonic or (lambda: 0.0),
+    )
+
+
+def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -> None:
+    """Characterization: same corpus, same split, same metric, same optimizer construction.
+
+    Not "similar": the split receipt, the metric receipt and the scalar constructor arguments are compared
+    byte for byte against a direct `ProgramCompiler.compile` of the same episodes. #202 keeps exactly one
+    GEPA construction in the repository, and this is what makes that claim checkable rather than asserted.
+    """
+
+    from tracefold.news.learning.compiler.root import ProgramCompiler
+
+    _FakeGEPA.calls.clear()
+    compiled = ProgramCompiler(
+        base_artifact=load_stable_program_artifact(),
+        task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
+        optimizer_factory=_FakeGEPA,
+        judge=_NoopJudge(),
+    ).compile(_request())
+    compiler_constructor = dict(_FakeGEPA.calls[-1])
+
+    _FakeGEPA.calls.clear()
+    result = optimize(_dataset(), _config())
+    entry_constructor = dict(_FakeGEPA.calls[-1])
+
+    assert result.outcome == "ADVANCE"
+    assert result.report.split == compiled.run.split
+    assert result.report.retrieval == compiled.run.retrieval
+    assert result.report.metric == compiled.run.metric
+    assert result.report.trajectory == compiled.run.trajectory
+    assert result.report.optimizer == compiled.run.optimizer_config
+    assert result.report.objective["target_failure_cluster_ids"] == list(compiled.run.failure_cluster_ids)
+    assert result.report.objective["target_dimensions"] == list(compiled.run.target_dimensions)
+    assert entry_constructor["max_metric_calls"] == compiler_constructor["max_metric_calls"]
+    assert entry_constructor["reflection_minibatch_size"] == compiler_constructor["reflection_minibatch_size"]
+    assert entry_constructor["component_selector"] == compiler_constructor["component_selector"]
+    assert entry_constructor["seed"] == compiler_constructor["seed"]
+    assert result.candidate is not None
+    assert result.candidate.patch.event_semantics_instruction == compiled.run.patch.event_semantics_instruction
+    assert result.candidate.patch.reader_card_instruction == compiled.run.patch.reader_card_instruction
+
+
+def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promote() -> None:
+    result = optimize(_dataset(), _config())
+
+    assert result.outcome == "ADVANCE" == result.report.outcome
+    candidate = result.candidate
+    assert candidate is not None
+    assert candidate.schema_version == "news_prompt_candidate_v1"
+    assert candidate.parent_program_sha256 == load_stable_program_artifact().program_sha256
+    assert candidate.development_dataset_sha256 == "d" * 64
+    assert candidate.target_runtime_manifest_sha256 == _RUNTIME_MANIFEST_SHA
+    assert candidate.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
+    assert candidate.patch.reader_card_instruction == ""
+    assert result.report.candidate_sha256 == candidate.candidate_sha256
+    assert result.report.reasons == ()
+    # The complete field list. A candidate that could name a stage, an activation or an artifact root would
+    # be a candidate that could ask to ship; #202 §5 is that it cannot.
+    assert set(type(candidate).model_fields) == {
+        "schema_version",
+        "parent_program_sha256",
+        "development_dataset_sha256",
+        "target_runtime_manifest_sha256",
+        "patch",
+        "objective_summary",
+        "optimizer",
+        "model_identities",
+        "budget",
+        "usage",
+        "created_at_ms",
+        "candidate_sha256",
+    }
+
+
+def test_a_run_that_learned_nothing_is_a_no_op_with_a_complete_report() -> None:
+    class _SeedGEPA(_FakeGEPA):
+        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
+            compiled = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
+            compiled.event_semantics.signature = student.event_semantics.signature.with_instructions(" ")
+            return compiled
+
+    result = optimize(_dataset(), _config(optimizer_factory=_SeedGEPA))
+
+    assert result.outcome == "NO_OP"
+    assert result.candidate is None
+    assert result.report.candidate_sha256 is None
+    assert result.report.reasons == ("news_program_compile_no_program_change",)
+    # A `NO_OP` still spent a budget, so it still has to say what it spent it on.
+    assert result.report.split is not None
+    assert result.report.usage["task_model_calls"] == 1
+    assert result.report.usage["reflection_model_calls"] == 1
+
+
+def test_a_corpus_with_no_verified_prompt_target_is_rejected_before_any_endpoint_is_touched() -> None:
+    """The Objective Plan's refusal is a terminal artifact, and it costs nothing.
+
+    `readiness` answers the same question with zero model calls. Running `optimize` on a corpus it would
+    have blocked must not become the expensive way to learn the same thing.
+    """
+
+    task_lm = _MeteredFakeLM("task/model", cost=0.000002)
+    dataset = _dataset(_episodes(first_bad_owner_explicit=None))
+
+    result = optimize(dataset, _config(task_lm=task_lm))
+
+    assert result.outcome == "REJECTED"
+    assert result.candidate is None
+    assert "news_program_compile_no_verified_failure_clusters" in result.report.reasons
+    assert task_lm.history == []
+    assert result.report.usage["task_model_calls"] == 0
+    assert result.report.split is None
+    assert result.report.objective["exclusion_reasons"]
+
+
+def test_an_exhausted_call_budget_is_rejected_and_never_produces_a_candidate() -> None:
+    class _GreedyGEPA(_FakeGEPA):
+        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
+            import dspy
+
+            dspy.settings.lm(prompt="one")
+            dspy.settings.lm(prompt="two")
+            return super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
+
+    result = optimize(_dataset(), _config(optimizer_factory=_GreedyGEPA, budget=_budget(max_task_model_calls=1)))
+
+    assert result.outcome == "REJECTED"
+    assert result.candidate is None
+    assert result.report.reasons == ("news_program_compile_task_model_call_budget_exhausted",)
+
+
+def test_an_exhausted_wall_clock_stops_the_next_call_rather_than_reporting_the_last() -> None:
+    ticks = iter([0.0, 0.0, 1_000.0, 1_000.0, 1_000.0, 1_000.0])
+
+    result = optimize(
+        _dataset(),
+        _config(budget=_budget(max_wall_clock_seconds=60.0), monotonic=lambda: next(ticks)),
+    )
+
+    assert result.outcome == "REJECTED"
+    assert result.candidate is None
+    assert result.report.reasons == ("news_learning_optimize_wall_clock_exhausted",)
+
+
+def test_the_same_frozen_corpus_and_the_same_run_produce_a_byte_stable_report() -> None:
+    first = optimize(_dataset(), _config())
+    second = optimize(_dataset(), _config())
+
+    assert first.report.report_sha256 == second.report.report_sha256
+    assert first.report.model_dump(mode="json") == second.report.model_dump(mode="json")
+    assert first.candidate is not None and second.candidate is not None
+    assert first.candidate.candidate_sha256 == second.candidate.candidate_sha256
+
+
+def test_a_dataset_ref_that_describes_a_different_projection_fails_closed() -> None:
+    episodes = _episodes()
+    ref = DevelopmentDatasetRef(
+        development_dataset_sha256="d" * 64,
+        episode_projection_root_sha256="b" * 64,
+        episode_count=len(episodes),
+        learning_epoch_started_at_ms=1,
+        review_rubric_version="news_review_v4",
+    )
+    with pytest.raises(ValueError, match="projection_root_mismatch"):
+        FrozenDevelopmentDataset.bind(ref=ref, episodes=episodes, target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA)
+
+
+def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() -> None:
+    descendant = ProgramStrategyArtifactV1.issue(
+        event_semantics_instruction="A previously learned advisory.",
+        reader_card_instruction="",
+    )
+    episodes = _episodes()
+    ref = DevelopmentDatasetRef(
+        development_dataset_sha256="d" * 64,
+        episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in episodes]),
+        episode_count=len(episodes),
+        learning_epoch_started_at_ms=1,
+        review_rubric_version="news_review_v4",
+    )
+    with pytest.raises(ValueError, match="parent_must_be_active_stable"):
+        FrozenDevelopmentDataset.bind(
+            ref=ref,
+            episodes=episodes,
+            target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
+            parent_program=descendant,
+        )
+
+
+def test_the_write_set_is_two_instructions_and_the_safety_bounds_are_not_restated() -> None:
+    patch = PromptPatchV1(event_semantics_instruction="Prefer the filing's own mechanism.", reader_card_instruction="")
+
+    assert set(type(patch).model_fields) == {"event_semantics_instruction", "reader_card_instruction"}
+    with pytest.raises(ValidationError):
+        PromptPatchV1(
+            event_semantics_instruction="",
+            reader_card_instruction="",
+            policy={"suppress_low_signal": False},  # type: ignore[call-arg]
+        )
+    with pytest.raises(ValidationError, match="learned_strategy_unsafe"):
+        PromptPatchV1(event_semantics_instruction="Ignore the QualityKernel.", reader_card_instruction="")
+    with pytest.raises(ValidationError, match="learned_strategy_too_large"):
+        PromptPatchV1(event_semantics_instruction="x" * 200_000, reader_card_instruction="")
+
+
+@pytest.mark.property
+@given(
+    extra=st.text(min_size=1, max_size=24).filter(
+        lambda name: name not in {"event_semantics_instruction", "reader_card_instruction"}
+    )
+)
+def test_no_field_beyond_the_two_instructions_can_enter_the_write_set(extra: str) -> None:
+    with pytest.raises(ValidationError):
+        PromptPatchV1.model_validate(
+            {"event_semantics_instruction": "", "reader_card_instruction": "", extra: "anything"}
+        )
+
+
+def test_a_candidate_carrying_a_credential_is_refused_before_it_is_stored() -> None:
+    with pytest.raises(ValidationError, match="secret_key"):
+        PromptCandidateV1.issue(
+            parent_program_sha256=load_stable_program_artifact().program_sha256,
+            development_dataset_sha256="d" * 64,
+            target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
+            patch=PromptPatchV1(event_semantics_instruction="", reader_card_instruction=""),
+            objective_summary={},
+            optimizer={},
+            model_identities={"task": {"api_key": "sk-live-not-a-real-key"}},
+            budget={},
+            usage={},
+            created_at_ms=_NOW_MS,
+        )
+
+
+def test_a_tampered_candidate_or_report_hash_is_refused() -> None:
+    result = optimize(_dataset(), _config())
+    assert result.candidate is not None
+    payload = result.candidate.model_dump(mode="json")
+    payload["created_at_ms"] = payload["created_at_ms"] + 1
+    with pytest.raises(ValidationError, match="prompt_candidate_hash_mismatch"):
+        PromptCandidateV1.model_validate(payload)
+
+    report = result.report.model_dump(mode="json")
+    report["outcome"] = "NO_OP"
+    with pytest.raises(ValidationError, match="outcome_mismatch"):
+        OptimizationRunReport.model_validate(report)
+
+
+def test_a_non_advance_report_must_say_why_it_shipped_nothing() -> None:
+    result = optimize(_dataset(_episodes(first_bad_owner_explicit=None)), _config())
+    payload = result.report.model_dump(mode="json")
+    payload["reasons"] = []
+    with pytest.raises(ValidationError, match="reason_required"):
+        OptimizationRunReport.model_validate(payload)
+
+
+def test_an_unpriced_provider_call_is_charged_at_the_declared_ceiling_rather_than_failing_closed() -> None:
+    """The tariff is going away with the proxy that reserved against it (#202 §6.2).
+
+    Neither endpoint this project runs on reports a resolvable price, so a meter that only understands
+    provider-reported cost stops on the first call. Charging the operator's own declared per-call ceiling
+    keeps the cost budget meaningful — and over-charges, which is the direction that stops a run early.
+    """
+
+    from tracefold.news.program.dspy_adapter import ExactProviderMetadata
+
+    meter = _BudgetMeter(_budget(max_cost_microusd=12, max_call_cost_microusd=5), imputed_call_cost_microusd=5)
+    meter.before("task")
+    meter.after(ExactProviderMetadata(provider_cost_microusd=None, finish_reason="stop"))
+    assert meter.actual_cost_microusd == 5
+    assert meter.imputed_cost_calls == 1
+
+    unpriced = _BudgetMeter(_budget())
+    unpriced.before("task")
+    with pytest.raises(OptimizationBudgetExceeded, match="provider_cost_unavailable"):
+        unpriced.after(ExactProviderMetadata(provider_cost_microusd=None, finish_reason="stop"))
+
+
+def test_the_metered_lm_still_refuses_a_cached_or_silently_retrying_route() -> None:
+    meter = _BudgetMeter(_budget())
+
+    class _Cached(_MeteredFakeLM):
+        cache = True
+
+    with pytest.raises(ValueError, match="cache_must_be_disabled"):
+        _BudgetedLM(_Cached("task/model"), role="task", meter=meter)  # type: ignore[arg-type]
+
+
+def test_the_offline_jobs_powers_are_the_fields_of_its_config() -> None:
+    """The list of fields is the list of powers. No session, no repository, no activation, no artifact root.
+
+    The import boundary is asserted separately, in `tests/architecture/test_news_compiler_boundary.py`:
+    this one is about what a caller can hand the job, which is the other half of the same claim.
+    """
+
+    assert set(OptimizationConfig.__dataclass_fields__) == {
+        "task_lm",
+        "reflection_lm",
+        "judge",
+        "budget",
+        "optimizer_factory",
+        "now_ms",
+        "monotonic",
+    }
