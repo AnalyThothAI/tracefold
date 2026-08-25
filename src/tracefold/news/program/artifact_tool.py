@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from ..artifact_identity import canonical_json
-from ..program.artifact import (
+from .artifact import (
     ProgramStrategyArtifactCodec,
     ProgramStrategyArtifactV1,
     build_code_owned_program_artifact,
 )
-from ..program.runtime import PROGRAM_SCHEMA_VERSION
+from .runtime import PROGRAM_SCHEMA_VERSION
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

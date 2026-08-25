@@ -153,6 +153,11 @@ def test_dspy_is_confined_to_model_implementation_families() -> None:
     allowed_roots = (
         NEWS_ROOT / "program",
         NEWS_ROOT / "learning",
+        # #202 §4.3. The review plane acquires human truth; the drafter is the one thing in it that asks a
+        # model first, so a person has a rubric to accept or rewrite rather than a blank form. The companion
+        # test below keeps that to the one module — a ReviewDesk that could call a model would be a desk
+        # that could manufacture its own Gold.
+        NEWS_ROOT / "review",
         SRC / "trading" / "decision",
         SRC / "app" / "workers" / "wiring",
     )
@@ -162,6 +167,12 @@ def test_dspy_is_confined_to_model_implementation_families() -> None:
         if "dspy" in _imported_roots(path) and not any(root in path.parents for root in allowed_roots)
     ]
     assert offenders == []
+
+
+def test_only_the_drafter_may_call_a_model_inside_the_review_plane() -> None:
+    review = NEWS_ROOT / "review"
+    callers = {path.name for path in review.rglob("*.py") if "dspy" in _imported_roots(path)}
+    assert callers == {"drafter.py"}
 
 
 def test_semantic_judge_contract_has_public_locality() -> None:

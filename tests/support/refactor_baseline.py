@@ -36,7 +36,6 @@ from tracefold.news.learning.compiler.security import (
     PROXY_EXECUTION_SCHEMA,
 )
 from tracefold.news.learning.metric import METRIC_ID
-from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.models import TRIAGE_POLICY_VERSION, ReaderReceipt, TriageVerdict
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.program.artifact import load_stable_program_artifact, render_predictor_instruction
@@ -58,6 +57,7 @@ from tracefold.news.program.runtime import (
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
 )
+from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
 from tracefold.platform.config.models import Settings

@@ -6,7 +6,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news.learning.review import (
+from tracefold.news.market_review.pricing import REVIEW_DEFAULT_HOURS, REVIEW_MAX_HOURS
+from tracefold.news.review.desk import (
     BlindPairwiseSubmission,
     DeskQuery,
     EventRubricSubmission,
@@ -15,7 +16,6 @@ from tracefold.news.learning.review import (
     ReviewDesk,
     TaskRef,
 )
-from tracefold.news.market_review.pricing import REVIEW_DEFAULT_HOURS, REVIEW_MAX_HOURS
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest, ApiConflict

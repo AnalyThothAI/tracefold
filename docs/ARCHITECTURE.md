@@ -313,15 +313,17 @@ tracefold.news
     instruments.py / pricing.py  instrument and quote/reaction domain contracts
     loops.py           the two cold polling loops and their one-slot DB lane
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
-  review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  learning/           content-addressed program_v7 datasets, reviews, compiler, and stable/candidate evaluation
+  review/
+    desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
+    drafter.py        model-proposed rubrics a human accepts or rewrites; writes a file, never the DB
+  learning/           content-addressed program_v7 datasets, compiler, and stable/candidate evaluation
   learning/objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or must exclude
   learning/compiler/gepa.py  the one bounded GEPA run, shared by the trusted compiler and the fast loop
   learning/experiment/       operator run directories: frozen window, arm comparison, unpromotable proposal
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
-  program/            SemanticJudge, DSPy Program artifacts/adapters, and code-owned quality baseline
+  program/            SemanticJudge, DSPy Program artifacts/adapters, code-owned quality baseline, artifact_tool
   delivery.py / control.py  cards, control commands
   pipeline/
     admission.py      the atomic Deduper transaction and raw-queue consumer

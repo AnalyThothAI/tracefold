@@ -25,6 +25,12 @@ from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.runtime import PROGRAM_FACTORY_ID
+from ..review.desk import (
+    READER_CONTRACT_SHA256,
+    READER_CONTRACT_VERSION,
+    REVIEW_RUBRIC_VERSION,
+    REVIEW_RUBRIC_VERSIONS,
+)
 from .compiler.security import CompileRecordV1, validate_compile_record
 from .contracts import (
     LEARNING_EPOCH,
@@ -55,12 +61,6 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
     _recording_verification_roots,
-)
-from .review import (
-    READER_CONTRACT_SHA256,
-    READER_CONTRACT_VERSION,
-    REVIEW_RUBRIC_VERSION,
-    REVIEW_RUBRIC_VERSIONS,
 )
 
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
