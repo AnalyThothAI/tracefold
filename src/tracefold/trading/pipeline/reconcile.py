@@ -144,7 +144,15 @@ class ReconcileRunner:
     async def _reconcile(self, row: dict[str, Any], *, control: str, now: int) -> bool:
         order_id = str(row["order_id"])
         state = str(row["state"])
-        row = await self._ensure_execution_snapshot(row, now=now)
+        if row.get("max_holding_ms") is None or row.get("taker_fee_bps") is None:
+            # A pre-#209 row whose exit policy the migration could not prove: it never opened a
+            # position, so no `must_close_at_ms` records the budget that governed it, and nothing in
+            # the database says what `max_holding_seconds` was when it was approved. Reading today's
+            # configuration for it is the drift #209 closes, so it goes to the drain every other
+            # unprovable outcome uses. This runs before `_order_from_row` on purpose — building the
+            # frozen intent from a row that has no frozen exit policy is the thing to avoid.
+            await self._escalate(order_id, "legacy_execution_snapshot_missing", now)
+            return True
         order = _order_from_row(row)
 
         if state in (OrderState.AMBIGUOUS.value, OrderState.RECONCILING.value):
@@ -275,51 +283,6 @@ class ReconcileRunner:
 
         await self._defer(order_id, state, now)
         return False
-
-    async def _ensure_execution_snapshot(self, row: dict[str, Any], *, now: int) -> dict[str, Any]:
-        """Give one pre-#209 active order its exit-policy snapshot before anything reads the row.
-
-        Orders written before the snapshot columns existed carry no `max_holding_ms` and no
-        `taker_fee_bps`. Reading today's configuration for them every turn is exactly the drift #209
-        closes, and refusing to manage them would leave an open position with no clock exit. So the
-        first turn that meets one freezes the configuration then in force, records that as its own
-        `legacy_runtime_snapshot` observation — the row then says which numbers governed it and nobody
-        has to reconstruct them from a deploy history — and every later turn reads the row.
-        """
-
-        if row.get("max_holding_ms") is not None and row.get("taker_fee_bps") is not None:
-            return row
-        order_id = str(row["order_id"])
-        requested_holding = int(self._config.order.max_holding_ms)
-        requested_fee = int(self._config.order.taker_fee_bps)
-
-        def _freeze(repos: Any) -> tuple[int, int]:
-            frozen: tuple[int, int] = repos.trading.freeze_legacy_execution_snapshot(
-                order_id=order_id,
-                max_holding_ms=requested_holding,
-                taker_fee_bps=requested_fee,
-                now_ms=now,
-            )
-            content = {
-                "schema": "tracefold.trading.legacy_runtime_snapshot.v1",
-                "max_holding_ms": frozen[0],
-                "taker_fee_bps": frozen[1],
-                "frozen_at_ms": int(now),
-            }
-            repos.trading.record_observation(
-                order_id=order_id,
-                observation_kind="legacy_runtime_snapshot",
-                content_sha256=canonical_sha256(content),
-                content=content,
-                now_ms=now,
-            )
-            return frozen
-
-        holding, fee = await self._db.tx(
-            "trading_legacy_execution_snapshot", _freeze, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS
-        )
-        log.info("trading froze a legacy execution snapshot order=%s max_holding_ms=%s", order_id, holding)
-        return {**row, "max_holding_ms": holding, "taker_fee_bps": fee}
 
     async def _commit(
         self,

@@ -228,40 +228,6 @@ class OrderStorage:
         # The counter is free but the row is not in a state this leg may be claimed from.
         return "wrong_state"
 
-    def freeze_legacy_execution_snapshot(
-        self, *, order_id: str, max_holding_ms: int, taker_fee_bps: int, now_ms: int
-    ) -> tuple[int, int]:
-        """Freeze the running exit policy onto one pre-#209 active order, and only if it has none.
-
-        Rows created before the snapshot columns existed carry neither number. Reading today's
-        configuration for them on every turn is the drift #209 closes, and refusing to manage them
-        would strand an open position outside the clock exit — so the first turn that meets one writes
-        the configuration then in force and every later turn reads the row like any other order. The
-        `coalesce` plus the NULL predicate is what makes that a one-time write: a second caller cannot
-        move a snapshot that already exists, and the effective pair is returned either way.
-        """
-
-        row = self.conn.execute(
-            """
-            UPDATE trading_orders
-               SET max_holding_ms = coalesce(max_holding_ms, %s),
-                   taker_fee_bps = coalesce(taker_fee_bps, %s),
-                   updated_at_ms = %s
-             WHERE order_id = %s
-               AND (max_holding_ms IS NULL OR taker_fee_bps IS NULL)
-         RETURNING max_holding_ms, taker_fee_bps
-            """,
-            (int(max_holding_ms), int(taker_fee_bps), int(now_ms), order_id),
-        ).fetchone()
-        if row is None:
-            row = self.conn.execute(
-                "SELECT max_holding_ms, taker_fee_bps FROM trading_orders WHERE order_id = %s",
-                (order_id,),
-            ).fetchone()
-        if row is None or row["max_holding_ms"] is None or row["taker_fee_bps"] is None:
-            return (int(max_holding_ms), int(taker_fee_bps))
-        return (int(row["max_holding_ms"]), int(row["taker_fee_bps"]))
-
     def release_exit_attempt(self, *, order_id: str, now_ms: int) -> bool:
         """Let the exit be attempted again after the prior close is proven terminal with no fill.
 

@@ -1596,12 +1596,21 @@ already-approved order took its holding deadline from whatever
 whatever taker fee was in force at close time. `trading_orders.max_holding_ms`
 and `trading_orders.taker_fee_bps` are written in the same transaction as the
 intent they govern, and the reconciler reads the row. A configuration edit
-changes the next order and never an approved one. Both columns are nullable
-because terminal history is not backfilled; the one shape that can still be met
-— an active order written before the columns existed — is frozen once at its next
-reconcile turn against the configuration then in force and recorded as a
-`legacy_runtime_snapshot` observation, so the row says which numbers governed it
-instead of leaving it to a deploy history.
+changes the next order and never an approved one.
+
+Both columns are nullable, and what fills them for a pre-#209 row is decided by
+what the database can prove rather than by what is convenient. `taker_fee_bps`
+is backfilled to 5 on every active row: it is not and has never been a
+configuration key, so that is the only value any `realized_bps` was ever charged
+at. `max_holding_ms` is backfilled to `must_close_at_ms -
+position_opened_at_ms` wherever both exist, because `promote_acknowledged`
+writes that pair in one statement and their difference *is* the budget that
+governed the row. Terminal history is not backfilled at all. What is left is an
+active order that never opened a position: nothing records what
+`max_holding_seconds` was when it was approved, so the reconciler refuses to
+manage it and sends it to `MANUAL_REVIEW_REQUIRED` as
+`legacy_execution_snapshot_missing` — the same drain every other unprovable
+outcome uses — rather than quietly applying whatever the deploy left in place.
 
 **What a paper exit proves, and what it does not.** Paper prices its exits off
 **closed bars, and only their close**. It does not simulate the intrabar path, so
@@ -1610,12 +1619,17 @@ it does not simulate spread, contract precision, partial fills, position mode or
 externally-created orders. `take_profit_bps` defaults to `0`, which disables that
 exit entirely — a default paper run demonstrates the stop and the clock, and
 calling it a take-profit proof would describe a branch the deployed configuration
-never enters. `make trading-smoke` drives all three exits — stop, explicitly
-enabled take-profit, and max-holding — end to end on real PostgreSQL to
-`CLOSED` and flat, with exactly one entry write and one close write each. What
+never enters. `make trading-smoke` selects the `test_paper_exit_acceptance_*`
+cases. Three of them drive one exit each — stop, explicitly enabled take-profit,
+max-holding — end to end on real PostgreSQL to `CLOSED` and flat with exactly
+one entry write and one close write. The rest cover the snapshot itself: that an
+approved order keeps its deadline and its fee across a restart under a new
+configuration, and that an active pre-#209 row is refused rather than
+re-governed. What
 that establishes is the execution kernel, the durable ledger and the state
-machine. It is not a backtest, not a profitability claim, and not evidence about
-a real venue or real funds.
+machine. It is a focused lane, not a substitute for `make test-evidence`; it is
+not a backtest, not a profitability claim, and not evidence about a real venue or
+real funds.
 
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the

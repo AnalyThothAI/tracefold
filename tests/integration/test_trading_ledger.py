@@ -3493,12 +3493,13 @@ def _assert_closed_and_flat(
     # The ledger's own record of how many times each leg was written, independent of the adapter.
     assert (int(row["provider_attempt_count"]), int(row["exit_attempt_total"])) == (1, 1)
 
-    trading = _repos(conn).trading
-    assert trading.active_underlyings() == []
-    # Nothing left to do: a nonterminal row that stayed due would hold the slot and re-enter the loop.
-    assert trading.due_orders(now_ms=closed_at_ms + 86_400_000) == []
     states = {str(item["state"]) for item in conn.execute("SELECT state FROM trading_orders").fetchall()}
     assert states == {"CLOSED"}
+    # Flat at the *venue*, not merely terminal in the ledger. `active_underlyings` and `due_orders`
+    # both filter on `ACTIVE_ORDER_STATES` and `CLOSED` is terminal, so asserting them here would only
+    # restate the line above; the simulated book is the one thing that can disagree with it. A close
+    # that acknowledged without taking effect leaves the position in `remote`.
+    assert adapter.remote == {}
 
 
 def test_paper_exit_acceptance_stop_loss_reaches_closed_and_flat(conn) -> None:
@@ -3608,60 +3609,106 @@ def test_paper_exit_acceptance_deadline_survives_a_restart_under_a_new_configura
     assert (adapter.submits, adapter.closes) == (0, 1)
 
 
-def test_paper_exit_acceptance_freezes_a_pre_snapshot_order_once_and_records_it(conn) -> None:
-    """The one legacy row shape the snapshot columns can meet, and what happens to it.
+@pytest.mark.parametrize("state", ["ACKNOWLEDGED", "APPROVED", "OPEN"])
+def test_paper_exit_acceptance_refuses_a_pre_snapshot_order_instead_of_re_governing_it(conn, state: str) -> None:
+    """The one legacy shape the migration cannot answer for, and what happens to it.
 
-    Terminal history is not backfilled, so an active order written before #209 carries neither number.
-    Reading today's configuration for it every turn is the drift this issue closes and refusing to
-    manage it would leave a position with no clock exit — so the first turn freezes what is in force,
-    says so in the observation ledger, and every later turn reads the row like any other order.
+    An active order that never opened a position has no provable holding budget — nothing records what
+    `max_holding_seconds` was when it was approved. Reading today's configuration for it is exactly
+    the drift #209 closes, so the reconciler refuses to manage it and uses the drain every other
+    unprovable outcome uses. Nothing about the row is rewritten on the way there: an `APPROVED` row's
+    `updated_at_ms` is its durable approval instant, and a snapshot write that moved it could carry a
+    live entry past its own approval TTL.
     """
 
     _case(conn, case_id="c1", source_key="k1")
-    # `binance`, not `paper`: the pipeline records the venue the case actually routed to, and the
-    # paper adapter's native-protection proof is typed to a real venue.
-    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="binance", state="ACKNOWLEDGED")
-    # The exact pre-#209 row: a durable paper acknowledgement, no snapshot, no deadline yet.
+    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="binance", state=state)
     conn.execute(
         "UPDATE trading_orders SET max_holding_ms = NULL, taker_fee_bps = NULL, must_close_at_ms = NULL, "
-        "remote_order_id = 'paper-o1', provider_attempt_count = 1"
+        "remote_order_id = 'paper-o1', provider_attempt_count = 1 WHERE order_id = 'o1'"
     )
     conn.commit()
 
-    config = _config(order=OrderPolicy(max_holding_ms=1_200_000, taker_fee_bps=7))
     adapter = _CountedPaperAdapter()
     asyncio.run(
         ReconcileRunner(
             db=_DirectDb(conn),
-            config=config,
+            config=_config(order=OrderPolicy(max_holding_ms=1_200_000, taker_fee_bps=7)),
             bars=lambda _venue: None,
             adapter=adapter,
-            clock=lambda: NOW,
+            clock=lambda: NOW + MINUTE,
         ).turn()
     )
 
     row = _order_row_only(conn)
-    assert (int(row["max_holding_ms"]), int(row["taker_fee_bps"])) == (1_200_000, 7)
-    assert int(row["must_close_at_ms"]) == NOW + 1_200_000
-    frozen = [
-        item
-        for item in _repos(conn).trading.observations(order_id="o1")
-        if item["observation_kind"] == "legacy_runtime_snapshot"
-    ]
-    assert len(frozen) == 1
-    assert frozen[0]["content"]["max_holding_ms"] == 1_200_000
-    assert frozen[0]["content"]["taker_fee_bps"] == 7
+    assert row["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert row["state_reason"] == "legacy_execution_snapshot_missing"
+    # Refused, not re-governed: no configuration reached the row and no exit was computed from one.
+    assert (row["max_holding_ms"], row["taker_fee_bps"], row["must_close_at_ms"]) == (None, None, None)
+    assert (adapter.submits, adapter.closes) == (0, 0)
+    # It keeps the underlying blocked, and `tracefold trading resolve` is the operator's way out.
+    assert _repos(conn).trading.active_underlyings() == ["crypto:DOGE"]
 
-    # A later turn under a different configuration reads the row, not the configuration.
+
+def test_a_live_order_keeps_its_own_deadline_and_fee_across_a_redeploy(conn) -> None:
+    """#209 on the lane where real funds move, with the row and the configuration deliberately apart.
+
+    Every other live test runs with `_order()`'s snapshot equal to `_config()`'s policy, so the two
+    switched call sites on the live path — the promotion deadline and the realised return — would pass
+    identically if they still read the running configuration.
+    """
+
+    approved = OrderPolicy(
+        fixed_notional_usd=Decimal("10"),
+        max_holding_ms=900_000,
+        max_open_underlyings=1,
+        max_orders_per_day=1,
+    )
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter, config=_live_config(order=approved))
+    assert (int(row["max_holding_ms"]), int(row["taker_fee_bps"])) == (900_000, 5)
+    adapter.observations = [_live_position_observation(row)]
+    _approve_live(conn, row)
+
+    # The process comes back under a configuration that would both shorten the hold to a minute and
+    # charge fifty times the fee.
+    redeployed = _live_config(
+        order=OrderPolicy(
+            fixed_notional_usd=Decimal("10"),
+            max_holding_ms=60_000,
+            taker_fee_bps=250,
+            max_open_underlyings=1,
+            max_orders_per_day=1,
+        )
+    )
+    del config
     asyncio.run(
         ReconcileRunner(
-            db=_DirectDb(conn),
-            config=_config(order=OrderPolicy(max_holding_ms=60_000, taker_fee_bps=99)),
-            bars=lambda _venue: None,
-            adapter=adapter,
-            clock=lambda: NOW + 60_000,
+            db=_DirectDb(conn), config=redeployed, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
         ).turn()
     )
-    after = _order_row_only(conn)
-    assert (int(after["max_holding_ms"]), int(after["taker_fee_bps"])) == (1_200_000, 7)
-    assert int(after["must_close_at_ms"]) == NOW + 1_200_000
+    opened = _order_row(conn, str(row["order_id"]))
+    assert opened["state"] == "OPEN"
+    assert int(opened["must_close_at_ms"]) == NOW + 900_000
+
+    adapter.observations = [
+        ExecutionObservation(
+            state="CLOSED",
+            observed_at_ms=NOW + 91_000,
+            remote_order_id=f"remote-{row['order_id']}",
+            first_fill_at_ms=NOW,
+            closed_at_ms=NOW + 62_000,
+            average_price=Decimal("9.9"),
+            exit_price=Decimal("10.1"),
+            evidence={"provider": "opentrade", "closed": True},
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=redeployed, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 91_001
+        ).turn()
+    )
+    closed = _order_row(conn, str(row["order_id"]))
+    assert closed["state"] == "CLOSED"
+    # 202.0 bps gross, minus both legs at the frozen 5 bps. At the redeployed 250 it would be -298.
+    assert int(closed["realized_bps"]) == 192

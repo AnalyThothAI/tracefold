@@ -127,6 +127,7 @@ instruction, and the empty demo section left with the DemoBank family.
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
 | `make test` / `make test-fast` | default AI/developer loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
+| `make trading-smoke` | the #209 paper exit acceptance contract | the `test_paper_exit_acceptance_*` cases on real PostgreSQL | everything else; it is a subset of `make test-integration`, never merge evidence on its own |
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | default loop |
 | `make test-e2e` | cross-process system evidence | real service topology and end-to-end paths | default loop |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD or fail-closed evidence claims |
@@ -279,7 +280,8 @@ uv run pytest -q \
 Tests that need PostgreSQL declare the explicit `postgres_dsn` fixture; their
 directory is not a resource trigger. `make test-integration`, `make
 test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, and `make
-test-external-codegen` expose the larger lanes. `make test-all` remains a local
+test-external-codegen` expose the larger lanes; `make trading-smoke` is a named
+subset of the integration lane and never evidence on its own. `make test-all` remains a local
 complete-suite convenience. `make test-evidence` is the canonical
 merge/release entry, runs every deterministic lane with fail-closed resource
 and outcome checks, and includes frontend validation.

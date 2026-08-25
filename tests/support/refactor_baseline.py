@@ -83,7 +83,7 @@ from tracefold.trading.contracts import (
 from tracefold.trading.decision.policy import decide as trading_decide
 from tracefold.trading.decision.policy import side_to_order_side
 from tracefold.trading.decision.regime import assess, pre_move_bps
-from tracefold.trading.execution.order import SizedOrder, build_payload, size_order
+from tracefold.trading.execution.order import DEFAULT_ORDER_POLICY, SizedOrder, build_payload, size_order
 from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
 from tracefold.trading.pipeline.root import build_pipeline
 from tracefold.trading.pipeline.runtime import TradingConfig
@@ -845,8 +845,12 @@ def _trading_order(
         entry_reference=sized.entry_reference,
         stop_price=sized.stop_price,
         take_profit_price=sized.take_profit_price,
-        max_holding_ms=1_800_000,
-        taker_fee_bps=5,
+        # From the policy, not a literal. `taker_fee_bps` has no configuration surface, so
+        # `DEFAULT_TAKER_FEE_BPS` is the single source of the number frozen onto every order row and
+        # charged on both legs of every realised return — exactly the kind of leaf this guard exists
+        # to make someone declare when it moves.
+        max_holding_ms=DEFAULT_ORDER_POLICY.max_holding_ms,
+        taker_fee_bps=DEFAULT_ORDER_POLICY.taker_fee_bps,
         payload=payload,
     )
     return model_decision, outcome, order
