@@ -113,11 +113,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if prompt.development_dataset_sha256 != str(args.development):
                 raise ValueError("news_learning_register_dataset_mismatch")
             candidate_artifact = apply_program_patch(parent, prompt.patch.applied_to(parent))
+            from tracefold.news.learning.dataset import DevelopmentDatasetStore
+
             with postgres_connection(settings, role="serve") as export_conn:
-                export = CandidateEvaluator(
+                export = DevelopmentDatasetStore(
                     export_conn,
                     stable=stable,
-                    judges={},
                 ).development_compile_export(str(args.development))
             plan = build_gepa_objective_plan(
                 tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from typing import Any
 
 from tracefold.app.query_audit import query_audit_for_connection
@@ -14,7 +15,7 @@ from tracefold.platform.postgres.client import (
 from tracefold.platform.postgres.migrations import latest_migration_version, upgrade_head
 
 
-def handle_db(args: object) -> tuple[int, dict[str, Any]]:
+def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     if args.db_command == "migrate":
         dsn = local_docker_host_dsn(
