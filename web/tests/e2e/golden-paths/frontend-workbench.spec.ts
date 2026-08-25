@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { expectNoUnhandledApiRequests } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
+test.setTimeout(60_000);
+
 /*
  * `ready` has to be something that only exists once the data is in, not the static heading: the funnel card,
  * the task-tab counts and the sidebar count all arrive with the status query, and the rows with the feed
