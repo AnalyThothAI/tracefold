@@ -133,15 +133,91 @@ FORBIDDEN_IN_WORKERS = (
 )
 
 
-def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> None:
-    """A fresh interpreter, because `sys.modules` in a test session has already loaded half the repo.
+def _module_file(module: str) -> Path | None:
+    """The first-party file a dotted module name refers to, or None for a third-party one."""
 
-    What the online route legitimately loads is `dspy` — it *runs* a DSPy Program, and dspy's own package
-    pulls `dspy.teleprompt`, and that pulls `gepa`. That is the optimizer library, not this repository's
-    optimizer, and nothing in the worker can start a run with it. What must stay out is ours: the offline
-    entry point, the baseline harness, the release evaluator, the semantic judge, recording replay, the
-    review drafter and the research package. `learning.canary` and `learning.contracts` are in, and belong
-    in — arming, tripping and validating an image-carried candidate is online release control.
+    if not module.startswith("tracefold."):
+        return None
+    relative = Path(*module.split(".")[1:])
+    for candidate in (SRC / relative.with_suffix(".py"), SRC / relative / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _every_import(path: Path) -> set[str]:
+    """Every module this file names, at any depth — including inside a function body.
+
+    `ast.walk`, not `tree.body`, and that is the whole point: `app/workers/wiring/news.py` already imports
+    `learning.canary` from inside `_wire_news_pipeline`, so a boundary that only reads top-level imports
+    would miss exactly the pattern this codebase actually uses to defer a heavy import.
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    package = list(path.relative_to(SRC.parent).with_suffix("").parts[:-1])
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                modules.add(str(node.module or ""))
+                continue
+            base = package[: len(package) - node.level + 1]
+            modules.add(".".join([*base, *(str(node.module).split(".") if node.module else [])]))
+    return modules
+
+
+def _worker_import_closure() -> set[str]:
+    """Everything the online worker can reach, following first-party imports transitively."""
+
+    roots = [SRC / "app" / "workers" / "root.py", *sorted((SRC / "app" / "workers" / "wiring").glob("*.py"))]
+    seen: set[str] = set()
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        for module in _every_import(current):
+            if module in seen:
+                continue
+            seen.add(module)
+            child = _module_file(module)
+            if child is not None:
+                stack.append(child)
+    return seen
+
+
+def test_the_online_worker_can_never_reach_the_offline_learning_plane() -> None:
+    """Two measurements of one claim, because each catches what the other cannot.
+
+    The static half follows every import at any depth, transitively — a lazy import inside
+    `_wire_news_pipeline` reaches the optimizer exactly as surely as a top-level one, and this codebase
+    already defers heavy imports that way. The process half below then catches what a source read cannot:
+    a dynamic import, or a module pulled in by something the walk resolved as third-party.
+
+    What the online route legitimately reaches is `dspy` — it *runs* a DSPy Program, and dspy's own package
+    pulls `dspy.teleprompt`, which pulls `gepa`. That is the optimizer library, not this repository's
+    optimizer, and nothing in the worker can start a run with it. `learning.canary` and `learning.contracts`
+    are in and belong in: arming, tripping and validating an image-carried candidate is release control,
+    and it is online by nature.
+    """
+
+    reachable = _worker_import_closure()
+    learning = {m for m in reachable if m.startswith(("tracefold.news.learning", "tracefold.news.review"))}
+
+    assert not (learning & set(FORBIDDEN_IN_WORKERS)), sorted(learning & set(FORBIDDEN_IN_WORKERS))
+    # Named, not merely bounded: a new learning module reaching the online graph is a decision someone
+    # makes here rather than one that arrives with an unrelated import.
+    assert learning == {
+        "tracefold.news.learning.canary",
+        "tracefold.news.learning.contracts",
+    }, sorted(learning)
+
+
+def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> None:
+    """The dynamic half: a fresh interpreter, because a test session has already loaded half the repo.
+
+    Weaker than the static walk above — it sees only module-level imports — and kept beside it because it
+    is the only one that would notice an `importlib` call or a plugin hook, which no source read resolves.
     """
 
     probe = (
@@ -156,13 +232,6 @@ def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> N
     loaded = set(json.loads(completed.stdout.strip().splitlines()[-1]))
 
     assert not (loaded & set(FORBIDDEN_IN_WORKERS)), sorted(loaded & set(FORBIDDEN_IN_WORKERS))
-    # Named, not merely bounded: a new learning module reaching the online graph is a decision someone
-    # makes here rather than one that arrives with an unrelated import.
-    assert loaded == {
-        "tracefold.news.learning",
-        "tracefold.news.learning.canary",
-        "tracefold.news.learning.contracts",
-    }
 
 
 BUSINESS_WRITE_SQL_RE = re.compile(
