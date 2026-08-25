@@ -408,9 +408,9 @@ port it needs from the process — `NewsDatabasePort`, `MarketReviewDatabasePort
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v3` and Trading's own candidate
+row contracts, News's `news_trade_projection_v5` and Trading's own candidate
 input rows, translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner. Version 3 publishes
+either side fails at the seam rather than inside a runner. Version 5 publishes
 three independent lanes: editorial News, deterministic OI, and typed
 liquidation facts. The mapper never turns one into another.
 
