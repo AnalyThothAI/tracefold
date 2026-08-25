@@ -29,7 +29,6 @@ import {
 } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
-import { NewsHealthPill } from "../chrome/NewsHealthPill";
 import { NewsEventDrawer } from "../detail/NewsEventDrawer";
 
 import { NewsEventRow } from "./NewsEventRow";
@@ -113,8 +112,12 @@ export function NewsFeedPage({ token }: { token: string }) {
   const groups = groupByHour(events);
   return (
     <NewsPageShell archetype="scan" className="news-feed-shell" label="新闻事件流">
+      {/*
+       * The pipeline health pill used to sit here. It is the topbar lamp now (#207): the same "only when it
+       * is not ok" rule, but on every page instead of this one, and two pills on one screen saying the same
+       * thing is one of them the reader learns to skip.
+       */}
       <NewsPageHeader subtitle="每条新闻的判定与去向，动作都在详情页。" title="新闻事件流">
-        <NewsHealthPill error={statusQuery.isError} status={statusQuery.data} />
         {statusQuery.data ? (
           <NewsPageStamp>
             更新于 {absoluteTime(statusQuery.data.measured_at_ms).slice(11)}

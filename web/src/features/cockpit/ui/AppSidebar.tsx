@@ -1,28 +1,29 @@
+import { BrandMark } from "@shared/ui/icons";
 import { Link, useLocation } from "react-router-dom";
 
 import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
-export type AppNavigationCounts = { events?: number };
-/** The one signal a destination may carry besides its count: how the pipeline behind it is doing. */
-export type AppNavigationLevel = "ok" | "warn" | "bad";
+export type AppNavigationCounts = { events?: number; oiFrames?: number };
 
 /**
  * The console's navigation, in the frame at desktop width and inside the tablet drawer below it. One
  * component for both, so the two presentations cannot disagree about what exists or which one is current.
  *
  * `onNavigate` is how the drawer closes itself: the in-frame sidebar passes nothing and stays put.
+ *
+ * Pipeline health used to ride here as a dot on the 流水线状态 entry. It moved to the topbar (#207): the
+ * dot was visible only while the sidebar was, which is neither of the two narrower frames, and it could say
+ * that something was wrong without saying what.
  */
 export function AppSidebar({
   counts,
   inDrawer = false,
   onNavigate,
-  statusLevel,
 }: {
   counts?: AppNavigationCounts;
   inDrawer?: boolean;
   onNavigate?: () => void;
-  statusLevel?: AppNavigationLevel;
 }) {
   return (
     <aside
@@ -31,7 +32,7 @@ export function AppSidebar({
       data-in-drawer={inDrawer || undefined}
     >
       {inDrawer ? null : <AppBrand />}
-      <AppNavigation counts={counts} onNavigate={onNavigate} statusLevel={statusLevel} />
+      <AppNavigation counts={counts} onNavigate={onNavigate} />
     </aside>
   );
 }
@@ -40,9 +41,7 @@ export function AppSidebar({
 export function AppBrand() {
   return (
     <div className="cockpit-app-sidebar-brand">
-      <span aria-hidden className="cockpit-app-sidebar-mark">
-        T
-      </span>
+      <BrandMark className="cockpit-app-sidebar-mark" />
       <span className="cockpit-app-sidebar-brand-copy">
         <b>Tracefold</b>
         <small>News V3 Console</small>
@@ -54,11 +53,9 @@ export function AppBrand() {
 export function AppNavigation({
   counts,
   onNavigate,
-  statusLevel,
 }: {
   counts?: AppNavigationCounts;
   onNavigate?: () => void;
-  statusLevel?: AppNavigationLevel;
 }) {
   const { pathname } = useLocation();
   return (
@@ -73,7 +70,6 @@ export function AppNavigation({
                 count={item.count ? counts?.[item.count] : undefined}
                 item={item}
                 key={item.to}
-                level={item.signal === "health" ? statusLevel : undefined}
                 onNavigate={onNavigate}
               />
             ))}
@@ -88,20 +84,18 @@ function AppSidebarItem({
   active,
   count,
   item,
-  level,
   onNavigate,
 }: {
   active: boolean;
   count?: number;
   item: AppNavigationItem;
-  level?: AppNavigationLevel;
   onNavigate?: () => void;
 }) {
   const Icon = item.icon;
   return (
     /*
      * A plain Link with `aria-current` driven by the same predicate as the visual state. `NavLink` would
-     * decide for itself by prefix, and `/news` is a prefix of `/news/status` — two links would announce
+     * decide for itself by prefix, and `/news` is a prefix of `/news/oi` — two links would announce
      * themselves as the current page.
      */
     <Link
@@ -115,18 +109,15 @@ function AppSidebarItem({
       <Icon aria-hidden />
       <span className="cockpit-app-sidebar-label">{item.label}</span>
       {/*
-       * Count and health dot are decoration on the link, not part of what it is: folding either into the
-       * accessible name would make the destination announce itself differently every three seconds. The same
-       * figures are announced properly by the feed's labelled 24 h funnel and the status route's cards.
+       * The count is decoration on the link, not part of what it is: folding it into the accessible name
+       * would make the destination announce itself differently every three seconds. The same figures are
+       * announced properly by the feed's labelled 24 h funnel and by the OI monitor's own telemetry band.
        */}
       {count == null ? null : (
         <span aria-hidden className="cockpit-app-sidebar-count" title="过去 24 小时收到">
           {compactCount(count)}
         </span>
       )}
-      {level && level !== "ok" ? (
-        <span aria-hidden className="cockpit-app-sidebar-signal" data-level={level} />
-      ) : null}
     </Link>
   );
 }

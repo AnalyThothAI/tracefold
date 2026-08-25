@@ -16,9 +16,12 @@ from tracefold.news.oi_signals import (
     OiPolicy,
     OiSignal,
     evaluate_oi,
+    oi_judgment_trace,
+    oi_parse_failure,
     parse_oi_signal,
 )
 from tracefold.news.similarity import similarity
+from tracefold.news.storage.feed import OI_FILTERS, OI_OUTCOMES, _oi_summary
 from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, storyline_status
 from tracefold.news.triage_rules import decide as production_decide
 
@@ -283,3 +286,92 @@ def test_default_policy_keeps_the_shipped_thresholds() -> None:
         "whale_oi_ratio_above_bps": 8_000,
         "oi_change_at_least_bps": 0,
     }
+
+
+# ---------------------------------------------------------------- #207: what the 持仓异动 monitor reads
+
+
+def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> None:
+    """The console's `oi` block is `oi_judgment_trace()` read back, never a second parse.
+
+    Every field has to survive the round trip, because the browser is not allowed to re-derive any of
+    them from `leader_title`: a second copy of `oi_signal_parser_v1` in the page would drift from the
+    judge the moment either side changed.
+    """
+
+    judgment = evaluate_oi(_signal(), earlier_eligible_count=0)
+    summary = _oi_summary(oi_judgment_trace(judgment, policy=DEFAULT_OI_POLICY))
+
+    assert summary is not None
+    assert summary["parsed"] is True
+    assert summary["rule"] == "opening_move_with_whale_concentration"
+    assert summary["oi_change_bps"] == judgment.signal.oi_change_bps
+    assert summary["oi_value_usd"] == judgment.signal.oi_value_usd
+    assert summary["whale_long_profit_bps"] == judgment.signal.whale_long_profit_bps
+    assert summary["whale_oi_ratio_bps"] == judgment.signal.whale_oi_ratio_bps
+    assert summary["eligible_rank_in_window"] == 1
+    assert summary["rank_semantics"] == "eligible_rank_v1"
+    # The thresholds this frame ran under, from its own trace: retuning `news.oi` must not rewrite the
+    # history of a decision it did not make.
+    assert summary["whale_oi_ratio_above_bps"] == DEFAULT_OI_POLICY.whale_oi_ratio_above_bps
+    assert summary["max_rank_in_window"] == DEFAULT_OI_POLICY.max_rank_in_window
+    assert summary["window_ms"] == DEFAULT_OI_POLICY.window_ms
+    # The provider's identity stays behind: the console does not display Strategy IDs.
+    assert {"strategy_id", "provider", "provider_source"}.isdisjoint(summary)
+
+
+def test_an_unparseable_frame_folds_to_its_failure_shape_and_no_measurements() -> None:
+    _, trace = oi_parse_failure("PENGU OI Rise 3.4%, OI Value --", provider_source="x")
+    summary = _oi_summary(trace)
+
+    assert summary is not None
+    assert summary["parsed"] is False
+    assert summary["rule"] == "oi_parse_failed"
+    assert summary["failure_stage"] == "template_match"
+    assert summary["parser_version"] == "oi_signal_parser_v1"
+    assert summary["title_sha256"]
+    # Nothing was measured, so nothing is reported. A zero here would read as a real reading of zero.
+    for key in ("oi_change_bps", "oi_value_usd", "whale_long_profit_bps", "whale_oi_ratio_bps"):
+        assert summary[key] is None
+    assert {"strategy_id", "provider", "provider_source"}.isdisjoint(summary)
+
+
+def test_a_row_from_any_other_admission_carries_no_oi_block() -> None:
+    assert _oi_summary(None) is None
+
+
+def test_the_feed_oi_filter_groups_exactly_the_rules_the_judge_can_write() -> None:
+    """The monitor's tabs are the judge's rules, grouped — the console owns no vocabulary of its own.
+
+    A rule `evaluate_oi` can produce that no group covers would be silently unreachable from every tab,
+    which is how a gate stops being visible without anyone noticing.
+    """
+
+    produced = {
+        evaluate_oi(_signal(whale_oi_ratio_bps=100), earlier_eligible_count=0).rule,
+        evaluate_oi(_signal(), earlier_eligible_count=0).rule,
+        evaluate_oi(_signal(), earlier_eligible_count=9).rule,
+        evaluate_oi(
+            _signal(oi_change_bps=1),
+            earlier_eligible_count=0,
+            policy=OiPolicy(oi_change_at_least_bps=500),
+        ).rule,
+        "oi_parse_failed",
+    }
+    grouped = [rule for rules in OI_FILTERS.values() for rule in rules]
+    assert produced == set(grouped)
+    # The groups partition the rules: no rule may appear under two tabs.
+    assert len(grouped) == len(set(grouped))
+
+
+def test_the_monitors_unfiltered_tab_is_a_value_the_caller_sends_not_an_omission() -> None:
+    """`all` is an accepted `oi` value that narrows nothing, and that is the point.
+
+    Omitting the parameter is indistinguishable from any other feed request, so the server would keep
+    paying for the outcome-group aggregate on the tab the monitor displays most — a count describing the
+    feed's task tabs, which this page does not have and never reads.
+    """
+
+    assert "all" in OI_OUTCOMES
+    assert "all" not in OI_FILTERS
+    assert set(OI_OUTCOMES) == {"all"} | set(OI_FILTERS)

@@ -95,8 +95,11 @@ describe("frontend documentation contract", () => {
       expect(frontendDoc).toContain(term);
       expect(navigationTargets).toContain(to);
     }
-    // ReviewDesk is a first-class destination; one navigation model drives every presentation.
-    expect(navigationTargets).toEqual(["/news", "/news/review", "/news/status"]);
+    // Every destination is a working surface; one navigation model drives every presentation. 流水线状态
+    // is a page without a slot (#207) — the topbar lamp is the way in, and it exists only when it has
+    // something to say.
+    expect(navigationTargets).toEqual(["/news", "/news/oi", "/news/review"]);
+    expect(navigationTargets).not.toContain("/news/status");
     expect(navigationTargets).not.toContain("/");
     expect(frontendDoc).not.toMatch(/Token Radar|RadarPage|live-radar|features\/live/);
 
@@ -106,6 +109,9 @@ describe("frontend documentation contract", () => {
     expect(topbar).not.toContain("opsPath");
     expect(topbar).toContain("healthAnomaly");
     expect(topbar).toContain("topbar-anomaly");
+    // The lamp lives in exactly one place, so every route gets the same read (#207).
+    expect(topbar).toContain("HealthLamp");
+    expect(frontendDoc).toContain("topbar-health-lamp");
   });
 
   it("describes the News console without the retired GMGN or Macro lanes", () => {

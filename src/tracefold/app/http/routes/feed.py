@@ -25,6 +25,11 @@ _ADMISSIONS = {
     "recovery",
 }
 _DECISIONS = {"push", "escalate", "drop", "throttled", "degraded"}
+# #207: the deterministic OI lane's outcome, for the 持仓异动 monitor's tabs. `decision` cannot express it —
+# a frame held by a threshold and one whose provider template stopped parsing are both `drop` — and the
+# browser must not split them by filtering a loaded page, which would leave the tab counts describing the
+# whole window while the rows below described one page of it.
+_OI_OUTCOMES = {"all", "pushed", "withheld", "parse_failed"}
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
@@ -39,6 +44,9 @@ def get_news_feed(
     cursor: Annotated[str, Query(max_length=200)] = "",
     outcome: Annotated[str, Query(pattern="^(pushed|held|pending)?$")] = "",
     hours: Annotated[int, Query(ge=0, le=168)] = 0,
+    # Wide enough to hold a full rule key: someone reaching for `whale_ratio_below_threshold` should get
+    # the named `news_feed_oi_invalid` rather than a shape error that says nothing about the vocabulary.
+    oi: Annotated[str, Query(max_length=40)] = "",
 ) -> Response:
     _validate_query_params(
         request,
@@ -52,6 +60,7 @@ def get_news_feed(
             "cursor",
             "outcome",
             "hours",
+            "oi",
             "token",
         },
     )
@@ -59,6 +68,8 @@ def get_news_feed(
         raise ApiBadRequest("news_feed_admission_invalid", field="admission")
     if decision and decision not in _DECISIONS:
         raise ApiBadRequest("news_feed_decision_invalid", field="decision")
+    if oi and oi not in _OI_OUTCOMES:
+        raise ApiBadRequest("news_feed_oi_invalid", field="oi")
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         try:
@@ -72,6 +83,7 @@ def get_news_feed(
                 cursor=cursor or None,
                 outcome=outcome or None,
                 hours=hours or None,
+                oi=oi or None,
             )
         except ValueError as exc:
             # Only `list_feed` decodes the cursor. Anything that fails while resolving instruments is a

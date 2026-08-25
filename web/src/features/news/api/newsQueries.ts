@@ -48,6 +48,11 @@ export type NewsReviewMagnitude = NewsSchemas["NewsReviewMagnitudeData"];
 export type NewsReviewEventType = NewsSchemas["NewsReviewEventTypeData"];
 export type NewsReviewMiss = NewsSchemas["NewsReviewMissData"];
 export type NewsPriceStatus = NewsSchemas["NewsPriceStatusData"];
+export type NewsFeedOi = NewsSchemas["NewsFeedOiData"];
+export type NewsOiStatus = NewsSchemas["NewsOiStatusData"];
+export type NewsOiPolicy = NewsSchemas["NewsOiPolicyData"];
+export type NewsOiTradeFloors = NewsSchemas["NewsOiTradeFloorsData"];
+export type NewsOiWindowSymbol = NewsSchemas["NewsOiWindowSymbolData"];
 
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
 export type NewsFeedOutcome = NewsOutcomeGroup;
@@ -90,6 +95,24 @@ export type NewsFeedFilters = {
   q: string;
   symbol: string | null;
 };
+
+/**
+ * The 持仓异动 monitor's tabs (#207). `全部` is the absence of the filter, so it is not a server value.
+ *
+ * The other three are the server's own grouping of the judge's rule names — `pushed` is the one qualifying
+ * rule, `withheld` the three threshold rules, `parse_failed` the provider-contract failure. `decision`
+ * cannot express the split: a frame held by a threshold and one whose template stopped parsing are both
+ * `drop`, and both carry `override_rule = telemetry_deterministic`.
+ */
+export type NewsOiOutcome = "pushed" | "withheld" | "parse_failed";
+export const NEWS_OI_TABS = ["all", "pushed", "withheld", "parse_failed"] as const;
+export type NewsOiTab = (typeof NEWS_OI_TABS)[number];
+/** The monitor is a 24 h read: the counts it shows beside each tab are the server's 24 h aggregates. */
+export const NEWS_OI_HOURS = 24;
+export const NEWS_OI_PAGE_SIZE = 50;
+/** The frame table follows the feed's own rhythm — a telemetry frame lands every few minutes. */
+export const NEWS_OI_REFETCH_MS = 5_000;
+export const NEWS_OI_ADMISSION = "telemetry_deterministic";
 
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
   (
@@ -138,6 +161,61 @@ export const useNewsFeedHistoryWithToken = (
     enabled: Boolean(token && firstCursor && enabled),
     queryKey: queryKeys.newsFeedHistory(filters, firstCursor ?? ""),
     queryFn: ({ pageParam }) => fetchNewsFeed(token, filters, pageParam),
+    initialPageParam: firstCursor ?? "",
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+
+const fetchNewsOiFeed = async (token: string, tab: NewsOiTab, cursor: string | null) =>
+  (
+    await getApi<NewsFeed>("/api/news/feed", {
+      etagKey: `news-oi-feed:${tab}:${cursor ?? "first"}`,
+      params: {
+        admission: NEWS_OI_ADMISSION,
+        cursor,
+        hours: NEWS_OI_HOURS,
+        limit: NEWS_OI_PAGE_SIZE,
+        // `all` is sent, not omitted: it narrows nothing, but it is how the request identifies itself as
+        // the monitor, which is what lets the server skip the outcome-group aggregate this page never reads.
+        oi: tab,
+      },
+      token,
+    })
+  ).data;
+
+/**
+ * One page of #137's deterministic telemetry frames, filtered server-side by the gate that judged them.
+ *
+ * Every tab is a real request rather than a filter over a loaded page: the counts beside the tabs are the
+ * server's 24 h aggregates, so a client-side split would leave them describing the window while the rows
+ * below described one page of it.
+ */
+export const useNewsOiFeedWithToken = (token: string, tab: NewsOiTab) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsOiFeed(tab),
+    queryFn: () => fetchNewsOiFeed(token, tab, null),
+    refetchInterval: NEWS_OI_REFETCH_MS,
+    staleTime: 2_000,
+  });
+
+/**
+ * The pages behind the first one, on an explicit action (`加载更多帧`) — never automatic scroll.
+ *
+ * A 24 h window holds roughly 190 frames and a tab can name more than one page of them, so without this the
+ * table would show 50 rows under a tab labelled 136 and offer no way to the rest. Loaded pages are frozen:
+ * only the first page follows the 5 s poll, exactly as the Event feed's history does.
+ */
+export const useNewsOiFeedHistoryWithToken = (
+  token: string,
+  tab: NewsOiTab,
+  firstCursor: string | null,
+  enabled: boolean,
+) =>
+  useInfiniteQuery({
+    enabled: Boolean(token && firstCursor && enabled),
+    queryKey: queryKeys.newsOiFeedHistory(tab, firstCursor ?? ""),
+    queryFn: ({ pageParam }) => fetchNewsOiFeed(token, tab, pageParam),
     initialPageParam: firstCursor ?? "",
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     staleTime: Number.POSITIVE_INFINITY,

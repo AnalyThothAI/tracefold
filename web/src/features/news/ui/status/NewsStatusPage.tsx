@@ -371,6 +371,18 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="triage_24h" v={String(status.pipeline.triage_24h)} />
           <KeyValueRow k="triage_degraded_24h" v={String(status.pipeline.triage_degraded_24h)} />
           <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
+          {/* #207: the deterministic OI lane's four counts, so its shape is visible from the pipeline page
+              even though the lane has its own destination. The gate-by-gate breakdown lives there. */}
+          <KeyValueRow
+            k="telemetry_received_24h"
+            v={String(status.pipeline.telemetry_received_24h)}
+          />
+          <KeyValueRow k="telemetry_parsed_24h" v={String(status.pipeline.telemetry_parsed_24h)} />
+          <KeyValueRow
+            k="telemetry_parse_failed_24h"
+            v={String(status.pipeline.telemetry_parse_failed_24h)}
+          />
+          <KeyValueRow k="telemetry_push_24h" v={String(status.pipeline.telemetry_push_24h)} />
           {/* `all` is policy v7's content comparison path. `throttled` only
               decodes pre-v7 historical rows that lacked an explicit scope. */}
           <KeyValueRow

@@ -270,7 +270,7 @@ filter, sort or badge for it. The hard-renamed `queue_priority` exists only in
 broker scheduling, storage/audit/measurement and explicit operator review
 projections; there is no public alias.
 
-- `GET /api/news/feed?family={family}&admission={admission}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}`
+- `GET /api/news/feed?family={family}&admission={admission}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}&oi={pushed|withheld|parse_failed}`
   returns Events newest first with the leader title,
   the derived display `title_zh` (`models.display_title`, normally the current
   verdict's `headline_zh`), admission,
@@ -286,11 +286,30 @@ projections; there is no public alias.
   `magnitude_zh`, `event_type_zh`), and the first delivery state with its
   error code. `outcome` is the feed's task-tab filter (its SQL mirrors the
   outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
-  or absent = no bound). Unknown query parameters, invalid admission or
-  decision values, malformed cursors, and the retired `priority`/`sort`
+  or absent = no bound).
+
+  A `telemetry_deterministic` row additionally carries a nullable `oi` block
+  (#207): `parsed`, `rule`, and — depending on which of the two shapes it is —
+  the four measurements (`oi_change_bps`, `oi_value_usd`,
+  `whale_long_profit_bps`, `whale_oi_ratio_bps`), `eligible_rank_in_window`,
+  `rank_semantics`, the thresholds that frame ran under (`window_ms`,
+  `max_rank_in_window`, `whale_oi_ratio_above_bps`, `oi_change_at_least_bps`),
+  or the provider-contract failure (`parser_version`, `failure_stage`,
+  `title_sha256`). Every field is `oi_judgment_trace()` /
+  `oi_parse_failure()` output read back from the verdict trace, so no client
+  ever re-runs `oi_signal_parser_v1` over `leader_title`. `strategy_id`,
+  `provider` and `provider_source` are deliberately not exposed. The block is
+  `null` on every other admission. `oi={pushed|withheld|parse_failed}` filters
+  on the judged rule: `pushed` is the one qualifying rule, `withheld` the three
+  threshold rules, `parse_failed` the unparseable frame. `decision` cannot
+  express that split — a threshold withhold and a parse failure are both
+  `drop` and both carry `override_rule = telemetry_deterministic`.
+
+  Unknown query parameters, invalid admission,
+  decision or `oi` values, malformed cursors, and the retired `priority`/`sort`
   parameters return 400; out-of-pattern `outcome`/`hours` return 422. Recovery
-  Events are visible with `admission=recovery`. `filters` echoes every parameter incl. `outcome` and
-  `hours` (never the wall-clock bound, so unchanged pages keep their ETag).
+  Events are visible with `admission=recovery`. `filters` echoes every parameter incl. `outcome`,
+  `hours` (never the wall-clock bound, so unchanged pages keep their ETag) and `oi`.
   `counts` (`total`, `pushed`, `held`, `pending`) reports how the request's
   filters and window split across the three outcome groups — the same
   predicates the `outcome` filter uses, so the three sum to `total` — and is
@@ -356,7 +375,19 @@ projections; there is no public alias.
   (`all` is the current content-only path; historical rows may retain the old
   `throttled` scope), plus `tagged_24h`,
   `grounded_24h` and
-  the top-ten `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
+  the top-ten `ungrounded_by_symbol_24h`), `oi` (#207: the deterministic
+  open-interest lane — `policy`, the `news.oi` thresholds as they are running;
+  `by_rule_24h`, 24 h counts keyed on the judge's own gate names, which
+  `pipeline.dropped_by_rule` cannot carry because `decide()` writes
+  `override_rule = telemetry_deterministic` for every OI verdict whether it
+  pushed or withheld; `window_occupancy`, per-symbol spent rank slots inside
+  the live window measured with the judge's eligibility predicate, ending at
+  `measured_at_ms` — the window's start is deliberately not a field because it
+  would move on every read and churn the ETag; and `trade_floors`, the capital
+  lane's own configured floors plus its `enabled`/`mode`, shown beside the News
+  gates and never merged with them, read from platform configuration so this
+  endpoint imports nothing from `tracefold.trading`),
+  and `delivery` (sent/terminal
   counts, last error, end-to-end p95, availability), plus
   the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last

@@ -19,8 +19,8 @@ describe("AppBottomNav", () => {
     );
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "事件流",
+      "持仓异动",
       "学习复盘",
-      "流水线状态",
     ]);
   });
 
@@ -30,18 +30,24 @@ describe("AppBottomNav", () => {
     // The same `isActive` predicate the sidebar uses, so the two presentations cannot disagree about where
     // the reader is. `NavLink` would decide by prefix and light up both.
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "流水线状态" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "持仓异动" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
-  it("marks status current on the status route", () => {
+  it("marks the OI monitor current on the OI route", () => {
+    renderBottomNav("/news/oi");
+
+    expect(screen.getByRole("link", { name: "持仓异动" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("has no destination for the pipeline status page", () => {
+    // #207: the page is still there and still reachable from the topbar lamp; what it no longer has is a
+    // slot on a bar with 48px targets, where every slot has to earn its width.
     renderBottomNav("/news/status");
 
-    expect(screen.getByRole("link", { name: "流水线状态" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-    expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("link", { name: "流水线状态" })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("link", { current: "page" })).toHaveLength(0);
   });
 });
 

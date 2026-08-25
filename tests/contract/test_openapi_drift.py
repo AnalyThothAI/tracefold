@@ -123,6 +123,11 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsPipelineStatusData",
         "NewsDeliveryStatusData",
         "NewsLearningRetentionStatusData",
+        "NewsFeedOiData",
+        "NewsOiStatusData",
+        "NewsOiPolicyData",
+        "NewsOiTradeFloorsData",
+        "NewsOiWindowSymbolData",
         "NewsOutcomeData",
         "NewsTimelineStepData",
         "NewsHealthData",
@@ -160,6 +165,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "ingest",
         "broker",
         "pipeline",
+        # #207: the deterministic OI lane, whose gate names live in the judge's trace rather than in
+        # `pipeline.dropped_by_rule`.
+        "oi",
         "delivery",
         "learning_retention",
         "watchlist",
@@ -167,6 +175,29 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         # #88 §11: per-source quote freshness and Reaction backlog.
         "price",
         "measured_at_ms",
+    }
+    assert set(components["NewsOiStatusData"]["properties"]) == {
+        "policy",
+        "trade_floors",
+        "by_rule_24h",
+        "window_occupancy",
+    }
+    # #207 principle 4: the News gates and the capital lane's floors are two threshold sets shown side by
+    # side. Keeping them in separate objects is what stops either being read as the other.
+    assert set(components["NewsOiPolicyData"]["properties"]) == {
+        "window_ms",
+        "max_rank_in_window",
+        "whale_oi_ratio_above_bps",
+        "oi_change_at_least_bps",
+    }
+    assert set(components["NewsOiTradeFloorsData"]["properties"]) == {
+        "enabled",
+        "mode",
+        "min_whale_long_profit_bps",
+        "min_oi_value_usd",
+        "min_price_move_bps",
+        "max_price_move_bps",
+        "pre_move_lookback_ms",
     }
     state = components["NewsStatusData"]["properties"]["state"]
     assert state["enum"] == ["ready", "degraded", "warming", "unavailable"]
@@ -211,10 +242,14 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "cursor",
         "outcome",
         "hours",
+        # #207: which gate the deterministic OI judge applied. `decision` collapses a threshold withhold and
+        # an unparseable provider frame into one `drop`, so the monitor's tabs cannot be built from it.
+        "oi",
     }
     assert parameters["q"]["schema"]["maxLength"] == 200
     assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
     assert parameters["hours"]["schema"]["maximum"] == 168
+    assert parameters["oi"]["schema"]["maxLength"] == 40
     limit = parameters["limit"]["schema"]
     assert limit == {"default": 50, "maximum": 100, "minimum": 1, "title": "Limit", "type": "integer"}
     assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
@@ -228,6 +263,7 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "limit",
         "outcome",
         "hours",
+        "oi",
     }
     assert set(filters["required"]) == {"limit"}
 

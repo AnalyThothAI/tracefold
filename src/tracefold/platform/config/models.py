@@ -246,6 +246,19 @@ class NewsOiSettings(BaseModel):
     whale_oi_ratio_above_bps: int = 8_000
     oi_change_at_least_bps: int = 0
 
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsOiSettings:
+        # The same 1-10 band `TradingCandidateSettings.max_rank_in_window` carries, for the same reason: this
+        # is "the opening N moves of a run", and a mistyped 1000 would silently mean "every frame" — and now
+        # also renders a rank slot per unit in the 持仓异动 window card. Fail at startup instead.
+        if not 1 <= self.max_rank_in_window <= 10:
+            raise ValueError("news_oi_max_rank_invalid")
+        if not 300_000 <= self.window_ms <= 86_400_000:
+            raise ValueError("news_oi_window_invalid")
+        if self.whale_oi_ratio_above_bps < 0 or self.oi_change_at_least_bps < 0:
+            raise ValueError("news_oi_threshold_invalid")
+        return self
+
 
 class NewsPolicySettings(BaseModel):
     """The four operator-owned v10 duplicate/safety knobs used by ``decide()``."""

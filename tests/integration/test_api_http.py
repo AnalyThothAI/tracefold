@@ -110,6 +110,10 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         retired_priority_sort = client.get("/api/news/feed?sort=priority", headers=headers)
         detail = client.get(f"/api/news/events/{event_ids[0]}", headers=headers)
         missing = client.get("/api/news/events/does-not-exist", headers=headers)
+        oi_all = client.get("/api/news/feed?admission=telemetry_deterministic&oi=all&limit=10", headers=headers)
+        oi_withheld = client.get(
+            "/api/news/feed?admission=telemetry_deterministic&oi=withheld&limit=10", headers=headers
+        )
         bad_admission = client.get("/api/news/feed?admission=bogus", headers=headers)
         bad_param = client.get("/api/news/feed?story_id=1", headers=headers)
         status = client.get("/api/news/status", headers=headers)
@@ -131,6 +135,23 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "limit": 10,
         "outcome": None,
         "hours": None,
+        # #207: the deterministic OI lane's outcome. Absent here means the whole lane, the same way every
+        # other filter reads — the monitor is the only caller that sets it.
+        "oi": None,
+    }
+
+    # #207: every `oi` value identifies the 持仓异动 monitor, so the outcome-group aggregate is skipped —
+    # including for `all`, which narrows nothing and is the tab displayed most. `counts` describes the feed's
+    # task tabs; the monitor's tabs are gates and it reads their counts from `/api/news/status`.
+    assert oi_all.status_code == 200
+    assert oi_all.json()["data"]["filters"]["oi"] == "all"
+    assert oi_all.json()["data"]["counts"] is None
+    assert oi_withheld.status_code == 200
+    assert oi_withheld.json()["data"]["filters"]["oi"] == "withheld"
+    assert oi_withheld.json()["data"]["counts"] is None
+    # `all` narrows nothing: it serves the same rows the admission filter alone would.
+    assert {row["event_id"] for row in oi_all.json()["data"]["events"]} >= {
+        row["event_id"] for row in oi_withheld.json()["data"]["events"]
     }
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",

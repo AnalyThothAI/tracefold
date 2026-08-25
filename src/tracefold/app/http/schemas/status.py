@@ -73,6 +73,9 @@ class NewsPipelineStatusData(ExactApiSchema):
     telemetry_received_24h: int = 0
     telemetry_parsed_24h: int = 0
     telemetry_parse_failed_24h: int = 0
+    # #207: Events on the deterministic admission, which is the 持仓异动 table's own universe. `received`
+    # counts provider items before the Gate and so names frames no row can reach.
+    telemetry_events_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None
@@ -98,6 +101,62 @@ class NewsPipelineStatusData(ExactApiSchema):
     ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)
     candidate_share_24h: float | None = None
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
+
+
+class NewsOiPolicyData(ExactApiSchema):
+    """`news.oi` as it is running right now — the operator-owned thresholds the judge applies."""
+
+    window_ms: int
+    max_rank_in_window: int
+    whale_oi_ratio_above_bps: int
+    oi_change_at_least_bps: int
+
+
+class NewsOiTradeFloorsData(ExactApiSchema):
+    """The capital lane's own floors, shown beside the News gates and never mixed with them (#207).
+
+    Two different questions read the same frame: News asks whether a reader should be told, Trading asks
+    whether the lane may open exposure. Their thresholds are separate config and reaching either number is no
+    evidence about the other, so the monitor renders both and labels which is which.
+
+    `enabled` is here because `tracefold.trading` ships disabled: a floor from a lane that is not running is a
+    published research band, not a gate anything is currently passing. Read from platform configuration —
+    `tracefold.news` never imports `tracefold.trading` and this endpoint does not either.
+    """
+
+    enabled: bool = False
+    mode: str = "paper"
+    min_whale_long_profit_bps: int = 0
+    min_oi_value_usd: int = 0
+    min_price_move_bps: int = 0
+    max_price_move_bps: int = 0
+    pre_move_lookback_ms: int = 0
+
+
+class NewsOiWindowSymbolData(ExactApiSchema):
+    """One symbol's spent rank slots inside the live window. `full` means the next frame hits the ceiling."""
+
+    symbol: str
+    used: int
+    max_rank_in_window: int
+    full: bool
+
+
+class NewsOiStatusData(ExactApiSchema):
+    """#137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
+
+    `by_rule_24h` is keyed on the judge's own rule names. It cannot come from `pipeline.dropped_by_rule`:
+    `decide()` writes `override_rule = 'telemetry_deterministic'` for every OI verdict — push and withhold
+    alike — so that map can say how many frames were held but never by which gate.
+    """
+
+    policy: NewsOiPolicyData | None = None
+    trade_floors: NewsOiTradeFloorsData = Field(default_factory=NewsOiTradeFloorsData)
+    by_rule_24h: dict[str, int] = Field(default_factory=dict)
+    # Measured over `policy.window_ms` ending at `measured_at_ms`. The window's start is deliberately not a
+    # field: it moves with every read and would churn the status ETag on a 15 s poll for every reader, while
+    # the two numbers it is the difference of are already here.
+    window_occupancy: list[NewsOiWindowSymbolData] = Field(default_factory=list)
 
 
 class NewsDeliveryStatusData(ExactApiSchema):
@@ -188,6 +247,7 @@ class NewsStatusData(ExactApiSchema):
     ingest: NewsIngestStatusData
     broker: NewsBrokerStatusData
     pipeline: NewsPipelineStatusData
+    oi: NewsOiStatusData = Field(default_factory=NewsOiStatusData)
     delivery: NewsDeliveryStatusData
     learning_retention: NewsLearningRetentionStatusData
     watchlist: list[str] = Field(default_factory=list)
@@ -207,6 +267,10 @@ __all__ = [
     "NewsIngestStatusData",
     "NewsInstrumentUniverse",
     "NewsLearningRetentionStatusData",
+    "NewsOiPolicyData",
+    "NewsOiStatusData",
+    "NewsOiTradeFloorsData",
+    "NewsOiWindowSymbolData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",
     "NewsQuoteVenueData",

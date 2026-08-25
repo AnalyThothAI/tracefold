@@ -32,16 +32,16 @@
     color: var(--text-primary);
   }
 
+  /*
+   * The brand mark draws its own indigo tile, so the frame it used to need is gone. It is the same path on
+   * the same tile as `favicon.svg`: the tab and the sidebar have to be one face, which a monospace `T` beside
+   * a three-colour heartbeat never was (#207).
+   */
   .cockpit-app-sidebar-mark {
-    display: grid;
     width: 26px;
     height: 26px;
-    place-items: center;
-    border: 1px solid var(--accent-border);
+    flex: 0 0 auto;
     border-radius: 5px;
-    color: var(--accent-primary);
-    background: rgba(42, 91, 215, 0.08);
-    font: 850 12px/1 var(--font-mono);
   }
 
   .cockpit-app-sidebar-brand-copy {
@@ -158,20 +158,10 @@
   }
 
   /*
-   * Health, only when it is not `ok`. A green light beside a healthy pipeline is a light the reader learns to
-   * stop seeing; a dot that appears only when something changed is one they will notice.
+   * Health used to live here as a dot on the 流水线状态 entry. It is the topbar's lamp now (#207): the same
+   * "only when it is not ok" rule, but visible in all three frames instead of only the widest, and carrying
+   * the failing item's own sentence rather than a colour the reader has to go and decode.
    */
-  .cockpit-app-sidebar-signal {
-    width: 6px;
-    height: 6px;
-    flex: 0 0 auto;
-    border-radius: 999px;
-    background: var(--signal-caution);
-  }
-
-  .cockpit-app-sidebar-signal[data-level="bad"] {
-    background: var(--signal-alert);
-  }
 
   @media (max-width: 767px) {
     .cockpit-app-sidebar-item {

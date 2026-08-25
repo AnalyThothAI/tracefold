@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 from ..models import ReaderReceipt, display_title
+from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..outcome import (
     audience_zh,
     decision_zh,
@@ -33,6 +34,27 @@ _OUTCOME_GROUP_SQL: Final = {
     "held": f"COALESCE(d.state, '') <> 'sent' AND NOT ({_PENDING_CORE_SQL})",
 }
 
+# The deterministic OI lane's own rule names, grouped the three ways the monitor asks about them. These are
+# `oi_signals.evaluate_oi` / `oi_parse_failure` keys verbatim: the reader-facing tab has no vocabulary of its
+# own, and a rule the judge adds shows up as an unfiltered row rather than silently joining `withheld`.
+_OI_PUSH_RULE: Final = "opening_move_with_whale_concentration"
+_OI_WITHHELD_RULES: Final = ("whale_ratio_below_threshold", "oi_change_below_threshold", "beyond_window_rank")
+_OI_PARSE_FAILED_RULE: Final = "oi_parse_failed"
+OI_FILTERS: Final[dict[str, tuple[str, ...]]] = {
+    "pushed": (_OI_PUSH_RULE,),
+    "withheld": _OI_WITHHELD_RULES,
+    "parse_failed": (_OI_PARSE_FAILED_RULE,),
+}
+# `all` is the monitor's fourth tab and narrows nothing, so it is not in `OI_FILTERS`. It still has to be a
+# value the caller can send: it is how a request says "I am the 持仓异动 monitor", which is what lets the
+# outcome-group count be skipped for the tab that is displayed most.
+OI_OUTCOMES: Final[frozenset[str]] = frozenset({"all", *OI_FILTERS})
+# Both feed laterals expose the judged rule under this one alias, so the page query and the tab-count query
+# share the predicate verbatim. A count that filtered differently from the rows it counts is the whole bug
+# this alias exists to prevent.
+_OI_RULE_SQL: Final = "v.trace -> 'oi_signal' ->> 'rule' AS oi_rule"
+_OI_RULE_PREDICATE: Final = "t.oi_rule = ANY(%s)"
+
 
 class FeedStorage:
     conn: Any
@@ -49,6 +71,7 @@ class FeedStorage:
         cursor: str | None,
         outcome: str | None = None,
         hours: int | None = None,
+        oi: str | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
@@ -78,9 +101,24 @@ class FeedStorage:
         if decision:
             where.append("t.final_decision = %s")
             params.append(decision)
+        if oi in OI_FILTERS:
+            # The judge's own rule, from the trace it wrote. `final_decision` cannot answer this: a frame held
+            # by a threshold and one whose provider template stopped parsing are both `drop`, and both carry
+            # `override_rule = 'telemetry_deterministic'` because `decide()` names the admission, not the gate.
+            # Measured live on 2026-08-25: all 99 OI verdicts in 24 h carried that one `override_rule`, while
+            # the trace split them 78 / 19 / 2 across the three gates. The predicate costs ~10 ms on a 24 h
+            # page because it is evaluated per surviving row rather than through an index.
+            where.append(_OI_RULE_PREDICATE)
+            params.append(list(OI_FILTERS[oi]))
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
         # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
-        counts = self._feed_counts(where=list(where), params=list(params)) if cursor_opened is None else None
+        #
+        # Any `oi` request skips it too — including `all`, which narrows nothing but still identifies the
+        # caller as the OI monitor. `counts` describes the three *outcome* groups, which are the feed's task
+        # tabs; the monitor's tabs are gates and it takes their counts from `status.oi`, so on a 5 s poll
+        # this would be the file's own "19 ms over the entire table" aggregate run for a field nobody reads.
+        wants_counts = cursor_opened is None and oi not in OI_OUTCOMES
+        counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
         if outcome in _OUTCOME_GROUP_SQL:
             where.append(_OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
@@ -97,12 +135,13 @@ class FeedStorage:
                    t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                    t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
                    t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
-                   t.model_decision, t.verdict AS triage_verdict,
+                   t.model_decision, t.verdict AS triage_verdict, t.trace -> 'oi_signal' AS oi_signal,
                    d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
               LEFT JOIN LATERAL (
-                SELECT * FROM news_verdicts v WHERE v.event_id = e.event_id AND v.stage = 'triage'
+                SELECT v.*, {_OI_RULE_SQL} FROM news_verdicts v
+                 WHERE v.event_id = e.event_id AND v.stage = 'triage'
                  ORDER BY v.created_at_ms DESC LIMIT 1
               ) t ON true
               LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
@@ -130,6 +169,7 @@ class FeedStorage:
                 "limit": int(limit),
                 "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
+                "oi": oi if oi in OI_OUTCOMES else None,
             },
         }
 
@@ -155,7 +195,7 @@ class FeedStorage:
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
               LEFT JOIN LATERAL (
-                SELECT v.final_decision FROM news_verdicts v
+                SELECT v.final_decision, {_OI_RULE_SQL} FROM news_verdicts v
                  WHERE v.event_id = e.event_id AND v.stage = 'triage'
                  ORDER BY v.created_at_ms DESC LIMIT 1
               ) t ON true
@@ -317,11 +357,63 @@ class FeedStorage:
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s
-                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h
+                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
+              -- #207: Events, not provider items. `telemetry_received_24h` counts 1019 items *before* the
+              -- Gate, so it names frames the monitor's table can never show; the three by-rule buckets
+              -- count judged verdicts, so together they miss a frame still waiting for one. This is the
+              -- table's own universe — exactly the rows `admission=telemetry_deterministic&hours=24`
+              -- serves — and it is what the 全部 tab counts.
+              (SELECT count(*) FROM news_events
+                WHERE opened_at_ms >= %s
+                  AND admission = 'telemetry_deterministic') AS telemetry_events_24h
             """,
-            (day_ago, day_ago, day_ago, day_ago),
+            (day_ago, day_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         return {key: int(value or 0) for key, value in dict(row or {}).items()}
+
+    def oi_window_occupancy(
+        self,
+        *,
+        now_ms: int,
+        window_ms: int,
+        whale_oi_ratio_above_bps: int,
+        oi_change_at_least_bps: int,
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        """How many rank slots each symbol has already spent inside the live window.
+
+        The eligibility predicate is `count_recent_eligible_oi_signals`' predicate verbatim, and for the same
+        reason: an ineligible frame stays auditable but never spends a later signal's rank, so counting rows
+        instead of filtering them would report a symbol as full that the next frame will sail straight past.
+        The stored `rank_in_window` cannot answer this either — it is the rank that frame had when it landed,
+        and a window that has since slid past its earlier siblings would keep reporting their high-water mark.
+
+        Bounded by construction: `news_oi_signals` holds one row per parsed frame under a 30-day purge —
+        roughly 190 a day, so low thousands at steady state. The window spans every symbol rather than one,
+        so the planner takes the table rather than `ix_news_oi_signals_symbol_observed`; measured at 0.06 ms
+        over 288 rows on 2026-08-25. Re-measure if the lane's daily volume or the retention window grows.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT symbol, count(*)::int AS used
+              FROM news_oi_signals
+             WHERE metric_version = %s AND observed_at_ms > %s AND observed_at_ms <= %s
+               AND whale_oi_ratio_bps > %s AND abs(oi_change_bps) >= %s
+             GROUP BY symbol
+             ORDER BY used DESC, symbol ASC
+             LIMIT %s
+            """,
+            (
+                OI_METRIC_VERSION,
+                int(now_ms) - int(window_ms),
+                int(now_ms),
+                int(whale_oi_ratio_above_bps),
+                int(oi_change_at_least_bps),
+                int(limit),
+            ),
+        ).fetchall()
+        return [{"symbol": str(row["symbol"]), "used": int(row["used"])} for row in rows]
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         ingest = self.conn.execute("SELECT * FROM news_ingest_state WHERE singleton_key = 'opennews'").fetchone()
@@ -386,6 +478,9 @@ class FeedStorage:
             (day_ago, hour_ago, day_ago, day_ago),
         ).fetchone()
         funnel = self._funnel_24h(day_ago=day_ago)
+        # The deterministic OI lane gets its own section rather than another `pipeline` map: it is one
+        # admission's arithmetic, not a property of the whole funnel, and the monitor is its only reader.
+        oi_by_rule_24h = funnel.pop("oi_by_rule_24h")
         retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
         return {
             "ingest": {
@@ -411,6 +506,7 @@ class FeedStorage:
                 **self._oi_telemetry_24h(day_ago=day_ago),
                 **funnel,
             },
+            "oi": {"by_rule_24h": oi_by_rule_24h},
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},
             "delivery": {
                 "sent_24h": int(delivery["sent_24h"] or 0) if delivery else 0,
@@ -472,16 +568,20 @@ class FeedStorage:
             """,
             (day_ago,),
         ).fetchall()
-        # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
+        # One pass over the last 24 h of Triage verdicts; the five named maps are folded from it in Python.
+        # `oi_rule` is the deterministic judge's own gate name and has to be read from the trace: `dropped_by_rule`
+        # groups `override_rule`, which `decide()` sets to the admission (`telemetry_deterministic`) for every
+        # OI verdict, so the funnel can say how many frames were withheld but never by which gate.
         verdict_groups = self.conn.execute(
             """
             SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
                    COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
                    COALESCE(trace ->> 'seen_scope', '') AS seen_scope,
+                   COALESCE(trace -> 'oi_signal' ->> 'rule', '') AS oi_rule,
                    count(*) AS n
               FROM news_verdicts
              WHERE stage = 'triage' AND created_at_ms >= %s
-             GROUP BY 1, 2, 3, 4, 5, 6
+             GROUP BY 1, 2, 3, 4, 5, 6, 7
             """,
             (day_ago,),
         ).fetchall()
@@ -489,6 +589,7 @@ class FeedStorage:
         throttled: dict[str, int] = {}
         pushed_by_rule: dict[str, int] = {}
         degraded_by_code: dict[str, int] = {}
+        oi_by_rule: dict[str, int] = {}
         # Duplicate withholds by measurement path. Policy v7 writes `all` for
         # every ordinary push comparison; `throttled` is retained for old rows.
         duplicates: dict[str, int] = {"throttled": 0, "all": 0}
@@ -508,6 +609,9 @@ class FeedStorage:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
+            oi_rule = str(row["oi_rule"] or "")
+            if oi_rule:
+                oi_by_rule[oi_rule] = oi_by_rule.get(oi_rule, 0) + n
         # Both Review v2 shapes of "the reader should have got this": an accepted Event judgment and an
         # accepted ExternalMissSnapshot.  The latter is the only observed upper bound on upstream recall.
         missed = self.conn.execute(
@@ -538,6 +642,7 @@ class FeedStorage:
             "dropped_by_rule": dict(sorted(dropped.items(), key=lambda kv: -kv[1])),
             "throttled_by_key": dict(sorted(throttled.items(), key=lambda kv: -kv[1])[:10]),
             "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
+            "oi_by_rule_24h": dict(sorted(oi_by_rule.items(), key=lambda kv: -kv[1])),
             "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "reviewed_should_push_24h": int(missed["n"] or 0) if missed else 0,
             "reviewed_external_miss_24h": int(missed["external"] or 0) if missed else 0,
@@ -688,6 +793,41 @@ def _optional_bool(value: Any) -> bool | None:
     return bool(value) if isinstance(value, bool) else None
 
 
+def _oi_summary(value: Any) -> dict[str, Any] | None:
+    """The deterministic OI judgment behind one `telemetry_deterministic` row, or None for every other row.
+
+    Every field is `oi_judgment_trace()` / `oi_parse_failure()` output read back verbatim — the browser is not
+    allowed to re-run `oi_signal_parser_v1` over `leader_title`, and a number it re-derived would be a second
+    parser to keep in step with the judge. The two thresholds come from the trace's own `policy`, so a stored
+    frame keeps saying what it ran under after an operator retunes `news.oi`.
+
+    `strategy_id`, `provider` and `provider_source` stay behind: the console does not display provider
+    Strategy IDs. The symbol and the direction are already on `triage.assets[]` / `triage.direction`.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    policy = value.get("policy")
+    policy = policy if isinstance(policy, Mapping) else {}
+    return {
+        "parsed": bool(value.get("parsed")),
+        "rule": str(value.get("rule") or ""),
+        "oi_change_bps": _optional_int(value.get("oi_change_bps")),
+        "oi_value_usd": _optional_int(value.get("oi_value_usd")),
+        "whale_long_profit_bps": _optional_int(value.get("whale_long_profit_bps")),
+        "whale_oi_ratio_bps": _optional_int(value.get("whale_oi_ratio_bps")),
+        "eligible_rank_in_window": _optional_int(value.get("eligible_rank_in_window")),
+        "rank_semantics": str(value.get("rank_semantics") or "") or None,
+        "window_ms": _optional_int(policy.get("window_ms")),
+        "max_rank_in_window": _optional_int(policy.get("max_rank_in_window")),
+        "whale_oi_ratio_above_bps": _optional_int(policy.get("whale_oi_ratio_above_bps")),
+        "oi_change_at_least_bps": _optional_int(policy.get("oi_change_at_least_bps")),
+        "parser_version": str(value.get("parser_version") or "") or None,
+        "failure_stage": str(value.get("failure_stage") or "") or None,
+        "title_sha256": str(value.get("title_sha256") or "") or None,
+    }
+
+
 def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
     triage = _triage_summary(
         final_decision=row.get("final_decision"),
@@ -716,6 +856,7 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "outcome": outcome.as_dict(),
         "triage": triage,
         "delivery": delivery,
+        "oi": _oi_summary(row.get("oi_signal")),
     }
 
 
