@@ -152,7 +152,7 @@ def test_partial_outcome_is_not_counted_as_complete_coverage_or_max_holding() ->
         **outcome["event_study_policy"],
         "path_semantics": "closed_5m_trade_price_bars",
         "status": "missing",
-        "reason": "holding_deadline_unobserved",
+        "reason": "holding_path_incomplete",
     }
     rows = [
         {
@@ -166,8 +166,8 @@ def test_partial_outcome_is_not_counted_as_complete_coverage_or_max_holding() ->
     _, cohorts = summarize_evaluation_rows(rows)
     assert cohorts[0]["completed"] == 0
     assert cohorts[0]["coverage_bps"] == 0
-    assert cohorts[0]["exit_by_reason"] == {"holding_deadline_unobserved": 1}
-    assert cohorts[0]["missing_data"]["exit:holding_deadline_unobserved"] == 1
+    assert cohorts[0]["exit_by_reason"] == {"holding_path_incomplete": 1}
+    assert cohorts[0]["missing_data"]["exit:holding_path_incomplete"] == 1
 
 
 def test_event_study_policy_is_version_owned_not_read_from_runtime_order_config() -> None:
@@ -214,6 +214,25 @@ def test_max_holding_does_not_substitute_a_candle_after_the_deadline() -> None:
 
     assert outcome["exit_simulation"]["status"] == "missing"
     assert outcome["exit_simulation"]["reason"] == "holding_deadline_unobserved"
+
+
+def test_missing_middle_candle_invalidates_path_metrics_and_later_exit() -> None:
+    bars = tuple(bar for index, bar in enumerate(_bars()) if index != 2)
+    outcome = measure_event(
+        bars,
+        cutoff_ms=NOW,
+        decision="no_trade",
+        research_side="long",
+        policy=EVENT_STUDY_POLICY,
+        gap_tolerance_ms=FIVE_MINUTES,
+    )
+
+    assert outcome["horizons"]["5m"]["status"] == "measured"
+    assert outcome["horizons"]["15m"]["status"] == "measured"
+    assert outcome["mfe_bps"] is None
+    assert outcome["mae_bps"] is None
+    assert outcome["exit_simulation"]["reason"] == "holding_path_incomplete"
+    assert "path:closed_bar_gap" in outcome["missing_data"]
 
 
 def test_successful_empty_history_becomes_a_terminal_missing_outcome() -> None:

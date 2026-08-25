@@ -122,8 +122,18 @@ def measure_event(
     longest_horizon_ms = max(duration for _, duration in HORIZONS_MS)
     path = [bar for bar in ordered if start.close_at_ms < bar.close_at_ms <= start.close_at_ms + longest_horizon_ms]
     raw_path = [_return_bps(start.close, bar.close) for bar in path]
+    path_complete = _closed_path_complete(
+        path,
+        entry_at_ms=start.close_at_ms,
+        through_at_ms=start.close_at_ms + longest_horizon_ms,
+        interval_ms=policy.bar_interval_ms,
+    )
+    if not path_complete:
+        missing.append("path:closed_bar_gap")
     signed_path = (
-        [value if research_side == "long" else -value for value in raw_path] if research_side is not None else []
+        [value if research_side == "long" else -value for value in raw_path]
+        if research_side is not None and path_complete
+        else []
     )
     mfe = max(signed_path) if signed_path else None
     mae = min(signed_path) if signed_path else None
@@ -340,8 +350,12 @@ def _simulate_exit(
     if side is None:
         return {**assumptions, "status": "not_applicable", "reason": "hypothesis_side_unavailable"}
     deadline_ms = entry_at_ms + policy.max_holding_ms
-    eligible = [bar for bar in path if bar.close_at_ms <= deadline_ms]
-    for bar in eligible:
+    by_close = {bar.close_at_ms: bar for bar in path}
+    for expected_at_ms in range(entry_at_ms + policy.bar_interval_ms, deadline_ms + 1, policy.bar_interval_ms):
+        bar = by_close.get(expected_at_ms)
+        if bar is None:
+            reason = "holding_deadline_unobserved" if expected_at_ms == deadline_ms else "holding_path_incomplete"
+            return {**assumptions, "status": "missing", "reason": reason}
         signed = _signed(_return_bps(entry, bar.close), side)
         if signed is not None and signed <= -policy.stop_bps:
             return _measured_exit(assumptions, entry=entry, selected=bar, side=side, reason="stop_loss", policy=policy)
@@ -349,12 +363,8 @@ def _simulate_exit(
             return _measured_exit(
                 assumptions, entry=entry, selected=bar, side=side, reason="take_profit", policy=policy
             )
-    selected = _select_bar_at_or_after(
-        path,
-        target_ms=deadline_ms,
-        gap_tolerance_ms=policy.fixed_timestamp_tolerance_ms,
-    )
-    if selected is None:
+    selected = by_close.get(deadline_ms)
+    if selected is None:  # pragma: no cover - the loop checks the version-owned aligned deadline
         return {**assumptions, "status": "missing", "reason": "holding_deadline_unobserved"}
     return _measured_exit(assumptions, entry=entry, selected=selected, side=side, reason="max_holding", policy=policy)
 
@@ -390,6 +400,11 @@ def _select_bar_at_or_after(bars: Sequence[Bar], *, target_ms: int, gap_toleranc
     if selected is None or selected.close_at_ms - target_ms > gap_tolerance_ms:
         return None
     return selected
+
+
+def _closed_path_complete(bars: Sequence[Bar], *, entry_at_ms: int, through_at_ms: int, interval_ms: int) -> bool:
+    observed = {bar.close_at_ms for bar in bars}
+    return all(at_ms in observed for at_ms in range(entry_at_ms + interval_ms, through_at_ms + 1, interval_ms))
 
 
 def _missing_entry_outcome(
@@ -433,6 +448,8 @@ def _missing_entry_outcome(
 def _outcome_complete(outcome: Mapping[str, Any]) -> bool:
     return (
         all(measured_horizon(outcome, label) is not None for label in ("5m", "15m", "1h"))
+        and isinstance(outcome.get("mfe_bps"), int)
+        and isinstance(outcome.get("mae_bps"), int)
         and isinstance((exit_result := outcome.get("exit_simulation")), Mapping)
         and exit_result.get("status") == "measured"
     )

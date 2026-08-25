@@ -121,6 +121,7 @@ def conn(_database):
 
 
 def _reset(conn: Any) -> None:
+    conn.execute("TRUNCATE trading_strategy_evaluations, trading_strategy_registrations CASCADE")
     conn.execute("TRUNCATE trading_order_observations, trading_orders, trading_cases CASCADE")
     conn.execute("TRUNCATE news_oi_signals, news_verdicts, news_events, news_items CASCADE")
     conn.execute("DELETE FROM news_market_instruments")
@@ -722,10 +723,14 @@ def _runner(
     program: Any = None,
     bars_result: Sequence[Bar] | None = None,
     bars_error: Exception | None = None,
+    bars_available: bool = True,
 ) -> CandidateRunner:
     at_trigger = tuple(bars_result) if bars_result is not None else _regime_bars(now)
 
     def bars(_exchange_id: str) -> Any:
+        if not bars_available:
+            return None
+
         async def fetch(_symbol: str, _start: int, _end: int) -> Any:
             if bars_error is not None:
                 raise bars_error
@@ -1160,21 +1165,54 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
     )
     conn.commit()
     first = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 2 * MINUTE).turn())
-    transient = asyncio.run(
+    unavailable = asyncio.run(
         _runner(
             conn,
             adapter=PaperAdapter(),
             now=NOW + 67 * MINUTE,
+            bars_available=False,
+        ).turn()
+    )
+    assert (
+        _repos(conn).trading.pending_strategy_outcomes(
+            before_cutoff_ms=NOW + 67 * MINUTE,
+            now_ms=NOW + 67 * MINUTE,
+        )
+        == []
+    )
+    transient = asyncio.run(
+        _runner(
+            conn,
+            adapter=PaperAdapter(),
+            now=NOW + 68 * MINUTE,
             bars_error=TimeoutError("temporary provider failure"),
         ).turn()
     )
+    retry_rows = conn.execute(
+        "SELECT outcome_attempt_count, outcome_next_attempt_at_ms, outcome_last_error "
+        "FROM trading_strategy_evaluations ORDER BY evaluation_id"
+    ).fetchall()
+    assert [dict(row) for row in retry_rows] == [
+        {
+            "outcome_attempt_count": 2,
+            "outcome_next_attempt_at_ms": NOW + 70 * MINUTE,
+            "outcome_last_error": "provider_unavailable",
+        },
+        {
+            "outcome_attempt_count": 2,
+            "outcome_next_attempt_at_ms": NOW + 70 * MINUTE,
+            "outcome_last_error": "provider_unavailable",
+        },
+    ]
     deferred = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
-    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 68 * MINUTE, bars_result=()).turn())
+    second = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 70 * MINUTE, bars_result=()).turn())
 
     rows = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - 24 * 3_600_000)
     assert first["shadow_evaluated"] == 2
+    assert unavailable["shadow_completed"] == 0
+    assert unavailable["funnel"]["liquidation_outcome_deferred:provider_unavailable"] == 2
     assert transient["shadow_completed"] == 0
-    assert transient["funnel"]["liquidation_outcome_deferred:provider_error"] == 2
+    assert transient["funnel"]["liquidation_outcome_deferred:provider_unavailable"] == 2
     assert all(row["completed_at_ms"] is None for row in deferred)
     assert second["shadow_evaluated"] == 0
     assert second["shadow_completed"] == 2
@@ -1196,11 +1234,62 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
         "liquidation_exhaustion_shadow_v1": 1,
     }
     assert all(cohort["completed"] == 0 for cohort in counts["shadow_cohorts"].values())
-    assert _repos(conn).trading.pending_strategy_outcomes(before_cutoff_ms=NOW + 68 * MINUTE) == []
+    assert (
+        _repos(conn).trading.pending_strategy_outcomes(
+            before_cutoff_ms=NOW + 70 * MINUTE,
+            now_ms=NOW + 70 * MINUTE,
+        )
+        == []
+    )
     assert counts["liquidation_promotion_ready"] is False
     assert counts["liquidation_promotion_reason"] == "source_contract_incomplete"
     assert _repos(conn).trading.cases() == []
     assert _repos(conn).trading.console_orders(since_ms=NOW - 24 * 3_600_000) == []
+
+
+def test_invalid_shadow_manifest_is_terminal_missing_evidence_not_permanent_pending_work(conn) -> None:
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    strategy = strategies()["liquidation_continuation_shadow_v1"]
+    registered = _repos(conn).trading.strategy_registrations()[
+        (strategy.strategy_id, strategy.strategy_version, strategy.config_digest)
+    ]
+    assert _repos(conn).trading.insert_strategy_evaluation(
+        evaluation_id="invalid-manifest",
+        trigger_source_key="c" * 64,
+        underlying_key="crypto:DOGE",
+        trigger_kind="liquidation",
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config_digest=strategy.config_digest,
+        manifest={},
+        manifest_sha256="d" * 64,
+        decision="no_trade",
+        rule="fixture",
+        setup="fixture",
+        invalidation="fixture",
+        expected_horizon="none",
+        permission="shadow",
+        strategy_registered_at_ms=registered,
+        research_partition="holdout",
+        cutoff_ms=NOW,
+        now_ms=NOW,
+    )
+    conn.commit()
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW + 66 * MINUTE).turn())
+    row = _repos(conn).trading.console_strategy_evaluations(since_ms=NOW - MINUTE)[0]
+
+    assert report["shadow_completed"] == 1
+    assert report["funnel"]["liquidation_outcome_terminal:manifest_invalid"] == 1
+    assert row["market_outcome"]["outcome_unavailable_reason"] == "manifest_invalid"
+    assert "manifest:invalid" in row["market_outcome"]["missing_data"]
+    assert (
+        _repos(conn).trading.pending_strategy_outcomes(
+            before_cutoff_ms=NOW + 66 * MINUTE,
+            now_ms=NOW + 66 * MINUTE,
+        )
+        == []
+    )
 
 
 def test_an_acknowledged_paper_order_is_reconstructed_after_restart(conn) -> None:

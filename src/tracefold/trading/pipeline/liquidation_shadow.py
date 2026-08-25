@@ -50,6 +50,8 @@ log = logging.getLogger("tracefold.trading")
 
 _WINDOW_MS = 60_000
 _MAX_PER_TURN = 4
+_OUTCOME_RETRY_BASE_MS = 60_000
+_OUTCOME_RETRY_MAX_MS = 3_600_000
 LIQUIDATION_STRATEGY_IDS: tuple[StrategyId, StrategyId] = (
     "liquidation_continuation_shadow_v1",
     "liquidation_exhaustion_shadow_v1",
@@ -267,7 +269,9 @@ class LiquidationShadowRunner:
         pending = await self._db.read(
             "trading_liquidation_outcomes_pending",
             lambda repos: repos.trading.pending_strategy_outcomes(
-                before_cutoff_ms=now - EVENT_STUDY_SETTLEMENT_LAG_MS, limit=32
+                before_cutoff_ms=now - EVENT_STUDY_SETTLEMENT_LAG_MS,
+                now_ms=now,
+                limit=32,
             ),
             timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
         )
@@ -277,7 +281,18 @@ class LiquidationShadowRunner:
             try:
                 manifest = TradingCaseManifest.model_validate(row["manifest"])
             except ValidationError:
-                funnel.count("liquidation_outcome_reject:manifest_invalid")
+                missing_outcome = measure_event(
+                    (),
+                    cutoff_ms=int(row["cutoff_ms"]),
+                    decision=str(row["decision"]),  # type: ignore[arg-type]
+                    research_side=None,
+                    policy=EVENT_STUDY_POLICY,
+                    gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms,
+                )
+                missing_outcome["outcome_unavailable_reason"] = "manifest_invalid"
+                missing_outcome["missing_data"] = sorted([*missing_outcome["missing_data"], "manifest:invalid"])
+                completed += int(await self._persist_outcome(row, outcome=missing_outcome, now=now))
+                funnel.count("liquidation_outcome_terminal:manifest_invalid")
                 continue
             cutoff = int(row["cutoff_ms"])
             key = (
@@ -294,49 +309,55 @@ class LiquidationShadowRunner:
                 )
                 if bars is None:
                     cache[key] = None
-                    funnel.count("liquidation_outcome_deferred:provider_error")
-                    continue
-                aggregate = manifest.contexts.liquidation_aggregate
-                side = hypothesis_side(
-                    manifest.strategy_id,
-                    None if aggregate is None else aggregate.dominant_liquidated_side,
-                )
-                cache[key] = measure_event(
-                    bars,
-                    cutoff_ms=cutoff,
-                    decision=str(row["decision"]),  # type: ignore[arg-type]
-                    research_side=side,
-                    policy=EVENT_STUDY_POLICY,
-                    gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms,
-                )
+                else:
+                    aggregate = manifest.contexts.liquidation_aggregate
+                    side = hypothesis_side(
+                        manifest.strategy_id,
+                        None if aggregate is None else aggregate.dominant_liquidated_side,
+                    )
+                    cache[key] = measure_event(
+                        bars,
+                        cutoff_ms=cutoff,
+                        decision=str(row["decision"]),  # type: ignore[arg-type]
+                        research_side=side,
+                        policy=EVENT_STUDY_POLICY,
+                        gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms,
+                    )
             outcome = cache[key]
             if outcome is None:
+                await self._defer_outcome(row, now=now)
+                funnel.count("liquidation_outcome_deferred:provider_unavailable")
                 continue
-            resolved_outcome = outcome
-
-            def _write(
-                repos: Any,
-                evaluation_id: str = str(row["evaluation_id"]),
-                market_outcome: dict[str, Any] = resolved_outcome,
-            ) -> bool:
-                return bool(
-                    repos.trading.complete_strategy_outcome(
-                        evaluation_id=evaluation_id,
-                        market_outcome=market_outcome,
-                        market_outcome_version=EVENT_STUDY_VERSION,
-                        now_ms=now,
-                    )
-                )
-
-            completed += int(
-                await self._db.tx(
-                    "trading_liquidation_outcome_complete",
-                    _write,
-                    timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
-                )
-            )
+            completed += int(await self._persist_outcome(row, outcome=outcome, now=now))
         funnel.count("liquidation_outcome_completed", completed)
         return completed
+
+    async def _persist_outcome(self, row: dict[str, Any], *, outcome: dict[str, Any], now: int) -> bool:
+        return bool(
+            await self._db.tx(
+                "trading_liquidation_outcome_complete",
+                lambda repos: repos.trading.complete_strategy_outcome(
+                    evaluation_id=str(row["evaluation_id"]),
+                    market_outcome=outcome,
+                    market_outcome_version=EVENT_STUDY_VERSION,
+                    now_ms=now,
+                ),
+                timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
+            )
+        )
+
+    async def _defer_outcome(self, row: dict[str, Any], *, now: int) -> None:
+        attempts = int(row["outcome_attempt_count"])
+        retry_ms = min(_OUTCOME_RETRY_BASE_MS * (2 ** min(attempts, 6)), _OUTCOME_RETRY_MAX_MS)
+        await self._db.tx(
+            "trading_liquidation_outcome_defer",
+            lambda repos: repos.trading.defer_strategy_outcome(
+                evaluation_id=str(row["evaluation_id"]),
+                expected_attempt_count=attempts,
+                retry_at_ms=now + retry_ms,
+            ),
+            timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
+        )
 
     async def _instrument(
         self, trigger: LiquidationTradeCandidate, *, exchange: LiveExchangeId, now: int
@@ -368,7 +389,7 @@ class LiquidationShadowRunner:
     async def _outcome_bars(self, instrument: InstrumentRef, *, cutoff: int, horizon: int) -> list[Bar] | None:
         fetcher = self._bars(instrument.exchange_id)
         if fetcher is None:
-            return []
+            return None
         try:
             bars = await observe_provider_call(
                 self._telemetry,

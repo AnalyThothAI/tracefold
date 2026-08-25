@@ -161,6 +161,9 @@ def upgrade() -> None:
           market_outcome         JSONB,
           market_outcome_version TEXT,
           completed_at_ms        BIGINT,
+          outcome_attempt_count  INTEGER NOT NULL DEFAULT 0,
+          outcome_next_attempt_at_ms BIGINT NOT NULL DEFAULT 0,
+          outcome_last_error     TEXT,
           CONSTRAINT trading_strategy_evaluations_identity_unique UNIQUE (
             trigger_source_key, strategy_id, strategy_version, strategy_config_digest
           ),
@@ -190,6 +193,10 @@ def upgrade() -> None:
             cutoff_ms >= strategy_registered_at_ms AND created_at_ms >= cutoff_ms
             AND (completed_at_ms IS NULL OR completed_at_ms >= created_at_ms)
           ),
+          CONSTRAINT trading_strategy_evaluations_retry_check CHECK (
+            outcome_attempt_count >= 0 AND outcome_next_attempt_at_ms >= 0
+            AND (outcome_last_error IS NULL OR outcome_last_error = 'provider_unavailable')
+          ),
           CONSTRAINT trading_strategy_evaluations_outcome_check CHECK (
             (market_outcome IS NULL AND market_outcome_version IS NULL AND completed_at_ms IS NULL) OR
             (market_outcome IS NOT NULL AND jsonb_typeof(market_outcome) = 'object'
@@ -201,6 +208,11 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX ix_trading_strategy_evaluations_cohort "
         "ON trading_strategy_evaluations (strategy_id, created_at_ms DESC)"
+    )
+    op.execute(
+        "CREATE INDEX ix_trading_strategy_evaluations_pending "
+        "ON trading_strategy_evaluations (outcome_next_attempt_at_ms, cutoff_ms) "
+        "WHERE completed_at_ms IS NULL"
     )
     op.execute("GRANT SELECT ON trading_strategy_evaluations TO tracefold_serve")
     op.execute("GRANT SELECT, INSERT, UPDATE ON trading_strategy_evaluations TO tracefold_workers")

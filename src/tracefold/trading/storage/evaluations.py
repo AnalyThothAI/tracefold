@@ -143,18 +143,39 @@ class EvaluationStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def pending_strategy_outcomes(self, *, before_cutoff_ms: int, limit: int = 32) -> list[dict[str, Any]]:
+    def pending_strategy_outcomes(self, *, before_cutoff_ms: int, now_ms: int, limit: int = 32) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT evaluation_id, strategy_id, decision, manifest, cutoff_ms
+            SELECT evaluation_id, strategy_id, decision, manifest, cutoff_ms, outcome_attempt_count
               FROM trading_strategy_evaluations
              WHERE completed_at_ms IS NULL AND cutoff_ms <= %s
+               AND outcome_next_attempt_at_ms <= %s
              ORDER BY cutoff_ms, evaluation_id
              LIMIT %s
             """,
-            (int(before_cutoff_ms), int(limit)),
+            (int(before_cutoff_ms), int(now_ms), int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def defer_strategy_outcome(
+        self,
+        *,
+        evaluation_id: str,
+        expected_attempt_count: int,
+        retry_at_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE trading_strategy_evaluations
+               SET outcome_attempt_count = outcome_attempt_count + 1,
+                   outcome_next_attempt_at_ms = %s,
+                   outcome_last_error = 'provider_unavailable'
+             WHERE evaluation_id = %s AND completed_at_ms IS NULL
+               AND outcome_attempt_count = %s
+            """,
+            (int(retry_at_ms), evaluation_id, int(expected_attempt_count)),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
     def complete_strategy_outcome(
         self,

@@ -1799,9 +1799,14 @@ Fixed horizons and the holding deadline require the exact normalized candle
 timestamp; a later candle never substitutes for a missing observation. A
 successful history response with no usable entry becomes a terminal,
 versioned missing-data outcome so it cannot block the bounded pending queue;
-provider errors remain pending and retry on a later turn.
+provider errors or a temporarily unavailable venue fetcher remain pending with
+durable exponential backoff, so repeated failures cannot starve newer rows.
+An invalid frozen manifest is terminalized as named missing evidence rather
+than occupying the pending queue forever.
 Coverage counts only rows with every supported 5m/15m/1h horizon and a proven
-terminal exit; a missing holding-deadline bar is not called max-holding. It also
+terminal exit and complete 5-minute path; a missing path candle invalidates
+MFE/MAE and any later exit, while a missing holding-deadline bar is not called
+max-holding. It also
 reports MFE/MAE, fees/slippage, funding availability, deterministic bootstrap
 intervals and failure/missing counts. The current 5-minute public candle
 contract marks 5s/30s/1m and funding missing. The provider does not expose a durable duplicate

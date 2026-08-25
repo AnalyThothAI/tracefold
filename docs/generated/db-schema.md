@@ -605,6 +605,9 @@
 | `market_outcome` | `JSONB` | True | `None` |
 | `market_outcome_version` | `TEXT` | True | `None` |
 | `completed_at_ms` | `BIGINT` | True | `None` |
+| `outcome_attempt_count` | `INTEGER` | False | `0` |
+| `outcome_next_attempt_at_ms` | `BIGINT` | False | `0` |
+| `outcome_last_error` | `TEXT` | True | `None` |
 
 ## `trading_strategy_registrations`
 

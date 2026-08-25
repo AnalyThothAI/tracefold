@@ -302,6 +302,18 @@ def test_0310_hard_cuts_case_kind_and_adds_immutable_strategy_ledgers() -> None:
             "trading_strategy_registrations",
             "trading_strategy_evaluations",
         }
+        evaluation_columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'trading_strategy_evaluations'"
+            ).fetchall()
+        }
+        assert {
+            "outcome_attempt_count",
+            "outcome_next_attempt_at_ms",
+            "outcome_last_error",
+        } <= evaluation_columns
         liquidation_columns = {
             str(row["column_name"])
             for row in conn.execute(
