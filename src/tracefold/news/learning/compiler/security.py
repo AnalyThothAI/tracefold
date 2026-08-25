@@ -22,7 +22,7 @@ from ...program.artifact import ProgramStrategyPatchV1
 from .sandbox import CompilerSandboxLaunchReceipt
 
 COMPILER_INPUT_SCHEMA: Literal["tracefold.news.compile_input_bundle.v3"] = "tracefold.news.compile_input_bundle.v3"
-COMPILER_CORPUS_SCHEMA: Literal["tracefold.news.compile_corpus_receipt.v3"] = "tracefold.news.compile_corpus_receipt.v3"
+COMPILER_CORPUS_SCHEMA: Literal["tracefold.news.compile_corpus_receipt.v4"] = "tracefold.news.compile_corpus_receipt.v4"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
     "tracefold.news.model_execution_identity.v1"
 )
@@ -188,14 +188,19 @@ def endpoint_fingerprint(api_base: str) -> str:
 class CompileCorpusReceipt(_ExactModel):
     """Trusted roots proving which accepted development projection was exported."""
 
-    schema_version: Literal["tracefold.news.compile_corpus_receipt.v3"] = COMPILER_CORPUS_SCHEMA
+    schema_version: Literal["tracefold.news.compile_corpus_receipt.v4"] = COMPILER_CORPUS_SCHEMA
     learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
+    # The ledger key for the dataset artifact, which is a separately stored object. That is what earns a
+    # digest here; `development_dataset_payload_sha256`, `case_root_sha256` and `cluster_root_sha256` did
+    # not. The bundle embeds `dataset_payload` and `episodes` and commits to both through `bundle_sha256`,
+    # so those three addressed content sitting in the same document — and the validator that checked them
+    # computed each side from that one object, which is a comparison that cannot fail.
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
-    development_dataset_payload_sha256: str = Field(pattern=_SHA256_PATTERN)
     learning_epoch_started_at_ms: int = Field(ge=0)
     projection_schema_id: Literal["tracefold.news.development_compile_episode.v3"] = COMPILE_EPISODE_PROJECTION_SCHEMA
-    case_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    cluster_root_sha256: str = Field(pattern=_SHA256_PATTERN)
+    # This one stays, and it is the only one that ever had a reason to. It survives into `CompileRecordV1`,
+    # where `CandidateEvaluator` re-projects the episodes from live tables and compares it — a second party
+    # checking a value it did not compute, which is the whole test §2 sets for keeping a digest.
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
     # The rubric the trusted side accepted this corpus under. The untrusted compiler records it in the metric
@@ -230,10 +235,6 @@ class CompilerProxyTariff(_ExactModel):
     reflection_output_microusd_per_million: int = Field(gt=0)
     metric_judge_input_microusd_per_million: int = Field(gt=0)
     metric_judge_output_microusd_per_million: int = Field(gt=0)
-
-    @property
-    def tariff_sha256(self) -> str:
-        return canonical_sha(self.model_dump(mode="json"))
 
     def worst_case_cost_microusd(
         self,
@@ -536,19 +537,12 @@ class CompileInputBundle(_ExactModel):
             "metric_judge",
         ):
             raise ValueError("news_program_compile_role_binding_order_invalid")
-        if self.corpus.development_dataset_payload_sha256 != canonical_sha(
-            self.dataset_payload
-        ) or self.corpus.development_dataset_sha != canonical_sha({"kind": "dataset", "payload": self.dataset_payload}):
+        if self.corpus.development_dataset_sha != canonical_sha({"kind": "dataset", "payload": self.dataset_payload}):
             raise ValueError("news_program_compile_dataset_payload_root_mismatch")
         if self.corpus.episode_count != len(episode_payloads):
             raise ValueError("news_program_compile_episode_count_mismatch")
         if self.corpus.episode_projection_root_sha256 != canonical_sha(episode_payloads):
             raise ValueError("news_program_compile_episode_projection_root_mismatch")
-        case_ids, cluster_ids = _episode_ids(episode_payloads)
-        if self.corpus.case_root_sha256 != canonical_sha(case_ids):
-            raise ValueError("news_program_compile_case_root_mismatch")
-        if self.corpus.cluster_root_sha256 != canonical_sha(cluster_ids):
-            raise ValueError("news_program_compile_cluster_root_mismatch")
         values = self.model_dump(mode="json", exclude={"bundle_sha256"})
         if self.bundle_sha256 != canonical_sha(values):
             raise ValueError("news_program_compile_input_bundle_hash_mismatch")
@@ -860,11 +854,8 @@ def seal_compile_input(
         raise ValueError("news_program_compile_dataset_episode_membership_mismatch")
     corpus = CompileCorpusReceipt(
         development_dataset_sha=dataset_sha,
-        development_dataset_payload_sha256=canonical_sha(payload),
         learning_epoch_started_at_ms=learning_epoch_started_at_ms,
         projection_schema_id=COMPILE_EPISODE_PROJECTION_SCHEMA,
-        case_root_sha256=canonical_sha(case_ids),
-        cluster_root_sha256=canonical_sha(cluster_ids),
         episode_projection_root_sha256=canonical_sha(list(episode_payloads)),
         episode_count=len(episode_payloads),
         review_rubric_version=review_rubric_version,

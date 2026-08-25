@@ -238,9 +238,15 @@ def test_sealed_compile_input_recomputes_dataset_and_ordered_projection_roots() 
     bundle = _sealed_bundle()
 
     assert bundle.corpus.episode_count == 2
-    assert bundle.corpus.case_root_sha256 == canonical_sha(["case-1", "case-2"])
-    assert bundle.corpus.cluster_root_sha256 == canonical_sha(["cluster-a", "cluster-b"])
+    # The one projection root that survives into `CompileRecordV1`, where `CandidateEvaluator` re-projects
+    # the episodes from live tables and compares it. `case_root_sha256`, `cluster_root_sha256` and
+    # `development_dataset_payload_sha256` used to sit beside it and were deleted: the bundle embeds
+    # `dataset_payload` and `episodes` and commits to both through `bundle_sha256`, so each of the three
+    # addressed content in the same document and was checked against a value computed from that document.
     assert bundle.corpus.episode_projection_root_sha256 == canonical_sha(list(_episodes()))
+    assert not {"case_root_sha256", "cluster_root_sha256", "development_dataset_payload_sha256"} & set(
+        type(bundle.corpus).model_fields
+    )
     assert CompileInputBundle.model_validate(bundle.model_dump(mode="json")) == bundle
 
 

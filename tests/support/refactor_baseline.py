@@ -172,9 +172,13 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_193_compile_record_convergence",
         "news_program_compile_record_v1",
     ),
+    # v4: the corpus receipt kept three digests of content the bundle already embeds and commits to —
+    # `development_dataset_payload_sha256`, `case_root_sha256`, `cluster_root_sha256` — each checked
+    # against a value computed from the same object. Only `episode_projection_root_sha256` survives,
+    # because a second party re-projects the episodes and compares it.
     "program_learning.compiler_schemas[1]": (
         "issue_193_compile_record_convergence",
-        "tracefold.news.compile_corpus_receipt.v3",
+        "tracefold.news.compile_corpus_receipt.v4",
     ),
     "program_learning.compiler_schemas[2]": (
         "issue_193_compile_record_convergence",
