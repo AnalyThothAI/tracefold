@@ -35,7 +35,10 @@ async def attempt_once(
     call: Callable[[], Awaitable[ExecutionReceipt]],
     now: int,
     observe_call: ExecutionCallObserver | None = None,
-) -> tuple[ExecutionReceipt | None, str]:
+    claim_clock: Callable[[], int] | None = None,
+    entry_approval_window: tuple[int, int] | None = None,
+    entry_preflight_window: tuple[int, int] | None = None,
+) -> tuple[ExecutionReceipt | None, str, int]:
     """The durable one-attempt contract, shared by the entry and the exit.
 
     OpenTrade publishes no client idempotency key, so nothing downstream can deduplicate a resend.
@@ -50,18 +53,83 @@ async def attempt_once(
     untouched and the same close was re-issued every thirty seconds forever.
     """
 
-    claim = await db.tx(
+    guard_clock = claim_clock
+    if entry_approval_window is not None and guard_clock is None:
+        raise ValueError("trading_guarded_entry_claim_clock_required")
+
+    def _claim(repos: Any) -> tuple[str, int]:
+        if entry_approval_window is not None:
+            # Take the order-row lock before sampling the final live windows. Otherwise lock
+            # contention can consume their remaining lifetime after a seemingly valid sample.
+            repos.trading.lock_entry_attempt(order_id=order.order_id)
+        claim_now = int(claim_clock()) if claim_clock is not None else now
+        claim_kwargs: dict[str, Any] = {}
+        if entry_approval_window is not None:
+            claim_kwargs["entry_approval_window"] = entry_approval_window
+        if entry_preflight_window is not None:
+            claim_kwargs["entry_preflight_window"] = entry_preflight_window
+        result = str(
+            repos.trading.claim_attempt(
+                order_id=order.order_id,
+                kind=kind,
+                now_ms=claim_now,
+                **claim_kwargs,
+            )
+        )
+        if result == "claimed" and kind == "entry":
+            # This is an attempt/write ceiling, not a receipt counter. Charge it in the same commit as
+            # SUBMITTING so process death after the provider call cannot make another entry admissible.
+            repos.trading.bump_orders_today(day_key=utc_day_key(claim_now), now_ms=claim_now)
+        return result, claim_now
+
+    claim, claim_now = await db.tx(
         "trading_attempt_claim",
-        lambda repos: repos.trading.claim_attempt(order_id=order.order_id, kind=kind, now_ms=now),
+        _claim,
         timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
     )
     if claim != "claimed":
         log.info("trading %s attempt refused order=%s reason=%s", kind, order.order_id, claim)
-        return None, claim
+        return None, claim, claim_now
+
+    attempt_now = claim_now
+    if entry_approval_window is not None:
+        if guard_clock is None:  # pragma: no cover - validated before the claim transaction
+            raise RuntimeError("trading_guarded_entry_claim_clock_missing")
+        attempt_now = int(guard_clock())
+        refusal: str | None = None
+        if not (entry_approval_window[0] <= attempt_now <= entry_approval_window[1]):
+            refusal = "approval_expired"
+        elif entry_preflight_window is not None and not (
+            entry_preflight_window[0] <= attempt_now <= entry_preflight_window[1]
+        ):
+            refusal = "live_repreflight_stale"
+        elif utc_day_key(attempt_now) != utc_day_key(claim_now):
+            refusal = "live_submission_day_changed"
+        if refusal is not None:
+
+            def _cancel(repos: Any) -> bool:
+                cancelled = bool(
+                    repos.trading.reject_unstarted_attempt(
+                        order_id=order.order_id,
+                        reason=refusal,
+                        now_ms=attempt_now,
+                    )
+                )
+                if cancelled:
+                    repos.trading.release_order_day_charge(day_key=utc_day_key(claim_now), now_ms=attempt_now)
+                return cancelled
+
+            await db.tx(
+                "trading_attempt_cancel_unstarted",
+                _cancel,
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
+            log.info("trading entry attempt cancelled before provider call order=%s reason=%s", order.order_id, refusal)
+            return None, refusal, attempt_now
 
     try:
         pending = call()
-        return await (observe_call(pending) if observe_call is not None else pending), "claimed"
+        return await (observe_call(pending) if observe_call is not None else pending), "claimed", attempt_now
     except Exception as exc:
         reason = f"provider_exception:{type(exc).__name__}"
         log.warning("trading %s attempt did not answer: %s", kind, type(exc).__name__)
@@ -71,12 +139,12 @@ async def attempt_once(
                 order_id=order.order_id,
                 state=OrderState.AMBIGUOUS.value,
                 state_reason=f"{kind}_{reason}",
-                next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
-                now_ms=now,
+                next_reconcile_at_ms=attempt_now + _RECONCILE_BACKOFF_MS,
+                now_ms=attempt_now,
             ),
             timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
         )
-        return None, "ambiguous"
+        return None, "ambiguous", attempt_now
 
 
 async def commit_order(
@@ -87,16 +155,22 @@ async def commit_order(
     count: Callable[[str], None] | None = None,
     now: int,
     observe_call: ExecutionCallObserver | None = None,
+    claim_clock: Callable[[], int] | None = None,
+    entry_approval_window: tuple[int, int] | None = None,
+    entry_preflight_window: tuple[int, int] | None = None,
 ) -> bool:
     """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
-    receipt, claim = await attempt_once(
+    receipt, claim, claim_now = await attempt_once(
         db=db,
         order=order,
         kind="entry",
         call=lambda: adapter.submit(order),
         now=now,
         observe_call=observe_call,
+        claim_clock=claim_clock,
+        entry_approval_window=entry_approval_window,
+        entry_preflight_window=entry_preflight_window,
     )
     if receipt is None:
         if claim != "ambiguous":
@@ -105,13 +179,6 @@ async def commit_order(
             if count is not None:
                 count("commit_reject:already_attempted")
             return False
-        # It raised and is now recorded AMBIGUOUS. That does count: an order that may exist at the
-        # venue is exposure.
-        await db.tx(
-            "trading_order_day_count",
-            lambda repos: repos.trading.bump_orders_today(day_key=utc_day_key(now), now_ms=now),
-            timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
-        )
         if count is not None:
             count("order_ambiguous")
         return True
@@ -130,19 +197,22 @@ async def commit_order(
             average_price=None,
             position_opened_at_ms=None,
             must_close_at_ms=None,
-            next_reconcile_at_ms=now,
-            closed_at_ms=now if state is OrderState.REJECTED else None,
-            now_ms=now,
+            next_reconcile_at_ms=claim_now,
+            closed_at_ms=claim_now if state is OrderState.REJECTED else None,
+            now_ms=claim_now,
         )
         repos.trading.record_observation(
             order_id=order.order_id,
             observation_kind="submit",
             content_sha256=canonical_sha256(receipt.model_dump(mode="json")),
             content=receipt.model_dump(mode="json"),
-            now_ms=now,
+            now_ms=claim_now,
         )
-        if state is not OrderState.REJECTED:
-            repos.trading.bump_orders_today(day_key=utc_day_key(now), now_ms=now)
+        if state is OrderState.REJECTED:
+            # A definitive rejection proves no exposure. Releasing the conservative claim in the
+            # receipt transaction preserves the nominal loss-envelope semantics. A crash before this
+            # proof stays charged, which is the safe side of the uncertainty.
+            repos.trading.release_order_day_charge(day_key=utc_day_key(claim_now), now_ms=claim_now)
 
     await db.tx("trading_order_receipt", _apply, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
     if count is not None:

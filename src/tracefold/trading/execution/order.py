@@ -20,9 +20,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 
 from ..contracts import (
+    ExecutionObservation,
     ExecutionReceipt,
     MarketContext,
     OrderSide,
@@ -72,7 +73,7 @@ class OrderPolicy:
         }
 
     @property
-    def worst_case_daily_loss_usd(self) -> Decimal:
+    def nominal_daily_stop_loss_usd(self) -> Decimal:
         per_order = self.fixed_notional_usd * Decimal(self.fixed_stop_bps) / Decimal(10_000)
         return per_order * Decimal(self.max_orders_per_day)
 
@@ -138,6 +139,12 @@ def size_order(
     if market.spread_bps is not None and market.spread_bps > policy.max_spread_bps:
         return RiskRejection(rule="spread_above_max", detail=str(market.spread_bps))
 
+    price_tick = market.price_tick
+    if live and price_tick is None:
+        return RiskRejection(rule="price_tick_unknown")
+    if price_tick is not None and price_tick <= 0:
+        return RiskRejection(rule="price_tick_invalid", detail=str(price_tick))
+
     contract_size = Decimal(market.contract_size or 1)
     if contract_size <= 0:
         return RiskRejection(rule="contract_size_invalid", detail=str(contract_size))
@@ -152,11 +159,17 @@ def size_order(
     notional = quantity * entry * contract_size
     if market.min_notional is not None and notional < market.min_notional:
         return RiskRejection(rule="notional_below_venue_minimum", detail=f"{notional} < {market.min_notional}")
+    stop_price = stop_price_for(side=side, entry=entry, stop_bps=policy.fixed_stop_bps)
+    if live and price_tick is not None:
+        rounding = ROUND_CEILING if side == "buy" else ROUND_DOWN
+        stop_price = (stop_price / price_tick).to_integral_value(rounding=rounding) * price_tick
+        if (side == "buy" and stop_price >= entry) or (side == "sell" and stop_price <= entry):
+            return RiskRejection(rule="stop_price_precision_invalid", detail=f"{stop_price} vs {entry}")
     return SizedOrder(
         quantity=quantity,
         notional_usd=notional,
         entry_reference=entry,
-        stop_price=stop_price_for(side=side, entry=entry, stop_bps=policy.fixed_stop_bps),
+        stop_price=stop_price,
         take_profit_price=take_profit_for(side=side, entry=entry, take_profit_bps=policy.take_profit_bps),
     )
 
@@ -170,6 +183,8 @@ def build_payload(
     stop_price: Decimal,
     take_profit_price: Decimal | None,
     hedged: bool,
+    execution_contract_sha256: str | None = None,
+    price_tick: Decimal | None = None,
 ) -> dict[str, object]:
     """The canonical provider payload, frozen on the order row before any network call exists.
 
@@ -189,7 +204,37 @@ def build_payload(
     }
     if take_profit_price is not None:
         payload["takeProfitPrice"] = str(take_profit_price)
+    if execution_contract_sha256 is not None:
+        payload["_tracefoldExecutionContractSha256"] = execution_contract_sha256
+    if price_tick is not None:
+        payload["_tracefoldPriceTick"] = str(price_tick)
     return payload
+
+
+def protection_matches(
+    *,
+    order: PreparedOrder,
+    observation: ExecutionObservation,
+    price_tick: Decimal | None,
+) -> bool:
+    """Prove that this exact position, not merely some stop, has working native protection."""
+
+    protection = observation.protection
+    quantity = observation.actual_position_quantity
+    if protection is None or quantity is None or quantity <= 0 or price_tick is None or price_tick <= 0:
+        return False
+    return (
+        order.remote_order_id is not None
+        and protection.parent_remote_order_id == order.remote_order_id
+        and protection.account_ref == order.account_ref
+        and protection.exchange_id == order.instrument.exchange_id
+        and protection.provider_symbol == order.instrument.provider_symbol
+        and protection.side == ("sell" if order.side == "buy" else "buy")
+        and protection.quantity >= quantity
+        and abs(protection.trigger_price - order.stop_price) <= price_tick
+        and protection.reduce_only
+        and protection.status.lower() in {"active", "new", "open", "working"}
+    )
 
 
 ClockMs = Callable[[], int]
@@ -231,6 +276,7 @@ __all__ = [
     "floor_to_step",
     "must_close_at",
     "next_state_for",
+    "protection_matches",
     "realized_bps",
     "size_order",
     "stop_price_for",

@@ -29,15 +29,52 @@ Before deploying #160, remove every retired policy-v9 action/priority key from
 `~/.tracefold/config.yaml` and report only its redacted result. There is no
 compatibility alias.
 
-Issue #185 PR-C1 keeps OpenTrade capital writes disabled. A configured
+Issue #185 PR-C2 implements the reviewed OpenTrade write lifecycle but does not
+make configuration equivalent to provider readiness. A configured
 `live_reviewed` lane must use one venue, a non-empty owner-private regular
 non-symlink token file (normally mode `0600`, at most 16 KiB),
 one explicit `trading.live_symbol`, notional at most 10 USD, one open
-underlying and one order per day. `trading status` must still show
-`execution_backend=opentrade_read_only`,
-`live_mode_supported=false`, `live_ready=false`, and
-`live_readiness=not_proven`. That is healthy read-only capability, not a failed
-attempt to live trade. `live_bounded` is rejected at config validation.
+underlying and one order per day. `trading status` shows
+`execution_backend=opentrade_reviewed`, `live_mode_supported=true`,
+`live_ready=false`, and `live_readiness=not_proven`: the CLI cannot infer the
+Workers process's account/metadata/position-mode/inventory receipt. The database
+accepts an approval only during the 60 s window from order creation. A valid
+approval near the end of that window remains due for one 30 s reconcile cadence,
+and the runner still requires a fresh no-drift preflight immediately before the
+write; rejection there is expected fail-closed behavior and must record zero
+provider attempts. An `APPROVED` row without the C2 approval marker has no
+provable approval instant and rejects without a write after upgrade.
+`live_bounded` is rejected at settings
+validation and again at composition. If a partially filled tracked entry still
+appears in provider open orders, reconciliation enters manual review and sends
+no position close: the remaining entry could otherwise fill after the filled
+slice was closed. Cancel or otherwise settle the entry at the venue, then let a
+fresh provider read prove it terminal before resolving the manual row.
+Provider redirects are ambiguous writes even when their body says rejection;
+they never release the daily attempt charge or active-underlying slot.
+A live ticker must identify the exact exchange and provider symbol selected by
+metadata and carry a millisecond timestamp within the 10-second preflight
+freshness window. Missing, cross-market, stale, seconds-unit or future ticker
+facts disable that attempt before sizing or any provider write.
+A provider rejection with explicit zero fill also remains ambiguous when the
+same snapshot contains any current open order or correlated position history
+that cannot be fully attributed to the tracked lifecycle.
+Same-symbol opening trades from the provider's lookback are scoped to the
+current order's frozen instrument/preflight time. Only a valid timestamp proven
+inside the composite snapshot's seven-day millisecond bounds and earlier beyond
+the tolerated 30-second provider clock skew is ignored. Missing timestamps stay
+conflicting; malformed, seconds-unit, too-old or future values invalidate the
+observation.
+The same rule applies to unmatched reverse-side or reduce-only trades: a current
+closing trade means the preceding position quantity may already be stale, so
+reconciliation enters manual review and sends no close. Only closing history
+proven earlier than the lifecycle cutoff is ignored.
+When a lost entry response reaches manual review with no remote identity, use
+`tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
+after confirming that exact order and position at the venue. The command
+persists the identity before protection/max-holding reconciliation resumes. A
+known provider identity is immutable: supplying a different ID rejects the
+resolution and leaves the order in manual review.
 
 ## Operator lifecycle
 

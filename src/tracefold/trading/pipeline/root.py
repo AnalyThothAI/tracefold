@@ -54,6 +54,10 @@ def build_pipeline(
     """Compose the two runners. A live mode without a real adapter refuses to start."""
 
     resolved_adapter: ExecutionAdapter
+    if config.mode == "live_bounded":
+        raise ValueError("trading_live_bounded_disabled")
+    if config.mode == "live_reviewed" and config.order.take_profit_bps != 0:
+        raise ValueError("trading_live_reviewed_take_profit_disabled")
     if config.mode != "paper":
         if adapter is None or not isinstance(adapter, LiveExecutionAdapter):
             raise ValueError("trading_live_mode_requires_execution_adapter")

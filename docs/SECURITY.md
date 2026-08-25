@@ -68,6 +68,16 @@ diagnostics expose only configured/readable booleans and its resolved path,
 never its contents. The provider base URL must be credential-free HTTPS, so
 plain HTTP is rejected before the token file is read.
 
+The token is attached only by the App-owned OpenTrade adapter. Provider write
+bodies are constructed from an explicit allowlist: one reviewed market entry
+with its venue-native stop, or one full close using the latest provider-observed
+position quantity. Tracefold audit payloads exclude the token, account balance
+and raw provider bodies; HTTP errors are reduced to stable reason codes. A write
+is reachable only after exact-digest approval, code-owned expiry and a fresh
+account/inventory/metadata check, and its durable attempt claim commits before
+the network call. Transport uncertainty therefore becomes read-only
+reconciliation, never a credential-bearing blind resend.
+
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model
 reservations are code-owned.

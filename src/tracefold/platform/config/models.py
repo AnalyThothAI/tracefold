@@ -545,8 +545,8 @@ class TradingOrderSettings(BaseModel):
         return self
 
     @property
-    def worst_case_daily_loss_usd(self) -> Decimal:
-        """`fixed_notional x fixed_stop_bps x max_orders_per_day` — the envelope the operator signs off."""
+    def nominal_daily_stop_loss_usd(self) -> Decimal:
+        """Planned stop loss: `fixed_notional x fixed_stop_bps x max_orders_per_day`."""
 
         return (
             self.fixed_notional_usd * Decimal(self.fixed_stop_bps) / Decimal(10_000) * Decimal(self.max_orders_per_day)
@@ -631,6 +631,8 @@ class TradingSettings(BaseModel):
                 raise ValueError("trading_live_reviewed_requires_one_position")
             if self.order.max_orders_per_day != 1:
                 raise ValueError("trading_live_reviewed_requires_one_order_per_day")
+            if self.order.take_profit_bps != 0:
+                raise ValueError("trading_live_reviewed_take_profit_not_supported")
         return self
 
     @property

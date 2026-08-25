@@ -10,11 +10,17 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from ..contracts import (
+    TRADING_LIVE_APPROVAL_MARKER,
+    TRADING_LIVE_APPROVAL_TTL_MS,
+    TRADING_LIVE_MAX_ENTRY_DRIFT_BPS,
+    TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
     Bar,
     ExchangeId,
     ExecutionAdapter,
     ExecutionObservation,
     InstrumentRef,
+    LiveExecutionAdapter,
+    LivePreflight,
     OrderSide,
     OrderState,
     PreparedOrder,
@@ -24,7 +30,7 @@ from ..contracts import (
 from ..contracts import (
     utc_day_key as _day_key,
 )
-from ..execution.order import must_close_at, realized_bps
+from ..execution.order import must_close_at, protection_matches, realized_bps
 from ..execution.paper import evaluate_paper_exit
 from ..execution.submission import attempt_once, commit_order
 from ..telemetry import (
@@ -143,6 +149,30 @@ class ReconcileRunner:
         if state in (OrderState.AMBIGUOUS.value, OrderState.RECONCILING.value):
             return await self._resolve_ambiguity(order, row, now=now)
 
+        approval_deadline_ms: int | None = None
+        if order.mode != "paper" and state == OrderState.AWAITING_APPROVAL.value:
+            approval_age = now - int(row["created_at_ms"])
+            if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
+                return await self._reject_unsubmitted(
+                    order_id,
+                    expected_state=OrderState.AWAITING_APPROVAL.value,
+                    reason="approval_expired",
+                    now=now,
+                )
+        elif order.mode != "paper" and state == OrderState.APPROVED.value:
+            approval_deadline_ms = _approved_submission_deadline(
+                created_at_ms=int(row["created_at_ms"]),
+                approved_at_ms=int(row["updated_at_ms"]),
+                approval_marker=str(row.get("state_reason") or ""),
+            )
+            if approval_deadline_ms is None or now > approval_deadline_ms:
+                return await self._reject_unsubmitted(
+                    order_id,
+                    expected_state=OrderState.APPROVED.value,
+                    reason="approval_expired",
+                    now=now,
+                )
+
         if state == OrderState.AWAITING_APPROVAL.value:
             await self._defer(order_id, state, now)
             return False
@@ -156,8 +186,6 @@ class ReconcileRunner:
                 await self._defer(order_id, state, now)
                 return False
             if not self._adapter.writes_enabled:
-                # PR-C1 is deliberately read-only. Do not even claim the durable provider attempt;
-                # C2 will replace this capability gate after the reviewed write path is proven.
                 await self._defer(order_id, state, now)
                 return False
             # The one place an approved order becomes a provider write. The caps are re-checked here
@@ -175,8 +203,12 @@ class ReconcileRunner:
             if any(over_cap):
                 await self._defer(order_id, state, now)
                 return False
-            await self._commit(order, now)
-            return True
+            return await self._submit_approved(
+                order,
+                created_at_ms=int(row["created_at_ms"]),
+                approval_deadline_ms=cast(int, approval_deadline_ms),
+                now=now,
+            )
 
         if state == OrderState.SAFETY_CLOSING.value:
             # The exit's analogue of the `SUBMITTING` orphan. Without it a crash between the attempt
@@ -232,24 +264,155 @@ class ReconcileRunner:
             await self._defer(order_id, state, now)
             return False
 
-        if state in (OrderState.ACKNOWLEDGED.value, OrderState.OPEN.value, OrderState.PARTIAL.value):
+        if state in (
+            OrderState.ACKNOWLEDGED.value,
+            OrderState.OPEN.value,
+            OrderState.PARTIAL.value,
+            OrderState.UNPROTECTED.value,
+        ):
             return await self._manage_open(order, row, now=now)
 
         await self._defer(order_id, state, now)
         return False
 
-    async def _commit(self, order: PreparedOrder, now: int) -> bool:
+    async def _commit(
+        self,
+        order: PreparedOrder,
+        now: int,
+        *,
+        entry_approval_window: tuple[int, int] | None = None,
+        entry_preflight_window: tuple[int, int] | None = None,
+    ) -> bool:
         return await commit_order(
             db=self._db,
             adapter=self._adapter,
             order=order,
             now=now,
+            claim_clock=self._clock if entry_approval_window is not None else None,
+            entry_approval_window=entry_approval_window,
+            entry_preflight_window=entry_preflight_window,
             observe_call=lambda call: observe_provider_call(
                 self._telemetry,
                 name="trading_reconcile",
                 source=external_data_source(order.instrument.exchange_id),
                 call=call,
             ),
+        )
+
+    async def _submit_approved(
+        self,
+        order: PreparedOrder,
+        *,
+        created_at_ms: int,
+        approval_deadline_ms: int,
+        now: int,
+    ) -> bool:
+        if order.mode == "paper":
+            return await self._commit(order, now)
+        if not isinstance(self._adapter, LiveExecutionAdapter):
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason="live_repreflight_unavailable",
+                now=now,
+            )
+        try:
+            preflight = await observe_provider_call(
+                self._telemetry,
+                name="trading_reconcile",
+                source=external_data_source(order.instrument.exchange_id),
+                call=self._adapter.preflight(instrument=order.instrument, account_ref=order.account_ref),
+            )
+        except Exception:
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason="live_repreflight_failed",
+                now=self._clock(),
+            )
+        submit_now = self._clock()
+        approval_expired = submit_now < created_at_ms or submit_now > approval_deadline_ms
+        rejection = (
+            "approval_expired"
+            if approval_expired
+            else _live_repreflight_rejection(order, preflight, config=self._config, now=submit_now)
+        )
+        audit = preflight.audit_payload()
+
+        def _record(repos: Any) -> bool:
+            repos.trading.record_observation(
+                order_id=order.order_id,
+                observation_kind="live_repreflight",
+                content_sha256=canonical_sha256(audit),
+                content=audit,
+                now_ms=submit_now,
+            )
+            if rejection is not None:
+                return bool(
+                    repos.trading.reject_unsubmitted(
+                        order_id=order.order_id,
+                        expected_state=OrderState.APPROVED.value,
+                        reason=(
+                            "approval_expired" if rejection == "approval_expired" else f"live_repreflight_{rejection}"
+                        ),
+                        now_ms=submit_now,
+                    )
+                )
+            return False
+
+        rejected = await self._db.tx("trading_live_repreflight", _record, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+        if rejection is not None:
+            return bool(rejected)
+
+        claim_now = self._clock()
+        if claim_now < created_at_ms or claim_now > approval_deadline_ms:
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason="approval_expired",
+                now=claim_now,
+            )
+        late_rejection = _live_repreflight_rejection(order, preflight, config=self._config, now=claim_now)
+        if late_rejection is not None:
+            return await self._reject_unsubmitted(
+                order.order_id,
+                expected_state=OrderState.APPROVED.value,
+                reason=f"live_repreflight_{late_rejection}",
+                now=claim_now,
+            )
+
+        await self._commit(
+            order,
+            claim_now,
+            entry_approval_window=(created_at_ms, approval_deadline_ms),
+            entry_preflight_window=(
+                preflight.observed_at_ms - TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
+                preflight.observed_at_ms + TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
+            ),
+        )
+        current = await self._db.read(
+            "trading_order_after_submit",
+            lambda repos: repos.trading.order(order_id=order.order_id),
+            timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
+        )
+        if current is None:
+            return True
+        if str(current["state"]) in {OrderState.ACKNOWLEDGED.value, OrderState.AMBIGUOUS.value}:
+            return await self._reconcile(current, control="RUNNING", now=claim_now)
+        return True
+
+    async def _reject_unsubmitted(self, order_id: str, *, expected_state: str, reason: str, now: int) -> bool:
+        return bool(
+            await self._db.tx(
+                "trading_reject_unsubmitted",
+                lambda repos: repos.trading.reject_unsubmitted(
+                    order_id=order_id,
+                    expected_state=expected_state,
+                    reason=reason,
+                    now_ms=now,
+                ),
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
         )
 
     async def _defer(self, order_id: str, state: str, now: int) -> None:
@@ -283,6 +446,10 @@ class ReconcileRunner:
             await self._defer(order.order_id, str(row["state"]), now)
             return False
 
+        observed_now = self._clock()
+        if order.mode != "paper":
+            return await self._apply_live_observation(order, row, observation, now=observed_now, exiting=exiting)
+
         observed_state = str(observation.state)
         if observed_state == "ABSENT_CONFIRMED":
             if exiting:
@@ -293,7 +460,7 @@ class ReconcileRunner:
                 repos.trading.record_observation(
                     order_id=order.order_id,
                     observation_kind="reconcile",
-                    content_sha256=canonical_sha256(observation.model_dump(mode="json")),
+                    content_sha256=observation.snapshot_sha256,
                     content=observation.model_dump(mode="json"),
                     now_ms=now,
                 )
@@ -310,11 +477,6 @@ class ReconcileRunner:
             return True
         if exiting and observed_state == "UNKNOWN":
             await self._escalate(order.order_id, "exit_ambiguous_position_unknown", now)
-            return True
-        if order.mode != "paper":
-            # C1 records live read truth but does not adopt, protect, close, or release exposure.
-            # Those mappings require C2's exact remote-order/fill/protection evidence.
-            await self._record_and_escalate(order.order_id, observation, now)
             return True
         if observed_state == "WORKING":
             await self._db.tx(
@@ -334,9 +496,13 @@ class ReconcileRunner:
             await self._escalate(order.order_id, f"observed_{observed_state.lower()}", now)
             return True
 
-        # A precise provider fill time wins. Otherwise submission/creation is the conservative lower
-        # bound; reconciliation time must never extend the holding period.
-        opened = int(observation.first_fill_at_ms or row.get("created_at_ms") or now)
+        # A precise provider fill time wins on first adoption. Once an earlier durable lower bound
+        # exists, later evidence may move it earlier but must never extend the holding period.
+        opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
+        deadline = _conservative_deadline(
+            row,
+            must_close_at(opened_at_ms=opened, policy=self._config.order),
+        )
         next_state = {
             "PARTIAL": OrderState.PARTIAL,
             "OPEN_PROTECTED": OrderState.OPEN,
@@ -352,7 +518,7 @@ class ReconcileRunner:
             repos.trading.record_observation(
                 order_id=order.order_id,
                 observation_kind="reconcile",
-                content_sha256=canonical_sha256(observation.model_dump(mode="json")),
+                content_sha256=observation.snapshot_sha256,
                 content=observation.model_dump(mode="json"),
                 now_ms=now,
             )
@@ -364,7 +530,7 @@ class ReconcileRunner:
                 filled_quantity=None if observation.filled_quantity is None else str(observation.filled_quantity),
                 average_price=None if observation.average_price is None else str(observation.average_price),
                 position_opened_at_ms=opened,
-                must_close_at_ms=must_close_at(opened_at_ms=opened, policy=self._config.order),
+                must_close_at_ms=deadline,
                 next_reconcile_at_ms=now,
                 now_ms=now,
             )
@@ -372,19 +538,371 @@ class ReconcileRunner:
         await self._db.tx("trading_reconcile_adopt", _adopt, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
         return True
 
-    async def _record_and_escalate(self, order_id: str, observation: ExecutionObservation, now: int) -> None:
+    async def _manage_live(self, order: PreparedOrder, row: dict[str, Any], *, now: int) -> bool:
+        try:
+            observation = await observe_provider_call(
+                self._telemetry,
+                name="trading_reconcile",
+                source=external_data_source(order.instrument.exchange_id),
+                call=self._adapter.observe(order),
+            )
+        except Exception:
+            await self._defer(order.order_id, str(row["state"]), self._clock())
+            return False
+        return await self._apply_live_observation(order, row, observation, now=self._clock(), exiting=False)
+
+    async def _apply_live_observation(
+        self,
+        order: PreparedOrder,
+        row: dict[str, Any],
+        observation: ExecutionObservation,
+        *,
+        now: int,
+        exiting: bool,
+    ) -> bool:
+        observed_state = str(observation.state)
+        prior_state = str(row["state"])
+        had_position = prior_state in {
+            OrderState.PARTIAL.value,
+            OrderState.OPEN.value,
+            OrderState.UNPROTECTED.value,
+            OrderState.SAFETY_CLOSING.value,
+            OrderState.RECONCILING.value,
+        }
+        if _observation_time_invalid(observation):
+            await self._record_and_escalate(order.order_id, observation, "live_observation_time_invalid", now)
+            return True
+        if (
+            order.remote_order_id is not None
+            and observation.remote_order_id is not None
+            and observation.remote_order_id != order.remote_order_id
+        ):
+            await self._record_and_escalate(order.order_id, observation, "live_remote_order_mismatch", now)
+            return True
+        if observed_state in {"UNKNOWN", "ABSENT_CONFIRMED", "WORKING", "REJECTED"} and (exiting or had_position):
+            await self._record_and_escalate(
+                order.order_id,
+                observation,
+                f"exit_position_{observed_state.lower()}",
+                now,
+            )
+            return True
+        if observed_state == "ABSENT_CONFIRMED" and prior_state == OrderState.ACKNOWLEDGED.value:
+            if str(row.get("state_reason") or "") == "provider_visibility_pending":
+                await self._record_and_escalate(
+                    order.order_id,
+                    observation,
+                    "live_ack_visibility_unresolved",
+                    now,
+                )
+            else:
+                await self._record_live_state(
+                    order,
+                    observation,
+                    state=OrderState.ACKNOWLEDGED,
+                    reason="provider_visibility_pending",
+                    now=now,
+                )
+            return True
+        if observed_state in {"ABSENT_CONFIRMED", "REJECTED"}:
+            content = observation.model_dump(mode="json")
+
+            def _reject(repos: Any) -> None:
+                repos.trading.record_observation(
+                    order_id=order.order_id,
+                    observation_kind="reconcile",
+                    content_sha256=observation.snapshot_sha256,
+                    content=content,
+                    now_ms=now,
+                )
+                repos.trading.update_order(
+                    order_id=order.order_id,
+                    state=OrderState.REJECTED.value,
+                    state_reason="proven_absent" if observed_state == "ABSENT_CONFIRMED" else "provider_rejected",
+                    closed_at_ms=now,
+                    next_reconcile_at_ms=None,
+                    now_ms=now,
+                )
+
+            await self._db.tx("trading_live_rejected", _reject, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+            return True
+        if observed_state == "CLOSED":
+            if (
+                observation.closed_at_ms is None
+                or observation.average_price is None
+                or observation.average_price <= 0
+                or observation.exit_price is None
+                or observation.exit_price <= 0
+            ):
+                await self._record_and_escalate(order.order_id, observation, "live_closed_evidence_incomplete", now)
+                return True
+            closed_at = int(observation.closed_at_ms)
+            opened_at = _conservative_opened_at(
+                row,
+                first_fill_at_ms=observation.first_fill_at_ms,
+                now=now,
+            )
+            if opened_at > closed_at:
+                await self._record_and_escalate(order.order_id, observation, "live_closed_time_invalid", now)
+                return True
+            bps = realized_bps(
+                side=order.side,
+                entry=observation.average_price,
+                exit_price=observation.exit_price,
+                fee_bps=self._config.order.taker_fee_bps,
+            )
+            content = observation.model_dump(mode="json")
+
+            def _closed(repos: Any) -> None:
+                repos.trading.record_observation(
+                    order_id=order.order_id,
+                    observation_kind="reconcile",
+                    content_sha256=observation.snapshot_sha256,
+                    content=content,
+                    now_ms=now,
+                )
+                repos.trading.update_order(
+                    order_id=order.order_id,
+                    state=OrderState.CLOSED.value,
+                    state_reason="provider_closed",
+                    average_price=None if observation.average_price is None else str(observation.average_price),
+                    exit_price=None if observation.exit_price is None else str(observation.exit_price),
+                    exit_reason="provider_closed",
+                    realized_bps=bps,
+                    position_opened_at_ms=opened_at,
+                    position_closed_at_ms=closed_at,
+                    closed_at_ms=closed_at,
+                    next_reconcile_at_ms=None,
+                    now_ms=now,
+                )
+
+            await self._db.tx("trading_live_closed", _closed, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+            return True
+        if observed_state == "WORKING":
+            if exiting:
+                await self._record_and_escalate(order.order_id, observation, "exit_position_working", now)
+                return True
+            await self._record_live_state(
+                order,
+                observation,
+                state=OrderState.ACKNOWLEDGED,
+                reason="provider_working",
+                now=now,
+            )
+            return True
+        if observed_state not in {"PARTIAL", "OPEN_PROTECTED", "OPEN_UNPROTECTED"}:
+            await self._record_and_escalate(
+                order.order_id,
+                observation,
+                f"live_observed_{observed_state.lower()}",
+                now,
+            )
+            return True
+        if (
+            observation.actual_position_quantity is None
+            or observation.actual_position_quantity <= 0
+            or observation.actual_position_quantity > order.quantity
+            or observation.filled_quantity is None
+            or observation.filled_quantity < observation.actual_position_quantity
+            or observation.filled_quantity > order.quantity
+            or observation.filled_quantity not in {observation.actual_position_quantity, order.quantity}
+            or observation.average_price is None
+        ):
+            await self._record_and_escalate(order.order_id, observation, "live_position_evidence_incomplete", now)
+            return True
+        if exiting and (
+            order.remote_close_order_id is None or observation.evidence.get("close_terminal_without_fill") is not True
+        ):
+            await self._record_and_escalate(
+                order.order_id,
+                observation,
+                "exit_close_terminal_evidence_missing",
+                now,
+            )
+            return True
+        observed_order = (
+            order
+            if order.remote_order_id is not None or observation.remote_order_id is None
+            else order.model_copy(update={"remote_order_id": observation.remote_order_id})
+        )
+        price_tick = _payload_decimal(order.payload, "_tracefoldPriceTick")
+        protected = protection_matches(order=observed_order, observation=observation, price_tick=price_tick)
+        partial = observation.filled_quantity < order.quantity
+        next_state = (
+            OrderState.PARTIAL if partial and protected else (OrderState.OPEN if protected else OrderState.UNPROTECTED)
+        )
+        opened = _conservative_opened_at(
+            row,
+            first_fill_at_ms=observation.first_fill_at_ms,
+            now=now,
+        )
+        deadline = _conservative_deadline(
+            row,
+            must_close_at(opened_at_ms=opened, policy=self._config.order),
+        )
+        content = observation.model_dump(mode="json")
+
+        def _position(repos: Any) -> None:
+            if exiting:
+                # The provider correlated the exact close id to a terminal rejection/cancellation
+                # with an explicit zero fill. A lagging position projection alone never reaches here.
+                repos.trading.release_exit_attempt(order_id=order.order_id, now_ms=now)
+            repos.trading.record_observation(
+                order_id=order.order_id,
+                observation_kind="reconcile",
+                content_sha256=observation.snapshot_sha256,
+                content=content,
+                now_ms=now,
+            )
+            repos.trading.update_order(
+                order_id=order.order_id,
+                state=next_state.value,
+                state_reason=(
+                    "provider_partial_protected"
+                    if next_state is OrderState.PARTIAL
+                    else (
+                        "provider_open_protected" if next_state is OrderState.OPEN else "native_protection_unverified"
+                    )
+                ),
+                remote_order_id=observation.remote_order_id,
+                filled_quantity=str(observation.filled_quantity),
+                average_price=str(observation.average_price),
+                position_opened_at_ms=opened,
+                must_close_at_ms=deadline,
+                next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
+                now_ms=now,
+            )
+
+        await self._db.tx("trading_live_position", _position, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+        if not protected:
+            return await self._attempt_live_close(
+                observed_order,
+                quantity=observation.actual_position_quantity,
+                reason="unprotected",
+                now=now,
+            )
+        if now >= deadline:
+            return await self._attempt_live_close(
+                observed_order,
+                quantity=observation.actual_position_quantity,
+                reason="max_holding",
+                now=now,
+            )
+        return True
+
+    async def _record_live_state(
+        self,
+        order: PreparedOrder,
+        observation: ExecutionObservation,
+        *,
+        state: OrderState,
+        reason: str,
+        now: int,
+    ) -> None:
+        content = observation.model_dump(mode="json")
+
+        def _write(repos: Any) -> None:
+            repos.trading.record_observation(
+                order_id=order.order_id,
+                observation_kind="reconcile",
+                content_sha256=observation.snapshot_sha256,
+                content=content,
+                now_ms=now,
+            )
+            repos.trading.update_order(
+                order_id=order.order_id,
+                state=state.value,
+                state_reason=reason,
+                remote_order_id=observation.remote_order_id,
+                next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
+                now_ms=now,
+            )
+
+        await self._db.tx("trading_live_observation", _write, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+
+    async def _attempt_live_close(
+        self,
+        order: PreparedOrder,
+        *,
+        quantity: Decimal,
+        reason: str,
+        now: int,
+    ) -> bool:
+        receipt, claim, _claim_now = await attempt_once(
+            db=self._db,
+            order=order,
+            kind="exit",
+            call=lambda: self._adapter.close(order, quantity=quantity),
+            now=now,
+            observe_call=lambda call: observe_provider_call(
+                self._telemetry,
+                name="trading_reconcile",
+                source=external_data_source(order.instrument.exchange_id),
+                call=call,
+            ),
+        )
+        if receipt is None:
+            if claim == "exhausted":
+                await self._escalate(order.order_id, "exit_attempts_exhausted", now)
+            return True
+        receipt_content = receipt.model_dump(mode="json")
+
+        def _write(repos: Any) -> None:
+            current = repos.trading.order(order_id=order.order_id)
+            attempt_ordinal = 0 if current is None else int(current.get("exit_attempt_total") or 0)
+            content = {
+                **receipt_content,
+                "exit_attempt_ordinal": attempt_ordinal,
+                "operator_generation": repos.trading.latest_open_resolution_generation(order_id=order.order_id),
+            }
+            repos.trading.record_observation(
+                order_id=order.order_id,
+                observation_kind="close",
+                content_sha256=canonical_sha256(content),
+                content=content,
+                now_ms=now,
+            )
+            if receipt.state == "REJECTED":
+                repos.trading.update_order(
+                    order_id=order.order_id,
+                    state=OrderState.MANUAL_REVIEW_REQUIRED.value,
+                    state_reason=f"exit_rejected:{receipt.reason}",
+                    next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
+                    now_ms=now,
+                )
+            else:
+                repos.trading.update_order(
+                    order_id=order.order_id,
+                    state=(OrderState.AMBIGUOUS if receipt.state == "AMBIGUOUS" else OrderState.RECONCILING).value,
+                    state_reason=(
+                        "exit_close_ambiguous" if receipt.state == "AMBIGUOUS" else f"exit_{reason}_acknowledged"
+                    ),
+                    next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
+                    now_ms=now,
+                )
+
+        await self._db.tx("trading_live_close_receipt", _write, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+        return True
+
+    async def _record_and_escalate(
+        self,
+        order_id: str,
+        observation: ExecutionObservation,
+        reason: str,
+        now: int,
+    ) -> None:
         def _write(repos: Any) -> None:
             repos.trading.record_observation(
                 order_id=order_id,
                 observation_kind="reconcile",
-                content_sha256=canonical_sha256(observation.model_dump(mode="json")),
+                content_sha256=observation.snapshot_sha256,
                 content=observation.model_dump(mode="json"),
                 now_ms=now,
             )
             repos.trading.update_order(
                 order_id=order_id,
                 state=OrderState.MANUAL_REVIEW_REQUIRED.value,
-                state_reason=f"live_observed_{str(observation.state).lower()}_c1_read_only",
+                state_reason=reason,
                 next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
                 now_ms=now,
             )
@@ -407,6 +925,8 @@ class ReconcileRunner:
     async def _manage_open(self, order: PreparedOrder, row: dict[str, Any], *, now: int) -> bool:
         order_id = str(row["order_id"])
         current_state = str(row["state"])
+        if order.mode != "paper":
+            return await self._manage_live(order, row, now=now)
         if current_state == OrderState.ACKNOWLEDGED.value:
             try:
                 observation = await observe_provider_call(
@@ -418,10 +938,6 @@ class ReconcileRunner:
             except Exception:
                 await self._defer(order_id, current_state, now)
                 return False
-            if str(row["mode"]) != "paper":
-                # C1 may capture the live answer but cannot map or act on a capital position.
-                await self._record_and_escalate(order_id, observation, now)
-                return True
             if (
                 str(observation.state) != "OPEN_PROTECTED"
                 or observation.filled_quantity is None
@@ -429,14 +945,17 @@ class ReconcileRunner:
             ):
                 await self._escalate(order_id, f"paper_observed_{str(observation.state).lower()}", now)
                 return True
-            opened = int(observation.first_fill_at_ms or row.get("created_at_ms") or now)
-            deadline = must_close_at(opened_at_ms=opened, policy=self._config.order)
+            opened = _conservative_opened_at(row, first_fill_at_ms=observation.first_fill_at_ms, now=now)
+            deadline = _conservative_deadline(
+                row,
+                must_close_at(opened_at_ms=opened, policy=self._config.order),
+            )
 
             def _promote(repos: Any) -> None:
                 repos.trading.record_observation(
                     order_id=order_id,
                     observation_kind="reconcile",
-                    content_sha256=canonical_sha256(observation.model_dump(mode="json")),
+                    content_sha256=observation.snapshot_sha256,
                     content=observation.model_dump(mode="json"),
                     now_ms=now,
                 )
@@ -456,14 +975,12 @@ class ReconcileRunner:
                 timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
             )
             current_state = OrderState.OPEN.value
-        elif str(row["mode"]) != "paper":
-            # A live position's fill, stop and close are provider facts. Simulating them from candles
-            # would be a local opinion about an account this lane cannot yet read (PR-C).
-            await self._defer(order_id, current_state, now)
-            return False
         else:
-            opened = int(row.get("position_opened_at_ms") or row.get("created_at_ms") or now)
-            deadline = int(row.get("must_close_at_ms") or must_close_at(opened_at_ms=opened, policy=self._config.order))
+            opened = _conservative_opened_at(row, first_fill_at_ms=None, now=now)
+            deadline = _conservative_deadline(
+                row,
+                must_close_at(opened_at_ms=opened, policy=self._config.order),
+            )
 
         fetcher = self._bars(str(row["exchange_id"]))
         bars: Sequence[Bar] = ()
@@ -498,7 +1015,7 @@ class ReconcileRunner:
             await self._defer(order_id, current_state, now)
             return False
 
-        receipt, claim = await attempt_once(
+        receipt, claim, _claim_now = await attempt_once(
             db=self._db,
             order=order,
             kind="exit",
@@ -575,6 +1092,86 @@ class ReconcileRunner:
         return True
 
 
+def _approved_submission_deadline(*, created_at_ms: int, approved_at_ms: int, approval_marker: str) -> int | None:
+    if approval_marker != TRADING_LIVE_APPROVAL_MARKER:
+        return None
+    approval_age = approved_at_ms - created_at_ms
+    if approval_age < 0 or approval_age > TRADING_LIVE_APPROVAL_TTL_MS:
+        return None
+    return max(
+        created_at_ms + TRADING_LIVE_APPROVAL_TTL_MS,
+        approved_at_ms + _RECONCILE_BACKOFF_MS,
+    )
+
+
+def _live_repreflight_rejection(
+    order: PreparedOrder,
+    preflight: LivePreflight,
+    *,
+    config: TradingConfig,
+    now: int,
+) -> str | None:
+    if not preflight.venue_healthy:
+        return "venue_unhealthy"
+    age = now - preflight.observed_at_ms
+    if age < -TRADING_LIVE_PREFLIGHT_MAX_AGE_MS or age > TRADING_LIVE_PREFLIGHT_MAX_AGE_MS:
+        return "stale"
+    if preflight.requested_account_ref != order.account_ref or preflight.observed_account_ref != order.account_ref:
+        return "account_mismatch"
+    if preflight.positions or preflight.open_orders:
+        return "remote_exposure"
+    expected_contract = order.payload.get("_tracefoldExecutionContractSha256")
+    if not isinstance(expected_contract, str) or expected_contract != preflight.execution_contract_sha256:
+        return "execution_contract_drift"
+    if order.payload.get("hedged") is not preflight.hedged:
+        return "position_mode_drift"
+    if preflight.leverage != 1:
+        return "leverage_drift"
+    if not preflight.margin_mode:
+        return "margin_mode_unknown"
+    if preflight.spread_bps < 0 or preflight.spread_bps > config.order.max_spread_bps:
+        return "spread"
+    if preflight.available_balance is None or preflight.available_balance < order.notional_usd:
+        return "balance"
+    if order.entry_reference <= 0 or preflight.mark_price <= 0:
+        return "mark_invalid"
+    drift_bps = abs(preflight.mark_price - order.entry_reference) / order.entry_reference * Decimal(10_000)
+    if drift_bps > TRADING_LIVE_MAX_ENTRY_DRIFT_BPS:
+        return "entry_drift"
+    return None
+
+
+def _payload_decimal(payload: dict[str, Any], key: str) -> Decimal | None:
+    value = payload.get(key)
+    try:
+        parsed = Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed > 0 else None
+
+
+def _observation_time_invalid(observation: ExecutionObservation) -> bool:
+    first_fill = observation.first_fill_at_ms
+    closed = observation.closed_at_ms
+    if first_fill is not None and (first_fill <= 0 or first_fill > observation.observed_at_ms):
+        return True
+    if closed is not None and (closed <= 0 or closed > observation.observed_at_ms):
+        return True
+    return first_fill is not None and closed is not None and first_fill > closed
+
+
+def _conservative_opened_at(row: dict[str, Any], *, first_fill_at_ms: int | None, now: int) -> int:
+    persisted = row.get("position_opened_at_ms")
+    if persisted is not None:
+        return min(int(persisted), int(first_fill_at_ms)) if first_fill_at_ms is not None else int(persisted)
+    return int(first_fill_at_ms or row.get("created_at_ms") or now)
+
+
+def _conservative_deadline(row: dict[str, Any], candidate: int) -> int:
+    persisted = row.get("must_close_at_ms")
+    return min(int(persisted), candidate) if persisted is not None else candidate
+
+
 def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrder:
     return PreparedOrder(
         order_id=str(row["order_id"]),
@@ -582,6 +1179,7 @@ def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrde
         underlying_key=str(row["underlying_key"]),
         account_ref=str(row["account_ref"]),
         remote_order_id=None if row.get("remote_order_id") is None else str(row["remote_order_id"]),
+        remote_close_order_id=(None if row.get("remote_close_order_id") is None else str(row["remote_close_order_id"])),
         instrument=InstrumentRef(
             exchange_id=cast(ExchangeId, row["exchange_id"]),
             venue=str(row["exchange_id"]),

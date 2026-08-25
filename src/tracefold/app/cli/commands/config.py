@@ -112,7 +112,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     "account_ref": settings.trading.account_ref,
                     "live_symbol": settings.trading.live_symbol,
                     "venues": list(settings.trading.venues.enabled),
-                    "worst_case_daily_loss_usd": str(settings.trading.order.worst_case_daily_loss_usd),
+                    "nominal_daily_stop_loss_usd": str(settings.trading.order.nominal_daily_stop_loss_usd),
                     "opentrade": {
                         "base_url_configured": bool(settings.trading.opentrade.base_url),
                         "token_file": None if opentrade_token_file is None else str(opentrade_token_file),

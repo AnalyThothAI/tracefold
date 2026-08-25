@@ -290,9 +290,13 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_185_explicit_remote_order_identity",
         None,
     ),
+    "representative_trading_flow.flow.prepared_order.remote_close_order_id": (
+        "issue_185_attempt_scoped_close_identity",
+        None,
+    ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_185_explicit_execution_observation_contract",
-        "d019e5e1274e9a3f3cb668b3fab5bfaa32bd9bbe125502fd54fb1da7faea32b0",
+        "issue_185_execution_observation_and_attempt_scoped_close_identity",
+        "44bb85b0951da2c0cf30c2dfe2c29b8921c7ddcc0a54a4a211252e7110d5a897",
     ),
 }
 

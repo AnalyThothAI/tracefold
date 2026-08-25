@@ -71,6 +71,14 @@ class CliTests(unittest.TestCase):
         assert parser.parse_args(["serve"]).command == "serve"
         assert parser.parse_args(["workers"]).command == "workers"
 
+    def test_manual_open_recovery_accepts_the_exact_provider_entry_identity(self):
+        args = build_parser().parse_args(
+            ["trading", "resolve", "order-1", "open", "--remote-order-id", "provider-entry-1"]
+        )
+
+        self.assertEqual(args.trading_command, "resolve")
+        self.assertEqual(args.remote_order_id, "provider-entry-1")
+
     def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()
 
@@ -237,7 +245,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(trading["mode"], "paper")
         self.assertFalse(trading["enabled"])
         self.assertIsNone(trading["live_symbol"])
-        self.assertEqual(trading["worst_case_daily_loss_usd"], "4")
+        self.assertEqual(trading["nominal_daily_stop_loss_usd"], "4")
+        self.assertNotIn("worst_case_daily_loss_usd", trading)
         self.assertFalse(trading["opentrade"]["base_url_configured"])
         self.assertFalse(trading["opentrade"]["token_file_configured"])
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())

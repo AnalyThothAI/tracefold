@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-from ..contracts import ACTIVE_ORDER_STATES
+from ..contracts import (
+    ACTIVE_ORDER_STATES,
+    TRADING_LIVE_APPROVAL_MARKER,
+    TRADING_LIVE_APPROVAL_TTL_MS,
+    canonical_sha256,
+)
 from .sql_values import _dumps
 
 _ACTIVE_SQL: Final = ", ".join(f"'{state}'" for state in ACTIVE_ORDER_STATES)
@@ -16,6 +21,22 @@ _MAX_EXIT_ATTEMPTS: Final = 3
 
 class OrderStorage:
     conn: Any
+
+    def lock_entry_attempt(self, *, order_id: str) -> bool:
+        """Serialize a live entry claim before its final wall-clock sample.
+
+        Sampling first would let a concurrent row lock consume the remaining approval or preflight
+        window while this caller waits. The subsequent guarded claim runs in the same transaction.
+        """
+
+        row = self.conn.execute(
+            "SELECT order_id FROM trading_orders WHERE order_id = %s FOR UPDATE",
+            (order_id,),
+        ).fetchone()
+        # The same claim transaction charges the daily ceiling. Lock its singleton before sampling
+        # too, so daily-counter contention cannot carry a valid sample across a UTC-day boundary.
+        self.conn.execute("SELECT id FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
+        return row is not None
 
     def active_underlyings(self) -> list[str]:
         rows = self.conn.execute(
@@ -95,7 +116,15 @@ class OrderStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def claim_attempt(self, *, order_id: str, kind: str, now_ms: int) -> str:
+    def claim_attempt(
+        self,
+        *,
+        order_id: str,
+        kind: str,
+        now_ms: int,
+        entry_approval_window: tuple[int, int] | None = None,
+        entry_preflight_window: tuple[int, int] | None = None,
+    ) -> str:
         """Record one capital write *before* the network call, and only ever once for that leg.
 
         The counter predicate plus the schema CHECK is what makes a second write unrecordable: a caller
@@ -105,6 +134,30 @@ class OrderStorage:
         """
 
         if kind == "entry":
+            # Live approval and account truth may expire while this transaction waits for database
+            # admission. The caller samples `now_ms` inside the transaction callback, so this is the
+            # last durable boundary before the provider POST. Fail closed without spending the one
+            # attempt when either accepted window has elapsed.
+            if entry_approval_window is not None and not (
+                entry_approval_window[0] <= int(now_ms) <= entry_approval_window[1]
+            ):
+                self.reject_unsubmitted(
+                    order_id=order_id,
+                    expected_state="APPROVED",
+                    reason="approval_expired",
+                    now_ms=now_ms,
+                )
+                return "approval_expired"
+            if entry_preflight_window is not None and not (
+                entry_preflight_window[0] <= int(now_ms) <= entry_preflight_window[1]
+            ):
+                self.reject_unsubmitted(
+                    order_id=order_id,
+                    expected_state="APPROVED",
+                    reason="live_repreflight_stale",
+                    now_ms=now_ms,
+                )
+                return "preflight_stale"
             sql = """
                 UPDATE trading_orders
                    SET state = 'SUBMITTING',
@@ -113,6 +166,15 @@ class OrderStorage:
                  WHERE order_id = %s
                    AND provider_attempt_count = 0
                    AND state IN ('PREPARED', 'APPROVED')
+                   AND EXISTS (
+                       SELECT 1 FROM trading_runtime_state
+                        WHERE id = 1 AND control = 'RUNNING'
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM trading_symbol_blacklist b
+                        WHERE b.base_symbol = split_part(trading_orders.underlying_key, ':', 2)
+                          AND (b.expires_at_ms IS NULL OR b.expires_at_ms > %s)
+                   )
             """
         elif kind == "exit":
             sql = """
@@ -124,17 +186,21 @@ class OrderStorage:
                  WHERE order_id = %s
                    AND exit_attempt_count = 0
                    AND exit_attempt_total < 3
-                   AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL')
+                   AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL', 'UNPROTECTED')
             """
         else:  # pragma: no cover - the caller passes a literal
             raise ValueError(f"trading_attempt_kind_invalid:{kind}")
-        cursor = self.conn.execute(sql, (int(now_ms), order_id))
+        params = (int(now_ms), order_id, int(now_ms)) if kind == "entry" else (int(now_ms), order_id)
+        cursor = self.conn.execute(sql, params)
         if int(getattr(cursor, "rowcount", 0) or 0) > 0:
             return "claimed"
         row = self.conn.execute(
-            "SELECT state, provider_attempt_count, exit_attempt_count, exit_attempt_total "
-            "FROM trading_orders WHERE order_id = %s",
-            (order_id,),
+            "SELECT o.state, o.provider_attempt_count, o.exit_attempt_count, o.exit_attempt_total, r.control, "
+            "EXISTS (SELECT 1 FROM trading_symbol_blacklist b "
+            "WHERE b.base_symbol = split_part(o.underlying_key, ':', 2) "
+            "AND (b.expires_at_ms IS NULL OR b.expires_at_ms > %s)) AS blacklisted "
+            "FROM trading_orders o CROSS JOIN trading_runtime_state r WHERE o.order_id = %s AND r.id = 1",
+            (int(now_ms), order_id),
         ).fetchone()
         if row is None:
             return "missing"
@@ -142,17 +208,20 @@ class OrderStorage:
             return "exhausted"
         if kind == "entry" and int(row["provider_attempt_count"]) > 0:
             return "already_spent"
+        if kind == "entry" and str(row["control"]) != "RUNNING":
+            return "control_blocked"
+        if kind == "entry" and bool(row["blacklisted"]):
+            return "blacklisted"
         if kind == "exit" and int(row["exit_attempt_count"]) > 0:
             return "already_spent"
         # The counter is free but the row is not in a state this leg may be claimed from.
         return "wrong_state"
 
     def release_exit_attempt(self, *, order_id: str, now_ms: int) -> bool:
-        """Let the exit be attempted again, because a read proved the position is still open.
+        """Let the exit be attempted again after the prior close is proven terminal with no fill.
 
-        This is the only thing that makes the exit's one-attempt claim recoverable. It is safe for the
-        exact reason the entry has no equivalent: the read has proven the previous close did not take
-        effect, so re-issuing it cannot double-close. `exit_attempt_total` still caps the retries.
+        The caller owns that proof. A position snapshot alone is insufficient because provider
+        projections can lag a close acknowledgement. `exit_attempt_total` still caps the retries.
         """
 
         cursor = self.conn.execute(
@@ -162,7 +231,15 @@ class OrderStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def resolve_manual_review(self, *, order_id: str, outcome: str, reason: str, now_ms: int) -> bool:
+    def resolve_manual_review(
+        self,
+        *,
+        order_id: str,
+        outcome: str,
+        reason: str,
+        remote_order_id: str | None = None,
+        now_ms: int,
+    ) -> bool:
         """The operator drain for `MANUAL_REVIEW_REQUIRED`. Without it the state is a permanent wedge.
 
         Five reconcile paths escalate here and the state sits inside the active-underlying index, so
@@ -176,7 +253,11 @@ class OrderStorage:
                 UPDATE trading_orders
                    SET state = 'CLOSED',
                        state_reason = %s,
-                       position_closed_at_ms = coalesce(position_closed_at_ms, %s),
+                       position_closed_at_ms = CASE
+                         WHEN position_opened_at_ms IS NOT NULL
+                         THEN coalesce(position_closed_at_ms, %s)
+                         ELSE position_closed_at_ms
+                       END,
                        closed_at_ms = coalesce(closed_at_ms, %s),
                        next_reconcile_at_ms = NULL,
                        updated_at_ms = %s
@@ -191,22 +272,77 @@ class OrderStorage:
             # ceiling should defer to — without this reset, `resolve <id> open` after exhaustion put
             # the row straight back into MANUAL_REVIEW_REQUIRED on the next turn with no explanation,
             # and the only escape left was asserting `closed` about a position that is still open.
+            remote_id = None if remote_order_id is None else str(remote_order_id).strip() or None
+            has_remote_id = remote_id is not None
             cursor = self.conn.execute(
                 """
                 UPDATE trading_orders
                    SET state = 'OPEN',
                        state_reason = %s,
+                       remote_order_id = coalesce(remote_order_id, %s),
                        exit_attempt_count = 0,
                        exit_attempt_total = 0,
                        next_reconcile_at_ms = %s,
                        updated_at_ms = %s
-                 WHERE order_id = %s AND state = 'MANUAL_REVIEW_REQUIRED'
+                 WHERE order_id = %s
+                   AND state = 'MANUAL_REVIEW_REQUIRED'
+                   AND (mode = 'paper' OR remote_order_id IS NOT NULL OR %s)
+                   AND (NOT %s OR remote_order_id IS NULL OR remote_order_id = %s)
                 """,
-                (f"operator_resolved:{reason}", int(now_ms), int(now_ms), order_id),
+                (
+                    f"operator_resolved:{reason}",
+                    remote_id,
+                    int(now_ms),
+                    int(now_ms),
+                    order_id,
+                    has_remote_id,
+                    has_remote_id,
+                    remote_id,
+                ),
             )
         else:  # pragma: no cover - the CLI constrains the choices
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
-        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+        resolved = int(getattr(cursor, "rowcount", 0) or 0) > 0
+        if resolved:
+            generation: int | None = None
+            if outcome == "open":
+                row = self.conn.execute(
+                    """
+                    SELECT coalesce(max((content->>'generation')::bigint), 0) + 1 AS generation
+                      FROM trading_order_observations
+                     WHERE order_id = %s
+                       AND observation_kind = 'operator_resolution'
+                       AND content->>'outcome' = 'open'
+                    """,
+                    (order_id,),
+                ).fetchone()
+                generation = int(row["generation"])
+            content = {
+                "outcome": outcome,
+                "reason": reason,
+                "remote_order_id": remote_order_id,
+                "resolved_at_ms": int(now_ms),
+                "generation": generation,
+            }
+            self.conn.execute(
+                """
+                INSERT INTO trading_order_observations (
+                  order_id, observation_kind, content_sha256, content,
+                  first_seen_at_ms, last_seen_at_ms, seen_count
+                ) VALUES (%s, 'operator_resolution', %s, %s::jsonb, %s, %s, 1)
+                ON CONFLICT (order_id, observation_kind, content_sha256) DO UPDATE
+                   SET last_seen_at_ms = EXCLUDED.last_seen_at_ms,
+                       seen_count = trading_order_observations.seen_count + 1
+                """,
+                (
+                    order_id,
+                    canonical_sha256(content),
+                    _dumps(content),
+                    int(now_ms),
+                    int(now_ms),
+                ),
+            )
+        return resolved
 
     def promote_acknowledged(
         self,
@@ -258,12 +394,15 @@ class OrderStorage:
         `update_order` writes `state` unconditionally, so a deferral computed from a state read at the
         top of a 32-row batch could blind-write a stale state back over one the commit path had since
         advanced — a live position whose row says `PREPARED` is invisible to `_manage_open` forever.
+        An APPROVED row keeps `updated_at_ms` as its durable approval time; reconciliation uses that
+        instant to give a valid late approval one full runner cadence without extending approval TTL.
         """
 
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET next_reconcile_at_ms = %s, updated_at_ms = %s
+               SET next_reconcile_at_ms = %s,
+                   updated_at_ms = CASE WHEN state = 'APPROVED' THEN updated_at_ms ELSE %s END
              WHERE order_id = %s AND state = %s
             """,
             (int(next_reconcile_at_ms), int(now_ms), order_id, expected_state),
@@ -335,15 +474,46 @@ class OrderStorage:
         row = self.conn.execute("SELECT * FROM trading_orders WHERE case_id = %s", (case_id,)).fetchone()
         return dict(row) if row is not None else None
 
+    def latest_open_resolution_generation(self, *, order_id: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT coalesce(max((content->>'generation')::bigint), 0) AS generation
+              FROM trading_order_observations
+             WHERE order_id = %s
+               AND observation_kind = 'operator_resolution'
+               AND content->>'outcome' = 'open'
+            """,
+            (order_id,),
+        ).fetchone()
+        return 0 if row is None else int(row["generation"])
+
     def due_orders(self, *, now_ms: int, limit: int = 32) -> list[dict[str, Any]]:
         """Live orders whose next reconcile is due, oldest first."""
 
         rows = self.conn.execute(
             f"""
-            SELECT * FROM trading_orders
-             WHERE state IN ({_ACTIVE_SQL})
-               AND coalesce(next_reconcile_at_ms, 0) <= %s
-             ORDER BY coalesce(next_reconcile_at_ms, 0), created_at_ms
+            SELECT o.*, latest_close.remote_close_order_id
+              FROM trading_orders o
+              LEFT JOIN LATERAL (
+                SELECT content->>'remote_order_id' AS remote_close_order_id
+                  FROM trading_order_observations
+                 WHERE order_id = o.order_id
+                   AND observation_kind = 'close'
+                   AND content->>'remote_order_id' IS NOT NULL
+                   AND content->>'exit_attempt_ordinal' = o.exit_attempt_total::text
+                   AND content->>'operator_generation' = (
+                     SELECT coalesce(max((reset.content->>'generation')::bigint), 0)::text
+                       FROM trading_order_observations reset
+                      WHERE reset.order_id = o.order_id
+                        AND reset.observation_kind = 'operator_resolution'
+                        AND reset.content->>'outcome' = 'open'
+                   )
+                 ORDER BY last_seen_at_ms DESC, first_seen_at_ms DESC, content_sha256 DESC
+                 LIMIT 1
+              ) latest_close ON true
+             WHERE o.state IN ({_ACTIVE_SQL})
+               AND coalesce(o.next_reconcile_at_ms, 0) <= %s
+             ORDER BY coalesce(o.next_reconcile_at_ms, 0), o.created_at_ms
              LIMIT %s
             """,
             (int(now_ms), int(limit)),
@@ -356,10 +526,76 @@ class OrderStorage:
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET state = 'APPROVED', updated_at_ms = %s
-             WHERE order_id = %s AND payload_sha256 = %s AND state = 'AWAITING_APPROVAL'
+               SET state = 'APPROVED',
+                   state_reason = %s,
+                   next_reconcile_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE order_id = %s
+               AND payload_sha256 = %s
+               AND state = 'AWAITING_APPROVAL'
+               AND created_at_ms BETWEEN %s AND %s
             """,
-            (int(now_ms), order_id, payload_sha256),
+            (
+                TRADING_LIVE_APPROVAL_MARKER,
+                int(now_ms),
+                int(now_ms),
+                order_id,
+                payload_sha256,
+                int(now_ms) - TRADING_LIVE_APPROVAL_TTL_MS,
+                int(now_ms),
+            ),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def reject_unsubmitted(self, *, order_id: str, expected_state: str, reason: str, now_ms: int) -> bool:
+        """Reject only the exact unsubmitted state the caller read.
+
+        Approval and reconciliation are concurrent database clients. A stale AWAITING_APPROVAL scan
+        must not overwrite an APPROVED row, and a stale APPROVED scan must not overwrite a claimed
+        provider attempt. The state and counter predicates make either advancement authoritative.
+        """
+
+        if expected_state not in {"AWAITING_APPROVAL", "APPROVED"}:
+            raise ValueError(f"trading_unsubmitted_state_invalid:{expected_state}")
+        cursor = self.conn.execute(
+            """
+            UPDATE trading_orders
+               SET state = 'REJECTED',
+                   state_reason = %s,
+                   closed_at_ms = %s,
+                   next_reconcile_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE order_id = %s
+               AND state = %s
+               AND provider_attempt_count = 0
+            """,
+            (reason, int(now_ms), int(now_ms), order_id, expected_state),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def reject_unstarted_attempt(self, *, order_id: str, reason: str, now_ms: int) -> bool:
+        """Cancel a committed entry reservation only while its provider call is still unstarted.
+
+        The submit protocol owns that proof and calls this immediately after its post-commit time
+        guard fails. Resetting the counter is safe at this exact boundary; a crash before this write
+        remains conservatively `SUBMITTING` with the reservation spent.
+        """
+
+        cursor = self.conn.execute(
+            """
+            UPDATE trading_orders
+               SET state = 'REJECTED',
+                   state_reason = %s,
+                   provider_attempt_count = 0,
+                   closed_at_ms = %s,
+                   next_reconcile_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE order_id = %s
+               AND state = 'SUBMITTING'
+               AND provider_attempt_count = 1
+               AND remote_order_id IS NULL
+            """,
+            (reason, int(now_ms), int(now_ms), order_id),
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 

@@ -189,6 +189,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "LiveExecutionAdapter",
         "LivePreflight",
         "NativeProtection",
+        "OrderSide",
         "PreparedOrder",
         "RemoteExposure",
         "StartupReconciliation",
@@ -218,14 +219,50 @@ def test_a_live_mode_without_a_provider_contract_fails_at_startup() -> None:
         TradingSettings(enabled=True, mode="live_bounded")
 
 
-def test_a_live_mode_without_an_execution_adapter_refuses_to_compose() -> None:
+def test_live_reviewed_rejects_take_profit_scope_expansion() -> None:
+    from pydantic import ValidationError
+
+    from tracefold.platform.config.models import TradingSettings
+
+    with pytest.raises(ValidationError, match="trading_live_reviewed_take_profit_not_supported"):
+        TradingSettings(
+            enabled=True,
+            mode="live_reviewed",
+            live_symbol="DOGE",
+            venues={"binance_enabled": True, "hyperliquid_enabled": False},
+            order={
+                "fixed_notional_usd": 10,
+                "max_open_underlyings": 1,
+                "max_orders_per_day": 1,
+                "take_profit_bps": 400,
+            },
+            opentrade={"base_url": "https://example.invalid", "token_file": "token"},
+        )
+
+
+def test_live_bounded_refuses_to_compose() -> None:
     from tracefold.trading.pipeline.root import build_pipeline
     from tracefold.trading.pipeline.runtime import TradingConfig
 
-    with pytest.raises(ValueError, match="trading_live_mode_requires_execution_adapter"):
+    with pytest.raises(ValueError, match="trading_live_bounded_disabled"):
         build_pipeline(
             db=object(),
             config=TradingConfig(mode="live_bounded"),
+            bars=lambda _venue: None,
+            candidate_projection=lambda *_: ((), ()),
+            instrument_projection=lambda *_: (),
+        )
+
+
+def test_live_reviewed_take_profit_refuses_to_compose_even_without_app_settings() -> None:
+    from tracefold.trading.execution.order import OrderPolicy
+    from tracefold.trading.pipeline.root import build_pipeline
+    from tracefold.trading.pipeline.runtime import TradingConfig
+
+    with pytest.raises(ValueError, match="trading_live_reviewed_take_profit_disabled"):
+        build_pipeline(
+            db=object(),
+            config=TradingConfig(mode="live_reviewed", order=OrderPolicy(take_profit_bps=400)),
             bars=lambda _venue: None,
             candidate_projection=lambda *_: ((), ()),
             instrument_projection=lambda *_: (),
@@ -278,7 +315,7 @@ def test_the_worst_case_daily_envelope_is_derivable_from_configuration_alone() -
 
     order = TradingOrderSettings()
     # notional 50 x 200 bps x 4 orders = 4 USD. An operator can sign off on a multiplication.
-    assert order.worst_case_daily_loss_usd == Decimal("4")
+    assert order.nominal_daily_stop_loss_usd == Decimal("4")
 
 
 def test_a_trading_wiring_failure_never_takes_the_workers_process_down(tmp_path: Path) -> None:
@@ -374,19 +411,19 @@ def test_live_reviewed_configuration_enforces_the_initial_canary(override: dict[
         TradingSettings.model_validate(values)
 
 
-def test_live_reviewed_wiring_injects_a_read_only_adapter(tmp_path: Path) -> None:
+def test_live_reviewed_wiring_injects_the_reviewed_adapter(tmp_path: Path) -> None:
     import asyncio
 
     from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
-    from tracefold.integrations.opentrade import OpenTradeReadAdapter
+    from tracefold.integrations.opentrade import OpenTradeAdapter
 
     token_file = tmp_path / "opentrade_token"
     token_file.write_text("test-token", encoding="utf-8")
     token_file.chmod(0o600)
     pipeline = _wire_trading_pipeline(settings=_live_reviewed_settings(token_file=token_file), db=_FakeDb())
     assert pipeline is not None
-    assert isinstance(pipeline.adapter, OpenTradeReadAdapter)
-    assert pipeline.adapter.writes_enabled is False
+    assert isinstance(pipeline.adapter, OpenTradeAdapter)
+    assert pipeline.adapter.writes_enabled is True
     asyncio.run(pipeline.close())
 
 

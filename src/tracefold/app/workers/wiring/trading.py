@@ -9,7 +9,7 @@ from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_trade_candidates, news_trade_instruments
-from tracefold.integrations.opentrade import OpenTradeReadAdapter
+from tracefold.integrations.opentrade import OpenTradeAdapter
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
@@ -121,7 +121,7 @@ def _wire_trading_pipeline(
                 token = read_secure_secret_text(token_path)
             except SecretFileError as exc:
                 raise ValueError(f"trading_opentrade_token_file_{exc.code}") from None
-            adapter = OpenTradeReadAdapter(
+            adapter = OpenTradeAdapter(
                 base_url=str(trading.opentrade.base_url),
                 token=token,
                 request_timeout_seconds=trading.opentrade.request_timeout_seconds,

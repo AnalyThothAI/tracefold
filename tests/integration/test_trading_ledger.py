@@ -42,6 +42,7 @@ from tracefold.trading.contracts import (
     ExecutionReceipt,
     InstrumentRef,
     LivePreflight,
+    NativeProtection,
     NewsTradeCandidate,
     OiTradeCandidate,
     PreparedOrder,
@@ -378,10 +379,35 @@ def test_approval_is_bound_to_the_exact_payload_digest_and_is_idempotent(conn) -
     )
     trading = _repos(conn).trading
     assert trading.approve_order(order_id="o1", payload_sha256="wrong", now_ms=NOW) is False
-    assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=NOW) is True
+    approved_at = NOW + 30_000
+    assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=approved_at) is True
     conn.commit()
+    approved = trading.order(order_id="o1")
+    assert approved["state_reason"] == "operator_approved_c2"
+    assert approved["next_reconcile_at_ms"] == approved_at
+    assert approved["updated_at_ms"] == approved_at
+    assert trading.reschedule_order(
+        order_id="o1",
+        expected_state="APPROVED",
+        next_reconcile_at_ms=NOW + 61_000,
+        now_ms=NOW + 31_000,
+    )
+    conn.commit()
+    deferred = trading.order(order_id="o1")
+    assert deferred["next_reconcile_at_ms"] == NOW + 61_000
+    assert deferred["updated_at_ms"] == approved_at
     # A second approval of an already-approved order changes nothing: the operator signed once.
     assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=NOW) is False
+
+
+def test_approval_after_the_operator_window_is_rejected_at_the_database_boundary(conn) -> None:
+    _case(conn, case_id="c1", source_key="k1")
+    _order(
+        conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="binance", state="AWAITING_APPROVAL"
+    )
+    trading = _repos(conn).trading
+    assert trading.approve_order(order_id="o1", payload_sha256="digest", now_ms=NOW + 60_001) is False
+    assert trading.order(order_id="o1")["state"] == "AWAITING_APPROVAL"
 
 
 # ---------------------------------------------------------------------------- runner, end to end
@@ -544,6 +570,7 @@ class _ReadOnlyLiveAdapter:
             ask_price=Decimal("10.01"),
             spread_bps=20,
             quantity_step=Decimal("0.1"),
+            price_tick=Decimal("0.01"),
             min_quantity=Decimal("0.1"),
             min_notional=Decimal("5"),
             requested_account_ref=account_ref,
@@ -586,6 +613,62 @@ class _ReadOnlyLiveAdapter:
         return None
 
 
+class _LiveLifecycleAdapter(_ReadOnlyLiveAdapter):
+    writes_enabled = True
+
+    def __init__(
+        self,
+        *,
+        observations: list[ExecutionObservation] | None = None,
+        repreflight_update: dict[str, Any] | None = None,
+        submit_fault: str | None = None,
+        observe_fault: bool = False,
+    ) -> None:
+        super().__init__()
+        self.observations = list(observations or [])
+        self.repreflight_update = dict(repreflight_update or {})
+        self.submit_fault = submit_fault
+        self.observe_fault = observe_fault
+        self.close_quantities: list[Decimal] = []
+        self.observed_close_ids: list[str | None] = []
+        self.close_faults: list[str] = []
+
+    async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
+        self.preflight_calls += 1
+        truth = self._truth(instrument=instrument, account_ref=account_ref)
+        return truth.model_copy(update=self.repreflight_update if self.preflight_calls > 1 else {})
+
+    async def submit(self, order: PreparedOrder) -> ExecutionReceipt:
+        self.submit_calls += 1
+        if self.submit_fault == "crash":
+            raise SystemExit("process died after provider call")
+        if self.submit_fault == "timeout":
+            raise TimeoutError("lost provider answer")
+        if self.submit_fault == "reject":
+            return ExecutionReceipt(state="REJECTED", reason="provider_rejected")
+        return ExecutionReceipt(state="ACKNOWLEDGED", remote_order_id=f"remote-{order.order_id}")
+
+    async def observe(self, order: PreparedOrder) -> ExecutionObservation:
+        self.observed_close_ids.append(order.remote_close_order_id)
+        if self.observe_fault:
+            raise TimeoutError("read unavailable")
+        if self.observations:
+            return self.observations.pop(0)
+        return ExecutionObservation(
+            state="UNKNOWN",
+            observed_at_ms=NOW,
+            remote_order_id=order.remote_order_id,
+            evidence={"provider": self.name},
+        )
+
+    async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt:
+        del order
+        self.close_quantities.append(quantity)
+        if self.close_faults and self.close_faults.pop(0) == "timeout":
+            raise TimeoutError("lost close answer")
+        return ExecutionReceipt(state="ACKNOWLEDGED", remote_order_id=f"close-{len(self.close_quantities)}")
+
+
 def _runner(
     conn: Any,
     *,
@@ -611,6 +694,104 @@ def _runner(
         instrument_projection=news_trade_instruments,
         program=program,
         clock=lambda: now,
+    )
+
+
+def _live_config(*, order: OrderPolicy | None = None) -> TradingConfig:
+    return _config(
+        mode="live_reviewed",
+        account_ref="canary",
+        live_symbol="DOGE",
+        venue_priority=("binance",),
+        order=order
+        or OrderPolicy(
+            fixed_notional_usd=Decimal("10"),
+            max_holding_ms=900_000,
+            max_open_underlyings=1,
+            max_orders_per_day=1,
+        ),
+    )
+
+
+def _prepare_live_reviewed(
+    conn: Any,
+    *,
+    adapter: _LiveLifecycleAdapter,
+    config: TradingConfig | None = None,
+) -> tuple[TradingConfig, Any]:
+    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE)
+    _promote_to_model_projection(conn, event_id="live-c2-news", symbol="DOGE")
+    live_config = config or _live_config()
+    report = asyncio.run(
+        _runner(
+            conn,
+            adapter=adapter,
+            now=NOW,
+            config=live_config,
+            program=_LiveDecisionProgram(),
+        ).turn()
+    )
+    assert report["created"] == 1, report
+    row = conn.execute("SELECT * FROM trading_orders").fetchone()
+    assert row["state"] == "AWAITING_APPROVAL"
+    return live_config, row
+
+
+def _approve_live(conn: Any, row: Any, *, now: int = NOW) -> None:
+    assert _repos(conn).trading.approve_order(
+        order_id=str(row["order_id"]),
+        payload_sha256=str(row["payload_sha256"]),
+        now_ms=now,
+    )
+    conn.commit()
+
+
+def _live_position_observation(
+    row: Any,
+    *,
+    quantity: Decimal = Decimal("1"),
+    protected: bool = True,
+    first_fill_at_ms: int = NOW,
+) -> ExecutionObservation:
+    remote_id = f"remote-{row['order_id']}"
+    protection = (
+        NativeProtection(
+            remote_order_id=f"stop-{row['order_id']}",
+            parent_remote_order_id=remote_id,
+            account_ref="canary",
+            exchange_id="binance",
+            provider_symbol=str(row["provider_symbol"]),
+            side="sell",
+            quantity=quantity,
+            trigger_price=Decimal(str(row["stop_price"])),
+            reduce_only=True,
+            status="open",
+        )
+        if protected
+        else None
+    )
+    return ExecutionObservation(
+        state="PARTIAL"
+        if quantity < Decimal(str(row["quantity"]))
+        else ("OPEN_PROTECTED" if protected else "OPEN_UNPROTECTED"),
+        observed_at_ms=NOW,
+        remote_order_id=remote_id,
+        actual_position_quantity=quantity,
+        filled_quantity=quantity,
+        average_price=Decimal("10"),
+        first_fill_at_ms=first_fill_at_ms,
+        protection=protection,
+        evidence={"provider": "opentrade", "snapshot": str(quantity)},
+    )
+
+
+def _live_absent_observation(row: Any, *, observed_at_ms: int) -> ExecutionObservation:
+    return ExecutionObservation(
+        state="ABSENT_CONFIRMED",
+        observed_at_ms=observed_at_ms,
+        remote_order_id=f"remote-{row['order_id']}",
+        evidence={"provider": "opentrade", "snapshot": f"absent-{observed_at_ms}"},
     )
 
 
@@ -959,10 +1140,11 @@ def test_read_only_c1_never_claims_or_submits_an_approved_live_order(conn) -> No
         take_profit_price=None,
         payload={"symbol": "DOGE/USDT:USDT"},
         payload_sha256="digest",
-        state="APPROVED",
+        state="AWAITING_APPROVAL",
         must_close_at_ms=NOW + 900_000,
         now_ms=NOW,
     )
+    assert trading.approve_order(order_id="live-approved-order", payload_sha256="digest", now_ms=NOW)
     conn.commit()
     adapter = _ReadOnlyLiveAdapter()
     report = asyncio.run(
@@ -1023,6 +1205,1316 @@ def test_read_only_c1_records_a_live_ack_observation_without_calling_it_a_fill(c
     assert order["filled_quantity"] is None
     assert order["position_opened_at_ms"] is None
     assert [row["observation_kind"] for row in trading.observations(order_id="live-ack-order")] == ["reconcile"]
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_expired_live_approval_is_terminal_with_zero_provider_writes(conn, approved: bool) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    if approved:
+        _approve_live(conn, row)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 60_001,
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == "approval_expired"
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_an_unversioned_approved_row_from_before_c2_fails_closed(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    conn.execute(
+        "UPDATE trading_orders SET state = 'APPROVED', state_reason = NULL, "
+        "next_reconcile_at_ms = %s, updated_at_ms = %s WHERE order_id = %s",
+        (NOW + 80_000, NOW + 50_000, str(row["order_id"])),
+    )
+    conn.commit()
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 80_000,
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == "approval_expired"
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_stale_awaiting_scan_cannot_overwrite_a_concurrent_valid_approval(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, stale_row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, stale_row, now=NOW + 59_999)
+
+    class _StaleApprovalScanDb(_DirectDb):
+        async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
+            if name == "trading_reconcile_scan":
+                return ([dict(stale_row)], "RUNNING")
+            return await super().read(name, fn, timeout_seconds=timeout_seconds)
+
+    report = asyncio.run(
+        ReconcileRunner(
+            db=_StaleApprovalScanDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 60_001,
+        ).turn()
+    )
+    approved = _order_row(conn, str(stale_row["order_id"]))
+    assert report["resolved"] == 0
+    assert approved["state"] == "APPROVED"
+    assert approved["state_reason"] == "operator_approved_c2"
+    assert int(approved["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_in_window_approval_gets_one_runner_cadence_to_reach_submission(conn) -> None:
+    approved_at = NOW + 31_000
+    submitted_at = NOW + 60_001
+    adapter = _LiveLifecycleAdapter(repreflight_update={"observed_at_ms": submitted_at, "server_time_ms": submitted_at})
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 30_000,
+        ).turn()
+    )
+    _approve_live(conn, row, now=approved_at)
+    adapter.observations = [
+        ExecutionObservation(
+            state="WORKING",
+            observed_at_ms=submitted_at,
+            remote_order_id=f"remote-{row['order_id']}",
+            evidence={"provider": "opentrade", "state": "working"},
+        )
+    ]
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: submitted_at,
+        ).turn()
+    )
+    submitted = _order_row(conn, str(row["order_id"]))
+    assert submitted["state"] == "ACKNOWLEDGED"
+    assert int(submitted["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("update", "reason"),
+    [
+        ({"mark_price": Decimal("10.1")}, "live_repreflight_entry_drift"),
+        ({"price_tick": Decimal("0.1")}, "live_repreflight_execution_contract_drift"),
+        (
+            {
+                "positions": (
+                    RemoteExposure(
+                        kind="position",
+                        exchange_id="binance",
+                        provider_symbol="SOL/USDT:USDT",
+                        side="long",
+                        quantity=Decimal("1"),
+                    ),
+                )
+            },
+            "live_repreflight_remote_exposure",
+        ),
+    ],
+)
+def test_live_repreflight_drift_rejects_before_the_one_attempt(conn, update: dict[str, Any], reason: str) -> None:
+    adapter = _LiveLifecycleAdapter(repreflight_update=update)
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("after_preflight", "reason"),
+    [
+        (NOW + 61_001, "approval_expired"),
+        (NOW + 11_001, "live_repreflight_stale"),
+    ],
+)
+def test_slow_repreflight_rechecks_expiry_and_freshness_before_write(conn, after_preflight: int, reason: str) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    clock_values = iter((NOW + 1_000, after_preflight))
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("before_audit", "after_audit", "reason", "repreflight_update"),
+    [
+        (
+            NOW + 59_000,
+            NOW + 61_001,
+            "approval_expired",
+            {"observed_at_ms": NOW + 59_000, "server_time_ms": NOW + 59_000},
+        ),
+        (NOW + 9_000, NOW + 11_001, "live_repreflight_stale", {}),
+    ],
+)
+def test_live_repreflight_rechecks_after_audit_before_claiming_the_attempt(
+    conn,
+    before_audit: int,
+    after_audit: int,
+    reason: str,
+    repreflight_update: dict[str, Any],
+) -> None:
+    adapter = _LiveLifecycleAdapter(repreflight_update=repreflight_update)
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    clock_values = iter((NOW + 1_000, before_audit, after_audit))
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("at_claim", "reason"),
+    [
+        (NOW + 61_001, "approval_expired"),
+        (NOW + 11_001, "live_repreflight_stale"),
+    ],
+)
+def test_live_repreflight_rechecks_inside_the_attempt_claim(conn, at_claim: int, reason: str) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    clock_values = iter((NOW + 1_000, NOW + 1_000, NOW + 1_000, at_claim))
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("before_call", "reason"),
+    [
+        (NOW + 61_001, "approval_expired"),
+        (NOW + 11_001, "live_repreflight_stale"),
+    ],
+)
+def test_live_repreflight_rechecks_after_claim_commit_before_provider_call(
+    conn,
+    before_call: int,
+    reason: str,
+) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    clock_values = iter((NOW + 1_000, NOW + 1_000, NOW + 1_000, NOW + 1_000, before_call))
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(NOW + 1_000)) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_live_attempt_claim_crossing_utc_midnight_charges_the_new_day(conn) -> None:
+    day_ms = 86_400_000
+    next_midnight = (NOW // day_ms + 1) * day_ms
+    before_midnight = next_midnight - 1
+    adapter = _LiveLifecycleAdapter(
+        repreflight_update={"observed_at_ms": before_midnight, "server_time_ms": before_midnight},
+        submit_fault="crash",
+    )
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    conn.execute(
+        "UPDATE trading_orders SET created_at_ms = %s, updated_at_ms = %s WHERE order_id = %s",
+        (next_midnight - 30_000, next_midnight - 30_000, str(row["order_id"])),
+    )
+    conn.commit()
+    _approve_live(conn, row, now=before_midnight)
+    clock_values = iter((before_midnight, before_midnight, before_midnight, next_midnight, next_midnight))
+
+    with pytest.raises(SystemExit, match="process died after provider call"):
+        asyncio.run(
+            ReconcileRunner(
+                db=_DirectDb(conn),
+                config=config,
+                bars=lambda _venue: None,
+                adapter=adapter,
+                clock=lambda: next(clock_values),
+            ).turn()
+        )
+
+    claimed = _order_row(conn, str(row["order_id"]))
+    assert claimed["state"] == "SUBMITTING"
+    assert claimed["updated_at_ms"] == next_midnight
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(before_midnight)) == 0
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(next_midnight)) == 1
+    assert adapter.submit_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("quantity", "protected", "expected_state", "expected_closes"),
+    [
+        (Decimal("0.5"), True, "PARTIAL", []),
+        (Decimal("1"), True, "OPEN", []),
+        (Decimal("0.4"), False, "RECONCILING", [Decimal("0.4")]),
+    ],
+)
+def test_live_fill_and_native_protection_drive_the_ledger_and_safety_close(
+    conn,
+    quantity: Decimal,
+    protected: bool,
+    expected_state: str,
+    expected_closes: list[Decimal],
+) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, quantity=quantity, protected=protected)]
+    _approve_live(conn, row)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == expected_state
+    assert current["filled_quantity"] == quantity
+    assert current["position_opened_at_ms"] == NOW
+    assert int(current["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+    assert adapter.close_quantities == expected_closes
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"provider": "opentrade", "entry_remainder_working": True},
+        {
+            "provider": "opentrade",
+            "entry_history_correlated_count": 1,
+            "entry_history_count": 0,
+        },
+    ],
+    ids=["working-partial", "mixed-entry-history"],
+)
+def test_unknown_live_truth_escalates_without_closing_any_position(conn, evidence: dict[str, object]) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        ExecutionObservation(
+            state="UNKNOWN",
+            observed_at_ms=NOW,
+            remote_order_id=f"remote-{row['order_id']}",
+            evidence=evidence,
+        )
+    ]
+    _approve_live(conn, row)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert current["filled_quantity"] is None
+    assert adapter.submit_calls == 1
+    assert adapter.close_quantities == []
+
+
+def test_live_working_order_stays_acknowledged_without_a_fabricated_fill(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        ExecutionObservation(
+            state="WORKING",
+            observed_at_ms=NOW,
+            remote_order_id=f"remote-{row['order_id']}",
+            evidence={"provider": "opentrade", "state": "working"},
+        )
+    ]
+    _approve_live(conn, row)
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    working = _order_row(conn, str(row["order_id"]))
+    assert working["state"] == "ACKNOWLEDGED"
+    assert working["filled_quantity"] is None
+    assert working["position_opened_at_ms"] is None
+    assert adapter.submit_calls == 1
+
+
+def test_live_acknowledgement_survives_one_empty_provider_read_before_the_fill_appears(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        _live_absent_observation(row, observed_at_ms=NOW + 1_000),
+        _live_position_observation(row),
+    ]
+    _approve_live(conn, row)
+
+    first_turn = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 1_000,
+    )
+    asyncio.run(first_turn.turn())
+    pending = _order_row(conn, str(row["order_id"]))
+    assert pending["state"] == "ACKNOWLEDGED"
+    assert pending["state_reason"] == "provider_visibility_pending"
+    assert str(row["underlying_key"]) in _repos(conn).trading.active_underlyings()
+
+    second_turn = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 31_001,
+    )
+    asyncio.run(second_turn.turn())
+    opened = _order_row(conn, str(row["order_id"]))
+    assert opened["state"] == "OPEN"
+    assert int(opened["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+    assert adapter.close_quantities == []
+
+
+def test_two_empty_reads_after_a_live_ack_escalate_without_freeing_the_underlying(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        _live_absent_observation(row, observed_at_ms=NOW + 1_000),
+        _live_absent_observation(row, observed_at_ms=NOW + 31_001),
+    ]
+    _approve_live(conn, row)
+
+    for observed_at in (NOW + 1_000, NOW + 31_001):
+        asyncio.run(
+            ReconcileRunner(
+                db=_DirectDb(conn),
+                config=config,
+                bars=lambda _venue: None,
+                adapter=adapter,
+                clock=lambda observed_at=observed_at: observed_at,
+            ).turn()
+        )
+
+    escalated = _order_row(conn, str(row["order_id"]))
+    assert escalated["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert escalated["state_reason"] == "live_ack_visibility_unresolved"
+    assert str(row["underlying_key"]) in _repos(conn).trading.active_underlyings()
+    assert int(escalated["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+    assert adapter.close_quantities == []
+
+
+def test_live_submitting_after_restart_is_read_without_resending(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    assert _repos(conn).trading.claim_attempt(order_id=str(row["order_id"]), kind="entry", now_ms=NOW + 1) == "claimed"
+    conn.commit()
+    adapter.observations = [_live_position_observation(row)]
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    orphaned = _order_row(conn, str(row["order_id"]))
+    assert orphaned["state"] == "AMBIGUOUS"
+    assert orphaned["state_reason"] == "entry_submitting_after_restart"
+    assert adapter.submit_calls == 0
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_001
+        ).turn()
+    )
+    recovered = _order_row(conn, str(row["order_id"]))
+    assert recovered["state"] == "OPEN"
+    assert int(recovered["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 0
+
+
+def test_unchanged_live_snapshot_bumps_seen_count_instead_of_growing_the_ledger(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    snapshot = _live_position_observation(row)
+    adapter.observations = [snapshot]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    adapter.observations = [snapshot.model_copy(update={"observed_at_ms": NOW + 31_001})]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 31_001
+        ).turn()
+    )
+    rows = [
+        item
+        for item in _repos(conn).trading.observations(order_id=str(row["order_id"]))
+        if item["observation_kind"] == "reconcile"
+    ]
+    assert len(rows) == 1
+    assert int(rows[0]["seen_count"]) == 2
+
+
+def test_later_fill_time_evidence_never_extends_a_persisted_live_deadline(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [
+        _live_position_observation(row).model_copy(
+            update={
+                "observed_at_ms": NOW + 1_000,
+                "first_fill_at_ms": None,
+                "evidence": {"provider": "opentrade", "snapshot": "incomplete-time"},
+            }
+        )
+    ]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    first = _order_row(conn, str(row["order_id"]))
+    conservative_opened = int(first["position_opened_at_ms"])
+    conservative_deadline = int(first["must_close_at_ms"])
+    assert conservative_opened == int(row["created_at_ms"])
+
+    adapter.observations = [
+        _live_position_observation(row, first_fill_at_ms=NOW + 500).model_copy(
+            update={
+                "observed_at_ms": NOW + 31_001,
+                "evidence": {"provider": "opentrade", "snapshot": "later-complete-time"},
+            }
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+    current = _order_row(conn, str(row["order_id"]))
+    assert int(current["position_opened_at_ms"]) == conservative_opened
+    assert int(current["must_close_at_ms"]) == conservative_deadline
+
+
+@pytest.mark.parametrize("regressed_state", ["WORKING", "REJECTED", "ABSENT_CONFIRMED", "UNKNOWN"])
+def test_a_known_live_position_is_never_released_by_a_regressed_provider_snapshot(conn, regressed_state: str) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    adapter.observations = [
+        ExecutionObservation(
+            state=regressed_state,  # type: ignore[arg-type]
+            observed_at_ms=NOW + 31_001,
+            remote_order_id=f"remote-{row['order_id']}",
+            evidence={"provider": "opentrade", "regressed": regressed_state},
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 31_001
+        ).turn()
+    )
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert _repos(conn).trading.active_underlyings() == ["crypto:DOGE"]
+    assert adapter.close_quantities == []
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"remote_order_id": "another-entry"},
+        {"actual_position_quantity": Decimal("2"), "filled_quantity": Decimal("2")},
+        {"actual_position_quantity": Decimal("0.4"), "filled_quantity": Decimal("0.7")},
+    ],
+)
+def test_inconsistent_live_position_evidence_escalates_without_a_close(conn, update: dict[str, Any]) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row).model_copy(update=update)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert adapter.close_quantities == []
+
+
+def test_future_live_fill_timestamp_escalates_without_extending_max_hold(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, first_fill_at_ms=NOW + 1)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert current["must_close_at_ms"] is None
+    assert adapter.close_quantities == []
+
+
+def test_submit_timeout_spends_one_attempt_and_restart_resolves_only_by_read(conn) -> None:
+    adapter = _LiveLifecycleAdapter(submit_fault="timeout", observe_fault=True)
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    first = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 1_000,
+    )
+    asyncio.run(first.turn())
+    ambiguous = _order_row(conn, str(row["order_id"]))
+    assert ambiguous["state"] == "AMBIGUOUS"
+    assert int(ambiguous["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+
+    adapter.submit_fault = None
+    adapter.observe_fault = False
+    adapter.observations = [_live_position_observation(row)]
+    restarted = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 31_001,
+    )
+    asyncio.run(restarted.turn())
+    opened = _order_row(conn, str(row["order_id"]))
+    assert opened["state"] == "OPEN"
+    assert int(opened["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+
+
+def test_process_death_after_attempt_claim_keeps_the_daily_cap_charged(conn) -> None:
+    adapter = _LiveLifecycleAdapter(submit_fault="crash")
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    runner = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 1_000,
+    )
+
+    with pytest.raises(SystemExit, match="process died after provider call"):
+        asyncio.run(runner.turn())
+    crashed = _order_row(conn, str(row["order_id"]))
+    assert crashed["state"] == "SUBMITTING"
+    assert int(crashed["provider_attempt_count"]) == 1
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(NOW + 1_000)) == 1
+
+    adapter.submit_fault = None
+    restarted = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: None,
+        adapter=adapter,
+        clock=lambda: NOW + 31_001,
+    )
+    asyncio.run(restarted.turn())
+    asyncio.run(restarted.turn())
+    assert _order_row(conn, str(row["order_id"]))["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert _repos(conn).trading.resolve_manual_review(
+        order_id=str(row["order_id"]), outcome="closed", reason="flat_at_venue", now_ms=NOW + 31_001
+    )
+    conn.commit()
+    resolved = _order_row(conn, str(row["order_id"]))
+    assert resolved["position_closed_at_ms"] is None
+    assert _repos(conn).trading.last_close_at_ms(underlying_key=str(row["underlying_key"])) is None
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(NOW + 31_001)) == 1
+    assert adapter.submit_calls == 1
+
+
+def test_definitive_live_rejection_releases_the_conservative_daily_charge(conn) -> None:
+    adapter = _LiveLifecycleAdapter(submit_fault="reject")
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    assert _order_row(conn, str(row["order_id"]))["state"] == "REJECTED"
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(NOW + 1_000)) == 0
+    assert adapter.submit_calls == 1
+
+
+def test_live_max_holding_closes_the_current_position_quantity_and_waits_for_read_truth(conn) -> None:
+    policy = OrderPolicy(
+        fixed_notional_usd=Decimal("10"),
+        max_holding_ms=60_000,
+        max_open_underlyings=1,
+        max_orders_per_day=1,
+    )
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter, config=_live_config(order=policy))
+    adapter.observations = [_live_position_observation(row)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    adapter.observations = [
+        _live_position_observation(row, quantity=Decimal("0.4")).model_copy(update={"filled_quantity": Decimal("1")})
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 61_000
+        ).turn()
+    )
+    closing = _order_row(conn, str(row["order_id"]))
+    assert closing["state"] == "RECONCILING"
+    assert adapter.close_quantities == [Decimal("0.4")]
+
+    adapter.observations = [
+        ExecutionObservation(
+            state="CLOSED",
+            observed_at_ms=NOW + 91_000,
+            remote_order_id=f"remote-{row['order_id']}",
+            first_fill_at_ms=NOW,
+            closed_at_ms=NOW + 62_000,
+            average_price=Decimal("9.9"),
+            exit_price=Decimal("10.1"),
+            evidence={"provider": "opentrade", "closed": True},
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 91_001
+        ).turn()
+    )
+    closed = _order_row(conn, str(row["order_id"]))
+    assert closed["state"] == "CLOSED"
+    assert closed["position_closed_at_ms"] == NOW + 62_000
+    assert int(closed["realized_bps"]) == 192
+    assert adapter.close_quantities == [Decimal("0.4")]
+
+
+@pytest.mark.parametrize(
+    ("terminal_without_fill", "expected_state", "expected_closes", "expected_attempts"),
+    [
+        (False, "MANUAL_REVIEW_REQUIRED", [Decimal("1")], (1, 1)),
+        (True, "RECONCILING", [Decimal("1"), Decimal("1")], (1, 2)),
+    ],
+)
+def test_live_exit_rearms_only_after_the_exact_close_is_terminal_without_fill(
+    conn,
+    terminal_without_fill: bool,
+    expected_state: str,
+    expected_closes: list[Decimal],
+    expected_attempts: tuple[int, int],
+) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1")]
+
+    active = _live_position_observation(row, protected=False)
+    adapter.observations = [
+        active.model_copy(
+            update={"evidence": {**active.evidence, "close_terminal_without_fill": terminal_without_fill}}
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert adapter.observed_close_ids[-1] == "close-1"
+    assert current["state"] == expected_state
+    assert adapter.close_quantities == expected_closes
+    assert (int(current["exit_attempt_count"]), int(current["exit_attempt_total"])) == expected_attempts
+
+
+def test_an_ambiguous_new_close_never_reuses_an_older_attempts_terminal_identity(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+
+    terminal = _live_position_observation(row, protected=False)
+    adapter.observations = [
+        terminal.model_copy(update={"evidence": {**terminal.evidence, "close_terminal_without_fill": True}})
+    ]
+    adapter.close_faults = ["timeout"]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+
+    adapter.observations = [
+        terminal.model_copy(update={"evidence": {**terminal.evidence, "close_terminal_without_fill": True}})
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 61_002,
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert adapter.observed_close_ids[-1] is None
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert (int(current["exit_attempt_count"]), int(current["exit_attempt_total"])) == (1, 2)
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+
+
+def test_manual_rearm_fences_off_old_close_identity_when_the_new_attempt_is_ambiguous(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 1_000,
+        ).turn()
+    )
+    trading = _repos(conn).trading
+    trading.update_order(
+        order_id=str(row["order_id"]),
+        state="MANUAL_REVIEW_REQUIRED",
+        state_reason="operator_check_required",
+        next_reconcile_at_ms=NOW + 2_000,
+        now_ms=NOW + 2_000,
+    )
+    assert trading.resolve_manual_review(
+        order_id=str(row["order_id"]),
+        outcome="open",
+        reason="position_still_open",
+        now_ms=NOW + 3_000,
+    )
+    conn.commit()
+
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 31_001,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1")]
+
+    trading.update_order(
+        order_id=str(row["order_id"]),
+        state="MANUAL_REVIEW_REQUIRED",
+        state_reason="operator_check_required_again",
+        next_reconcile_at_ms=NOW + 32_000,
+        now_ms=NOW + 32_000,
+    )
+    assert trading.resolve_manual_review(
+        order_id=str(row["order_id"]),
+        outcome="open",
+        reason="position_still_open",
+        # The same timestamp and reason as the first resolution must still allocate a new generation.
+        now_ms=NOW + 3_000,
+    )
+    conn.commit()
+    resolutions = [
+        item["content"]["generation"]
+        for item in trading.observations(order_id=str(row["order_id"]))
+        if item["observation_kind"] == "operator_resolution" and item["content"]["outcome"] == "open"
+    ]
+    assert sorted(resolutions) == [1, 2]
+
+    adapter.close_faults = ["timeout"]
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 61_002,
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1"), Decimal("1")]
+
+    stale_terminal = _live_position_observation(row, protected=False)
+    adapter.observations = [
+        stale_terminal.model_copy(update={"evidence": {**stale_terminal.evidence, "close_terminal_without_fill": True}})
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: NOW + 91_003,
+        ).turn()
+    )
+
+    current = _order_row(conn, str(row["order_id"]))
+    assert adapter.observed_close_ids[-1] is None
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert adapter.close_quantities == [Decimal("1"), Decimal("1"), Decimal("1")]
+
+
+def test_slow_live_observation_that_crosses_max_holding_closes_in_the_same_turn(conn) -> None:
+    policy = OrderPolicy(
+        fixed_notional_usd=Decimal("10"),
+        max_holding_ms=60_000,
+        max_open_underlyings=1,
+        max_orders_per_day=1,
+    )
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter, config=_live_config(order=policy))
+    adapter.observations = [_live_position_observation(row)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    adapter.observations = [_live_position_observation(row)]
+    clock_values = iter((NOW + 59_000, NOW + 61_000))
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1")]
+    assert _order_row(conn, str(row["order_id"]))["state"] == "RECONCILING"
+
+
+def test_ambiguous_entry_that_was_manually_closed_is_never_released_as_absent(conn) -> None:
+    adapter = _LiveLifecycleAdapter(submit_fault="timeout", observe_fault=True)
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    adapter.observe_fault = False
+    adapter.observations = [
+        ExecutionObservation(
+            state="CLOSED",
+            observed_at_ms=NOW + 31_001,
+            remote_order_id="provider-recovered-id",
+            closed_at_ms=NOW + 20_000,
+            average_price=Decimal("10"),
+            exit_price=Decimal("10"),
+            evidence={"provider": "opentrade", "manual_close": True},
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 31_001
+        ).turn()
+    )
+    closed = _order_row(conn, str(row["order_id"]))
+    assert closed["state"] == "CLOSED"
+    assert closed["state_reason"] == "provider_closed"
+    assert closed["position_opened_at_ms"] == NOW
+    assert int(closed["provider_attempt_count"]) == 1
+
+
+def test_manual_open_recovery_requires_and_persists_the_provider_entry_identity(conn) -> None:
+    adapter = _LiveLifecycleAdapter(submit_fault="timeout")
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    manual = _order_row(conn, str(row["order_id"]))
+    assert manual["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert manual["remote_order_id"] is None
+
+    trading = _repos(conn).trading
+    assert (
+        trading.resolve_manual_review(
+            order_id=str(row["order_id"]),
+            outcome="open",
+            reason="position_confirmed",
+            now_ms=NOW + 2_000,
+        )
+        is False
+    )
+    remote_id = f"remote-{row['order_id']}"
+    assert trading.resolve_manual_review(
+        order_id=str(row["order_id"]),
+        outcome="open",
+        reason="position_confirmed",
+        remote_order_id=remote_id,
+        now_ms=NOW + 2_000,
+    )
+    conn.commit()
+    adapter.observations = [_live_position_observation(row)]
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 2_001
+        ).turn()
+    )
+    recovered = _order_row(conn, str(row["order_id"]))
+    assert recovered["state"] == "OPEN"
+    assert recovered["remote_order_id"] == remote_id
+    assert int(recovered["provider_attempt_count"]) == 1
+    assert adapter.submit_calls == 1
+
+
+def test_manual_open_recovery_never_replaces_a_known_provider_entry_identity(conn) -> None:
+    adapter = _LiveLifecycleAdapter()
+    _, row = _prepare_live_reviewed(conn, adapter=adapter)
+    trading = _repos(conn).trading
+    order_id = str(row["order_id"])
+    remote_id = f"remote-{order_id}"
+    trading.update_order(
+        order_id=order_id,
+        state="MANUAL_REVIEW_REQUIRED",
+        remote_order_id=remote_id,
+        now_ms=NOW,
+    )
+    conn.commit()
+
+    assert (
+        trading.resolve_manual_review(
+            order_id=order_id,
+            outcome="open",
+            reason="position_confirmed",
+            remote_order_id="different-provider-order",
+            now_ms=NOW + 1,
+        )
+        is False
+    )
+    unchanged = _order_row(conn, order_id)
+    assert unchanged["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert unchanged["remote_order_id"] == remote_id
+
+    assert trading.resolve_manual_review(
+        order_id=order_id,
+        outcome="open",
+        reason="position_confirmed",
+        remote_order_id=remote_id,
+        now_ms=NOW + 2,
+    )
+    conn.commit()
+    recovered = _order_row(conn, order_id)
+    assert recovered["state"] == "OPEN"
+    assert recovered["remote_order_id"] == remote_id
+
+
+@pytest.mark.parametrize("missing_field", ["closed_at_ms", "average_price", "exit_price"])
+def test_incomplete_live_close_evidence_never_fabricates_a_terminal_position(conn, missing_field: str) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    observation = ExecutionObservation(
+        state="CLOSED",
+        observed_at_ms=NOW + 1_000,
+        remote_order_id=f"remote-{row['order_id']}",
+        first_fill_at_ms=NOW,
+        closed_at_ms=NOW + 500,
+        average_price=Decimal("9.9"),
+        exit_price=Decimal("10.1"),
+        evidence={"provider": "opentrade", "closed": True},
+    )
+    adapter.observations = [observation.model_copy(update={missing_field: None})]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert current["state_reason"] == "live_closed_evidence_incomplete"
+    assert current["position_closed_at_ms"] is None
+    assert current["realized_bps"] is None
+
+
+@pytest.mark.parametrize("existing_opened_at", [False, True])
+def test_live_close_before_the_conservative_open_lower_bound_is_invalid(conn, existing_opened_at: bool) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    if existing_opened_at:
+        adapter.observations = [_live_position_observation(row)]
+        asyncio.run(
+            ReconcileRunner(
+                db=_DirectDb(conn),
+                config=config,
+                bars=lambda _venue: None,
+                adapter=adapter,
+                clock=lambda: NOW + 1_000,
+            ).turn()
+        )
+
+    observed_now = NOW + (31_001 if existing_opened_at else 1_000)
+    adapter.observations = [
+        ExecutionObservation(
+            state="CLOSED",
+            observed_at_ms=observed_now,
+            remote_order_id=f"remote-{row['order_id']}",
+            closed_at_ms=NOW - 1,
+            average_price=Decimal("9.9"),
+            exit_price=Decimal("10.1"),
+            evidence={"provider": "opentrade", "closed": True},
+        )
+    ]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: observed_now
+        ).turn()
+    )
+    current = _order_row(conn, str(row["order_id"]))
+    assert current["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert current["state_reason"] == "live_closed_time_invalid"
+    assert current["position_closed_at_ms"] is None
+    assert current["realized_bps"] is None
+
+
+@pytest.mark.parametrize("control", ["PAUSED", "CLOSE_ONLY"])
+def test_control_blocks_entry_but_never_blocks_a_live_safety_close(conn, control: str) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    adapter.observations = [_live_position_observation(row)]
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+    _repos(conn).trading.set_control(control=control, now_ms=NOW + 2_000)
+    conn.commit()
+    adapter.observations = [_live_position_observation(row, protected=False)]
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 31_001
+        ).turn()
+    )
+    assert adapter.close_quantities == [Decimal("1")]
+
+
+@pytest.mark.parametrize("control", ["PAUSED", "CLOSE_ONLY"])
+def test_control_change_during_repreflight_blocks_the_atomic_entry_claim(conn, control: str) -> None:
+    class _ControlChangingAdapter(_LiveLifecycleAdapter):
+        async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
+            truth = await super().preflight(instrument=instrument, account_ref=account_ref)
+            if self.preflight_calls > 1:
+                _repos(conn).trading.set_control(control=control, now_ms=NOW + 1_000)
+                conn.commit()
+            return truth
+
+    adapter = _ControlChangingAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    blocked = _order_row(conn, str(row["order_id"]))
+    assert blocked["state"] == "APPROVED"
+    assert int(blocked["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+def test_blacklist_added_during_repreflight_blocks_the_atomic_entry_claim(conn) -> None:
+    class _BlacklistingAdapter(_LiveLifecycleAdapter):
+        async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight:
+            truth = await super().preflight(instrument=instrument, account_ref=account_ref)
+            if self.preflight_calls > 1:
+                _repos(conn).trading.blacklist_upsert(
+                    base_symbol="DOGE",
+                    reason="operator",
+                    expires_at_ms=None,
+                    now_ms=NOW + 1_000,
+                )
+                conn.commit()
+            return truth
+
+    adapter = _BlacklistingAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn), config=config, bars=lambda _venue: None, adapter=adapter, clock=lambda: NOW + 1_000
+        ).turn()
+    )
+
+    blocked = _order_row(conn, str(row["order_id"]))
+    assert blocked["state"] == "APPROVED"
+    assert int(blocked["provider_attempt_count"]) == 0
     assert adapter.submit_calls == 0
 
 
@@ -1219,7 +2711,8 @@ def test_a_live_position_is_never_closed_from_a_simulated_exit(conn) -> None:
     )
     asyncio.run(reconcile.turn())
     order = conn.execute("SELECT * FROM trading_orders").fetchone()
-    assert order["state"] == "OPEN"
+    assert order["state"] == "MANUAL_REVIEW_REQUIRED"
+    assert order["state_reason"] == "exit_position_unknown"
     assert order["exit_reason"] is None
 
 
@@ -1828,7 +3321,12 @@ def test_an_operator_resolved_close_cools_the_symbol_but_is_not_a_measured_resul
     trading = _repos(conn).trading
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
-    trading.update_order(order_id="o1", state="MANUAL_REVIEW_REQUIRED", now_ms=NOW)
+    trading.update_order(
+        order_id="o1",
+        state="MANUAL_REVIEW_REQUIRED",
+        position_opened_at_ms=NOW - MINUTE,
+        now_ms=NOW,
+    )
     trading.resolve_manual_review(order_id="o1", outcome="closed", reason="flat", now_ms=NOW)
     conn.commit()
 

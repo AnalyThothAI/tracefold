@@ -26,9 +26,9 @@ def test_status_never_reports_live_ready_from_configuration_alone(tmp_path: Path
     token_file.write_text("test-token", encoding="utf-8")
     token_file.chmod(0o600)
     assert _execution_capability(_live_settings(token_file)) == {
-        "execution_backend": "opentrade_read_only",
+        "execution_backend": "opentrade_reviewed",
         "execution_configured": True,
-        "live_mode_supported": False,
+        "live_mode_supported": True,
         "live_ready": False,
         "live_readiness": "not_proven",
     }

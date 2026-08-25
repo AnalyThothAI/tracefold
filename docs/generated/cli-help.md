@@ -759,15 +759,20 @@ options:
 ## `trading resolve`
 
 ```
-usage: tracefold trading resolve [-h] [--reason REASON] order_id {closed,open}
+usage: tracefold trading resolve [-h] [--reason REASON]
+                                 [--remote-order-id REMOTE_ORDER_ID]
+                                 order_id {closed,open}
 
 positional arguments:
   order_id
   {closed,open}
 
 options:
-  -h, --help       show this help message and exit
+  -h, --help            show this help message and exit
   --reason REASON
+  --remote-order-id REMOTE_ORDER_ID
+                        provider entry order identity; required for open
+                        recovery when the ledger has none
 
 ```
 

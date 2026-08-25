@@ -31,6 +31,10 @@ TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 TRADING_RECONCILE_BACKOFF_MS = 30_000
+TRADING_LIVE_APPROVAL_MARKER = "operator_approved_c2"
+TRADING_LIVE_APPROVAL_TTL_MS = 60_000
+TRADING_LIVE_MAX_ENTRY_DRIFT_BPS = 25
+TRADING_LIVE_PREFLIGHT_MAX_AGE_MS = 10_000
 
 # Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
 # a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
@@ -346,6 +350,7 @@ class MarketContext(_Frozen):
     # Exact contract precision. The public instrument catalogue does not carry it, so paper sizes on a
     # declared conservative step and live must get it from provider metadata or refuse to size at all.
     quantity_step: Decimal | None = None
+    price_tick: Decimal | None = None
     min_quantity: Decimal | None = None
     min_notional: Decimal | None = None
     contract_size: Decimal = Decimal("1")
@@ -421,6 +426,7 @@ class PreparedOrder(_Frozen):
     underlying_key: str
     account_ref: str
     remote_order_id: str | None = None
+    remote_close_order_id: str | None = None
     instrument: InstrumentRef
     mode: TradingMode
     side: OrderSide
@@ -477,6 +483,7 @@ class LivePreflight(_Frozen):
     ask_price: Decimal
     spread_bps: int
     quantity_step: Decimal | None = None
+    price_tick: Decimal | None = None
     min_quantity: Decimal | None = None
     min_notional: Decimal | None = None
     contract_size: Decimal = Decimal("1")
@@ -490,11 +497,33 @@ class LivePreflight(_Frozen):
     positions: tuple[RemoteExposure, ...] = ()
     open_orders: tuple[RemoteExposure, ...] = ()
 
+    @property
+    def execution_contract_sha256(self) -> str:
+        """Identity of the provider facts that must not drift after operator approval."""
+
+        return canonical_sha256(
+            {
+                "instrument": {
+                    "exchange_id": self.instrument.exchange_id,
+                    "provider_symbol": self.instrument.provider_symbol,
+                },
+                "quantity_step": None if self.quantity_step is None else str(self.quantity_step),
+                "price_tick": None if self.price_tick is None else str(self.price_tick),
+                "min_quantity": None if self.min_quantity is None else str(self.min_quantity),
+                "min_notional": None if self.min_notional is None else str(self.min_notional),
+                "contract_size": str(self.contract_size),
+                "available_currency": self.available_currency,
+                "hedged": self.hedged,
+                "leverage": self.leverage,
+                "margin_mode": self.margin_mode,
+            }
+        )
+
     def audit_payload(self) -> dict[str, Any]:
         """Persist the execution proof without account balances or provider response bodies."""
 
         return {
-            "schema": "tracefold.trading.live_preflight.v1",
+            "schema": "tracefold.trading.live_preflight.v2",
             "provider": self.provider,
             "observed_at_ms": self.observed_at_ms,
             "server_time_ms": self.server_time_ms,
@@ -505,6 +534,7 @@ class LivePreflight(_Frozen):
             "ask_price": str(self.ask_price),
             "spread_bps": self.spread_bps,
             "quantity_step": None if self.quantity_step is None else str(self.quantity_step),
+            "price_tick": None if self.price_tick is None else str(self.price_tick),
             "min_quantity": None if self.min_quantity is None else str(self.min_quantity),
             "min_notional": None if self.min_notional is None else str(self.min_notional),
             "contract_size": str(self.contract_size),
@@ -515,6 +545,7 @@ class LivePreflight(_Frozen):
             "hedged": self.hedged,
             "leverage": self.leverage,
             "margin_mode": self.margin_mode,
+            "execution_contract_sha256": self.execution_contract_sha256,
             "positions": [item.model_dump(mode="json") for item in self.positions],
             "open_orders": [item.model_dump(mode="json") for item in self.open_orders],
         }
@@ -543,6 +574,7 @@ class ExecutionObservationState(StrEnum):
 
 class NativeProtection(_Frozen):
     remote_order_id: str
+    parent_remote_order_id: str
     account_ref: str
     exchange_id: LiveExchangeId
     provider_symbol: str
@@ -563,8 +595,18 @@ class ExecutionObservation(_Frozen):
     filled_quantity: Decimal | None = None
     average_price: Decimal | None = None
     first_fill_at_ms: int | None = None
+    closed_at_ms: int | None = None
+    exit_price: Decimal | None = None
     protection: NativeProtection | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def snapshot_sha256(self) -> str:
+        """Stable provider-state identity; polling time belongs to the ledger's seen timestamps."""
+
+        snapshot = self.model_dump(mode="json")
+        snapshot.pop("observed_at_ms")
+        return canonical_sha256(snapshot)
 
 
 class ExecutionAdapter(Protocol):
@@ -604,6 +646,10 @@ __all__ = [
     "NO_TRADE_DECISION",
     "TERMINAL_ORDER_STATES",
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
+    "TRADING_LIVE_APPROVAL_MARKER",
+    "TRADING_LIVE_APPROVAL_TTL_MS",
+    "TRADING_LIVE_MAX_ENTRY_DRIFT_BPS",
+    "TRADING_LIVE_PREFLIGHT_MAX_AGE_MS",
     "TRADING_MANIFEST_VERSION",
     "TRADING_POLICY_VERSION",
     "TRADING_PROGRAM_VERSION",
