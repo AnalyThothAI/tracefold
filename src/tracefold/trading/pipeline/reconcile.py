@@ -275,12 +275,22 @@ class ReconcileRunner:
         await self._defer(order_id, state, now)
         return False
 
-    async def _commit(self, order: PreparedOrder, now: int) -> bool:
+    async def _commit(
+        self,
+        order: PreparedOrder,
+        now: int,
+        *,
+        entry_approval_window: tuple[int, int] | None = None,
+        entry_preflight_window: tuple[int, int] | None = None,
+    ) -> bool:
         return await commit_order(
             db=self._db,
             adapter=self._adapter,
             order=order,
             now=now,
+            claim_clock=self._clock if entry_approval_window is not None else None,
+            entry_approval_window=entry_approval_window,
+            entry_preflight_window=entry_preflight_window,
             observe_call=lambda call: observe_provider_call(
                 self._telemetry,
                 name="trading_reconcile",
@@ -371,7 +381,15 @@ class ReconcileRunner:
                 now=claim_now,
             )
 
-        await self._commit(order, claim_now)
+        await self._commit(
+            order,
+            claim_now,
+            entry_approval_window=(created_at_ms, approval_deadline_ms),
+            entry_preflight_window=(
+                preflight.observed_at_ms - TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
+                preflight.observed_at_ms + TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
+            ),
+        )
         current = await self._db.read(
             "trading_order_after_submit",
             lambda repos: repos.trading.order(order_id=order.order_id),

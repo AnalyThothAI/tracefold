@@ -35,6 +35,9 @@ async def attempt_once(
     call: Callable[[], Awaitable[ExecutionReceipt]],
     now: int,
     observe_call: ExecutionCallObserver | None = None,
+    claim_clock: Callable[[], int] | None = None,
+    entry_approval_window: tuple[int, int] | None = None,
+    entry_preflight_window: tuple[int, int] | None = None,
 ) -> tuple[ExecutionReceipt | None, str]:
     """The durable one-attempt contract, shared by the entry and the exit.
 
@@ -51,7 +54,20 @@ async def attempt_once(
     """
 
     def _claim(repos: Any) -> str:
-        result = str(repos.trading.claim_attempt(order_id=order.order_id, kind=kind, now_ms=now))
+        claim_now = int(claim_clock()) if claim_clock is not None else now
+        claim_kwargs: dict[str, Any] = {}
+        if entry_approval_window is not None:
+            claim_kwargs["entry_approval_window"] = entry_approval_window
+        if entry_preflight_window is not None:
+            claim_kwargs["entry_preflight_window"] = entry_preflight_window
+        result = str(
+            repos.trading.claim_attempt(
+                order_id=order.order_id,
+                kind=kind,
+                now_ms=claim_now,
+                **claim_kwargs,
+            )
+        )
         if result == "claimed" and kind == "entry":
             # This is an attempt/write ceiling, not a receipt counter. Charge it in the same commit as
             # SUBMITTING so process death after the provider call cannot make another entry admissible.
@@ -95,6 +111,9 @@ async def commit_order(
     count: Callable[[str], None] | None = None,
     now: int,
     observe_call: ExecutionCallObserver | None = None,
+    claim_clock: Callable[[], int] | None = None,
+    entry_approval_window: tuple[int, int] | None = None,
+    entry_preflight_window: tuple[int, int] | None = None,
 ) -> bool:
     """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
@@ -105,6 +124,9 @@ async def commit_order(
         call=lambda: adapter.submit(order),
         now=now,
         observe_call=observe_call,
+        claim_clock=claim_clock,
+        entry_approval_window=entry_approval_window,
+        entry_preflight_window=entry_preflight_window,
     )
     if receipt is None:
         if claim != "ambiguous":

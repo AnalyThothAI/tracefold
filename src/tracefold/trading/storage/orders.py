@@ -100,7 +100,15 @@ class OrderStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def claim_attempt(self, *, order_id: str, kind: str, now_ms: int) -> str:
+    def claim_attempt(
+        self,
+        *,
+        order_id: str,
+        kind: str,
+        now_ms: int,
+        entry_approval_window: tuple[int, int] | None = None,
+        entry_preflight_window: tuple[int, int] | None = None,
+    ) -> str:
         """Record one capital write *before* the network call, and only ever once for that leg.
 
         The counter predicate plus the schema CHECK is what makes a second write unrecordable: a caller
@@ -110,6 +118,30 @@ class OrderStorage:
         """
 
         if kind == "entry":
+            # Live approval and account truth may expire while this transaction waits for database
+            # admission. The caller samples `now_ms` inside the transaction callback, so this is the
+            # last durable boundary before the provider POST. Fail closed without spending the one
+            # attempt when either accepted window has elapsed.
+            if entry_approval_window is not None and not (
+                entry_approval_window[0] <= int(now_ms) <= entry_approval_window[1]
+            ):
+                self.reject_unsubmitted(
+                    order_id=order_id,
+                    expected_state="APPROVED",
+                    reason="approval_expired",
+                    now_ms=now_ms,
+                )
+                return "approval_expired"
+            if entry_preflight_window is not None and not (
+                entry_preflight_window[0] <= int(now_ms) <= entry_preflight_window[1]
+            ):
+                self.reject_unsubmitted(
+                    order_id=order_id,
+                    expected_state="APPROVED",
+                    reason="live_repreflight_stale",
+                    now_ms=now_ms,
+                )
+                return "preflight_stale"
             sql = """
                 UPDATE trading_orders
                    SET state = 'SUBMITTING',

@@ -1437,6 +1437,35 @@ def test_live_repreflight_rechecks_after_audit_before_claiming_the_attempt(
 
 
 @pytest.mark.parametrize(
+    ("at_claim", "reason"),
+    [
+        (NOW + 61_001, "approval_expired"),
+        (NOW + 11_001, "live_repreflight_stale"),
+    ],
+)
+def test_live_repreflight_rechecks_inside_the_attempt_claim(conn, at_claim: int, reason: str) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    clock_values = iter((NOW + 1_000, NOW + 1_000, NOW + 1_000, at_claim))
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert adapter.submit_calls == 0
+
+
+@pytest.mark.parametrize(
     ("quantity", "protected", "expected_state", "expected_closes"),
     [
         (Decimal("0.5"), True, "PARTIAL", []),
