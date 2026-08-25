@@ -146,6 +146,50 @@ describe("TradingPage", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
+  it("never reads as ready when the lane is enabled but its provider contract is not", async () => {
+    /*
+     * #207's own requirement, and the shape #185 P1-2 exists for: `enabled: true` with a live mode whose
+     * OpenTrade contract failed to compose. The page states `execution_configured: false` and the ledger's
+     * `not_proven`; there is no state of configuration in which it prints "ready".
+     */
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            readiness: {
+              control: "RUNNING",
+              enabled: true,
+              execution_backend: "opentrade_reviewed",
+              execution_configured: false,
+              live_mode_supported: true,
+              live_ready: false,
+              live_readiness: "not_proven",
+              mode: "live_reviewed",
+              venues: ["binance"],
+            },
+          }),
+        }),
+      ),
+    );
+
+    renderTrading();
+
+    /*
+     * The *value* under LIVE READY, not the block: the label names the field and is not a claim, and
+     * matching the block's text would compare against `LIVE READYnot_proven`, where the two run together
+     * and no word-boundary assertion can tell them apart.
+     */
+    const readiness = (await screen.findByText("LIVE READY")).closest(
+      ".trading-stat",
+    ) as HTMLElement;
+    const value = readiness.querySelector("b") as HTMLElement;
+    expect(value).toHaveTextContent("not_proven");
+    expect(value.textContent).not.toMatch(/^(ready|true|ok)$/i);
+    // Enabled, so the "lane is switched off" banner is not the explanation here.
+    expect(screen.queryByText(/资本通道未启用/)).not.toBeInTheDocument();
+  });
+
   it("names the case that stopped, and the rule it stopped on", async () => {
     renderTrading();
 
