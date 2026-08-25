@@ -416,7 +416,7 @@ def test_production_launcher_runs_real_runner_proxy_and_typed_outputs(
     # The record root is what makes any of this tamper-evident: the runner receipt, the sidecar ledger
     # and the launch receipt no longer carry digests of themselves.
     tampered = record.model_dump(mode="json")
-    tampered["metric_calls"] += 1
+    tampered["run"]["metric_calls"] += 1
     with pytest.raises(ValidationError, match="compile_record_hash_mismatch"):
         CompileRecordV1.model_validate(tampered)
 
