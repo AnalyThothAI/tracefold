@@ -1009,6 +1009,10 @@ def _accepted_event(
     magnitude: str | None = None,
     published_at_ms: int | None = None,
     relevance: TradeRelevanceV1 | None = None,
+    delivered: bool = True,
+    final_decision: str = "push",
+    throttled_by: str | None = None,
+    delivery_error_code: str | None = None,
 ) -> str:
     selected_stable = stable or _arm()
     event_id = _open_event(
@@ -1021,11 +1025,30 @@ def _accepted_event(
         title=title,
         published_at_ms=published_at_ms,
         relevance=relevance,
+        delivered=delivered,
     )
     conn.execute(
-        "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
-        (json.dumps({"agent_assignment": {"arm": "stable", "bundle_sha": selected_stable.bundle_sha}}), event_id),
+        "UPDATE news_verdicts SET trace = trace || %s::jsonb, final_decision = %s, throttled_by = %s "
+        "WHERE event_id = %s AND stage = 'triage'",
+        (
+            json.dumps({"agent_assignment": {"arm": "stable", "bundle_sha": selected_stable.bundle_sha}}),
+            final_decision,
+            throttled_by,
+            event_id,
+        ),
     )
+    if delivery_error_code is not None:
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=NOW - 1000) == "new"
+            assert repos.news.settle_delivery(
+                event_id=event_id,
+                kind="first",
+                state="terminal",
+                receipt=None,
+                error_code=delivery_error_code,
+                now_ms=NOW,
+            )
     desk = ReviewDesk(conn, now_ms=NOW)
     task = desk.open(
         # Event lookup is deterministic; no random queue sampling is involved.
@@ -1168,6 +1191,64 @@ def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None
     assert prior_event_id not in {case.event_id for case in development.cases}
     assert development.counts["eligible_event_n"] == 1
     assert development.counts["eligibility"]["bundle_sha"] == stable.bundle_sha
+
+
+def test_freeze_dataset_includes_undelivered_holds_but_excludes_unsafe_pushes(conn) -> None:
+    stable = _arm()
+    undelivered_drop = _accepted_event(
+        conn,
+        stable=stable,
+        hit_id=112021,
+        title="Nintendo keeps its full-year console shipment guidance unchanged",
+        delivered=False,
+        final_decision="drop",
+        should_push="must_hold",
+        published_at_ms=NOW - 3_900_000,
+    )
+    throttled_drop = _accepted_event(
+        conn,
+        stable=stable,
+        hit_id=112022,
+        title="Chile repeats its existing lithium royalty schedule",
+        delivered=False,
+        final_decision="throttled",
+        throttled_by="storyline:fixture:seen",
+        should_push="must_hold",
+        published_at_ms=NOW - 3_800_000,
+    )
+    undelivered_push = _accepted_event(
+        conn,
+        stable=stable,
+        hit_id=112023,
+        title="European Central Bank unexpectedly cuts its deposit rate by 50 basis points",
+        delivered=False,
+        published_at_ms=NOW - 3_700_000,
+    )
+    ambiguous_push = _accepted_event(
+        conn,
+        stable=stable,
+        hit_id=112024,
+        title="Brazil suspends soybean export licences for two crushing plants",
+        delivered=False,
+        delivery_error_code="ambiguous_after_crash",
+        published_at_ms=NOW - 3_600_000,
+    )
+
+    development = asyncio.run(
+        _datasets(conn, stable).freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+
+    case_ids = {case.event_id for case in development.cases}
+    assert case_ids == {undelivered_drop, throttled_drop}
+    assert undelivered_push not in case_ids
+    assert ambiguous_push not in case_ids
+    assert development.counts["case_n"] == 2
+    assert development.counts["eligible_event_n"] == 4
 
 
 def test_seed_receipts_match_production_latest_delivered_verdict_with_multiple_routes(conn) -> None:
