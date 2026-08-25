@@ -1,0 +1,35 @@
+@layer app.features {
+  /*
+   * The provenance line every #207 panel closes with. Owned beside the component that imports it, and
+   * shared by the OI monitor and the token page — one line, one namespace, one place to change it.
+   */
+  .news-source-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    align-items: baseline;
+    margin: 0;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .news-source-line code {
+    color: var(--text-secondary);
+    font: 500 10.5px/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .news-source-line-label {
+    font: 700 8.5px/1 var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .news-source-line-note {
+    flex: 1 1 220px;
+  }
+}

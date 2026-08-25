@@ -53,6 +53,8 @@ export type NewsOiStatus = NewsSchemas["NewsOiStatusData"];
 export type NewsOiPolicy = NewsSchemas["NewsOiPolicyData"];
 export type NewsOiTradeFloors = NewsSchemas["NewsOiTradeFloorsData"];
 export type NewsOiWindowSymbol = NewsSchemas["NewsOiWindowSymbolData"];
+export type NewsSymbol = NewsSchemas["NewsSymbolData"];
+export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
 
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
 export type NewsFeedOutcome = NewsOutcomeGroup;
@@ -258,6 +260,29 @@ export const useNewsStatusWithToken = (token: string) =>
  * symbols share one cache entry and one request. The server deduplicates again — a client cannot multiply
  * repository or provider work by repeating a symbol.
  */
+/**
+ * What one `base_symbol` is (#207 PR-W1). Identity, and nothing that moves.
+ *
+ * No `refetchInterval`: the universe snapshot lands on a schedule measured in hours, and the three things
+ * on the token page that *do* move — Events, quote, rank window — each arrive on their own key at their own
+ * rhythm. Polling this would re-render the page for bytes that cannot have changed.
+ */
+export const useNewsSymbolWithToken = (token: string, base: string) => {
+  const normalized = base.trim().toUpperCase().replace(/^XYZ-/, "");
+  return useQuery({
+    enabled: Boolean(token && normalized),
+    queryKey: queryKeys.newsSymbol(normalized),
+    queryFn: async () =>
+      (
+        await getApi<NewsSymbol>(`/api/news/symbols/${encodeURIComponent(normalized)}`, {
+          etagKey: `news-symbol:${normalized}`,
+          token,
+        })
+      ).data,
+    staleTime: 60_000,
+  });
+};
+
 export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]) => {
   const batch = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
     .sort()

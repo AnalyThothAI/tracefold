@@ -1,3 +1,6 @@
+import { newsSymbolPath } from "@shared/routing/paths";
+import { Link } from "react-router-dom";
+
 import type { NewsAssetRef, NewsQuote } from "../../api/newsQueries";
 
 import { NewsQuoteChange } from "./NewsQuoteValue";
@@ -15,6 +18,11 @@ import "./newsAssetChips.css";
  * Whether a tag resolved is the server's answer, not this component's — it renders `listed` and never
  * consults a symbol table of its own. `quotes` is an independent poll keyed by the requested tag (#88), so a
  * price that moved does not invalidate the feed body and a chip with no quote yet simply renders without one.
+ *
+ * Every chip is a link to the token page (#207 principle 9), including the struck-through ones: "the
+ * provider tagged a name nothing lists" is a real answer and the endpoint gives it rather than a 404. The
+ * link is on the symbol alone, not the whole chip, so a quote that ticks beside it is not part of the target
+ * — and the row's own stretched headline link keeps working around it.
  */
 export function NewsAssetChips({
   assets,
@@ -35,12 +43,13 @@ export function NewsAssetChips({
       {shown.map((asset) => (
         <code data-listed={asset.listed || undefined} key={asset.symbol}>
           {asset.venue ? <span className="news-asset-venue">{asset.venue}:</span> : null}
-          <span
+          <Link
             className="news-asset-symbol"
-            title={asset.listed ? undefined : "该符号未落在标的表上"}
+            title={asset.listed ? `打开代币页 ${asset.base_symbol}` : "该符号未落在标的表上"}
+            to={newsSymbolPath(asset.base_symbol)}
           >
             {asset.symbol}
-          </span>
+          </Link>
           {asset.listed ? <NewsQuoteChange quote={quotes?.[asset.symbol]} /> : null}
         </code>
       ))}

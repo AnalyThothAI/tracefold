@@ -9,6 +9,7 @@ import {
   newsQuoteFixture,
   newsReviewFixture,
   newsStatusFixture,
+  newsSymbolFixture,
   newsTriageFixture,
 } from "@tests/fixtures/newsFixture";
 
@@ -62,6 +63,14 @@ export async function installMockApi(
     if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));
     if (path === "/api/news/review") return fulfill(route, newsReviewFixture());
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
+    // #207 PR-W1: identity is keyed on the path segment, so the token page's baseline names the base the
+    // URL asked for rather than the fixture's default.
+    if (path.startsWith("/api/news/symbols/")) {
+      return fulfill(
+        route,
+        newsSymbolFixture({ base_symbol: decodeURIComponent(path.split("/").pop() ?? "WIF") }),
+      );
+    }
     recordUnhandledApiRequest(page, url);
     return route.fulfill({
       status: 404,

@@ -22,8 +22,7 @@ import {
 import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
-
-import { NewsOiSource } from "./NewsOiSource";
+import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 import "./newsOiFrameTable.css";
 
@@ -133,7 +132,7 @@ export function NewsOiFrameTable({
         </div>
       ) : null}
 
-      <NewsOiSource
+      <NewsSourceLine
         note="四个测量值、窗口名次与闸门名都来自服务端已落库的判定痕迹；1H/4H 是事件锚定的定格测量，不是现价。页签计数按判定时间算、行按事件时间算，窗口边缘上二者可差一两条"
         path="GET /api/news/feed?admission=telemetry_deterministic&hours=24"
       />

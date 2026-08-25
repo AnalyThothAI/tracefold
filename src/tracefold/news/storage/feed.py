@@ -54,7 +54,18 @@ OI_OUTCOMES: Final[frozenset[str]] = frozenset({"all", *OI_FILTERS})
 # share the predicate verbatim. A count that filtered differently from the rows it counts is the whole bug
 # this alias exists to prevent.
 _OI_RULE_SQL: Final = "v.trace -> 'oi_signal' ->> 'rule' AS oi_rule"
-_OI_RULE_PREDICATE: Final = "t.oi_rule = ANY(%s)"
+# The lane the key can only come from. `triage.py` enters its OI branch under
+# `admission == 'telemetry_deterministic'` and nothing else writes `trace['oi_signal']`, so pairing the rule
+# with the admission narrows nothing semantically — measured live on 2026-08-25, all 298 verdicts carrying
+# the key across the whole retention belonged to that admission.
+#
+# It is not decoration. Without it the planner has to read `trace` — a TOASTed JSONB column, 26 MB over 24 h
+# of verdicts — for every candidate row before it can tell whether the rule matches. A rare rule finds no
+# rows to stop early on, so `?oi=parse_failed` with no window walked the entire retention and hit the serve
+# role's 1 s `statement_timeout`: measured 500 in 1.24 s unbounded, against 0.44 s with the admission and
+# 9 ms on the 24 h window the console actually sends. Pairing them puts the admission index in front of the
+# detoast.
+_OI_RULE_PREDICATE: Final = "e.admission = 'telemetry_deterministic' AND t.oi_rule = ANY(%s)"
 
 
 class FeedStorage:
@@ -94,8 +105,22 @@ class FeedStorage:
             where.append("e.admission = %s")
             params.append(admission)
         if symbol:
-            where.append("EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = %s)")
-            params.append(symbol.upper())
+            # The filter names an *identity*, not one spelling. `news_event_assets` stores the normalized
+            # provider tag, so an Event the Gate grounded on `SKHX` carries `SKHX` — but #87 collapsed SKHX,
+            # SKHY and SKHYNIX into one base, the asset chip renders that base, and the token page is keyed
+            # on it. Matching the tag exactly would leave the Event that supplied the link missing from its
+            # own symbol page.
+            #
+            # The alias lookup is a primary-key probe on `news_symbol_aliases` per candidate row, which is
+            # why it sits inside the same EXISTS rather than expanding to a list the caller has to build.
+            where.append(
+                "EXISTS (SELECT 1 FROM news_event_assets a"
+                " WHERE a.event_id = e.event_id"
+                "   AND (a.symbol = %s"
+                "        OR COALESCE((SELECT n.base_symbol FROM news_symbol_aliases n WHERE n.alias = a.symbol), '')"
+                "            = %s))"
+            )
+            params.extend([symbol.upper(), symbol.upper()])
         if q:
             where.append("(e.search_doc @@ plainto_tsquery('simple', %s) OR e.leader_title ILIKE %s)")
             params.extend([q, f"%{q}%"])
@@ -107,8 +132,9 @@ class FeedStorage:
             # by a threshold and one whose provider template stopped parsing are both `drop`, and both carry
             # `override_rule = 'telemetry_deterministic'` because `decide()` names the admission, not the gate.
             # Measured live on 2026-08-25: all 99 OI verdicts in 24 h carried that one `override_rule`, while
-            # the trace split them 78 / 19 / 2 across the three gates. The predicate costs ~10 ms on a 24 h
-            # page because it is evaluated per surviving row rather than through an index.
+            # the trace split them 78 / 19 / 2 across the three gates. The predicate carries the lane's
+            # admission with the rule, which is what keeps it off the whole retention's TOAST — see
+            # `_OI_RULE_PREDICATE`.
             where.append(_OI_RULE_PREDICATE)
             params.append(list(OI_FILTERS[oi]))
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.

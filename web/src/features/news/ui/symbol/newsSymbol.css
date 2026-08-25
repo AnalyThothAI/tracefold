@@ -1,0 +1,277 @@
+@layer app.features {
+  /*
+   * 代币页 (#207 PR-W1). Identity, the live rank window, then everything that happened to the name.
+   *
+   * The page carries indigo and nothing else. Red and green appear only in the 1H / 4H cells and the
+   * direction word, which are the two places that state a market move — the same rule the OI monitor and the
+   * feed follow, so a reader who learns it once never has to relearn it.
+   */
+  .news-symbol-shell .news-page-header h1 {
+    font-family: var(--font-mono);
+    letter-spacing: -0.01em;
+  }
+
+  .news-symbol-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  /* ------------------------------------------------------------------ identity */
+  .news-symbol-identity {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 14px;
+  }
+
+  .news-symbol-identity-main {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .news-symbol-classes,
+  .news-symbol-aliases {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    align-items: center;
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 11.5px;
+  }
+
+  .news-symbol-class,
+  .news-symbol-aliases code {
+    padding: 2px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    color: var(--text-secondary);
+    font: 600 10px/1.5 var(--font-mono);
+  }
+
+  .news-symbol-tradeable {
+    padding: 2px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    color: var(--text-subtle);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+
+  .news-symbol-tradeable[data-tradeable] {
+    border-color: color-mix(in srgb, var(--accent-primary) 26%, transparent);
+    background: color-mix(in srgb, var(--accent-primary) 9%, transparent);
+    color: var(--accent-primary);
+  }
+
+  .news-symbol-unknown,
+  .news-symbol-muted {
+    color: var(--text-subtle);
+  }
+
+  .news-symbol-quote {
+    display: grid;
+    gap: 1px;
+    text-align: right;
+  }
+
+  .news-symbol-quote small {
+    color: var(--text-subtle);
+    font: 700 8.5px/12px var(--font-mono);
+    letter-spacing: 0.08em;
+  }
+
+  .news-symbol-contracts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: 0 14px 12px;
+  }
+
+  .news-symbol-contract {
+    display: inline-flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 2px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    background: var(--surface-raised);
+  }
+
+  .news-symbol-contract code {
+    color: var(--text-secondary);
+    font: 600 10.5px/1.6 var(--font-mono);
+  }
+
+  .news-symbol-contract small {
+    color: var(--text-subtle);
+    font-size: 10px;
+  }
+
+  /* A reference-tier row proves the ticker exists, not that the lane can act on it (#91). */
+  .news-symbol-contract[data-reference] {
+    border-style: dashed;
+  }
+
+  /* ------------------------------------------------------------------ rank window */
+  .news-symbol-window {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    align-items: baseline;
+    margin: 0;
+    padding: 12px 14px;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .news-symbol-window b {
+    color: var(--text-primary);
+    font: 640 15px/1.15 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-symbol-window b[data-full] {
+    color: var(--signal-caution);
+  }
+
+  .news-symbol-window a {
+    margin-left: auto;
+    font-size: 11.5px;
+  }
+
+  /* ------------------------------------------------------------------ event table */
+  .news-symbol-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .news-symbol-tab {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    min-height: 26px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .news-symbol-tab[data-active] {
+    background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+    color: var(--text-primary);
+    font-weight: 620;
+  }
+
+  .news-symbol-tab-count {
+    color: var(--text-faint);
+    font: 600 10.5px/1 var(--font-mono);
+  }
+
+  .news-symbol-tab[data-active] .news-symbol-tab-count {
+    color: var(--accent-primary);
+  }
+
+  .news-symbol-table {
+    overflow-x: auto;
+  }
+
+  .news-symbol-head,
+  .news-symbol-row {
+    display: grid;
+    grid-template-columns: 62px 74px minmax(280px, 1fr) 104px 132px;
+    gap: 10px;
+    align-items: center;
+    min-width: 780px;
+    padding: 0 14px;
+  }
+
+  .news-symbol-head {
+    min-height: 30px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: 700 8.5px/1.35 var(--font-mono);
+    letter-spacing: 0.06em;
+  }
+
+  .news-symbol-row {
+    min-height: 44px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-symbol-num {
+    justify-self: end;
+    text-align: right;
+  }
+
+  .news-symbol-time {
+    color: var(--text-subtle);
+    font: 500 11px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-symbol-lane {
+    justify-self: start;
+    padding: 2px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: 600 9.5px/1.5 var(--font-mono);
+  }
+
+  .news-symbol-headline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .news-symbol-headline a {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-symbol-reaction {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    align-items: baseline;
+  }
+
+  .news-symbol-more {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    padding: 10px 14px;
+  }
+
+  .news-symbol-more small {
+    color: var(--text-subtle);
+    font-size: 11px;
+  }
+
+  @media (max-width: 720px) {
+    .news-symbol-identity {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .news-symbol-quote {
+      text-align: left;
+    }
+  }
+}

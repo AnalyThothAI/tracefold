@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review`, and `/api/news/review/tasks/{task_id}/evidence` over HTTP; the two ReviewDesk mutation endpoints are the only browser writes. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
+The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/review`, and `/api/news/review/tasks/{task_id}/evidence` over HTTP; the two ReviewDesk mutation endpoints are the only browser writes. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
 
 ## Source Layer Map (`web/src/`)
 
@@ -356,9 +356,50 @@ the route components into the eager shell chunk.
   are deliberately absent: both need the price one hour before the frame, and the
   News price plane stores only the Event-anchored `p0/p1/p4`.
 
+  `/news/symbols/:base` is 代币页 (#207 PR-W1): what one `base_symbol` is, and
+  everything that happened to it. It reads four endpoints, each on its own key
+  and its own rhythm — `/api/news/symbols/{base}` for identity (`contracts`,
+  `tradeable`, `normalization`), `/api/news/feed?symbol=&hours=24` for the
+  Events, `/api/news/quotes` for the current mark, and the `oi` section of
+  `/api/news/status` for this symbol's rank occupancy — and closes every panel
+  with the same mono source line the OI monitor uses. Identity does not poll:
+  the universe snapshot lands on a schedule measured in hours, and the three
+  things that do move each arrive on their own key.
+
+  The identity card keeps three answers separate. `known` is whether any venue
+  we poll lists the name; `tradeable` is the #91 distinction — a `us.listed`
+  contract proves a ticker exists, not that the lane can act on it, so a
+  reference-only row is rendered *and* labelled rather than filtered away. The
+  quote is a third poll and is never a zero. A base the universe has never seen
+  is `known: false` with an explanation, not a 404: every asset chip on the
+  console links here, including the struck-through ones, so 404 would be the
+  ordinary outcome of following one.
+
+  The events table mixes news and OI frames on one clock — the reason a
+  per-token page exists — and its channel tabs (`全部 / 已推送 / 新闻 / OI 帧`)
+  filter the loaded window in the browser, unlike the OI monitor's server-side
+  tabs. That is deliberate and stated in the source line: `/api/news/feed` has
+  no `lane` parameter, so a server count would describe a window the table is
+  not showing; the tab count and the rows under it come from the same loaded
+  set. The lane itself is the server's `admission`, never a guess from the
+  title. There is no watchlist star — `watchlistHardCut.test.ts` keeps that
+  vocabulary out of production source — no price chart, and no open-interest
+  curve. The 交易视角 and 交易复盘 sections the design shows need `/api/trading/*`
+  and are PR-W4's; an empty panel promising them would be worse than their
+  absence.
+
+  Every `base_symbol` on the console routes here (#207 principle 9): the asset
+  chips on feed rows, the drawer and the Event detail, and the collapsed
+  identity in the Event's 符号归一 block. The feed row also carries the fixed
+  1H/4H Event Reaction in its own column, on held rows as well as pushed ones —
+  the verdict and what the market did are two different claims, and "the
+  pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
+  say. A horizon that has not matured reads `未到期`, never `0.00%`.
+
   Polling: Feed every 3 seconds; the OI frame table every 5 seconds; Event
   detail and Status every 15 seconds (one shared status query feeds the Feed
-  header, the topbar health lamp, the OI monitor and `/news/status`).
+  header, the topbar health lamp, the OI monitor, the token page's rank window
+  and `/news/status`). Token identity does not poll.
   Feed, Event, and Status retain ETag revalidation and a `304` reuses the
   cached body. There is no archive, revision timeline, read state, favorites,
   subscriptions, per-Event AI panel, push inbox, notification settings,
@@ -407,7 +448,7 @@ the route components into the eager shell chunk.
   because open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is part of the page and the topbar trigger folds it away for readers who want the whole column; from `768px` to `1279px` the same sidebar is the left `Drawer` that trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds (three today), reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail and no remembered collapse state: a manual toggle is per-page. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries the three News working surfaces (`事件流` `/news`, `持仓异动` `/news/oi`, `学习复盘` `/news/review`); `/news/events/:eventId` highlights `事件流`, and `/news/status` is a route without a slot, reached from the topbar health lamp. The feed entry shows the 24 h `funnel_24h.received` count and the 持仓异动 entry shows `pipeline.telemetry_received_24h`, both compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and both `aria-hidden` so they decorate the link without renaming it. The sidebar carries no health dot: health is the lamp's, in one place, on every frame. The shell reads these through `@features/news/shell` — the same query key the funnel card, the OI monitor and the status route use, so React Query serves all of them from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/oi`, `/news/review`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is part of the page and the topbar trigger folds it away for readers who want the whole column; from `768px` to `1279px` the same sidebar is the left `Drawer` that trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds (three today), reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail and no remembered collapse state: a manual toggle is per-page. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries the three News working surfaces (`事件流` `/news`, `持仓异动` `/news/oi`, `学习复盘` `/news/review`); `/news/events/:eventId` highlights `事件流`, and `/news/status` is a route without a slot, reached from the topbar health lamp. The feed entry shows the 24 h `funnel_24h.received` count and the 持仓异动 entry shows `pipeline.telemetry_received_24h`, both compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and both `aria-hidden` so they decorate the link without renaming it. The sidebar carries no health dot: health is the lamp's, in one place, on every frame. The shell reads these through `@features/news/shell` — the same query key the funnel card, the OI monitor and the status route use, so React Query serves all of them from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/oi`, `/news/review`, `/news/status`, `/news/symbols/:base`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
@@ -480,9 +521,12 @@ Production bundles ship inside the same Docker image as the Python service and a
 
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
-1. Hard-reload `/`, `/news`, `/news/review`, `/news/status`, and
-   `/news/events/:eventId` with representative query params; confirm `/macro`,
-   `/search`, and `/token/...` render the not-found surface.
+1. Hard-reload `/`, `/news`, `/news/oi`, `/news/review`, `/news/status`,
+   `/news/symbols/:base` and `/news/events/:eventId` with representative query
+   params; confirm `/macro`, `/search`, and `/token/...` render the not-found
+   surface. On the token page, confirm a base no venue lists (`/news/symbols/SPOT`)
+   says so rather than erroring, and that `/news/symbols/xyz-wif` resolves to the
+   same page as `/news/symbols/WIF`.
 2. Submit the topbar search from `/news/status` and from `/news` and confirm
    the URL becomes `/news?q=<submitted-query>` (existing News filters survive).
    The box has no submit button: `Enter` submits and `/` focuses it.

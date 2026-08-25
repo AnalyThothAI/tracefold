@@ -1,16 +1,21 @@
 import { displayAssetRefs } from "@features/news/model/newsLabels";
 import { NewsAssetChips } from "@features/news/ui/chrome/NewsAssetChips";
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 
 afterEach(() => cleanup());
+
+/** Every chip is a link now (#207 principle 9), so the chips need a router around them. */
+const renderChips = (element: ReactElement) => render(<MemoryRouter>{element}</MemoryRouter>);
 
 const LISTED = { base_symbol: "HYPE", listed: true, symbol: "HYPE", venue: "hl.perp" };
 const UNLISTED = { base_symbol: "SPOT", listed: false, symbol: "SPOT", venue: null };
 
 describe("NewsAssetChips", () => {
   it("names the venue for a tag that resolves, and marks one that does not", () => {
-    render(<NewsAssetChips assets={[LISTED, UNLISTED]} />);
+    renderChips(<NewsAssetChips assets={[LISTED, UNLISTED]} />);
 
     const chips = screen.getByLabelText("关联资产").querySelectorAll("code");
     expect(chips).toHaveLength(2);
@@ -26,6 +31,32 @@ describe("NewsAssetChips", () => {
     expect(chips[1].textContent).not.toContain(":");
   });
 
+  it("routes every symbol to its token page, including one that resolved to nothing", () => {
+    /*
+     * #207 principle 9. The struck-through chip is a link too: `/api/news/symbols/{base}` answers
+     * `known: false` for a tag no venue lists, which is the answer a reader following that chip came for —
+     * a 404 would make the console's own honesty look like a broken link.
+     */
+    renderChips(<NewsAssetChips assets={[LISTED, UNLISTED]} />);
+
+    expect(screen.getByText("HYPE").closest("a")).toHaveAttribute("href", "/news/symbols/HYPE");
+    expect(screen.getByText("SPOT").closest("a")).toHaveAttribute("href", "/news/symbols/SPOT");
+  });
+
+  it("keys the link on the collapsed identity, not the provider's prefixed spelling", () => {
+    // `XYZ-UNITREE` and `UNITREE` are one instrument; the token page is keyed on the base the Gate stored.
+    renderChips(
+      <NewsAssetChips
+        assets={[{ base_symbol: "UNITREE", listed: true, symbol: "XYZ-UNITREE", venue: "hl.xyz" }]}
+      />,
+    );
+
+    expect(screen.getByText("XYZ-UNITREE").closest("a")).toHaveAttribute(
+      "href",
+      "/news/symbols/UNITREE",
+    );
+  });
+
   it("shows the first few chips and counts the overflow", () => {
     const assets = ["A", "B", "C", "D", "E"].map((symbol) => ({
       base_symbol: symbol,
@@ -33,14 +64,14 @@ describe("NewsAssetChips", () => {
       symbol,
       venue: "hl.perp",
     }));
-    render(<NewsAssetChips assets={assets} max={3} />);
+    renderChips(<NewsAssetChips assets={assets} max={3} />);
 
     expect(screen.getByLabelText("关联资产").querySelectorAll("code")).toHaveLength(3);
     expect(screen.getByText("+2")).toBeInTheDocument();
   });
 
   it("renders nothing rather than an empty container when an Event grounded on nothing", () => {
-    const { container } = render(<NewsAssetChips assets={[]} />);
+    const { container } = renderChips(<NewsAssetChips assets={[]} />);
 
     expect(container).toBeEmptyDOMElement();
   });

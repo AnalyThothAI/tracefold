@@ -4,8 +4,7 @@ import { ThresholdIcon, WhaleShareIcon, WindowClockIcon } from "@shared/ui/icons
 import type { NewsOiPolicy, NewsOiTradeFloors } from "../../api/newsQueries";
 import { formatCount } from "../../model/newsLabels";
 import { oiPercent, oiRuleLabel, oiValueZh, oiWindowLabel } from "../../model/oiSignals";
-
-import { NewsOiSource } from "./NewsOiSource";
+import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 /**
  * The two threshold sets, side by side and never merged (#207 principle 4).
@@ -55,7 +54,7 @@ export function NewsOiGates({
             title="持仓变动下限"
           />
         </div>
-        <NewsOiSource
+        <NewsSourceLine
           note="拦下量按判定痕迹里的闸门名分组；pipeline.dropped_by_rule 记的是 admission，分不出闸门"
           path="GET /api/news/status → oi.policy · oi.by_rule_24h"
         />
@@ -84,7 +83,7 @@ export function NewsOiGates({
             why="News 价格面只锚定事件后的 p0/p1/p4，帧前一小时的价格没有落表，本页无法逐帧判定"
           />
         </div>
-        <NewsOiSource
+        <NewsSourceLine
           note={
             floors.enabled
               ? "推送 ≠ 可交易：上面的闸门决定读者是否收到，这里的地板决定资本是否开仓"

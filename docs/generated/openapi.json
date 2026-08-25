@@ -369,6 +369,52 @@
         "title": "ApiEnvelope[NewsStatusData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsSymbolData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsSymbolData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsSymbolData]",
+        "type": "object"
+      },
       "ApiEnvelope_StatusData_": {
         "additionalProperties": false,
         "properties": {
@@ -5540,6 +5586,96 @@
         "title": "NewsStatusData",
         "type": "object"
       },
+      "NewsSymbolContractData": {
+        "additionalProperties": false,
+        "description": "One contract the base names on one venue.\n\n`reference_only` is the #91 distinction kept visible rather than filtered away: `us.listed` proves a\nticker exists, not that anyone can trade it, and the page is where an operator asks the first question.",
+        "properties": {
+          "instrument_class": {
+            "title": "Instrument Class",
+            "type": "string"
+          },
+          "quote_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Asset"
+          },
+          "reference_only": {
+            "default": false,
+            "title": "Reference Only",
+            "type": "boolean"
+          },
+          "venue": {
+            "title": "Venue",
+            "type": "string"
+          },
+          "venue_symbol": {
+            "title": "Venue Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "venue",
+          "venue_symbol",
+          "instrument_class"
+        ],
+        "title": "NewsSymbolContractData",
+        "type": "object"
+      },
+      "NewsSymbolData": {
+        "additionalProperties": false,
+        "description": "The identity card. `known` is false for a base no venue we poll has ever listed \u2014 a real answer, and\nnot the same as an error: the provider tags symbols the universe has never seen, and the page says so\nrather than 404-ing on a name the reader just clicked.",
+        "properties": {
+          "base_symbol": {
+            "title": "Base Symbol",
+            "type": "string"
+          },
+          "contracts": {
+            "items": {
+              "$ref": "#/components/schemas/NewsSymbolContractData"
+            },
+            "title": "Contracts",
+            "type": "array"
+          },
+          "known": {
+            "title": "Known",
+            "type": "boolean"
+          },
+          "normalization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsSymbolNormalizationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tradeable": {
+            "title": "Tradeable",
+            "type": "boolean"
+          },
+          "venues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Venues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_symbol",
+          "known",
+          "tradeable"
+        ],
+        "title": "NewsSymbolData",
+        "type": "object"
+      },
       "NewsSymbolNormalizationData": {
         "additionalProperties": false,
         "description": "#87: the several names one issuer trades under, collapsed to one stable storyline identity.",
@@ -7022,6 +7158,49 @@
           }
         },
         "summary": "Get News Status",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/symbols/{base}": {
+      "get": {
+        "description": "What one `base_symbol` is: the names it answers to, and the contracts it names (#207 PR-W1).\n\nA base no venue we poll has ever listed is `known: false` with empty lists, not a 404. The provider tags\nsymbols the universe has never seen \u2014 that is exactly what the struck-through chip means \u2014 and every one\nof those chips is now a link, so 404 would be the ordinary outcome of a reader following one.",
+        "operationId": "get_news_symbol_api_news_symbols__base__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "base",
+            "required": true,
+            "schema": {
+              "title": "Base",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsSymbolData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Symbol",
         "tags": [
           "api"
         ]

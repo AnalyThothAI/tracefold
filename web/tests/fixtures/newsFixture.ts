@@ -14,6 +14,7 @@ import type {
   NewsQuote,
   NewsReaction,
   NewsReview,
+  NewsSymbol,
 } from "@features/news/api/newsQueries";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
@@ -62,6 +63,9 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     provenance: ["opennews:1018"],
     provider_score_max: 88,
     published_at_ms: NEWS_NOW_MS - 25_000,
+    // #207 PR-W1: the feed row carries the Event Reaction in its own column. A row whose horizons have not
+    // matured overrides `state` — it must read 未到期, never 0.00%.
+    reaction: newsReactionFixture(),
     reporting_origin: "Reuters World",
     storyline_key: "asset:BTC",
     title_zh: "央行应对新的全球政策冲击",
@@ -660,6 +664,40 @@ export function newsReviewFixture(overrides: Partial<NewsReview> = {}): NewsRevi
       },
     ],
     view: "queue",
+    ...overrides,
+  };
+}
+
+/**
+ * One `base_symbol`'s identity card (#207 PR-W1).
+ *
+ * `us.listed` is in the contracts on purpose: it is what makes `known` and `tradeable` two different
+ * answers, and a fixture that only ever shipped tradeable venues could not tell them apart. A test that
+ * wants the name-nothing-lists case passes `{ contracts: [], known: false, tradeable: false, venues: [] }`.
+ */
+export function newsSymbolFixture(overrides: Partial<NewsSymbol> = {}): NewsSymbol {
+  return {
+    base_symbol: "WIF",
+    contracts: [
+      {
+        instrument_class: "crypto",
+        quote_asset: "USDT",
+        reference_only: false,
+        venue: "binance.perp",
+        venue_symbol: "WIFUSDT",
+      },
+      {
+        instrument_class: "crypto",
+        quote_asset: "USDC",
+        reference_only: false,
+        venue: "hl.perp",
+        venue_symbol: "WIF",
+      },
+    ],
+    known: true,
+    normalization: { aliases: ["WIF", "XYZ-WIF"], base_symbol: "WIF", sources: ["seed"] },
+    tradeable: true,
+    venues: ["binance.perp", "hl.perp"],
     ...overrides,
   };
 }
