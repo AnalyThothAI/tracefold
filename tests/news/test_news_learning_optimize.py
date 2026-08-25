@@ -16,13 +16,11 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.learning.compiler.security import (
+from tracefold.news.learning.contracts import (
     METRIC_JUDGE_MAX_TOKENS,
     METRIC_JUDGE_TIMEOUT_SECONDS,
-    ModelExecutionIdentity,
-)
-from tracefold.news.learning.contracts import (
     DevelopmentDatasetRef,
+    ModelExecutionIdentity,
     OptimizationBudget,
     OptimizationRunReport,
     PromptCandidateV1,
