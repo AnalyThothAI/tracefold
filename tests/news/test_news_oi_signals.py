@@ -305,6 +305,10 @@ def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> No
     assert summary is not None
     assert summary["parsed"] is True
     assert summary["rule"] == "opening_move_with_whale_concentration"
+    # The frame's subject. Nothing else in a feed row carries it for this lane: the Gate grounds
+    # `news_event_assets` from provider coin tags at admission and a 1019 frame ships none, so a live
+    # telemetry Event has `assets == []` and `grounded_assets == []`.
+    assert summary["symbol"] == judgment.signal.symbol
     assert summary["oi_change_bps"] == judgment.signal.oi_change_bps
     assert summary["oi_value_usd"] == judgment.signal.oi_value_usd
     assert summary["whale_long_profit_bps"] == judgment.signal.whale_long_profit_bps
@@ -330,7 +334,9 @@ def test_an_unparseable_frame_folds_to_its_failure_shape_and_no_measurements() -
     assert summary["failure_stage"] == "template_match"
     assert summary["parser_version"] == "oi_signal_parser_v1"
     assert summary["title_sha256"]
-    # Nothing was measured, so nothing is reported. A zero here would read as a real reading of zero.
+    # Nothing was measured, so nothing is reported — including the symbol, which the template never
+    # matched. A zero or an empty string here would read as a real reading.
+    assert summary["symbol"] is None
     for key in ("oi_change_bps", "oi_value_usd", "whale_long_profit_bps", "whale_oi_ratio_bps"):
         assert summary[key] is None
     assert {"strategy_id", "provider", "provider_source"}.isdisjoint(summary)

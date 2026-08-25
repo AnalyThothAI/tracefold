@@ -119,11 +119,7 @@ function newsOiFeedData(oi: string | null) {
   const frames = [
     newsOiFrameFixture(),
     newsOiFrameFixture({
-      // The Event's own assets, because that is where the row reads its symbol from — `triage.assets` is
-      // the Event detail's shape and the feed never sends it.
-      assets: [{ base_symbol: "DOGE", listed: true, symbol: "DOGE", venue: "binance.perp" }],
       event_id: "evt-oi-doge",
-      grounded_assets: ["DOGE"],
       leader_title:
         "DOGE OI Rise 2.08%, OI Value 892.31M, Whale Long Profit 63.00%, Whale/OI Ratio 54.20%",
       oi: {
@@ -132,6 +128,7 @@ function newsOiFeedData(oi: string | null) {
         oi_change_bps: 208,
         oi_value_usd: 892_310_000,
         rule: "whale_ratio_below_threshold",
+        symbol: "DOGE",
         whale_long_profit_bps: 6_300,
         whale_oi_ratio_bps: 5_420,
       },
@@ -153,11 +150,7 @@ function newsOiFeedData(oi: string | null) {
       }),
     }),
     newsOiFrameFixture({
-      // An unparseable frame grounded on nothing: the parser never produced a symbol, so the Gate had no
-      // tag to ground and the row's SYMBOL column has nothing true to show.
-      assets: [],
       event_id: "evt-oi-pengu",
-      grounded_assets: [],
       leader_title:
         "PENGU OI Rise 3.4%, OI Value --, Whale Long Profit 55.10%, Whale/OI Ratio 71.00%",
       oi: {
@@ -171,6 +164,8 @@ function newsOiFeedData(oi: string | null) {
         parser_version: "oi_signal_parser_v1",
         rank_semantics: null,
         rule: "oi_parse_failed",
+        // The template never matched, so nothing — not even the subject — was read out of the title.
+        symbol: null,
         title_sha256: "9f2c41ab7d10",
         whale_long_profit_bps: null,
         whale_oi_ratio_above_bps: null,

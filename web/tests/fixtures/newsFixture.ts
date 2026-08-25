@@ -494,11 +494,17 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
 export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): NewsFeedEvent {
   return newsFeedEventFixture({
     admission: "telemetry_deterministic",
-    assets: [{ base_symbol: "WIF", listed: true, symbol: "WIF", venue: "binance.perp" }],
+    /*
+     * Both empty, because that is what production sends. The Gate grounds `news_event_assets` from the
+     * provider's coin tags at admission and a strategy-1019 frame ships none; the symbol is parsed out of
+     * the title later, at Triage. A fixture that filled either of these is what let two successive
+     * "fixed the symbol column" changes ship while the column stayed `—` on the live console.
+     */
+    assets: [],
     delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
     event_id: "evt-oi-wif",
     family: "market_telemetry",
-    grounded_assets: ["WIF"],
+    grounded_assets: [],
     leader_title:
       "WIF OI Rise 6.71%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
     oi: {
@@ -511,6 +517,8 @@ export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): News
       parsed: true,
       parser_version: null,
       rank_semantics: "eligible_rank_v1",
+      // The only place the feed carries the frame's subject for this lane.
+      symbol: "WIF",
       rule: "opening_move_with_whale_concentration",
       title_sha256: null,
       whale_long_profit_bps: 8_840,

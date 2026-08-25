@@ -26,6 +26,10 @@ class NewsFeedOiData(ExactApiSchema):
 
     parsed: bool
     rule: str
+    # The frame's own subject, from the judge's trace. It is not on `assets`/`grounded_assets`: the Gate
+    # grounds those from provider coin tags at admission and a 1019 frame ships none, so this is the only
+    # place the feed carries it.
+    symbol: str | None = None
     oi_change_bps: int | None = None
     oi_value_usd: int | None = None
     whale_long_profit_bps: int | None = None

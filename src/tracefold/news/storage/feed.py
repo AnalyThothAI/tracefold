@@ -9,6 +9,7 @@ from typing import Any, Final
 
 from ..models import ReaderReceipt, display_title
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from ..outcome import (
     audience_zh,
     decision_zh,
@@ -371,6 +372,34 @@ class FeedStorage:
         ).fetchone()
         return {key: int(value or 0) for key, value in dict(row or {}).items()}
 
+    def _oi_by_rule_24h(self, *, day_ago: int) -> dict[str, int]:
+        """The deterministic judge's own gate, counted over 24 h.
+
+        `pipeline.dropped_by_rule` cannot answer this: it groups `override_rule`, and `decide()` writes
+        `telemetry_deterministic` there for every OI verdict, push and withhold alike. The gate name lives
+        only in the trace the judge wrote.
+
+        Its own query, filtered to OI verdicts first, rather than another grouping key on the funnel's
+        shared verdict scan. That scan reads `trace` for every Triage verdict in the window — 1948 rows and
+        26 MB of JSONB on 2026-08-25 — and folding a second path extraction into it cost **+79 ms**
+        (84 -> 164 ms), on an endpoint that already sits at ~730 ms against a 1 s statement timeout and is
+        polled every 15 s by every open tab. `program_version` narrows the same answer to 94 rows and 147 kB:
+        **1.2 ms**, identical counts. One cheap query beats one widened expensive one.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT COALESCE(trace -> 'oi_signal' ->> 'rule', '') AS oi_rule, count(*) AS n
+              FROM news_verdicts
+             WHERE stage = 'triage' AND created_at_ms >= %s
+               AND program_version = %s
+             GROUP BY 1
+            """,
+            (day_ago, OI_PROGRAM_VERSION),
+        ).fetchall()
+        counts = {str(row["oi_rule"]): int(row["n"]) for row in rows if row["oi_rule"]}
+        return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
     def oi_window_occupancy(
         self,
         *,
@@ -443,6 +472,23 @@ class FeedStorage:
                   AND created_at_ms >= %s) AS decided_push_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s) AS throttled_24h,
+              -- WARNING: the five subqueries below are why `/api/news/status` 500s intermittently, and it is
+              -- not a `news.oi` problem — it predates #207 and needs a migration to fix properly.
+              --
+              -- Each reads one scalar out of `news_verdicts.trace`, a TOASTed JSONB column holding 26 MB
+              -- across a day's ~1950 verdicts. Measured 2026-08-25 with EXPLAIN (BUFFERS): the bitmap heap
+              -- scan itself is 11 ms / 506 buffers, and adding the `trace` reads takes it to 354 ms /
+              -- 27544 buffers — the whole cost is decompressing the column to reach three numbers. The five
+              -- together measure ~1.1 s against the serve role's 1 s `statement_timeout`, so the endpoint
+              -- fails whenever the cache is cold or the host is busy.
+              --
+              -- Folding them into one `FILTER` pass was measured and returns identical values, but only
+              -- saves about a tenth (1107 -> 1009 ms) because the planner already shares most of that work
+              -- — still over the limit, so it is not worth the churn here. (Write no bare per-cent sign in
+              -- this string: psycopg scans the whole statement for placeholders, comments included, and one
+              -- raises `incomplete placeholder`.) The real fix is to stop reading a 26 MB
+              -- column for three scalars: promote `latency_ms` / `queue_lag_ms` to real columns, or add a
+              -- partial expression index the percentile can scan in order. Both are migrations. See #207.
               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
                  FROM news_verdicts
                 WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p50_ms,
@@ -478,9 +524,6 @@ class FeedStorage:
             (day_ago, hour_ago, day_ago, day_ago),
         ).fetchone()
         funnel = self._funnel_24h(day_ago=day_ago)
-        # The deterministic OI lane gets its own section rather than another `pipeline` map: it is one
-        # admission's arithmetic, not a property of the whole funnel, and the monitor is its only reader.
-        oi_by_rule_24h = funnel.pop("oi_by_rule_24h")
         retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
         return {
             "ingest": {
@@ -506,7 +549,7 @@ class FeedStorage:
                 **self._oi_telemetry_24h(day_ago=day_ago),
                 **funnel,
             },
-            "oi": {"by_rule_24h": oi_by_rule_24h},
+            "oi": {"by_rule_24h": self._oi_by_rule_24h(day_ago=day_ago)},
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},
             "delivery": {
                 "sent_24h": int(delivery["sent_24h"] or 0) if delivery else 0,
@@ -568,20 +611,16 @@ class FeedStorage:
             """,
             (day_ago,),
         ).fetchall()
-        # One pass over the last 24 h of Triage verdicts; the five named maps are folded from it in Python.
-        # `oi_rule` is the deterministic judge's own gate name and has to be read from the trace: `dropped_by_rule`
-        # groups `override_rule`, which `decide()` sets to the admission (`telemetry_deterministic`) for every
-        # OI verdict, so the funnel can say how many frames were withheld but never by which gate.
+        # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
         verdict_groups = self.conn.execute(
             """
             SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
                    COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
                    COALESCE(trace ->> 'seen_scope', '') AS seen_scope,
-                   COALESCE(trace -> 'oi_signal' ->> 'rule', '') AS oi_rule,
                    count(*) AS n
               FROM news_verdicts
              WHERE stage = 'triage' AND created_at_ms >= %s
-             GROUP BY 1, 2, 3, 4, 5, 6, 7
+             GROUP BY 1, 2, 3, 4, 5, 6
             """,
             (day_ago,),
         ).fetchall()
@@ -589,7 +628,6 @@ class FeedStorage:
         throttled: dict[str, int] = {}
         pushed_by_rule: dict[str, int] = {}
         degraded_by_code: dict[str, int] = {}
-        oi_by_rule: dict[str, int] = {}
         # Duplicate withholds by measurement path. Policy v7 writes `all` for
         # every ordinary push comparison; `throttled` is retained for old rows.
         duplicates: dict[str, int] = {"throttled": 0, "all": 0}
@@ -609,9 +647,6 @@ class FeedStorage:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
-            oi_rule = str(row["oi_rule"] or "")
-            if oi_rule:
-                oi_by_rule[oi_rule] = oi_by_rule.get(oi_rule, 0) + n
         # Both Review v2 shapes of "the reader should have got this": an accepted Event judgment and an
         # accepted ExternalMissSnapshot.  The latter is the only observed upper bound on upstream recall.
         missed = self.conn.execute(
@@ -642,7 +677,6 @@ class FeedStorage:
             "dropped_by_rule": dict(sorted(dropped.items(), key=lambda kv: -kv[1])),
             "throttled_by_key": dict(sorted(throttled.items(), key=lambda kv: -kv[1])[:10]),
             "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
-            "oi_by_rule_24h": dict(sorted(oi_by_rule.items(), key=lambda kv: -kv[1])),
             "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "reviewed_should_push_24h": int(missed["n"] or 0) if missed else 0,
             "reviewed_external_miss_24h": int(missed["external"] or 0) if missed else 0,
@@ -801,8 +835,17 @@ def _oi_summary(value: Any) -> dict[str, Any] | None:
     parser to keep in step with the judge. The two thresholds come from the trace's own `policy`, so a stored
     frame keeps saying what it ran under after an operator retunes `news.oi`.
 
+    `symbol` is here because this lane is the one place nothing else carries it. The Gate grounds
+    `news_event_assets` from the provider's coin tags at admission, and a strategy-1019 frame ships none —
+    the symbol exists only in the title, and `evaluate_oi` parses it into the verdict's `TriageAsset` at
+    Triage time, after the Gate has already written its rows. So on a live telemetry Event both
+    `grounded_assets` and `assets` are empty and `triage.assets` is absent from the feed's slim summary:
+    verified against production on 2026-08-25, where every row's symbol column read `—`. The judge's own
+    trace is the only place the feed can reach it. `direction` is not folded here — the slim triage summary
+    does carry that one.
+
     `strategy_id`, `provider` and `provider_source` stay behind: the console does not display provider
-    Strategy IDs. The symbol and the direction are already on `triage.assets[]` / `triage.direction`.
+    Strategy IDs.
     """
 
     if not isinstance(value, Mapping):
@@ -812,6 +855,7 @@ def _oi_summary(value: Any) -> dict[str, Any] | None:
     return {
         "parsed": bool(value.get("parsed")),
         "rule": str(value.get("rule") or ""),
+        "symbol": str(value.get("symbol") or "") or None,
         "oi_change_bps": _optional_int(value.get("oi_change_bps")),
         "oi_value_usd": _optional_int(value.get("oi_value_usd")),
         "whale_long_profit_bps": _optional_int(value.get("whale_long_profit_bps")),
