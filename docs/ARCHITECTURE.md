@@ -315,6 +315,7 @@ tracefold.news
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
   learning/           content-addressed program_v7 datasets, reviews, compiler, and stable/candidate evaluation
+  learning/objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or must exclude
   learning/compiler/gepa.py  the one bounded GEPA run, shared by the trusted compiler and the fast loop
   learning/experiment/       operator run directories: frozen window, arm comparison, unpromotable proposal
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
@@ -1216,6 +1217,28 @@ worst-case reservation taken before every provider call, the sidecar owning the
 only credentials, the boundary evidence — commands, mounts, egress, cleanup,
 termination — and fail-closed on any tamper all stand unchanged. The record
 root is simply what makes them tamper-evident now.
+
+What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
+and every plane rebuilds the same plan from the same frozen episodes: readiness,
+the dataset-bound baseline, `run_gepa` (so both the trusted compiler and the
+experiment loop), and `CandidateEvaluator` when it re-projects a candidate's
+corpus. A case is a **target** only when an operator wrote
+`first_bad_owner = triage_prompt` into the submission itself — a ReviewDesk-derived
+owner routes queue work and grants nothing — and the failure belongs to
+EventSemantics or ReaderCard with something checkable behind it: an exact typed
+gold value, or evidence refs plus a stated correction, or a novelty prior that
+reached the ToldContext the model actually saw. A **control** is a case the
+stable Program already answers correctly under the accepted review and that
+trips no hard gate. Everything else is an **excluded diagnostic** — retrieval,
+Gate, storyline, policy, delivery, taxonomy, provider failures, derived-only
+owners, failed dimensions with no stated correct value, accepted external misses
+with no stable output — and stays visible in readiness and baseline reports
+without ever entering a reflective minibatch. `run_gepa` splits `target +
+control` and nothing else; before #199 it scoped targets owner-blind and split
+the whole corpus, so a retrieval miss became an instruction to repair.
+`news learning readiness --development SHA` publishes the plan with zero model
+calls, and the trusted compiler rebuilds it and fails closed on the same
+conditions.
 
 Metric v4 (`tracefold.news.production_action_trade_relevance_v4`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster

@@ -174,9 +174,22 @@ def _open_event(
     return opened.event_id
 
 
-def _rubric(*, why: str = "pass") -> EventRubricSubmission:
+def _rubric(
+    *,
+    why: str = "pass",
+    should_push: str = "must_push",
+    first_bad_owner: str | None = None,
+) -> EventRubricSubmission:
+    """One accepted rubric.
+
+    `first_bad_owner` is the operator's own attribution and is what #199's Objective Plan reads to decide
+    whether GEPA may try to repair the case. It is deliberately not defaulted: a rubric that leaves it
+    unset is exactly the shape ReviewDesk derives an owner for, and the plan must not treat a derived
+    owner as a grant.
+    """
+
     return EventRubricSubmission(
-        should_push="must_push",
+        should_push=should_push,  # type: ignore[arg-type]
         dimensions={
             "factual_fidelity": "pass",
             "headline_fidelity": "pass",
@@ -185,6 +198,7 @@ def _rubric(*, why: str = "pass") -> EventRubricSubmission:
             "timeliness": "pass",
         },
         novelty={"judgment": "new_fact"},
+        first_bad_owner=first_bad_owner,  # type: ignore[arg-type]
         evidence_refs=[] if why == "pass" else ["source:sentence:1", "output:why"],
         expected_correction="" if why == "pass" else "Do not claim priced-in without source evidence.",
     )

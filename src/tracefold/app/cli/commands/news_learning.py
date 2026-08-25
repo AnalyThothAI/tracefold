@@ -12,6 +12,7 @@ from tracefold.platform.config.loader import load_settings
 from .news_learning_baseline import (
     _handle_learning_baseline,
     _handle_learning_draft_reviews,
+    _handle_learning_readiness,
 )
 from .news_learning_documents import (
     _canonical_model_document,
@@ -81,6 +82,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return 0, {"ok": True, "data": result}
 
         stable = active_arm_manifest(settings)
+        if action == "readiness":
+            return _handle_learning_readiness(args, settings, stable)
         if action == "baseline":
             return _handle_learning_baseline(args, settings, stable)
         if action == "draft-reviews":

@@ -858,9 +858,11 @@ that ran only for current-cohort episodes, so `--all-cohorts --action-source
 policy` applies today's rules to a retired corpus by design. An episode with no
 complete recorded `DecisionResult` is refused in `recorded` mode rather than quietly falling through
 to a policy replay. The sealed compile projection is
-`tracefold.news.development_compile_episode.v3`; a dataset frozen under v2
-carries no policy and is refused at validation instead of failing inside every
-metric call.
+`tracefold.news.development_compile_episode.v4`; a dataset frozen under v2
+carries no policy and one frozen under v3 cannot say whether a human wrote
+`first_bad_owner` or ReviewDesk derived it, so both are refused at validation
+instead of failing inside every metric call or silently widening what GEPA may
+optimize.
 
 `--mode recorded` makes no provider call; `--all-cohorts` drops release-plane
 eligibility — for the seed sent ledger too, not only the cases — so a retired
@@ -946,6 +948,22 @@ the run's own fixed order, one ReviewDesk query per Event, and reports
 superseded is visible rather than read as judged. Without it the command keeps
 its queue-by-hours form, which is how a first corpus is grown before any run
 exists.
+
+`news learning readiness --development SHA [--out FILE]` explains one frozen
+development dataset before anyone spends a provider call on it: it re-projects
+the sealed corpus, builds the one `GepaObjectivePlan`, and reports
+`target / control / excluded` with a reason for every exclusion, the explicit vs
+derived owner distribution, exact-gold coverage by dimension, the train and
+development-selection halves of the honest split with their case and cluster
+roots, the required strata, retrieval verifiability, and a per-metric-call task
+and judge envelope computed from the corpus. It makes no task, reflection or
+judge call and writes nothing. `outcome` is `ready` or `insufficient`; the exit
+code stays `0` for an `insufficient` report, because refusing to optimize a
+corpus that cannot support it is a result rather than a failure. Readiness is an
+explanation in advance, not a bypass — `run_gepa` rebuilds the same plan and
+refuses on the same conditions, and `CandidateEvaluator` rebuilds it again from
+the frozen dataset and requires the candidate's declared failure clusters,
+target dimensions and split roots to equal it exactly.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in

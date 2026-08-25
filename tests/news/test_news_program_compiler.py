@@ -24,7 +24,8 @@ from tracefold.news.learning.compiler.security import (
     REFLECTION_TIMEOUT_SECONDS,
     ModelExecutionIdentity,
 )
-from tracefold.news.learning.metric import _honest_split, _metric_receipt, _retrieval_receipt
+from tracefold.news.learning.metric import _metric_receipt
+from tracefold.news.learning.objective import _honest_split, _retrieval_receipt
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.artifact import (
     ProgramStrategyArtifactV1,
@@ -258,7 +259,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
             {
                 "case_id": f"case-{cluster}-{name}",
                 "cluster_id": f"cluster-{cluster}",
-                "stratum": "review_failure",
+                "stratum": "review_failure" if name == "target" else "delivered",
                 "context": context,
                 "policy_metric": {
                     "gate": {
@@ -270,8 +271,8 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
                     "seen": [],
                     "told": [],
                     "recorded_decision_result": {
-                        "final": "push",
-                        "rule_baseline": "push",
+                        "final": final,
+                        "rule_baseline": final,
                         "override_rule": None,
                         "throttled_by": None,
                         "watchlist_hits": [],
@@ -281,18 +282,46 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
                     },
                     **_frozen_policy_projection(),
                 },
-                "accepted_review": {
-                    "should_push": should_push,
-                    "dimensions": {"direction": "fail", "factual_fidelity": "pass"},
-                    "novelty": {"judgment": "new_fact", "duplicate_of": ""},
-                    "expected_correction": "The direction must follow the filing's actual mechanism.",
-                },
-                "production_judgment": _judgment(direction="neutral").model_dump(mode="json"),
+                "accepted_review": review,
+                "production_judgment": _judgment(**verdict).model_dump(mode="json"),
             }
-            # Two clusters so the split is possible, and both halves carry every required stratum:
-            # a safety/positive case and a safety/negative one. Anything less fails closed.
+            # Two clusters so the split is possible, and both halves carry every required stratum: a
+            # safety/positive case and a safety/negative one. Since #199 each half also has to carry at
+            # least one verified Prompt target *and* at least one stable-correct control — GEPA is handed
+            # `target + control` only, so a corpus of failures alone no longer splits at all.
             for cluster in (1, 2)
-            for name, should_push in (("push", "must_push"), ("hold", "must_hold"))
+            for name, final, review, verdict in (
+                (
+                    "target",
+                    "push",
+                    {
+                        "should_push": "must_push",
+                        "dimensions": {"direction": "fail", "factual_fidelity": "pass"},
+                        "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+                        # The owner an operator wrote into the submission, not the one ReviewDesk derives
+                        # for the queue. Without it this case is an excluded diagnostic.
+                        "first_bad_owner_explicit": "triage_prompt",
+                        "first_bad_owner": "triage_prompt",
+                        "evidence_refs": ["filing#timetable"],
+                        "expected": {"direction": "bullish"},
+                        "expected_correction": "The direction must follow the filing's actual mechanism.",
+                    },
+                    {"direction": "neutral"},
+                ),
+                (
+                    "control",
+                    "drop",
+                    {
+                        "should_push": "must_hold",
+                        "dimensions": {"direction": "pass", "factual_fidelity": "pass"},
+                        "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+                        "evidence_refs": [],
+                        "expected": {},
+                        "expected_correction": "",
+                    },
+                    {},
+                ),
+            )
         ),
         budget=CompileBudget(
             max_metric_calls=3,
@@ -414,7 +443,7 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert result.spend.metric_judge_model_calls == 0
     assert result.spend.actual_cost_microusd == 5
     assert result.run.failure_cluster_ids == ("cluster-1", "cluster-2")
-    assert result.run.target_dimensions == ("direction", "should_push")
+    assert result.run.target_dimensions == ("direction",)
     receipts = result.run.model_dump(mode="json")
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
     assert "source" in receipts["metric"]["implementation"]
@@ -811,6 +840,10 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
     source_units = receipt["implementation"]["source_unit_sha256"]
     assert set(source_units) == {
         "tracefold.news.learning.metric",
+        # #199: the corpus vocabulary the metric reads — dimension groups, exact gold, the frozen policy,
+        # the production action — lives beside the Objective Plan now. The ruler commits to both files or
+        # half of its definition can change without the receipt noticing.
+        "tracefold.news.learning.objective",
         "tracefold.news.models.base_symbol",
         "tracefold.news.events.storyline",
         "tracefold.news.triage_rules",

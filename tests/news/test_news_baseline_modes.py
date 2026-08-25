@@ -18,7 +18,7 @@ import pytest
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, compile_program_factory, run_baseline
-from tracefold.news.learning.metric import DevelopmentEpisode
+from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext

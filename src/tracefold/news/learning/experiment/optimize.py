@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ...artifact_identity import canonical_sha
 from ...program.artifact import ProgramStrategyArtifactV1
 from ..compiler.gepa import GepaRunResult, run_gepa
-from ..metric import DevelopmentEpisode
+from ..objective import DevelopmentEpisode
 from .compare import baseline_cases
 from .run import ExperimentCase
 

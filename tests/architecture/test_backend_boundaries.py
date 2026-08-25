@@ -45,6 +45,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.canary",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluator",
+        # #199. The framework-neutral objective: which accepted cases GEPA may optimize, which ones hold it
+        # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
+        # this is the one module here that is neither the optimizer nor the release plane.
+        "tracefold.news.learning.objective",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.learning.replay",

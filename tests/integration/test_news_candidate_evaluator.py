@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from unittest.mock import patch
@@ -43,6 +44,11 @@ from tracefold.news.learning.evaluator import (
 )
 from tracefold.news.learning.evaluator import (
     CandidateEvaluator as _CandidateEvaluator,
+)
+from tracefold.news.learning.objective import (
+    DevelopmentEpisode,
+    GepaObjectivePlan,
+    build_gepa_objective_plan,
 )
 from tracefold.news.learning.replay import ReplayArmSpec, load_recording_replay_capability
 from tracefold.news.learning.review import (
@@ -528,6 +534,13 @@ def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
     return artifact, record
 
 
+def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaObjectivePlan:
+    """The plan the release gate will rebuild, asked of the same frozen dataset the fixture froze."""
+
+    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
+    return build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
+
+
 def _compile_record(
     conn,
     *,
@@ -554,8 +567,16 @@ def _compile_record(
     assert epoch is not None
     exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
     episode_count = len(exported.episodes)
-    train_count = max(1, episode_count - 1)
-    val_count = episode_count - train_count
+    # The real split of the real optimizer corpus, not a plausible pair of numbers. `run_gepa` derives
+    # both from the Objective Plan, and `_validate_candidate_static` rebuilds that plan from the same
+    # frozen dataset — so a hand-picked split here would be a fixture asserting its own fiction.
+    plan = _objective_plan(conn, stable=stable, development_sha=development_sha)
+    # A corpus the plan refuses cannot produce a real split, and several tests build exactly that on
+    # purpose to prove the release gate rejects the candidate rather than trusting its receipt. Those get
+    # a declared split the plan will not confirm, which is the shape the gate is supposed to catch.
+    split = plan.split or {"schema": "tracefold.news.compile_split_receipt.v1", "unverifiable_fixture": True}
+    train_count = len(plan.train_episodes) or max(1, episode_count - 1)
+    val_count = len(plan.development_selection_episodes) or max(1, episode_count - train_count)
     minibatch = min(2, train_count)
     parent_program_sha256 = str(overrides.pop("parent_program_sha256", stable.program_sha256))
     # The optimizer's whole write-set: a parent identity and the two advisory instructions. Four keys
@@ -692,7 +713,10 @@ def _compile_record(
                         "reflection_minibatch_size": minibatch,
                     },
                     "compile_call": {
-                        "example_count": episode_count,
+                        # The optimizer corpus, not the frozen corpus: since #199 GEPA is handed
+                        # `target + control` only, so an example count taken from the dataset would
+                        # describe a run that never happened.
+                        "example_count": train_count + val_count,
                         "trainset_count": train_count,
                         "valset_count": val_count,
                     },
@@ -704,10 +728,10 @@ def _compile_record(
                 },
                 # Computed in the container and now carried out: the winner was selected on clusters it
                 # never trained on, and the model saw the evidence it was scored against.
-                "split": {"schema": "tracefold.news.compile_split_receipt.v1", "disjoint": True},
+                "split": split,
                 "retrieval": {"schema": "tracefold.news.compile_retrieval_receipt.v1", "target_visible": True},
-                "failure_cluster_ids": ["cluster-fixture"],
-                "target_dimensions": ["why_support"],
+                "failure_cluster_ids": list(plan.target_failure_cluster_ids) or ["cluster-fixture"],
+                "target_dimensions": list(plan.target_dimensions) or ["why_support"],
                 "metric_calls": metric_calls,
                 "train_count": train_count,
                 "val_count": val_count,
@@ -764,6 +788,8 @@ def _program_candidate(
     generator_kind: str = "model",
     program_version: str | None = None,
     program_sha256: str | None = None,
+    failure_cluster_ids: tuple[str, ...] | None = None,
+    target_dimensions: tuple[str, ...] | None = None,
 ) -> CandidateManifest:
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
@@ -790,15 +816,18 @@ def _program_candidate(
             # catch rather than trusting the key.
             artifact_sha=record_root,
         )
+    plan = _objective_plan(conn, stable=stable, development_sha=development_sha)
     receipt_values = {
         "development_dataset_sha": development_sha,
-        "failure_cluster_ids": (cluster_id,),
+        # The plan's verified Prompt targets, not one cluster the caller happened to name. #199 made this
+        # an equality: a candidate that declares anything else was optimized against a different corpus.
+        "failure_cluster_ids": failure_cluster_ids or plan.target_failure_cluster_ids or (cluster_id,),
         "generator_kind": generator_kind,
         # For a Program candidate the compile record is the generator execution identity: the receipt
         # used to carry a prompt digest and a model digest that re-hashed the same compile twice more.
         "generator_execution_sha": record_root,
         "registered_at_ms": NOW,
-        "declared_target_dimensions": ("why_support",),
+        "declared_target_dimensions": target_dimensions or plan.target_dimensions or ("why_support",),
         "guardrails": ("must_push_recall", "reader_load"),
         "program_parent_sha256": stable.program_sha256,
         "program_candidate_sha256": candidate_arm.program_sha256,
@@ -810,7 +839,7 @@ def _program_candidate(
         parent_stable_sha=stable.bundle_sha,
         candidate_arm=candidate_arm,
         hypothesis="Remove unsupported priced-in dismissals without changing reader load.",
-        target_dimensions=("why_support",),
+        target_dimensions=target_dimensions or plan.target_dimensions or ("why_support",),
         development_dataset_sha=development_sha,
         proposal_receipt=proposal_receipt,
     )
@@ -903,13 +932,19 @@ def _open_event(
     program_version: str | None = None,
     program_sha256: str | None = None,
     stale_reask: bool = False,
+    # The honest split orders fact clusters by Event time, so a corpus meant to land on a particular side
+    # of it has to be able to say when each Event happened. Every fixture Event used to share one instant,
+    # which left the split ordered by the hash of the focus fact.
+    published_at_ms: int | None = None,
+    relevance: TradeRelevanceV1 | None = None,
 ) -> str:
     stable = _arm()
     effective_bundle = bundle_sha or stable.bundle_sha
     effective_program_version = program_version or stable.program_version
     effective_program_sha = program_sha256 or stable.program_sha256
     repos = repositories_for_connection(conn)
-    published_at_ms = NOW - 3_600_000
+    published_at_ms = NOW - 3_600_000 if published_at_ms is None else published_at_ms
+    effective_relevance = relevance or _relevance()
     wire = {
         "id": hit_id,
         "text": title,
@@ -942,9 +977,9 @@ def _open_event(
             for key, value in verdict.items()
             if key not in {"actionable", "decision", "headline_zh", "title_zh", "why_zh"}
         }
-        semantics["relevance"] = _relevance().model_dump(mode="json")
+        semantics["relevance"] = effective_relevance.model_dump(mode="json")
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
-        editorial = _editorial()
+        editorial = EditorialEnvelope.issue(editorial_origin="model", relevance=effective_relevance)
         scored = ScoredJudgment.issue(
             verdict=TriageVerdict.model_validate(verdict),
             editorial=editorial,
@@ -1117,7 +1152,7 @@ def _open_event(
             evidence_version=int(evidence["evidence_version"]),
             evidence_sha256=str(evidence["evidence_sha256"]),
             focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=NOW - 3_500_000,
+            now_ms=published_at_ms + 100_000,
         )
         if delivered:
             assert (
@@ -1125,7 +1160,7 @@ def _open_event(
                     event_id=opened.event_id,
                     kind="first",
                     card={"header": {"title": {"content": str(verdict["headline_zh"])}}},
-                    now_ms=NOW - 3_400_000,
+                    now_ms=published_at_ms + 200_000,
                 )
                 == "new"
             )
@@ -1135,7 +1170,7 @@ def _open_event(
                 state="sent",
                 receipt={"ok": True},
                 error_code=None,
-                now_ms=NOW - 3_300_000,
+                now_ms=published_at_ms + 300_000,
             )
     return opened.event_id
 
@@ -1148,6 +1183,10 @@ def _accepted_event(
     stable: ArmManifest | None = None,
     hit_id: int = 112001,
     title: str = "Micron says DRAM contract prices rose again in August",
+    should_push: str = "must_push",
+    first_bad_owner: str | None = "triage_prompt",
+    published_at_ms: int | None = None,
+    relevance: TradeRelevanceV1 | None = None,
 ) -> str:
     selected_stable = stable or _arm()
     event_id = _open_event(
@@ -1158,6 +1197,8 @@ def _accepted_event(
         stale_reask=stale_reask,
         hit_id=hit_id,
         title=title,
+        published_at_ms=published_at_ms,
+        relevance=relevance,
     )
     conn.execute(
         "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
@@ -1172,11 +1213,54 @@ def _accepted_event(
     with repositories_for_connection(conn).transaction():
         desk.submit(
             TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-            _rubric(why=why),
+            _rubric(
+                why=why,
+                should_push=should_push,
+                # A failing case only becomes a GEPA target when a human wrote the owner into the
+                # submission; a passing one has nothing to attribute.
+                first_bad_owner=first_bad_owner if why != "pass" else None,
+            ),
             principal=PRINCIPAL,
             idempotency_key=str(uuid.uuid4()),
         )
     return event_id
+
+
+# Six independent facts, in the order the honest split will see them. #199 turned "a compile needs two
+# clusters" into something stricter: GEPA is handed `target + control` only, both halves of the split need
+# a verified Prompt target, and both still need every required stratum. A corpus of failures alone — which
+# is what this fixture used to be — now produces no split at all, which is the correct answer and not one
+# a release test can build a candidate on.
+#
+# `held` carries `reader_value=background`, so the frozen policy resolves it to `drop`: a `must_hold` case
+# the stable Program already gets right is what makes `negative_action` a control rather than a failure.
+_COMPILABLE_CORPUS: tuple[tuple[str, int, str, str, bool], ...] = (
+    # role, hit id, title, should_push, held
+    ("target", 112001, "Micron says DRAM contract prices rose again in August", "must_push", False),
+    (
+        "control",
+        912001,
+        "European Central Bank unexpectedly cuts its deposit rate by 50 basis points",
+        "must_push",
+        False,
+    ),
+    ("control", 912002, "Brazil suspends soybean export licences for two crushing plants", "must_hold", True),
+    (
+        "control",
+        912003,
+        "Norway's sovereign wealth fund raises its allocation to listed real estate",
+        "must_push",
+        False,
+    ),
+    ("target", 912004, "Taiwan regulator approves an accelerated chip fabrication permit process", "must_push", False),
+    (
+        "control",
+        912005,
+        "Chile publishes a revised lithium royalty schedule for existing concessions",
+        "must_hold",
+        True,
+    ),
+)
 
 
 def _accepted_compilable_event(
@@ -1186,24 +1270,26 @@ def _accepted_compilable_event(
     stale_reask: bool = False,
     stable: ArmManifest | None = None,
 ) -> str:
-    """Create the focal Event plus an independent accepted GEPA validation case."""
+    """Create the focal Event plus the accepted corpus a real compile could have been run against."""
 
     selected_stable = stable or _arm()
-    event_id = _accepted_event(
-        conn,
-        why=why,
-        stale_reask=stale_reask,
-        stable=selected_stable,
-    )
-    companion_id = _accepted_event(
-        conn,
-        why=why,
-        stable=selected_stable,
-        hit_id=912001,
-        title="European Central Bank unexpectedly cuts its deposit rate by 50 basis points",
-    )
-    assert companion_id != event_id
-    return event_id
+    event_ids: list[str] = []
+    for index, (role, hit_id, title, should_push, held) in enumerate(_COMPILABLE_CORPUS):
+        event_ids.append(
+            _accepted_event(
+                conn,
+                why=why if role == "target" else "pass",
+                stale_reask=stale_reask and index == 0,
+                stable=selected_stable,
+                hit_id=hit_id,
+                title=title,
+                should_push=should_push,
+                published_at_ms=NOW - 3_600_000 + index * 60_000,
+                relevance=_relevance().model_copy(update={"reader_value": "background"}) if held else None,
+            )
+        )
+    assert len(set(event_ids)) == len(_COMPILABLE_CORPUS)
+    return event_ids[0]
 
 
 def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None:
@@ -1764,9 +1850,11 @@ def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receip
             )
         )
     )
-    episode_count = len(development.cases)
-    train_count = max(1, episode_count - 1)
-    val_count = episode_count - train_count
+    # The split the record embeds is the Objective Plan's, so the admissible overshoot is arithmetic on
+    # that split rather than on the raw case count.
+    plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
+    train_count = len(plan.train_episodes)
+    val_count = len(plan.development_selection_episodes)
     metric_call_ceiling = 20 + val_count + min(2, train_count)
 
     allowed = _compile_record(
@@ -2082,10 +2170,14 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     )
 
     candidate_stability = report.evidence["stability"]["candidate"]
-    assert len(candidate_stability) == len(development.cases) == 2
+    assert len(candidate_stability) == len(development.cases) == len(_COMPILABLE_CORPUS)
     assert {item["trials"] for item in candidate_stability} == {3}
-    assert sorted(item["pass_n"] for item in candidate_stability) == [0, 2]
-    assert all(item["pass_k"] is False for item in candidate_stability)
+    # `pass_k` is exactly "all three trials agreed", and the corpus now produces both answers: the
+    # #199 controls are cases the arms agree on, which is the first time this assertion has had a
+    # `True` to check at all.
+    pass_counts = [item["pass_n"] for item in candidate_stability]
+    assert min(pass_counts) == 0 and max(pass_counts) == 3
+    assert [item["pass_k"] for item in candidate_stability] == [count == 3 for count in pass_counts]
     assert {len(item["trial_results"]) for item in candidate_stability} == {3}
     assert _judge_call_count(judges) == 6 * len(development.cases)
     assert report.evidence["stable_mean_total_tokens"] == 590
@@ -2175,8 +2267,12 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     }
     semantics["relevance"] = _relevance().model_dump(mode="json")
     card = {key: _verdict()[key] for key in ("headline_zh", "why_zh")}
-    stable_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
-    candidate_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
+    # Three k3 stability trials per case, two Predictors each. Sized from the corpus rather than pinned:
+    # the script exhausting is how this test detects an extra provider call, so the number has to track
+    # the number of cases instead of standing for it.
+    scripted_calls = 3 * len(_COMPILABLE_CORPUS)
+    stable_adapter = ScriptedPredictorAdapter([value for _ in range(scripted_calls) for value in (semantics, card)])
+    candidate_adapter = ScriptedPredictorAdapter([value for _ in range(scripted_calls) for value in (semantics, card)])
     judges = {
         ("stable", stable.bundle_sha): DspyNewsSemanticProgram(
             stable_artifact,
@@ -2246,7 +2342,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     }
     assert verification["mode"] == "strict_record_replay_v1"
     assert verification["run_sha"] == first.run_sha
-    assert verification["case_n"] == len(development.cases) == 2
+    assert verification["case_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
     assert len(verification["observation_root"]) == 64
     assert verification["recording_n"] == before["recordings"]
     assert len(verification["recording_corpus_root"]) == 64
@@ -2726,9 +2822,12 @@ def test_blind_candidate_critical_error_is_a_release_failure(conn) -> None:
 
     desk = ReviewDesk(conn, now_ms=NOW)
     task = desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"][0]
+    # `pair.<run_sha>.<case_id>`: the queue chose the case, so the arm order has to be read for *that*
+    # case. With a one-case corpus an unqualified `fetchone()` happened to be the right row.
+    reviewed_case_id = str(task["task_id"]).rsplit(".", 1)[-1]
     row = conn.execute(
-        "SELECT comparison FROM news_learning_cases WHERE run_sha = %s",
-        (first.run_sha,),
+        "SELECT comparison FROM news_learning_cases WHERE run_sha = %s AND case_id = %s",
+        (first.run_sha, reviewed_case_id),
     ).fetchone()
     candidate_side = "A" if row["comparison"]["pair_order"] == "candidate_A" else "B"
     with repositories_for_connection(conn).transaction():
@@ -2746,7 +2845,8 @@ def test_blind_candidate_critical_error_is_a_release_failure(conn) -> None:
     report = asyncio.run(evaluator.evaluate(request))
     assert report.gate_outcome == "fail"
     assert "candidate_critical_error_regression" in report.evidence["failures"]
-    assert report.evidence["primary"]["candidate_only_critical_cluster_ids"] == [development.cases[0].cluster_id]
+    reviewed_cluster = next(case.cluster_id for case in development.cases if case.case_id == reviewed_case_id)
+    assert report.evidence["primary"]["candidate_only_critical_cluster_ids"] == [reviewed_cluster]
 
 
 def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
@@ -2764,6 +2864,10 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
                 principal=PRINCIPAL,
                 idempotency_key=str(uuid.uuid4()),
             )
+    # #199: a corpus of external misses alone cannot authorize a Program candidate — there is no stable
+    # output on any of them, so the Objective Plan has neither a target nor a control. The misses are what
+    # this test is about; the compilable corpus is what makes a Program candidate legal at all.
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -2774,11 +2878,15 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
             )
         )
     )
-    assert development.counts["independent_cluster_n"] == 30
+    assert development.counts["independent_cluster_n"] == 30 + len(_COMPILABLE_CORPUS)
     cases_by_id = {case.case_id: case for case in development.cases}
     episodes = bootstrap.development_compile_episodes(development.artifact_sha)
-    assert len(episodes) == 30
+    assert len(episodes) == 30 + len(_COMPILABLE_CORPUS)
+    miss_ids = {case.case_id for case in development.cases if case.subject_kind == "external_miss"}
+    assert len(miss_ids) == 30
     for episode in episodes:
+        if episode["case_id"] not in miss_ids:
+            continue
         case = cases_by_id[episode["case_id"]]
         evidence = episode["context"]["evidence"]
         assert evidence["event_id"] == case.case_id
@@ -2807,6 +2915,8 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
     )
     first = asyncio.run(evaluator.evaluate(request))
     tasks = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"]
+    # One page of the pairwise queue — `DeskQuery.limit` defaults to 30 — not the size of the corpus.
+    # The holdout plan pre-registers one representative per fact cluster, and there are 36 of them.
     assert len(tasks) == 30
     task = tasks[0]
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
@@ -3001,9 +3111,13 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     ).fetchone()
 
     assert after == before
-    assert len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls) == len(development.cases) == 2
+    assert (
+        len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls)
+        == len(development.cases)
+        == len(_COMPILABLE_CORPUS)
+    )
     assert report.gate_outcome == "unknown"  # fixture is only six hours, not the required 24
-    assert report.evidence["observation_n"] == len(development.cases) == 2
+    assert report.evidence["observation_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
     assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"
     assert report.evidence["observation_manifest_sha"]
     stored = conn.execute(
@@ -3049,17 +3163,18 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
         "SELECT arm, predictor_name FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
         (report.run_sha,),
     ).fetchall()
+    # One candidate call per Predictor per case, the two Predictors in graph order. Only the candidate is
+    # re-run: the stable arm's calls are what production already recorded.
     assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
-        ("candidate", "event_semantics"),
-        ("candidate", "event_semantics"),
-        ("candidate", "reader_card"),
-        ("candidate", "reader_card"),
+        *[("candidate", "event_semantics")] * len(_COMPILABLE_CORPUS),
+        *[("candidate", "reader_card")] * len(_COMPILABLE_CORPUS),
     ]
+    assert Counter(row["arm"] for row in recordings) == Counter({"candidate": 2 * len(_COMPILABLE_CORPUS)})
     manifest = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
         (report.evidence["observation_manifest_sha"],),
     ).fetchone()["payload"]
-    assert manifest["case_n"] == len(development.cases) == 2
+    assert manifest["case_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
     assert "observations" not in manifest
 
 
