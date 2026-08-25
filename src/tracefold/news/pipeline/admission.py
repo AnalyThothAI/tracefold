@@ -229,6 +229,7 @@ def admit_item(
                 source_key=liquidation.source_key,
                 item_id=liquidation.item_id,
                 fact_id=liquidation.fact_id,
+                ingest_mode=ingest_mode,
                 symbol=liquidation.symbol,
                 venue=liquidation.venue,
                 liquidated_position_side=liquidation.liquidated_position_side,

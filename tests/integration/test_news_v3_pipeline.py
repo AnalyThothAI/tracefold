@@ -747,7 +747,7 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
     admit(2_000_002, ingest_mode="recovery", side="Long", venue="hyperliquid")
 
     rows = conn.execute(
-        "SELECT venue, liquidated_position_side, forced_order_side, notional_usd, quantity, "
+        "SELECT source_key, ingest_mode, venue, liquidated_position_side, forced_order_side, notional_usd, quantity, "
         "provider_record_identity, symbol_contract_identity, position_side_semantics, "
         "quantity_semantics, notional_semantics, price_semantics, completeness_assumption, "
         "throttle_assumption, source_contract_version, source_contract_complete "
@@ -769,6 +769,10 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
     assert all(row["completeness_assumption"] and row["throttle_assumption"] for row in rows)
     assert all(row["source_contract_version"] == "opennews_liquidation_source_v1" for row in rows)
     assert all(row["source_contract_complete"] is False for row in rows)
+    assert {row["venue"]: row["ingest_mode"] for row in rows} == {
+        "binance": "live",
+        "hyperliquid": "recovery",
+    }
 
     # Raw Item retention may remove the provider envelope, but the normalized
     # immutable replay fact is a separate durable research source.
@@ -784,6 +788,14 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
         ).fetchone()
         is not None
     )
+    projected = repos.news.trade_candidate_liquidation_rows(
+        after_received_at_ms=0,
+        until_received_at_ms=10**15,
+    )
+    recovery_source_key = next(row["source_key"] for row in rows if row["ingest_mode"] == "recovery")
+    assert retained["source_key"] in {row["source_key"] for row in projected}
+    assert recovery_source_key not in {row["source_key"] for row in projected}
+    assert all(row["ingest_mode"] == "live" for row in projected)
 
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:

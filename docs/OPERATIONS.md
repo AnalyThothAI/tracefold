@@ -893,7 +893,8 @@ ground truth the system has.
 
 `news_market_liquidations` is a separate immutable normalized replay ledger,
 not an Item-owned child. Item retention may remove its provider envelope but
-must leave the typed liquidation fact and source identity intact.
+must leave the typed liquidation fact, source identity and frozen live/recovery
+ingest provenance intact.
 
 Learning evidence follows #118's separate deterministic policy:
 

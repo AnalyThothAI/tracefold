@@ -21,6 +21,7 @@ def upgrade() -> None:
           source_key                TEXT    PRIMARY KEY,
           item_id                   TEXT    NOT NULL,
           fact_id                   TEXT    NOT NULL,
+          ingest_mode               TEXT    NOT NULL,
           symbol                    TEXT    NOT NULL,
           venue                     TEXT    NOT NULL,
           liquidated_position_side  TEXT    NOT NULL,
@@ -45,6 +46,8 @@ def upgrade() -> None:
           CONSTRAINT news_market_liquidations_fact_unique UNIQUE (item_id, fact_id, parser_version),
           CONSTRAINT news_market_liquidations_venue_check
             CHECK (venue IN ('binance', 'hyperliquid')),
+          CONSTRAINT news_market_liquidations_ingest_mode_check
+            CHECK (ingest_mode IN ('live', 'recovery')),
           CONSTRAINT news_market_liquidations_position_side_check
             CHECK (liquidated_position_side IN ('long', 'short')),
           CONSTRAINT news_market_liquidations_forced_side_check

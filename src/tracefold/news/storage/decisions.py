@@ -235,6 +235,7 @@ class DecisionStorage:
         source_key: str,
         item_id: str,
         fact_id: str,
+        ingest_mode: str,
         symbol: str,
         venue: str,
         liquidated_position_side: str,
@@ -262,7 +263,7 @@ class DecisionStorage:
         self.conn.execute(
             """
             INSERT INTO news_market_liquidations (
-              source_key, item_id, fact_id, symbol, venue, liquidated_position_side,
+              source_key, item_id, fact_id, ingest_mode, symbol, venue, liquidated_position_side,
               forced_order_side, notional_usd, quantity, price, event_at_ms,
               received_at_ms, parser_version, provider_record_identity,
               symbol_contract_identity, position_side_semantics, quantity_semantics,
@@ -270,7 +271,7 @@ class DecisionStorage:
               throttle_assumption, source_contract_version, source_contract_complete, created_at_ms
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (source_key) DO NOTHING
             """,
@@ -278,6 +279,7 @@ class DecisionStorage:
                 source_key,
                 item_id,
                 fact_id,
+                ingest_mode,
                 symbol,
                 venue,
                 liquidated_position_side,
@@ -307,7 +309,7 @@ class DecisionStorage:
 
         row = self.conn.execute(
             """
-            SELECT source_key, item_id, fact_id, symbol, venue, liquidated_position_side,
+            SELECT source_key, item_id, fact_id, ingest_mode, symbol, venue, liquidated_position_side,
                    forced_order_side, notional_usd, quantity, price, event_at_ms,
                    received_at_ms, parser_version, provider_record_identity,
                    symbol_contract_identity, position_side_semantics, quantity_semantics,

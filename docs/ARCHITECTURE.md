@@ -1445,9 +1445,10 @@ the forced order side separately: a short liquidation is forced buying, while
 a long liquidation is forced selling. Venue is restricted to Binance or
 Hyperliquid, money uses decimal arithmetic, malformed units or timestamps fail
 closed, and recovery-origin facts remain in audit but cannot trigger Trading.
-The normalized fact deliberately has no cascading Item foreign key: ordinary
-raw-Item retention may remove its provider envelope, but cannot erase the
-immutable liquidation replay dataset.
+The normalized fact deliberately has no cascading Item foreign key and freezes
+its live/recovery ingest provenance: ordinary raw-Item retention may remove its
+provider envelope, but cannot erase or make ambiguous the immutable
+liquidation replay dataset.
 The reader verdict is deliberately direction-neutral because an observed
 forced trade is not by itself a forecast.
 

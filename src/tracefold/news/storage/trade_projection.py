@@ -28,7 +28,7 @@ from ..opennews import source_artifact_identity
 # actually visible, and with an ascending `LIMIT` a busy hour of that wider window would have been
 # answered entirely with its oldest rows — spending the whole budget on context and returning none of
 # the fresh triggers the scan exists to find.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v4"
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v5"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -315,11 +315,9 @@ class TradeProjectionStorage:
                    l.provider_record_identity, l.symbol_contract_identity,
                    l.position_side_semantics, l.quantity_semantics, l.notional_semantics,
                    l.price_semantics, l.completeness_assumption, l.throttle_assumption,
-                   l.source_contract_version, l.source_contract_complete,
-                   i.first_ingest_mode AS ingest_mode
+                   l.source_contract_version, l.source_contract_complete, l.ingest_mode
               FROM news_market_liquidations l
-              JOIN news_items i ON i.item_id = l.item_id
-             WHERE i.first_ingest_mode = 'live'
+             WHERE l.ingest_mode = 'live'
                AND l.received_at_ms > %s
                AND l.received_at_ms <= %s
              ORDER BY l.received_at_ms DESC, l.source_key DESC

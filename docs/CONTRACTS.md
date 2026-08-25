@@ -1250,12 +1250,13 @@ deterministic safety close), and `trading approve|reject <order-id> --digest`
 settles one order bound to its exact frozen payload digest, idempotent by state
 so a second approval of an already-approved order changes nothing.
 
-Trading consumes `news_trade_projection_v4`: separate editorial News,
+Trading consumes `news_trade_projection_v5`: separate editorial News,
 deterministic OI, and typed liquidation rows. The liquidation row preserves
 both `liquidated_position_side` and `forced_order_side`; callers must not infer
 one by treating the other as a forecast. It also carries every source-contract
-semantic named above. Recovery rows are audit context and are not eligible
-triggers.
+semantic named above and freezes `ingest_mode` in the normalized ledger, so
+Item retention cannot erase live/recovery provenance. Recovery rows are audit
+context and are not eligible triggers.
 
 Trading's editorial News projection contract is `program_v7` / policy v10
 only. `trading_manifest_v4` freezes the learning epoch, lane-specific Program

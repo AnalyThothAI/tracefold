@@ -313,6 +313,7 @@
 | `source_key` | `TEXT` | False | `None` |
 | `item_id` | `TEXT` | False | `None` |
 | `fact_id` | `TEXT` | False | `None` |
+| `ingest_mode` | `TEXT` | False | `None` |
 | `symbol` | `TEXT` | False | `None` |
 | `venue` | `TEXT` | False | `None` |
 | `liquidated_position_side` | `TEXT` | False | `None` |
