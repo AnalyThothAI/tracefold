@@ -18,7 +18,9 @@ const NOW = 1_777_746_300_000;
 const unhandledApiRequests = new WeakMap<Page, string[]>();
 
 export type MockApiOptions = {
+  bootstrapStatus?: number;
   delayNonBootstrapMs?: number;
+  emptyFeed?: boolean;
   failNonBootstrap?: boolean;
 };
 
@@ -47,6 +49,13 @@ export async function installMockApi(
       }
     }
 
+    if (path === "/api/bootstrap" && options.bootstrapStatus) {
+      return route.fulfill({
+        status: options.bootstrapStatus,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "unauthorized" }),
+      });
+    }
     if (path === "/api/bootstrap") return fulfill(route, { ws_token: "secret" });
     if (path === "/api/status") return fulfill(route, statusData());
     // The OI monitor asks the same endpoint for one admission (#207), and the rows it gets back carry the
@@ -56,7 +65,7 @@ export async function installMockApi(
         route,
         url.searchParams.get("admission") === "telemetry_deterministic"
           ? newsOiFeedData(url.searchParams.get("oi"))
-          : newsFeedData(prepended),
+          : newsFeedData(prepended, options.emptyFeed),
       );
     }
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
@@ -100,7 +109,7 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
   unhandledApiRequests.set(page, requests);
 }
 
-function newsFeedData(prepended: string[] = []) {
+function newsFeedData(prepended: string[] = [], empty = false) {
   const event = newsFeedEventFixture({
     event_id: "evt-global-policy",
     leader_description:
@@ -115,7 +124,7 @@ function newsFeedData(prepended: string[] = []) {
     event_id: eventId,
     leader_title: title,
   });
-  return {
+  const data = {
     ...newsFeedFixture(),
     events: [
       ...prepended.map((eventId) => row(eventId, `Breaking ${eventId}`)),
@@ -126,6 +135,7 @@ function newsFeedData(prepended: string[] = []) {
       ),
     ],
   };
+  return empty ? { ...data, events: [] } : data;
 }
 
 /**

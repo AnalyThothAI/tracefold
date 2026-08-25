@@ -17,7 +17,7 @@ const NEWS_SEARCH_ARIA_LABEL = "news search";
 const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
 
 /**
- * One always-visible number from the pipeline. `value` is undefined until the poll answers.
+ * One route-context fact from a status read. `value` is undefined until the poll answers.
  *
  * `text` is the escape hatch for a figure that is not a plain count (#88): a hit rate has to arrive with its
  * denominator or not at all, and `56% · N=225` is one server-decided string rather than two numbers the

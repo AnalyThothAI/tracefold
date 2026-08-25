@@ -55,12 +55,12 @@
 
   .news-detail-hero-state > span {
     color: var(--text-subtle);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
   }
 
   .news-detail-hero-time {
     color: var(--text-secondary);
-    font: 500 11px/1.6 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.6 var(--font-mono);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -68,7 +68,7 @@
   .news-detail-headline {
     margin: 2px 0 0;
     color: var(--text-primary);
-    font-size: 23px;
+    font-size: var(--font-size-metric);
     font-weight: 680;
     letter-spacing: -0.024em;
     line-height: 1.34;
@@ -78,7 +78,7 @@
   .news-detail-translated {
     margin: 0;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--font-size-meta);
     line-height: 1.5;
   }
 
@@ -127,17 +127,17 @@
 
   .news-detail-asset-group small {
     color: var(--text-subtle);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-detail-asset-group code {
     color: var(--text-secondary);
-    font: 600 11px/1.6 var(--font-mono);
+    font: 600 var(--font-size-mono-meta)/1.6 var(--font-mono);
   }
 
   .news-detail-asset-group b {
     color: var(--text-primary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     font-weight: 620;
   }
 
@@ -150,7 +150,7 @@
     padding-top: 10px;
     border-top: 1px solid var(--border-faint);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     line-height: 1.5;
   }
 
@@ -171,7 +171,7 @@
     display: inline-flex;
     gap: 4px;
     align-items: center;
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-detail-original svg {
@@ -218,12 +218,12 @@
     background: var(--surface-raised);
     box-shadow: inset 0 0 0 1px var(--border-faint);
     color: var(--text-secondary);
-    font: 500 10.5px/1.7 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.7 var(--font-mono);
   }
 
   .news-normalization-base {
     color: var(--text-primary);
-    font: 700 12px/1.4 var(--font-mono);
+    font: 700 var(--font-size-meta)/1.4 var(--font-mono);
   }
 
   /* ------------------------------------------------------------------ 事件后反应 */
@@ -242,12 +242,12 @@
     border-radius: var(--radius-md);
     background: var(--surface-raised);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
   }
 
   .news-detail-reaction-aggregate small {
     color: var(--text-subtle);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-detail-reaction-list {
@@ -281,19 +281,19 @@
 
   .news-detail-quote-symbol code {
     color: var(--text-primary);
-    font: 600 12px/1.4 var(--font-mono);
+    font: 600 var(--font-size-meta)/1.4 var(--font-mono);
   }
 
   .news-detail-quote-symbol small {
     color: var(--text-subtle);
-    font: 500 10.5px/1.4 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.4 var(--font-mono);
   }
 
   /* The raw closes behind each return, so the number is auditable rather than asserted. */
   .news-detail-reaction-closes {
     flex: 1 1 12rem;
     color: var(--text-subtle);
-    font: 500 10.5px/1.5 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
     overflow-wrap: anywhere;
   }
 
@@ -326,7 +326,7 @@
 
   .news-detail-pager-position {
     color: var(--text-subtle);
-    font: 500 11px/1 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
@@ -354,14 +354,14 @@
 
   .news-member time {
     color: var(--text-secondary);
-    font: 500 11px/1.6 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.6 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .news-member-title {
     margin: 0;
     color: var(--text-primary);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     line-height: 1.45;
     text-wrap: pretty;
   }
@@ -373,7 +373,7 @@
     align-items: baseline;
     margin: 3px 0 0;
     color: var(--text-subtle);
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-member-meta a {
@@ -399,7 +399,7 @@
     }
 
     .news-detail-headline {
-      font-size: 19px;
+      font-size: var(--font-size-page-title);
       letter-spacing: -0.02em;
       line-height: 1.4;
     }

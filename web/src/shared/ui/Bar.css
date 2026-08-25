@@ -4,7 +4,7 @@
     min-width: 0;
     height: 7px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--border-faint);
   }
 
@@ -12,7 +12,7 @@
     display: block;
     min-width: 2px;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--border-strong);
     transition: width 240ms ease;
   }

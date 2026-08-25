@@ -11,7 +11,7 @@
     gap: 4px;
     align-items: center;
     color: var(--text-subtle);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     font-weight: 640;
     white-space: nowrap;
   }
@@ -31,25 +31,25 @@
   }
 
   .news-direction-glyph {
-    font-size: 8px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1;
   }
 
   .news-direction[data-size="lg"] {
-    font-size: 13.5px;
+    font-size: var(--font-size-body);
   }
 
   .news-direction[data-size="lg"] .news-direction-glyph {
-    font-size: 10px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-direction-strength {
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     white-space: nowrap;
   }
 
   .news-direction[data-size="lg"] + .news-direction-strength {
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
   }
 }

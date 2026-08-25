@@ -89,7 +89,7 @@
 
   .news-review-task-list > button[aria-pressed="true"] {
     background: var(--surface-raised);
-    box-shadow: inset 3px 0 0 var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent-primary);
   }
 
   .news-review-task-list span {
@@ -170,7 +170,7 @@
   }
 
   .news-review-success {
-    color: var(--state-good);
+    color: var(--accent-primary);
   }
 
   .news-review-verifier {
@@ -211,7 +211,7 @@
   }
 
   .news-review-error {
-    color: var(--state-bad);
+    color: var(--signal-alert);
   }
 
   .news-review-blind-note,
@@ -376,7 +376,7 @@
 
   .news-review-market-cases a {
     justify-self: start;
-    color: var(--accent);
+    color: var(--accent-primary);
   }
 
   .news-review-proposals {
@@ -410,7 +410,7 @@
   .news-review-proposals li span {
     padding: 3px 7px;
     border-radius: var(--radius-lg);
-    background: var(--surface-sunken);
+    background: var(--surface-slot);
     font: var(--type-mono-meta);
   }
 

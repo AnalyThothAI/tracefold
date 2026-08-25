@@ -41,7 +41,7 @@
     width: 5px;
     height: 5px;
     flex: 0 0 auto;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--tone);
   }
 

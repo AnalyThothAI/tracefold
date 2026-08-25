@@ -16,7 +16,7 @@
     color: var(--text-secondary);
     background: var(--surface-panel);
     box-shadow: var(--ring-control);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     font-weight: 500;
     line-height: 1;
     white-space: nowrap;
@@ -35,25 +35,25 @@
   .ui-button[data-size="sm"] {
     min-height: 26px;
     padding: 0 10px;
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .ui-button[data-size="lg"] {
     min-height: var(--tap-target);
     padding: 0 16px;
     border-radius: var(--radius-lg);
-    font-size: 13px;
+    font-size: var(--font-size-meta);
   }
 
   .ui-button[data-variant="primary"] {
-    color: #ffffff;
+    color: var(--primary-foreground);
     background: var(--accent-primary);
     box-shadow: none;
     font-weight: 600;
   }
 
   .ui-button[data-variant="primary"]:hover:not(:disabled) {
-    background: #1e46ad;
+    background: var(--accent-strong);
   }
 
   .ui-button[data-variant="secondary"]:hover:not(:disabled) {
@@ -104,7 +104,7 @@
     .ui-button {
       min-height: var(--tap-target);
       border-radius: var(--radius-md);
-      font-size: 13px;
+      font-size: var(--font-size-meta);
     }
 
     .ui-button[data-size="sm"] {

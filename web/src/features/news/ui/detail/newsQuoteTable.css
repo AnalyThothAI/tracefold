@@ -45,7 +45,7 @@
 
   .news-quote-table-row code {
     overflow-wrap: anywhere;
-    font: 11.5px/1.5 var(--font-mono);
+    font: var(--font-size-mono-meta)/1.5 var(--font-mono);
   }
 
   .news-quote-table-row code span {
@@ -62,7 +62,7 @@
     padding: 7px 12px 8px;
     border-top: 1px solid var(--border-faint);
     color: var(--text-subtle);
-    font-size: 10.5px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.5;
   }
 

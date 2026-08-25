@@ -43,13 +43,13 @@
 
   .news-health-card-eyebrow {
     color: var(--text-primary);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     font-weight: 640;
   }
 
   .news-health-card-level {
     color: var(--tone);
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
     font-weight: 640;
     white-space: nowrap;
   }
@@ -57,7 +57,7 @@
   .news-health-card-summary {
     margin: 1px 0 0;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     font-weight: 560;
     line-height: 1.4;
   }
@@ -65,7 +65,7 @@
   .news-health-card-detail {
     margin: 0;
     color: var(--text-subtle);
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.45;
   }
 
@@ -91,7 +91,7 @@
   .news-health-card-numbers dd {
     margin: 0;
     color: var(--text-primary);
-    font: 640 13px/1.3 var(--font-mono);
+    font: 640 var(--font-size-body)/1.3 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
@@ -129,19 +129,19 @@
 
   .news-funnel-label {
     color: var(--text-secondary);
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-funnel-row b {
     color: var(--text-primary);
-    font: 640 12px/1 var(--font-mono);
+    font: 640 var(--font-size-body)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
   .news-funnel-row small {
     color: var(--text-subtle);
-    font: 500 10px/1 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
     text-align: right;
   }
 
@@ -150,7 +150,7 @@
     padding-top: 9px;
     border-top: 1px solid var(--border-faint);
     color: var(--text-muted);
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.5;
   }
 
@@ -166,13 +166,13 @@
     align-items: center;
     margin: 0 0 7px;
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
     font-weight: 600;
   }
 
   .news-reason-total {
     color: var(--text-subtle);
-    font: 500 10px/1 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
@@ -189,7 +189,7 @@
     grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) 2.6rem;
     gap: 0 10px;
     align-items: center;
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-reason-label {
@@ -206,7 +206,7 @@
 
   .news-reason-group b {
     color: var(--text-secondary);
-    font: 600 11px/1 var(--font-mono);
+    font: 600 var(--font-size-mono-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
@@ -238,12 +238,12 @@
     background: var(--surface-raised);
     box-shadow: inset 0 0 0 1px var(--border-faint);
     color: var(--text-secondary);
-    font: 500 10.5px/1.7 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.7 var(--font-mono);
   }
 
   .news-chip-row em {
     color: var(--text-subtle);
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
     font-style: normal;
   }
 

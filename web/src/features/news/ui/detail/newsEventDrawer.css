@@ -8,7 +8,7 @@
   .news-drawer-headline {
     margin: 0;
     color: var(--text-primary);
-    font-size: 18px;
+    font-size: var(--font-size-page-title);
     font-weight: 660;
     letter-spacing: -0.02em;
     line-height: 1.38;
@@ -22,7 +22,7 @@
     align-items: center;
     margin: 0;
     color: var(--text-subtle);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
   }
 
   /* The model's one sentence, set as the reading matter it is — indigo edge, sunken ground, body size. */
@@ -43,7 +43,7 @@
     padding-top: 10px;
     border-top: 1px solid var(--border-faint);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-meta);
     line-height: 1.5;
   }
 
@@ -58,7 +58,7 @@
     display: inline-flex;
     gap: 4px;
     align-items: center;
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .news-drawer-original svg {
@@ -69,17 +69,17 @@
   /* ------------------------------------------------------------------ drawer header bits */
   .news-drawer-time {
     color: var(--text-secondary);
-    font: 500 11px/1 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .news-drawer-open {
     padding: 0 9px;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     background: var(--surface-panel);
     box-shadow: var(--ring-control);
-    font-size: 11.5px;
+    font-size: var(--font-size-mono-meta);
     line-height: 26px;
     white-space: nowrap;
   }

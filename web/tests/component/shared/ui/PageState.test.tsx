@@ -60,6 +60,17 @@ describe("PageState shared UI", () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
+  it("gives authorization failures a specific, actionable state", () => {
+    const { container } = render(
+      <PageState.Error error={Object.assign(new Error("unauthorized"), { status: 401 })} />,
+    );
+
+    const alert = within(container).getByRole("alert");
+    expect(alert).toHaveTextContent("无权限访问");
+    expect(alert).toHaveTextContent("当前凭证无效或已过期，请刷新页面后重试。");
+    expect(alert).not.toHaveTextContent("unauthorized");
+  });
+
   it("marks stale content busy while retaining settled children", () => {
     render(
       <PageState.Stale updating>

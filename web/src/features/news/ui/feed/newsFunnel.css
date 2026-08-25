@@ -8,7 +8,7 @@
    */
   .news-funnel-summary b {
     color: var(--text-primary);
-    font: 600 11.5px/1 var(--font-mono);
+    font: 600 var(--font-size-mono-meta)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 

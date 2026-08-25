@@ -10,20 +10,20 @@
     align-items: baseline;
     padding: 2px 8px;
     border: 1px solid var(--border-subtle);
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: var(--surface-raised);
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
   }
 
   .trading-case-badge[data-state="ORDER_PREPARED"] {
-    border-color: color-mix(in srgb, var(--accent-primary) 26%, transparent);
-    background: color-mix(in srgb, var(--accent-primary) 9%, transparent);
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
     color: var(--accent-primary);
   }
 
   .trading-case-badge code {
-    font: 500 10px/1.5 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
     overflow-wrap: anywhere;
   }
 }

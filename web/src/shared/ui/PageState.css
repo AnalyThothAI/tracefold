@@ -14,7 +14,7 @@
   .page-state-empty b,
   .page-state-error b {
     color: var(--text-primary);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     font-weight: 620;
   }
 
@@ -22,7 +22,7 @@
   .page-state-error span {
     max-width: 48ch;
     color: var(--text-subtle);
-    font-size: 11px;
+    font-size: var(--font-size-mono-meta);
     line-height: 1.5;
   }
 
