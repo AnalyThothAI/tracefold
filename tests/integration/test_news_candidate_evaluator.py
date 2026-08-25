@@ -2151,9 +2151,9 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
     apart compared two different populations under one name.
     """
 
-    from tracefold.news.artifact_identity import canonical_sha
     import dspy
 
+    from tracefold.news.artifact_identity import canonical_sha
     from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 
     stable_artifact = load_stable_program_artifact()

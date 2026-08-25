@@ -256,14 +256,30 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if not dataset_sha and len(moving_window) != 2:
         raise ValueError("news_program_baseline_requires_dataset_or_window")
 
-    if dataset_sha and mode == "recorded":
-        # The Objective Plan classifies under a replayed `decide()` — it has to, because readiness, the
-        # trusted compiler and the release gate all rebuild it from the sealed export, which carries no
-        # recorded decision. `recorded` scores against the action that actually shipped. The two disagree
-        # on any case whose ledger state differed at ingest, and the report would then call a case a
-        # control and zero it in the same document. The moving-window form stays the recorded-behavior
-        # diagnostic; a frozen dataset is scored under the policy its plan was built with.
-        raise ValueError("news_program_baseline_dataset_requires_policy_action")
+    if dataset_sha and mode != "compile_live":
+        # `--dataset` publishes `subsets.development_selection` as the formal *before* value a Candidate is
+        # picked against, so it has to measure what the optimizer measures: `DspyCompileProgram` on one
+        # task endpoint. The other two modes measure something else, each in its own way.
+        #
+        # `recorded` scores the action that actually shipped, while the Objective Plan classifies under a
+        # replayed `decide()` — it has to, because readiness, the trusted compiler and the release gate all
+        # rebuild the plan from the sealed export, which carries no recorded decision. They disagree on any
+        # case whose ledger state differed at ingest, and the report would then call a case a control and
+        # zero it in the same document.
+        #
+        # `runtime_live` runs the four-slot production route with its retry, fallback, deadline and
+        # circuit. That is a reliability question, and a number from it is not comparable to a candidate
+        # selected on the cold graph however honestly it is labelled.
+        #
+        # Both stay available in the moving-window form, which names itself discovery.
+        raise ValueError("news_program_baseline_dataset_requires_compile_live")
+    if dataset_sha and not str(args.semantic_judge).strip():
+        # `run_gepa` refuses to run without a metric judge, so an optimizer baseline without one is scored
+        # by a different ruler than the optimizer it is the baseline for: `bind_metric(None)` compares
+        # free-text retention byte-for-byte and fires `factual_contradiction` on every failed
+        # `factual_fidelity`. The report records the judge identity, so two runs judged differently are
+        # already visibly incomparable; this makes the un-judged one impossible rather than merely visible.
+        raise ValueError("news_program_baseline_dataset_requires_semantic_judge")
 
     plan = None
     dataset_identity: dict[str, Any] = {}
@@ -307,6 +323,11 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
         if not source.configured:
             raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+        if dataset_sha and source is not reflection:
+            # The trusted compile judges on the compiler reflection route. A dataset-bound baseline that
+            # fell through to the Triage fallback would be judged on a route the compile never uses, and
+            # then published as the before value for it.
+            raise ValueError("news_program_baseline_dataset_requires_compiler_reflection_judge")
         endpoint = configured_lm_endpoint(
             settings, model_name=judge_model, api_key=source.api_key, base_url=source.base_url
         )

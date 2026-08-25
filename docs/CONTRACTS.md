@@ -759,14 +759,23 @@ refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
 rather than published with an empty `subsets` block that reads as a measured
 zero — `readiness` explains the same blockers for free.
 
-`--dataset` is refused with `--mode recorded`
-(`news_program_baseline_dataset_requires_policy_action`). The Objective Plan
-classifies under a replayed `decide()`, because readiness, the trusted compiler
-and the release gate all rebuild it from the sealed export, which carries no
-recorded decision; `recorded` scores against the action that actually shipped.
-The two disagree on any case whose ledger state differed at ingest, and the
-report would then call a case a control and zero it in the same document. The
-moving-window form remains the recorded-behaviour diagnostic. For the same
+`--dataset` runs `--mode compile_live` and nothing else
+(`news_program_baseline_dataset_requires_compile_live`), and requires
+`--semantic-judge` on the compiler reflection route
+(`news_program_baseline_dataset_requires_semantic_judge`,
+`..._requires_compiler_reflection_judge`). `subsets.development_selection` is
+published as the formal *before* value a Candidate is picked against, so it has
+to measure what the optimizer measures — `DspyCompileProgram` on one task
+endpoint, judged by the ruler `run_gepa` refuses to run without. `recorded`
+scores the action that actually shipped while the Objective Plan classifies under
+a replayed `decide()`, so the two disagree on any case whose ledger state
+differed at ingest and the report would call a case a control and zero it in the
+same document; `runtime_live` measures the four-slot production route with retry,
+fallback, deadline and circuit, which is a reliability question and not
+comparable to a candidate selected on the cold graph; and `bind_metric(None)`
+compares free-text retention byte-for-byte and fires `factual_contradiction` on
+every failed `factual_fidelity`. All three remain available in the moving-window
+form, which names itself discovery. For the same
 reason the retrieval receipt in a dataset-bound report is computed over the
 **whole** sealed export rather than the scored subset: the plan excludes exactly
 the cases `_retrieval_receipt` counts as misses, so a receipt over

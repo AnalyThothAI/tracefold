@@ -627,6 +627,7 @@ def test_a_dataset_baseline_will_not_publish_split_roots_for_cases_it_did_not_sc
             to_ms=None,
             mode="compile_live",
             action_source="policy",
+            semantic_judge="deepseek-v4-pro",
             max_model_cases=2,
         )
     )
@@ -634,11 +635,15 @@ def test_a_dataset_baseline_will_not_publish_split_roots_for_cases_it_did_not_sc
     assert payload["error"] == "news_program_baseline_dataset_requires_full_corpus_budget:3"
 
 
-def test_a_frozen_dataset_is_not_scored_against_the_action_that_shipped(monkeypatch: Any) -> None:
-    """The plan classifies under a replayed `decide()`; `recorded` scores against what shipped.
+@pytest.mark.parametrize("mode", ["recorded", "runtime_live"])
+def test_dataset_evidence_only_comes_from_the_graph_the_optimizer_runs(monkeypatch: Any, mode: str) -> None:
+    """`subsets.development_selection` is the formal before value, so it has to measure the cold graph.
 
-    They disagree on any case whose ledger state differed at ingest, and the report would then call a case
-    a control and zero it in the same document. The moving-window form is still the recorded diagnostic.
+    `recorded` scores the action that shipped while the Objective Plan classifies under a replayed
+    `decide()`, so the same report would call a case a control and zero it. `runtime_live` measures the
+    four-slot production route with retry, fallback, deadline and circuit — a reliability question, not a
+    number a candidate selected on `DspyCompileProgram` can be compared against. Both stay available in
+    the moving-window form.
     """
 
     def refuse(*_args: Any, **_kwargs: Any) -> None:
@@ -648,9 +653,47 @@ def test_a_frozen_dataset_is_not_scored_against_the_action_that_shipped(monkeypa
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
 
-    code, payload = _handle_learning(_baseline_args(dataset="a" * 64, from_ms=None, to_ms=None, mode="recorded"))
+    code, payload = _handle_learning(
+        _baseline_args(
+            dataset="a" * 64,
+            from_ms=None,
+            to_ms=None,
+            mode=mode,
+            action_source="recorded" if mode == "recorded" else "policy",
+            semantic_judge="deepseek-v4-pro",
+            max_model_cases=8,
+        )
+    )
     assert code == 2
-    assert payload["error"] == "news_program_baseline_dataset_requires_policy_action"
+    assert payload["error"] == "news_program_baseline_dataset_requires_compile_live"
+
+
+def test_a_dataset_baseline_refuses_to_be_judged_by_a_different_ruler(monkeypatch: Any) -> None:
+    """`run_gepa` refuses to run without a metric judge; its baseline may not run without one either.
+
+    `bind_metric(None)` compares free-text retention byte-for-byte and fires `factual_contradiction` on
+    every failed `factual_fidelity`, so an un-judged baseline is a different ruler wearing the same name.
+    """
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the guard must fail before the corpus is read")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
+
+    code, payload = _handle_learning(
+        _baseline_args(
+            dataset="a" * 64,
+            from_ms=None,
+            to_ms=None,
+            mode="compile_live",
+            action_source="policy",
+            max_model_cases=8,
+        )
+    )
+    assert code == 2
+    assert payload["error"] == "news_program_baseline_dataset_requires_semantic_judge"
 
 
 def test_a_blocked_objective_plan_does_not_become_an_empty_before_number(monkeypatch: Any) -> None:
@@ -685,7 +728,13 @@ def test_a_blocked_objective_plan_does_not_become_an_empty_before_number(monkeyp
 
     code, payload = _handle_learning(
         _baseline_args(
-            dataset="a" * 64, from_ms=None, to_ms=None, mode="compile_live", action_source="policy", max_model_cases=8
+            dataset="a" * 64,
+            from_ms=None,
+            to_ms=None,
+            mode="compile_live",
+            action_source="policy",
+            semantic_judge="deepseek-v4-pro",
+            max_model_cases=8,
         )
     )
     assert code == 2
