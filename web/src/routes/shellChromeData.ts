@@ -76,7 +76,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       outletContext: routeContext,
       topbar: {
-        health: healthLamp(newsStatusQuery.data),
+        health: healthLamp(newsStatusQuery.data, newsStatusQuery.isError),
         // #87: the two numbers the operator checks without opening a page. Both are already-served fields —
         // no derived rate, and nothing that would need a market-data lane the pipeline does not have.
         figures: [
@@ -110,8 +110,22 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
  * `ok` and `off` both return `null`: the lamp exists to interrupt, and a light that is always on is one the
  * reader stops seeing. Nothing is computed here — the level, the four stage levels and every sentence are
  * server values, and the only local decisions are which item is the worst and what to call each stage.
+ *
+ * A failed read is its own state and must not read as health. The topbar's other indicator watches
+ * `/api/status`, a different endpoint, so without this branch a console whose `/api/news/status` starts
+ * failing would show no health signal at all, on any route — which is precisely the shape of outage the
+ * lamp exists for.
  */
-function healthLamp(status?: NewsStatus): CockpitHealth | null {
+function healthLamp(status: NewsStatus | undefined, failed: boolean): CockpitHealth | null {
+  if (failed && !status) {
+    return {
+      headline: "流水线状态暂不可用",
+      items: [],
+      level: "bad",
+      summary: "读取流水线状态失败",
+      to: newsStatusPath(),
+    };
+  }
   const health = status?.health;
   if (!health || (health.overall !== "warn" && health.overall !== "bad")) return null;
   const items = HEALTH_ITEM_KEYS.map((key) => ({

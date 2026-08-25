@@ -64,8 +64,123 @@ describe("NewsOiPage", () => {
     // 未达阈值 is the three threshold rules summed: 106 + 30 + 0.
     expect(within(tabs).getByRole("tab", { name: /未达阈值/ })).toHaveTextContent("136");
     expect(within(tabs).getByRole("tab", { name: /解析失败/ })).toHaveTextContent("1");
-    // 全部 is `received`, not the sum: a frame that arrived and has not reached a verdict is in neither.
+    /*
+     * 全部 is the sum of the three judged buckets (106 + 30 + 3 + 1), **not** `telemetry_received_24h`
+     * (142). They count different things: `received` counts provider items before the Gate, so the two the
+     * Gate folded into an existing Event are in it and in no row this table can ever show. `received` keeps
+     * its own tile in the band above, where it is the lane's intake and nothing else.
+     */
     expect(within(tabs).getByRole("tab", { name: /全部/ })).toHaveTextContent("140");
+    expect(screen.getByText("telemetry_received_24h").closest(".ui-metric")).toHaveTextContent(
+      "142",
+    );
+  });
+
+  it("marks a frame no threshold let through as having spent no window slot", async () => {
+    // `evaluate_oi` computes a rank for every frame and the trace records it, so a whale-ratio rejection
+    // still carries `eligible_rank_in_window: 1`. That is the rank it *would* have taken; printing "1 / 2"
+    // beside it would say the window is fuller than it is.
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                oi: {
+                  ...newsOiFrameFixture().oi!,
+                  eligible_rank_in_window: 1,
+                  rule: "whale_ratio_below_threshold",
+                  whale_oi_ratio_bps: 5_420,
+                },
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderOi();
+    const row = await screen.findByRole("button", { name: /WIF/ });
+    expect(row).toHaveTextContent("whale_ratio_below_threshold");
+    expect(row).not.toHaveTextContent("1 / 2");
+  });
+
+  it("stamps no research bucket when the capital lane sends no floor", async () => {
+    // A console newer than the API gets the schema's zero defaults. `profit >= 0` would badge every frame
+    // as 研究里唯一均值为正的分桶 — a claim about a measured bucket, made against no threshold at all.
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsStatusFixture({
+            oi: {
+              ...newsStatusFixture().oi,
+              trade_floors: {
+                enabled: false,
+                max_price_move_bps: 0,
+                min_oi_value_usd: 0,
+                min_price_move_bps: 0,
+                min_whale_long_profit_bps: 0,
+                mode: "paper",
+                pre_move_lookback_ms: 0,
+              },
+            },
+          }),
+        }),
+      ),
+    );
+
+    renderOi();
+    const row = await screen.findByRole("button", { name: /WIF/ });
+    expect(row).not.toHaveTextContent("盈利正桶");
+  });
+
+  it("keeps the tabs reachable when the frame request fails", async () => {
+    // The rows are what failed, not the navigation. A reader stuck on a 5xx'd tab must be able to click
+    // back to 全部 without editing the URL.
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: false }, { status: 500 })),
+    );
+
+    renderOi("/news/oi?oi=withheld");
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    const tabs = screen.getByRole("tablist", { name: "按判定筛选" });
+    expect(within(tabs).getByRole("tab", { name: /全部/ })).toBeInTheDocument();
+    expect(within(tabs).getByRole("tab", { name: /未达阈值/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("offers an explicit page action while the window holds more frames than one page", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        return HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture(
+                cursor ? { event_id: "evt-oi-page2", leader_title: "S OI Rise 1%" } : {},
+              ),
+            ],
+            next_cursor: cursor ? null : "cursor-2",
+          }),
+        });
+      }),
+    );
+
+    renderOi();
+    const more = await screen.findByRole("button", { name: "加载更多帧" });
+    // The tab count is the whole 24 h window; the note says how much of it is on screen.
+    expect(screen.getByText(/已加载 1 条/)).toBeInTheDocument();
+
+    fireEvent.click(more);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /OI|WIF|S/ }).length).toBeGreaterThan(1),
+    );
+    expect(screen.queryByRole("button", { name: "加载更多帧" })).not.toBeInTheDocument();
   });
 
   it("puts the chosen tab in the URL and forwards it as the server's own rule group", async () => {

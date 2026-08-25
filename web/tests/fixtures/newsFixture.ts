@@ -416,7 +416,10 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       telemetry_parse_failed_24h: 1,
       telemetry_parsed_24h: 139,
       telemetry_push_24h: 3,
-      telemetry_received_24h: 140,
+      // Deliberately larger than the 140 judged verdicts in `oi.by_rule_24h`: `received` counts provider
+      // items before the Gate, and two of them folded into an existing Event rather than opening one. A
+      // fixture where the two agreed would let the 全部 tab read either field and still pass.
+      telemetry_received_24h: 142,
       dropped_by_rule: { noise: 60, below_threshold: 20 },
       events_1h: 12,
       events_24h: 320,

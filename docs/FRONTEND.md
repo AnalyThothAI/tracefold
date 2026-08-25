@@ -396,8 +396,10 @@ the route components into the eager shell chunk.
   `shared/ui/icons.tsx` on the same 24 grid with a 2px round-capped stroke and
   `currentColor` only, each a `forwardRef` with lucide's exact signature so
   `AppNavigationItem.icon` stays typed `LucideIcon`: `EventStreamIcon`,
-  `OpenInterestIcon`, `ReviewCheckIcon`, `PipelineFunnelIcon`, and the three OI
-  measurement glyphs `WhaleShareIcon` / `WindowClockIcon` / `ThresholdIcon`. An
+  `OpenInterestIcon`, `ReviewCheckIcon`, and the three OI
+  measurement glyphs `WhaleShareIcon` / `WindowClockIcon` / `ThresholdIcon`. The
+  set holds exactly what is rendered — a glyph nothing imports is a claim about
+  a surface that does not exist. An
   icon has three colours, all inherited — `--text-subtle` at rest,
   `--accent-primary` when current, `--text-faint` when disabled — and **never**
   red or green: those two hues state a market direction, which an icon never has.

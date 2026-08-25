@@ -1,10 +1,12 @@
 import { Card } from "@shared/ui/Card";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
   NEWS_OI_TABS,
+  useNewsOiFeedHistoryWithToken,
   useNewsOiFeedWithToken,
   useNewsStatusWithToken,
   type NewsOiTab,
@@ -39,6 +41,28 @@ export function NewsOiPage({ token }: { token: string }) {
   const tab = parseOiTab(searchParams.get("oi"));
   const statusQuery = useNewsStatusWithToken(token);
   const feedQuery = useNewsOiFeedWithToken(token, tab);
+  // Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
+  // which is what the reader means by switching tabs.
+  const [moreRequested, setMoreRequested] = useState(false);
+  useEffect(() => setMoreRequested(false), [tab]);
+  const firstPage = feedQuery.data;
+  const historyQuery = useNewsOiFeedHistoryWithToken(
+    token,
+    tab,
+    firstPage?.next_cursor ?? null,
+    moreRequested,
+  );
+  const pages = historyQuery.data?.pages ?? [];
+  const rows = Array.from(
+    new Map(
+      [firstPage?.events ?? [], ...pages.map((page) => page.events)]
+        .flat()
+        .map((event) => [event.event_id, event]),
+    ).values(),
+  );
+  const hasMore = Boolean(
+    moreRequested ? historyQuery.hasNextPage : (firstPage?.next_cursor ?? null),
+  );
 
   const status = statusQuery.data;
   const pipeline = status?.pipeline;
@@ -47,9 +71,9 @@ export function NewsOiPage({ token }: { token: string }) {
   const parsed = pipeline?.telemetry_parsed_24h;
   const failed = pipeline?.telemetry_parse_failed_24h;
   const pushed = pipeline?.telemetry_push_24h;
-  const byRule = oi?.by_rule_24h ?? {};
+  const byRule = oi?.by_rule_24h;
   const counts = Object.fromEntries(
-    NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, received)]),
+    NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule)]),
   ) as Record<NewsOiTab, number | null>;
   const hours = oiWindowHours(oi?.policy?.window_ms);
 
@@ -95,7 +119,7 @@ export function NewsOiPage({ token }: { token: string }) {
                 <Metric
                   caption="oi.by_rule_24h"
                   eyebrow="ELIGIBLE"
-                  value={count(byRule.opening_move_with_whale_concentration)}
+                  value={count(byRule?.opening_move_with_whale_concentration)}
                 />
                 <Metric
                   caption="telemetry_push_24h"
@@ -115,24 +139,34 @@ export function NewsOiPage({ token }: { token: string }) {
 
             <div className="news-oi-columns">
               <NewsOiGates
-                byRule={byRule}
+                byRule={byRule ?? {}}
                 floors={oi?.trade_floors ?? EMPTY_FLOORS}
                 policy={oi?.policy ?? null}
               />
               <NewsOiWindow hours={hours} rows={oi?.window_occupancy ?? []} />
             </div>
 
-            {feedQuery.isError && !feedQuery.data ? (
-              <PageState.Error error={feedQuery.error} onRetry={() => void feedQuery.refetch()} />
-            ) : (
-              <NewsOiFrameTable
-                counts={counts}
-                floors={oi?.trade_floors ?? EMPTY_FLOORS}
-                onTabChange={(next) => setSearchParams(nextOiParams(next), { replace: true })}
-                rows={feedQuery.data?.events ?? []}
-                tab={tab}
-              />
-            )}
+            {/*
+             * The failed request replaces the rows, never the tabs: a reader whose 未达阈值 page 5xx'd has to
+             * be able to click back to 全部 without editing the URL.
+             */}
+            <NewsOiFrameTable
+              counts={counts}
+              error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
+              floors={oi?.trade_floors ?? EMPTY_FLOORS}
+              hasMore={hasMore}
+              loadingMore={
+                historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
+              }
+              onLoadMore={() => {
+                if (!moreRequested) setMoreRequested(true);
+                else void historyQuery.fetchNextPage();
+              }}
+              onRetry={() => void feedQuery.refetch()}
+              onTabChange={(next) => setSearchParams(nextOiParams(next), { replace: true })}
+              rows={rows}
+              tab={tab}
+            />
           </div>
         </PageState.Stale>
       ) : null}

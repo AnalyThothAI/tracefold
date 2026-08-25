@@ -85,14 +85,6 @@ export const OpenInterestIcon = forwardRef<SVGSVGElement, LucideProps>((props, r
 ));
 OpenInterestIcon.displayName = "OpenInterestIcon";
 
-/** 流水线状态. A funnel — the page's own 24 h main visual, shorthanded. */
-export const PipelineFunnelIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
-  <TracefoldIcon ref={ref} {...props}>
-    <path d="M3.5 5h17l-6.5 7.2v7.3l-4-2v-5.3z" />
-  </TracefoldIcon>
-));
-PipelineFunnelIcon.displayName = "PipelineFunnelIcon";
-
 /**
  * 鲸鱼占比. One slice cut out of the whole. The wedge is filled because it *is* the share; it takes
  * `currentColor` like every stroke here, so it never carries a hue of its own.

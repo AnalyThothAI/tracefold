@@ -50,22 +50,25 @@ export function parseOiTab(value: string | null): NewsOiTab {
 }
 
 /**
- * Each tab's count, from the server's 24 h aggregate by rule.
+ * Each tab's count, all four from the same server aggregate over judged verdicts.
  *
- * `all` is the received total rather than the sum of the other three, because those three count *judged*
- * frames: a frame the provider pushed that has not reached a verdict yet is in `received` and in no rule
- * bucket, and quietly dropping it would make the tab row disagree with the telemetry band above it.
+ * `all` is the sum of the other three rather than `telemetry_received_24h`. They count different things:
+ * `received` counts provider *items* carrying strategy 1019 before the Gate, while every row this table can
+ * show is an Event that reached a verdict. A 1019 item the Gate folded into an existing Event, or one still
+ * awaiting judgment, is in `received` and in no row — so labelling the tab with it would state a number the
+ * table structurally cannot reach. `received` keeps its own tile in the telemetry band, where it is the
+ * lane's intake and nothing else.
  */
 export function oiTabCount(
   tab: NewsOiTab,
   byRule: Record<string, number> | undefined,
-  received24h: number | undefined,
 ): number | null {
-  const rules = byRule ?? {};
-  if (tab === "all") return received24h ?? null;
-  if (tab === "pushed") return rules[OI_PUSH_RULE] ?? 0;
-  if (tab === "parse_failed") return rules[OI_PARSE_FAILED_RULE] ?? 0;
-  return OI_WITHHELD_RULES.reduce((total, rule) => total + (rules[rule] ?? 0), 0);
+  if (!byRule) return null;
+  if (tab === "pushed") return byRule[OI_PUSH_RULE] ?? 0;
+  if (tab === "parse_failed") return byRule[OI_PARSE_FAILED_RULE] ?? 0;
+  const withheld = OI_WITHHELD_RULES.reduce((total, rule) => total + (byRule[rule] ?? 0), 0);
+  if (tab === "withheld") return withheld;
+  return withheld + (byRule[OI_PUSH_RULE] ?? 0) + (byRule[OI_PARSE_FAILED_RULE] ?? 0);
 }
 
 /**
@@ -82,15 +85,29 @@ export function oiPercent(bps: number | null | undefined, digits = 2): string {
 /**
  * Open interest in the units the reader card already uses: `32_170_000` -> `3217 万`.
  *
- * The same shape as `_usd_zh` on the server, which is what the pushed headline carries — the monitor and the
- * card a reader received must not disagree about how much open interest a frame reported.
+ * `_usd_zh` on the server is what the pushed headline carries, and the monitor must not disagree with the
+ * card a reader received about how much open interest a frame reported. So this is that function's integer
+ * arithmetic transcribed, not an approximation of it: `Math.round` is half-up where Python's `:.0f` is
+ * half-to-even, which would put `2.5 万` on the card and `3 万` here for the same frame.
  */
 export function oiValueZh(usd: number | null | undefined): string {
   if (usd == null || !Number.isFinite(usd)) return "—";
   const amount = Math.trunc(usd);
-  if (amount >= 100_000_000) return `${(amount / 100_000_000).toFixed(2)} 亿`;
-  if (amount >= 10_000) return `${Math.round(amount / 10_000)} 万`;
+  if (amount >= 100_000_000) {
+    const hundredths = Math.floor((amount * 100 + 50_000_000) / 100_000_000);
+    return `${Math.floor(hundredths / 100)}.${String(hundredths % 100).padStart(2, "0")} 亿`;
+  }
+  if (amount >= 10_000) return `${halfToEven(amount, 10_000)} 万`;
   return String(amount);
+}
+
+/** Python's `:.0f` rounding: ties go to the even neighbour, not away from zero. */
+function halfToEven(value: number, divisor: number): number {
+  const whole = Math.floor(value / divisor);
+  const remainder = value - whole * divisor;
+  if (remainder * 2 > divisor) return whole + 1;
+  if (remainder * 2 < divisor) return whole;
+  return whole % 2 === 0 ? whole : whole + 1;
 }
 
 /**
@@ -105,9 +122,19 @@ export function oiChangeLabel(oi: NewsFeedOi | null | undefined): string {
   return `${oi.oi_change_bps < 0 ? "−" : "+"}${pct.toFixed(2)}%`;
 }
 
-/** `1 / 2`, or `—` for a frame that never became eligible and so never spent a slot. */
+/**
+ * `1 / 2` — the slot this frame spent — or `—` when it spent none.
+ *
+ * `evaluate_oi` computes `rank = earlier_eligible_count + 1` for *every* frame and the trace records it
+ * unconditionally, so a frame the whale or OI-change threshold rejected still carries a number. That number
+ * is the rank it would have taken had it qualified: it never became eligible and never consumed a slot, and
+ * printing `1 / 2` beside it would say the window is fuller than it is — exactly the reading the window
+ * occupancy card exists to get right.
+ */
+const OI_INELIGIBLE_RULES = new Set(["whale_ratio_below_threshold", "oi_change_below_threshold"]);
+
 export function oiRankLabel(oi: NewsFeedOi | null | undefined): string {
-  if (oi?.eligible_rank_in_window == null) return "—";
+  if (oi?.eligible_rank_in_window == null || OI_INELIGIBLE_RULES.has(oi.rule)) return "—";
   const max = oi.max_rank_in_window;
   return max == null
     ? String(oi.eligible_rank_in_window)
@@ -147,7 +174,13 @@ export function oiBuckets(
   if (!oi?.parsed) return [];
   const buckets: OiBucket[] = [];
   const profit = oi.whale_long_profit_bps;
-  if (profit != null && profit >= floors.min_whale_long_profit_bps) {
+  // A zero floor is not a floor. It arrives when the console is newer than the API, and `profit >= 0` would
+  // stamp "研究里唯一均值为正的分桶" on every frame with a tooltip claiming a 0.00% threshold.
+  if (
+    floors.min_whale_long_profit_bps > 0 &&
+    profit != null &&
+    profit >= floors.min_whale_long_profit_bps
+  ) {
     buckets.push({
       label: "盈利正桶",
       title: `鲸鱼多头盈利 ≥ ${oiPercent(floors.min_whale_long_profit_bps)}：研究里唯一均值为正的分桶`,

@@ -77,7 +77,13 @@
     letter-spacing: 0.06em;
   }
 
+  /*
+   * The same floor its head, its row button and its expansion carry. Without it a plain block child of the
+   * `overflow-x: auto` container takes the *visible* width, so scrolling the table right leaves every row's
+   * hairline stopping mid-row.
+   */
   .news-oi-row {
+    min-width: 1040px;
     border-bottom: 1px solid var(--border-faint);
   }
 
@@ -181,6 +187,21 @@
     border-color: var(--signal-caution-border);
     color: var(--signal-caution);
     background: var(--signal-caution-soft);
+  }
+
+  /* The explicit page action, and what it has and has not reached. */
+  .news-oi-more {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    padding: 11px 14px;
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .news-oi-more small {
+    color: var(--text-subtle);
+    font-size: 11px;
   }
 
   .news-oi-verdict {

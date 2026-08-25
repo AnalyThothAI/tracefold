@@ -1,5 +1,7 @@
 import { newsEventPath } from "@shared/routing/paths";
+import { ActionButton } from "@shared/ui/ActionButton";
 import { Card } from "@shared/ui/Card";
+import * as PageState from "@shared/ui/PageState";
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -35,13 +37,23 @@ import "./newsOiFrameTable.css";
  */
 export function NewsOiFrameTable({
   counts,
+  error,
   floors,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  onRetry,
   onTabChange,
   rows,
   tab,
 }: {
   counts: Record<NewsOiTab, number | null>;
+  error: unknown;
   floors: NewsOiTradeFloors;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+  onRetry: () => void;
   onTabChange: (tab: NewsOiTab) => void;
   rows: readonly NewsFeedEvent[];
   tab: NewsOiTab;
@@ -68,6 +80,10 @@ export function NewsOiFrameTable({
              * The server's 24 h aggregate, not a count of the rows below: the tab filters the whole window
              * server-side while the table shows one page of it, and deriving the number from the page would
              * make an empty page read as an empty window.
+             *
+             * The two are anchored differently — `by_rule_24h` counts verdicts by `created_at_ms`, the feed
+             * bounds Events by `opened_at_ms` — so at the window edge they can disagree by a frame or two,
+             * the same asymmetry the 24 h funnel card carries. The source line below says so.
              */}
             {counts[value] == null ? null : (
               <span aria-hidden className="news-oi-tab-count">
@@ -78,9 +94,13 @@ export function NewsOiFrameTable({
         ))}
       </div>
 
-      {rows.length === 0 ? (
+      {error ? <PageState.Error error={error} onRetry={onRetry} /> : null}
+
+      {!error && rows.length === 0 ? (
         <NewsEmptyNote>这个窗口里没有符合当前判定的遥测帧。</NewsEmptyNote>
-      ) : (
+      ) : null}
+
+      {!error && rows.length > 0 ? (
         <div className="news-oi-table">
           <div aria-hidden className="news-oi-head">
             <span>TIME</span>
@@ -98,10 +118,23 @@ export function NewsOiFrameTable({
             <FrameRow event={event} floors={floors} key={event.event_id} />
           ))}
         </div>
-      )}
+      ) : null}
+
+      {/*
+       * An explicit action, never automatic scroll (`docs/FRONTEND.md`). A 24 h window holds more frames
+       * than one page, so without this the table would sit at 50 rows under a tab that names 136.
+       */}
+      {!error && hasMore ? (
+        <div className="news-oi-more">
+          <ActionButton disabled={loadingMore} onClick={onLoadMore}>
+            {loadingMore ? "正在加载" : "加载更多帧"}
+          </ActionButton>
+          <small>已加载 {formatCount(rows.length)} 条；页签计数是过去 24 小时的全量</small>
+        </div>
+      ) : null}
 
       <NewsOiSource
-        note="四个测量值、窗口名次与闸门名都来自服务端已落库的判定痕迹；1H/4H 是事件锚定的定格测量，不是现价"
+        note="四个测量值、窗口名次与闸门名都来自服务端已落库的判定痕迹；1H/4H 是事件锚定的定格测量，不是现价。页签计数按判定时间算、行按事件时间算，窗口边缘上二者可差一两条"
         path="GET /api/news/feed?admission=telemetry_deterministic&hours=24"
       />
     </Card>

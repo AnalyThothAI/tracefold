@@ -56,17 +56,10 @@ describe("news route", () => {
     await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(endpoint, expect.any(Object)));
   });
 
-  it("keeps the topbar health lamp dark while the pipeline is ok", async () => {
-    // One route is enough to pin the wiring: the lamp lives in `CockpitTopbar`, which `CockpitShell`
-    // renders once for every route, and the navigation tests already prove that shell is shared. What is
-    // route-specific — the rule that `ok` draws nothing at all — is pinned in `CockpitTopbarHealth`.
-    renderAppRoute("/news/oi");
-
-    await screen.findByRole("heading", { level: 1, name: "持仓异动监控" });
-    expect(screen.queryByRole("button", { name: /流水线健康/ })).not.toBeInTheDocument();
-  });
-
   it("lights the topbar lamp with the failing item's own sentence when health degrades", async () => {
+    // What the route level owns is the mapping: server `health` -> the frame's structural prop. That `ok`
+    // draws nothing at all is the lamp's own rule and is pinned on the component in
+    // `CockpitTopbarHealth.test.tsx`, so it is not rendered a second time here.
     setupAppRouteTest((mock) => {
       mockAppRoutes(mock);
       const base = mock.getApiImpl;
@@ -89,6 +82,26 @@ describe("news route", () => {
 
     // The mapping the shell owns: server level -> lamp level, worst item's `summary_zh` -> lamp text.
     const lamp = await screen.findByRole("button", { name: "流水线健康：24 小时降级率 20%" });
+    expect(lamp).toHaveAttribute("data-level", "bad");
+  });
+
+  it("says the health read itself failed rather than going dark", async () => {
+    /*
+     * The lamp is the console's only health signal now, and the topbar's other indicator watches a
+     * different endpoint (`/api/status`). Without this branch a console whose `/api/news/status` starts
+     * failing shows nothing wrong anywhere — which is the shape of outage the lamp exists for.
+     */
+    setupAppRouteTest((mock) => {
+      mockAppRoutes(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) => {
+        if (path === "/api/news/status") throw new Error("news status unavailable");
+        return base(path, options);
+      };
+    });
+    renderAppRoute("/news/oi");
+
+    const lamp = await screen.findByRole("button", { name: "流水线健康：读取流水线状态失败" });
     expect(lamp).toHaveAttribute("data-level", "bad");
   });
 

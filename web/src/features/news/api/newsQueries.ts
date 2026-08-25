@@ -166,6 +166,21 @@ export const useNewsFeedHistoryWithToken = (
     staleTime: Number.POSITIVE_INFINITY,
   });
 
+const fetchNewsOiFeed = async (token: string, tab: NewsOiTab, cursor: string | null) =>
+  (
+    await getApi<NewsFeed>("/api/news/feed", {
+      etagKey: `news-oi-feed:${tab}:${cursor ?? "first"}`,
+      params: {
+        admission: NEWS_OI_ADMISSION,
+        cursor,
+        hours: NEWS_OI_HOURS,
+        limit: NEWS_OI_PAGE_SIZE,
+        oi: tab === "all" ? undefined : tab,
+      },
+      token,
+    })
+  ).data;
+
 /**
  * One page of #137's deterministic telemetry frames, filtered server-side by the gate that judged them.
  *
@@ -177,21 +192,31 @@ export const useNewsOiFeedWithToken = (token: string, tab: NewsOiTab) =>
   useQuery({
     enabled: Boolean(token),
     queryKey: queryKeys.newsOiFeed(tab),
-    queryFn: async () =>
-      (
-        await getApi<NewsFeed>("/api/news/feed", {
-          etagKey: `news-oi-feed:${tab}`,
-          params: {
-            admission: NEWS_OI_ADMISSION,
-            hours: NEWS_OI_HOURS,
-            limit: NEWS_OI_PAGE_SIZE,
-            oi: tab === "all" ? undefined : tab,
-          },
-          token,
-        })
-      ).data,
+    queryFn: () => fetchNewsOiFeed(token, tab, null),
     refetchInterval: NEWS_OI_REFETCH_MS,
     staleTime: 2_000,
+  });
+
+/**
+ * The pages behind the first one, on an explicit action (`加载更多帧`) — never automatic scroll.
+ *
+ * A 24 h window holds roughly 190 frames and a tab can name more than one page of them, so without this the
+ * table would show 50 rows under a tab labelled 136 and offer no way to the rest. Loaded pages are frozen:
+ * only the first page follows the 5 s poll, exactly as the Event feed's history does.
+ */
+export const useNewsOiFeedHistoryWithToken = (
+  token: string,
+  tab: NewsOiTab,
+  firstCursor: string | null,
+  enabled: boolean,
+) =>
+  useInfiniteQuery({
+    enabled: Boolean(token && firstCursor && enabled),
+    queryKey: queryKeys.newsOiFeedHistory(tab, firstCursor ?? ""),
+    queryFn: ({ pageParam }) => fetchNewsOiFeed(token, tab, pageParam),
+    initialPageParam: firstCursor ?? "",
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    staleTime: Number.POSITIVE_INFINITY,
   });
 
 export const useNewsEventWithToken = (token: string, eventId?: string | null) =>

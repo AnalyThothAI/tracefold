@@ -182,15 +182,18 @@ function HealthLamp({ health }: { health?: CockpitHealth | null }) {
           sideOffset={6}
         >
           <b className="topbar-health-popover-title">{health.headline}</b>
-          <ul className="topbar-health-items">
-            {health.items.map((item) => (
-              <li data-level={item.level} key={item.key}>
-                <span aria-hidden className="topbar-health-dot" data-level={item.level} />
-                <b>{item.label}</b>
-                <span>{item.summary}</span>
-              </li>
-            ))}
-          </ul>
+          {/* A failed read has a headline and a door but no stage lines: there is no health to break down. */}
+          {health.items.length === 0 ? null : (
+            <ul className="topbar-health-items">
+              {health.items.map((item) => (
+                <li data-level={item.level} key={item.key}>
+                  <span aria-hidden className="topbar-health-dot" data-level={item.level} />
+                  <b>{item.label}</b>
+                  <span>{item.summary}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           <Link className="topbar-health-link" to={health.to}>
             打开流水线状态
             <ChevronRight aria-hidden />

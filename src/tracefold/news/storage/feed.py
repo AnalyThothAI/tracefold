@@ -108,7 +108,13 @@ class FeedStorage:
             params.append(list(OI_FILTERS[oi]))
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
         # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
-        counts = self._feed_counts(where=list(where), params=list(params)) if cursor_opened is None else None
+        #
+        # An `oi` request skips it too. `counts` describes the three *outcome* groups, which are the feed's
+        # task tabs; the OI monitor's tabs are gates and it takes their counts from `status.oi.by_rule_24h`,
+        # so on a 5 s poll this would be the file's own "19 ms over the entire table" aggregate run for a
+        # field nobody reads.
+        wants_counts = cursor_opened is None and oi not in OI_FILTERS
+        counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
         if outcome in _OUTCOME_GROUP_SQL:
             where.append(_OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
