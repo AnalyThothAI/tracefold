@@ -479,6 +479,8 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `decided_at_ms` | `BIGINT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `source_observed_at_ms` | `BIGINT` | True | `None` |
+| `trigger_persisted_at_ms` | `BIGINT` | True | `None` |
 
 ## `trading_order_observations`
 

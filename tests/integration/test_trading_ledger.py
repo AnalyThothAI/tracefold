@@ -150,7 +150,22 @@ def _order_row(conn: Any, order_id: str) -> Any:
     return conn.execute("SELECT * FROM trading_orders WHERE order_id = %s", (order_id,)).fetchone()
 
 
-def _case(conn: Any, *, case_id: str, source_key: str, underlying: str = "crypto:DOGE") -> bool:
+def _case(
+    conn: Any,
+    *,
+    case_id: str,
+    source_key: str,
+    underlying: str = "crypto:DOGE",
+    state: str = "ORDER_PREPARED",
+) -> bool:
+    """One case row to hang an order ledger test on.
+
+    `state` defaults to a settled one because #211 added a partial unique index over undecided cases
+    per underlying: a fixture that left every case PENDING could not build the two-orders-one-underlying
+    scenarios these tests are actually about. Tests that care about the undecided window pass PENDING
+    or RUNNING explicitly.
+    """
+
     created = _repos(conn).trading.insert_case(
         case_id=case_id,
         underlying_key=underlying,
@@ -162,8 +177,12 @@ def _case(conn: Any, *, case_id: str, source_key: str, underlying: str = "crypto
         manifest_sha256="sha",
         regime="buildup_up",
         observed_at_ms=NOW,
+        source_observed_at_ms=NOW - 2_000,
+        trigger_persisted_at_ms=NOW - 1_000,
         now_ms=NOW,
     )
+    if created and state != "PENDING":
+        conn.execute("UPDATE trading_cases SET state = %s WHERE case_id = %s", (state, case_id))
     conn.commit()
     return created
 
@@ -258,9 +277,11 @@ def _order(conn: Any, *, order_id: str, case_id: str, underlying: str, exchange_
 
 # ---------------------------------------------------------------------------- identity invariants
 def test_one_source_fact_produces_one_case_however_often_the_window_is_re_read(conn) -> None:
-    assert _case(conn, case_id="c1", source_key="oi:e1:v1") is True
+    # Settled, so the in-flight index for this underlying is not what refuses the second insert. The
+    # source key is, which is the rule this test exists for and the one that survives a redeploy.
+    assert _case(conn, case_id="c1", source_key="oi:e1:v1", state="NO_TRADE") is True
     # The scanner keeps no cursor; it re-reads a bounded overlap. This is what makes that safe.
-    assert _case(conn, case_id="c2", source_key="oi:e1:v1") is False
+    assert _case(conn, case_id="c2", source_key="oi:e1:v1", state="NO_TRADE") is False
     assert len(_repos(conn).trading.cases()) == 1
 
 
@@ -471,12 +492,23 @@ def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int
         "VALUES (%s, 'oi_signal_v1', %s, 'rise', 320, 73010000, 9900, 21097, %s, 1, %s)",
         (event_id, symbol, observed_at_ms, observed_at_ms),
     )
-    conn.execute(
-        "INSERT INTO news_market_instruments (venue, venue_symbol, base_symbol, instrument_class, quote_asset, "
-        "status, last_seen_ms) VALUES ('binance.perp', %s, %s, 'crypto', 'USDT', 'trading', %s) "
-        "ON CONFLICT DO NOTHING",
-        (f"{symbol}USDT", symbol, observed_at_ms),
-    )
+    # The listing is seeded at the venue the frame itself names. Source-aligned routing (#211) means a
+    # Hyperliquid frame may only produce a Hyperliquid manifest, so seeding Binance for a Hyperliquid
+    # frame is now a fixture that proves nothing except that the lane fails closed.
+    if venue == "binance":
+        conn.execute(
+            "INSERT INTO news_market_instruments (venue, venue_symbol, base_symbol, instrument_class, quote_asset, "
+            "status, last_seen_ms) VALUES ('binance.perp', %s, %s, 'crypto', 'USDT', 'trading', %s) "
+            "ON CONFLICT DO NOTHING",
+            (f"{symbol}USDT", symbol, observed_at_ms),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO news_market_instruments (venue, venue_symbol, base_symbol, instrument_class, quote_asset, "
+            "status, last_seen_ms) VALUES ('hl.perp', %s, %s, 'crypto', NULL, 'trading', %s) "
+            "ON CONFLICT DO NOTHING",
+            (symbol, symbol, observed_at_ms),
+        )
     conn.commit()
 
 
@@ -723,8 +755,10 @@ def _prepare_live_reviewed(
     adapter: _LiveLifecycleAdapter,
     config: TradingConfig | None = None,
 ) -> tuple[TradingConfig, Any]:
-    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE)
-    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE)
+    # The live canary enables exactly one venue, so a frame tagged at the other one is refused
+    # rather than rerouted (#211). These fixtures are about the capital protocol, not routing.
+    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
     _promote_to_model_projection(conn, event_id="live-c2-news", symbol="DOGE")
     live_config = config or _live_config()
     report = asyncio.run(
@@ -899,8 +933,12 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
         until_created_at_ms=NOW,
     )
 
-    assert [row["event_id"] for row in oi_rows] == ["oi-a", "oi-b", "oi-until-boundary"]
-    assert [row["event_id"] for row in news_rows] == ["news-a", "news-b", "news-until-boundary"]
+    # Newest first at the limit (#211): the scan horizon is now wide enough to hold an hour of
+    # attachable context, and an ascending LIMIT would have answered a busy window entirely with its
+    # oldest rows — spending the budget on context and returning none of the triggers. Ties fall back
+    # to `event_id` so two identical scans still see the same rows in the same order.
+    assert [row["event_id"] for row in oi_rows] == ["oi-until-boundary", "oi-b", "oi-a"]
+    assert [row["event_id"] for row in news_rows] == ["news-until-boundary", "news-b", "news-a"]
     assert set(oi_rows[0]) == {
         "direction",
         "editorial_origin",
@@ -994,7 +1032,9 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     )
     # #162 PR8-B: the manifest binds the exact News generation, so bumping epoch/program moves its
     # content hash. That is the contract working — a case frozen under v6 must not read as a v7 case.
-    assert manifest.digest() == "0d659c107dbab3d1640da51bfb93f01c3a1154209265a1e2c656cf2e90259540"
+    # #211 moves it again: the OI projection now carries when its verdict became durable, and
+    # `trading_manifest_v3` says so, so a v2 case cannot be replayed as if it had that stamp.
+    assert manifest.digest() == "a2ce8fe82a82e3ff2f6d452a586e776f6745cdf9aa07e8e97584f2f03797f4c5"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
@@ -1048,8 +1088,8 @@ def test_an_acknowledged_paper_order_is_reconstructed_after_restart(conn) -> Non
 
 
 def test_live_prepare_uses_fresh_provider_truth_and_the_existing_observation_ledger(conn) -> None:
-    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE)
-    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE)
+    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
     _promote_to_model_projection(conn, event_id="live-c1-news", symbol="DOGE")
     adapter = _ReadOnlyLiveAdapter()
     report = asyncio.run(
@@ -1092,7 +1132,7 @@ def test_live_prepare_uses_fresh_provider_truth_and_the_existing_observation_led
 
 
 def test_external_startup_inventory_blocks_a_live_turn_before_case_creation(conn) -> None:
-    _seed_oi_event(conn, event_id="live-exposure", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    _seed_oi_event(conn, event_id="live-exposure", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
     adapter = _ReadOnlyLiveAdapter(
         startup_exposures=(
             RemoteExposure(
@@ -2544,6 +2584,8 @@ def test_a_legacy_news_generation_case_is_blocked_before_model_or_order(
         manifest_sha256=canonical_sha256(manifest),
         regime="buildup_up",
         observed_at_ms=NOW,
+        source_observed_at_ms=NOW - 2_000,
+        trigger_persisted_at_ms=NOW - 1_000,
         now_ms=NOW,
     )
     if starting_state == "RUNNING":
@@ -2675,20 +2717,32 @@ def test_a_submitting_row_that_survived_a_restart_becomes_ambiguous_not_a_resend
     assert adapter.attempts == 0
 
 
-def test_the_frozen_row_records_the_venue_that_was_chosen_even_in_paper(conn) -> None:
+@pytest.mark.parametrize("venue", ["binance", "hyperliquid"])
+def test_the_frozen_row_records_the_venue_the_frame_itself_named_even_in_paper(conn, venue: str) -> None:
     """`mode` says whether the write was real; `exchange_id` says where the intent was routed.
 
     Collapsing the two would erase the venue choice from the ledger, and the venue choice is the one
     thing the cross-venue invariant and the reconcile price read both need.
+
+    #211 makes that choice the frame's own, not the operator's static priority. Both venues are
+    enabled here and both listings exist for `DOGE`, so the only thing deciding the row is which venue
+    the open interest actually moved on.
     """
 
     now = NOW
-    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE)
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE, venue=venue)
+    conn.execute(
+        "INSERT INTO news_market_instruments (venue, venue_symbol, base_symbol, instrument_class, quote_asset, "
+        "status, last_seen_ms) VALUES ('binance.perp', 'DOGEUSDT', 'DOGE', 'crypto', 'USDT', 'trading', %s), "
+        "('hl.perp', 'DOGE', 'DOGE', 'crypto', NULL, 'trading', %s) ON CONFLICT DO NOTHING",
+        (now, now),
+    )
+    conn.commit()
     asyncio.run(_runner(conn, adapter=PaperAdapter(), now=now).turn())
     order = conn.execute("SELECT * FROM trading_orders").fetchone()
-    assert order["exchange_id"] == "binance"
+    assert order["exchange_id"] == venue
     assert order["mode"] == "paper"
-    assert order["payload"]["exchangeId"] == "binance"
+    assert order["payload"]["exchangeId"] == venue
 
 
 def test_a_live_position_is_never_closed_from_a_simulated_exit(conn) -> None:
@@ -3712,3 +3766,154 @@ def test_a_live_order_keeps_its_own_deadline_and_fee_across_a_redeploy(conn) -> 
     assert closed["state"] == "CLOSED"
     # 202.0 bps gross, minus both legs at the frozen 5 bps. At the redeployed 250 it would be -298.
     assert int(closed["realized_bps"]) == 192
+
+
+# ------------------------------------------------------------- #211 trigger, fusion and venue truth
+def _instrument_rows(conn: Any, *venues: tuple[str, str]) -> None:
+    conn.execute("DELETE FROM news_market_instruments")
+    for venue, venue_symbol in venues:
+        conn.execute(
+            "INSERT INTO news_market_instruments (venue, venue_symbol, base_symbol, instrument_class, quote_asset, "
+            "status, last_seen_ms) VALUES (%s, %s, 'DOGE', 'crypto', NULL, 'trading', %s)",
+            (venue, venue_symbol, NOW),
+        )
+    conn.commit()
+
+
+def test_a_hyperliquid_frame_never_silently_becomes_a_binance_paper_manifest(conn) -> None:
+    """The defect #211 names: the frame said Hyperliquid and the static priority answered Binance.
+
+    `DOGE` is listed on Binance and not on Hyperliquid here, so under the old rule the lane would have
+    routed an order at a book whose open interest had done nothing at all. It now refuses.
+    """
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="hyperliquid")
+    _instrument_rows(conn, ("binance.perp", "DOGEUSDT"))
+
+    adapter = PaperAdapter()
+    report = asyncio.run(_runner(conn, adapter=adapter, now=NOW).turn())
+
+    assert report["created"] == 0
+    assert report["funnel"]["freeze_reject:no_perp_at_signal_venue"] == 1
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"]) == 0
+    assert adapter.attempts == 0
+
+
+def test_a_frame_from_a_venue_the_lane_cannot_execute_fails_closed_with_a_named_reason(conn) -> None:
+    """An unrecognised provider tag is not a licence to pick a venue; it is a refusal."""
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="okx")
+    _instrument_rows(conn, ("binance.perp", "DOGEUSDT"), ("hl.perp", "DOGE"))
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+
+    assert report["created"] == 0
+    # Refused at the plan, before fusion: an unroutable frame must not be able to win coalescing from
+    # a routable older one, nor be attached as context to a News trigger it would then kill.
+    assert report["funnel"]["oi_reject:venue_unresolved"] == 1
+    assert report["funnel"]["oi_eligible_venue:other"] == 1
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"]) == 0
+
+
+def test_a_signal_venue_the_operator_has_not_enabled_is_refused_rather_than_rerouted(conn) -> None:
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="hyperliquid")
+    _instrument_rows(conn, ("binance.perp", "DOGEUSDT"), ("hl.perp", "DOGE"))
+
+    report = asyncio.run(
+        _runner(conn, adapter=PaperAdapter(), now=NOW, config=_config(venue_priority=("binance",))).turn()
+    )
+
+    assert report["created"] == 0
+    assert report["funnel"]["oi_reject:venue_not_enabled"] == 1
+
+
+def test_an_undecided_case_stops_a_second_thesis_for_the_same_underlying(conn) -> None:
+    """One frozen research decision per issuer at a time — in the funnel and in the schema."""
+
+    assert _case(conn, case_id="in-flight", source_key="k-in-flight", state="PENDING") is True
+    # The scanner's read is not the authority: a second undecided case for the same underlying is
+    # refused by the partial unique index even when a caller goes straight to storage.
+    assert _case(conn, case_id="second", source_key="k-second", state="PENDING") is False
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+
+    assert report["created"] == 0
+    assert report["funnel"]["plan_reject:case_in_flight"] == 1
+    # Nothing was routed through a model or an adapter to learn that.
+    assert int(conn.execute("SELECT dspy_calls_today FROM trading_runtime_state").fetchone()["dspy_calls_today"]) == 0
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 0
+
+
+def test_a_settled_case_never_permanently_blocks_a_later_genuinely_new_trigger(conn) -> None:
+    """The in-flight index holds only while a case is undecided. `NO_TRADE` is an answer, not a lock."""
+
+    assert _case(conn, case_id="settled", source_key="k-settled", state="NO_TRADE") is True
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+
+    assert report["created"] == 1
+    assert {str(row["state"]) for row in _repos(conn).trading.cases()} == {"NO_TRADE", "ORDER_PREPARED"}
+
+
+def test_the_scan_reaches_back_far_enough_for_a_forty_five_minute_old_verdict_to_fuse(conn) -> None:
+    """End to end, at the configured windows rather than the trigger budget.
+
+    Under the previous rule this scan read fifteen minutes of history and re-checked both lanes
+    against the same five-minute budget, so this verdict was invisible twice over and the case could
+    only ever have been `oi_only`. The 60-minute News lookback is now a window that exists.
+    """
+
+    policy = EligibilityPolicy(max_age_ms=300_000, symbol_cooldown_ms=1_800_000)
+    _seed_oi_event(conn, event_id="news-45m", symbol="DOGE", observed_at_ms=NOW - 45 * MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-45m", symbol="DOGE")
+    _seed_oi_event(conn, event_id="oi-now", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+
+    report = asyncio.run(
+        _runner(
+            conn,
+            adapter=PaperAdapter(),
+            now=NOW,
+            config=_config(eligibility=policy),
+            program=_LiveDecisionProgram(),
+        ).turn()
+    )
+
+    assert report["created"] == 1
+    case = _repos(conn).trading.cases()[0]
+    assert case["case_kind"] == "news_oi"
+    # The trigger is the frame that just fired; the verdict is the context it attached.
+    assert int(case["observed_at_ms"]) == NOW - MINUTE
+    assert case["manifest"]["news"]["verdict_created_at_ms"] == NOW - 45 * MINUTE
+    assert len(case["supplemental_source_keys"]) == 1
+    # A 45-minute-old verdict is context, never a trigger of its own: only one case exists.
+    assert len(_repos(conn).trading.cases()) == 1
+
+
+def test_the_case_row_records_the_two_upstream_stages_and_status_reports_them(conn) -> None:
+    """#211 latency: measurable from the ledger, with no per-symbol or per-order key anywhere in it."""
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    # The verdict is written a second after the frame is observed; that gap is the ingest stage.
+    conn.execute("UPDATE news_verdicts SET created_at_ms = %s WHERE event_id = 'e1'", (NOW - MINUTE + 1_000,))
+    conn.commit()
+
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+
+    trading = _repos(conn).trading
+    case = trading.cases()[0]
+    assert int(case["source_observed_at_ms"]) == NOW - MINUTE
+    assert int(case["trigger_persisted_at_ms"]) == NOW - MINUTE + 1_000
+
+    latency = trading.stage_latency_ms(since_ms=NOW - 86_400_000)
+    assert latency["source_observed_to_verdict_persisted"] == {"n": 1, "p50": 1_000, "p95": 1_000}
+    assert latency["verdict_persisted_to_case_created"]["p50"] == MINUTE - 1_000
+    # Both middle stages are measured from `case_created`, because the runner writes the order before
+    # it settles the case. They are real samples now, not the identical zero a single clock produced.
+    assert latency["case_created_to_order_prepared"]["n"] == 1
+    assert latency["case_created_to_case_decided"]["n"] == 1
+    assert latency["case_created_to_order_prepared"]["p50"] >= 0
+    assert latency["case_created_to_case_decided"]["p50"] >= latency["case_created_to_order_prepared"]["p50"]
+    # No position has opened yet, so that stage has no evidence rather than a fabricated zero.
+    assert latency["order_prepared_to_position_opened"] == {"n": 0}

@@ -86,6 +86,10 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     "nominal_daily_stop_loss_usd": str(order.nominal_daily_stop_loss_usd),
                     **_execution_capability(settings),
                     "funnel_24h": runtime.get("funnel") or {},
+                    # #211: where the 24 h of work actually spent its time, stage by stage, read off
+                    # the same rows the funnel counts. `n` per stage says how much evidence each
+                    # number rests on.
+                    "stage_latency_ms": trading.stage_latency_ms(since_ms=now - _STATUS_WINDOW_MS),
                     **counts,
                 },
             }

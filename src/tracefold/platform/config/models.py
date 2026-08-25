@@ -404,6 +404,16 @@ class TradingCandidateSettings(BaseModel):
     def validate_bounds(self) -> TradingCandidateSettings:
         if not 30 <= self.max_age_seconds <= 3_600:
             raise ValueError("trading_candidate_max_age_invalid")
+        # #211 made the scan window `max_age + max(lookback)`, so these two are no longer only fusion
+        # rules — they size the query the candidate runner issues every `poll_seconds` against the same
+        # PostgreSQL the News plane runs on. Six hours is well past any point-in-time context a trade
+        # decision can use, and it keeps the widest reachable horizon inside the read's row ceiling.
+        if not 60 <= self.news_lookback_seconds <= 21_600:
+            raise ValueError("trading_candidate_news_lookback_invalid")
+        if not 60 <= self.oi_lookback_seconds <= 21_600:
+            raise ValueError("trading_candidate_oi_lookback_invalid")
+        if not 0 <= self.symbol_cooldown_seconds <= 86_400:
+            raise ValueError("trading_candidate_symbol_cooldown_invalid")
         if not 1 <= self.max_rank_in_window <= 10:
             raise ValueError("trading_candidate_rank_invalid")
         if not 0 <= self.max_dspy_cases_per_day <= 500:

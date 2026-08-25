@@ -24,17 +24,27 @@ class CaseStorage:
         manifest_sha256: str,
         regime: str | None,
         observed_at_ms: int,
+        source_observed_at_ms: int,
+        trigger_persisted_at_ms: int,
         now_ms: int,
     ) -> bool:
-        """One source fact, one case. A re-scanned window is a no-op, not a duplicate."""
+        """One trigger, one case, and one undecided case per underlying.
+
+        Two unique constraints can refuse this insert and the caller treats both the same way, so the
+        `ON CONFLICT` deliberately names no target: `primary_source_key` makes a re-scanned window a
+        no-op, and the partial unique index on an in-flight `underlying_key` stops a second concurrent
+        thesis for the same issuer. Naming one target would turn the other into an exception in a
+        transaction that has already done work.
+        """
 
         cursor = self.conn.execute(
             """
             INSERT INTO trading_cases (
               case_id, underlying_key, case_kind, mode, primary_source_key, supplemental_source_keys,
-              manifest, manifest_sha256, state, regime, observed_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, 'PENDING', %s, %s, %s, %s)
-            ON CONFLICT (primary_source_key) DO NOTHING
+              manifest, manifest_sha256, state, regime, observed_at_ms, source_observed_at_ms,
+              trigger_persisted_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, 'PENDING', %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
             """,
             (
                 case_id,
@@ -47,6 +57,8 @@ class CaseStorage:
                 manifest_sha256,
                 regime,
                 int(observed_at_ms),
+                int(source_observed_at_ms),
+                int(trigger_persisted_at_ms),
                 int(now_ms),
                 int(now_ms),
             ),
@@ -97,7 +109,14 @@ class CaseStorage:
         regime: str | None = None,
         now_ms: int,
     ) -> bool:
-        """Terminalise a claimed case. A stale `run_id` cannot write: its lease belongs to someone else."""
+        """Terminalise a claimed case, and only one that is still undecided.
+
+        `run_id` alone is not enough. A worker holding a valid lease can be inside its model call while
+        something else terminalises the case — migration `0309` coalescing duplicates onto the newest
+        trigger is exactly that — and without the state predicate the returning worker would write its
+        own answer straight over the top, undoing the coalescing and leaving an audit trail that reads
+        as a case both superseded and traded (#211).
+        """
 
         cursor = self.conn.execute(
             """
@@ -111,7 +130,7 @@ class CaseStorage:
                    regime = coalesce(%s, regime),
                    decided_at_ms = %s,
                    updated_at_ms = %s
-             WHERE case_id = %s AND run_id = %s
+             WHERE case_id = %s AND run_id = %s AND state IN ('PENDING', 'RUNNING')
             """,
             (
                 state,
@@ -144,6 +163,33 @@ class CaseStorage:
                 "SELECT * FROM trading_cases ORDER BY created_at_ms DESC LIMIT %s", (int(limit),)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def underlyings_in_flight(self) -> list[str]:
+        """Underlyings whose case is still undecided, in the same predicate as the unique index.
+
+        The index is the authority; this read is what lets the scanner name the reason in its funnel
+        instead of discovering it as a swallowed insert conflict.
+        """
+
+        rows = self.conn.execute(
+            "SELECT DISTINCT underlying_key FROM trading_cases WHERE state IN ('PENDING', 'RUNNING')"
+        ).fetchall()
+        return [str(row["underlying_key"]) for row in rows]
+
+    def source_keys_since(self, *, observed_at_ms: int) -> list[str]:
+        """Trigger identities this lane has already turned into a case, over the scan's own horizon.
+
+        The scanner reads this so a trigger that already produced a case cannot win the per-underlying
+        coalescing again and again for the rest of its freshness window, starving the older trigger it
+        beat. `has_source_key` remains the authority at the freeze — this read only decides which
+        trigger is worth planning, and a race between the two is settled by the unique constraint.
+        """
+
+        rows = self.conn.execute(
+            "SELECT primary_source_key FROM trading_cases WHERE observed_at_ms >= %s",
+            (int(observed_at_ms),),
+        ).fetchall()
+        return [str(row["primary_source_key"]) for row in rows]
 
     def has_source_key(self, *, primary_source_key: str) -> bool:
         row = self.conn.execute(

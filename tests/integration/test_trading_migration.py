@@ -133,6 +133,83 @@ def test_0308_backfills_the_exit_policy_only_where_the_ledger_can_prove_it() -> 
             conn.close()
 
 
+def _seed_pre_index_case(conn: Any, *, case_id: str, underlying: str, observed_at_ms: int, state: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO trading_cases (
+          case_id, underlying_key, case_kind, mode, primary_source_key, supplemental_source_keys,
+          manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+        ) VALUES (%s, %s, 'oi_only', 'paper', %s, '[]'::jsonb, '{}'::jsonb, 'sha', %s, %s, %s, %s)
+        """,
+        (case_id, underlying, f"key-{case_id}", state, observed_at_ms, NOW, NOW),
+    )
+
+
+def test_0309_coalesces_undecided_cases_before_the_index_and_never_disowns_an_order() -> None:
+    """The upgrade path the invariant has to survive, on a database that already has duplicates.
+
+    Failing the migration on pre-existing duplicates would leave the invariant unenforced on exactly
+    the databases that need it, so the coalescing is a total order rather than a filter — and a case
+    that already authored an order outranks a newer one that did not, because `_place` commits the
+    order before `_settle` terminalises the case and blocking that case would leave the ledger
+    asserting no authorisation for a position reconciliation is still managing.
+    """
+
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_SNAPSHOT)
+        conn = connect_postgres_test(read_only=False)
+        _seed_pre_index_case(conn, case_id="old", underlying="crypto:DOGE", observed_at_ms=NOW - 1_000, state="PENDING")
+        _seed_pre_index_case(conn, case_id="new", underlying="crypto:DOGE", observed_at_ms=NOW, state="RUNNING")
+        # A third for the same underlying, older than both, but it authored an order.
+        _seed_pre_snapshot_order(
+            conn, order_id="ordered", state="OPEN", position_opened_at_ms=NOW, must_close_at_ms=NOW + 1_800_000
+        )
+        conn.execute(
+            "UPDATE trading_cases SET underlying_key = 'crypto:DOGE', state = 'RUNNING', observed_at_ms = %s "
+            "WHERE case_id = 'case-ordered'",
+            (NOW - 2_000,),
+        )
+        conn.execute("UPDATE trading_orders SET underlying_key = 'crypto:DOGE' WHERE order_id = 'ordered'")
+        # A different underlying, untouched.
+        _seed_pre_index_case(conn, case_id="other", underlying="crypto:SOL", observed_at_ms=NOW, state="PENDING")
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("head")
+
+        conn = connect_postgres_test(read_only=False)
+        rows = {
+            str(row["case_id"]): (str(row["state"]), row["policy_reason"], row["policy_decision"], row["decided_at_ms"])
+            for row in conn.execute(
+                "SELECT case_id, state, policy_reason, policy_decision, decided_at_ms FROM trading_cases"
+            ).fetchall()
+        }
+        # The order-owning case survives even though it is the oldest of the three.
+        assert rows["case-ordered"][0] == "RUNNING"
+        assert rows["other"][0] == "PENDING"
+        for blocked in ("old", "new"):
+            state, reason, decision, decided = rows[blocked]
+            assert state == "BLOCKED"
+            # The reason the runner would have written anyway: this release retires every v2 manifest.
+            assert reason == "news_generation_retired"
+            # Nothing decided anything, so no fabricated decision and no fabricated decision instant —
+            # the latter would feed `stage_latency_ms` as if it were a measurement.
+            assert (decision, decided) == (None, None)
+
+        # And the invariant now holds: a second undecided case for a busy underlying is refused.
+        assert (
+            conn.execute(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_trading_case_in_flight_underlying'"
+            ).fetchone()
+            is not None
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def test_0308_refuses_an_unusable_snapshot_at_the_database_boundary() -> None:
     """The CHECKs carry the migration's own safety claim, so they are asserted rather than described.
 

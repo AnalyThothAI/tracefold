@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any, ClassVar
 
@@ -14,14 +14,15 @@ from pydantic import ValidationError
 
 from ..candidate.blacklist import Blacklist
 from ..candidate.eligibility import (
+    EligibilityPolicy,
     Funnel,
     _uses_current_news_generation,
     blacklist_rule,
     news_candidate,
     oi_candidate,
 )
-from ..candidate.fusion import _fuse, _Plan
-from ..candidate.routing import resolve_instrument
+from ..candidate.fusion import _Plan, plan_triggers
+from ..candidate.routing import resolve_instrument, signal_exchange_id
 from ..contracts import (
     TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
     Bar,
@@ -88,8 +89,8 @@ from .runtime import (
 log = logging.getLogger("tracefold.trading")
 
 # A bounded overlap instead of a cursor. Everything inside `max_age_ms` is still fresh enough to trade,
-# so re-reading twice that window each turn is what makes a crash, a redeploy or a paused runner
-# self-healing; `primary_source_key` rejects whatever the previous turn already turned into a case.
+# so re-reading a multiple of that window each turn is what makes a crash, a redeploy or a paused
+# runner self-healing; `primary_source_key` rejects whatever the previous turn already made a case of.
 _SCAN_OVERLAP_FACTOR = 3
 _CASE_LEASE_MS = 60_000
 _MAX_CASES_PER_TURN = 4
@@ -195,6 +196,10 @@ class CandidateRunner:
         if live_adapter is None:
             funnel.count("startup_reject:read_capability_unavailable")
             return False
+        # The canary enables exactly one venue, and source-aligned routing (#211) drops every frame
+        # tagged at a venue the operator has not enabled — so the venue proved flat here is the only
+        # venue a live case can execute at. Enabling a second venue for a live mode would break that
+        # correspondence, which is why `live_reviewed` requires the single-venue configuration.
         venue = self._config.venue_priority[0]
         live_symbol = self._config.live_symbol or ""
         instrument = InstrumentRef(
@@ -246,8 +251,8 @@ class CandidateRunner:
 
     # ------------------------------------------------------------------ read
     async def _read_state(self, now: int) -> dict[str, Any] | None:
-        window = self._config.eligibility.max_age_ms * _SCAN_OVERLAP_FACTOR
         elig = self._config.eligibility
+        window = scan_horizon_ms(elig)
 
         def _read(repos: Any) -> dict[str, Any]:
             trading: TradingRepository = repos.trading
@@ -260,6 +265,8 @@ class CandidateRunner:
             orders_today = trading.orders_today(day_key=_day_key(now))
             dspy_calls_today = trading.dspy_calls_today(day_key=_day_key(now))
             active = set(trading.active_underlyings())
+            in_flight = set(trading.underlyings_in_flight())
+            cased = set(trading.source_keys_since(observed_at_ms=now - window))
             oi_rows, news_rows = self._candidate_projection(
                 repos,
                 self._config.oi_metric_version,
@@ -274,6 +281,8 @@ class CandidateRunner:
                 "dspy_calls_today": dspy_calls_today,
                 "blacklist": blacklist,
                 "active": active,
+                "cases_in_flight": in_flight,
+                "cased_source_keys": cased,
                 "oi_rows": oi_rows,
                 "news_rows": news_rows,
             }
@@ -289,6 +298,14 @@ class CandidateRunner:
 
     # ------------------------------------------------------------------ plan
     def _plan(self, state: dict[str, Any], *, funnel: Funnel, now: int) -> list[_Plan]:
+        """Every eligible row this turn read, reduced to at most one plan per underlying.
+
+        Eligibility answers "may this row be used at all"; it no longer answers "is it new enough to
+        start something", because those are two windows with two budgets. `plan_triggers` owns the
+        second one and owns the point-in-time attachment, so this method is a read boundary and two
+        count caps — nothing about time lives here.
+        """
+
         elig = self._config.eligibility
         blacklist: Blacklist = state["blacklist"]
         funnel.count("oi_rows", len(state["oi_rows"]))
@@ -305,41 +322,50 @@ class CandidateRunner:
             if isinstance(news_result, NewsTradeCandidate):
                 news_all.append(news_result)
 
-        active: set[str] = state["active"]
         orders_today = int(state["orders_today"])
         if orders_today >= self._config.order.max_orders_per_day:
             funnel.count("scan_skipped:daily_order_cap")
             return []
-        if len(active) >= self._config.order.max_open_underlyings:
+        if len(state["active"]) >= self._config.order.max_open_underlyings:
             funnel.count("scan_skipped:max_open_underlyings")
             return []
 
-        # One pass per underlying: two separate loops made `attach_oi` unreachable whenever OI existed,
-        # leaving `oi_lookback_seconds` dead and the News loop able to emit only `news_only`.
-        newest_oi: dict[str, OiTradeCandidate] = {}
-        for candidate in oi_all:
-            key = underlying_key(candidate.base_symbol)
-            current = newest_oi.get(key)
-            if current is None or candidate.observed_at_ms > current.observed_at_ms:
-                newest_oi[key] = candidate
-        newest_news: dict[str, NewsTradeCandidate] = {}
-        for item in news_all:
-            key = underlying_key(item.base_symbol)
-            seen = newest_news.get(key)
-            if seen is None or item.verdict_created_at_ms > seen.verdict_created_at_ms:
-                newest_news[key] = item
+        # Routability is decided here, before fusion, and not at the freeze (#211). An OI frame whose
+        # venue tag names nothing this lane may execute is neither a reason to act nor usable context:
+        # leaving it in would let it win coalescing from an older frame that *is* routable and then be
+        # refused, and would let a News trigger be killed by an OI frame it merely attached. Measured
+        # on live data, every pushed frame in the last week carried a tag, so this is a guard rather
+        # than a filter with volume behind it.
+        routable_oi: list[OiTradeCandidate] = []
+        for signal in oi_all:
+            exchange = signal_exchange_id(signal.venue)
+            if exchange is None:
+                funnel.count("oi_reject:venue_unresolved")
+            elif exchange not in self._config.venue_priority:
+                funnel.count("oi_reject:venue_not_enabled")
+            else:
+                routable_oi.append(signal)
 
-        plans: dict[str, _Plan] = {}
-        for key in sorted(set(newest_oi) | set(newest_news)):
-            if key in active:
-                funnel.count("plan_reject:active_underlying")
-                continue
-            plan = _fuse(newest_oi.get(key), newest_news.get(key), policy=elig)
-            if plan is not None:
-                plans[key] = plan
-        for plan in plans.values():
-            funnel.count(f"plan_kind:{plan.kind}")
-        return sorted(plans.values(), key=lambda item: item.observed_at_ms, reverse=True)
+        news_context = news_all
+        if int(state["dspy_calls_today"]) >= self._config.max_dspy_cases_per_day:
+            # No News-bearing case can be decided today. A case is terminal and its source key is
+            # unique, so freezing one anyway would spend a frame's only chance to become a case on an
+            # answer nobody can buy — and an OI frame that would have traded on arithmetic alone goes
+            # with it. Widening the News lookback (#211) is what made that trade-off common enough to
+            # matter: an hour of headlines now reclassifies far more frames as `news_oi`.
+            funnel.count("scan_skipped:dspy_budget_exhausted", len(news_all))
+            news_context = []
+
+        return plan_triggers(
+            oi=routable_oi,
+            news=news_context,
+            now_ms=now,
+            policy=elig,
+            active_underlyings=state["active"],
+            underlyings_in_flight=state["cases_in_flight"],
+            cased_source_keys=state["cased_source_keys"],
+            funnel=funnel,
+        )
 
     # ------------------------------------------------------------------ freeze
     async def _freeze(self, plan: _Plan, *, funnel: Funnel, now: int) -> bool:
@@ -362,11 +388,31 @@ class CandidateRunner:
             funnel.count("freeze_reject:symbol_cooldown")
             return False
 
-        instrument = resolve_instrument(instrument_rows, priority=self._config.venue_priority, observed_at_ms=now)
+        # Source-aligned routing (#211). An OI frame is a claim about *one venue's* open interest, so
+        # the static operator priority must not be allowed to answer it: a Hyperliquid frame that
+        # resolved to a Binance perp produced an order against a book whose OI did nothing of the kind.
+        # `_plan` has already dropped every frame whose venue this lane cannot execute, so these two
+        # refusals are unreachable from the scanner and exist because `_freeze` must not depend on a
+        # caller having filtered for it.
+        priority: Sequence[str] = self._config.venue_priority
+        if plan.oi is not None:
+            aligned = signal_exchange_id(plan.oi.venue)
+            if aligned is None:
+                funnel.count("freeze_reject:venue_unresolved")
+                return False
+            if aligned not in self._config.venue_priority:
+                funnel.count("freeze_reject:venue_not_enabled")
+                return False
+            priority = (aligned,)
+        instrument = resolve_instrument(instrument_rows, priority=priority, observed_at_ms=now)
         if instrument is None:
             # A Gate class of `crypto` is not a listing. `WMT` reaches here with a Binance perp whose
-            # own catalogue class is `equity`, and this is where it stops.
-            funnel.count("freeze_reject:no_native_perp")
+            # own catalogue class is `equity`, and this is where it stops. With a signal venue in hand
+            # the same absence means something narrower and is counted separately: the issuer may well
+            # be listed, just not on the venue whose open interest moved.
+            funnel.count(
+                "freeze_reject:no_perp_at_signal_venue" if plan.oi is not None else "freeze_reject:no_native_perp"
+            )
             return False
 
         bars = await self._fetch_bars(instrument, anchor_at_ms=plan.observed_at_ms)
@@ -438,12 +484,14 @@ class CandidateRunner:
                     manifest_sha256=digest,
                     regime=regime.regime.value,
                     observed_at_ms=plan.observed_at_ms,
+                    source_observed_at_ms=plan.source_observed_at_ms,
+                    trigger_persisted_at_ms=plan.trigger_persisted_at_ms,
                     now_ms=now,
                 )
             )
 
         created = await self._db.tx("trading_case_insert", _insert, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
-        funnel.count("case_created" if created else "freeze_reject:source_key_race")
+        funnel.count("case_created" if created else "freeze_reject:trigger_identity_race")
         return bool(created)
 
     async def _fetch_bars(self, instrument: InstrumentRef, *, anchor_at_ms: int) -> list[Bar]:
@@ -491,14 +539,13 @@ class CandidateRunner:
                 CaseState.BLOCKED,
                 "no_trade",
                 "news_generation_retired",
-                now=now,
             )
             return "news_generation_retired"
         try:
             manifest = TradingCaseManifest.model_validate(raw_manifest)
         except ValidationError:
             funnel.count("advance_reject:manifest_invalid")
-            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "manifest_invalid", now=now)
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "manifest_invalid")
             return "manifest_invalid"
         kind: CaseKind = str(claimed["case_kind"])  # type: ignore[assignment]
 
@@ -512,7 +559,7 @@ class CandidateRunner:
         # means that signal can never produce another case.
         if now - int(claimed["created_at_ms"]) > _CASE_DECISION_TTL_MS:
             funnel.count("advance_reject:case_stale")
-            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "case_stale", now=now)
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "case_stale")
             return "case_stale"
 
         # #21: the mode frozen into the case, not today's configuration. An operator who edits
@@ -520,7 +567,7 @@ class CandidateRunner:
         case_mode: TradingMode = str(claimed["mode"])  # type: ignore[assignment]
         if case_mode != self._config.mode:
             funnel.count("advance_reject:mode_changed")
-            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "mode_changed_since_freeze", now=now)
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "mode_changed_since_freeze")
             return "mode_changed"
         if case_mode != "paper" and manifest.instrument.base_symbol != self._config.live_symbol:
             funnel.count("advance_reject:live_symbol_not_allowed")
@@ -529,7 +576,6 @@ class CandidateRunner:
                 CaseState.BLOCKED,
                 "no_trade",
                 "live_symbol_not_allowed",
-                now=now,
             )
             return "live_symbol_not_allowed"
 
@@ -549,7 +595,7 @@ class CandidateRunner:
         )
         if early is not None:
             funnel.count(f"policy:{early.rule}")
-            await self._settle(case_id, CaseState.POLICY_REJECTED, "no_trade", early.rule, now=now)
+            await self._settle(case_id, CaseState.POLICY_REJECTED, "no_trade", early.rule)
             return early.rule
 
         if kind in ("news_only", "news_oi"):
@@ -560,11 +606,11 @@ class CandidateRunner:
             )
             if int(budget) >= self._config.max_dspy_cases_per_day:
                 funnel.count("advance_reject:dspy_budget")
-                await self._settle(case_id, CaseState.NO_TRADE, "no_trade", "dspy_budget_exhausted", now=now)
+                await self._settle(case_id, CaseState.NO_TRADE, "no_trade", "dspy_budget_exhausted")
                 return "budget"
             if self._program is None:
                 funnel.count("advance_reject:program_unconfigured")
-                await self._settle(case_id, CaseState.NO_TRADE, "no_trade", "program_unconfigured", now=now)
+                await self._settle(case_id, CaseState.NO_TRADE, "no_trade", "program_unconfigured")
                 return "unconfigured"
             await self._db.tx(
                 "trading_dspy_budget_bump",
@@ -604,17 +650,18 @@ class CandidateRunner:
                 program_version=program_version,
                 program_sha256=program_sha256,
                 program_output=program_output,
-                now=now,
             )
             return outcome.rule
 
+        # A fresh sample, not the claim instant: `trading_orders.created_at_ms` is the reported
+        # `order_prepared` stage and the model call sits between the two (#211).
         placed = await self._place(
             case_id=case_id,
             manifest=manifest,
             decision_side=outcome.decision,
             mode=case_mode,
             funnel=funnel,
-            now=now,
+            now=self._clock(),
         )
         await self._settle(
             case_id,
@@ -624,7 +671,6 @@ class CandidateRunner:
             program_version=program_version,
             program_sha256=program_sha256,
             program_output=program_output,
-            now=now,
         )
         return outcome.rule
 
@@ -638,8 +684,16 @@ class CandidateRunner:
         program_version: str | None = None,
         program_sha256: str | None = None,
         program_output: dict[str, Any] | None = None,
-        now: int,
     ) -> None:
+        """Terminalise a claimed case at the instant it is actually decided.
+
+        The clock is sampled here rather than inherited from the top of `_advance` (#211). A single
+        sample made `decided_at_ms` equal to the moment the case was *claimed*, so the model call —
+        the one expensive step in the turn, and the only one with a daily budget — measured as zero
+        and fell inside no reported stage at all.
+        """
+
+        now = self._clock()
         await self._db.tx(
             "trading_case_settle",
             lambda repos: repos.trading.settle_case(
@@ -886,6 +940,25 @@ class CandidateRunner:
         )
 
 
+def scan_horizon_ms(policy: EligibilityPolicy) -> int:
+    """How far back one scan must read so that every legally attachable row is visible.
+
+    A trigger may be up to `max_age_ms` old, and it may attach a counterpart up to that counterpart's
+    own lookback before *its* cutoff — so the oldest row that can legally enter a manifest frozen now
+    is `max_age + max(lookback)` old. Reading only `max_age x overlap` made the configured 60 m / 30 m
+    windows unreachable at the query, before fusion ever got a chance to honour them. The recovery
+    overlap stays as the third floor: after a crash or a paused lane the scan has to re-see triggers it
+    never turned into cases, and `primary_source_key` is what makes re-seeing them free.
+    """
+
+    return max(
+        policy.max_age_ms + policy.news_lookback_ms,
+        policy.max_age_ms + policy.oi_lookback_ms,
+        policy.max_age_ms * _SCAN_OVERLAP_FACTOR,
+    )
+
+
 __all__ = [
     "CandidateRunner",
+    "scan_horizon_ms",
 ]

@@ -117,10 +117,21 @@ and drill the reviewed new-schema/v5-behaviour rollback image from the clean
 primary checkout:
 
 The same release hard-cuts the News-to-Trading input contract. New projections
-expose only post-epoch v10 judgments and new cases freeze
-`trading_manifest_v2`. Any undecided v1 case is blocked as
-`news_generation_retired` before model or order work; existing prepared orders
-remain owned by reconciliation and are never rewritten by the News migration.
+expose only post-epoch v10 judgments and new cases freeze the current
+`trading_manifest_*` version. Any undecided case frozen under an earlier one is
+blocked as `news_generation_retired` before model or order work; existing
+prepared orders remain owned by reconciliation and are never rewritten by the
+News migration. The manifest version is a constant in the deployed image, not a
+schema fact: #211 moves it to `trading_manifest_v3`, so the *image* retires
+every case frozen under v2 and rolling the image back retires everything frozen
+since. Schema `0309` is a separate thing — it adds the two upstream stage stamps
+and coalesces any undecided cases that share an underlying down to one (recorded
+with the same `news_generation_retired` reason the runner would write, since the
+version bump retires them all anyway) before creating the partial unique index
+that keeps one undecided case per underlying from then on. A case that already
+authored an order is never the one coalesced away. `0309` has no downgrade: the
+coalescing cannot be told apart afterwards from any other block. Both statements
+are no-ops on a deployment where Trading has been disabled.
 
 ```bash
 cd ~/Documents/Code/tracefold

@@ -59,6 +59,16 @@ def test_trading_status_reports_capability_without_claiming_runtime_readiness() 
     assert data["live_mode_supported"] is False
     assert data["live_ready"] is False
     assert data["live_readiness"] == "not_applicable"
+    # #211: the stage report is keyed by stage and by nothing else — no symbol, event or order id can
+    # enter it — and every stage says how much evidence it rests on.
+    assert set(data["stage_latency_ms"]) == {
+        "source_observed_to_verdict_persisted",
+        "verdict_persisted_to_case_created",
+        "case_created_to_order_prepared",
+        "case_created_to_case_decided",
+        "order_prepared_to_position_opened",
+    }
+    assert all(isinstance(stage["n"], int) for stage in data["stage_latency_ms"].values())
 
 
 def _delete_test_topology(url: str, name_prefix: str) -> None:

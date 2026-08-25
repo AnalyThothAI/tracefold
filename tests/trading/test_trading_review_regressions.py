@@ -8,11 +8,12 @@ budget spent on a quadrant that cannot trade, a `news_only` case that no input c
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
 from tracefold.trading.candidate.eligibility import EligibilityPolicy, blacklist_rule
-from tracefold.trading.candidate.fusion import _fuse
+from tracefold.trading.candidate.fusion import plan_triggers
 from tracefold.trading.contracts import (
     Bar,
     NewsTradeCandidate,
@@ -29,6 +30,7 @@ def _oi(symbol: str = "DOGE", at: int = NOW, whale: int = 9_900, value: int = 73
     return OiTradeCandidate(
         event_id=f"e-{symbol}-{at}",
         observed_at_ms=at,
+        verdict_created_at_ms=at,
         base_symbol=symbol,
         venue="hyperliquid",
         oi_direction="rise",
@@ -80,30 +82,37 @@ def _news(symbol: str = "DOGE", at: int = NOW) -> NewsTradeCandidate:
     )
 
 
+def _one_plan(oi: OiTradeCandidate, news: NewsTradeCandidate, *, policy: EligibilityPolicy) -> Any:
+    """The single plan one OI row and one News row produce, or `None` if neither can trigger."""
+
+    plans = plan_triggers(oi=[oi], news=[news], now_ms=NOW, policy=policy)
+    return plans[0] if plans else None
+
+
 # ---------------------------------------------------------------------------- 7 + 18: the News lane
 def test_a_news_verdict_reached_by_a_later_oi_frame_fuses_into_news_oi() -> None:
     """The two-loop planner skipped this underlying before `attach_oi` could ever run."""
 
-    plan = _fuse(_oi(at=NOW), _news(at=NOW - 60_000), policy=EligibilityPolicy())
+    plan = _one_plan(_oi(at=NOW), _news(at=NOW - 60_000), policy=EligibilityPolicy())
     assert plan is not None
     assert plan.kind == "news_oi"
-    assert plan.observed_at_ms == NOW  # the OI frame fired later, so it is the primary
+    assert plan.observed_at_ms == NOW  # the OI frame fired later, so it is the trigger
 
 
 def test_an_oi_frame_reached_by_a_later_news_verdict_also_fuses() -> None:
     """The reverse direction — and the only path that makes `oi_lookback_seconds` live configuration."""
 
-    plan = _fuse(_oi(at=NOW - 60_000), _news(at=NOW), policy=EligibilityPolicy())
+    plan = _one_plan(_oi(at=NOW - 60_000), _news(at=NOW), policy=EligibilityPolicy())
     assert plan is not None
     assert plan.kind == "news_oi"
-    assert plan.observed_at_ms == NOW  # the verdict fired later, so it is the primary
+    assert plan.observed_at_ms == NOW  # the verdict fired later, so it is the trigger
     assert plan.oi is not None
 
 
 def test_a_counterpart_outside_its_lookback_is_not_attached() -> None:
     policy = EligibilityPolicy(news_lookback_ms=60_000, oi_lookback_ms=60_000)
-    assert _fuse(_oi(at=NOW), _news(at=NOW - 3_600_000), policy=policy).kind == "oi_only"  # type: ignore[union-attr]
-    assert _fuse(_oi(at=NOW - 3_600_000), _news(at=NOW), policy=policy).kind == "news_only"  # type: ignore[union-attr]
+    assert _one_plan(_oi(at=NOW), _news(at=NOW - 3_600_000), policy=policy).kind == "oi_only"
+    assert _one_plan(_oi(at=NOW - 3_600_000), _news(at=NOW), policy=policy).kind == "news_only"
 
 
 def test_a_news_only_case_takes_its_side_from_the_model_not_a_quadrant() -> None:

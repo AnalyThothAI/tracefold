@@ -53,13 +53,14 @@ from tracefold.news.program.runtime import (
     PROGRAM_VERSION,
 )
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
+from tracefold.news.storage.trade_projection import TRADE_PROJECTION_ROW_LIMIT
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
 from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.candidate.eligibility import news_candidate, oi_candidate
-from tracefold.trading.candidate.routing import resolve_instrument
+from tracefold.trading.candidate.routing import resolve_instrument, signal_exchange_id
 from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     TERMINAL_ORDER_STATES,
@@ -120,8 +121,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # #193's compile-record convergence (0305/0306) and now #202's single Prompt candidate (0307). A dict
     # has one key, so the reason names them rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_175_index_then_issue_193_compile_record_then_issue_202_prompt_candidate_then_issue_209_snapshot",
-        "20260825_0308",
+        "issue_175_index_then_issue_193_then_issue_202_then_issue_209_snapshot_then_issue_211_trigger_identity",
+        "20260825_0309",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
@@ -143,16 +144,16 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "program_v7",
     ),
     "news_to_trading.schema_sha256.manifest": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "710184d6508043d747a4b5ac6afb5a80e592475ead2058a40d7c5c984ccfeebe",
+        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
+        "ad346cc65cee63e33d5b8f9f6b7e6785ee89c6e0441cc583998a6f531b86cb21",
     ),
     "news_to_trading.schema_sha256.news": (
         "issue_162_pr8b_program_learning_identity_migration",
         "9cb007bf545af72e2ed847fc524101f57b1db06ea5a74554d53f18c4707e2a51",
     ),
     "news_to_trading.schema_sha256.oi": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "051c5c06fbda7e2764bb5959c3fecd286ea90c1e4e1bc33bfa113fe7539f03a6",
+        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
+        "e6a52b7b32ef01757d94d3a2813ea105e4e36ff78b5a115294bb8d2d2284ffe4",
     ),
     # #193 hard-cuts the two-file Artifact v2 (QualityKernel, route spec, execution contract, RulePacks,
     # DemoBank, embedded compile receipt) down to one document holding a factory id and the two advisory
@@ -233,8 +234,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "program_v7",
     ),
     "representative_trading_flow.flow.manifest_sha256": (
-        "issue_162_pr8b_program_learning_identity_migration",
-        "21e27e7865d4b8698e63582d9ce9f3741b7e446a409fe6c507b847ffdfb6fb75",
+        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
+        "0cabb951667813392307c0cbc9e40ebed05184991468e8e8fee60b3d18eccafe",
     ),
     "representative_trading_flow.flow.news_projection.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
@@ -276,6 +277,70 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_185_attempt_scoped_close_identity",
         None,
     ),
+    # #211 also flips the two candidate reads from oldest-first to newest-first and raises their
+    # per-lane ceiling. The leaf recorded only the sort *key*, so both changes were invisible to this
+    # guard; recording the direction and the limit is what makes a revert to ASC — which at the new
+    # 65-minute horizon returns a page of context and no triggers at all — fail here.
+    "news_to_trading.point_in_time_reads.oi.order[0]": (
+        "issue_211_newest_first_candidate_read",
+        "verdict_created_at_ms DESC",
+    ),
+    "news_to_trading.point_in_time_reads.oi.order[1]": ("issue_211_newest_first_candidate_read", "event_id DESC"),
+    "news_to_trading.point_in_time_reads.oi.row_limit": ("issue_211_newest_first_candidate_read", 256),
+    "news_to_trading.point_in_time_reads.news.order[0]": (
+        "issue_211_newest_first_candidate_read",
+        "verdict_created_at_ms DESC",
+    ),
+    "news_to_trading.point_in_time_reads.news.order[1]": ("issue_211_newest_first_candidate_read", "event_id DESC"),
+    "news_to_trading.point_in_time_reads.news.row_limit": ("issue_211_newest_first_candidate_read", 256),
+    # Source-aligned routing (#211). The frozen flow's frame is tagged `hyperliquid`, and the shipped
+    # scanner now resolves an OI-bearing case only at the venue its own frame named — so the canonical
+    # release artefact stops documenting the Binance answer the static priority used to give.
+    "representative_trading_flow.flow.manifest.instrument.exchange_id": (
+        "issue_211_source_aligned_venue",
+        "hyperliquid",
+    ),
+    "representative_trading_flow.flow.manifest.instrument.venue": ("issue_211_source_aligned_venue", "hl.perp"),
+    "representative_trading_flow.flow.manifest.instrument.provider_symbol": (
+        "issue_211_source_aligned_venue",
+        "DOGE",
+    ),
+    "representative_trading_flow.flow.manifest.instrument.quote_asset": ("issue_211_source_aligned_venue", "USDC"),
+    "representative_trading_flow.flow.prepared_order.instrument.exchange_id": (
+        "issue_211_source_aligned_venue",
+        "hyperliquid",
+    ),
+    "representative_trading_flow.flow.prepared_order.instrument.venue": ("issue_211_source_aligned_venue", "hl.perp"),
+    "representative_trading_flow.flow.prepared_order.instrument.provider_symbol": (
+        "issue_211_source_aligned_venue",
+        "DOGE",
+    ),
+    "representative_trading_flow.flow.prepared_order.instrument.quote_asset": (
+        "issue_211_source_aligned_venue",
+        "USDC",
+    ),
+    "representative_trading_flow.flow.prepared_order.payload.exchangeId": (
+        "issue_211_source_aligned_venue",
+        "hyperliquid",
+    ),
+    "representative_trading_flow.flow.prepared_order.payload.symbol": ("issue_211_source_aligned_venue", "DOGE"),
+    # #211 makes the trigger own the cutoff and the case row carry the two upstream stage stamps. The
+    # OI projection now names when its deterministic verdict became durable — it always had the column
+    # and always dropped it — so the manifest layout moves and says so. A case frozen under v2 has no
+    # such stamp and must not be replayed as if it did.
+    "news_to_trading.manifest_version": ("issue_211_point_in_time_trigger_identity", "trading_manifest_v3"),
+    "representative_trading_flow.flow.manifest.manifest_version": (
+        "issue_211_point_in_time_trigger_identity",
+        "trading_manifest_v3",
+    ),
+    "representative_trading_flow.flow.manifest.oi.verdict_created_at_ms": (
+        "issue_211_point_in_time_trigger_identity",
+        NOW_MS,
+    ),
+    "representative_trading_flow.flow.oi_projection.verdict_created_at_ms": (
+        "issue_211_point_in_time_trigger_identity",
+        NOW_MS,
+    ),
     # #209 freezes the exit policy on the order row. `must_close_after_ms` was a duration nothing read —
     # the deadline was recomputed from the running configuration at every promotion — and it is replaced
     # by the two numbers the reconciler now reads off the row instead of off the config.
@@ -292,8 +357,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         5,
     ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_185_execution_observation_then_issue_209_frozen_exit_policy_snapshot",
-        "a388dc48636c473f9766152002b3869ed778b66ebb12c2d8c01ceee96cad5884",
+        "issue_185_observation_then_issue_209_exit_snapshot_then_issue_211_trigger_identity",
+        "5a091aaba579c838878538dff5c7e2b13ba56ec9f392e9b66de1d897f843e571",
     ),
 }
 
@@ -475,7 +540,12 @@ def _projection_contract() -> dict[str, Any]:
                 "fields": sorted(_oi_row()),
                 "after_created_at_ms": "exclusive",
                 "until_created_at_ms": "inclusive",
-                "order": ["verdict_created_at_ms", "event_id"],
+                # Direction and ceiling, not only the sort key: #211 flipped this read from oldest-
+                # first to newest-first and raised the per-lane cap, and both came out byte-identical
+                # here because the leaf recorded neither. A revert to ASC at a 65-minute horizon
+                # returns a full page of context and no triggers at all, and nothing would notice.
+                "order": ["verdict_created_at_ms DESC", "event_id DESC"],
+                "row_limit": TRADE_PROJECTION_ROW_LIMIT,
                 "generation": {
                     "learning_epoch": "program_v7",
                     "program_version": "news_oi_signal_v1",
@@ -487,7 +557,12 @@ def _projection_contract() -> dict[str, Any]:
                 "fields": sorted(_news_row()),
                 "after_created_at_ms": "exclusive",
                 "until_created_at_ms": "inclusive",
-                "order": ["verdict_created_at_ms", "event_id"],
+                # Direction and ceiling, not only the sort key: #211 flipped this read from oldest-
+                # first to newest-first and raised the per-lane cap, and both came out byte-identical
+                # here because the leaf recorded neither. A revert to ASC at a 65-minute horizon
+                # returns a full page of context and no triggers at all, and nothing would notice.
+                "order": ["verdict_created_at_ms DESC", "event_id DESC"],
+                "row_limit": TRADE_PROJECTION_ROW_LIMIT,
                 "generation": {
                     "learning_epoch": "program_v7",
                     "program_version": "news_semantic_program_v5",
@@ -759,7 +834,10 @@ def _trading_manifest() -> tuple[OiTradeCandidate, NewsTradeCandidate, TradingCa
                 "last_seen_ms": NOW_MS,
             },
         ],
-        priority=("binance", "hyperliquid"),
+        # Source-aligned (#211): `_oi_row()` is tagged `hyperliquid`, and the shipped scanner resolves
+        # an OI-bearing case only at the venue its own frame named. Freezing the static-priority answer
+        # here would leave the canonical release artefact documenting the defect the lane now refuses.
+        priority=(signal_exchange_id(_oi_row()["venue"]),),
         observed_at_ms=NOW_MS,
     )
     assert isinstance(instrument, InstrumentRef)

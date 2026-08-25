@@ -26,7 +26,7 @@ from tracefold.trading.contracts import InstrumentCandidateRow, NewsCandidateRow
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v1"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v2"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
