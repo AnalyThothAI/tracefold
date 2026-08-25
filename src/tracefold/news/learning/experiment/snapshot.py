@@ -7,7 +7,7 @@ nothing about the number a release gate will see.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..contracts import ArmManifest, ClosedWindow
@@ -15,28 +15,41 @@ from ..evaluator import CandidateEvaluator
 from .run import ExperimentCase, ExperimentRun, ExperimentRunManifest, ExperimentWindow, case_root_sha256
 
 
-def snapshot_window(
+def project_window(
     evaluator: CandidateEvaluator,
     *,
-    run: ExperimentRun,
-    name: str,
     window: ClosedWindow,
-    stable: ArmManifest,
-    now_ms: int,
     limit: int = 500,
-) -> ExperimentRunManifest:
-    """Project the window's accepted reviews into frozen cases and record what was frozen.
+) -> tuple[ExperimentCase, ...]:
+    """Read the window. Everything that needs the database happens here and nowhere else.
+
+    Split from the writing half on purpose: freezing a window means up to 500 fsync'd files, and holding a
+    `serve` connection across that is what `docs/DEVELOPMENT.md` forbids. A comment used to claim this
+    separation existed while one function did both inside a single `with` block — the claim is the split
+    now, not the comment.
 
     `cohort=False` deliberately: the fast loop's job is to look at everything reviewed in the window,
     including cases produced by an arm that has since been retired. Release eligibility is the release
     plane's question and is applied there, on a frozen dataset, not here.
     """
 
-    episodes = evaluator.baseline_episodes(window, cohort=False, limit=limit)
-    cases = [_case(episode) for episode in episodes]
-    # Read the whole window *before* touching the directory, then refuse a directory that already holds a
-    # run. Snapshotting twice into one directory used to merge two windows: the manifest said 2 cases and
-    # `cases()` returned 5, and every downstream `--resume` skipped cases this run never scored.
+    return tuple(_case(episode) for episode in evaluator.baseline_episodes(window, cohort=False, limit=limit))
+
+
+def freeze_window(
+    cases: Sequence[ExperimentCase],
+    *,
+    run: ExperimentRun,
+    name: str,
+    window: ClosedWindow,
+    stable: ArmManifest,
+    now_ms: int,
+) -> ExperimentRunManifest:
+    """Write what `project_window` read. No database, and no second projection."""
+
+    # Refuse a directory that already holds a run. Snapshotting twice into one used to merge two windows:
+    # the manifest said 2 cases and `cases()` returned 5, and every later `--resume` skipped cases this
+    # run never scored.
     if run.manifest_path.exists() or any(run.cases_dir.glob("*.json")):
         raise ValueError("news_experiment_run_directory_not_empty")
     for case in cases:
@@ -79,4 +92,4 @@ def _case(episode: Mapping[str, Any]) -> ExperimentCase:
     )
 
 
-__all__ = ["snapshot_window"]
+__all__ = ["freeze_window", "project_window"]

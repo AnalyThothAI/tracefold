@@ -134,21 +134,53 @@ def _ranked_clusters(
     return ranked
 
 
+# Corpus-scoped, so they differ between two batches of one run by construction. `identity` mixes "which
+# models answered" with "which cases they answered about", and only the first is what two resumed passes
+# have to agree on. Comparing the whole dict made every normal second `--resume` raise.
+_BATCH_SCOPED_IDENTITY_KEYS = frozenset({"case_root_sha256", "cluster_root_sha256", "corpus_sha256"})
+
+
+def execution_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Which models answered, with the corpus roots that name *this batch* dropped."""
+
+    return {key: value for key, value in dict(identity).items() if key not in _BATCH_SCOPED_IDENTITY_KEYS}
+
+
+def _merged_scores(per_case: Mapping[str, Mapping[str, float | None]], *, arm: str) -> dict[str, Any]:
+    """Both means over every case merged so far, recomputed rather than carried from one batch.
+
+    `run_baseline` computes these over the batch it scored. Keeping the latest batch's copy is how a
+    500-case run reported headline accuracy for its last twenty while publishing all five hundred rows.
+    Both means, never one: the answered-only mean says how good an answer is, the failure-as-zero mean is
+    the end-to-end lower bound, and publishing only the first is what let 29 unanswered cases turn 0.482
+    into 0.587.
+    """
+
+    scores = [row.get(arm) for row in per_case.values() if arm in row]
+    answered = [float(score) for score in scores if score is not None]
+    return {
+        "mean": round(statistics.fmean(answered), 6) if answered else None,
+        "mean_with_failures_as_zero": round(sum(answered) / len(scores), 6) if scores else None,
+    }
+
+
 def merged_report(*, previous: Mapping[str, Any] | None, current: Mapping[str, Any]) -> dict[str, Any]:
     """One report over everything answered so far, not just this pass.
 
     `--resume` scores only the cases a previous pass left, which is the point — but it made the report a
     view of the last batch while still stamped with the whole run's `run_sha256`. Per-case scores merge
-    (this pass wins for a case it re-answered), the clusters are re-ranked over the union, and the arm
-    identities are checked: two passes run against different models are not one report, and saying so is
-    cheaper than silently averaging them.
+    (this pass wins for a case it re-answered), the clusters and both means are recomputed over the union,
+    and the arm identities are checked on their model fields alone: two passes run against different
+    models are not one report, while two batches of one run are.
     """
 
     if previous is None:
         return dict(current)
     if previous.get("run_sha256") != current.get("run_sha256"):
         raise ValueError("news_experiment_report_run_mismatch")
-    if previous.get("arms") != current.get("arms"):
+    previous_arms = {arm: execution_identity(identity) for arm, identity in dict(previous.get("arms") or {}).items()}
+    current_arms = {arm: execution_identity(identity) for arm, identity in dict(current.get("arms") or {}).items()}
+    if previous_arms != current_arms:
         raise ValueError("news_experiment_report_arm_identity_changed")
     cases = {**dict(previous.get("cases") or {}), **dict(current.get("cases") or {})}
     # The cluster map merges too. Re-ranking the union against only this pass's map dropped every earlier
@@ -158,6 +190,21 @@ def merged_report(*, previous: Mapping[str, Any] | None, current: Mapping[str, A
     merged["cases"] = cases
     merged["cluster_of"] = cluster_of
     merged["failure_clusters"] = _ranked_clusters(cases, cluster_of=cluster_of)
+    merged["scores"] = {arm: _merged_scores(cases, arm=arm) for arm in current_arms}
+    merged["population"] = {
+        arm: {
+            "requested_n": sum(1 for row in cases.values() if arm in row),
+            "answered_n": sum(1 for row in cases.values() if row.get(arm) is not None),
+        }
+        for arm in current_arms
+    }
+    # A batch report's address names the batch it scored, so a merged view has no single one. Both are
+    # kept by name rather than one of them being passed off as the whole run's.
+    merged["batch_report_sha256"] = [
+        *list(previous.get("batch_report_sha256") or [previous.get("report_sha256")]),
+        current.get("report_sha256"),
+    ]
+    merged.pop("report_sha256", None)
     return merged
 
 

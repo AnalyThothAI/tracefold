@@ -92,10 +92,24 @@ def _manifest(cases: list[ExperimentCase], **overrides: Any) -> ExperimentRunMan
     return ExperimentRunManifest.issue(**values)
 
 
+def _sha_of(parts: list[str]) -> str:
+    import hashlib
+
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
 def _arm(scores: dict[str, float], *, cluster_of: dict[str, str], failed: tuple[str, ...] = ()) -> BaselineReport:
     return BaselineReport(
         mode="recorded",
-        identity={"mode": "recorded"},
+        identity={
+            "mode": "recorded",
+            "compile_task_model": "qwen3.8-27b",
+            # Batch-scoped by construction: two batches of one run never agree on these, which is why the
+            # merge compares model identity only.
+            "case_root_sha256": _sha_of(sorted(scores)),
+            "corpus_sha256": _sha_of([*sorted(scores), "corpus"]),
+            "cluster_root_sha256": _sha_of(sorted(set(cluster_of.values()))),
+        },
         execution_scope=("recorded",),
         population={"cases": len(scores), "answered": len(scores) - len(failed)},
         scores={"mean": 0.5, "mean_with_failures_as_zero": 0.5},
@@ -293,13 +307,54 @@ def test_a_resumed_report_covers_the_whole_run_not_the_last_batch() -> None:
     assert {row["cluster_id"] for row in merged["failure_clusters"]} == {"c0", "c1"}
 
 
+def test_two_batches_of_one_run_merge_even_though_their_corpus_roots_differ() -> None:
+    """`identity` mixes which models answered with which cases they answered about.
+
+    Only the first is what two resumed passes have to agree on — `case_root_sha256`, `corpus_sha256` and
+    `cluster_root_sha256` are scoped to the batch by construction. Comparing the whole dict made every
+    normal second `--resume` raise, and it raised *after* the batch had been marked compared, so the next
+    pass skipped results nothing had recorded.
+    """
+
+    cluster_of = {"a": "c0", "b": "c0"}
+    first = compare_report(run_sha256="a" * 64, arms={"recorded": _arm({"a": 1.0}, cluster_of=cluster_of)})
+    second = compare_report(run_sha256="a" * 64, arms={"recorded": _arm({"b": 0.4}, cluster_of=cluster_of)})
+
+    assert first["arms"]["recorded"]["case_root_sha256"] != second["arms"]["recorded"]["case_root_sha256"]
+    assert set(merged_report(previous=first, current=second)["cases"]) == {"a", "b"}
+
+
 def test_two_passes_run_against_different_models_are_not_one_report() -> None:
     cluster_of = {"a": "c0"}
     current = compare_report(run_sha256="a" * 64, arms={"recorded": _arm({"a": 1.0}, cluster_of=cluster_of)})
     previous = dict(current)
-    previous["arms"] = {"recorded": {"mode": "recorded", "compile_task_model": "someone-else"}}
+    previous["arms"] = {
+        "recorded": {**dict(current["arms"]["recorded"]), "compile_task_model": "someone-else"},
+    }
     with pytest.raises(ValueError, match="news_experiment_report_arm_identity_changed"):
         merged_report(previous=previous, current=current)
+
+
+def test_a_merged_report_recomputes_its_headline_numbers_over_every_case() -> None:
+    """`scores` and `population` used to be carried from the last batch alone.
+
+    So a 500-case run processed twenty at a time published headline accuracy for its final twenty while
+    carrying all five hundred rows and the whole run's identity. The batch report addresses are kept by
+    name rather than one of them being passed off as the merged view's.
+    """
+
+    cluster_of = {"a": "c0", "b": "c0", "c": "c0"}
+    first = compare_report(run_sha256="a" * 64, arms={"recorded": _arm({"a": 1.0, "b": 1.0}, cluster_of=cluster_of)})
+    second = compare_report(
+        run_sha256="a" * 64,
+        arms={"recorded": _arm({"c": 0.4}, cluster_of=cluster_of, failed=("c",))},
+    )
+    merged = merged_report(previous=first, current=second)
+
+    assert merged["population"]["recorded"] == {"requested_n": 3, "answered_n": 3}
+    assert merged["scores"]["recorded"]["mean"] == round((1.0 + 1.0 + 0.4) / 3, 6)
+    assert "report_sha256" not in merged
+    assert len(merged["batch_report_sha256"]) == 2
 
 
 # --- only an accepted review can score or train anything ----------------------------------------------

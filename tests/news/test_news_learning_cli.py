@@ -10,7 +10,11 @@ import pytest
 from tracefold.app import learning_runtime
 from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
-from tracefold.app.cli.commands.news_learning_baseline import _run_window_hours
+from tracefold.app.cli.commands.news_learning_baseline import (
+    _desk_lookback_hours,
+    _run_window,
+    _within_window,
+)
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.learning.experiment.run import (
@@ -556,41 +560,54 @@ def test_the_experiment_group_parses_its_three_actions() -> None:
     assert optimize.max_judge_model_calls == 200
 
 
-def test_a_snapshot_ends_at_the_settlement_grace_not_at_now(monkeypatch: Any) -> None:
-    """A window whose tail is still settling is not closed, and a snapshot of it is not reproducible.
+def test_a_snapshot_ends_at_the_settlement_grace_and_closes_its_connection_first(monkeypatch: Any) -> None:
+    """Two properties of one command, both about when things happen.
 
-    The outcome loop keeps writing price outcomes for minutes after an Event opens, so `to_ms = now` would
-    freeze cases whose scores change after the file is written — and the comparison an operator reads would
-    not be the comparison they could rerun.
+    A window whose tail is still settling is not closed: the outcome loop keeps writing prices for minutes
+    after an Event opens, so `to_ms = now` would freeze cases whose scores change after the file is
+    written. And freezing is up to 500 fsync'd files, so the `serve` connection has to be closed before
+    the first of them — `docs/DEVELOPMENT.md` forbids holding one across a file write.
     """
 
     seen: dict[str, Any] = {}
+    open_connections: list[str] = []
 
     class _Evaluator:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
-    def fake_snapshot_window(_evaluator: Any, **kwargs: Any) -> Any:
-        seen.update(kwargs)
-        window = kwargs["window"]
+    def fake_project_window(_evaluator: Any, *, window: Any, limit: int) -> tuple[Any, ...]:
+        seen["window"] = window
+        seen["limit"] = limit
+        seen["connection_open_during_read"] = bool(open_connections)
+        return ()
+
+    def fake_freeze_window(cases: Any, **kwargs: Any) -> Any:
+        seen["connection_open_during_write"] = bool(open_connections)
+        seen["now_ms"] = kwargs["now_ms"]
         return SimpleNamespace(
             run_sha256="a" * 64,
-            case_count=0,
+            case_count=len(cases),
             accepted_case_count=0,
-            window=window,
+            window=kwargs["window"],
             parent_program_sha256="b" * 64,
         )
 
     @contextmanager
     def fake_postgres_connection(_settings: Any, *, role: str):
         assert role == "serve"
-        yield object()
+        open_connections.append(role)
+        try:
+            yield object()
+        finally:
+            open_connections.pop()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
-    monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.snapshot_window", fake_snapshot_window)
+    monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.project_window", fake_project_window)
+    monkeypatch.setattr("tracefold.news.learning.experiment.snapshot.freeze_window", fake_freeze_window)
     monkeypatch.setattr("time.time", lambda: 1_787_086_400.0)
 
     with tempfile.TemporaryDirectory() as directory:
@@ -601,6 +618,8 @@ def test_a_snapshot_ends_at_the_settlement_grace_not_at_now(monkeypatch: Any) ->
     assert seen["window"].to_ms == now_ms - 10 * 60 * 1000
     assert seen["window"].from_ms == seen["window"].to_ms - 24 * 3_600_000
     assert seen["now_ms"] == now_ms
+    assert seen["connection_open_during_read"] is True
+    assert seen["connection_open_during_write"] is False
 
 
 def test_draft_reviews_takes_its_events_from_a_run_when_told_to() -> None:
@@ -628,6 +647,24 @@ def test_draft_reviews_takes_its_events_from_a_run_when_told_to() -> None:
     )
 
 
+def _run_with_window(root: Any, *, from_ms: int, to_ms: int) -> ExperimentRun:
+    run = ExperimentRun(root, create=True)
+    run.write_manifest(
+        ExperimentRunManifest.issue(
+            name="run",
+            window=ExperimentWindow(from_ms=from_ms, to_ms=to_ms),
+            parent_program_sha256=load_stable_program_artifact().program_sha256,
+            program_version="news_semantic_program_v5",
+            policy_sha256="b" * 64,
+            case_count=0,
+            accepted_case_count=0,
+            case_root_sha256="c" * 64,
+            created_at_ms=to_ms,
+        )
+    )
+    return run
+
+
 def test_draft_reviews_draws_its_lookback_from_the_run_window(tmp_path: Any) -> None:
     """`--events-from` contributes the window; the ReviewDesk queue still does the selecting.
 
@@ -636,47 +673,41 @@ def test_draft_reviews_draws_its_lookback_from_the_run_window(tmp_path: Any) -> 
     raised. Drafting is for the rest of the window, and the desk's stratified sampler picks which.
     """
 
-    run = ExperimentRun(tmp_path / "run", create=True)
-    run.write_manifest(
-        ExperimentRunManifest.issue(
-            name="run",
-            window=ExperimentWindow(from_ms=1_787_000_000_000, to_ms=1_787_086_400_000),
-            parent_program_sha256=load_stable_program_artifact().program_sha256,
-            program_version="news_semantic_program_v5",
-            policy_sha256="b" * 64,
-            case_count=0,
-            accepted_case_count=0,
-            case_root_sha256="c" * 64,
-            created_at_ms=1_787_086_400_000,
-        )
-    )
+    opened = 1_787_000_000_000
+    run = _run_with_window(tmp_path / "run", from_ms=opened, to_ms=opened + 24 * 3_600_000)
 
-    # 48h after the window opened, rounded up so the look-back covers its leading edge.
-    assert _run_window_hours(str(run.root), now_ms=1_787_000_000_000 + 48 * 3_600_000) == 48
-    assert _run_window_hours(str(run.root), now_ms=1_787_000_000_000 + 48 * 3_600_000 + 1) == 49
+    assert _run_window(str(run.root)) == (opened, opened + 24 * 3_600_000)
+    assert _desk_lookback_hours((opened, opened + 1), now_ms=opened + 48 * 3_600_000) == 48
+    # Rounded up, so the look-back covers the window's leading edge rather than stopping just inside it.
+    assert _desk_lookback_hours((opened, opened + 1), now_ms=opened + 48 * 3_600_000 + 1) == 49
     # No run named leaves `--hours` exactly as it was.
-    assert _run_window_hours("", now_ms=1_787_000_000_000) is None
+    assert _run_window("") is None
+
+
+def test_draft_reviews_keeps_only_the_events_inside_the_frozen_window(tmp_path: Any) -> None:
+    """The desk's look-back is a width ending at *now*; a run has two edges.
+
+    A snapshot stops at the settlement grace on purpose, so the look-back necessarily reaches past `to_ms`
+    and rounds up to an hour before `from_ms`. Without this bound the drafts would grow a corpus for a
+    window the run never froze while claiming to target exactly that window.
+    """
+
+    window = (1_000_000, 2_000_000)
+
+    assert _within_window({"opened_at_ms": 1_500_000}, window) is True
+    assert _within_window({"opened_at_ms": 1_000_000}, window) is True
+    assert _within_window({"opened_at_ms": 999_999}, window) is False
+    # Half-open at the top: `to_ms` is the settlement grace, and an Event opening exactly there is newer
+    # than the window the run froze.
+    assert _within_window({"opened_at_ms": 2_000_000}, window) is False
+    # No run named means no bound, which is the historical `--hours` behaviour untouched.
+    assert _within_window({"opened_at_ms": 0}, None) is True
 
 
 def test_draft_reviews_refuses_a_run_window_the_desk_cannot_reach(tmp_path: Any) -> None:
     """The desk pages a look-back, and its own bound is 720 hours. Past that, say so."""
 
-    run = ExperimentRun(tmp_path / "run", create=True)
-    run.write_manifest(
-        ExperimentRunManifest.issue(
-            name="run",
-            window=ExperimentWindow(from_ms=1_000, to_ms=2_000),
-            parent_program_sha256=load_stable_program_artifact().program_sha256,
-            program_version="news_semantic_program_v5",
-            policy_sha256="b" * 64,
-            case_count=0,
-            accepted_case_count=0,
-            case_root_sha256="c" * 64,
-            created_at_ms=2_000,
-        )
-    )
-
     with pytest.raises(ValueError, match="news_review_drafter_run_window_exceeds_desk_lookback"):
-        _run_window_hours(str(run.root), now_ms=1_787_000_000_000)
+        _desk_lookback_hours((1_000, 2_000), now_ms=1_787_000_000_000)
     with pytest.raises(ValueError, match="news_review_drafter_run_window_not_in_the_past"):
-        _run_window_hours(str(run.root), now_ms=0)
+        _desk_lookback_hours((1_000, 2_000), now_ms=0)

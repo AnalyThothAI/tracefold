@@ -32,28 +32,20 @@ def _snapshot(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     from tracefold.news.learning.contracts import ClosedWindow
     from tracefold.news.learning.evaluator import SETTLEMENT_GRACE_MS, CandidateEvaluator
     from tracefold.news.learning.experiment.run import ExperimentRun
-    from tracefold.news.learning.experiment.snapshot import snapshot_window
+    from tracefold.news.learning.experiment.snapshot import freeze_window, project_window
 
     now_ms = int(time.time() * 1000)
     # Ends at the settlement grace, not at "now": a window whose tail is still settling is not closed, and
     # a snapshot of it would measure a corpus that changes underneath the comparison.
     to_ms = now_ms - SETTLEMENT_GRACE_MS
     window = ClosedWindow(from_ms=to_ms - int(args.hours) * 3_600_000, to_ms=to_ms)
-    run = ExperimentRun(Path(str(args.out)), create=True)
-    # `snapshot_window` reads the whole window before it writes anything, so the connection is closed by
-    # the time up to 500 fsync'd case files are on disk. `docs/DEVELOPMENT.md` forbids holding one across
-    # a file write, and 500 of them is the case that rule was written for.
+    # Read first, with the connection open. Then close it, and only then create the directory and write:
+    # freezing a window is up to 500 fsync'd files, and `docs/DEVELOPMENT.md` forbids holding a connection
+    # across one. The directory is created after the read, so a failed read leaves nothing behind.
     with postgres_connection(settings, role="serve") as conn:
-        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-        manifest = snapshot_window(
-            evaluator,
-            run=run,
-            name=run.root.name,
-            window=window,
-            stable=stable,
-            now_ms=now_ms,
-            limit=int(args.limit),
-        )
+        cases = project_window(CandidateEvaluator(conn, stable=stable, judges={}), window=window, limit=int(args.limit))
+    run = ExperimentRun(Path(str(args.out)), create=True)
+    manifest = freeze_window(cases, run=run, name=run.root.name, window=window, stable=stable, now_ms=now_ms)
     return 0, {
         "ok": True,
         "data": {
@@ -128,12 +120,13 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
         )
     report = compare_report(run_sha256=manifest.run_sha256, arms=arms)
     failed = failed_case_ids(arms)
+    # Merge first, write second. `merged_report` can refuse — a run identity that does not match, arms run
+    # against different models — and marking the batch compared before that refusal both errored and made
+    # the next `--resume` skip results nothing had recorded.
+    merged = merged_report(previous=run.report("report"), current=report)
     for case_sha256, scores in answered_case_scores(report, failed_case_ids=failed).items():
         run.write_compared(case_sha256, {"case_sha256": case_sha256, "scores": scores})
-    # Merged, not overwritten. `--resume` deliberately scores only the pending batch, so a report rebuilt
-    # from that batch alone covered the last 20 cases of a 500-case run while carrying the whole run's
-    # identity — and `failure_clusters`, which is the operator's work queue, was ranked over 4% of it.
-    path = run.write_report("report", merged_report(previous=run.report("report"), current=report))
+    path = run.write_report("report", merged)
     return 0, {
         "ok": True,
         "data": {
