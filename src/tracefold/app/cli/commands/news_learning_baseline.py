@@ -90,6 +90,96 @@ def _baseline_model_route(
     return lm, semantic_judge, runtime_identity
 
 
+def _readiness_model_targets(settings: Any) -> dict[str, Any]:
+    """The endpoints a compile would run against, named and never quoted.
+
+    Secret-free by construction: a model name and the same endpoint fingerprint `compile_live` records.
+    `compiler_reflection_configured` is here because it is the one identity that silently turns a planned
+    compile into `news_experiment_reflection_not_configured` after the corpus work is already done.
+    """
+
+    from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
+
+    composition = compose_news_program_runtime(settings)
+    task: dict[str, Any] | None = None
+    if composition.program_configured:
+        endpoint = composition.event_semantics_primary
+        task = {"model": endpoint.model_name, "endpoint_sha256": _endpoint_model_sha256(endpoint)}
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    return {
+        "task": task,
+        "program_route_configured": bool(composition.program_configured),
+        "compiler_reflection_configured": bool(reflection is not None and reflection.configured),
+    }
+
+
+def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Explain one frozen development dataset before anyone spends a provider call on it.
+
+    Read-only and zero-call: it re-projects the sealed corpus, builds the one Objective Plan the trusted
+    compiler will rebuild, and reports what would be target, control and excluded — with the reason for
+    every exclusion. `outcome` is the answer; the exit code stays 0 for a report that says `insufficient`,
+    because refusing to optimize a corpus that cannot support it is a correct result, not a failure.
+    """
+
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.learning.evaluator import LEARNING_EPOCH, LEARNING_PROFILE_ID, CandidateEvaluator
+    from tracefold.news.learning.objective import (
+        DevelopmentEpisode,
+        GepaObjectivePlan,
+        build_gepa_objective_plan,
+        build_readiness_report,
+    )
+    from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
+    from tracefold.news.program.runtime import PROGRAM_FACTORY_ID
+
+    dataset_sha = str(args.development).strip()
+    identity: dict[str, Any] = {
+        "development_dataset_sha": dataset_sha,
+        "learning_epoch": LEARNING_EPOCH,
+        "profile_id": LEARNING_PROFILE_ID,
+        "review_rubric_version": REVIEW_RUBRIC_VERSION,
+        "program_factory_id": PROGRAM_FACTORY_ID,
+        "program_version": stable.program_version,
+        "program_sha256": stable.program_sha256,
+        "stable_bundle_sha": stable.bundle_sha,
+        "policy_sha256": stable.policy_sha256,
+        "model_targets": _readiness_model_targets(settings),
+        # Present on every path, including the one that never reaches a projection: a consumer keying on
+        # `identity.episode_count` must read 0, not fall off the end of the object.
+        "episode_count": 0,
+        "episode_projection_root_sha256": None,
+    }
+    episodes: tuple[Any, ...] = ()
+    plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))
+    with postgres_connection(settings, role="serve") as conn:
+        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        try:
+            export = evaluator.development_compile_export(dataset_sha)
+        except ValueError as exc:
+            # The one blocker in the #199 §4 vocabulary that has no episodes behind it: a dataset frozen
+            # under a different arm cannot be projected at all. It is a readiness answer, so it is reported
+            # as one — through the same builder, so a consumer never has to parse two report shapes. Every
+            # other refusal (a validation-role SHA, an epoch mismatch, drifted evidence) is an error, not
+            # an insufficiency, and still raises.
+            if "news_learning_dataset_agent_cohort_mismatch" not in str(exc):
+                raise
+        else:
+            episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
+            identity["episode_count"] = len(episodes)
+            # The exact root `CompileRecordV1` commits to and `CandidateEvaluator` re-derives, computed from
+            # the same raw projection dicts rather than from the parsed models — same bytes, same address.
+            identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
+            plan = build_gepa_objective_plan(episodes)
+    report = build_readiness_report(plan, episodes=episodes, identity=identity)
+    if str(args.out):
+        _write_json(str(args.out), report)
+    summary: dict[str, Any] = {key: value for key, value in report.items() if key != "case_dispositions"}
+    summary["case_dispositions_written_to"] = str(args.out) or None
+    return 0, {"ok": True, "data": summary}
+
+
 def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
 

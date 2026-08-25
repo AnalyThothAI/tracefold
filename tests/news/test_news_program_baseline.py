@@ -15,7 +15,8 @@ from tracefold.news.learning.baseline import (
     run_baseline,
 )
 from tracefold.news.learning.compiler import root as program_compiler
-from tracefold.news.learning.metric import DevelopmentEpisode, accepted_review_metric
+from tracefold.news.learning.metric import accepted_review_metric
+from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.learning.review import EventRubricSubmission
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact

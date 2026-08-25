@@ -17,6 +17,7 @@ from tracefold.app.cli.commands.news_learning_baseline import (
 )
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.learning.compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.experiment.run import (
     ExperimentRun,
     ExperimentRunManifest,
@@ -293,6 +294,100 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
         stable_judge._record_primary_failure()
     assert stable_judge._primary_open_until > 0
     assert candidate_judge._primary_open_until == 0
+
+
+def _readiness_args(**updates: Any) -> SimpleNamespace:
+    args = {"learning_command": "readiness", "development": "a" * 64, "out": ""}
+    args.update(updates)
+    return SimpleNamespace(**args)
+
+
+def _readiness_settings(monkeypatch: Any) -> None:
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        learning_runtime,
+        "active_arm_manifest",
+        lambda _settings: SimpleNamespace(
+            program_version="news_semantic_program_v5",
+            program_sha256="b" * 64,
+            bundle_sha="c" * 64,
+            policy_sha256="d" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        "tracefold.app.cli.commands.news_learning_baseline._readiness_model_targets",
+        lambda _settings: {"task": None, "program_route_configured": False, "compiler_reflection_configured": True},
+    )
+
+
+def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(monkeypatch: Any) -> None:
+    """One report shape, whatever the answer.
+
+    The blocked path used to return four keys and a differently named output field, so anything parsing
+    the report had to special-case it. `dataset_agent_cohort_mismatch` is a #199 §4 blocking reason, not
+    an error, so it is an `insufficient` report with every section present and empty.
+    """
+
+    class _Evaluator:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def development_compile_export(self, _sha: str) -> Any:
+            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    _readiness_settings(monkeypatch)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+
+    code, payload = _handle_learning(_readiness_args())
+    data = payload["data"]
+    assert code == 0 and payload["ok"] is True
+    assert data["outcome"] == "insufficient"
+    assert data["blocking_reasons"] == ["dataset_agent_cohort_mismatch"]
+    # The sections a consumer reads, present and empty rather than absent.
+    for section in (
+        "corpus",
+        "owner_distribution",
+        "objective",
+        "split",
+        "train",
+        "development_selection",
+        "retrieval",
+        "call_envelope",
+        "case_dispositions_written_to",
+    ):
+        assert section in data, section
+    assert data["objective"]["target_case_n"] == 0
+    assert data["identity"]["model_targets"]["compiler_reflection_configured"] is True
+
+
+def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any) -> None:
+    """`insufficient` means "this corpus cannot support an optimization". A validation SHA is a typo."""
+
+    class _Evaluator:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def development_compile_export(self, _sha: str) -> Any:
+            raise ValueError("news_learning_compile_requires_development_dataset")
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    _readiness_settings(monkeypatch)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.evaluator.CandidateEvaluator", _Evaluator)
+
+    code, payload = _handle_learning(_readiness_args())
+    assert code == 2
+    assert payload["error"] == "news_learning_compile_requires_development_dataset"
 
 
 def _baseline_args(**updates: Any) -> SimpleNamespace:
@@ -651,6 +746,7 @@ def _run_with_window(root: Any, *, from_ms: int, to_ms: int) -> ExperimentRun:
     run = ExperimentRun(root, create=True)
     run.write_manifest(
         ExperimentRunManifest.issue(
+            projection_schema_id=COMPILE_EPISODE_PROJECTION_SCHEMA,
             name="run",
             window=ExperimentWindow(from_ms=from_ms, to_ms=to_ms),
             parent_program_sha256=load_stable_program_artifact().program_sha256,

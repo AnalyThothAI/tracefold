@@ -37,7 +37,13 @@ from .contracts import (
     ProposalReceipt,
 )
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
-from .metric import production_decision
+from .objective import (
+    DevelopmentEpisode,
+    _expected_delivery,
+    build_gepa_objective_plan,
+    policy_candidate_failure_clusters,
+    production_decision,
+)
 from .projection import (
     _arm_exact_diff,
     _call_cost_microusd,
@@ -512,6 +518,10 @@ class CandidateEvaluator:
                         "dimensions": dict(review.get("dimensions") or {}),
                         "novelty": dict(review.get("novelty") or {}),
                         "first_bad_owner": review.get("first_bad_owner"),
+                        # The column is `submission.first_bad_owner or _derive_owner(submission)` and cannot
+                        # tell the two apart. The submission itself is persisted verbatim, so the payload —
+                        # not a new column — is what says whether a human actually blamed the Prompt (#199).
+                        "first_bad_owner_explicit": (dict(review.get("payload") or {}).get("first_bad_owner")),
                         "evidence_refs": list(review.get("evidence_refs") or []),
                         "expected": dict((dict(review.get("payload") or {}).get("expected")) or {}),
                         "expected_correction": str(review.get("expected_correction") or ""),
@@ -827,6 +837,9 @@ class CandidateEvaluator:
         allowed = {"program_sha256"} if candidate.target == "program" else {"policy", "policy_sha256"}
         if not changed or not changed <= allowed:
             raise ValueError(f"news_learning_exact_one_variable_violation:{','.join(sorted(changed))}")
+        development = self._load_dataset(candidate.development_dataset_sha)
+        if development.role != "development":
+            raise ValueError("news_learning_proposal_requires_development_dataset")
         receipt = candidate.proposal_receipt
         if candidate.target == "program":
             if receipt.generator_kind != "model":
@@ -845,8 +858,13 @@ class CandidateEvaluator:
             record = self._compile_record(candidate)
             if record.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
                 raise ValueError("news_learning_program_compile_epoch_mismatch")
-            compile_export = self.development_compile_export(candidate.development_dataset_sha)
-            episodes = list(compile_export.episodes)
+            # Re-projected once, and only for a Program candidate: the corpus binding below and the
+            # Objective Plan are the same question asked of the same episodes, and projecting them twice
+            # would let a review edited between the two reads pass one check and fail the other. A policy
+            # candidate never reaches this — replaying `decide()` over the whole corpus to screen a policy
+            # proposal would import failure modes its own gate never meets.
+            episodes = list(self.development_compile_export(candidate.development_dataset_sha).episodes)
+            plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
             # Not the count: the episodes themselves. `development_compile_export` re-projects them from
             # live reviews and recorded decisions, so a review edited between compile and evaluate leaves
             # the count identical and the corpus different — and the candidate would then be judged
@@ -855,6 +873,20 @@ class CandidateEvaluator:
                 raise ValueError("news_learning_program_compile_corpus_mismatch")
             if receipt.generator_execution_sha != record.compile_record_sha256:
                 raise ValueError("news_learning_program_generator_execution_mismatch")
+            # The Objective Plan, rebuilt from the same frozen corpus the compile ran on. A candidate that
+            # declares clusters the plan does not call targets was optimized against something else.
+            if set(candidate.proposal_receipt.failure_cluster_ids) != set(plan.target_failure_cluster_ids):
+                unknown = ",".join(
+                    sorted(set(candidate.proposal_receipt.failure_cluster_ids) ^ set(plan.target_failure_cluster_ids))
+                )
+                raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
+            if tuple(candidate.target_dimensions) != plan.target_dimensions:
+                raise ValueError("news_learning_proposal_target_dimensions_unverified")
+            # The split roots, not the split's shape: `readiness`, this record and this re-projection must
+            # all name the same train and development-selection halves, or the winner was picked on a
+            # different corpus than the one this gate is about to judge it against.
+            if record.run.split != plan.split:
+                raise ValueError("news_learning_proposal_split_roots_unverified")
         elif any(
             value is not None
             for value in (
@@ -868,23 +900,19 @@ class CandidateEvaluator:
             raise ValueError("news_learning_proposal_dataset_mismatch")
         if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):
             raise ValueError("news_learning_target_dimensions_mismatch")
-        development = self._load_dataset(candidate.development_dataset_sha)
-        if development.role != "development":
-            raise ValueError("news_learning_proposal_requires_development_dataset")
-        reviews = self._reviews_by_id([case.review_id for case in development.cases])
-        failure_clusters = {
-            case.cluster_id
-            for case in development.cases
-            if (
-                _case_delivery_failed(case)
-                or "fail" in dict(reviews.get(case.review_id, {}).get("dimensions") or {}).values()
-                or bool(reviews.get(case.review_id, {}).get("expected_correction"))
+        if candidate.target != "program":
+            # A policy candidate is not GEPA's output, so the Prompt-owner question is the wrong one to hold
+            # it to. It keeps the rule it always had — a failed dimension, a stated correction, or frozen
+            # delivery disagreeing with the accepted action — which now lives in `objective.py` under its
+            # own name instead of being a second inline heuristic here.
+            admissible = policy_candidate_failure_clusters(
+                development.cases, self._reviews_by_id([case.review_id for case in development.cases])
             )
-        }
-        declared_clusters = set(candidate.proposal_receipt.failure_cluster_ids)
-        if not declared_clusters <= failure_clusters:
-            unknown = ",".join(sorted(declared_clusters - failure_clusters))
-            raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
+            declared = set(candidate.proposal_receipt.failure_cluster_ids)
+            if not declared <= admissible:
+                raise ValueError(
+                    f"news_learning_proposal_failure_cluster_unverified:{','.join(sorted(declared - admissible))}"
+                )
         self._verify_registration_receipt(candidate.proposal_receipt)
 
     def _accepted_cases(
@@ -2987,23 +3015,6 @@ def _mean_regressed(stable: Sequence[int], candidate: Sequence[int], *, growth_p
     if stable_mean == 0:
         return candidate_mean > 0
     return candidate_mean > stable_mean * (1 + float(growth_pct))
-
-
-def _expected_delivery(should_push: str) -> bool | None:
-    if should_push in {"must_push", "should_push"}:
-        return True
-    if should_push in {"must_hold", "should_hold"}:
-        return False
-    return None
-
-
-def _case_delivery_failed(case: DatasetCaseRef) -> bool:
-    """Whether the accepted expected action disagrees with frozen delivery truth."""
-
-    expected = _expected_delivery(case.should_push)
-    if expected is None or case.delivery_truth == "unknown":
-        return False
-    return (case.delivery_truth == "observed_sent") != expected
 
 
 def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:

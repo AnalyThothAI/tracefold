@@ -16,7 +16,7 @@ from tracefold.news.learning.baseline import (
     run_baseline,
 )
 from tracefold.news.learning.judge import CardEquivalenceJudge
-from tracefold.news.learning.metric import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
+from tracefold.news.learning.objective import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext

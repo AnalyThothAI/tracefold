@@ -28,14 +28,11 @@ from ...program.artifact import ProgramStrategyArtifactV1
 from ...program.dspy_adapter import DspyStrictJSONAdapter, ExactMetadataDspyLM
 from ...program.graph import DspyCompileProgram, extract_optimizer_patch
 from ..metric import (
-    DevelopmentEpisode,
     _compile_example,
-    _honest_split,
     _metric_receipt,
-    _retrieval_receipt,
     bind_metric,
-    production_decision,
 )
+from ..objective import DevelopmentEpisode, build_gepa_objective_plan, retrieval_receipt
 from ..proposer import RulePackAwareProposer
 from .security import (
     REFLECTION_MAX_TOKENS,
@@ -163,13 +160,26 @@ def run_gepa(
 
     if judge is None:
         raise ValueError("news_program_compile_metric_judge_required")
-    failure_clusters, target_dimensions = failure_scope(episodes)
-    if not failure_clusters:
+    # One Objective Plan, built here rather than by each caller, so the corpus this optimization sees is the
+    # corpus `readiness`, the dataset-bound baseline and `CandidateEvaluator` re-derive from the same frozen
+    # episodes. Until #199 this function scoped its targets with an owner-blind "did any review say anything
+    # is wrong" rule and then split *every* episode — so a retrieval miss became an instruction to repair,
+    # and cases nobody had blamed on the Prompt still reached the reflective minibatch as low scores.
+    plan = build_gepa_objective_plan(episodes)
+    if not plan.target_failure_cluster_ids:
         raise ValueError("news_program_compile_no_verified_failure_clusters")
-    train_episodes, val_episodes, split_receipt = _honest_split(episodes)
-    train_examples = [_compile_example(episode) for episode in train_episodes]
-    val_examples = [_compile_example(episode) for episode in val_episodes]
-    retrieval_receipt = _retrieval_receipt(episodes)
+    if not plan.control_cluster_ids:
+        raise ValueError("news_program_compile_no_correct_control_clusters")
+    if plan.split is None:
+        # Verbatim: the plan records the exact code `_honest_split` refused with, so this stays the failure
+        # the caller has always seen rather than a translation of it.
+        raise ValueError(plan.split_error or "news_program_compile_objective_split_unavailable")
+    if plan.blocking_reasons:
+        raise ValueError("news_program_compile_objective_blocked:" + ",".join(plan.blocking_reasons))
+    split_receipt = plan.split
+    train_examples = [_compile_example(episode) for episode in plan.train_episodes]
+    val_examples = [_compile_example(episode) for episode in plan.development_selection_episodes]
+    retrieval = retrieval_receipt(episodes)
 
     student = student_factory(base_program)
     if tuple(name for name, _ in student.named_predictors()) != ("event_semantics", "reader_card"):
@@ -235,9 +245,9 @@ def run_gepa(
         trajectory=trajectory,
         checkpoint=checkpoint,
         split=split_receipt,
-        retrieval=retrieval_receipt,
-        failure_cluster_ids=failure_clusters,
-        target_dimensions=target_dimensions,
+        retrieval=retrieval,
+        failure_cluster_ids=plan.target_failure_cluster_ids,
+        target_dimensions=plan.target_dimensions,
         metric_calls=metric_calls,
         train_count=len(train_examples),
         val_count=len(val_examples),
@@ -408,40 +418,6 @@ def require_model_identity(lm: dspy.LM, *, role: str) -> ModelExecutionIdentity:
     return identity
 
 
-def failure_scope(episodes: Sequence[DevelopmentEpisode]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The clusters an accepted review says are wrong, and the dimensions they are wrong on."""
-
-    clusters: set[str] = set()
-    dimensions: set[str] = set()
-    for episode in episodes:
-        review = episode.accepted_review
-        results = dict(review.get("dimensions") or {})
-        failed = {str(key) for key, value in results.items() if value == "fail"}
-        production_judgment = episode.production_judgment
-        should_push = str(review.get("should_push") or "uncertain")
-        production_action = (
-            production_decision(production_judgment, episode.policy_metric) if production_judgment is not None else None
-        )
-        production_pushes = production_action is not None and production_action.final in {"push", "escalate"}
-        decision_failed = (should_push in {"must_push", "should_push"} and not production_pushes) or (
-            should_push in {"must_hold", "should_hold"} and production_pushes
-        )
-        novelty = str(dict(review.get("novelty") or {}).get("judgment") or "uncertain")
-        production_novelty = production_judgment.verdict.novelty if production_judgment is not None else ""
-        novelty_failed = novelty not in ("uncertain", production_novelty)
-        correction = bool(str(review.get("expected_correction") or "").strip())
-        if failed or decision_failed or novelty_failed or correction:
-            clusters.add(episode.cluster_id)
-            dimensions.update(failed)
-            if decision_failed:
-                dimensions.add("should_push")
-            if novelty_failed:
-                dimensions.add("novelty")
-            if correction and not failed:
-                dimensions.add("factual_fidelity")
-    return tuple(sorted(clusters)), tuple(sorted(dimensions))
-
-
 def generated_default_instruction(predictor: dspy.Predict) -> str:
     """What DSPy writes into a signature when it is handed an empty instruction."""
 
@@ -519,7 +495,6 @@ __all__ = [
     "_FeedbackCompileProgram",
     "build_compile_lm",
     "checkpoint_receipt",
-    "failure_scope",
     "generated_default_instruction",
     "optimizer_config_receipt",
     "optimizer_constructor",

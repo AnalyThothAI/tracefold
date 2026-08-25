@@ -17,6 +17,7 @@ from tracefold.news.learning.review import (
     BlindPairwiseSubmission,
     DeskQuery,
     EventRubricSubmission,
+    ExpectedCorrection,
     ExternalMissSubmission,
     Principal,
     ReviewDesk,
@@ -174,19 +175,43 @@ def _open_event(
     return opened.event_id
 
 
-def _rubric(*, why: str = "pass") -> EventRubricSubmission:
+def _rubric(
+    *,
+    why: str = "pass",
+    should_push: str = "must_push",
+    first_bad_owner: str | None = None,
+    magnitude: str | None = None,
+) -> EventRubricSubmission:
+    """One accepted rubric.
+
+    `first_bad_owner` is the operator's own attribution and is what #199's Objective Plan reads to decide
+    whether GEPA may try to repair the case. It is deliberately not defaulted: a rubric that leaves it
+    unset is exactly the shape ReviewDesk derives an owner for, and the plan must not treat a derived
+    owner as a grant.
+
+    `magnitude="fail"` is the *typed* failure — a stated correct value the metric can score a repair
+    against. `why="fail"` is a copy complaint with no such value; #199 keeps it as an excluded diagnostic
+    rather than a target, so a corpus meant to exercise optimization has to fail a typed dimension.
+    """
+
+    dimensions = {
+        "factual_fidelity": "pass",
+        "headline_fidelity": "pass",
+        "why_support": why,
+        "why_value": "pass",
+        "timeliness": "pass",
+    }
+    if magnitude is not None:
+        dimensions["magnitude"] = magnitude
+    failed = why == "fail" or magnitude == "fail"
     return EventRubricSubmission(
-        should_push="must_push",
-        dimensions={
-            "factual_fidelity": "pass",
-            "headline_fidelity": "pass",
-            "why_support": why,
-            "why_value": "pass",
-            "timeliness": "pass",
-        },
+        should_push=should_push,  # type: ignore[arg-type]
+        dimensions=dimensions,
         novelty={"judgment": "new_fact"},
-        evidence_refs=[] if why == "pass" else ["source:sentence:1", "output:why"],
-        expected_correction="" if why == "pass" else "Do not claim priced-in without source evidence.",
+        first_bad_owner=first_bad_owner,  # type: ignore[arg-type]
+        expected=ExpectedCorrection(magnitude=3) if magnitude == "fail" else None,
+        evidence_refs=["source:sentence:1", "output:why"] if failed else [],
+        expected_correction="Do not claim priced-in without source evidence." if failed else "",
     )
 
 

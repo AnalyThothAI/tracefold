@@ -38,7 +38,15 @@ _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f1
 # every case result are byte-for-byte what the previous pin covered — re-hashing this report with the old
 # identity block still yields b234ba2fd4a3f0297e1e59b7a76b3a6ad58fb8f78de8929e73212106b68eccd3. Nothing about
 # the measurement moved, so `_EXPECTED_CASE_MACRO` and friends below are deliberately untouched.
-_EXPECTED_REPORT_SHA256 = "34f8d3bf5278b812c276166f6d5f2f8834614ca32f0145959e02e22c2d106d94"
+#
+# #199 moves it again for the same kind of reason and with the same kind of proof. The metric's corpus
+# vocabulary — the dimension groups, the exact-gold lookup, the frozen policy and the production action —
+# now lives in `learning/objective.py`, and the metric receipt commits to that file too. Diffing the whole
+# report against `main@2d0494b7` changes exactly three lines: the metric module's own source hash, the new
+# `tracefold.news.learning.objective` entry beside it, and the root over the two. Every score, every case
+# result and every dimension outcome is identical, which is what "the ruler moved house, not shape" has to
+# mean if the pin is to be worth anything.
+_EXPECTED_REPORT_SHA256 = "e1daa4778a4279297c72bcf296945a383fdeb8ad9f3616d4e75f158dac401bdf"
 
 
 @pytest.fixture(scope="module")

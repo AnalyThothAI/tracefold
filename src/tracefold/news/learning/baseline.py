@@ -55,10 +55,12 @@ from .metric import (
     LABEL_GROUP,
     METRIC_ID,
     UNGROUPED_LABEL,
-    DevelopmentEpisode,
     bind_metric,
     build_compile_example,
     metric_receipt,
+)
+from .objective import (
+    DevelopmentEpisode,
     retrieval_receipt,
     verify_policy_projection,
 )

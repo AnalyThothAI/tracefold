@@ -10,6 +10,7 @@ the whole suite stayed green while `compare` died on its first case with
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,12 @@ from pydantic import ValidationError
 from tracefold.news.learning.baseline import BaselineReport, CaseResult
 from tracefold.news.learning.compiler import gepa as gepa_core
 from tracefold.news.learning.compiler import root as compiler_root
-from tracefold.news.learning.compiler.security import CompileRecordV1, GepaRunResult, validate_compile_record
+from tracefold.news.learning.compiler.security import (
+    COMPILE_EPISODE_PROJECTION_SCHEMA,
+    CompileRecordV1,
+    GepaRunResult,
+    validate_compile_record,
+)
 from tracefold.news.learning.experiment import optimize as optimize_module
 from tracefold.news.learning.experiment.compare import (
     answered_case_scores,
@@ -78,6 +84,7 @@ def _case(index: int, **overrides: Any) -> ExperimentCase:
 
 def _manifest(cases: list[ExperimentCase], **overrides: Any) -> ExperimentRunManifest:
     values: dict[str, Any] = {
+        "projection_schema_id": COMPILE_EPISODE_PROJECTION_SCHEMA,
         "name": "news-24h",
         "window": ExperimentWindow(from_ms=1_787_000_000_000, to_ms=1_787_086_400_000),
         "parent_program_sha256": load_stable_program_artifact().program_sha256,
@@ -204,6 +211,24 @@ def test_a_run_is_addressed_by_the_cases_it_froze(tmp_path: Path) -> None:
     run = ExperimentRun(tmp_path / "run", create=True)
     run.write_manifest(first)
     assert run.manifest() == first
+
+
+def test_a_run_frozen_under_an_older_episode_projection_is_refused_by_name(tmp_path: Any) -> None:
+    """A stale run is not a corrupt one — it just cannot answer a question the projection has learned.
+
+    #199 added `first_bad_owner_explicit` to the episode projection. A run frozen before it carries no
+    such key, so every failure case in it classifies as `owner_absent` and `experiment optimize` refuses
+    with `news_program_compile_no_verified_failure_clusters` — which reads as "this corpus has no
+    targets" when the truth is "re-snapshot the window".
+    """
+
+    run = ExperimentRun(tmp_path / "run", create=True)
+    payload = _manifest([_case(0)]).model_dump(mode="json")
+    payload["projection_schema_id"] = "tracefold.news.development_compile_episode.v3"
+    (run.root / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="news_experiment_run_projection_schema_stale"):
+        run.manifest()
 
 
 def test_a_manifest_whose_identity_was_edited_is_refused() -> None:

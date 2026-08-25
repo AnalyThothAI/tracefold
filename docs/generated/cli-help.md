@@ -300,12 +300,14 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {compile,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary} ...
+                               {compile,readiness,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary} ...
 
 positional arguments:
-  {compile,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary}
+  {compile,readiness,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary}
     compile             compile a bounded DSPy Program candidate from accepted
                         development evidence
+    readiness           explain the Objective Plan for a frozen development
+                        dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
     draft-reviews       propose news_review_v4 rubrics with exact gold for a
@@ -353,6 +355,21 @@ options:
   --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
   --max-cost-microusd MAX_COST_MICROUSD
   --seed SEED
+
+```
+
+## `news learning readiness`
+
+```
+usage: tracefold news learning readiness [-h] --development DEVELOPMENT
+                                         [--out OUT]
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --out OUT             write the readiness report JSON (per-case dispositions
+                        live only here)
 
 ```
 

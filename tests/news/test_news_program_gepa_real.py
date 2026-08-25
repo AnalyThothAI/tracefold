@@ -27,7 +27,7 @@ from tracefold.news.learning.compiler.security import (
     ModelExecutionIdentity,
 )
 from tracefold.news.learning.judge import CardEquivalenceJudge
-from tracefold.news.learning.metric import DevelopmentEpisode
+from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.learning.proposer import RulePackAwareProposer
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import (
@@ -170,7 +170,15 @@ class _ScriptedJudgeLM(_ScriptedLM):
         ]
 
 
-def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool) -> DevelopmentEpisode:
+def _episode(
+    index: int,
+    *,
+    should_push: str,
+    novelty: str,
+    magnitude_fail: bool,
+    production_magnitude: int,
+    reader_value: str,
+) -> DevelopmentEpisode:
     card = {
         "event_id": f"{index:064d}",
         "evidence_version": 1,
@@ -216,17 +224,23 @@ def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool
             "novelty": {"judgment": novelty, "duplicate_of": ""},
             "expected": {"magnitude": 2} if magnitude_fail else {},
             "expected_correction": "",
+            # #199: the owner an operator wrote into the submission is what grants GEPA permission, and a
+            # corpus without one is a corpus with no targets at all. The controls carry none on purpose —
+            # nobody blames anything for an answer that was right.
+            "first_bad_owner_explicit": "triage_prompt" if magnitude_fail else None,
+            "first_bad_owner": "triage_prompt" if magnitude_fail else None,
+            "evidence_refs": ["filing#magnitude"] if magnitude_fail else [],
         },
         production_judgment=scored_judgment(
             {
                 **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
                 **_CARD,
-                "magnitude": 0,
+                "magnitude": production_magnitude,
                 "actionable": True,
                 "decision": "push",
                 "title_zh": "",
             },
-            relevance=trade_relevance(),
+            relevance=trade_relevance(reader_value=reader_value),
         ),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
@@ -237,15 +251,35 @@ def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool
     )
 
 
+# One repeating quartet, so both halves of the honest split carry every required stratum *and* the two
+# things #199 added to that requirement: at least one verified Prompt target, and at least one case the
+# stable Program already answers correctly.
+#
+# `realtime_eligible` needs `magnitude >= 2`, so a production magnitude of 0 under `reader_value=realtime`
+# resolves to `trade_relevance_inconsistent` — which is why the target is both a magnitude failure and a
+# `must_push` the reader never got, and why every control has to state a magnitude the policy accepts. The
+# predecessor gave all twelve cases magnitude 0 and called four of them controls; the Objective Plan
+# correctly refused every one as `stable_hard_gate:relevance_inconsistent`.
+_CORPUS_ROLES: tuple[tuple[str, bool, int, str], ...] = (
+    # should_push, magnitude failed, production magnitude, production reader_value
+    ("must_push", True, 0, "realtime"),  # target: safety + positive action
+    ("must_push", False, 2, "realtime"),  # control: safety + positive action, pushed and correct
+    ("must_hold", False, 2, "background"),  # control: safety + negative action, held and correct
+    ("should_push", False, 2, "realtime"),  # control: soft positive action
+)
+
+
 def compiler_development_corpus() -> tuple[DevelopmentEpisode, ...]:
     """Enough coverage that the honest split can find every required stratum on both sides."""
 
     return tuple(
         _episode(
             index + 1,
-            should_push="must_push" if index % 4 == 0 else ("should_push" if index % 2 == 0 else "should_hold"),
-            novelty="restatement" if index % 3 == 0 else "new_fact",
-            magnitude_fail=index % 2 == 0,
+            should_push=_CORPUS_ROLES[index % 4][0],
+            novelty="new_fact",
+            magnitude_fail=_CORPUS_ROLES[index % 4][1],
+            production_magnitude=_CORPUS_ROLES[index % 4][2],
+            reader_value=_CORPUS_ROLES[index % 4][3],
         )
         for index in range(12)
     )

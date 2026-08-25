@@ -42,8 +42,12 @@ LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 # cannot be regenerated without changing identity — left at v2 it would still validate here and then
 # raise inside every single metric call, which a compile run reports as 100% provider failure with zero
 # provider calls actually made. This is the one field whose job is to detect exactly that change.
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v3"] = (
-    "tracefold.news.development_compile_episode.v3"
+# v4 (#199): `accepted_review.first_bad_owner_explicit` carries the owner an operator wrote into the
+# submission, distinct from the derived one the column holds. A v3 projection cannot answer "did a human
+# blame the Prompt", so an Objective Plan built from one would grant GEPA every derived owner in the
+# corpus — the exact permission #199 exists to withdraw.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v4"] = (
+    "tracefold.news.development_compile_episode.v4"
 )
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -197,7 +201,7 @@ class CompileCorpusReceipt(_ExactModel):
     # computed each side from that one object, which is a comparison that cannot fail.
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
     learning_epoch_started_at_ms: int = Field(ge=0)
-    projection_schema_id: Literal["tracefold.news.development_compile_episode.v3"] = COMPILE_EPISODE_PROJECTION_SCHEMA
+    projection_schema_id: Literal["tracefold.news.development_compile_episode.v4"] = COMPILE_EPISODE_PROJECTION_SCHEMA
     # This one stays, and it is the only one that ever had a reason to. It survives into `CompileRecordV1`,
     # where `CandidateEvaluator` re-projects the episodes from live tables and compares it — a second party
     # checking a value it did not compute, which is the whole test §2 sets for keeping a digest.
@@ -645,7 +649,7 @@ class CompileRecordV1(_ExactModel):
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
     program_sha256: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
-    projection_schema_id: Literal["tracefold.news.development_compile_episode.v3"] = COMPILE_EPISODE_PROJECTION_SCHEMA
+    projection_schema_id: Literal["tracefold.news.development_compile_episode.v4"] = COMPILE_EPISODE_PROJECTION_SCHEMA
     learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
@@ -757,6 +761,13 @@ class CompileRecordV1(_ExactModel):
             for call in usage.calls
         ):
             raise ValueError("news_program_compile_record_task_call_failed")
+        # #199: the optimizer no longer sees the whole frozen corpus. `run_gepa` splits the Objective
+        # Plan's `target + control` episodes, so the example count the receipt has to answer for is that
+        # subset — bounded above by the sealed corpus, which is what keeps a record from inflating its
+        # admissible overshoot by claiming a larger split than the dataset can supply.
+        optimizer_example_count = self.run.train_count + self.run.val_count
+        if optimizer_example_count > self.episode_count:
+            raise ValueError("news_program_compile_record_optimizer_corpus_exceeds_dataset")
         if (
             usage.actual_cost_microusd > budget.max_cost_microusd
             or usage.reserved_cost_microusd > budget.max_cost_microusd
@@ -765,7 +776,7 @@ class CompileRecordV1(_ExactModel):
             > gepa_metric_call_ceiling(
                 max_metric_calls=budget.max_metric_calls,
                 optimizer_config=self.run.optimizer_config,
-                expected_example_count=self.episode_count,
+                expected_example_count=optimizer_example_count,
             )
         ):
             raise ValueError("news_program_compile_record_budget_exceeded")

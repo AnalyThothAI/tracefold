@@ -858,9 +858,15 @@ that ran only for current-cohort episodes, so `--all-cohorts --action-source
 policy` applies today's rules to a retired corpus by design. An episode with no
 complete recorded `DecisionResult` is refused in `recorded` mode rather than quietly falling through
 to a policy replay. The sealed compile projection is
-`tracefold.news.development_compile_episode.v3`; a dataset frozen under v2
-carries no policy and is refused at validation instead of failing inside every
-metric call.
+`tracefold.news.development_compile_episode.v4`. The projection is recomputed
+from `news_reviews` on every read, so a *dataset* is never stale; what the field
+refuses is a **compile record** written under an older projection — v2 carried no
+policy and would have raised inside every metric call, and v3 could not say
+whether a human wrote `first_bad_owner` or ReviewDesk derived it, which is
+exactly the difference between a Prompt-owned target and somebody else's defect.
+A record naming an older projection fails
+`news_learning_program_compile_record_invalid` rather than being re-read under
+rules it was not produced under.
 
 `--mode recorded` makes no provider call; `--all-cohorts` drops release-plane
 eligibility — for the seed sent ledger too, not only the cases — so a retired
@@ -917,7 +923,13 @@ outcome loop keeps writing prices for minutes after an Event opens, so a
 snapshot taken to the current instant measures a corpus that changes underneath
 the comparison. `run_sha256` is issued over the window, the parent Program, the
 policy, the case counts and a root over the frozen case ids, so a run cannot
-silently change what it measured. `case_sha256` is the evaluator's own case id,
+silently change what it measured. The manifest is
+`tracefold.news.experiment_run_manifest.v2` and names the episode projection its
+cases were frozen under; a run frozen under an older one is refused by name
+(`news_experiment_run_projection_schema_stale`) rather than silently answering a
+question its cases cannot support — a snapshot taken before the Objective Plan
+existed carries no explicit owner, so every failure case in it would classify as
+`owner_absent`. `case_sha256` is the evaluator's own case id,
 which is what makes `--resume` a directory listing rather than a stored cursor.
 
 `compare` scores three arms that are never averaged together — `recorded` is
@@ -946,6 +958,28 @@ the run's own fixed order, one ReviewDesk query per Event, and reports
 superseded is visible rather than read as judged. Without it the command keeps
 its queue-by-hours form, which is how a first corpus is grown before any run
 exists.
+
+`news learning readiness --development SHA [--out FILE]` explains one frozen
+development dataset before anyone spends a provider call on it: it re-projects
+the sealed corpus, builds the one `GepaObjectivePlan`, and reports
+`target / control / excluded` with a reason for every exclusion, the explicit vs
+derived owner distribution, exact-gold coverage by dimension, the train and
+development-selection halves of the honest split with their case and cluster
+roots, the required strata, retrieval verifiability, and a per-metric-call task
+and judge envelope computed from the corpus. It makes no task, reflection or
+judge call and writes nothing. `outcome` is `ready` or `insufficient`; the exit
+code stays `0` for an `insufficient` report, because refusing to optimize a
+corpus that cannot support it is a result rather than a failure. `insufficient`
+means exactly that — a corpus that cannot support an optimization, including the
+one blocking reason that has no episodes behind it,
+`dataset_agent_cohort_mismatch` — and it is reported in the same shape as a
+`ready` report, every section present. A wrong argument is still an error: a
+validation-role SHA, a bumped epoch or drifted evidence raise their own codes
+and a non-zero exit rather than being dressed up as insufficiency. Readiness is an
+explanation in advance, not a bypass — `run_gepa` rebuilds the same plan and
+refuses on the same conditions, and `CandidateEvaluator` rebuilds it again from
+the frozen dataset and requires the candidate's declared failure clusters,
+target dimensions and split roots to equal it exactly.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in

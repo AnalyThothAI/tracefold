@@ -133,6 +133,18 @@ def build_parser() -> argparse.ArgumentParser:
     learning_compile.add_argument("--max-metric-judge-model-calls", type=_positive_int, required=True)
     learning_compile.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_compile.add_argument("--seed", type=_nonnegative_int, default=129)
+    # #199 P0. The one formal answer to "what would GEPA actually optimize on this corpus, and why is
+    # everything else out" — read-only, and it makes no task, reflection or judge call at all. It is an
+    # explanation in advance, not a bypass: the trusted compiler rebuilds the same Objective Plan and
+    # refuses on the same conditions, so a blocked corpus costs nothing instead of costing a container.
+    learning_readiness = learning_subcommands.add_parser(
+        "readiness",
+        help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
+    )
+    learning_readiness.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_readiness.add_argument(
+        "--out", default="", help="write the readiness report JSON (per-case dispositions live only here)"
+    )
     learning_baseline = learning_subcommands.add_parser(
         "baseline", help="score the stable Program over accepted reviews (no sandbox, no tariff, no writes)"
     )

@@ -26,11 +26,10 @@ from ...program.dspy_adapter import (
 )
 from ..metric import (
     METRIC_ID,
-    DevelopmentEpisode,
-    _ExactModel,
     _json_safe,
     accepted_review_metric,
 )
+from ..objective import DevelopmentEpisode, _ExactModel
 from .gepa import GepaRunResult, OptimizerFactory, build_compile_lm, require_model_identity, run_gepa
 from .security import (
     CompileBudgetV3,
