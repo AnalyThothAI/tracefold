@@ -952,6 +952,7 @@ export interface components {
             macro_lexicon: boolean;
             /** Member Count */
             member_count: number;
+            oi?: components["schemas"]["NewsFeedOiData"] | null;
             /** Opened At Ms */
             opened_at_ms: number;
             outcome: components["schemas"]["NewsOutcomeData"];
@@ -990,12 +991,59 @@ export interface components {
             hours?: number | null;
             /** Limit */
             limit: number;
+            /** Oi */
+            oi?: ("pushed" | "withheld" | "parse_failed") | null;
             /** Outcome */
             outcome?: ("pushed" | "held" | "pending") | null;
             /** Q */
             q?: string | null;
             /** Symbol */
             symbol?: string | null;
+        };
+        /**
+         * NewsFeedOiData
+         * @description #207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.
+         *
+         *     `None` on every other admission. These are `oi_judgment_trace()` / `oi_parse_failure()` fields read back
+         *     verbatim so the browser never re-runs `oi_signal_parser_v1` over `leader_title` — a second parser in the
+         *     page would drift from the judge the moment either changed, and every figure here keys a stored verdict.
+         *
+         *     The two shapes are told apart by `parsed`: a judged frame carries the four measurements and its rank, an
+         *     unparseable one carries the provider-contract failure instead. `window_ms` / `max_rank_in_window` /
+         *     `whale_oi_ratio_above_bps` / `oi_change_at_least_bps` are the thresholds *this frame ran under*, from its
+         *     own trace, so a retuned `news.oi` never rewrites the history of a decision it did not make.
+         */
+        NewsFeedOiData: {
+            /** Eligible Rank In Window */
+            eligible_rank_in_window?: number | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
+            /** Max Rank In Window */
+            max_rank_in_window?: number | null;
+            /** Oi Change At Least Bps */
+            oi_change_at_least_bps?: number | null;
+            /** Oi Change Bps */
+            oi_change_bps?: number | null;
+            /** Oi Value Usd */
+            oi_value_usd?: number | null;
+            /** Parsed */
+            parsed: boolean;
+            /** Parser Version */
+            parser_version?: string | null;
+            /** Rank Semantics */
+            rank_semantics?: string | null;
+            /** Rule */
+            rule: string;
+            /** Title Sha256 */
+            title_sha256?: string | null;
+            /** Whale Long Profit Bps */
+            whale_long_profit_bps?: number | null;
+            /** Whale Oi Ratio Above Bps */
+            whale_oi_ratio_above_bps?: number | null;
+            /** Whale Oi Ratio Bps */
+            whale_oi_ratio_bps?: number | null;
+            /** Window Ms */
+            window_ms?: number | null;
         };
         /** NewsFunnelData */
         NewsFunnelData: {
@@ -1210,6 +1258,101 @@ export interface components {
             /** Potential Misses */
             potential_misses?: components["schemas"]["NewsReviewMissData"][];
             summary: components["schemas"]["NewsReviewSummaryData"];
+        };
+        /**
+         * NewsOiPolicyData
+         * @description `news.oi` as it is running right now — the operator-owned thresholds the judge applies.
+         */
+        NewsOiPolicyData: {
+            /** Max Rank In Window */
+            max_rank_in_window: number;
+            /** Oi Change At Least Bps */
+            oi_change_at_least_bps: number;
+            /** Whale Oi Ratio Above Bps */
+            whale_oi_ratio_above_bps: number;
+            /** Window Ms */
+            window_ms: number;
+        };
+        /**
+         * NewsOiStatusData
+         * @description #137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
+         *
+         *     `by_rule_24h` is keyed on the judge's own rule names. It cannot come from `pipeline.dropped_by_rule`:
+         *     `decide()` writes `override_rule = 'telemetry_deterministic'` for every OI verdict — push and withhold
+         *     alike — so that map can say how many frames were held but never by which gate.
+         */
+        NewsOiStatusData: {
+            /** By Rule 24H */
+            by_rule_24h?: {
+                [key: string]: number;
+            };
+            policy?: components["schemas"]["NewsOiPolicyData"] | null;
+            trade_floors?: components["schemas"]["NewsOiTradeFloorsData"];
+            /** Window Occupancy */
+            window_occupancy?: components["schemas"]["NewsOiWindowSymbolData"][];
+        };
+        /**
+         * NewsOiTradeFloorsData
+         * @description The capital lane's own floors, shown beside the News gates and never mixed with them (#207).
+         *
+         *     Two different questions read the same frame: News asks whether a reader should be told, Trading asks
+         *     whether the lane may open exposure. Their thresholds are separate config and reaching either number is no
+         *     evidence about the other, so the monitor renders both and labels which is which.
+         *
+         *     `enabled` is here because `tracefold.trading` ships disabled: a floor from a lane that is not running is a
+         *     published research band, not a gate anything is currently passing. Read from platform configuration —
+         *     `tracefold.news` never imports `tracefold.trading` and this endpoint does not either.
+         */
+        NewsOiTradeFloorsData: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Max Price Move Bps
+             * @default 0
+             */
+            max_price_move_bps: number;
+            /**
+             * Min Oi Value Usd
+             * @default 0
+             */
+            min_oi_value_usd: number;
+            /**
+             * Min Price Move Bps
+             * @default 0
+             */
+            min_price_move_bps: number;
+            /**
+             * Min Whale Long Profit Bps
+             * @default 0
+             */
+            min_whale_long_profit_bps: number;
+            /**
+             * Mode
+             * @default paper
+             */
+            mode: string;
+            /**
+             * Pre Move Lookback Ms
+             * @default 0
+             */
+            pre_move_lookback_ms: number;
+        };
+        /**
+         * NewsOiWindowSymbolData
+         * @description One symbol's spent rank slots inside the live window. `full` means the next frame hits the ceiling.
+         */
+        NewsOiWindowSymbolData: {
+            /** Full */
+            full: boolean;
+            /** Max Rank In Window */
+            max_rank_in_window: number;
+            /** Symbol */
+            symbol: string;
+            /** Used */
+            used: number;
         };
         /**
          * NewsOutcomeData
@@ -2141,6 +2284,7 @@ export interface components {
             learning_retention: components["schemas"]["NewsLearningRetentionStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
+            oi?: components["schemas"]["NewsOiStatusData"];
             pipeline: components["schemas"]["NewsPipelineStatusData"];
             price?: components["schemas"]["NewsPriceStatusData"];
             /** Reasons 24H */
@@ -2499,6 +2643,7 @@ export interface operations {
                 cursor?: string;
                 outcome?: string;
                 hours?: number;
+                oi?: string;
             };
             header?: never;
             path?: never;

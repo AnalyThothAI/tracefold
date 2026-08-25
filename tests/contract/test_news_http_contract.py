@@ -73,6 +73,7 @@ class _FakeNewsRepository:
                 "limit": kwargs["limit"],
                 "outcome": kwargs.get("outcome"),
                 "hours": kwargs.get("hours"),
+                "oi": kwargs.get("oi"),
             },
         }
 
@@ -110,6 +111,10 @@ class _FakeNewsRepository:
         self.calls.append(("asset_usage_24h", {"now_ms": now_ms}))
         return {"ev-1": ["COPPER", "SPOT"], "ev-2": ["SPOT"]}
 
+    def oi_window_occupancy(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.calls.append(("oi_window_occupancy", kwargs))
+        return [{"symbol": "WIF", "used": 2}, {"symbol": "DOGE", "used": 1}]
+
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         self.calls.append(("status_snapshot", {"now_ms": now_ms}))
         return {
@@ -121,6 +126,7 @@ class _FakeNewsRepository:
                 "open_incidents": [],
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
+            "oi": {"by_rule_24h": {"opening_move_with_whale_concentration": 3, "whale_ratio_below_threshold": 7}},
             "delivery": {"sent_24h": 0, "sent_1h": 0, "terminal_24h": 0, "last_error_code": None, "e2e_p95_ms": None},
             "learning_retention": {
                 "last_run_at_ms": None,
@@ -364,6 +370,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "limit",
         "outcome",
         "hours",
+        # #207: the deterministic OI lane's outcome, which `decision` cannot express.
+        "oi",
     }
     assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
         "title_zh",
@@ -372,6 +380,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "delivery",
         # #88: the fixed post-Event return. The *current* quote is deliberately not a feed field.
         "reaction",
+        # #207: the deterministic OI judgment, read back from the trace it wrote; null on every other admission.
+        "oi",
     }
     assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
@@ -401,6 +411,9 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "ingest",
         "broker",
         "pipeline",
+        # #207: the deterministic OI lane, read by the 持仓异动 monitor. Its gate names live in the judge's
+        # trace, so `pipeline.dropped_by_rule` — which groups `override_rule` — can never carry them.
+        "oi",
         "delivery",
         "learning_retention",
         "watchlist",
@@ -472,6 +485,7 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "limit": 5,
         "outcome": None,
         "hours": None,
+        "oi": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
     assert "priority" not in body["data"]["events"][0]
@@ -519,6 +533,9 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
     [
         ({"admission": "bogus"}, "news_feed_admission_invalid", "admission"),
         ({"decision": "maybe"}, "news_feed_decision_invalid", "decision"),
+        # #207: the OI outcome is a closed set. An unknown value must not fall through to "no filter" —
+        # that would serve the whole lane under a tab whose count says otherwise.
+        ({"oi": "whale_ratio_below_threshold"}, "news_feed_oi_invalid", "oi"),
         ({"cursor": "broken"}, "news_feed_cursor_invalid", "cursor"),
         ({"priority": "high"}, "unsupported_query_param", "priority"),
         ({"sort": "priority"}, "unsupported_query_param", "sort"),
@@ -741,3 +758,47 @@ def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.
     assert data["price"]["oldest_due_age_ms"] == 0
+
+
+def test_status_reports_the_oi_lane_with_both_threshold_sets(client) -> None:
+    """#207: what the 持仓异动 monitor reads, in one section of the status the whole console already polls."""
+
+    api, news = client
+    data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
+
+    # The gate names are the judge's own, from its trace. `pipeline.dropped_by_rule` groups `override_rule`,
+    # which `decide()` sets to the admission for every OI verdict, so it can never carry them.
+    assert data["oi"]["by_rule_24h"] == {
+        "opening_move_with_whale_concentration": 3,
+        "whale_ratio_below_threshold": 7,
+    }
+    assert "whale_ratio_below_threshold" not in data["pipeline"].get("dropped_by_rule", {})
+
+    # The News gates, echoed from `news.oi` exactly as they are running.
+    assert data["oi"]["policy"] == {
+        "window_ms": 4 * 3_600_000,
+        "max_rank_in_window": 2,
+        "whale_oi_ratio_above_bps": 8_000,
+        "oi_change_at_least_bps": 0,
+    }
+    # The capital lane's own floors, side by side and never merged (#207 principle 4). `enabled` is part of
+    # the answer: a floor from a lane that is switched off is a published band, not a gate.
+    assert data["oi"]["trade_floors"] == {
+        "enabled": False,
+        "mode": "paper",
+        "min_whale_long_profit_bps": 9_500,
+        "min_oi_value_usd": 20_000_000,
+        "min_price_move_bps": 100,
+        "max_price_move_bps": 600,
+        "pre_move_lookback_ms": 3_600_000,
+    }
+
+    # The live window, read under the running thresholds and folded against the rank ceiling here.
+    assert data["oi"]["window_occupancy"] == [
+        {"symbol": "WIF", "used": 2, "max_rank_in_window": 2, "full": True},
+        {"symbol": "DOGE", "used": 1, "max_rank_in_window": 2, "full": False},
+    ]
+    occupancy = next(call for name, call in news.calls if name == "oi_window_occupancy")
+    assert occupancy["window_ms"] == 4 * 3_600_000
+    assert occupancy["whale_oi_ratio_above_bps"] == 8_000
+    assert occupancy["oi_change_at_least_bps"] == 0
