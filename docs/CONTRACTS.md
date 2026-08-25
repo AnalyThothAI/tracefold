@@ -858,11 +858,15 @@ that ran only for current-cohort episodes, so `--all-cohorts --action-source
 policy` applies today's rules to a retired corpus by design. An episode with no
 complete recorded `DecisionResult` is refused in `recorded` mode rather than quietly falling through
 to a policy replay. The sealed compile projection is
-`tracefold.news.development_compile_episode.v4`; a dataset frozen under v2
-carries no policy and one frozen under v3 cannot say whether a human wrote
-`first_bad_owner` or ReviewDesk derived it, so both are refused at validation
-instead of failing inside every metric call or silently widening what GEPA may
-optimize.
+`tracefold.news.development_compile_episode.v4`. The projection is recomputed
+from `news_reviews` on every read, so a *dataset* is never stale; what the field
+refuses is a **compile record** written under an older projection — v2 carried no
+policy and would have raised inside every metric call, and v3 could not say
+whether a human wrote `first_bad_owner` or ReviewDesk derived it, which is
+exactly the difference between a Prompt-owned target and somebody else's defect.
+A record naming an older projection fails
+`news_learning_program_compile_record_invalid` rather than being re-read under
+rules it was not produced under.
 
 `--mode recorded` makes no provider call; `--all-cohorts` drops release-plane
 eligibility — for the seed sent ledger too, not only the cases — so a retired
@@ -959,7 +963,13 @@ roots, the required strata, retrieval verifiability, and a per-metric-call task
 and judge envelope computed from the corpus. It makes no task, reflection or
 judge call and writes nothing. `outcome` is `ready` or `insufficient`; the exit
 code stays `0` for an `insufficient` report, because refusing to optimize a
-corpus that cannot support it is a result rather than a failure. Readiness is an
+corpus that cannot support it is a result rather than a failure. `insufficient`
+means exactly that — a corpus that cannot support an optimization, including the
+one blocking reason that has no episodes behind it,
+`dataset_agent_cohort_mismatch` — and it is reported in the same shape as a
+`ready` report, every section present. A wrong argument is still an error: a
+validation-role SHA, a bumped epoch or drifted evidence raise their own codes
+and a non-zero exit rather than being dressed up as insufficiency. Readiness is an
 explanation in advance, not a bypass — `run_gepa` rebuilds the same plan and
 refuses on the same conditions, and `CandidateEvaluator` rebuilds it again from
 the frozen dataset and requires the candidate's declared failure clusters,

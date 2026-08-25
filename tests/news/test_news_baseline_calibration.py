@@ -46,7 +46,7 @@ _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f1
 # `tracefold.news.learning.objective` entry beside it, and the root over the two. Every score, every case
 # result and every dimension outcome is identical, which is what "the ruler moved house, not shape" has to
 # mean if the pin is to be worth anything.
-_EXPECTED_REPORT_SHA256 = "3e71aaf55663ea90cd4018484dd5bc340ed21c2a7a26b5748e8f7e7f282bf3fe"
+_EXPECTED_REPORT_SHA256 = "fa3dd4fb2496cc6efb8e874f9dd20bc9f51511d73ff9d41766773fe407422008"
 
 
 @pytest.fixture(scope="module")

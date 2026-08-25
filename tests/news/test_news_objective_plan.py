@@ -384,6 +384,63 @@ def test_a_restatement_the_reviewer_could_not_name_is_not_verifiable() -> None:
     )[:2] == ("excluded", "accepted_novelty_target_not_verifiable")
 
 
+def test_an_accepted_progression_the_model_called_new_names_no_prior_to_check() -> None:
+    """`NoveltyJudgment` accepts `duplicate_of` only for `restatement`.
+
+    So when the reviewer asserts a link the model did not make and cannot name the prior, there is no way
+    to prove the card reached the ToldContext — which is the retrieval defect, not a Prompt one.
+    """
+
+    assert _disposition(
+        _episode(
+            1,
+            novelty="progression",
+            production_novelty="new_fact",
+            explicit_owner="triage_prompt",
+            told_rows=(_told_row("event-prior", at_ms=1_786_999_400_000),),
+        )
+    )[:2] == ("excluded", "accepted_novelty_target_not_verifiable")
+
+
+def test_a_model_claimed_progression_the_reviewer_rejected_is_checkable_against_the_told_context() -> None:
+    disposition, _reason, predictors, dimensions = _disposition(
+        _episode(
+            1,
+            novelty="new_fact",
+            production_novelty="progression",
+            explicit_owner="triage_prompt",
+            told_rows=(_told_row("event-prior", at_ms=1_786_999_400_000),),
+        )
+    )
+    assert (disposition, predictors, dimensions) == ("target", ("event_semantics",), ("novelty",))
+
+
+def test_an_unreplayable_novelty_target_blocks_the_run_like_any_other_target() -> None:
+    """`would_be_target` has to know about all three target kinds, not just the two typed ones."""
+
+    plan = build_gepa_objective_plan(
+        (
+            *_mixed_corpus(),
+            _episode(
+                99,
+                novelty="restatement",
+                duplicate_of="event-prior",
+                production_novelty="new_fact",
+                explicit_owner="triage_prompt",
+                told_rows=(_told_row("event-prior", at_ms=1_786_999_400_000),),
+                seen_rows=({"event_id": "event-prior"},),
+                policy_metric={
+                    "gate": {"grounded_assets": ["TSLA"], "watchlist_symbols": [], "admission": "candidate"},
+                    "storyline": {"title": "broken", "family": "general"},
+                    "seen": [{"event_id": "event-prior"}],
+                    "told": [],
+                },
+            ),
+        )
+    )
+    assert "non_replayable_target" in plan.blocking_reasons
+
+
 def test_a_false_duplicate_claim_against_an_empty_context_is_not_the_instructions_fault() -> None:
     assert _disposition(
         _episode(

@@ -7,6 +7,7 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -2132,6 +2133,85 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
                 )
             )
         )
+
+
+def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(conn) -> None:
+    """#199: the release gate rebuilds the Objective Plan and holds the candidate to it, exactly.
+
+    All three are the same defect wearing different clothes — a candidate optimized against a corpus other
+    than the one it names. Before the plan there was only a subset check against an owner-blind guess, so
+    a candidate could declare any cluster whose review mentioned a failure, whoever owned it.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    development = asyncio.run(
+        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
+    assert plan.split is not None and len(plan.target_failure_cluster_ids) == 2
+
+    honest = _compile_record(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        program_sha256=_sha({"program": "candidate", "case": "objective-tamper"}),
+    )
+    tampered_split = _compile_record(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        program_sha256=_sha({"program": "candidate", "case": "split-tamper"}),
+        run=honest.run.model_copy(
+            update={"split": {**dict(honest.run.split), "train": {"cluster_root_sha256": "0" * 64}}}
+        ),
+    )
+
+    cases: list[tuple[str, dict[str, Any]]] = [
+        (
+            "news_learning_proposal_failure_cluster_unverified",
+            {"failure_cluster_ids": (plan.control_cluster_ids[0],)},
+        ),
+        (
+            "news_learning_proposal_target_dimensions_unverified",
+            {"target_dimensions": ("direction",)},
+        ),
+        (
+            "news_learning_proposal_split_roots_unverified",
+            {"record": tampered_split},
+        ),
+    ]
+    for error, overrides in cases:
+        candidate = _program_candidate(
+            conn,
+            stable=stable,
+            development_sha=development.artifact_sha,
+            cluster_id=development.cases[0].cluster_id,
+            program_sha256=(
+                overrides["record"].program_sha256
+                if "record" in overrides
+                else _sha({"program": "candidate", "case": error})
+            ),
+            **overrides,
+        )
+        evaluator = CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_static_judges(stable, candidate.candidate_arm),
+            candidate_catalog=(candidate,),
+        )
+        with pytest.raises(ValueError, match=error):
+            asyncio.run(
+                evaluator.evaluate(
+                    EvaluationRequest(
+                        development_dataset_sha=development.artifact_sha,
+                        candidate_sha=candidate.candidate_sha,
+                        stage="offline",
+                    )
+                )
+            )
 
 
 def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:

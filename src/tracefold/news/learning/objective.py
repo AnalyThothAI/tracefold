@@ -418,8 +418,8 @@ class GepaObjectivePlan(_ExactModel):
     """
 
     schema_version: Literal["tracefold.news.gepa_objective_plan.v1"] = OBJECTIVE_PLAN_SCHEMA
-    case_n: int = Field(ge=0)
-    cluster_n: int = Field(ge=0)
+    case_n: int = Field(default=0, ge=0)
+    cluster_n: int = Field(default=0, ge=0)
     cases: tuple[ObjectiveCase, ...] = ()
     target_case_ids: tuple[str, ...] = ()
     target_failure_cluster_ids: tuple[str, ...] = ()
@@ -559,11 +559,17 @@ def _novelty_verifiability(
     `retrieval`. Neither is repairable by an instruction, and both used to enter the failure clusters GEPA
     was pointed at.
 
-    The mirror case — the reviewer says the fact is new and the model called it a restatement — has no
-    named prior to locate, because the reviewer is asserting that no prior exists. What makes it checkable
-    is the same bounded context: the model claimed duplication against entries it was shown, so an
-    instruction can be held responsible for that claim. With an empty ToldContext there is nothing it
-    could have matched against and the defect is the model's, not the instruction's.
+    The mirror case is the one where the *model* asserts the link — it called a fact a restatement or a
+    progression and the reviewer disagreed. That claim is checkable without a named prior, because the
+    model made it against entries it was shown, so an instruction can be held responsible for it. With an
+    empty ToldContext there was nothing to match against and the defect is the model's, not the
+    instruction's.
+
+    Everything else is the reviewer asserting a link the model did not make, on a prior the rubric gives
+    no way to name — `NoveltyJudgment` only accepts `duplicate_of` for `restatement`. An accepted
+    `progression` the model called `new_fact` is exactly that shape, and it is precisely the "the model
+    was never shown the card" defect this module exists to keep out of the trainset, so it is excluded
+    rather than optimized toward.
     """
 
     if accepted_novelty in {"uncertain", production_novelty}:
@@ -578,7 +584,7 @@ def _novelty_verifiability(
         if duplicate_of not in told_ids:
             return False, "novelty_prior_not_selected"
         return True, ""
-    if production_novelty == "restatement" and not told_ids:
+    if production_novelty not in {"restatement", "progression"} or not told_ids:
         return False, "accepted_novelty_target_not_verifiable"
     return True, ""
 
@@ -664,6 +670,17 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
     gold_facts["observed_failure"] = observed_failure
     gold_facts["observed_dimensions"] = tuple(sorted(observed_dimensions))
 
+    # Decided here, before the guards below, because a novelty disagreement is one of the three things that
+    # can make a case a target — and "would this have been a target" is what decides whether an
+    # unreplayable case blocks the run or merely shrinks the corpus.
+    novelty_target, novelty_reason = _novelty_verifiability(
+        episode,
+        accepted_novelty=accepted_novelty,
+        duplicate_of=duplicate_of,
+        production_novelty=production_novelty,
+    )
+    would_be_target = explicit_prompt_owned and bool(semantics_targets or card_targets or novelty_target)
+
     # A case with no stable output is out of scope rather than broken: the accepted external miss is a fact
     # the Gate never admitted, so its `TriageContext` is synthesized rather than replayed, there is no
     # stable answer to preserve, and — the decisive part — `_component` credits every passed retention
@@ -675,7 +692,6 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
     # it mid-compile, after the budget is spent. If it would otherwise have been a target, that blocks the
     # run rather than shrinking it, which is exactly what a zero-call readiness exists to say in advance.
     if not policy_verifiable:
-        would_be_target = explicit_prompt_owned and bool(semantics_targets or card_targets)
         return _case(
             "excluded", reason="non_replayable_target" if would_be_target else "non_replayable_policy_unverifiable"
         )
@@ -699,12 +715,6 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
             reason = "owner_absent"
         return _case("excluded", reason=reason)
 
-    novelty_target, novelty_reason = _novelty_verifiability(
-        episode,
-        accepted_novelty=accepted_novelty,
-        duplicate_of=duplicate_of,
-        production_novelty=production_novelty,
-    )
     predictors: list[str] = []
     dims: list[str] = []
     if semantics_targets or novelty_target:
@@ -863,6 +873,52 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
     )
 
 
+def policy_candidate_failure_clusters(
+    cases: Sequence[Any],
+    reviews: Mapping[str, Mapping[str, Any]],
+) -> frozenset[str]:
+    """The clusters a *policy* candidate may declare. Deliberately not the GEPA rule, and not a hash of it.
+
+    A policy candidate is not GEPA's output: nobody proposes an instruction for it, so "which errors is a
+    Prompt allowed to try to repair" is the wrong question to hold it to. What it is held to is what an
+    accepted review says went wrong at all — a failed dimension, a stated correction, or the frozen
+    delivery disagreeing with the accepted action.
+
+    It reads `DatasetCaseRef` fields and review rows, and nothing else. That is the point: the release
+    plane can check a policy candidate without re-projecting the whole development corpus through
+    `decide()`, which is a per-case reader-history rebuild and a set of failure modes — drifted evidence,
+    a superseded judgment — that a policy screen would never have met.
+    """
+
+    failed: set[str] = set()
+    for case in cases:
+        review = dict(reviews.get(str(case.review_id)) or {})
+        dimensions = dict(review.get("dimensions") or {})
+        expected_sent = _expected_delivery(str(case.should_push or "uncertain"))
+        delivery_failed = (
+            expected_sent is not None
+            and str(case.delivery_truth or "unknown") != "unknown"
+            and (str(case.delivery_truth) == "observed_sent") != expected_sent
+        )
+        if delivery_failed or "fail" in dimensions.values() or bool(review.get("expected_correction")):
+            failed.add(str(case.cluster_id))
+    return frozenset(failed)
+
+
+def _expected_delivery(should_push: str) -> bool | None:
+    """Which delivery the accepted action implies, or `None` when the reviewer stated no opinion.
+
+    Read by the release evaluator's own delivery checks too, so it lives here with the rest of the corpus
+    vocabulary rather than in the module that happens to have the most callers.
+    """
+
+    if should_push in {"must_push", "should_push"}:
+        return True
+    if should_push in {"must_hold", "should_hold"}:
+        return False
+    return None
+
+
 READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v1"] = "tracefold.news.gepa_readiness_report.v1"
 # The Program answers two Predictors per metric call, in a fixed order. Not an estimate — it is the graph.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
@@ -980,15 +1036,14 @@ __all__ = [
     "ObjectiveCase",
     "build_gepa_objective_plan",
     "build_readiness_report",
-    "development_split",
-    "episode_strata",
+    "policy_candidate_failure_clusters",
     "production_decision",
     "retrieval_receipt",
     "stable_hard_gate",
     "verify_policy_projection",
 ]
 
-# Public aliases for the two private helpers the scoring plane and the release plane read by name.
-development_split = _honest_split
-episode_strata = _episode_strata
+# The one private helper a caller outside this module reads by name: `baseline.py` publishes the retrieval
+# receipt beside its scores. `_honest_split` and `_episode_strata` deliberately stay private — the plan is
+# the only thing that should be splitting an optimizer corpus.
 retrieval_receipt = _retrieval_receipt

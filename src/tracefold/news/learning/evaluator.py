@@ -37,7 +37,13 @@ from .contracts import (
     ProposalReceipt,
 )
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
-from .objective import DevelopmentEpisode, build_gepa_objective_plan, production_decision
+from .objective import (
+    DevelopmentEpisode,
+    _expected_delivery,
+    build_gepa_objective_plan,
+    policy_candidate_failure_clusters,
+    production_decision,
+)
 from .projection import (
     _arm_exact_diff,
     _call_cost_microusd,
@@ -834,11 +840,6 @@ class CandidateEvaluator:
         development = self._load_dataset(candidate.development_dataset_sha)
         if development.role != "development":
             raise ValueError("news_learning_proposal_requires_development_dataset")
-        # Re-projected once, here, for both branches: the corpus binding below and the Objective Plan are
-        # the same question asked of the same episodes, and projecting them twice would let a review edited
-        # between the two reads pass one check and fail the other.
-        projected = self.development_compile_export(candidate.development_dataset_sha).episodes
-        plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in projected))
         receipt = candidate.proposal_receipt
         if candidate.target == "program":
             if receipt.generator_kind != "model":
@@ -857,7 +858,13 @@ class CandidateEvaluator:
             record = self._compile_record(candidate)
             if record.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
                 raise ValueError("news_learning_program_compile_epoch_mismatch")
-            episodes = list(projected)
+            # Re-projected once, and only for a Program candidate: the corpus binding below and the
+            # Objective Plan are the same question asked of the same episodes, and projecting them twice
+            # would let a review edited between the two reads pass one check and fail the other. A policy
+            # candidate never reaches this — replaying `decide()` over the whole corpus to screen a policy
+            # proposal would import failure modes its own gate never meets.
+            episodes = list(self.development_compile_export(candidate.development_dataset_sha).episodes)
+            plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
             # Not the count: the episodes themselves. `development_compile_export` re-projects them from
             # live reviews and recorded decisions, so a review edited between compile and evaluate leaves
             # the count identical and the corpus different — and the candidate would then be judged
@@ -875,9 +882,9 @@ class CandidateEvaluator:
                 raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
             if tuple(candidate.target_dimensions) != plan.target_dimensions:
                 raise ValueError("news_learning_proposal_target_dimensions_unverified")
-            # The split roots, not the split's shape: `readiness`, the dataset-bound baseline, this record
-            # and this re-projection must all name the same train and development-selection halves, or the
-            # "before" number a release reads was measured on a different corpus than the winner was picked on.
+            # The split roots, not the split's shape: `readiness`, this record and this re-projection must
+            # all name the same train and development-selection halves, or the winner was picked on a
+            # different corpus than the one this gate is about to judge it against.
             if record.run.split != plan.split:
                 raise ValueError("news_learning_proposal_split_roots_unverified")
         elif any(
@@ -893,17 +900,19 @@ class CandidateEvaluator:
             raise ValueError("news_learning_proposal_dataset_mismatch")
         if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):
             raise ValueError("news_learning_target_dimensions_mismatch")
-        if candidate.target != "program" and not set(candidate.proposal_receipt.failure_cluster_ids) <= set(
-            plan.observed_failure_cluster_ids
-        ):
-            # A policy candidate is not GEPA's output and its clusters are not Prompt-owned targets, so it is
-            # held to the plan's owner-blind superset — the same rule, from the same module, asked a
-            # different question. It used to be a second inline heuristic here that also counted a delivery
-            # failure as a review failure, which no accepted review ever says.
-            unknown = ",".join(
-                sorted(set(candidate.proposal_receipt.failure_cluster_ids) - set(plan.observed_failure_cluster_ids))
+        if candidate.target != "program":
+            # A policy candidate is not GEPA's output, so the Prompt-owner question is the wrong one to hold
+            # it to. It keeps the rule it always had — a failed dimension, a stated correction, or frozen
+            # delivery disagreeing with the accepted action — which now lives in `objective.py` under its
+            # own name instead of being a second inline heuristic here.
+            admissible = policy_candidate_failure_clusters(
+                development.cases, self._reviews_by_id([case.review_id for case in development.cases])
             )
-            raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
+            declared = set(candidate.proposal_receipt.failure_cluster_ids)
+            if not declared <= admissible:
+                raise ValueError(
+                    f"news_learning_proposal_failure_cluster_unverified:{','.join(sorted(declared - admissible))}"
+                )
         self._verify_registration_receipt(candidate.proposal_receipt)
 
     def _accepted_cases(
@@ -3006,14 +3015,6 @@ def _mean_regressed(stable: Sequence[int], candidate: Sequence[int], *, growth_p
     if stable_mean == 0:
         return candidate_mean > 0
     return candidate_mean > stable_mean * (1 + float(growth_pct))
-
-
-def _expected_delivery(should_push: str) -> bool | None:
-    if should_push in {"must_push", "should_push"}:
-        return True
-    if should_push in {"must_hold", "should_hold"}:
-        return False
-    return None
 
 
 def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:

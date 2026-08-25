@@ -127,6 +127,7 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     from tracefold.news.learning.evaluator import LEARNING_EPOCH, LEARNING_PROFILE_ID, CandidateEvaluator
     from tracefold.news.learning.objective import (
         DevelopmentEpisode,
+        GepaObjectivePlan,
         build_gepa_objective_plan,
         build_readiness_report,
     )
@@ -146,30 +147,28 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         "policy_sha256": stable.policy_sha256,
         "model_targets": _readiness_model_targets(settings),
     }
+    episodes: tuple[Any, ...] = ()
+    plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))
     with postgres_connection(settings, role="serve") as conn:
         evaluator = CandidateEvaluator(conn, stable=stable, judges={})
         try:
             export = evaluator.development_compile_export(dataset_sha)
         except ValueError as exc:
-            # The one blocker that has no episodes behind it: a dataset frozen under a different arm cannot
-            # be projected at all. It is still a readiness answer, so it is reported as one.
+            # The one blocker in the #199 §4 vocabulary that has no episodes behind it: a dataset frozen
+            # under a different arm cannot be projected at all. It is a readiness answer, so it is reported
+            # as one — through the same builder, so a consumer never has to parse two report shapes. Every
+            # other refusal (a validation-role SHA, an epoch mismatch, drifted evidence) is an error, not
+            # an insufficiency, and still raises.
             if "news_learning_dataset_agent_cohort_mismatch" not in str(exc):
                 raise
-            report = {
-                "schema": "tracefold.news.gepa_readiness_report.v1",
-                "identity": identity,
-                "outcome": "insufficient",
-                "blocking_reasons": ["dataset_agent_cohort_mismatch"],
-            }
-            if str(args.out):
-                _write_json(str(args.out), report)
-            return 0, {"ok": True, "data": {**report, "report_written_to": str(args.out) or None}}
-    episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
-    identity["episode_count"] = len(episodes)
-    # The exact root `CompileRecordV1` commits to and `CandidateEvaluator` re-derives, computed from the same
-    # raw projection dicts rather than from the parsed models — same bytes, same address, four readers.
-    identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
-    report = build_readiness_report(build_gepa_objective_plan(episodes), episodes=episodes, identity=identity)
+        else:
+            episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
+            identity["episode_count"] = len(episodes)
+            # The exact root `CompileRecordV1` commits to and `CandidateEvaluator` re-derives, computed from
+            # the same raw projection dicts rather than from the parsed models — same bytes, same address.
+            identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
+            plan = build_gepa_objective_plan(episodes)
+    report = build_readiness_report(plan, episodes=episodes, identity=identity)
     if str(args.out):
         _write_json(str(args.out), report)
     summary: dict[str, Any] = {key: value for key, value in report.items() if key != "case_dispositions"}
