@@ -91,7 +91,9 @@ class ExperimentCase(_ExactModel):
     invents its own identity would resume against a corpus it never measured.
     """
 
-    case_sha256: str = Field(min_length=1)
+    # Constrained because it is used as a filename. Left as `min_length=1` it accepted `../../../pwned`,
+    # and `write_compared` would have written outside the run root the safe-directory check guards.
+    case_sha256: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     cluster_id: str = Field(min_length=1)
     stratum: str = Field(min_length=1)
     # Kept beside the episode rather than inside it: `DevelopmentEpisode` forbids the key, and this is what
@@ -108,8 +110,10 @@ class ExperimentCase(_ExactModel):
 class ExperimentRun:
     """A directory on disk. Nothing here is a database, and nothing here may become one."""
 
-    def __init__(self, root: Path) -> None:
-        self.root = _safe_directory(root)
+    def __init__(self, root: Path, *, create: bool = False) -> None:
+        """`create` only for `snapshot`. The three read commands must not conjure the run they were given."""
+
+        self.root = _safe_directory(root, create=create)
 
     @property
     def manifest_path(self) -> Path:
@@ -154,6 +158,12 @@ class ExperimentRun:
             return {}
         return {path.stem: _read_json(path) for path in sorted(self.compare_dir.glob("*.json"))}
 
+    def report(self, name: str) -> dict[str, Any] | None:
+        """A report a previous pass left, or `None`. What `--resume` merges onto."""
+
+        path = self.root / f"{name}.json"
+        return _read_json(path) if path.is_file() else None
+
     def write_report(self, name: str, payload: Mapping[str, Any]) -> Path:
         path = self.root / f"{name}.json"
         _write_json(path, dict(payload))
@@ -161,18 +171,30 @@ class ExperimentRun:
 
 
 def case_root_sha256(cases: Sequence[ExperimentCase]) -> str:
-    """One root over the frozen case identities, so a run cannot silently change what it measured."""
+    """One order-independent root over the frozen case identities.
 
-    return canonical_sha([case.case_sha256 for case in cases])
+    Sorted, because the write order and the read order are different orders and always were: a snapshot
+    writes in `(opened_at_ms, case_id)` — wall clock — and `cases()` reads back in filename order, which is
+    the case sha. Hashing the caller's iteration order therefore produced a root that could not be
+    recomputed from the directory it addresses, on every run, which made the promise below unenforceable.
+    `baseline.py` sorts for the same reason one file over.
+    """
+
+    return canonical_sha(sorted(case.case_sha256 for case in cases))
 
 
-def _safe_directory(root: Path) -> Path:
+def _safe_directory(root: Path, *, create: bool) -> Path:
+    """Resolve a run root, refusing a traversal or a symlink *before* anything is created."""
+
     requested = Path(root)
-    if ".." in requested.parts:
+    if ".." in requested.parts or requested.is_symlink():
         raise ValueError("news_experiment_run_path_invalid")
-    requested.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if create:
+        requested.mkdir(parents=True, exist_ok=True, mode=0o700)
+    elif not requested.is_dir():
+        raise ValueError("news_experiment_run_directory_missing")
     resolved = requested.resolve(strict=True)
-    if requested.is_symlink() or not resolved.is_dir() or requested.absolute().resolve() != resolved:
+    if not resolved.is_dir():
         raise ValueError("news_experiment_run_path_invalid")
     return resolved
 

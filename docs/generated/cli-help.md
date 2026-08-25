@@ -419,8 +419,8 @@ options:
   --include-reviewed    also draft Events that already carry an accepted
                         review (default: only unjudged ones)
   --events-from EVENTS_FROM
-                        draft only the unlabelled Events frozen in this
-                        experiment run directory (ignores --hours)
+                        draft the unjudged Events in this experiment run's
+                        window (replaces --hours)
   --out OUT             write the draft batch JSON for human review
 
 ```
@@ -488,6 +488,7 @@ usage: tracefold news learning experiment optimize [-h] --run RUN
                                                    --reflection REFLECTION
                                                    --semantic-judge SEMANTIC_JUDGE
                                                    --max-metric-calls MAX_METRIC_CALLS
+                                                   --max-judge-model-calls MAX_JUDGE_MODEL_CALLS
                                                    [--seed SEED]
 
 options:
@@ -499,6 +500,7 @@ options:
   --semantic-judge SEMANTIC_JUDGE
                         equivalence judge model
   --max-metric-calls MAX_METRIC_CALLS
+  --max-judge-model-calls MAX_JUDGE_MODEL_CALLS
   --seed SEED
 
 ```

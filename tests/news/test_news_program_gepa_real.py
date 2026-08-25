@@ -14,12 +14,11 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
-from tracefold.news.learning.compiler.gepa import build_compile_lm
+from tracefold.news.learning.compiler.gepa import _FeedbackCompileProgram, build_compile_lm
 from tracefold.news.learning.compiler.root import (
     CompileBudget,
     CompileRequest,
     ProgramCompiler,
-    _FeedbackCompileProgram,
 )
 from tracefold.news.learning.compiler.security import (
     REFLECTION_MAX_TOKENS,

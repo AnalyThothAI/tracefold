@@ -72,7 +72,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260825_0305"
+        assert revision["version_num"] == "20260825_0306"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -176,7 +176,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0305"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
     finally:
         if conn is not None:
             conn.close()
@@ -218,7 +218,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0305"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -541,7 +541,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0305"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -697,6 +697,7 @@ _HARD_CUT_TRIP_REASON = "program_strategy_artifact_v1_hard_cut"
 # the optimizer provenance record and the machine diff with one `news_program_compile_record_v1`
 # document. Pinned as a literal for the same reason as everything above.
 _COMPILE_RECORD_TRIP_REASON = "compile_record_v1_hard_cut"
+_RUN_SPEND_TRIP_REASON = "compile_record_run_spend_embed"
 
 
 def _ledger_artifact_sha(kind: str, payload: dict[str, Any]) -> str:
@@ -778,7 +779,7 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0305"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -931,7 +932,7 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0305"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -1011,3 +1012,66 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
             reset_postgres_schema(restore)
         finally:
             restore.close()
+
+
+def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_record() -> None:
+    """#193 PR-C embeds the optimization and the spend, so a record written between `0305` and it is dead.
+
+    `0305` shipped one day earlier with eleven flat fields; the record carries `run` and `spend` now, and
+    `extra="forbid"` refuses the old shape outright. Without this migration a candidate registered in that
+    window surfaces at evaluate time as `news_learning_program_compile_record_invalid` — corruption, rather
+    than the hard cut it actually is. `schema_version` deliberately does not move: the document is still one
+    trusted compile, and a bump would imply two readable shapes when there is one.
+    """
+
+    _fresh_schema_at("20260825_0305")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        settled_at_ms = int(time.time() * 1000) - 60_000
+        # Armed *after* `0305` ran, so it is `0306`'s to close and nothing else's.
+        conn.execute(
+            """
+            INSERT INTO news_canary_activations (
+              activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+              selector_version, exposure_bps, eligibility_profile_sha, rolling_profile_sha,
+              state, revision, created_at_ms
+            ) VALUES (%s, %s, %s, %s, 'news_canary_selector_v1', 1000, %s, %s, 'armed', 3, %s)
+            """,
+            ("f" * 32, "1" * 64, "2" * 64, "3" * 64, "4" * 64, "5" * 64, settled_at_ms),
+        )
+        prior_epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        conn.commit()
+        conn.close()
+        conn = None
+
+        deployed_after_ms = int(time.time() * 1000) - 5_000
+        _upgrade("head")
+        deployed_before_ms = int(time.time() * 1000) + 5_000
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+
+        activation = dict(
+            conn.execute(
+                "SELECT state, revision, trip_reason, tripped_at_ms FROM news_canary_activations "
+                "WHERE activation_id = %s",
+                ("f" * 32,),
+            ).fetchone()
+        )
+        assert activation["state"] == "tripped"
+        assert activation["revision"] == 4
+        assert activation["trip_reason"] == _RUN_SPEND_TRIP_REASON
+        assert deployed_after_ms <= activation["tripped_at_ms"] <= deployed_before_ms
+
+        # Accepted `news_review_v4` truth does not depend on how a compile is serialized.
+        epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        assert epochs == prior_epochs
+    finally:
+        if conn is not None:
+            conn.close()

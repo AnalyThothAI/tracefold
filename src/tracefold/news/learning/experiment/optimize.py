@@ -18,6 +18,7 @@ from ...artifact_identity import canonical_sha
 from ...program.artifact import ProgramStrategyArtifactV1
 from ..compiler.gepa import GepaRunResult, run_gepa
 from ..metric import DevelopmentEpisode
+from .compare import baseline_cases
 from .run import ExperimentCase
 
 EXPERIMENT_CANDIDATE_SCHEMA: Literal["tracefold.news.experiment_candidate.v1"] = (
@@ -67,9 +68,14 @@ class ExperimentCandidate(BaseModel):
 
 
 def accepted_episodes(cases: Sequence[ExperimentCase]) -> tuple[DevelopmentEpisode, ...]:
-    """Only cases a human accepted. A teacher draft is a proposal, never truth to optimize against."""
+    """Only cases a human accepted, projected exactly as the scoring side projects them.
 
-    return tuple(DevelopmentEpisode.model_validate(case.episode) for case in cases if case.accepted)
+    Through `baseline_cases`, not a second `model_validate`: the number this optimization maximizes and the
+    number the comparison reports have to come off the same objects, which is the same reason `run_gepa` is
+    shared one layer down.
+    """
+
+    return tuple(case.episode for case in baseline_cases(cases))
 
 
 def optimize_snapshot(

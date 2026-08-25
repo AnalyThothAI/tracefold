@@ -1,31 +1,34 @@
 """The operator's fast loop: a frozen run directory, a paired comparison, and an unpromotable proposal.
 
-Four properties are what make this loop safe to run beside a release plane, and each one is asserted here
-rather than argued in a docstring: the run is addressed by what it froze, only accepted reviews can score
-or train anything, a case nobody judged is named rather than silently dropped, and the winner is not
-release evidence. The fifth — that the fast loop optimizes through the same core a trusted compile does —
-is what makes the number it reports worth reading at all.
+Every fixture here builds its cases through `snapshot._case`, the projection the real command uses. The
+first version of this file constructed `ExperimentCase(...)` by hand, and so tested a shape the snapshot
+can never write: the hand-built case carried no `recorded_decision_result`, and neither did the code, so
+the whole suite stayed green while `compare` died on its first case with
+`news_program_baseline_recorded_decision_missing`. Two of the tests below exist only to run the arms.
 """
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news.learning.baseline import BaselineCase, BaselineReport, CaseResult
+from tracefold.news.learning.baseline import BaselineReport, CaseResult
 from tracefold.news.learning.compiler import gepa as gepa_core
 from tracefold.news.learning.compiler import root as compiler_root
-from tracefold.news.learning.compiler.gepa import GepaRunResult
-from tracefold.news.learning.compiler.security import CompileRecordV1, validate_compile_record
+from tracefold.news.learning.compiler.security import CompileRecordV1, GepaRunResult, validate_compile_record
 from tracefold.news.learning.experiment import optimize as optimize_module
 from tracefold.news.learning.experiment.compare import (
     answered_case_scores,
     baseline_cases,
     compare_report,
+    failed_case_ids,
+    merged_report,
     pending_cases,
+    score_arm,
 )
 from tracefold.news.learning.experiment.optimize import (
     ExperimentCandidate,
@@ -39,10 +42,12 @@ from tracefold.news.learning.experiment.run import (
     ExperimentWindow,
     case_root_sha256,
 )
+from tracefold.news.learning.experiment.snapshot import _case as _snapshot_case
 from tracefold.news.program.artifact import ProgramStrategyPatchV1, load_stable_program_artifact
 
 from .test_news_baseline_modes import _case as _baseline_case
 
+_RECORDED_DECISION = {"final": "push", "rule": "trade_relevance", "rule_baseline": "push", "throttled_by": None}
 _ACCEPTED_REVIEW = {
     "should_push": "should_push",
     "dimensions": {"factual_fidelity": "fail", "headline_fidelity": "pass", "magnitude": "pass"},
@@ -50,27 +55,32 @@ _ACCEPTED_REVIEW = {
 }
 
 
-def _case(index: int, *, accepted: bool = True) -> ExperimentCase:
-    """One frozen case built from the same episode shape the baseline harness scores."""
+def _episode(index: int) -> dict[str, Any]:
+    """A raw `baseline_episodes` row, loader-only keys and all — what `snapshot` actually receives."""
 
-    episode = _baseline_case(index).episode.model_dump(mode="json")
-    episode["accepted_review"] = dict(_ACCEPTED_REVIEW) if accepted else {}
-    return ExperimentCase(
-        case_sha256=f"{index:064x}",
+    payload = _baseline_case(index).episode.model_dump(mode="json")
+    payload.update(
+        case_id=f"{index:064x}",
         cluster_id=f"cluster-{index % 3}",
         stratum="delivered",
-        event_id=f"{index:064x}",
-        episode=episode,
-        accepted=accepted,
+        accepted_review=dict(_ACCEPTED_REVIEW),
+        event_id=f"event-{index}",
+        recorded_decision_result=dict(_RECORDED_DECISION),
     )
+    return payload
+
+
+def _case(index: int, **overrides: Any) -> ExperimentCase:
+    payload = _episode(index)
+    payload.update(overrides)
+    return _snapshot_case(payload)
 
 
 def _manifest(cases: list[ExperimentCase], **overrides: Any) -> ExperimentRunManifest:
-    stable = load_stable_program_artifact()
     values: dict[str, Any] = {
         "name": "news-24h",
         "window": ExperimentWindow(from_ms=1_787_000_000_000, to_ms=1_787_086_400_000),
-        "parent_program_sha256": stable.program_sha256,
+        "parent_program_sha256": load_stable_program_artifact().program_sha256,
         "program_version": "news_semantic_program_v5",
         "policy_sha256": "b" * 64,
         "case_count": len(cases),
@@ -82,14 +92,12 @@ def _manifest(cases: list[ExperimentCase], **overrides: Any) -> ExperimentRunMan
     return ExperimentRunManifest.issue(**values)
 
 
-def _report(scores: dict[str, float], *, cluster_of: dict[str, str]) -> BaselineReport:
-    """A minimal arm report: what `compare_report` reads, through the real report model."""
-
+def _arm(scores: dict[str, float], *, cluster_of: dict[str, str], failed: tuple[str, ...] = ()) -> BaselineReport:
     return BaselineReport(
         mode="recorded",
         identity={"mode": "recorded"},
         execution_scope=("recorded",),
-        population={"cases": len(scores), "answered": len(scores)},
+        population={"cases": len(scores), "answered": len(scores) - len(failed)},
         scores={"mean": 0.5, "mean_with_failures_as_zero": 0.5},
         action_confusion={},
         hard_gates={},
@@ -107,24 +115,79 @@ def _report(scores: dict[str, float], *, cluster_of: dict[str, str]) -> Baseline
                 action="push",
                 should_push="should_push",
                 feedback="",
+                error_code="provider_unavailable" if case_id in failed else None,
             )
             for case_id, score in scores.items()
         ),
     )
 
 
+# --- the arms actually run ----------------------------------------------------------------------------
+
+
+def test_the_recorded_arm_scores_a_frozen_case() -> None:
+    """The regression that mattered: `compare`'s first arm used to raise on its first case.
+
+    `snapshot` stripped `recorded_decision_result` and `baseline_cases` rebuilt `BaselineCase` by hand
+    without it, so `run_baseline` refused every recorded case — and no test noticed, because no test called
+    `run_baseline` at all. Both sides now go through `build_baseline_cases`, the release plane's own
+    projection.
+    """
+
+    report = score_arm([_case(0)], mode="recorded", artifact=load_stable_program_artifact(), cohort_scope="experiment")
+
+    assert [case.case_id for case in report.cases] == [f"{0:064x}"]
+    assert report.cases[0].error_code is None
+
+
+def test_the_student_arm_gets_the_program_factory_run_baseline_requires() -> None:
+    """`compile_live` refuses without a factory, and the caller is not the one who should remember it.
+
+    Left to the CLI it was forgotten, and `--student` being required meant no invocation escaped
+    `news_program_baseline_requires_program_factory`. `score_arm` picks it from the mode now, so reaching a
+    provider error here — rather than the factory error — is the whole assertion.
+    """
+
+    report = score_arm(
+        [_case(0)],
+        mode="compile_live",
+        artifact=load_stable_program_artifact(),
+        lm=object(),
+        cohort_scope="experiment",
+    )
+
+    # It built the graph and tried to answer. A bogus LM is a provider failure, which this plane publishes
+    # as an outcome rather than an absence — the point is that it got that far at all.
+    assert [case.case_id for case in report.cases] == [f"{0:064x}"]
+    assert report.cases[0].error_code is not None
+
+
 # --- the run directory is addressed by what it froze --------------------------------------------------
+
+
+def test_a_run_root_is_reproducible_from_the_directory_it_addresses(tmp_path: Path) -> None:
+    """Write order and read order are different orders, so the root cannot depend on either.
+
+    A snapshot writes in `(opened_at_ms, case_id)` — wall clock — and `cases()` reads back in filename
+    order, which is the case sha. Hashing the caller's sequence produced a root nothing could recompute.
+    """
+
+    cases = [_case(index) for index in (4, 0, 2)]
+    run = ExperimentRun(tmp_path / "run", create=True)
+    for case in cases:
+        run.write_case(case)
+
+    assert case_root_sha256(cases) == case_root_sha256(list(run.cases()))
+    assert case_root_sha256(cases) == case_root_sha256(list(reversed(cases)))
 
 
 def test_a_run_is_addressed_by_the_cases_it_froze(tmp_path: Path) -> None:
     cases = [_case(index) for index in range(4)]
     first = _manifest(cases)
     assert _manifest(list(cases)).run_sha256 == first.run_sha256
+    assert _manifest([*cases[:3], _case(99)]).run_sha256 != first.run_sha256
 
-    swapped = [*cases[:3], _case(99)]
-    assert _manifest(swapped).run_sha256 != first.run_sha256
-
-    run = ExperimentRun(tmp_path / "run")
+    run = ExperimentRun(tmp_path / "run", create=True)
     run.write_manifest(first)
     assert run.manifest() == first
 
@@ -136,88 +199,130 @@ def test_a_manifest_whose_identity_was_edited_is_refused() -> None:
         ExperimentRunManifest.model_validate(payload)
 
 
-def test_a_run_cannot_claim_more_accepted_cases_than_it_holds() -> None:
-    with pytest.raises(ValidationError, match="news_experiment_accepted_case_count_invalid"):
-        _manifest([_case(0)], case_count=1, accepted_case_count=2)
+def test_a_case_id_cannot_escape_the_run_directory() -> None:
+    """`case_sha256` is a filename. Unconstrained, `write_compared` wrote outside the run root."""
+
+    with pytest.raises(ValidationError):
+        _case(0, case_id="../../../pwned")
 
 
 def test_a_run_directory_refuses_a_path_that_escapes_or_follows_a_link(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="news_experiment_run_path_invalid"):
-        ExperimentRun(tmp_path / ".." / "elsewhere")
+        ExperimentRun(tmp_path / ".." / "elsewhere", create=True)
 
     (tmp_path / "real").mkdir()
     (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
     with pytest.raises(ValueError, match="news_experiment_run_path_invalid"):
-        ExperimentRun(tmp_path / "link")
+        ExperimentRun(tmp_path / "link", create=True)
+
+
+def test_a_read_command_never_conjures_the_run_it_was_given(tmp_path: Path) -> None:
+    """Only `snapshot` creates. `compare`/`optimize` used to mkdir and then report a missing manifest."""
+
+    with pytest.raises(ValueError, match="news_experiment_run_directory_missing"):
+        ExperimentRun(tmp_path / "never-snapshotted")
+    assert not (tmp_path / "never-snapshotted").exists()
 
 
 def test_a_case_file_that_is_a_symlink_is_not_a_case(tmp_path: Path) -> None:
-    run = ExperimentRun(tmp_path / "run")
+    run = ExperimentRun(tmp_path / "run", create=True)
     run.write_case(_case(0))
     (run.cases_dir / "planted.json").symlink_to(run.cases_dir / f"{0:064x}.json")
     with pytest.raises(ValueError, match="news_experiment_run_file_invalid"):
         list(run.cases())
 
 
-def test_a_run_without_a_manifest_is_not_a_run(tmp_path: Path) -> None:
-    run = ExperimentRun(tmp_path / "run")
-    with pytest.raises(ValueError, match="news_experiment_run_manifest_missing"):
-        run.manifest()
-
-
-# --- resume is a directory listing, not a stored cursor -----------------------------------------------
+# --- resume ------------------------------------------------------------------------------------------
 
 
 def test_resume_answers_only_what_a_previous_run_left(tmp_path: Path) -> None:
-    run = ExperimentRun(tmp_path / "run")
+    run = ExperimentRun(tmp_path / "run", create=True)
     cases = [_case(index) for index in range(5)]
     for case in cases:
         run.write_case(case)
-    run.write_compared(cases[0].case_sha256, {"case_sha256": cases[0].case_sha256, "scores": {}})
-    run.write_compared(cases[3].case_sha256, {"case_sha256": cases[3].case_sha256, "scores": {}})
+    for case in (cases[0], cases[3]):
+        run.write_compared(case.case_sha256, {"case_sha256": case.case_sha256, "scores": {}})
 
-    remaining = [case.case_sha256 for case in pending_cases(run, resume=True)]
-    assert remaining == [cases[1].case_sha256, cases[2].case_sha256, cases[4].case_sha256]
-    # Without `--resume` the run is answered again from the top: the flag is the only thing that lets a
-    # previous partial answer stand, so a rerun can never inherit one by accident.
+    assert [case.case_sha256 for case in pending_cases(run, resume=True)] == [
+        cases[1].case_sha256,
+        cases[2].case_sha256,
+        cases[4].case_sha256,
+    ]
     assert len(pending_cases(run, resume=False)) == 5
 
 
-def test_cases_are_read_in_one_fixed_order(tmp_path: Path) -> None:
-    run = ExperimentRun(tmp_path / "run")
-    for index in (4, 0, 2, 1, 3):
-        run.write_case(_case(index))
-    assert [case.case_sha256 for case in run.cases()] == sorted(f"{index:064x}" for index in range(5))
+def test_a_case_the_provider_never_answered_is_asked_again() -> None:
+    """`if scores` could never be False — a provider failure scores `0.0`, not nothing.
+
+    So a timed-out case was recorded as answered, skipped by every later pass, and its full delta ranked as
+    a semantic regression. Failure is still published; it is just not a reason to stop asking.
+    """
+
+    cluster_of = {"answered": "c0", "timed-out": "c0"}
+    arms = {
+        "recorded": _arm({"answered": 1.0, "timed-out": 1.0}, cluster_of=cluster_of),
+        "student": _arm({"answered": 0.8, "timed-out": 0.0}, cluster_of=cluster_of, failed=("timed-out",)),
+    }
+    report = compare_report(run_sha256="a" * 64, arms=arms)
+
+    assert failed_case_ids(arms) == ("timed-out",)
+    assert set(answered_case_scores(report, failed_case_ids=failed_case_ids(arms))) == {"answered"}
+
+
+def test_a_resumed_report_covers_the_whole_run_not_the_last_batch() -> None:
+    """`--resume` scores only the pending batch, so a report rebuilt from it alone described 4% of a run."""
+
+    cluster_of = {"a": "c0", "b": "c0", "c": "c1"}
+    first = compare_report(
+        run_sha256="a" * 64,
+        arms={
+            "recorded": _arm({"a": 1.0, "b": 1.0}, cluster_of=cluster_of),
+            "student": _arm({"a": 0.5, "b": 0.5}, cluster_of=cluster_of),
+        },
+    )
+    second = compare_report(
+        run_sha256="a" * 64,
+        arms={
+            "recorded": _arm({"c": 1.0}, cluster_of=cluster_of),
+            "student": _arm({"c": 0.2}, cluster_of=cluster_of),
+        },
+    )
+    merged = merged_report(previous=first, current=second)
+
+    assert set(merged["cases"]) == {"a", "b", "c"}
+    assert {row["cluster_id"] for row in merged["failure_clusters"]} == {"c0", "c1"}
+
+
+def test_two_passes_run_against_different_models_are_not_one_report() -> None:
+    cluster_of = {"a": "c0"}
+    current = compare_report(run_sha256="a" * 64, arms={"recorded": _arm({"a": 1.0}, cluster_of=cluster_of)})
+    previous = dict(current)
+    previous["arms"] = {"recorded": {"mode": "recorded", "compile_task_model": "someone-else"}}
+    with pytest.raises(ValueError, match="news_experiment_report_arm_identity_changed"):
+        merged_report(previous=previous, current=current)
 
 
 # --- only an accepted review can score or train anything ----------------------------------------------
 
 
-def test_only_accepted_reviews_become_training_episodes() -> None:
-    cases = [_case(0), _case(1, accepted=False), _case(2)]
-    episodes = accepted_episodes(cases)
-    assert [episode.case_id for episode in episodes] == [f"{0:064x}", f"{2:064x}"]
+def test_a_snapshot_case_is_accepted_by_construction() -> None:
+    """`baseline_episodes` reaches a case through an acceptance row, so this is a fact, not a guess.
 
-
-def test_a_case_nobody_judged_is_scored_by_nobody() -> None:
-    cases = [_case(0), _case(1, accepted=False)]
-    scored: list[BaselineCase] = baseline_cases(cases)
-    assert [case.episode.case_id for case in scored] == [f"{0:064x}"]
-
-
-def test_a_drafted_review_is_a_proposal_and_never_truth() -> None:
-    """A draft sitting in the episode is not an acceptance, and `accepted` is what decides.
-
-    `draft-reviews` writes a file; a human accepts it; only then does `baseline_episodes` project it as
-    `accepted_review`. A frozen case that carried a drafted rubric and were trained on anyway would let the
-    teacher model grade its own homework and call the result gold.
+    It used to read `bool(accepted_review)`, which `_project_episodes` always fills — a constant wearing the
+    costume of a check, and the reason `--events-from` could never find anything to draft.
     """
 
-    drafted = _case(7, accepted=False)
-    drafted = drafted.model_copy(update={"episode": {**drafted.episode, "accepted_review": _ACCEPTED_REVIEW}})
-    assert drafted.accepted is False
-    assert accepted_episodes([drafted]) == ()
-    assert baseline_cases([drafted]) == []
+    assert _case(0).accepted is True
+    assert _case(0, accepted_review={}).accepted is True
+
+
+def test_both_the_metric_and_the_optimizer_see_one_projection() -> None:
+    cases = [_case(0), _case(1)]
+    scored = baseline_cases(cases)
+
+    assert [case.episode.case_id for case in scored] == [episode.case_id for episode in accepted_episodes(cases)]
+    # Threaded, not dropped: this is the field whose absence made the recorded arm unrunnable.
+    assert all(case.recorded_decision_result for case in scored)
 
 
 def test_optimizing_a_snapshot_nobody_reviewed_is_refused() -> None:
@@ -225,7 +330,7 @@ def test_optimizing_a_snapshot_nobody_reviewed_is_refused() -> None:
         optimize_snapshot(
             run_sha256="a" * 64,
             base_program=load_stable_program_artifact(),
-            cases=[_case(0, accepted=False)],
+            cases=[],
             task_lm=None,
             reflection_lm=None,
             judge=object(),
@@ -235,69 +340,18 @@ def test_optimizing_a_snapshot_nobody_reviewed_is_refused() -> None:
         )
 
 
-# --- an unlabelled case is named, not dropped ---------------------------------------------------------
-
-
-def test_unlabelled_cases_are_named_in_the_report() -> None:
-    cluster_of = {"a": "c0", "b": "c0"}
-    report = compare_report(
-        run_sha256="a" * 64,
-        arms={
-            "recorded": _report({"a": 1.0, "b": 0.5}, cluster_of=cluster_of),
-            "student": _report({"a": 0.5, "b": 0.5}, cluster_of=cluster_of),
-        },
-        unlabelled_case_ids=["c", "d"],
-    )
-    assert report["unlabelled_case_ids"] == ["c", "d"]
-    # Both means survive the trip. Reporting only the answered-only mean is what turned 0.482 into 0.587.
-    assert set(report["scores"]["student"]) >= {"mean", "mean_with_failures_as_zero"}
-
-
-def test_resume_never_remembers_a_case_nobody_scored(tmp_path: Path) -> None:
-    """The loop's own step: draft, accept, compare again. An empty result would break exactly that.
-
-    `compare` writes what an arm answered so a resumed pass does not re-spend those calls. If it also
-    wrote an empty record for the unlabelled cases, the next `--resume` would skip them — including the
-    ones `draft-reviews --events-from` had a rubric written for and a human accepted in between.
-    """
-
-    cluster_of = {"scored": "c0"}
-    report = compare_report(
-        run_sha256="a" * 64,
-        arms={
-            "recorded": _report({"scored": 1.0}, cluster_of=cluster_of),
-            "student": _report({"scored": 0.5}, cluster_of=cluster_of),
-        },
-        unlabelled_case_ids=["unscored"],
-    )
-    assert set(answered_case_scores(report)) == {"scored"}
-
-    run = ExperimentRun(tmp_path / "run")
-    for case_sha256 in ("scored", "unscored"):
-        run.write_case(
-            ExperimentCase(
-                case_sha256=case_sha256,
-                cluster_id="c0",
-                stratum="delivered",
-                event_id=f"event-{case_sha256}",
-                episode={},
-                accepted=case_sha256 == "scored",
-            )
-        )
-    for case_sha256, scores in answered_case_scores(report).items():
-        run.write_compared(case_sha256, {"case_sha256": case_sha256, "scores": scores})
-
-    assert [case.case_sha256 for case in pending_cases(run, resume=True)] == ["unscored"]
+# --- failure clusters are a work queue ----------------------------------------------------------------
 
 
 def test_failure_clusters_rank_a_broad_regression_above_a_single_bad_case() -> None:
     cluster_of = {"a": "broad", "b": "broad", "c": "broad", "d": "broad", "e": "single"}
-    recorded = _report({"a": 1.0, "b": 1.0, "c": 1.0, "d": 1.0, "e": 1.0}, cluster_of=cluster_of)
-    student = _report({"a": 0.8, "b": 0.8, "c": 0.8, "d": 0.8, "e": 0.3}, cluster_of=cluster_of)
     report = compare_report(
-        run_sha256="a" * 64, arms={"recorded": recorded, "student": student}, unlabelled_case_ids=[]
+        run_sha256="a" * 64,
+        arms={
+            "recorded": _arm({"a": 1.0, "b": 1.0, "c": 1.0, "d": 1.0, "e": 1.0}, cluster_of=cluster_of),
+            "student": _arm({"a": 0.8, "b": 0.8, "c": 0.8, "d": 0.8, "e": 0.3}, cluster_of=cluster_of),
+        },
     )
-    # -0.2 across four cases outranks -0.7 on one: an operator's next hour is better spent on the pattern.
     assert [row["cluster_id"] for row in report["failure_clusters"]] == ["broad", "single"]
 
 
@@ -306,28 +360,30 @@ def test_an_improvement_never_climbs_the_work_queue() -> None:
     report = compare_report(
         run_sha256="a" * 64,
         arms={
-            "recorded": _report({"a": 0.2, "b": 1.0}, cluster_of=cluster_of),
-            "student": _report({"a": 0.9, "b": 0.4}, cluster_of=cluster_of),
+            "recorded": _arm({"a": 0.2, "b": 1.0}, cluster_of=cluster_of),
+            "student": _arm({"a": 0.9, "b": 0.4}, cluster_of=cluster_of),
         },
-        unlabelled_case_ids=[],
     )
     ranked = {row["cluster_id"]: row["attention"] for row in report["failure_clusters"]}
-    assert ranked["better"] == 0.0
-    assert ranked["worse"] < 0.0
+    assert ranked["better"] == 0.0 and ranked["worse"] < 0.0
 
 
 # --- both planes optimize through one core ------------------------------------------------------------
 
 
-def test_both_planes_hold_the_same_optimization_core() -> None:
-    """Not "the same algorithm" by inspection — the same function object, in both callers.
+def test_both_planes_hold_the_same_optimization_core_and_the_same_student() -> None:
+    """Function identity was not enough, and the gap it missed falsified the PR's headline claim.
 
-    If either plane rebinds its own copy, the number an operator reads in the fast loop stops predicting
-    what a trusted compile maximizes, and every comparison this loop produces becomes advisory noise.
+    `run_gepa` defaulted `student_factory` to the plain `DspyCompileProgram`; the trusted compiler passed
+    `_FeedbackCompileProgram`, whose `_rekey_trace` is what lets GEPA's reflective dataset find anything at
+    all. Same function, different student — the fast loop would have burned its whole budget proposing
+    nothing while reporting the same algorithm. The student is the core's own default now.
     """
 
-    assert optimize_module.run_gepa is gepa_core.run_gepa
-    assert compiler_root.run_gepa is gepa_core.run_gepa
+    assert optimize_module.run_gepa is gepa_core.run_gepa is compiler_root.run_gepa
+    default = inspect.signature(gepa_core.run_gepa).parameters["student_factory"].default
+    assert default is gepa_core._FeedbackCompileProgram
+    assert callable(getattr(default, "_rekey_trace", None))
 
 
 def _stub_result(**overrides: Any) -> GepaRunResult:
@@ -356,7 +412,7 @@ def _stub_result(**overrides: Any) -> GepaRunResult:
     return GepaRunResult(**values)
 
 
-def test_optimize_hands_the_core_accepted_episodes_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_optimize_hands_the_core_the_projection_the_metric_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
     def _fake(**kwargs: Any) -> GepaRunResult:
@@ -364,11 +420,10 @@ def test_optimize_hands_the_core_accepted_episodes_only(monkeypatch: pytest.Monk
         return _stub_result()
 
     monkeypatch.setattr(optimize_module, "run_gepa", _fake)
-    cases = [_case(0), _case(1, accepted=False), _case(2), _case(3, accepted=False)]
     candidate = optimize_snapshot(
         run_sha256="a" * 64,
         base_program=load_stable_program_artifact(),
-        cases=cases,
+        cases=[_case(0), _case(2)],
         task_lm=None,
         reflection_lm=None,
         judge=object(),
@@ -376,9 +431,9 @@ def test_optimize_hands_the_core_accepted_episodes_only(monkeypatch: pytest.Monk
         seed=7,
         review_rubric_version="news_review_v4",
     )
+
     assert [episode.case_id for episode in seen["episodes"]] == [f"{0:064x}", f"{2:064x}"]
     assert seen["review_rubric_version"] == "news_review_v4"
-    assert candidate.parent_program_sha256 == load_stable_program_artifact().program_sha256
     assert candidate.event_semantics_instruction == "Name the comparison base."
 
 
@@ -412,9 +467,6 @@ def _candidate(**overrides: Any) -> ExperimentCandidate:
 def test_an_experiment_candidate_says_it_cannot_be_promoted() -> None:
     payload = _candidate().model_dump(mode="json")
     assert payload["promotable"] is False
-    assert payload["schema_version"] == "tracefold.news.experiment_candidate.v1"
-    # Not a near-miss of the release document: it carries no compile record identity at all, so nothing
-    # that reads one can mistake it for a compile that happened.
     assert "compile_record_sha256" not in payload
 
 

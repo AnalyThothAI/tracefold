@@ -18,9 +18,10 @@ that are already budget-metered, and the experiment hands in plain ones.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import dspy  # type: ignore[import-untyped]
+from pydantic import ValidationError
 
 from ...artifact_identity import canonical_sha
 from ...program.artifact import ProgramStrategyArtifactV1
@@ -56,6 +57,81 @@ _REFLECTION_TEMPERATURE = 1.0
 _TASK_TEMPERATURE = 0
 
 
+_ADVISORY_REJECTIONS = (
+    "news_program_learned_strategy_too_large",
+    "news_program_learned_strategy_unsafe",
+    "news_program_learned_strategy_secret",
+    "news_program_learned_strategy_unicode_noncanonical",
+)
+
+
+def _advisory_rejection_code(exc: BaseException) -> str | None:
+    """Whether this failure is the advisory safety bound refusing a proposal, and which bound it was."""
+
+    text = str(exc)
+    return next((marker for marker in _ADVISORY_REJECTIONS if marker in text), None)
+
+
+class _FeedbackCompileProgram(DspyCompileProgram):
+    """The optimizer's student, with advisory rejections turned into scorable predictions.
+
+    The bounds themselves are unchanged and still absolute — this subclass cannot widen them. What changes is
+    where a rejection lands: raised out of `forward`, DSPy's evaluator caught it and recorded `failure_score`
+    without ever calling the metric, so the reflection model was told its proposal scored zero and nothing
+    about why. It then proposed text that tripped the same bound again. Returned as a prediction, the code
+    reaches the metric and comes back as a repair instruction.
+
+    It lives in the shared core, not beside the trusted compiler: `_rekey_trace` below is what makes GEPA
+    able to propose anything at all, so a plane that ran `run_gepa` with the plain student would burn its
+    whole budget on the seed and end in `no_program_change` while reporting the same algorithm. It is still
+    optimizer-only — nothing in the production graph may learn to answer with `advisory_rejected`, and the
+    module boundary is what keeps that true.
+    (Until #193 the stated reason was that the Program package's source was hashed into the shipped
+    Artifact, so editing it re-issued `program_sha256`. That is no longer so — the root commits to the
+    factory id and the two instructions — but the placement is still right for the reason above.)
+    """
+
+    def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> dspy.Prediction:
+        trace = dspy.settings.trace
+        before = len(trace) if isinstance(trace, list) else None
+        try:
+            return cast(dspy.Prediction, super().forward(evidence_json, card_evidence_json, told_count))
+        except (ValidationError, ValueError) as exc:
+            code = _advisory_rejection_code(exc)
+            if code is None:
+                raise
+            return dspy.Prediction(semantics=None, card=None, verdict=None, advisory_rejected=code)
+        finally:
+            # In `finally`, not on the success path only. A schema rejection of the model's own output is the
+            # most informative failure there is — it is exactly what `add_format_failure_as_feedback` exists to
+            # surface — and leaving those entries keyed to the anonymous inner predictor drops them from the
+            # reflective dataset, so the reflection model never sees the outputs it most needs to fix.
+            if before is not None:
+                self._rekey_trace(trace, before)
+
+    def _rekey_trace(self, trace: list[Any], before: int) -> None:
+        """Attribute the recorded calls to the two named Predictors GEPA is optimizing.
+
+        `_OptimizerOwnedPredictor` does not answer the provider itself: it renders RulePacks plus the advisory
+        into a fresh `dspy.Predict` and delegates. So the trace records that anonymous inner predictor, whose
+        signature carries the full rendered instruction.
+
+        GEPA matches traces to components with `t[0].signature.equals(module.signature)`, and the outer
+        signature carries only the advisory. The two are never equal, so `make_reflective_dataset` found no
+        instances, raised "No valid predictions found for any module", and the reflective loop could not
+        propose anything at all — no matter how good the metric or the feedback was.
+
+        The graph is exactly two serial calls in a fixed order, which is what makes positional re-keying exact
+        rather than a guess.
+        """
+
+        named = [self.event_semantics, self.reader_card]
+        for offset, entry in enumerate(trace[before:]):
+            if offset >= len(named) or not isinstance(entry, tuple) or len(entry) != 3:
+                continue
+            trace[before + offset] = (named[offset], entry[1], entry[2])
+
+
 class _Optimizer(Protocol):
     def compile(
         self,
@@ -81,7 +157,7 @@ def run_gepa(
     seed: int,
     review_rubric_version: str,
     optimizer_factory: OptimizerFactory = dspy.GEPA,
-    student_factory: Callable[[ProgramStrategyArtifactV1], DspyCompileProgram] = DspyCompileProgram,
+    student_factory: Callable[[ProgramStrategyArtifactV1], DspyCompileProgram] = _FeedbackCompileProgram,
 ) -> GepaRunResult:
     """Optimize the two advisory instructions against accepted-review truth."""
 
@@ -440,6 +516,7 @@ def _json_scalars(value: Any) -> Any:
 __all__ = [
     "GepaRunResult",
     "OptimizerFactory",
+    "_FeedbackCompileProgram",
     "build_compile_lm",
     "checkpoint_receipt",
     "failure_scope",

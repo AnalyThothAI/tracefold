@@ -12,8 +12,14 @@ import statistics
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..baseline import BaselineCase, BaselineMode, BaselineReport, run_baseline
-from ..metric import DevelopmentEpisode
+from ..baseline import (
+    BaselineCase,
+    BaselineMode,
+    BaselineReport,
+    build_baseline_cases,
+    compile_program_factory,
+    run_baseline,
+)
 from .run import ExperimentCase, ExperimentRun
 
 COMPARE_REPORT_SCHEMA = "tracefold.news.experiment_compare_report.v1"
@@ -32,17 +38,21 @@ def pending_cases(run: ExperimentRun, *, resume: bool) -> tuple[ExperimentCase, 
     return tuple(case for case in run.cases() if case.case_sha256 not in done)
 
 
-def baseline_cases(cases: Sequence[ExperimentCase]) -> list[BaselineCase]:
-    """Frozen cases as the baseline harness takes them, so both planes score the same objects."""
+def baseline_cases(cases: Sequence[ExperimentCase]) -> tuple[BaselineCase, ...]:
+    """Frozen cases through the release plane's own projection, so both planes score the same objects.
 
-    return [BaselineCase(episode=DevelopmentEpisode.model_validate(case.episode)) for case in cases if case.accepted]
+    `build_baseline_cases` rather than a local `BaselineCase(...)`: it is what strips the loader-only keys
+    and threads `recorded_decision_result` into the case, and reimplementing it here is what left the
+    `recorded` arm raising `news_program_baseline_recorded_decision_missing` on its first case.
+    """
+
+    return build_baseline_cases([case.episode for case in cases if case.accepted], action_source="recorded")
 
 
 def compare_report(
     *,
     run_sha256: str,
     arms: Mapping[str, BaselineReport],
-    unlabelled_case_ids: Sequence[str],
 ) -> dict[str, Any]:
     """Per-case deltas and the failure clusters worth an operator's attention.
 
@@ -55,15 +65,60 @@ def compare_report(
     for arm, report in arms.items():
         for case in report.cases:
             per_case.setdefault(case.case_id, {})[arm] = case.score
-    clusters: dict[str, list[float]] = {}
     cluster_of = {case.case_id: case.cluster_id for report in arms.values() for case in report.cases}
-    baseline_arm = "recorded" if "recorded" in arms else next(iter(arms))
+    return {
+        "cluster_of": cluster_of,
+        "schema": COMPARE_REPORT_SCHEMA,
+        "run_sha256": run_sha256,
+        "arms": {arm: report.identity for arm, report in arms.items()},
+        # Both means, never one: the answered-only mean says how good an answer is, the failure-as-zero
+        # mean is the end-to-end lower bound, and reporting only the first is what let 29 unanswered cases
+        # turn 0.482 into 0.587.
+        "scores": {arm: report.scores for arm, report in arms.items()},
+        "population": {arm: report.population for arm, report in arms.items()},
+        "report_sha256": {arm: report.report_sha256 for arm, report in arms.items()},
+        "cases": per_case,
+        "failure_clusters": _ranked_clusters(per_case, cluster_of=cluster_of),
+        # Said once, plainly: this corpus is the window's *reviewed* Events and nothing else, because that
+        # is the only population an accepted review can score. The rest of the window is what
+        # `draft-reviews --events-from` exists for. A per-case `unlabelled_case_ids` list used to sit here
+        # and was necessarily always empty — a field that can only ever say one thing is not evidence.
+        "corpus": "accepted_reviews_only",
+    }
+
+
+def answered_case_scores(report: Mapping[str, Any], *, failed_case_ids: Sequence[str]) -> dict[str, Any]:
+    """What `--resume` is allowed to remember: the cases every arm actually got an answer for.
+
+    `if scores` was the first attempt and could never be False — `CaseResult.score` is a non-optional float
+    and a provider failure scores `0.0`, so a timed-out case was recorded as answered, skipped forever by
+    the next resumed pass, and its full delta ranked as a semantic regression. Failure is an outcome the
+    report still publishes; it is just not a reason to stop asking.
+    """
+
+    failed = set(failed_case_ids)
+    return {case_id: scores for case_id, scores in dict(report.get("cases") or {}).items() if case_id not in failed}
+
+
+def failed_case_ids(arms: Mapping[str, BaselineReport]) -> tuple[str, ...]:
+    """Every case that any arm failed to get an answer for, by the arm's own error code."""
+
+    return tuple(
+        sorted({case.case_id for report in arms.values() for case in report.cases if case.error_code is not None})
+    )
+
+
+def _ranked_clusters(
+    per_case: Mapping[str, Mapping[str, float | None]], *, cluster_of: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """The failure clusters worth an operator's attention, ranked over whatever cases it is given."""
+
+    clusters: dict[str, list[float]] = {}
     for case_id, scores in per_case.items():
-        reference = scores.get(baseline_arm)
-        student = scores.get("student")
+        reference, student = scores.get("recorded"), scores.get("student")
         if reference is None or student is None:
             continue
-        clusters.setdefault(cluster_of.get(case_id, "unknown"), []).append(student - reference)
+        clusters.setdefault(str(cluster_of.get(case_id) or "unknown"), []).append(student - reference)
     ranked: list[dict[str, Any]] = [
         {
             "cluster_id": cluster_id,
@@ -76,33 +131,34 @@ def compare_report(
         for cluster_id, deltas in clusters.items()
     ]
     ranked.sort(key=lambda row: (float(row["attention"]), -int(row["case_count"])))
-    return {
-        "schema": COMPARE_REPORT_SCHEMA,
-        "run_sha256": run_sha256,
-        "arms": {arm: report.identity for arm, report in arms.items()},
-        # Both means, never one: the answered-only mean says how good an answer is, the failure-as-zero
-        # mean is the end-to-end lower bound, and reporting only the first is what let 29 unanswered cases
-        # turn 0.482 into 0.587.
-        "scores": {arm: report.scores for arm, report in arms.items()},
-        "population": {arm: report.population for arm, report in arms.items()},
-        "report_sha256": {arm: report.report_sha256 for arm, report in arms.items()},
-        "cases": per_case,
-        "failure_clusters": ranked,
-        # Named, not silently dropped: a case nobody reviewed cannot contribute accuracy, and a report
-        # that omitted them would read as if the whole window had been measured.
-        "unlabelled_case_ids": list(unlabelled_case_ids),
-    }
+    return ranked
 
 
-def answered_case_scores(report: Mapping[str, Any]) -> dict[str, dict[str, float | None]]:
-    """The cases an arm actually answered, and only those.
+def merged_report(*, previous: Mapping[str, Any] | None, current: Mapping[str, Any]) -> dict[str, Any]:
+    """One report over everything answered so far, not just this pass.
 
-    This is what `--resume` is allowed to remember. Recording an empty result for a case nobody could
-    score would make the next resumed pass skip it forever — including after `draft-reviews` produced a
-    rubric for it and a human accepted one, which is the whole point of the loop.
+    `--resume` scores only the cases a previous pass left, which is the point — but it made the report a
+    view of the last batch while still stamped with the whole run's `run_sha256`. Per-case scores merge
+    (this pass wins for a case it re-answered), the clusters are re-ranked over the union, and the arm
+    identities are checked: two passes run against different models are not one report, and saying so is
+    cheaper than silently averaging them.
     """
 
-    return {case_id: scores for case_id, scores in dict(report.get("cases") or {}).items() if scores}
+    if previous is None:
+        return dict(current)
+    if previous.get("run_sha256") != current.get("run_sha256"):
+        raise ValueError("news_experiment_report_run_mismatch")
+    if previous.get("arms") != current.get("arms"):
+        raise ValueError("news_experiment_report_arm_identity_changed")
+    cases = {**dict(previous.get("cases") or {}), **dict(current.get("cases") or {})}
+    # The cluster map merges too. Re-ranking the union against only this pass's map dropped every earlier
+    # case into `unknown`, which is the same "report describes one batch" defect one level down.
+    cluster_of = {**dict(previous.get("cluster_of") or {}), **dict(current.get("cluster_of") or {})}
+    merged = dict(current)
+    merged["cases"] = cases
+    merged["cluster_of"] = cluster_of
+    merged["failure_clusters"] = _ranked_clusters(cases, cluster_of=cluster_of)
+    return merged
 
 
 def score_arm(
@@ -111,9 +167,20 @@ def score_arm(
     mode: BaselineMode,
     **kwargs: Any,
 ) -> BaselineReport:
-    """One arm, through the baseline harness the release plane already uses."""
+    """One arm, through the baseline harness the release plane already uses.
 
-    return run_baseline(baseline_cases(cases), mode=mode, **kwargs)
+    The factory is chosen here rather than by the caller. `run_baseline` refuses `compile_live` without one,
+    and leaving it to the CLI is what made every `experiment compare` die with
+    `news_program_baseline_requires_program_factory` — a required argument a second call site had to
+    remember, which is the kind of thing a call site eventually does not.
+    """
+
+    return run_baseline(
+        baseline_cases(cases),
+        mode=mode,
+        program_factory=compile_program_factory if mode == "compile_live" else None,
+        **kwargs,
+    )
 
 
 __all__ = [

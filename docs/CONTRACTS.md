@@ -967,7 +967,7 @@ identities, budget, tariff, per-call usage, the sandbox launch receipt, the
 unaccepted content-addressed Artifact from the exact stable root. The command
 writes `compile_record`, `compile_record_sha256` and the operator-facing
 `changed_predictors`. `learning propose` reads `spec["compile_record"]`,
-rebuilds the candidate from `record.patch`, and stores the record under kind
+rebuilds the candidate from `record.run.patch`, and stores the record under kind
 `compile_record` keyed by its own root. A Program `ProposalReceipt` carries
 that root as `compile_record_sha256`, and its `generator_execution_sha` equals
 it; `CandidateEvaluator` loads that one row rather than walking a chain. The

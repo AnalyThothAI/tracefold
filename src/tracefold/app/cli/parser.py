@@ -204,13 +204,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
-    # #193 PR-C. Closes the fast loop: `compare` names the cases nobody has judged, and this drafts exactly
-    # those instead of whatever the last N hours happen to contain. Still one Event per desk task, still one
-    # file for a human to accept — the corpus the loop needs and the queue's task identity are the same thing.
+    # #193 PR-C. Closes the fast loop: a snapshot holds the window's *reviewed* Events, so drafting is for
+    # the rest of that same window rather than for whatever the last N hours happen to contain. The queue
+    # still does the selecting, so this inherits its stratified sampling and its task identity.
     learning_draft.add_argument(
         "--events-from",
         default="",
-        help="draft only the unlabelled Events frozen in this experiment run directory (ignores --hours)",
+        help="draft the unjudged Events in this experiment run's window (replaces --hours)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
     # The operator's fast research loop. Deliberately its own command group: it reads the database once,
@@ -252,6 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_optimize.add_argument("--reflection", required=True, help="reflection model, e.g. deepseek-v4-pro")
     experiment_optimize.add_argument("--semantic-judge", required=True, help="equivalence judge model")
     experiment_optimize.add_argument("--max-metric-calls", type=_positive_int, required=True)
+    # The metric-call bound is not a spend bound: each metric call drives two task calls plus N judge
+    # calls. This is the judge's own ceiling, required for the same reason every other model-spending
+    # command in this plane makes its budget mandatory.
+    experiment_optimize.add_argument("--max-judge-model-calls", type=_positive_int, required=True)
     experiment_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
     learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")
     learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")

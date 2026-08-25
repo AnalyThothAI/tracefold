@@ -34,6 +34,11 @@ def snapshot_window(
 
     episodes = evaluator.baseline_episodes(window, cohort=False, limit=limit)
     cases = [_case(episode) for episode in episodes]
+    # Read the whole window *before* touching the directory, then refuse a directory that already holds a
+    # run. Snapshotting twice into one directory used to merge two windows: the manifest said 2 cases and
+    # `cases()` returned 5, and every downstream `--resume` skipped cases this run never scored.
+    if run.manifest_path.exists() or any(run.cases_dir.glob("*.json")):
+        raise ValueError("news_experiment_run_directory_not_empty")
     for case in cases:
         run.write_case(case)
     manifest = ExperimentRunManifest.issue(
@@ -52,21 +57,25 @@ def snapshot_window(
 
 
 def _case(episode: Mapping[str, Any]) -> ExperimentCase:
+    """One reviewed case, frozen in exactly the shape `build_baseline_cases` takes.
+
+    The two loader-only keys stay in the payload. They used to be stripped here, which looked tidy and cost
+    the `recorded` arm its `recorded_decision_result` — `run_baseline` refuses a recorded case without one,
+    and nothing could put it back without re-snapshotting. The release plane hands the raw dicts straight to
+    `build_baseline_cases` and lets *it* do the popping; so does this.
+    """
+
     payload = dict(episode)
-    # `baseline_episodes` carries two loader-only keys that `DevelopmentEpisode` forbids; the frozen case
-    # keeps the episode in exactly the shape the metric and the optimizer accept.
-    payload.pop("recorded_decision_result", None)
-    event_id = str(payload.pop("event_id", "") or "")
-    review = dict(payload.get("accepted_review") or {})
     return ExperimentCase(
         case_sha256=str(payload["case_id"]),
         cluster_id=str(payload["cluster_id"]),
         stratum=str(payload.get("stratum") or "unknown"),
-        event_id=event_id,
+        event_id=str(payload.get("event_id") or ""),
         episode=payload,
-        # An accepted review is the only thing that can score a case. A case without one is still frozen,
-        # because it is what `draft-reviews` exists to propose against — it just cannot produce accuracy.
-        accepted=bool(review),
+        # `baseline_episodes` reaches these through an acceptance row, so every one of them is reviewed.
+        # This flag is not a guess about the payload — `_project_episodes` always writes a non-empty
+        # `accepted_review`, so reading `bool(review)` here was a constant wearing the costume of a check.
+        accepted=True,
     )
 
 

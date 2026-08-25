@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from argparse import Namespace
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -193,11 +194,20 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
     )
 
 
-def _unlabelled_events_from_run(root: str) -> list[str] | None:
-    """The Events an experiment run froze and nobody has judged, or `None` when no run was named.
+_DESK_MAX_LOOKBACK_HOURS = 720
 
-    Ordered by the run's own case identity rather than by recency: two operators pointing `--limit 20` at
-    the same run must draft the same twenty cases, or the corpus each of them grows is a different corpus.
+
+def _run_window_hours(root: str, *, now_ms: int) -> int | None:
+    """The look-back that covers an experiment run's window, or `None` when no run was named.
+
+    This used to read the run's *case list* and draft the ones marked unaccepted. There are none, and there
+    never can be: `baseline_episodes` reaches a case through an acceptance row, so a snapshot holds reviewed
+    Events by construction. Drafting is for the rest of the window — the Events the comparison could not
+    score because nobody has judged them — so the run contributes the one thing it actually knows, which is
+    which window the operator is working on.
+
+    The queue itself still does the selecting, so `--events-from` inherits the desk's deterministic
+    stratified sampling rather than substituting an ordering of its own.
     """
 
     if not root.strip():
@@ -206,12 +216,14 @@ def _unlabelled_events_from_run(root: str) -> list[str] | None:
 
     from tracefold.news.learning.experiment.run import ExperimentRun
 
-    run = ExperimentRun(Path(root))
-    run.manifest()  # a directory without a manifest is not a run, and its cases are not a corpus
-    events = [case.event_id for case in run.cases() if not case.accepted]
-    if not events:
-        raise ValueError("news_review_drafter_run_has_no_unlabelled_events")
-    return events
+    window = ExperimentRun(Path(root)).manifest().window
+    if now_ms <= window.from_ms:
+        raise ValueError("news_review_drafter_run_window_not_in_the_past")
+    # Ceiling, so the look-back covers the window's leading edge rather than stopping just inside it.
+    hours = -(-(now_ms - window.from_ms) // 3_600_000)
+    if hours > _DESK_MAX_LOOKBACK_HOURS:
+        raise ValueError("news_review_drafter_run_window_exceeds_desk_lookback")
+    return int(hours)
 
 
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
@@ -244,42 +256,36 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
     wanted = int(args.limit)
-    targeted = _unlabelled_events_from_run(str(getattr(args, "events_from", "") or ""))
+    # `--events-from` narrows the look-back to the run's own window; everything else about the queue —
+    # the stratified sampling, the cohort filter, the pending/all switch — is unchanged, because a corpus
+    # grown through the fast loop has to carry the same stratum mix as one grown through the queue.
+    windowed = _run_window_hours(str(getattr(args, "events_from", "") or ""), now_ms=int(time.time() * 1000))
+    if windowed is not None:
+        hours = windowed
     with postgres_connection(settings, role="serve") as conn:
         desk = ReviewDesk(conn)
+        # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through
+        # it keeps that stratification — which is what makes a corpus carry the boundary/negative/retention
+        # mix the release thresholds require — instead of bypassing the desk with a raw query.
         rows: list[Mapping[str, Any]] = []
-        if targeted is not None:
-            # One desk query per Event, because the point of `--events-from` is *these* cases and no others.
-            # Paging the time-windowed queue and filtering would drop any case whose Event has aged out of
-            # the look-back — which is most of them, since a snapshot is taken after the window closes.
-            for event_id in targeted[:wanted]:
-                queue = desk.open(
-                    DeskQuery(view="queue", mode="event", status="all", event=event_id, limit=1),
-                    principal=principal,
-                )
-                rows.extend(list(queue.get("tasks") or ())[:1])
-        else:
-            # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through
-            # it keeps that stratification — which is what makes a corpus carry the boundary/negative/retention
-            # mix the release thresholds require — instead of bypassing the desk with a raw query.
-            cursor = ""
-            while len(rows) < wanted:
-                queue = desk.open(
-                    DeskQuery(
-                        view="queue",
-                        mode="event",
-                        status="all" if bool(args.include_reviewed) else "pending",
-                        hours=hours,
-                        limit=min(100, wanted - len(rows)),
-                        cursor=cursor,
-                    ),
-                    principal=principal,
-                )
-                page = list(queue.get("tasks") or ())
-                rows.extend(page)
-                cursor = str(queue.get("next_cursor") or "")
-                if not page or not cursor:
-                    break
+        cursor = ""
+        while len(rows) < wanted:
+            queue = desk.open(
+                DeskQuery(
+                    view="queue",
+                    mode="event",
+                    status="all" if bool(args.include_reviewed) else "pending",
+                    hours=hours,
+                    limit=min(100, wanted - len(rows)),
+                    cursor=cursor,
+                ),
+                principal=principal,
+            )
+            page = list(queue.get("tasks") or ())
+            rows.extend(page)
+            cursor = str(queue.get("next_cursor") or "")
+            if not page or not cursor:
+                break
         for row in rows:
             view = desk.evidence(
                 TaskRef(task_id=str(row["task_id"]), task_version=str(row["task_version"])), principal=principal
@@ -345,9 +351,9 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "batch_sha256": batch.batch_sha256,
             "drafter": batch.drafter,
             "tasks": len(tasks),
-            # Named when a run was targeted: the desk answers per Event, and an Event whose task has since
-            # been superseded returns nothing. Reporting only `tasks` would read as if the rest were judged.
-            "requested_events": len(targeted[:wanted]) if targeted is not None else None,
+            # The look-back actually used, so a run-scoped draft says which window it drew from rather
+            # than leaving the reader to assume `--hours`.
+            "lookback_hours": hours,
             "drafted": len(drafted),
             "with_gold": len(with_gold),
             "failed": len(batch.drafts) - len(drafted),

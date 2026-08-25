@@ -15,10 +15,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tracefold.app.cli.commands.news_learning_documents import _write_json
-
-_SETTLEMENT_GRACE_MS = 10 * 60 * 1000
-
 
 def handle_experiment(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     action = str(args.experiment_action)
@@ -34,16 +30,19 @@ def handle_experiment(args: Any, settings: Any, stable: Any) -> tuple[int, dict[
 def _snapshot(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.learning.contracts import ClosedWindow
-    from tracefold.news.learning.evaluator import CandidateEvaluator
+    from tracefold.news.learning.evaluator import SETTLEMENT_GRACE_MS, CandidateEvaluator
     from tracefold.news.learning.experiment.run import ExperimentRun
     from tracefold.news.learning.experiment.snapshot import snapshot_window
 
     now_ms = int(time.time() * 1000)
     # Ends at the settlement grace, not at "now": a window whose tail is still settling is not closed, and
     # a snapshot of it would measure a corpus that changes underneath the comparison.
-    to_ms = now_ms - _SETTLEMENT_GRACE_MS
+    to_ms = now_ms - SETTLEMENT_GRACE_MS
     window = ClosedWindow(from_ms=to_ms - int(args.hours) * 3_600_000, to_ms=to_ms)
-    run = ExperimentRun(Path(str(args.out)))
+    run = ExperimentRun(Path(str(args.out)), create=True)
+    # `snapshot_window` reads the whole window before it writes anything, so the connection is closed by
+    # the time up to 500 fsync'd case files are on disk. `docs/DEVELOPMENT.md` forbids holding one across
+    # a file write, and 500 of them is the case that rule was written for.
     with postgres_connection(settings, role="serve") as conn:
         evaluator = CandidateEvaluator(conn, stable=stable, judges={})
         manifest = snapshot_window(
@@ -74,6 +73,8 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
     from tracefold.news.learning.experiment.compare import (
         answered_case_scores,
         compare_report,
+        failed_case_ids,
+        merged_report,
         pending_cases,
         score_arm,
     )
@@ -88,13 +89,16 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
     run = ExperimentRun(Path(str(args.run)))
     manifest = run.manifest()
     artifact = load_program_artifact(manifest.parent_program_sha256)
+    # The same judge `optimize` will maximize against. Parsing `--semantic-judge` and then scoring by byte
+    # equality is the ruler drift the shared core exists to prevent: the operator reads one number and the
+    # optimizer maximizes another.
+    judge = _semantic_judge(settings, model=str(getattr(args, "semantic_judge", "") or ""))
     cases = pending_cases(run, resume=bool(args.resume))
     if not cases:
         return 0, {"ok": True, "data": {"run": str(run.root), "note": "every case already answered"}}
     # The student is the single-slot local route that also serves production Triage, so it is bounded and
     # sequential. The bound is required rather than defaulted for the same reason `baseline` requires one.
     bounded = cases[: int(args.max_model_cases)]
-    unlabelled = [case.case_sha256 for case in bounded if not case.accepted]
 
     arms: dict[str, BaselineReport] = {
         "recorded": score_arm(bounded, mode="recorded", artifact=artifact, cohort_scope="experiment_run")
@@ -118,20 +122,25 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
                 max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
                 model_kwargs=endpoint.model_kwargs,
             ),
+            judge=judge,
             runtime_identity=_endpoint_identity(endpoint),
             cohort_scope="experiment_run",
         )
-    report = compare_report(run_sha256=manifest.run_sha256, arms=arms, unlabelled_case_ids=unlabelled)
-    for case_sha256, scores in answered_case_scores(report).items():
+    report = compare_report(run_sha256=manifest.run_sha256, arms=arms)
+    failed = failed_case_ids(arms)
+    for case_sha256, scores in answered_case_scores(report, failed_case_ids=failed).items():
         run.write_compared(case_sha256, {"case_sha256": case_sha256, "scores": scores})
-    path = run.write_report("report", report)
+    # Merged, not overwritten. `--resume` deliberately scores only the pending batch, so a report rebuilt
+    # from that batch alone covered the last 20 cases of a 500-case run while carrying the whole run's
+    # identity — and `failure_clusters`, which is the operator's work queue, was ranked over 4% of it.
+    path = run.write_report("report", merged_report(previous=run.report("report"), current=report))
     return 0, {
         "ok": True,
         "data": {
             "run": str(run.root),
             "report": str(path),
             "scored_cases": len(bounded),
-            "unlabelled_cases": len(unlabelled),
+            "unanswered_cases": len(failed),
             "failure_clusters": report["failure_clusters"][:5],
         },
     }
@@ -150,7 +159,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     from tracefold.news.learning.experiment.optimize import optimize_snapshot
     from tracefold.news.learning.experiment.run import ExperimentRun
     from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
-    from tracefold.news.program.artifact import load_program_artifact
+    from tracefold.news.program.artifact import load_program_artifact, load_stable_program_artifact
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
         PROGRAM_READER_CARD_MAX_TOKENS,
@@ -160,6 +169,11 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     run = ExperimentRun(Path(str(args.run)))
     manifest = run.manifest()
     artifact = load_program_artifact(manifest.parent_program_sha256)
+    # Before the first provider call, and for the same reason `ProgramCompiler.__init__` checks it: a
+    # snapshot taken on Monday against a Program promoted away on Tuesday would spend the whole budget on
+    # a superseded parent and emit a candidate the trusted compiler refuses on sight.
+    if artifact.program_sha256 != load_stable_program_artifact().program_sha256:
+        raise ValueError("news_experiment_parent_program_superseded")
     cases = tuple(run.cases())
     task = _arm_endpoint(settings, arm="student", model=str(args.student))
     reflection = _arm_endpoint(settings, arm="teacher", model=str(args.reflection))
@@ -185,6 +199,9 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     # Fail before the first provider call, the way the trusted compiler does.
     require_model_identity(task_lm, role="task")
     require_model_identity(reflection_lm, role="reflection")
+    # Bounded like the trusted compile's judge. Without `max_model_calls` a run has no ceiling at all:
+    # `--max-metric-calls` bounds metric invocations, and each of those drives two task calls plus N judge
+    # calls, so the only number an operator could set bounded nothing they were actually spending.
     judge = build_judge(
         model_name=judge_endpoint.model_name,
         api_key=judge_endpoint.api_key,
@@ -192,6 +209,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
         max_tokens=METRIC_JUDGE_MAX_TOKENS,
         model_kwargs=judge_endpoint.model_kwargs,
+        max_model_calls=int(args.max_judge_model_calls),
     )
     candidate = optimize_snapshot(
         run_sha256=manifest.run_sha256,
@@ -204,8 +222,10 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         seed=int(args.seed),
         review_rubric_version=REVIEW_RUBRIC_VERSION,
     )
-    path = run.root / "experiment_candidate.json"
-    _write_json(str(path), candidate.model_dump(mode="json"))
+    # Through the run directory's own writer: atomic, no-follow, 0600, and the same `canonical_json` bytes
+    # `experiment_candidate_sha256` was computed over, so the file can be re-verified byte for byte. The
+    # App CLI's plain `open()` helper did none of those and wrote 0644 into a 0700 directory.
+    path = run.write_report("experiment_candidate", candidate.model_dump(mode="json"))
     return 0, {
         "ok": True,
         "data": {
@@ -220,6 +240,29 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
             "promotable": False,
         },
     }
+
+
+def _semantic_judge(settings: Any, *, model: str) -> Any:
+    """The equivalence judge for one comparison, or `None` when the operator named no model.
+
+    Optional here and required by `optimize`: a comparison is allowed to be a cheap byte-equality read, but
+    it has to say so by not naming a judge rather than by naming one and ignoring it.
+    """
+
+    if not model.strip():
+        return None
+    from tracefold.news.learning.baseline import build_judge
+    from tracefold.news.learning.compiler.security import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS
+
+    endpoint = _arm_endpoint(settings, arm="teacher", model=model)
+    return build_judge(
+        model_name=endpoint.model_name,
+        api_key=endpoint.api_key,
+        api_base=endpoint.api_base,
+        timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
+        max_tokens=METRIC_JUDGE_MAX_TOKENS,
+        model_kwargs=endpoint.model_kwargs,
+    )
 
 
 def _arm_endpoint(settings: Any, *, arm: str, model: str) -> Any:

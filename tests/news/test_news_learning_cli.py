@@ -10,11 +10,10 @@ import pytest
 from tracefold.app import learning_runtime
 from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
-from tracefold.app.cli.commands.news_learning_baseline import _unlabelled_events_from_run
+from tracefold.app.cli.commands.news_learning_baseline import _run_window_hours
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.learning.experiment.run import (
-    ExperimentCase,
     ExperimentRun,
     ExperimentRunManifest,
     ExperimentWindow,
@@ -545,11 +544,16 @@ def test_the_experiment_group_parses_its_three_actions() -> None:
             "deepseek-v4-pro",
             "--max-metric-calls",
             "60",
+            "--max-judge-model-calls",
+            "200",
             "--seed",
             "7",
         ]
     )
     assert (optimize.experiment_action, optimize.max_metric_calls, optimize.seed) == ("optimize", 60, 7)
+    # The metric-call bound is not a spend bound: each metric call drives two task calls plus N judge
+    # calls, so the judge carries its own required ceiling.
+    assert optimize.max_judge_model_calls == 200
 
 
 def test_a_snapshot_ends_at_the_settlement_grace_not_at_now(monkeypatch: Any) -> None:
@@ -624,64 +628,55 @@ def test_draft_reviews_takes_its_events_from_a_run_when_told_to() -> None:
     )
 
 
-def test_draft_reviews_targets_exactly_the_unlabelled_cases_a_run_froze(tmp_path: Any) -> None:
-    run = ExperimentRun(tmp_path / "run")
+def test_draft_reviews_draws_its_lookback_from_the_run_window(tmp_path: Any) -> None:
+    """`--events-from` contributes the window; the ReviewDesk queue still does the selecting.
+
+    It used to read the run's *case list* and draft the ones marked unaccepted. There are none and there
+    never can be — `baseline_episodes` reaches a case through an acceptance row — so the bridge always
+    raised. Drafting is for the rest of the window, and the desk's stratified sampler picks which.
+    """
+
+    run = ExperimentRun(tmp_path / "run", create=True)
     run.write_manifest(
         ExperimentRunManifest.issue(
             name="run",
-            window=ExperimentWindow(from_ms=1, to_ms=2),
+            window=ExperimentWindow(from_ms=1_787_000_000_000, to_ms=1_787_086_400_000),
             parent_program_sha256=load_stable_program_artifact().program_sha256,
             program_version="news_semantic_program_v5",
             policy_sha256="b" * 64,
-            case_count=3,
-            accepted_case_count=1,
+            case_count=0,
+            accepted_case_count=0,
             case_root_sha256="c" * 64,
-            created_at_ms=2,
+            created_at_ms=1_787_086_400_000,
         )
     )
-    for index, accepted in ((0, False), (1, True), (2, False)):
-        run.write_case(
-            ExperimentCase(
-                case_sha256=f"{index:064x}",
-                cluster_id="c",
-                stratum="delivered",
-                event_id=f"event-{index}",
-                episode={},
-                accepted=accepted,
-            )
-        )
 
-    # Only the cases nobody judged, in the run's own fixed order: two operators pointing `--limit` at one
-    # run must draft the same cases, or each of them grows a different corpus.
-    assert _unlabelled_events_from_run(str(run.root)) == ["event-0", "event-2"]
-    # No run named is the historical behaviour, untouched.
-    assert _unlabelled_events_from_run("") is None
+    # 48h after the window opened, rounded up so the look-back covers its leading edge.
+    assert _run_window_hours(str(run.root), now_ms=1_787_000_000_000 + 48 * 3_600_000) == 48
+    assert _run_window_hours(str(run.root), now_ms=1_787_000_000_000 + 48 * 3_600_000 + 1) == 49
+    # No run named leaves `--hours` exactly as it was.
+    assert _run_window_hours("", now_ms=1_787_000_000_000) is None
 
 
-def test_draft_reviews_refuses_a_run_with_nothing_left_to_judge(tmp_path: Any) -> None:
-    run = ExperimentRun(tmp_path / "run")
+def test_draft_reviews_refuses_a_run_window_the_desk_cannot_reach(tmp_path: Any) -> None:
+    """The desk pages a look-back, and its own bound is 720 hours. Past that, say so."""
+
+    run = ExperimentRun(tmp_path / "run", create=True)
     run.write_manifest(
         ExperimentRunManifest.issue(
             name="run",
-            window=ExperimentWindow(from_ms=1, to_ms=2),
+            window=ExperimentWindow(from_ms=1_000, to_ms=2_000),
             parent_program_sha256=load_stable_program_artifact().program_sha256,
             program_version="news_semantic_program_v5",
             policy_sha256="b" * 64,
-            case_count=1,
-            accepted_case_count=1,
+            case_count=0,
+            accepted_case_count=0,
             case_root_sha256="c" * 64,
-            created_at_ms=2,
+            created_at_ms=2_000,
         )
     )
-    run.write_case(
-        ExperimentCase(
-            case_sha256="0" * 64,
-            cluster_id="c",
-            stratum="delivered",
-            event_id="event-0",
-            episode={},
-            accepted=True,
-        )
-    )
-    with pytest.raises(ValueError, match="news_review_drafter_run_has_no_unlabelled_events"):
-        _unlabelled_events_from_run(str(run.root))
+
+    with pytest.raises(ValueError, match="news_review_drafter_run_window_exceeds_desk_lookback"):
+        _run_window_hours(str(run.root), now_ms=1_787_000_000_000)
+    with pytest.raises(ValueError, match="news_review_drafter_run_window_not_in_the_past"):
+        _run_window_hours(str(run.root), now_ms=0)

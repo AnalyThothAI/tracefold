@@ -125,7 +125,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # has one key, so the reason names both rather than letting the later declaration silently win.
     "migration_head": (
         "issue_175_reader_history_index_then_issue_193_compile_record_convergence",
-        "20260825_0305",
+        "20260825_0306",
     ),
     # #190 adds the dedicated real-package compiler target and moves the web-dist copy to the final
     # runtime stage. Program source, dependency lock, prompts, routes and call budgets stay unchanged;
