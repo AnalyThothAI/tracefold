@@ -5,7 +5,7 @@ The Gate no longer decides relevance and keeps no name table of its own: the pro
 model — verifies which of them are primary. The lexicons only set queue order, the energy context for ``CL``, and the
 preliminary storyline theme. The only admissions that skip the model are recovery replays, deterministic listing
 notices, law-firm PR templates without a grounded asset, and — behind an operator switch that defaults off —
-low-score ungrounded social posts.
+low-score ungrounded social posts. Provider-specific deterministic lanes compose after this policy.
 """
 
 from __future__ import annotations

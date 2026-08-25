@@ -103,7 +103,9 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     {
                         "case_id": row["case_id"],
                         "underlying_key": row["underlying_key"],
-                        "case_kind": row["case_kind"],
+                        "trigger_kind": row["trigger_kind"],
+                        "strategy_id": row["strategy_id"],
+                        "strategy_version": row["strategy_version"],
                         "state": row["state"],
                         "regime": row["regime"],
                         "policy_decision": row["policy_decision"],

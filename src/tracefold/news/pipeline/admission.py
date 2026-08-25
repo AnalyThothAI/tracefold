@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from .. import liquidations
 from ..bus import (
     Q_RAW,
     RK_EVENT,
@@ -42,7 +43,9 @@ _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|tr
 # Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
 # provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
 # the model call the admission exists to avoid (#137).
-_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "telemetry_deterministic", "recovery"})
+_REGATE_ADMISSIONS = frozenset(
+    {"candidate", "listing_deterministic", "telemetry_deterministic", "liquidation_deterministic", "recovery"}
+)
 _STRONG_MEMBER_SCORE = 80.0
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
@@ -211,6 +214,44 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
+    if liquidations.STRATEGY_ID in strategy_ids:
+        liquidation = liquidations.parse_liquidation(
+            title,
+            item_id=item_id,
+            fact_id=fact.fact_id,
+            provider_source=str(metadata.get("source") or ""),
+            event_at_ms=published_at_ms,
+            received_at_ms=int(observed_at_ms),
+            provider_record_identity=event.provider_record_id,
+        )
+        if liquidation is not None:
+            news.insert_market_liquidation(
+                source_key=liquidation.source_key,
+                item_id=liquidation.item_id,
+                fact_id=liquidation.fact_id,
+                ingest_mode=ingest_mode,
+                symbol=liquidation.symbol,
+                venue=liquidation.venue,
+                liquidated_position_side=liquidation.liquidated_position_side,
+                forced_order_side=liquidation.forced_order_side,
+                notional_usd=liquidation.notional_usd,
+                quantity=liquidation.quantity,
+                price=liquidation.price,
+                event_at_ms=liquidation.event_at_ms,
+                received_at_ms=liquidation.received_at_ms,
+                parser_version=liquidation.parser_version,
+                provider_record_identity=liquidation.provider_record_identity,
+                symbol_contract_identity=liquidation.symbol_contract_identity,
+                position_side_semantics=liquidation.position_side_semantics,
+                quantity_semantics=liquidation.quantity_semantics,
+                notional_semantics=liquidation.notional_semantics,
+                price_semantics=liquidation.price_semantics,
+                completeness_assumption=liquidation.completeness_assumption,
+                throttle_assumption=liquidation.throttle_assumption,
+                source_contract_version=liquidation.source_contract_version,
+                source_contract_complete=liquidation.source_contract_complete,
+                now_ms=now_ms,
+            )
     existing_membership = news.fact_membership(item_id=item_id, fact_id=fact.fact_id)
     if existing_membership is not None:
         ev = news.event_admission(str(existing_membership["event_id"]))
@@ -249,6 +290,8 @@ def admit_item(
             instrument_classes=instrument_classes,
         )
     )
+    if liquidations.STRATEGY_ID in strategy_ids:
+        gate = liquidations.admission_verdict(gate)
     tokens = comparison_tokens(comparison)
     window_ms = event_window_ms(family)
     shareable = len(tokens) >= 3
@@ -317,7 +360,7 @@ def admit_item(
         # keeps the normal duplicate path.
         candidates = (
             ()
-            if gate.admission == "telemetry_deterministic"
+            if gate.admission in {"telemetry_deterministic", "liquidation_deterministic"}
             else news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms)
         )
         for cand in candidates:

@@ -52,10 +52,17 @@ export const CASE_STATE_ZH: Record<string, string> = {
   RUNNING: "判定中",
 };
 
-export const CASE_KIND_ZH: Record<string, string> = {
-  news_oi: "新闻+OI",
-  news_only: "仅新闻",
-  oi_only: "仅 OI",
+export const TRIGGER_KIND_ZH: Record<string, string> = {
+  liquidation: "清算触发",
+  news: "新闻触发",
+  oi: "OI 触发",
+};
+
+export const STRATEGY_ZH: Record<string, string> = {
+  liquidation_continuation_shadow_v1: "清算延续（影子）",
+  liquidation_exhaustion_shadow_v1: "清算衰竭（影子）",
+  news_oi_alignment_v1: "新闻 × OI 对齐",
+  oi_momentum_v1: "OI 动量",
 };
 
 export const REGIME_ZH: Record<string, string> = {

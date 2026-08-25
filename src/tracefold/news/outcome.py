@@ -62,6 +62,7 @@ ADMISSION_ZH: Final[dict[str, str]] = {
     "candidate": "已送审",
     "listing_deterministic": "上币/下币公告（自动送审）",
     "telemetry_deterministic": "持仓异动遥测（规则判断，不过模型）",
+    "liquidation_deterministic": "强平遥测（规则解析，不过模型）",
     "suppressed_pr_template": "律所推广模板，规则直接拦截",
     "suppressed_low_signal": "低分社媒/盘口噪音，规则直接拦截",
     "recovery": "断线期间补抄的旧闻，仅用于去重与历史",
@@ -77,7 +78,9 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "degraded_no_objective_guard": "模型不可用且未命中客观推送条件",
     "listing_deterministic": "上币/下币公告按客观规则推送",
     "telemetry_deterministic": "持仓异动按客观规则判断",
+    "liquidation_deterministic": "强平事实按客观规则解析",
     "oi_parse_failed": "持仓异动供应商格式无法解析，已安全拦截",
+    "liquidation_parse_failed": "强平供应商格式无法解析，已安全拦截",
     "watchlist_objective_guard": "命中关注列表客观条件",
     "trade_relevance_escalate": "交易相关性达到重点推送标准",
     "trade_relevance_realtime": "交易相关性达到实时推送标准",
@@ -105,6 +108,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
 
 ERROR_CODE_ZH: Final[dict[str, str]] = {
     "oi_parse_failed": "持仓异动供应商格式无法解析",
+    "liquidation_parse_failed": "强平供应商格式无法解析",
     "news_triage_timeout": "模型超时",
     "news_triage_output_truncated": "模型输出被截断",
     "news_triage_output_invalid": "模型输出格式错误",

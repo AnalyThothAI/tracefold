@@ -6493,6 +6493,30 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
+      "TradingBootstrapData": {
+        "additionalProperties": false,
+        "properties": {
+          "lower_95_bps": {
+            "title": "Lower 95 Bps",
+            "type": "integer"
+          },
+          "mean_bps": {
+            "title": "Mean Bps",
+            "type": "integer"
+          },
+          "upper_95_bps": {
+            "title": "Upper 95 Bps",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mean_bps",
+          "lower_95_bps",
+          "upper_95_bps"
+        ],
+        "title": "TradingBootstrapData",
+        "type": "object"
+      },
       "TradingBudgetData": {
         "additionalProperties": false,
         "description": "The mandate, as configured. Fixed size, fixed stop, fixed maximum hold \u2014 there is no sizing model.",
@@ -6543,10 +6567,6 @@
           },
           "case_id": {
             "title": "Case Id",
-            "type": "string"
-          },
-          "case_kind": {
-            "title": "Case Kind",
             "type": "string"
           },
           "created_at_ms": {
@@ -6609,6 +6629,18 @@
             "title": "State",
             "type": "string"
           },
+          "strategy_id": {
+            "title": "Strategy Id",
+            "type": "string"
+          },
+          "strategy_version": {
+            "title": "Strategy Version",
+            "type": "string"
+          },
+          "trigger_kind": {
+            "title": "Trigger Kind",
+            "type": "string"
+          },
           "underlying_key": {
             "title": "Underlying Key",
             "type": "string"
@@ -6618,7 +6650,9 @@
           "case_id",
           "underlying_key",
           "base_symbol",
-          "case_kind",
+          "trigger_kind",
+          "strategy_id",
+          "strategy_version",
           "mode",
           "state",
           "observed_at_ms",
@@ -6631,18 +6665,25 @@
         "additionalProperties": false,
         "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.\n\n`funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count\nover the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`\nand is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader\ncan see that a Workers process stopped over midnight left yesterday's totals in place instead of having\nto infer it.",
         "properties": {
-          "cases_by_kind": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Cases By Kind",
-            "type": "object"
-          },
           "cases_by_state": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Cases By State",
+            "type": "object"
+          },
+          "cases_by_strategy": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Cases By Strategy",
+            "type": "object"
+          },
+          "cases_by_trigger": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Cases By Trigger",
             "type": "object"
           },
           "closed_orders": {
@@ -6654,6 +6695,13 @@
             "default": 0,
             "title": "Closed Realized Bps",
             "type": "integer"
+          },
+          "event_study_cohorts": {
+            "items": {
+              "$ref": "#/components/schemas/TradingEventStudyCohortData"
+            },
+            "title": "Event Study Cohorts",
+            "type": "array"
           },
           "funnel_day_key": {
             "default": "",
@@ -6667,11 +6715,42 @@
             "title": "Funnel Today",
             "type": "object"
           },
+          "liquidation_promotion_ready": {
+            "default": false,
+            "title": "Liquidation Promotion Ready",
+            "type": "boolean"
+          },
+          "liquidation_promotion_reason": {
+            "default": "",
+            "title": "Liquidation Promotion Reason",
+            "type": "string"
+          },
           "orders_by_state": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Orders By State",
+            "type": "object"
+          },
+          "shadow_by_rule": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Shadow By Rule",
+            "type": "object"
+          },
+          "shadow_by_strategy": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Shadow By Strategy",
+            "type": "object"
+          },
+          "shadow_cohorts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TradingShadowCohortData"
+            },
+            "title": "Shadow Cohorts",
             "type": "object"
           }
         },
@@ -6844,6 +6923,158 @@
         "title": "TradingEventCaseData",
         "type": "object"
       },
+      "TradingEventStudyCohortData": {
+        "additionalProperties": false,
+        "properties": {
+          "cohort_key": {
+            "title": "Cohort Key",
+            "type": "string"
+          },
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "coverage_bps": {
+            "default": 0,
+            "title": "Coverage Bps",
+            "type": "integer"
+          },
+          "duplicate_rate_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Rate Bps"
+          },
+          "evaluated": {
+            "title": "Evaluated",
+            "type": "integer"
+          },
+          "exit_by_reason": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Exit By Reason",
+            "type": "object"
+          },
+          "holdout": {
+            "default": 0,
+            "title": "Holdout",
+            "type": "integer"
+          },
+          "horizons": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TradingHorizonData"
+            },
+            "title": "Horizons",
+            "type": "object"
+          },
+          "liquidity_bucket": {
+            "title": "Liquidity Bucket",
+            "type": "string"
+          },
+          "mae_mean_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mae Mean Bps"
+          },
+          "mean_return_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Return Bps"
+          },
+          "mean_source_latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Source Latency Ms"
+          },
+          "mfe_mean_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mfe Mean Bps"
+          },
+          "missing_data": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Missing Data",
+            "type": "object"
+          },
+          "net_ex_funding_bootstrap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingBootstrapData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "promotion_ready": {
+            "default": false,
+            "title": "Promotion Ready",
+            "type": "boolean"
+          },
+          "promotion_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Promotion Reasons",
+            "type": "array"
+          },
+          "source_contract_complete": {
+            "default": 0,
+            "title": "Source Contract Complete",
+            "type": "integer"
+          },
+          "strategy_id": {
+            "title": "Strategy Id",
+            "type": "string"
+          },
+          "venue": {
+            "title": "Venue",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evaluated",
+          "completed",
+          "cohort_key",
+          "strategy_id",
+          "venue",
+          "liquidity_bucket"
+        ],
+        "title": "TradingEventStudyCohortData",
+        "type": "object"
+      },
       "TradingFloorsData": {
         "additionalProperties": false,
         "description": "The capital lane's own thresholds \u2014 a different set from the News gates, never merged with them.",
@@ -6879,6 +7110,33 @@
         "title": "TradingFloorsData",
         "type": "object"
       },
+      "TradingHorizonData": {
+        "additionalProperties": false,
+        "properties": {
+          "bootstrap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingBootstrapData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measured": {
+            "default": 0,
+            "title": "Measured",
+            "type": "integer"
+          },
+          "missing": {
+            "default": 0,
+            "title": "Missing",
+            "type": "integer"
+          }
+        },
+        "title": "TradingHorizonData",
+        "type": "object"
+      },
       "TradingOrderData": {
         "additionalProperties": false,
         "description": "One economic intent and the case that authored it. Money is an exact decimal string, never a float.",
@@ -6900,10 +7158,6 @@
           },
           "case_id": {
             "title": "Case Id",
-            "type": "string"
-          },
-          "case_kind": {
-            "title": "Case Kind",
             "type": "string"
           },
           "case_observed_at_ms": {
@@ -7100,6 +7354,14 @@
             "title": "Stop Price",
             "type": "string"
           },
+          "strategy_id": {
+            "title": "Strategy Id",
+            "type": "string"
+          },
+          "strategy_version": {
+            "title": "Strategy Version",
+            "type": "string"
+          },
           "take_profit_price": {
             "anyOf": [
               {
@@ -7110,6 +7372,10 @@
               }
             ],
             "title": "Take Profit Price"
+          },
+          "trigger_kind": {
+            "title": "Trigger Kind",
+            "type": "string"
           },
           "underlying_key": {
             "title": "Underlying Key",
@@ -7136,7 +7402,9 @@
           "state",
           "created_at_ms",
           "updated_at_ms",
-          "case_kind",
+          "trigger_kind",
+          "strategy_id",
+          "strategy_version",
           "case_state"
         ],
         "title": "TradingOrderData",
@@ -7235,6 +7503,138 @@
           "live_readiness"
         ],
         "title": "TradingReadinessData",
+        "type": "object"
+      },
+      "TradingShadowCohortData": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "coverage_bps": {
+            "default": 0,
+            "title": "Coverage Bps",
+            "type": "integer"
+          },
+          "duplicate_rate_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Rate Bps"
+          },
+          "evaluated": {
+            "title": "Evaluated",
+            "type": "integer"
+          },
+          "exit_by_reason": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Exit By Reason",
+            "type": "object"
+          },
+          "holdout": {
+            "default": 0,
+            "title": "Holdout",
+            "type": "integer"
+          },
+          "horizons": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TradingHorizonData"
+            },
+            "title": "Horizons",
+            "type": "object"
+          },
+          "mae_mean_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mae Mean Bps"
+          },
+          "mean_return_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Return Bps"
+          },
+          "mean_source_latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Source Latency Ms"
+          },
+          "mfe_mean_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mfe Mean Bps"
+          },
+          "missing_data": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Missing Data",
+            "type": "object"
+          },
+          "net_ex_funding_bootstrap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingBootstrapData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "promotion_ready": {
+            "default": false,
+            "title": "Promotion Ready",
+            "type": "boolean"
+          },
+          "promotion_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Promotion Reasons",
+            "type": "array"
+          },
+          "source_contract_complete": {
+            "default": 0,
+            "title": "Source Contract Complete",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evaluated",
+          "completed"
+        ],
+        "title": "TradingShadowCohortData",
         "type": "object"
       },
       "TradingStatusData": {

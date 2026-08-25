@@ -2,15 +2,15 @@
 
 The shape this module enforces (#211):
 
-    a new OI frame at T      -> the newest eligible News in [T - news_lookback, T]  -> oi_only | news_oi
-    a new News verdict at T  -> the newest eligible OI    in [T - oi_lookback,   T]  -> news_only | news_oi
+    a new OI frame at T      -> the newest eligible News in [T - news_lookback, T]
+    a new News verdict at T  -> the newest eligible OI    in [T - oi_lookback,   T]
 
 Three rules carry the whole design, and each of them replaces a specific defect:
 
 * **the trigger owns the cutoff.** Freshness gates the trigger only. A counterpart is not required to
   be fresh — it is required to be at or before the trigger and inside its *own* lookback. Re-checking
   the counterpart against the trigger's 5 m budget is what made the configured 60 m / 30 m windows
-  unreachable and `news_oi` all but impossible.
+  unreachable and combined News/OI context all but impossible.
 * **nothing later than the trigger may enter.** A counterpart written after the frame is the future,
   and a manifest that can see the future is a backtest that proves nothing.
 * **choose the counterpart from the whole candidate set, not from a pre-selected newest row.**
@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Container, Sequence
 from dataclasses import dataclass
 
-from ..contracts import CaseKind, NewsTradeCandidate, OiTradeCandidate, underlying_key
+from ..contracts import NewsTradeCandidate, OiTradeCandidate, TriggerKind, underlying_key
 from .eligibility import DEFAULT_ELIGIBILITY, EligibilityPolicy, Funnel, is_fresh_trigger
 
 
@@ -73,7 +73,7 @@ def attach_oi(
 class _Plan:
     """One underlying's worth of work, already reduced to one trigger and at most one counterpart."""
 
-    kind: CaseKind
+    trigger_kind: TriggerKind
     base_symbol: str
     # The trigger's cutoff. Nothing later than this may enter the manifest.
     observed_at_ms: int
@@ -172,8 +172,8 @@ def plan_triggers(
             else _news_trigger_plan(payload, oi, policy=policy)
         )
         # Only a trigger that ends up in neither slot of the winner's manifest was actually dropped.
-        # With one fresh frame and one fresh verdict for the same issuer — the ordinary `news_oi`
-        # shape — the loser is inside the winner's lookback by construction and gets attached, so
+        # With one fresh frame and one fresh verdict for the same issuer, the loser is inside the
+        # winner's lookback by construction and gets attached, so
         # counting it as superseded would report the same row as both a rejection and a survivor.
         # A dropped trigger is coalesced for *this turn*, not retired: nothing durable records it, and
         # the winner drops out of the running as soon as it has produced a case, so a loser still
@@ -187,7 +187,7 @@ def plan_triggers(
         )
         plans.append(plan)
     for plan in plans:
-        count(f"plan_kind:{plan.kind}")
+        count(f"plan_trigger:{plan.trigger_kind}")
     return sorted(plans, key=lambda plan: plan.observed_at_ms, reverse=True)
 
 
@@ -199,7 +199,7 @@ def _oi_trigger_plan(
 ) -> _Plan:
     attached = attach_news(signal, news, policy=policy)
     return _Plan(
-        kind="news_oi" if attached is not None else "oi_only",
+        trigger_kind="oi",
         base_symbol=signal.base_symbol,
         observed_at_ms=signal.observed_at_ms,
         source_observed_at_ms=signal.observed_at_ms,
@@ -219,7 +219,7 @@ def _news_trigger_plan(
 ) -> _Plan:
     attached = attach_oi(item, oi, policy=policy)
     return _Plan(
-        kind="news_oi" if attached is not None else "news_only",
+        trigger_kind="news",
         base_symbol=item.base_symbol,
         observed_at_ms=item.verdict_created_at_ms,
         # The Event's own open time, not the verdict's: for a News trigger the cutoff *is* the verdict,

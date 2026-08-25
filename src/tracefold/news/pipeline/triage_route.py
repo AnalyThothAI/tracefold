@@ -63,6 +63,7 @@ class _TriageSettle:
     model_name: str | None
     program_version: str
     program_sha256: str
+    policy_version: str
     policy: DecidePolicy
     runtime_manifest_sha: str
     trace: dict[str, Any]

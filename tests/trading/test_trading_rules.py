@@ -16,17 +16,21 @@ from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
     Bar,
     ExecutionObservation,
+    FrozenMarketContext,
+    FrozenStrategyContext,
     InstrumentRef,
     MarketContext,
     NativeProtection,
+    NewsTradeCandidate,
     OiRegime,
+    OiTradeCandidate,
     PreparedOrder,
+    RegimeAssessment,
     RiskRejection,
     TradeDecision,
     canonical_base_symbol,
     underlying_key,
 )
-from tracefold.trading.decision.policy import TradePolicy, decide
 from tracefold.trading.decision.regime import RegimePolicy, assess, pre_move_bps
 from tracefold.trading.execution.order import (
     OrderPolicy,
@@ -38,6 +42,8 @@ from tracefold.trading.execution.order import (
     stop_price_for,
 )
 from tracefold.trading.execution.paper import evaluate_paper_exit
+from tracefold.trading.strategy.news_oi_alignment import NewsOiAlignmentStrategy
+from tracefold.trading.strategy.oi_momentum import OiMomentumConfig, OiMomentumStrategy
 
 NOW = 1_787_000_000_000
 
@@ -69,6 +75,85 @@ def _market(mark: str = "100", **kwargs: object) -> MarketContext:
     }
     defaults.update(kwargs)
     return MarketContext(**defaults)  # type: ignore[arg-type]
+
+
+def _oi_context(
+    regime: OiRegime,
+    *,
+    mode: str = "paper",
+    whale: int = 9_900,
+    value: int = 50_000_000,
+    decision: TradeDecision | None = None,
+    with_news: bool = False,
+) -> FrozenStrategyContext:
+    oi = OiTradeCandidate(
+        event_id="e1",
+        observed_at_ms=NOW,
+        verdict_created_at_ms=NOW,
+        base_symbol="DOGE",
+        venue="hyperliquid",
+        oi_direction="rise",
+        oi_change_bps=300,
+        oi_value_usd=value,
+        whale_long_profit_bps=whale,
+        whale_oi_ratio_bps=20_000,
+        rank_in_window=1,
+        metric_version="oi_signal_v1",
+        learning_epoch="program_v7",
+        program_version="news_oi_signal_v1",
+        program_sha256="a" * 64,
+        policy_version="news_triage_policy_v10",
+        editorial_origin="telemetry_deterministic",
+        editorial_sha256="b" * 64,
+        scored_judgment_sha256="c" * 64,
+        runtime_manifest_sha="d" * 64,
+    )
+    news = (
+        NewsTradeCandidate(
+            event_id="n1",
+            verdict_created_at_ms=NOW,
+            opened_at_ms=NOW,
+            base_symbol="DOGE",
+            evidence_version=1,
+            evidence_sha256="evidence",
+            focus_fact_id="f1",
+            comparison_fingerprint="fp",
+            source_artifact_id="x:1",
+            source_published_at_ms=NOW,
+            final_decision="push",
+            event_type="listing",
+            risk_direction="bullish",
+            scope="single_name",
+            magnitude=2,
+            novelty="new_fact",
+            headline_zh="标题",
+            why_zh="机制",
+            learning_epoch="program_v7",
+            program_version="news_semantic_program_v5",
+            program_sha256="a" * 64,
+            policy_version="news_triage_policy_v10",
+            editorial_origin="model",
+            editorial_sha256="b" * 64,
+            scored_judgment_sha256="c" * 64,
+            runtime_manifest_sha="d" * 64,
+        )
+        if with_news
+        else None
+    )
+    market = FrozenMarketContext(
+        mark_price=Decimal("100"),
+        observed_at_ms=NOW,
+        pre_move_bps=250,
+        pre_move_lookback_ms=3_600_000,
+    )
+    return FrozenStrategyContext(
+        mode=mode,  # type: ignore[arg-type]
+        oi=oi,
+        news=news,
+        regime=RegimeAssessment(regime=regime, reason="quadrant", pre_move_bps=250, oi_direction="rise"),
+        market=market,
+        news_decision=decision,
+    )
 
 
 # ---------------------------------------------------------------------------- identity
@@ -152,15 +237,9 @@ def test_a_move_below_the_band_is_rejected_too() -> None:
 
 
 def test_deleveraging_never_opens() -> None:
+    strategy = OiMomentumStrategy()
     for regime in (OiRegime.DELEVERAGING_UP, OiRegime.DELEVERAGING_DOWN, OiRegime.UNCLEAR):
-        outcome = decide(
-            case_kind="oi_only",
-            mode="paper",
-            regime=regime,
-            decision=None,
-            whale_long_profit_bps=9_900,
-            oi_value_usd=50_000_000,
-        )
+        outcome = strategy.evaluate(_oi_context(regime))
         assert outcome.decision == "no_trade"
         assert outcome.rule.startswith("regime_no_entry")
 
@@ -190,65 +269,32 @@ def _aligned(decision: str = "long", **kwargs: object) -> TradeDecision:
     return TradeDecision(**defaults)  # type: ignore[arg-type]
 
 
-def test_the_oi_only_trial_lane_never_reaches_a_live_mode() -> None:
-    for mode in ("live_reviewed", "live_bounded"):
-        outcome = decide(
-            case_kind="oi_only",
-            mode=mode,  # type: ignore[arg-type]
-            regime=OiRegime.BUILDUP_UP,
-            decision=None,
-            whale_long_profit_bps=9_900,
-            oi_value_usd=50_000_000,
-        )
-        assert outcome.rule == "oi_only_never_live"
+def test_the_oi_momentum_strategy_never_reaches_a_live_mode() -> None:
+    outcome = OiMomentumStrategy().evaluate(_oi_context(OiRegime.BUILDUP_UP, mode="live_reviewed"))
+    assert outcome.rule == "strategy_permission_shadow_or_paper"
 
 
-def test_oi_only_paper_decides_without_a_model() -> None:
-    outcome = decide(
-        case_kind="oi_only",
-        mode="paper",
-        regime=OiRegime.BUILDUP_UP,
-        decision=None,
-        whale_long_profit_bps=9_900,
-        oi_value_usd=50_000_000,
-    )
+def test_oi_momentum_paper_decides_without_a_model() -> None:
+    outcome = OiMomentumStrategy().evaluate(_oi_context(OiRegime.BUILDUP_UP))
     assert outcome.decision == "long"
-    assert outcome.rule == "oi_only_paper_regime"
+    assert outcome.rule == "oi_momentum_regime"
 
 
-def test_news_only_never_reaches_a_live_mode() -> None:
-    outcome = decide(
-        case_kind="news_only",
-        mode="live_bounded",
-        regime=OiRegime.BUILDUP_UP,
-        decision=_aligned(),
-        whale_long_profit_bps=None,
-        oi_value_usd=None,
-    )
-    assert outcome.rule == "news_only_never_live"
+def test_news_without_oi_is_no_trade_instead_of_a_model_chosen_side() -> None:
+    context = _oi_context(OiRegime.BUILDUP_UP, decision=_aligned(), with_news=True).model_copy(update={"oi": None})
+    outcome = NewsOiAlignmentStrategy().evaluate(context)
+    assert outcome.rule == "oi_context_missing"
 
 
 def test_a_model_that_contradicts_the_regime_is_a_no_trade() -> None:
-    outcome = decide(
-        case_kind="news_oi",
-        mode="paper",
-        regime=OiRegime.BUILDUP_UP,
-        decision=_aligned("short"),
-        whale_long_profit_bps=9_900,
-        oi_value_usd=50_000_000,
+    outcome = NewsOiAlignmentStrategy().evaluate(
+        _oi_context(OiRegime.BUILDUP_UP, decision=_aligned("short"), with_news=True)
     )
     assert outcome.rule == "model_contradicts_regime"
 
 
 def test_a_missing_model_answer_is_a_no_trade_for_a_news_case() -> None:
-    outcome = decide(
-        case_kind="news_oi",
-        mode="paper",
-        regime=OiRegime.BUILDUP_UP,
-        decision=None,
-        whale_long_profit_bps=9_900,
-        oi_value_usd=50_000_000,
-    )
+    outcome = NewsOiAlignmentStrategy().evaluate(_oi_context(OiRegime.BUILDUP_UP, decision=None, with_news=True))
     assert outcome.rule == "model_absent"
 
 
@@ -264,60 +310,36 @@ def test_a_missing_model_answer_is_a_no_trade_for_a_news_case() -> None:
 def test_live_accepts_only_a_direct_surprising_unpriced_aligned_news_oi_case(
     overrides: dict[str, object], expected_prefix: str
 ) -> None:
-    outcome = decide(
-        case_kind="news_oi",
-        mode="live_bounded",
-        regime=OiRegime.BUILDUP_UP,
-        decision=_aligned(**overrides),
-        whale_long_profit_bps=9_900,
-        oi_value_usd=50_000_000,
+    outcome = NewsOiAlignmentStrategy().evaluate(
+        _oi_context(
+            OiRegime.BUILDUP_UP,
+            mode="live_reviewed",
+            decision=_aligned(**overrides),
+            with_news=True,
+        )
     )
     assert outcome.rule.startswith(expected_prefix)
 
 
 def test_a_fully_aligned_news_oi_case_is_the_only_live_acceptance() -> None:
-    outcome = decide(
-        case_kind="news_oi",
-        mode="live_bounded",
-        regime=OiRegime.BUILDUP_UP,
-        decision=_aligned(),
-        whale_long_profit_bps=9_900,
-        oi_value_usd=50_000_000,
+    outcome = NewsOiAlignmentStrategy().evaluate(
+        _oi_context(OiRegime.BUILDUP_UP, mode="live_reviewed", decision=_aligned(), with_news=True)
     )
-    assert (outcome.decision, outcome.rule) == ("long", "news_oi_live_aligned")
+    assert (outcome.decision, outcome.rule, outcome.permission) == ("long", "news_oi_aligned", "live_reviewed")
 
 
 def test_shorts_are_off_by_default_and_turn_on_only_by_operator_configuration() -> None:
-    kwargs: dict[str, object] = {
-        "case_kind": "oi_only",
-        "mode": "paper",
-        "regime": OiRegime.BUILDUP_DOWN,
-        "decision": None,
-        "whale_long_profit_bps": 9_900,
-        "oi_value_usd": 50_000_000,
-    }
-    assert decide(**kwargs).rule == "short_disabled_long_only"  # type: ignore[arg-type]
-    assert decide(**kwargs, policy=TradePolicy(allow_short=True)).decision == "short"  # type: ignore[arg-type]
+    context = _oi_context(OiRegime.BUILDUP_DOWN)
+    assert OiMomentumStrategy().evaluate(context).rule == "short_disabled_long_only"
+    enabled = OiMomentumStrategy(OiMomentumConfig(allow_short=True)).evaluate(context)
+    assert enabled.decision == "short"
 
 
 def test_the_measured_quality_floors_reject_the_losing_buckets() -> None:
-    weak_whale = decide(
-        case_kind="oi_only",
-        mode="paper",
-        regime=OiRegime.BUILDUP_UP,
-        decision=None,
-        whale_long_profit_bps=8_600,
-        oi_value_usd=50_000_000,
-    )
+    strategy = OiMomentumStrategy()
+    weak_whale = strategy.evaluate(_oi_context(OiRegime.BUILDUP_UP, whale=8_600))
     assert weak_whale.rule == "whale_long_profit_below_floor"
-    thin = decide(
-        case_kind="oi_only",
-        mode="paper",
-        regime=OiRegime.BUILDUP_UP,
-        decision=None,
-        whale_long_profit_bps=9_900,
-        oi_value_usd=3_000_000,
-    )
+    thin = strategy.evaluate(_oi_context(OiRegime.BUILDUP_UP, value=3_000_000))
     assert thin.rule == "oi_value_below_floor"
 
 

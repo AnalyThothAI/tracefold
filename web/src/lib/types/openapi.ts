@@ -2721,6 +2721,15 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
+        /** TradingBootstrapData */
+        TradingBootstrapData: {
+            /** Lower 95 Bps */
+            lower_95_bps: number;
+            /** Mean Bps */
+            mean_bps: number;
+            /** Upper 95 Bps */
+            upper_95_bps: number;
+        };
         /**
          * TradingBudgetData
          * @description The mandate, as configured. Fixed size, fixed stop, fixed maximum hold — there is no sizing model.
@@ -2748,8 +2757,6 @@ export interface components {
             base_symbol: string;
             /** Case Id */
             case_id: string;
-            /** Case Kind */
-            case_kind: string;
             /** Created At Ms */
             created_at_ms: number;
             /** Decided At Ms */
@@ -2766,6 +2773,12 @@ export interface components {
             regime?: string | null;
             /** State */
             state: string;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Strategy Version */
+            strategy_version: string;
+            /** Trigger Kind */
+            trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
         };
@@ -2784,12 +2797,16 @@ export interface components {
          *     to infer it.
          */
         TradingCountsData: {
-            /** Cases By Kind */
-            cases_by_kind?: {
-                [key: string]: number;
-            };
             /** Cases By State */
             cases_by_state?: {
+                [key: string]: number;
+            };
+            /** Cases By Strategy */
+            cases_by_strategy?: {
+                [key: string]: number;
+            };
+            /** Cases By Trigger */
+            cases_by_trigger?: {
                 [key: string]: number;
             };
             /**
@@ -2802,6 +2819,8 @@ export interface components {
              * @default 0
              */
             closed_realized_bps: number;
+            /** Event Study Cohorts */
+            event_study_cohorts?: components["schemas"]["TradingEventStudyCohortData"][];
             /**
              * Funnel Day Key
              * @default
@@ -2811,9 +2830,31 @@ export interface components {
             funnel_today?: {
                 [key: string]: number;
             };
+            /**
+             * Liquidation Promotion Ready
+             * @default false
+             */
+            liquidation_promotion_ready: boolean;
+            /**
+             * Liquidation Promotion Reason
+             * @default
+             */
+            liquidation_promotion_reason: string;
             /** Orders By State */
             orders_by_state?: {
                 [key: string]: number;
+            };
+            /** Shadow By Rule */
+            shadow_by_rule?: {
+                [key: string]: number;
+            };
+            /** Shadow By Strategy */
+            shadow_by_strategy?: {
+                [key: string]: number;
+            };
+            /** Shadow Cohorts */
+            shadow_cohorts?: {
+                [key: string]: components["schemas"]["TradingShadowCohortData"];
             };
         };
         /**
@@ -2858,6 +2899,66 @@ export interface components {
             /** Stop Price */
             stop_price?: string | null;
         };
+        /** TradingEventStudyCohortData */
+        TradingEventStudyCohortData: {
+            /** Cohort Key */
+            cohort_key: string;
+            /** Completed */
+            completed: number;
+            /**
+             * Coverage Bps
+             * @default 0
+             */
+            coverage_bps: number;
+            /** Duplicate Rate Bps */
+            duplicate_rate_bps?: number | null;
+            /** Evaluated */
+            evaluated: number;
+            /** Exit By Reason */
+            exit_by_reason?: {
+                [key: string]: number;
+            };
+            /**
+             * Holdout
+             * @default 0
+             */
+            holdout: number;
+            /** Horizons */
+            horizons?: {
+                [key: string]: components["schemas"]["TradingHorizonData"];
+            };
+            /** Liquidity Bucket */
+            liquidity_bucket: string;
+            /** Mae Mean Bps */
+            mae_mean_bps?: number | null;
+            /** Mean Return Bps */
+            mean_return_bps?: number | null;
+            /** Mean Source Latency Ms */
+            mean_source_latency_ms?: number | null;
+            /** Mfe Mean Bps */
+            mfe_mean_bps?: number | null;
+            /** Missing Data */
+            missing_data?: {
+                [key: string]: number;
+            };
+            net_ex_funding_bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            /**
+             * Promotion Ready
+             * @default false
+             */
+            promotion_ready: boolean;
+            /** Promotion Reasons */
+            promotion_reasons?: string[];
+            /**
+             * Source Contract Complete
+             * @default 0
+             */
+            source_contract_complete: number;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Venue */
+            venue: string;
+        };
         /**
          * TradingFloorsData
          * @description The capital lane's own thresholds — a different set from the News gates, never merged with them.
@@ -2874,6 +2975,20 @@ export interface components {
             /** Min Whale Long Profit Bps */
             min_whale_long_profit_bps: number;
         };
+        /** TradingHorizonData */
+        TradingHorizonData: {
+            bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            /**
+             * Measured
+             * @default 0
+             */
+            measured: number;
+            /**
+             * Missing
+             * @default 0
+             */
+            missing: number;
+        };
         /**
          * TradingOrderData
          * @description One economic intent and the case that authored it. Money is an exact decimal string, never a float.
@@ -2885,8 +3000,6 @@ export interface components {
             base_symbol: string;
             /** Case Id */
             case_id: string;
-            /** Case Kind */
-            case_kind: string;
             /** Case Observed At Ms */
             case_observed_at_ms?: number | null;
             /** Case State */
@@ -2948,8 +3061,14 @@ export interface components {
             state_reason?: string | null;
             /** Stop Price */
             stop_price: string;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Strategy Version */
+            strategy_version: string;
             /** Take Profit Price */
             take_profit_price?: string | null;
+            /** Trigger Kind */
+            trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
             /** Updated At Ms */
@@ -2995,6 +3114,58 @@ export interface components {
             mode: "paper" | "live_reviewed" | "live_bounded";
             /** Venues */
             venues?: string[];
+        };
+        /** TradingShadowCohortData */
+        TradingShadowCohortData: {
+            /** Completed */
+            completed: number;
+            /**
+             * Coverage Bps
+             * @default 0
+             */
+            coverage_bps: number;
+            /** Duplicate Rate Bps */
+            duplicate_rate_bps?: number | null;
+            /** Evaluated */
+            evaluated: number;
+            /** Exit By Reason */
+            exit_by_reason?: {
+                [key: string]: number;
+            };
+            /**
+             * Holdout
+             * @default 0
+             */
+            holdout: number;
+            /** Horizons */
+            horizons?: {
+                [key: string]: components["schemas"]["TradingHorizonData"];
+            };
+            /** Mae Mean Bps */
+            mae_mean_bps?: number | null;
+            /** Mean Return Bps */
+            mean_return_bps?: number | null;
+            /** Mean Source Latency Ms */
+            mean_source_latency_ms?: number | null;
+            /** Mfe Mean Bps */
+            mfe_mean_bps?: number | null;
+            /** Missing Data */
+            missing_data?: {
+                [key: string]: number;
+            };
+            net_ex_funding_bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            /**
+             * Promotion Ready
+             * @default false
+             */
+            promotion_ready: boolean;
+            /** Promotion Reasons */
+            promotion_reasons?: string[];
+            /**
+             * Source Contract Complete
+             * @default 0
+             */
+            source_contract_complete: number;
         };
         /** TradingStatusData */
         TradingStatusData: {

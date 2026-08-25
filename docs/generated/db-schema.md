@@ -306,6 +306,36 @@
 | `status` | `TEXT` | False | `'trading'::text` |
 | `last_seen_ms` | `BIGINT` | False | `None` |
 
+## `news_market_liquidations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_key` | `TEXT` | False | `None` |
+| `item_id` | `TEXT` | False | `None` |
+| `fact_id` | `TEXT` | False | `None` |
+| `ingest_mode` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `liquidated_position_side` | `TEXT` | False | `None` |
+| `forced_order_side` | `TEXT` | False | `None` |
+| `notional_usd` | `NUMERIC` | False | `None` |
+| `quantity` | `NUMERIC` | True | `None` |
+| `price` | `NUMERIC` | False | `None` |
+| `event_at_ms` | `BIGINT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `parser_version` | `TEXT` | False | `None` |
+| `provider_record_identity` | `TEXT` | False | `None` |
+| `symbol_contract_identity` | `TEXT` | False | `None` |
+| `position_side_semantics` | `TEXT` | False | `None` |
+| `quantity_semantics` | `TEXT` | False | `None` |
+| `notional_semantics` | `TEXT` | False | `None` |
+| `price_semantics` | `TEXT` | False | `None` |
+| `completeness_assumption` | `TEXT` | False | `None` |
+| `throttle_assumption` | `TEXT` | False | `None` |
+| `source_contract_version` | `TEXT` | False | `None` |
+| `source_contract_complete` | `BOOLEAN` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_model_recordings`
 
 | Column | Type | Nullable | Default |
@@ -459,7 +489,7 @@
 |--------|------|----------|---------|
 | `case_id` | `TEXT` | False | `None` |
 | `underlying_key` | `TEXT` | False | `None` |
-| `case_kind` | `TEXT` | False | `None` |
+| `trigger_kind` | `TEXT` | False | `None` |
 | `mode` | `TEXT` | False | `None` |
 | `primary_source_key` | `TEXT` | False | `None` |
 | `supplemental_source_keys` | `JSONB` | False | `'[]'::jsonb` |
@@ -481,6 +511,9 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `source_observed_at_ms` | `BIGINT` | True | `None` |
 | `trigger_persisted_at_ms` | `BIGINT` | True | `None` |
+| `strategy_id` | `TEXT` | False | `None` |
+| `strategy_version` | `TEXT` | False | `None` |
+| `strategy_config_digest` | `TEXT` | False | `None` |
 
 ## `trading_order_observations`
 
@@ -545,6 +578,47 @@
 | `dspy_calls_today` | `INTEGER` | False | `0` |
 | `funnel` | `JSONB` | False | `'{}'::jsonb` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_strategy_evaluations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `evaluation_id` | `TEXT` | False | `None` |
+| `trigger_source_key` | `TEXT` | False | `None` |
+| `underlying_key` | `TEXT` | False | `None` |
+| `trigger_kind` | `TEXT` | False | `None` |
+| `strategy_id` | `TEXT` | False | `None` |
+| `strategy_version` | `TEXT` | False | `None` |
+| `strategy_config_digest` | `TEXT` | False | `None` |
+| `manifest` | `JSONB` | False | `None` |
+| `manifest_sha256` | `TEXT` | False | `None` |
+| `decision` | `TEXT` | False | `None` |
+| `rule` | `TEXT` | False | `None` |
+| `setup` | `TEXT` | False | `None` |
+| `invalidation` | `TEXT` | False | `None` |
+| `expected_horizon` | `TEXT` | False | `None` |
+| `permission` | `TEXT` | False | `None` |
+| `strategy_registered_at_ms` | `BIGINT` | False | `None` |
+| `research_partition` | `TEXT` | False | `None` |
+| `cutoff_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `market_outcome` | `JSONB` | True | `None` |
+| `market_outcome_version` | `TEXT` | True | `None` |
+| `completed_at_ms` | `BIGINT` | True | `None` |
+| `outcome_attempt_count` | `INTEGER` | False | `0` |
+| `outcome_next_attempt_at_ms` | `BIGINT` | False | `0` |
+| `outcome_last_error` | `TEXT` | True | `None` |
+
+## `trading_strategy_registrations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `strategy_id` | `TEXT` | False | `None` |
+| `strategy_version` | `TEXT` | False | `None` |
+| `strategy_config_digest` | `TEXT` | False | `None` |
+| `strategy_config` | `JSONB` | False | `None` |
+| `permission` | `TEXT` | False | `None` |
+| `registered_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_symbol_blacklist`
 
