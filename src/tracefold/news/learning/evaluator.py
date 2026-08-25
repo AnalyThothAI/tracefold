@@ -32,6 +32,7 @@ from ..review.desk import (
     REVIEW_RUBRIC_VERSION,
     REVIEW_RUBRIC_VERSIONS,
 )
+from ..storage.root import NewsRepository
 from .contracts import (
     LEARNING_EPOCH,
     LEARNING_PROFILE_ID,
@@ -245,7 +246,6 @@ class CandidateEvaluator:
     ) -> None:
         if not trusted_root_sha or trusted_root_sha != TRUSTED_ROOT_SHA:
             raise ValueError("news_learning_trusted_root_invalid")
-        self._conn = conn
         self._stable = stable
         self._judges = dict(judges)
         self._candidates = {candidate.candidate_sha: candidate for candidate in candidate_catalog}
@@ -258,6 +258,10 @@ class CandidateEvaluator:
         # Injectable so a caller that needs a different clock — a fixture pinning "now" beyond a closed
         # window — swaps one object rather than subclassing the evaluator to override a private method.
         self._ledger = ledger or LearningLedger(conn, stable=stable, principal=principal)
+        # Named repository methods, not raw SQL. `docs/DEVELOPMENT.md` puts business SQL in the owning
+        # package's storage module; this class had 25 statements inlined, which is why splitting it three
+        # ways (#202 §8) would otherwise have copied one violation into three files.
+        self._repository = NewsRepository(conn)
         self._trusted_root_sha = trusted_root_sha
         self._history = EvaluationReaderHistory(conn)
 
@@ -405,18 +409,7 @@ class CandidateEvaluator:
 
         if not event_ids:
             return {}
-        rows = self._conn.execute(
-            """
-            SELECT DISTINCT ON (v.event_id)
-                   v.event_id, v.final_decision, v.override_rule, v.throttled_by,
-                   v.rule_baseline_decision, v.trace, e.watchlist_hits
-              FROM news_verdicts v
-             JOIN news_events e ON e.event_id = v.event_id
-             WHERE v.stage = 'triage' AND v.event_id = ANY(%s)
-             ORDER BY v.event_id, v.created_at_ms DESC
-            """,
-            (list(event_ids),),
-        ).fetchall()
+        rows = self._repository.recorded_triage_decisions(event_ids)
         decisions: dict[str, dict[str, Any]] = {}
         for row in rows:
             trace = dict(row.get("trace") or {})
@@ -437,27 +430,12 @@ class CandidateEvaluator:
     def _baseline_cases(self, window: ClosedWindow) -> tuple[DatasetCaseRef, ...]:
         """Every accepted event review in the window, with no cohort filter. Baseline-only."""
 
-        rows = self._conn.execute(
-            """
-            WITH accepted AS (
-              SELECT DISTINCT ON (j.event_id) j.*
-                FROM news_reviews a
-                JOIN news_reviews j ON j.review_id = a.accepts_review_id
-               WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
-                 AND a.release_eligible AND j.release_eligible
-                 AND j.rubric_version = ANY(%s) AND j.reader_contract_version = %s
-               ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
-            )
-            SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
-                   source.final_decision, source.delivery_state, source.evidence_snapshot
-              FROM accepted
-              JOIN news_review_task_source_v1 source
-                ON source.event_id = accepted.event_id
-               AND source.evidence_version = accepted.evidence_version
-             WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s AND source.ingest_mode = 'live'
-            """,
-            (list(REVIEW_RUBRIC_VERSIONS), READER_CONTRACT_VERSION, window.from_ms, window.to_ms),
-        ).fetchall()
+        rows = self._repository.accepted_event_review_sources(
+            rubric_versions=REVIEW_RUBRIC_VERSIONS,
+            reader_contract_version=READER_CONTRACT_VERSION,
+            from_ms=window.from_ms,
+            to_ms=window.to_ms,
+        )
         drafts: list[tuple[DatasetCaseRef, str, str]] = []
         for row in rows:
             snapshot = dict(row["evidence_snapshot"] or {})
@@ -921,81 +899,26 @@ class CandidateEvaluator:
         freeze_as_of_ms: int,
         epoch_started_at_ms: int,
     ) -> tuple[DatasetCaseRef, ...]:
-        rows = self._conn.execute(
-            """
-            WITH accepted AS (
-              SELECT DISTINCT ON (j.event_id) j.*, a.created_at_ms AS accepted_at_ms
-                FROM news_reviews a
-                JOIN news_reviews j ON j.review_id = a.accepts_review_id
-               WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
-                 AND a.release_eligible AND j.release_eligible
-                 AND a.created_at_ms >= %s AND j.created_at_ms >= %s
-                 AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
-                 AND j.reader_contract_version = %s
-               ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
-            )
-            SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
-                   source.final_decision, source.delivery_state, source.evidence_release_eligible,
-                   source.evidence_snapshot
-              FROM accepted
-              JOIN news_review_task_source_v1 source
-                ON source.event_id = accepted.event_id
-               AND source.evidence_version = accepted.evidence_version
-             WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s
-               AND source.ingest_mode = 'live' AND source.evidence_release_eligible
-               AND source.program_version = %s AND source.program_sha256 = %s
-               AND source.policy_version = %s
-               AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
-               AND NOT (
-                 source.final_decision IN ('push', 'escalate')
-                 AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
-               )
-               AND NOT (
-                 source.delivery_state = 'terminal'
-                 AND source.delivery_error_code = 'ambiguous_after_crash'
-               )
-            """,
-            (
-                epoch_started_at_ms,
-                epoch_started_at_ms,
-                freeze_as_of_ms,
-                list(REVIEW_RUBRIC_VERSIONS),
-                READER_CONTRACT_VERSION,
-                window.from_ms,
-                window.to_ms,
-                self._stable.program_version,
-                self._stable.program_sha256,
-                TRIAGE_POLICY_VERSION,
-                self._stable.bundle_sha,
-            ),
-        ).fetchall()
-        external = self._conn.execute(
-            """
-            SELECT DISTINCT ON (j.external_snapshot_id) j.*, a.created_at_ms AS accepted_at_ms,
-                   x.evidence_sha256, x.occurred_at_ms AS opened_at_ms, x.snapshot AS evidence_snapshot
-              FROM news_reviews a
-              JOIN news_reviews j ON j.review_id = a.accepts_review_id
-              JOIN news_external_miss_snapshots x ON x.snapshot_id = j.external_snapshot_id
-             WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
-               AND a.release_eligible AND j.release_eligible
-               AND a.created_at_ms >= %s AND j.created_at_ms >= %s
-               AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
-               AND j.reader_contract_version = %s
-               AND x.created_at_ms >= %s
-               AND x.occurred_at_ms >= %s AND x.occurred_at_ms < %s
-             ORDER BY j.external_snapshot_id, a.created_at_ms DESC, a.review_id DESC
-            """,
-            (
-                epoch_started_at_ms,
-                epoch_started_at_ms,
-                freeze_as_of_ms,
-                list(REVIEW_RUBRIC_VERSIONS),
-                READER_CONTRACT_VERSION,
-                epoch_started_at_ms,
-                window.from_ms,
-                window.to_ms,
-            ),
-        ).fetchall()
+        rows = self._repository.accepted_event_reviews_in_window(
+            epoch_started_at_ms=epoch_started_at_ms,
+            freeze_as_of_ms=freeze_as_of_ms,
+            rubric_versions=REVIEW_RUBRIC_VERSIONS,
+            reader_contract_version=READER_CONTRACT_VERSION,
+            from_ms=window.from_ms,
+            to_ms=window.to_ms,
+            program_version=self._stable.program_version,
+            program_sha256=self._stable.program_sha256,
+            policy_version=TRIAGE_POLICY_VERSION,
+            bundle_sha=self._stable.bundle_sha,
+        )
+        external = self._repository.accepted_external_miss_reviews_in_window(
+            epoch_started_at_ms=epoch_started_at_ms,
+            freeze_as_of_ms=freeze_as_of_ms,
+            rubric_versions=REVIEW_RUBRIC_VERSIONS,
+            reader_contract_version=READER_CONTRACT_VERSION,
+            from_ms=window.from_ms,
+            to_ms=window.to_ms,
+        )
         drafts: list[tuple[DatasetCaseRef, str, str]] = []
         for row in [*rows, *external]:
             subject_kind = str(row["subject_kind"])
@@ -1082,20 +1005,14 @@ class CandidateEvaluator:
             days.add(case.opened_at_ms // 86_400_000)
         # A release cohort is the whole runtime bundle. Mixing model bindings or retrieval identity into a
         # Program/policy cohort would score a candidate against evidence produced by a different executable arm.
-        eligible = self._conn.execute(
-            "SELECT count(*) AS n FROM news_review_task_source_v1 "
-            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
-            "AND trace #>> '{agent_assignment,bundle_sha}' = %s",
-            (
-                spec.window.from_ms,
-                spec.window.to_ms,
-                self._stable.program_version,
-                self._stable.program_sha256,
-                TRIAGE_POLICY_VERSION,
-                self._stable.bundle_sha,
-            ),
-        ).fetchone()
+        eligible = self._repository.eligible_stable_arm_event_count(
+            from_ms=spec.window.from_ms,
+            to_ms=spec.window.to_ms,
+            program_version=self._stable.program_version,
+            program_sha256=self._stable.program_sha256,
+            policy_version=TRIAGE_POLICY_VERSION,
+            bundle_sha=self._stable.bundle_sha,
+        )
         return {
             "case_n": len(cases),
             "independent_cluster_n": len({case.cluster_id for case in cases}),
@@ -1106,7 +1023,7 @@ class CandidateEvaluator:
             "natural_day_n": len(days),
             "stratum_n": len(strata),
             "strata": sorted(strata),
-            "eligible_event_n": int(eligible["n"] or 0),
+            "eligible_event_n": int((eligible or {}).get("n") or 0),
             "eligibility": {
                 "unit": "agent_bundle_sha",
                 "bundle_sha": self._stable.bundle_sha,
@@ -1384,28 +1301,13 @@ class CandidateEvaluator:
         learning artifacts/model recordings.
         """
 
-        rows = self._conn.execute(
-            """
-            SELECT *
-              FROM news_review_task_source_v1
-             WHERE opened_at_ms >= %s AND opened_at_ms < %s
-               AND ingest_mode = 'live'
-               AND admission IN ('candidate', 'listing_deterministic')
-               AND evidence_release_eligible
-               AND verdict IS NOT NULL
-               AND trace #>> '{agent_assignment,arm}' = 'stable'
-               AND trace #>> '{agent_assignment,bundle_sha}' = %s
-               AND program_version = %s AND program_sha256 = %s
-             ORDER BY opened_at_ms, event_id, evidence_version
-            """,
-            (
-                dataset.window.from_ms,
-                dataset.window.to_ms,
-                self._stable.bundle_sha,
-                self._stable.program_version,
-                self._stable.program_sha256,
-            ),
-        ).fetchall()
+        rows = self._repository.stable_arm_review_sources(
+            from_ms=dataset.window.from_ms,
+            to_ms=dataset.window.to_ms,
+            bundle_sha=self._stable.bundle_sha,
+            program_version=self._stable.program_version,
+            program_sha256=self._stable.program_sha256,
+        )
         state = ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts))
         observations: list[dict[str, Any]] = []
         for row in rows:
@@ -1507,49 +1409,18 @@ class CandidateEvaluator:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Read one-arm production assignment/verdict/receipt facts for canary."""
 
-        activation = self._conn.execute(
-            "SELECT * FROM news_canary_activations "
-            "WHERE candidate_manifest_sha = %s ORDER BY created_at_ms DESC LIMIT 1",
-            (candidate.candidate_sha,),
-        ).fetchone()
+        activation = self._repository.newest_canary_activation_for_candidate(candidate.candidate_sha)
         if activation is None:
             raise ValueError("news_learning_canary_activation_not_found")
         if str(activation["candidate_bundle_sha"]) != candidate.candidate_arm.bundle_sha:
             raise ValueError("news_learning_canary_candidate_bundle_mismatch")
         if str(activation["baseline_bundle_sha"]) != self._stable.bundle_sha:
             raise ValueError("news_learning_canary_stable_bundle_mismatch")
-        rows = self._conn.execute(
-            """
-            SELECT a.arm, a.bundle_sha, a.selector_version, a.eligibility_reason,
-                   a.assigned_at_ms, e.event_id, e.opened_at_ms,
-                   s.evidence_version, s.evidence_sha256, s.snapshot AS evidence_snapshot,
-                   v.verdict, v.editorial, v.scored_judgment_sha256, v.runtime_manifest_sha,
-                   v.final_decision, v.degraded, v.error_code AS verdict_error_code,
-                   v.trace, v.program_version, v.program_sha256,
-                   d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
-              FROM news_agent_assignments a
-              JOIN news_events e ON e.event_id = a.event_id
-              LEFT JOIN LATERAL (
-                SELECT x.* FROM news_verdicts x
-                 WHERE x.event_id = e.event_id AND x.stage = 'triage'
-                 ORDER BY x.created_at_ms DESC LIMIT 1
-              ) v ON true
-              LEFT JOIN LATERAL (
-                SELECT x.* FROM news_event_evidence_snapshots x
-                 WHERE x.event_id = e.event_id
-                   AND x.evidence_version = COALESCE(
-                     v.evidence_version,
-                     (SELECT max(z.evidence_version) FROM news_event_evidence_snapshots z
-                       WHERE z.event_id = e.event_id)
-                   )
-              ) s ON true
-              LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
-             WHERE a.activation_id = %s
-               AND e.opened_at_ms >= %s AND e.opened_at_ms < %s
-             ORDER BY e.opened_at_ms, e.event_id
-            """,
-            (activation["activation_id"], dataset.window.from_ms, dataset.window.to_ms),
-        ).fetchall()
+        rows = self._repository.canary_arm_observations(
+            activation_id=str(activation["activation_id"]),
+            from_ms=dataset.window.from_ms,
+            to_ms=dataset.window.to_ms,
+        )
         observations: list[dict[str, Any]] = []
         invariant_breaches: list[str] = []
         candidate_n = 0
@@ -1933,20 +1804,7 @@ class CandidateEvaluator:
             "finish_reason": call.get("finish_reason"),
             "error_code": call.get("error_code"),
         }
-        self._conn.execute(
-            """
-            INSERT INTO news_model_recordings (
-              recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
-              request_sha256, response_sha256, request, response, provider, model, model_sha,
-              execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
-              provider_cost_microusd, finish_reason, error_code, created_at_ms
-            ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s
-            ) ON CONFLICT DO NOTHING
-            """,
+        self._repository.append_model_recording(
             (
                 recording_sha,
                 run_sha,
@@ -1974,19 +1832,9 @@ class CandidateEvaluator:
                 call.get("finish_reason"),
                 call.get("error_code"),
                 self._ledger.now_ms(),
-            ),
+            )
         )
-        persisted = self._conn.execute(
-            """
-            SELECT recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
-                   request_sha256, response_sha256, request, response, provider, model, model_sha,
-                   execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
-                   provider_cost_microusd, finish_reason, error_code
-              FROM news_model_recordings
-             WHERE recording_sha = %s
-            """,
-            (recording_sha,),
-        ).fetchone()
+        persisted = self._repository.model_recording(recording_sha)
         if persisted is None:
             # A different recording_sha can still collide with the composite
             # run/case/arm/trial/Predictor identity.  Never expose the backend's
@@ -2315,17 +2163,7 @@ class CandidateEvaluator:
         candidate_critical: dict[str, set[str]] = {}
         stable_critical: dict[str, set[str]] = {}
         resolved_cluster_ids: set[str] = set()
-        pairwise = self._conn.execute(
-            """
-            SELECT DISTINCT ON (j.pairwise_case_id) j.pairwise_case_id, j.payload
-              FROM news_reviews a
-              JOIN news_reviews j ON j.review_id = a.accepts_review_id
-             WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
-               AND j.pairwise_case_id LIKE %s
-             ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
-            """,
-            (f"{run_sha}:%",),
-        ).fetchall()
+        pairwise = self._repository.accepted_pairwise_judgments(run_sha)
         by_id = {str(item["case_ref"]["case_id"]): item for item in observations}
         for row in pairwise:
             case_id = str(row["pairwise_case_id"]).split(":", 1)[-1]
@@ -2362,16 +2200,12 @@ class CandidateEvaluator:
             for cluster_id, errors in candidate_critical.items()
             if errors - stable_critical.get(cluster_id, set())
         )
-        review_budget = self._conn.execute(
-            "SELECT count(*) AS n FROM news_reviews "
-            "WHERE review_kind = 'judgment' AND subject_kind = 'pairwise' AND pairwise_case_id LIKE %s",
-            (f"{run_sha}:%",),
-        ).fetchone()
+        review_budget = self._repository.pairwise_review_budget_used(run_sha)
         return {
             "endpoint": "blind_net_preference",
             "planned_cluster_n": len(planned_cluster_ids),
             "resolved_cluster_n": len(resolved_cluster_ids),
-            "review_budget_used": int(review_budget["n"] or 0),
+            "review_budget_used": int((review_budget or {}).get("n") or 0),
             "review_budget_max": int(_PROFILE["validation"]["max_review_budget"]),
             "accepted_case_n": sum(len(items) for items in cluster_values.values()),
             "accepted_cluster_n": len(values),
@@ -2418,14 +2252,13 @@ class CandidateEvaluator:
         }
 
     def _load_case(self, case: DatasetCaseRef) -> dict[str, Any]:
-        review = self._conn.execute("SELECT * FROM news_reviews WHERE review_id = %s", (case.review_id,)).fetchone()
+        review = self._repository.review(case.review_id)
         if review is None:
             raise ValueError("news_learning_review_missing")
         if case.subject_kind == "event":
-            row = self._conn.execute(
-                "SELECT * FROM news_review_task_source_v1 WHERE event_id = %s AND evidence_version = %s",
-                (case.event_id, case.evidence_version),
-            ).fetchone()
+            row = self._repository.review_task_source(
+                event_id=str(case.event_id), evidence_version=int(case.evidence_version or 0)
+            )
             if row is None or row["evidence_sha256"] != case.evidence_sha256:
                 raise ValueError("news_learning_evidence_changed")
             production_judgment: dict[str, Any] | None = None
@@ -2445,9 +2278,7 @@ class CandidateEvaluator:
                 "review": dict(review),
                 "watchlist": list((row.get("trace") or {}).get("watchlist") or []),
             }
-        row = self._conn.execute(
-            "SELECT * FROM news_external_miss_snapshots WHERE snapshot_id = %s", (case.external_snapshot_id,)
-        ).fetchone()
+        row = self._repository.external_miss_snapshot(str(case.external_snapshot_id))
         if row is None or row["evidence_sha256"] != case.evidence_sha256:
             raise ValueError("news_learning_external_evidence_changed")
         snapshot = dict(row["snapshot"] or {})
@@ -2492,46 +2323,20 @@ class CandidateEvaluator:
     ) -> None:
         now_ms = self._ledger.now_ms()
         for item in observations:
-            case = item["case_ref"]
-            self._conn.execute(
-                """
-                INSERT INTO news_learning_cases (
-                  run_sha, case_id, dataset_sha, dataset_role, evaluation_stage, subject_kind, event_id,
-                  evidence_version, external_snapshot_id, review_id, opened_at_ms,
-                  evidence_sha256, cluster_id, stratum,
-                  stable_observation, candidate_observation, comparison, created_at_ms
-                ) VALUES (
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s::jsonb, %s::jsonb, %s::jsonb, %s
-                )
-                ON CONFLICT (run_sha, case_id) DO NOTHING
-                """,
-                (
-                    run_sha,
-                    case["case_id"],
-                    dataset.artifact_sha,
-                    dataset.role,
-                    stage,
-                    case["subject_kind"],
-                    case.get("event_id"),
-                    case.get("evidence_version"),
-                    case.get("external_snapshot_id"),
-                    case.get("review_id"),
-                    case["opened_at_ms"],
-                    case["evidence_sha256"],
-                    case["cluster_id"],
-                    case["stratum"],
-                    _json(item["stable"]),
-                    _json(item["candidate"]),
-                    _json(item["comparison"]),
-                    now_ms,
-                ),
+            self._repository.append_learning_run_case(
+                run_sha=run_sha,
+                case=item["case_ref"],
+                dataset_sha=dataset.artifact_sha,
+                dataset_role=dataset.role,
+                stage=stage,
+                stable_observation=item["stable"],
+                candidate_observation=item["candidate"],
+                comparison=item["comparison"],
+                now_ms=now_ms,
             )
 
     def _load_run_cases(self, run_sha: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM news_learning_cases WHERE run_sha = %s ORDER BY case_id", (run_sha,)
-        ).fetchall()
+        rows = self._repository.learning_run_cases(run_sha)
         return [
             {
                 "case_ref": {
@@ -2571,10 +2376,7 @@ class CandidateEvaluator:
         self._ledger.persist_artifact("candidate", payload, parent_sha=candidate.parent_stable_sha)
 
     def _verify_registration_receipt(self, receipt: ProposalReceipt) -> None:
-        row = self._conn.execute(
-            "SELECT kind, payload FROM news_learning_artifacts WHERE artifact_sha = %s",
-            (receipt.registration_receipt_sha,),
-        ).fetchone()
+        row = self._repository.learning_artifact(receipt.registration_receipt_sha)
         if row is None or str(row["kind"]) != "candidate_registration":
             raise ValueError("news_learning_candidate_registration_missing")
         payload = dict(row["payload"] or {})
@@ -2593,11 +2395,7 @@ class CandidateEvaluator:
         """
 
         receipt = candidate.proposal_receipt
-        rows = self._conn.execute(
-            "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
-            "WHERE kind = 'prompt_candidate' AND artifact_sha = %s",
-            (receipt.prompt_candidate_sha256,),
-        ).fetchall()
+        rows = self._repository.learning_artifacts_of_kind("prompt_candidate", receipt.prompt_candidate_sha256)
         if not rows:
             raise ValueError("news_learning_prompt_candidate_missing")
         row = rows[0]
@@ -2618,11 +2416,7 @@ class CandidateEvaluator:
         candidate = self._candidates.get(candidate_sha)
         if candidate is not None:
             return candidate
-        rows = self._conn.execute(
-            "SELECT payload FROM news_learning_artifacts WHERE kind = 'candidate' ORDER BY created_at_ms DESC"
-        ).fetchall()
-        for row in rows:
-            payload = dict(row["payload"] or {})
+        for payload in self._repository.registered_candidate_payloads():
             parsed = CandidateManifest.model_validate(payload.get("manifest") or payload)
             if parsed.candidate_sha == candidate_sha:
                 self._candidates[candidate_sha] = parsed
@@ -2630,20 +2424,13 @@ class CandidateEvaluator:
         raise ValueError("news_learning_candidate_not_found")
 
     def _candidate_registered_at(self, candidate_sha: str) -> int:
-        row = self._conn.execute(
-            "SELECT created_at_ms FROM news_learning_artifacts "
-            "WHERE kind = 'candidate' AND payload ->> 'candidate_sha' = %s "
-            "ORDER BY created_at_ms LIMIT 1",
-            (candidate_sha,),
-        ).fetchone()
-        if row is None:
+        registered_at_ms = self._repository.candidate_registered_at_ms(candidate_sha)
+        if registered_at_ms is None:
             raise ValueError("news_learning_candidate_registration_missing")
-        return int(row["created_at_ms"])
+        return registered_at_ms
 
     def _load_dataset_payload(self, artifact_sha: str) -> dict[str, Any]:
-        row = self._conn.execute(
-            "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s AND kind = 'dataset'", (artifact_sha,)
-        ).fetchone()
+        row = self._repository.learning_artifact(artifact_sha, kind="dataset")
         if row is None:
             raise ValueError("news_learning_dataset_not_found")
         payload = dict(row["payload"] or {})
@@ -2690,10 +2477,7 @@ class CandidateEvaluator:
         candidate: CandidateManifest,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         expected_kind = "shadow_observation" if stage == "shadow" else "canary_observation"
-        row = self._conn.execute(
-            "SELECT kind, payload, created_by FROM news_learning_artifacts WHERE artifact_sha = %s",
-            (artifact_sha,),
-        ).fetchone()
+        row = self._repository.learning_artifact(artifact_sha)
         if row is None or str(row["kind"]) != expected_kind:
             raise ValueError("news_learning_production_observation_not_found")
         payload = dict(row["payload"] or {})
@@ -2773,12 +2557,7 @@ class CandidateEvaluator:
         observations: Sequence[Mapping[str, Any]],
     ) -> tuple[str, dict[str, Any]]:
         kind = "shadow_observation" if stage == "shadow" else "canary_observation"
-        row = self._conn.execute(
-            "SELECT artifact_sha, payload FROM news_learning_artifacts "
-            "WHERE kind = %s AND payload->>'observation_run_sha' = %s "
-            "ORDER BY created_at_ms DESC LIMIT 1",
-            (kind, run_sha),
-        ).fetchone()
+        row = self._repository.newest_observation_manifest(kind=kind, observation_run_sha=run_sha)
         if row is None:
             raise ValueError("news_learning_generated_observation_manifest_missing")
         payload = dict(row["payload"] or {})
@@ -2796,19 +2575,7 @@ class CandidateEvaluator:
         return str(row["artifact_sha"]), dict(dimensions)
 
     def _has_passed_stage(self, candidate_sha: str, stage: str) -> bool:
-        row = self._conn.execute(
-            """
-            SELECT 1 AS ok
-              FROM news_learning_artifacts
-             WHERE kind = 'release_evidence'
-               AND payload->>'candidate_sha' = %s
-               AND payload->>'stage' = %s
-               AND payload->>'gate_outcome' = 'pass'
-             LIMIT 1
-            """,
-            (candidate_sha, stage),
-        ).fetchone()
-        return bool(row)
+        return self._repository.candidate_passed_stage(candidate_sha, stage)
 
     @staticmethod
     def _needs_stability_trials(case_id: str, outputs: Mapping[str, Mapping[str, Any]]) -> bool:

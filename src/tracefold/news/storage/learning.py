@@ -564,6 +564,472 @@ class LearningStorage:
             raise ValueError("news_learning_artifact_collision")
         return artifact_sha
 
+    def candidate_registered_at_ms(self, candidate_sha: str) -> int | None:
+        """When this candidate first entered the ledger, or None when it never did."""
+
+        row = self.conn.execute(
+            "SELECT created_at_ms FROM news_learning_artifacts "
+            "WHERE kind = 'candidate' AND payload ->> 'candidate_sha' = %s "
+            "ORDER BY created_at_ms LIMIT 1",
+            (candidate_sha,),
+        ).fetchone()
+        return None if row is None else int(row["created_at_ms"])
+
+    def candidate_passed_stage(self, candidate_sha: str, stage: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 AS ok
+              FROM news_learning_artifacts
+             WHERE kind = 'release_evidence'
+               AND payload->>'candidate_sha' = %s
+               AND payload->>'stage' = %s
+               AND payload->>'gate_outcome' = 'pass'
+             LIMIT 1
+            """,
+            (candidate_sha, stage),
+        ).fetchone()
+        return bool(row)
+
+    def learning_artifact(self, artifact_sha: str, *, kind: str | None = None) -> dict[str, Any] | None:
+        """One artifact row by its address, optionally required to be of a given kind.
+
+        Returns the row rather than the payload: three callers need `kind` back to refuse a document that
+        answers to the right address under the wrong name, which is the case a payload-only read cannot
+        distinguish from a missing row.
+        """
+
+        if kind is None:
+            row = self.conn.execute(
+                "SELECT artifact_sha, kind, parent_sha, payload FROM news_learning_artifacts WHERE artifact_sha = %s",
+                (artifact_sha,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT artifact_sha, kind, parent_sha, payload FROM news_learning_artifacts "
+                "WHERE artifact_sha = %s AND kind = %s",
+                (artifact_sha, kind),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def append_model_recording(self, values: Sequence[Any]) -> None:
+        """Append one exact Predictor call recording.
+
+        The column list is the contract: 26 values in a fixed order, which is why this takes the tuple the
+        caller already assembled rather than 26 keyword arguments that would only be re-packed here. The
+        caller reads the row back through `model_recording` and compares field by field, so a silent
+        `ON CONFLICT DO NOTHING` cannot pass for a write.
+        """
+
+        self.conn.execute(
+            """
+    INSERT INTO news_model_recordings (
+      recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
+      request_sha256, response_sha256, request, response, provider, model, model_sha,
+      execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
+      provider_cost_microusd, finish_reason, error_code, created_at_ms
+    ) VALUES (
+      %s, %s, %s, %s, %s, %s, %s, %s, %s,
+      %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s,
+      %s, %s, %s, %s, %s, %s,
+      %s, %s, %s, %s
+    ) ON CONFLICT DO NOTHING
+    """,
+            tuple(values),
+        )
+
+    def accepted_event_review_sources(
+        self, *, rubric_versions: Sequence[str], reader_contract_version: str, from_ms: int, to_ms: int
+    ) -> list[dict[str, Any]]:
+        """Every accepted event review whose Event opened in the window, with no cohort filter. Baseline-only."""
+
+        rows = self.conn.execute(
+            """
+    WITH accepted AS (
+      SELECT DISTINCT ON (j.event_id) j.*
+        FROM news_reviews a
+        JOIN news_reviews j ON j.review_id = a.accepts_review_id
+       WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
+         AND a.release_eligible AND j.release_eligible
+         AND j.rubric_version = ANY(%s) AND j.reader_contract_version = %s
+       ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
+    )
+    SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
+           source.final_decision, source.delivery_state, source.evidence_snapshot
+      FROM accepted
+      JOIN news_review_task_source_v1 source
+        ON source.event_id = accepted.event_id
+       AND source.evidence_version = accepted.evidence_version
+     WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s AND source.ingest_mode = 'live'
+    """,
+            (list(rubric_versions), reader_contract_version, from_ms, to_ms),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def accepted_event_reviews_in_window(
+        self,
+        *,
+        epoch_started_at_ms: int,
+        freeze_as_of_ms: int,
+        rubric_versions: Sequence[str],
+        reader_contract_version: str,
+        from_ms: int,
+        to_ms: int,
+        program_version: str,
+        program_sha256: str,
+        policy_version: str,
+        bundle_sha: str,
+    ) -> list[dict[str, Any]]:
+        """Accepted event reviews in the current cohort, inside one closed window."""
+
+        rows = self.conn.execute(
+            """
+    WITH accepted AS (
+      SELECT DISTINCT ON (j.event_id) j.*, a.created_at_ms AS accepted_at_ms
+        FROM news_reviews a
+        JOIN news_reviews j ON j.review_id = a.accepts_review_id
+       WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
+         AND a.release_eligible AND j.release_eligible
+         AND a.created_at_ms >= %s AND j.created_at_ms >= %s
+         AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
+         AND j.reader_contract_version = %s
+       ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
+    )
+    SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
+           source.final_decision, source.delivery_state, source.evidence_release_eligible,
+           source.evidence_snapshot
+      FROM accepted
+      JOIN news_review_task_source_v1 source
+        ON source.event_id = accepted.event_id
+       AND source.evidence_version = accepted.evidence_version
+     WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s
+       AND source.ingest_mode = 'live' AND source.evidence_release_eligible
+       AND source.program_version = %s AND source.program_sha256 = %s
+       AND source.policy_version = %s
+       AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
+       AND NOT (
+         source.final_decision IN ('push', 'escalate')
+         AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
+       )
+       AND NOT (
+         source.delivery_state = 'terminal'
+         AND source.delivery_error_code = 'ambiguous_after_crash'
+       )
+    """,
+            (
+                epoch_started_at_ms,
+                epoch_started_at_ms,
+                freeze_as_of_ms,
+                list(rubric_versions),
+                reader_contract_version,
+                from_ms,
+                to_ms,
+                program_version,
+                program_sha256,
+                policy_version,
+                bundle_sha,
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def accepted_external_miss_reviews_in_window(
+        self,
+        *,
+        epoch_started_at_ms: int,
+        freeze_as_of_ms: int,
+        rubric_versions: Sequence[str],
+        reader_contract_version: str,
+        from_ms: int,
+        to_ms: int,
+    ) -> list[dict[str, Any]]:
+        """Accepted external misses in the current cohort, inside one closed window."""
+
+        rows = self.conn.execute(
+            """
+    SELECT DISTINCT ON (j.external_snapshot_id) j.*, a.created_at_ms AS accepted_at_ms,
+           x.evidence_sha256, x.occurred_at_ms AS opened_at_ms, x.snapshot AS evidence_snapshot
+      FROM news_reviews a
+      JOIN news_reviews j ON j.review_id = a.accepts_review_id
+      JOIN news_external_miss_snapshots x ON x.snapshot_id = j.external_snapshot_id
+     WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
+       AND a.release_eligible AND j.release_eligible
+       AND a.created_at_ms >= %s AND j.created_at_ms >= %s
+       AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
+       AND j.reader_contract_version = %s
+       AND x.created_at_ms >= %s
+       AND x.occurred_at_ms >= %s AND x.occurred_at_ms < %s
+     ORDER BY j.external_snapshot_id, a.created_at_ms DESC, a.review_id DESC
+    """,
+            (
+                epoch_started_at_ms,
+                epoch_started_at_ms,
+                freeze_as_of_ms,
+                list(rubric_versions),
+                reader_contract_version,
+                epoch_started_at_ms,
+                from_ms,
+                to_ms,
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def eligible_stable_arm_event_count(
+        self,
+        *,
+        from_ms: int,
+        to_ms: int,
+        program_version: str,
+        program_sha256: str,
+        policy_version: str,
+        bundle_sha: str,
+    ) -> dict[str, Any] | None:
+        """How many live Events the stable arm answered in the window, whether or not anyone reviewed them."""
+
+        row = self.conn.execute(
+            "SELECT count(*) AS n FROM news_review_task_source_v1 "
+            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
+            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
+            "AND trace #>> '{agent_assignment,bundle_sha}' = %s",
+            (from_ms, to_ms, program_version, program_sha256, policy_version, bundle_sha),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def newest_canary_activation_for_candidate(self, candidate_manifest_sha: str) -> dict[str, Any] | None:
+        """The most recent activation this candidate was ever armed under."""
+
+        row = self.conn.execute(
+            "SELECT * FROM news_canary_activations "
+            "WHERE candidate_manifest_sha = %s ORDER BY created_at_ms DESC LIMIT 1",
+            (candidate_manifest_sha,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def canary_arm_observations(self, *, activation_id: str, from_ms: int, to_ms: int) -> list[dict[str, Any]]:
+        """Every assignment one activation made in the window, with the verdict and delivery it produced."""
+
+        rows = self.conn.execute(
+            """
+    SELECT a.arm, a.bundle_sha, a.selector_version, a.eligibility_reason,
+           a.assigned_at_ms, e.event_id, e.opened_at_ms,
+           s.evidence_version, s.evidence_sha256, s.snapshot AS evidence_snapshot,
+           v.verdict, v.editorial, v.scored_judgment_sha256, v.runtime_manifest_sha,
+           v.final_decision, v.degraded, v.error_code AS verdict_error_code,
+           v.trace, v.program_version, v.program_sha256,
+           d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
+      FROM news_agent_assignments a
+      JOIN news_events e ON e.event_id = a.event_id
+      LEFT JOIN LATERAL (
+        SELECT x.* FROM news_verdicts x
+         WHERE x.event_id = e.event_id AND x.stage = 'triage'
+         ORDER BY x.created_at_ms DESC LIMIT 1
+      ) v ON true
+      LEFT JOIN LATERAL (
+        SELECT x.* FROM news_event_evidence_snapshots x
+         WHERE x.event_id = e.event_id
+           AND x.evidence_version = COALESCE(
+             v.evidence_version,
+             (SELECT max(z.evidence_version) FROM news_event_evidence_snapshots z
+               WHERE z.event_id = e.event_id)
+           )
+      ) s ON true
+      LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
+     WHERE a.activation_id = %s
+       AND e.opened_at_ms >= %s AND e.opened_at_ms < %s
+     ORDER BY e.opened_at_ms, e.event_id
+    """,
+            (activation_id, from_ms, to_ms),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def model_recording(self, recording_sha: str) -> dict[str, Any] | None:
+        """One persisted Predictor call, read back so the writer can prove what landed."""
+
+        row = self.conn.execute(
+            """
+    SELECT recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
+           request_sha256, response_sha256, request, response, provider, model, model_sha,
+           execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
+           provider_cost_microusd, finish_reason, error_code
+      FROM news_model_recordings
+     WHERE recording_sha = %s
+    """,
+            (recording_sha,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def accepted_pairwise_judgments(self, run_sha: str) -> list[dict[str, Any]]:
+        """The accepted blind pairwise judgments for one evaluation run."""
+
+        rows = self.conn.execute(
+            """
+    SELECT DISTINCT ON (j.pairwise_case_id) j.pairwise_case_id, j.payload
+      FROM news_reviews a
+      JOIN news_reviews j ON j.review_id = a.accepts_review_id
+     WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
+       AND j.pairwise_case_id LIKE %s
+     ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
+    """,
+            (f"{run_sha}:%",),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def pairwise_review_budget_used(self, run_sha: str) -> dict[str, Any] | None:
+        """How many pairwise judgments this run has already spent from the review budget."""
+
+        row = self.conn.execute(
+            "SELECT count(*) AS n FROM news_reviews "
+            "WHERE review_kind = 'judgment' AND subject_kind = 'pairwise' AND pairwise_case_id LIKE %s",
+            (f"{run_sha}:%",),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def stable_arm_review_sources(
+        self,
+        *,
+        from_ms: int,
+        to_ms: int,
+        bundle_sha: str,
+        program_version: str,
+        program_sha256: str,
+    ) -> list[dict[str, Any]]:
+        """Every admitted, release-eligible Event the stable arm answered inside a closed window."""
+
+        rows = self.conn.execute(
+            """
+            SELECT *
+              FROM news_review_task_source_v1
+             WHERE opened_at_ms >= %s AND opened_at_ms < %s
+               AND ingest_mode = 'live'
+               AND admission IN ('candidate', 'listing_deterministic')
+               AND evidence_release_eligible
+               AND verdict IS NOT NULL
+               AND trace #>> '{agent_assignment,arm}' = 'stable'
+               AND trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND program_version = %s AND program_sha256 = %s
+             ORDER BY opened_at_ms, event_id, evidence_version
+            """,
+            (from_ms, to_ms, bundle_sha, program_version, program_sha256),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def newest_observation_manifest(self, *, kind: str, observation_run_sha: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT artifact_sha, payload FROM news_learning_artifacts "
+            "WHERE kind = %s AND payload->>'observation_run_sha' = %s "
+            "ORDER BY created_at_ms DESC LIMIT 1",
+            (kind, observation_run_sha),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def review(self, review_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM news_reviews WHERE review_id = %s", (review_id,)).fetchone()
+        return None if row is None else dict(row)
+
+    def review_task_source(self, *, event_id: str, evidence_version: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM news_review_task_source_v1 WHERE event_id = %s AND evidence_version = %s",
+            (event_id, evidence_version),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def external_miss_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM news_external_miss_snapshots WHERE snapshot_id = %s", (snapshot_id,)
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def recorded_triage_decisions(self, event_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """The newest persisted triage verdict per Event, with the watchlist hits the Event carried."""
+
+        if not event_ids:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT ON (v.event_id)
+                   v.event_id, v.final_decision, v.override_rule, v.throttled_by,
+                   v.rule_baseline_decision, v.trace, e.watchlist_hits
+              FROM news_verdicts v
+             JOIN news_events e ON e.event_id = v.event_id
+             WHERE v.stage = 'triage' AND v.event_id = ANY(%s)
+             ORDER BY v.event_id, v.created_at_ms DESC
+            """,
+            (list(event_ids),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def append_learning_run_case(
+        self,
+        *,
+        run_sha: str,
+        case: Mapping[str, Any],
+        dataset_sha: str,
+        dataset_role: str,
+        stage: str,
+        stable_observation: Mapping[str, Any],
+        candidate_observation: Mapping[str, Any],
+        comparison: Mapping[str, Any],
+        now_ms: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO news_learning_cases (
+              run_sha, case_id, dataset_sha, dataset_role, evaluation_stage, subject_kind, event_id,
+              evidence_version, external_snapshot_id, review_id, opened_at_ms,
+              evidence_sha256, cluster_id, stratum,
+              stable_observation, candidate_observation, comparison, created_at_ms
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s::jsonb, %s::jsonb, %s::jsonb, %s
+            )
+            ON CONFLICT (run_sha, case_id) DO NOTHING
+            """,
+            (
+                run_sha,
+                case["case_id"],
+                dataset_sha,
+                dataset_role,
+                stage,
+                case["subject_kind"],
+                case.get("event_id"),
+                case.get("evidence_version"),
+                case.get("external_snapshot_id"),
+                case.get("review_id"),
+                case["opened_at_ms"],
+                case["evidence_sha256"],
+                case["cluster_id"],
+                case["stratum"],
+                _dumps(dict(stable_observation)),
+                _dumps(dict(candidate_observation)),
+                _dumps(dict(comparison)),
+                int(now_ms),
+            ),
+        )
+
+    def learning_run_cases(self, run_sha: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM news_learning_cases WHERE run_sha = %s ORDER BY case_id", (run_sha,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def registered_candidate_payloads(self) -> list[dict[str, Any]]:
+        """Every registered candidate payload, newest first.
+
+        Newest first because the caller is looking one up by its content hash and a re-registration is
+        more likely to be the one being asked about.
+        """
+
+        rows = self.conn.execute(
+            "SELECT payload FROM news_learning_artifacts WHERE kind = 'candidate' ORDER BY created_at_ms DESC"
+        ).fetchall()
+        return [dict(row["payload"] or {}) for row in rows]
+
+    def learning_artifacts_of_kind(self, kind: str, artifact_sha: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
+            "WHERE kind = %s AND artifact_sha = %s",
+            (kind, artifact_sha),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def learning_artifact_read_back(
         self,
         kind: str,
