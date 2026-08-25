@@ -5,6 +5,10 @@ freezes what it read into files the operator owns, and never writes back: no ver
 dataset, no candidate, no activation. Nothing here can promote anything, and the release plane cannot
 read it — a run directory is not a second truth, it is a notebook that happens to be reproducible.
 
+One command outside this package reads a run directory: `draft-reviews --events-from`, and only to pick
+*which* Events to ask the ReviewDesk about. The desk still owns task identity and the evidence view, and
+the draft is still a file a human has to accept, so nothing here becomes truth by being read.
+
 What makes it reproducible is that the cases are the *same* projection the trusted compiler seals. The
 snapshot calls `CandidateEvaluator`'s own episode projection rather than re-deriving one, because two
 projections would let the number an operator reads drift from the number a compile maximizes — which is
