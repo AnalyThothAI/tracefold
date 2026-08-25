@@ -46,7 +46,7 @@
   }
 
   .trading-heading-aside {
-    display: flex;
+    display: none;
     flex-wrap: wrap;
     gap: 16px;
     align-items: baseline;
@@ -99,6 +99,20 @@
     grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
     gap: 12px;
     align-items: start;
+  }
+
+  @media (max-width: 767px) {
+    /* Topbar figures intentionally leave the phone; keep the three safety facts on the page at this width. */
+    .trading-heading-aside {
+      display: flex;
+      width: 100%;
+      justify-content: space-between;
+      padding-top: 4px;
+    }
+
+    .trading-stat {
+      text-align: left;
+    }
   }
 
   /* ------------------------------------------------------------------ tables */

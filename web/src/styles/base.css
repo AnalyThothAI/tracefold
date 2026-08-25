@@ -42,7 +42,7 @@
   }
 
   ::selection {
-    background: rgba(42, 91, 215, 0.16);
+    background: var(--accent-selection);
   }
 
   button,
@@ -65,7 +65,7 @@
   }
 
   a:hover {
-    color: #1e46ad;
+    color: var(--accent-strong);
   }
 
   .lucide {
@@ -157,7 +157,7 @@
 
   @keyframes tf-flash {
     0% {
-      background: rgba(42, 91, 215, 0.14);
+      background: var(--accent-selection);
     }
 
     100% {

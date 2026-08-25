@@ -20,7 +20,7 @@
       /* The home indicator and the WeChat bottom bar both sit over the last row without this. */
       padding: 6px 8px calc(10px + env(safe-area-inset-bottom, 0px));
       border-top: 1px solid var(--border-subtle);
-      background: rgba(255, 255, 255, 0.95);
+      background: var(--surface-glass);
       backdrop-filter: blur(14px);
     }
 

@@ -37,7 +37,7 @@
     align-items: baseline;
     justify-content: space-between;
     padding: 6px 14px;
-    background: rgba(248, 249, 251, 0.95);
+    background: var(--surface-raised-glass);
     box-shadow: inset 0 -1px 0 var(--border-subtle);
     backdrop-filter: blur(8px);
   }
@@ -69,7 +69,7 @@
     border: 0;
     border-radius: 999px;
     color: var(--accent-primary);
-    background: rgba(42, 91, 215, 0.1);
+    background: var(--accent-soft);
     box-shadow: var(--shadow-pill);
     font-size: 12px;
     font-weight: 600;
@@ -143,7 +143,7 @@
       margin: 4px 0 0;
       padding: 5px 10px;
       border-radius: var(--radius-sm);
-      background: rgba(234, 237, 241, 0.96);
+      background: var(--surface-canvas-glass);
       box-shadow: none;
     }
 

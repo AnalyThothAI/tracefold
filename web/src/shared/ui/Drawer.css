@@ -3,7 +3,7 @@
     position: fixed;
     z-index: 70;
     inset: 0;
-    background: rgba(13, 17, 23, 0.28);
+    background: var(--surface-scrim);
   }
 
   .ui-drawer {
@@ -19,12 +19,12 @@
 
   .ui-drawer[data-side="right"] {
     right: 0;
-    box-shadow: -14px 0 40px rgba(13, 17, 23, 0.2);
+    box-shadow: var(--shadow-drawer-left);
   }
 
   .ui-drawer[data-side="left"] {
     left: 0;
-    box-shadow: 14px 0 40px rgba(13, 17, 23, 0.2);
+    box-shadow: var(--shadow-drawer-right);
   }
 
   .ui-drawer-head {

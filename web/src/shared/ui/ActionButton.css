@@ -46,14 +46,14 @@
   }
 
   .ui-button[data-variant="primary"] {
-    color: #ffffff;
+    color: var(--primary-foreground);
     background: var(--accent-primary);
     box-shadow: none;
     font-weight: 600;
   }
 
   .ui-button[data-variant="primary"]:hover:not(:disabled) {
-    background: #1e46ad;
+    background: var(--accent-strong);
   }
 
   .ui-button[data-variant="secondary"]:hover:not(:disabled) {

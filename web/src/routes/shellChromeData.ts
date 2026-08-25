@@ -3,6 +3,7 @@ import {
   useCockpitStatusQuery,
   type CockpitHealth,
   type CockpitShellProps,
+  type CockpitTopbarFigure,
 } from "@features/cockpit";
 import {
   HEALTH_ITEM_KEYS,
@@ -11,7 +12,7 @@ import {
   useNewsStatusWithToken,
   type NewsStatus,
 } from "@features/news/shell";
-import { useTradingStatusWithToken } from "@features/trading/shell";
+import { useTradingStatusWithToken, type TradingStatus } from "@features/trading/shell";
 import { newsPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useQueryClient } from "@tanstack/react-query";
@@ -90,15 +91,10 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       outletContext: routeContext,
       topbar: {
         health: healthLamp(newsStatusQuery.data, newsStatusQuery.isError),
-        // #87: the two numbers the operator checks without opening a page. Both are already-served fields —
-        // no derived rate, and nothing that would need a market-data lane the pipeline does not have.
-        figures: [
-          {
-            label: "PUSHED 24H",
-            tone: "accent" as const,
-            value: newsStatusQuery.data?.delivery?.sent_24h,
-          },
-        ],
+        // The visual contract makes the topbar a route context strip. Every value is an already-served
+        // material fact from the two status reads this shell shares with the pages; switching routes never
+        // starts a new request or asks the browser to invent a KPI.
+        figures: topbarFigures(location.pathname, newsStatusQuery.data, tradingStatusQuery.data),
         onRefresh: () => void queryClient.invalidateQueries(),
         search: {
           onSubmitQuery: submitTopbarSearch,
@@ -115,6 +111,66 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     },
     routeContext,
   };
+}
+
+/** The two or three facts that identify the surface at a glance, using only status fields already in cache. */
+export function topbarFigures(
+  pathname: string,
+  newsStatus?: NewsStatus,
+  tradingStatus?: TradingStatus,
+): CockpitTopbarFigure[] {
+  if (pathname === "/trading") {
+    const readiness = tradingStatus?.readiness;
+    const budget = tradingStatus?.budget;
+    return [
+      { label: "MODE", text: readiness?.mode.toUpperCase() },
+      {
+        label: "LIVE READY",
+        text: readiness ? (readiness.live_ready ? "YES" : "NO") : undefined,
+        tone: readiness?.live_ready === false ? "caution" : undefined,
+        title: readiness?.live_readiness,
+      },
+      {
+        label: "ORDERS TODAY",
+        text: budget ? `${budget.orders_today} / ${budget.max_orders_per_day}` : undefined,
+      },
+    ];
+  }
+
+  if (pathname === "/news/oi") {
+    return [
+      {
+        label: "OI FRAMES 24H",
+        tone: "accent",
+        value: newsStatus?.pipeline.telemetry_received_24h,
+      },
+      {
+        label: "CASES TODAY",
+        // Sparse counter maps omit zeroes; once the status document exists, absence is the ledger's zero.
+        value: tradingStatus ? (tradingStatus.counts.funnel_today?.case_created ?? 0) : undefined,
+      },
+    ];
+  }
+
+  if (pathname === "/news/status") {
+    return [
+      { label: "EVENTS 24H", tone: "accent", value: newsStatus?.pipeline.events_24h },
+      {
+        label: "QUEUE P95",
+        text: durationText(newsStatus?.pipeline.queue_lag_p95_ms),
+      },
+    ];
+  }
+
+  return [
+    { label: "PUSHED 24H", tone: "accent", value: newsStatus?.delivery.sent_24h },
+    { label: "E2E P95", text: durationText(newsStatus?.delivery.e2e_p95_ms) },
+  ];
+}
+
+function durationText(value: number | null | undefined): string | undefined {
+  if (value == null) return undefined;
+  return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} s`;
 }
 
 /**

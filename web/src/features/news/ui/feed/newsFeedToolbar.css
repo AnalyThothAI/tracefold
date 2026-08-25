@@ -14,7 +14,7 @@
     justify-content: space-between;
     margin: 0 -16px;
     padding: 9px 16px;
-    background: rgba(234, 237, 241, 0.94);
+    background: var(--surface-canvas-glass);
     backdrop-filter: blur(10px);
   }
 
@@ -184,7 +184,7 @@
     .news-feed-toolbar {
       margin: 0 -12px;
       padding: 8px 12px;
-      background: rgba(234, 237, 241, 0.96);
+      background: var(--surface-canvas-glass);
     }
 
     .news-segmented {

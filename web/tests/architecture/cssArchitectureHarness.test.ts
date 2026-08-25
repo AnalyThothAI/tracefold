@@ -162,6 +162,48 @@ describe("CSS architecture harness", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("keeps literal colours in the token stylesheet", () => {
+    const offenders = collectFiles(srcRoot)
+      .filter(isCssFile)
+      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
+      .flatMap((path) => {
+        const css = sanitizeCss(readFileSync(path, "utf8"));
+        return [...css.matchAll(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g)].map(
+          (match) => `${relativeToSrc(path)}:${lineNumber(css, match.index)} uses ${match[0]}`,
+        );
+      });
+
+    expect(
+      offenders,
+      "Semantic colours belong in styles/tokens.css; route and component CSS must consume a token.",
+    ).toEqual([]);
+  });
+
+  it("does not reference undefined CSS custom properties", () => {
+    const cssFiles = collectFiles(srcRoot).filter(isCssFile);
+    const defined = new Set(
+      cssFiles.flatMap((path) =>
+        [...sanitizeCss(readFileSync(path, "utf8")).matchAll(/(--[a-z0-9-]+)\s*:/g)].map(
+          (match) => match[1],
+        ),
+      ),
+    );
+    const offenders = cssFiles.flatMap((path) => {
+      const css = sanitizeCss(readFileSync(path, "utf8"));
+      return [...css.matchAll(/var\((--[a-z0-9-]+)(\s*,[^)]*)?\)/g)]
+        .filter((match) => !defined.has(match[1]) && !match[2])
+        .map(
+          (match) =>
+            `${relativeToSrc(path)}:${lineNumber(css, match.index)} references ${match[1]}`,
+        );
+    });
+
+    expect(
+      offenders,
+      "Every CSS custom property must be defined, or supply a local fallback at its use site.",
+    ).toEqual([]);
+  });
+
   it("keeps side-effect CSS imported only by local owner files", () => {
     const sourceFiles = collectFiles(srcRoot).filter((path) =>
       [".ts", ".tsx"].includes(extname(path)),

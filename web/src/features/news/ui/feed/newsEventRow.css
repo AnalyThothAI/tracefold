@@ -50,15 +50,15 @@
    * compete with the ones that got somewhere. Roughly three quarters of a day's Events are held.
    */
   .news-event-row[data-outcome-group="held"] {
-    --rail: #dfe3e9;
+    --rail: var(--border-subtle);
   }
 
   .news-event-row[data-outcome-group="held"][data-direction="bullish"] {
-    --rail: rgba(211, 32, 41, 0.45);
+    --rail: color-mix(in srgb, var(--dir-bullish) 45%, transparent);
   }
 
   .news-event-row[data-outcome-group="held"][data-direction="bearish"] {
-    --rail: rgba(10, 125, 74, 0.45);
+    --rail: color-mix(in srgb, var(--dir-bearish) 45%, transparent);
   }
 
   .news-event-row:hover {
@@ -66,7 +66,7 @@
   }
 
   .news-event-row[data-selected] {
-    background: rgba(42, 91, 215, 0.06);
+    background: var(--accent-soft);
   }
 
   /* A new Event landing at the top while the reader is already there: it arrives, and says so once. */
@@ -193,7 +193,7 @@
   .news-event-select svg {
     width: 9px;
     height: 9px;
-    color: #ffffff;
+    color: var(--primary-foreground);
     opacity: 0;
     stroke-width: 3.4;
   }

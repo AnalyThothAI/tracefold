@@ -35,6 +35,10 @@
   --surface-hover: #f8f9fb;
   /* The segmented-control groove. Alpha, so it sits on white and on the sunken block alike. */
   --surface-slot: rgba(13, 17, 23, 0.05);
+  --surface-glass: rgba(255, 255, 255, 0.94);
+  --surface-raised-glass: rgba(248, 249, 251, 0.95);
+  --surface-canvas-glass: rgba(234, 237, 241, 0.96);
+  --surface-scrim: rgba(13, 17, 23, 0.28);
 
   /*
    * Six ink steps. The first five clear 4.5:1 on #ffffff (16.9 / 9.6 / 8.2 / 5.9 / 4.7); `subtle` is the
@@ -55,7 +59,9 @@
 
   /* Product accent — the only brand colour, and it only ever marks the pipeline. */
   --accent-primary: #2a5bd7;
+  --accent-strong: #1e46ad;
   --accent-soft: rgba(42, 91, 215, 0.09);
+  --accent-selection: rgba(42, 91, 215, 0.16);
   --accent-border: rgba(42, 91, 215, 0.3);
 
   /*
@@ -111,6 +117,8 @@
   --shadow-pill: 0 1px 2px rgba(13, 17, 23, 0.08);
   --shadow-elevated: inset 0 0 0 1px rgba(13, 17, 23, 0.08), 0 6px 18px rgba(13, 17, 23, 0.12);
   --shadow-overlay: 0 18px 48px rgba(13, 17, 23, 0.24);
+  --shadow-drawer-left: -14px 0 40px rgba(13, 17, 23, 0.2);
+  --shadow-drawer-right: 14px 0 40px rgba(13, 17, 23, 0.2);
   --focus-halo: 0 0 0 3px rgba(42, 91, 215, 0.1);
   --focus-ring: #2a5bd7;
 
