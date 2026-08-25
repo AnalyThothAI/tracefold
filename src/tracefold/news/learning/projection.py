@@ -480,8 +480,7 @@ def _arm_exact_diff(
             "candidate_program_version": candidate.program_version,
             "stable_program_sha256": stable.program_sha256,
             "candidate_program_sha256": candidate.program_sha256,
-            "machine_diff": dict(proposal.program_machine_diff or {}),
-            "compile_provenance": dict(proposal.compile_provenance or {}),
+            "compile_record_sha256": proposal.compile_record_sha256,
         }
     changed_keys = sorted(
         key for key in set(stable.policy) | set(candidate.policy) if stable.policy.get(key) != candidate.policy.get(key)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import dspy
 import pytest
@@ -21,6 +21,11 @@ from tracefold.news.learning.compiler.root import (
     _optimizer_config_receipt,
     _retrieval_receipt,
     accepted_review_metric,
+)
+from tracefold.news.learning.compiler.security import (
+    REFLECTION_MAX_TOKENS,
+    REFLECTION_TIMEOUT_SECONDS,
+    ModelExecutionIdentity,
 )
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.program.artifact import (
@@ -132,6 +137,14 @@ class _EvidenceJudge(_NoopJudge):
 
 
 class _MeteredFakeLM:
+    """A fake route that carries the same stamp `build_compile_lm` puts on a real one.
+
+    `ProgramCompiler` refuses an LM without `tracefold_compiler_endpoint_identity`, before any provider
+    call, because the role contract — temperature, output ceiling, deadline — is what an identity attests
+    and cannot be inferred from the object it describes. A fake that skips the stamp is not a cheaper
+    fixture, it is a route the compiler would refuse in production.
+    """
+
     cache = False
     num_retries = 0
 
@@ -141,12 +154,22 @@ class _MeteredFakeLM:
         *,
         cost: float = 0.000001,
         api_base: str = "https://compiler.test/v1",
+        role: Literal["task", "reflection"] = "task",
     ) -> None:
         self.model = model
         self.cost = cost
         self.kwargs = {"api_base": api_base}
         self.history: list[dict[str, Any]] = []
         self._capture: ExactProviderCallCapture | None = None
+        self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
+            role=role,
+            model=model,
+            api_base=api_base,
+            max_output_tokens=REFLECTION_MAX_TOKENS if role == "reflection" else 512,
+            timeout_seconds=REFLECTION_TIMEOUT_SECONDS if role == "reflection" else 20.0,
+            temperature=1.0 if role == "reflection" else 0.0,
+            model_kwargs={},
+        )
 
     @contextmanager
     def observe_exact_call(self) -> Iterator[ExactProviderCallCapture]:
@@ -289,7 +312,7 @@ def _compiler(base: Any | None = None) -> ProgramCompiler:
     return ProgramCompiler(
         base_artifact=base or load_stable_program_artifact(),
         task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
         judge=_NoopJudge(),
     )
@@ -337,6 +360,39 @@ def test_compiler_charges_a_provider_response_even_when_the_lm_raises_afterward(
         _BudgetedLM(lm, role="task", meter=meter)(prompt="probe")  # type: ignore[arg-type]
     assert meter.task_model_calls == 1
     assert meter.actual_cost_microusd == 4
+
+
+def test_program_compiler_refuses_an_unstamped_or_misrouted_lm_before_spending_anything() -> None:
+    """#193: the route identity is checked at construction, so a bad route costs no provider call.
+
+    It used to be read when the optimizer receipt was built — after a full GEPA run had already been
+    paid for. Both refusals below are the same failure: an LM that cannot attest the contract the seat
+    it was handed to runs under.
+    """
+
+    unstamped = _MeteredFakeLM("task/model")
+    del unstamped.tracefold_compiler_endpoint_identity
+    with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
+        ProgramCompiler(
+            base_artifact=load_stable_program_artifact(),
+            task_lm=unstamped,  # type: ignore[arg-type]
+            reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
+            optimizer_factory=_FakeGEPA,
+            judge=_NoopJudge(),
+        )
+    assert unstamped.history == []
+
+    # A task-stamped route seated as the reflection teacher: same model, wrong contract.
+    misrouted = _MeteredFakeLM("reflection/model")
+    with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
+        ProgramCompiler(
+            base_artifact=load_stable_program_artifact(),
+            task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
+            reflection_lm=misrouted,  # type: ignore[arg-type]
+            optimizer_factory=_FakeGEPA,
+            judge=_NoopJudge(),
+        )
+    assert misrouted.history == []
 
 
 def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> None:
@@ -397,7 +453,7 @@ def test_non_json_trajectory_value_fails_closed() -> None:
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_UnsafeGEPA,
         judge=_NoopJudge(),
     )
@@ -416,7 +472,7 @@ def test_nonfinite_trajectory_value_fails_closed() -> None:
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_NonfiniteGEPA,
         judge=_NoopJudge(),
     )
@@ -448,7 +504,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     base = _optimizer_config_receipt(
         constructor=constructor,
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
@@ -458,7 +514,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     changed_scalar = _optimizer_config_receipt(
         constructor={**constructor, "seed": 18},
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
@@ -468,7 +524,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     changed_model = _optimizer_config_receipt(
         constructor=constructor,
         task_lm=_MeteredFakeLM("task/other-model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
@@ -478,7 +534,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     changed_endpoint = _optimizer_config_receipt(
         constructor=constructor,
         task_lm=_MeteredFakeLM("task/model", api_base="https://other-compiler.test/v1"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,

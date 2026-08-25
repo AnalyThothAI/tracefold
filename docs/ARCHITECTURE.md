@@ -793,12 +793,12 @@ old manifest/state root is not a second runtime option.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
 parent lineage, compile cost, trajectory, teacher endpoint or a compile
-receipt, so two compiles that reach the same two instructions are the same
+record, so two compiles that reach the same two instructions are the same
 running Program however much they cost and whoever launched them. Lineage is a
 property of the candidate (`ProposalReceipt.program_parent_sha256` and
-`program_candidate_sha256`); compile provenance is a property of the compile
-receipt chain. Folding them into the runtime root let "who compiled this"
-change what "this Program" meant.
+`program_candidate_sha256`); compile provenance is a property of the one
+`CompileRecordV1` that receipt names. Folding them into the runtime root let
+"who compiled this" change what "this Program" meant.
 
 Everything else the Program needs — the two-Predictor graph, the typed
 schemas, the ordered code-owned RulePacks, the renderer, the normalizer, the
@@ -1161,18 +1161,49 @@ holdout or application credentials and can emit only `ProgramStrategyPatchV1`.
 That patch carries the two advisory instructions and nothing else: RulePacks,
 the graph, the Signatures, the execution budget, the model slots and the policy
 are code under `factory_id` and are outside the write set, and a demo is
-refused rather than banked. The trusted side revalidates every
-receipt payload and applies the patch to the exact active stable root. GEPA
-cannot accept a review, register/deploy its output, move a stable pointer, or
-promote a candidate.
+refused rather than banked. GEPA cannot accept a review, register/deploy its
+output, move a stable pointer, or promote a candidate.
 Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
-or production assignment. Compiler protocol/receipt v3 derives sealed,
-secret-free identity and enforcement from three typed role configurations:
-task, reflection (32k tokens) and `metric_judge`. The judge is wired explicitly
-for headline/why/factual semantic equivalence; its calls, cost and failures are
-separate receipt facts, and unavailable means failure-as-zero rather than byte
-equality, hidden retry or cache.
+or production assignment.
+
+One trusted compile produces one `CompileRecordV1`. Issue #193 replaced seven
+content-addressed receipts, a chain root, a runner receipt, an optimizer
+provenance record and a machine diff — five kinds of document that between them
+carried the same four identities (parent Program, dataset, runtime manifest,
+patch) up to four times, cross-bound by hashes each party computed from a
+payload it already held. The record embeds the whole compile and is addressed
+by `compile_record_sha256`, which is also its key in `news_learning_artifacts`
+under the new `compile_record` kind. A digest survives only when it addresses
+independently stored bytes, crosses a real trust boundary, is a durable key,
+fingerprints an external mutable identity that cannot be stored whole, or
+serves a consumer that cannot read the parent payload. Everything the cut
+removed failed all five: it was a self-proof inside one package, verified by
+someone who already held the object being re-hashed.
+
+Each of the three roles — task, reflection (32k tokens) and `metric_judge` — is
+one `ModelExecutionIdentity` carrying the complete secret-free execution
+contract, in place of the `endpoint_sha256 -> model_sha256 -> binding_sha256`
+chain and the role binding above it. Its one surviving digest is
+`endpoint_fingerprint`, because the endpoint URL names the host a credential is
+presented to and therefore may not be stored. The judge is wired explicitly for
+headline/why/factual semantic equivalence; its calls, cost and failures stay
+separate facts inside the record, and unavailable means failure-as-zero rather
+than byte equality, hidden retry or cache.
+
+`CompilerBuildAttestation` is the one genuinely multi-party check in the
+compile: the host's hash of its own tree and lock, the same paths copied out of
+the pinned image and hashed again before any secret is staged, and the
+container's own recomputation from inside the running image. Three parties
+answer one question and must agree; that agreement *is* the attestation, which
+is why it is the only digest here that can meaningfully fail.
+
+Collapsing the chain changed no security property. The sealed input bundle, the
+container's own revalidation of policy, source and grant, the per-call
+worst-case reservation taken before every provider call, the sidecar owning the
+only credentials, the boundary evidence — commands, mounts, egress, cleanup,
+termination — and fail-closed on any tamper all stand unchanged. The record
+root is simply what makes them tamper-evident now.
 
 Metric v4 (`tracefold.news.production_action_trade_relevance_v4`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
@@ -1264,6 +1295,13 @@ deliberately does not re-open `program_v7`. A serialization and identity change
 is not an evidence reset, so accepted `news_review_v4` truth stays eligible and
 the epoch row goes on naming the factory, schema and baseline root the epoch was
 opened with — the same way it already did across the #175 and #190 re-issues.
+`20260825_0305` carries the compile-record half of #193 the same way: it admits
+`compile_record` as a learning-artifact kind, keeps `compile_receipt` readable
+so existing rows stay audit history, and trips open canary activations because
+a candidate registered against the old chain names a receipt that no longer
+validates and can no longer be evaluated. It does not re-open `program_v7`
+either — how a compile is serialized says nothing about whether an accepted
+review is true.
 Because the physical rename makes the old exact image incompatible, release
 requires a separately built and drilled new-schema/v5-behaviour rollback image;
 it is never part of the production registry or a second runtime loader. No

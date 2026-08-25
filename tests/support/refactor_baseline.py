@@ -27,13 +27,13 @@ from tracefold.news.delivery import render_first_card
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.learning.compiler.root import COMPILER_ID
 from tracefold.news.learning.compiler.security import (
+    COMPILE_RECORD_SCHEMA,
+    COMPILER_BUILD_ATTESTATION_SCHEMA,
     COMPILER_CORPUS_SCHEMA,
-    COMPILER_ENDPOINT_IDENTITY_SCHEMA,
     COMPILER_INPUT_SCHEMA,
-    COMPILER_RECEIPT_CHAIN_SCHEMA,
-    COMPILER_RECEIPT_SCHEMA,
-    COMPILER_ROLE_BINDING_SCHEMA,
     COMPILER_RUNNER_RECEIPTS_SCHEMA,
+    MODEL_EXECUTION_IDENTITY_SCHEMA,
+    PROXY_EXECUTION_SCHEMA,
 )
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.learning.review import REVIEW_RUBRIC_VERSION
@@ -124,8 +124,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # Two migrations moved the head: #175's reader-history index (0302) and PR8-B's epoch (0303). A dict
     # has one key, so the reason names both rather than letting the later declaration silently win.
     "migration_head": (
-        "issue_175_reader_history_index_then_issue_193_program_strategy_artifact_hard_cut",
-        "20260824_0304",
+        "issue_175_reader_history_index_then_issue_193_compile_record_convergence",
+        "20260825_0305",
     ),
     # #190 adds the dedicated real-package compiler target and moves the web-dist copy to the final
     # runtime stage. Program source, dependency lock, prompts, routes and call budgets stay unchanged;
@@ -164,6 +164,38 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # code, versioned by `factory_id`, and the numbers that used to be hashed are now recorded as numbers.
     # Prompt bytes change too — the RulePack and LearnedStrategy digests are gone from the rendered
     # instruction — so the sole stable root re-issues inside `program_v7` without reopening the epoch.
+    # #193 PR-B collapses the compile chain: seven content-addressed receipts, a chain root, a runner
+    # receipt, a provenance record and a machine diff become one `CompileRecordV1`, and the three-level
+    # endpoint identity plus the role binding become one `ModelExecutionIdentity`. The schema list is the
+    # shape of that collapse, so every slot moves.
+    "program_learning.compiler_schemas[0]": (
+        "issue_193_compile_record_convergence",
+        "news_program_compile_record_v1",
+    ),
+    "program_learning.compiler_schemas[1]": (
+        "issue_193_compile_record_convergence",
+        "tracefold.news.compile_corpus_receipt.v3",
+    ),
+    "program_learning.compiler_schemas[2]": (
+        "issue_193_compile_record_convergence",
+        "tracefold.news.compile_input_bundle.v3",
+    ),
+    "program_learning.compiler_schemas[3]": (
+        "issue_193_compile_record_convergence",
+        "tracefold.news.compiler_build_attestation.v1",
+    ),
+    "program_learning.compiler_schemas[4]": (
+        "issue_193_compile_record_convergence",
+        "tracefold.news.compiler_proxy_execution.v4",
+    ),
+    "program_learning.compiler_schemas[5]": (
+        "issue_193_compile_record_convergence",
+        "tracefold.news.compiler_runner_receipts.v4",
+    ),
+    "program_learning.compiler_schemas[6]": (
+        "issue_193_compile_record_convergence",
+        "tracefold.news.model_execution_identity.v1",
+    ),
     "program_learning.factory_id": (
         "issue_193_program_strategy_artifact_hard_cut",
         "tracefold.news.program.factory_v6",
@@ -423,11 +455,11 @@ def _program_contract() -> dict[str, Any]:
             (
                 COMPILER_INPUT_SCHEMA,
                 COMPILER_CORPUS_SCHEMA,
-                COMPILER_ENDPOINT_IDENTITY_SCHEMA,
-                COMPILER_ROLE_BINDING_SCHEMA,
-                COMPILER_RECEIPT_SCHEMA,
-                COMPILER_RECEIPT_CHAIN_SCHEMA,
+                COMPILER_BUILD_ATTESTATION_SCHEMA,
+                MODEL_EXECUTION_IDENTITY_SCHEMA,
+                PROXY_EXECUTION_SCHEMA,
                 COMPILER_RUNNER_RECEIPTS_SCHEMA,
+                COMPILE_RECORD_SCHEMA,
             )
         ),
     }

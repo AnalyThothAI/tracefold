@@ -378,9 +378,12 @@ acceptance receipts bound to the exact stable Program bundle, so quality
 evidence begins at zero. Issue #190 later reissues the sole bundle inside v7
 for canonical non-finite-number rejection, and Issue #193 reissues it again as
 the single-document strategy artifact under factory v6; `0304` trips open
-canaries and receipts that cut. Neither re-issue changes the epoch or makes an
+canaries and receipts that cut. `0305` admits the `compile_record` artifact
+kind, keeps `compile_receipt` readable as history, and trips open canaries a
+second time, because a candidate registered against the retired receipt chain
+can no longer be evaluated. No re-issue changes the epoch or makes an
 older bundle executable in the new image, and accepted `news_review_v4` truth
-stays eligible across both.
+stays eligible across all of them.
 
 Review v4 uses exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
@@ -429,14 +432,20 @@ single-slot GPU that serves production Triage. A code-owned
 reflection model as read-only context; before it, `<curr_param>` was one space
 and the model was rewriting 8.5 KB of rules it could not see.
 
-Compiler protocol/receipt v3 has three typed roles, not copied adjacent
-scalars: task, reflection and `metric_judge`. Secret-free identity, grant,
-bundle and proxy enforcement derive from each role object. The judge is
+The compiler has three typed roles, not copied adjacent scalars: task,
+reflection and `metric_judge`, each one `ModelExecutionIdentity`. Secret-free
+identity, grant, bundle and proxy enforcement derive from that single object,
+whose only digest is `endpoint_fingerprint` — the endpoint URL travels beside a
+credential and so is fingerprinted rather than stored. The three-level
+`endpoint_sha256 -> model_sha256 -> binding_sha256` chain it replaced hashed
+values printed immediately below it: a verifier holding the object never needed
+them, and one without the object could not use them. The judge is
 explicitly constructed for headline/why/factual semantic equivalence and binds
 model/endpoint, instruction/schema, JSONAdapter, max tokens, timeout,
 temperature, LM kwargs, cache and retry. Its calls, cost and unavailable
-failures are separate receipt facts; unavailable enters the affected free-text
-dimension as failure-as-zero, never byte equality, hidden retry or cache.
+failures are separate facts inside the compile record; unavailable enters the
+affected free-text dimension as failure-as-zero, never byte equality, hidden
+retry or cache.
 Use #148's measured same-output ruler delta `+0.060662`; the earlier roughly
 `+0.13` simulation is not release evidence.
 
@@ -535,10 +544,29 @@ fixes.
 The operator config must contain one complete, positive
 `llm.news_compiler_tariff`; every invocation pins the exact local compiler
 image ID and states metric/model/total-cost and resource limits plus a seed. The
-trusted applier revalidates the complete receipt chain and reissues the
+trusted applier cross-checks the runner's counters against the sidecar ledger,
+issues one `CompileRecordV1` holding the whole compile, and reissues the
 canonical artifact document from the exact stable root. The runner cannot write
 accepted truth, register a candidate, alter trusted Program state, accept,
 deploy or promote.
+
+That record is the second half of #193. Seven content-addressed receipts, a
+chain root, a runner receipt, an optimizer provenance record and a machine diff
+became one document, embedded whole and addressed by `compile_record_sha256`,
+which is also its `news_learning_artifacts` key under the new `compile_record`
+kind. The rule that decided each field: a digest survives only if it addresses
+independently stored bytes, crosses a real trust boundary, is a durable key,
+fingerprints an external mutable identity that cannot be stored whole, or
+serves a consumer that cannot read the parent payload. Everything else was
+being computed and verified by the same code in the same process over a payload
+sitting next to it. `CompilerBuildAttestation` is what a digest looks like when
+it does pass that rule: host tree, image payload copied out before any secret
+is staged, and the container's own recomputation, all three required to agree.
+`ProposalReceipt` carries the record root and repeats it as
+`generator_execution_sha` for a Program candidate; `CandidateEvaluator` reads
+that one row instead of walking a chain. Migration `20260825_0305` admits the
+new kind, keeps `compile_receipt` readable as audit history, and trips open
+canary activations whose candidate was registered against the old chain.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,

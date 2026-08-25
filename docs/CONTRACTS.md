@@ -77,12 +77,15 @@ required together; a partial or zero-rate tariff fails configuration. It does
 not affect Workers or hot-path model calls. `tracefold config` reports only
 whether this tariff is configured and its non-secret ID. `learning compile`
 also requires an explicit local `--compiler-image sha256:<64 hex>`; tags and
-registry manifest references are rejected. Compiler protocol/receipt v3 derives
-three sealed role identities from typed task, reflection and `metric_judge`
-configurations. Reflection has an exact 32k-token ceiling. The judge binds its
+registry manifest references are rejected. Each of the three compiler roles —
+task, reflection and `metric_judge` — is one `ModelExecutionIdentity` holding
+the complete secret-free execution contract; its only digest is
+`endpoint_fingerprint` over the canonical endpoint URL, which is fingerprinted
+rather than stored because it names the host a credential is presented to.
+Reflection has an exact 32k-token ceiling. The judge binds its
 model/endpoint, instruction/schema, JSONAdapter, timeout/token/temperature/LM
 kwargs and cache/retry contract, and its calls, cost and explicit unavailable
-failures are receipted separately.
+failures stay separate facts inside the compile record.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
@@ -468,9 +471,10 @@ image as `<program_sha256>.json` and selected by the code-owned registry. The
 stable root is
 `e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`.
 That SHA is behavior identity only: it holds no parent lineage, compile cost,
-trajectory, teacher endpoint or compile receipt, so two compiles that reach the
+trajectory, teacher endpoint or compile record, so two compiles that reach the
 same two instructions produce the same Program. Lineage belongs to the
-candidate's `ProposalReceipt`, compile provenance to the compile receipt chain.
+candidate's `ProposalReceipt`, compile provenance to the one `CompileRecordV1`
+that receipt names by `compile_record_sha256`.
 The graph, schemas, ordered code-owned RulePacks, renderer, normalizer,
 assembler, model route and execution budget are code, versioned by `factory_id`;
 a semantic change to any of them is an explicit factory bump, not a cascade of
@@ -606,6 +610,12 @@ accepted `news_review_v4` truth stays eligible, and the epoch row keeps naming
 the factory, schema and baseline root it was opened with. The sole stable root
 re-issues a third time inside v7, now as the 262-byte
 `news_program_strategy_artifact_v1` document under factory v6.
+`20260825_0305` carries the compile-record half of the same issue. It adds
+`compile_record` to the `news_learning_artifacts` kind constraint and leaves
+`compile_receipt` in it, so retired rows stay readable audit history, and it
+trips every armed or active canary: a candidate registered against the old
+receipt chain names a document the new image cannot validate, so it can no
+longer be evaluated. `program_v7` is again not re-opened.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -904,10 +914,18 @@ development dataset and ordered episode roots, then launches an isolated runner
 without DB/holdout/application credentials. The runner is bounded by the
 declared per-role calls, combined cost, seed and resource policy and can emit
 only a typed `ProgramStrategyPatchV1` carrying the two advisory instructions.
-A trusted
-applier validates the complete receipt chain and builds an unaccepted
-content-addressed Artifact from the exact stable root. The runner cannot read
-holdout, register, accept, deploy or promote its output.
+The trusted side cross-checks the runner's own counters against the sidecar
+ledger, then issues one `CompileRecordV1` embedding the whole compile — role
+identities, budget, tariff, per-call usage, the sandbox launch receipt, the
+`CompilerBuildAttestation` and the two-instruction patch — and builds an
+unaccepted content-addressed Artifact from the exact stable root. The command
+writes `compile_record`, `compile_record_sha256` and the operator-facing
+`changed_predictors`. `learning propose` reads `spec["compile_record"]`,
+rebuilds the candidate from `record.patch`, and stores the record under kind
+`compile_record` keyed by its own root. A Program `ProposalReceipt` carries
+that root as `compile_record_sha256`, and its `generator_execution_sha` equals
+it; `CandidateEvaluator` loads that one row rather than walking a chain. The
+runner cannot read holdout, register, accept, deploy or promote its output.
 
 `learning propose` seals exactly one candidate variable (`program` or
 `policy`) against a development dataset. `learning evaluate` runs the

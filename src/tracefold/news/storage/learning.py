@@ -537,7 +537,15 @@ class LearningStorage:
         """
 
         public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
-        artifact_sha = canonical_sha({"kind": kind, "payload": public})
+        # A compile record already has a root, and that root is what the candidate's receipt names. Wrapping
+        # it in `sha({kind, payload})` would give one object two addresses and force every reader to know
+        # both; the row is instead stored under the identity the document carries, and the read-back below
+        # still refuses a second document landing on it.
+        artifact_sha = (
+            str(public["compile_record_sha256"])
+            if kind == "compile_record" and isinstance(public.get("compile_record_sha256"), str)
+            else canonical_sha({"kind": kind, "payload": public})
+        )
         self.conn.execute(
             "INSERT INTO news_learning_artifacts "
             "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "

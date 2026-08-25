@@ -161,7 +161,7 @@ llm:
     model: "reader-fallback-model"
   # Required only for the cold compiler. Reflection uses this endpoint with
   # code-owned 32k/300s/temperature-1; metric_judge derives a distinct sealed
-  # role from it with its own schema, budget, tariff and receipt.
+  # role from it with its own schema, budget, tariff and accounted calls.
   news_compiler_reflection:
     api_key: "<compiler reflection secret>"
     base_url: "https://reflection.example/v1"
@@ -258,7 +258,11 @@ quality uplift; v7 evidence starts from zero
 and the normal graph remains exactly two serial Predictor calls.
 Migration `0304` carries the #193 strategy-artifact cut: it trips every open
 canary activation and receipts itself, but does not re-open the epoch, so
-accepted `news_review_v4` evidence stays eligible.
+accepted `news_review_v4` evidence stays eligible. Migration `0305` carries the
+same issue's compile-record cut: it admits the `compile_record` learning
+artifact kind, keeps `compile_receipt` readable as audit history, and trips
+open activations again, because a candidate registered against the retired
+receipt chain can no longer be evaluated. It does not re-open the epoch either.
 The production image has one loader only: the
 `news_program_strategy_artifact_v1` document, factory v6, executable v5,
 epoch v7 and policy v10. Issue #175 reissues that sole stable Program and bundle

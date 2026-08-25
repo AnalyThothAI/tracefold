@@ -21,23 +21,14 @@ from tracefold.news.learning.canary import (
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
-from tracefold.news.learning.compiler.proxy import (
-    CompilerModelProxyGrant,
-    CompilerProxyCallLeaf,
-    CompilerProxyExecutionReceipt,
-)
-from tracefold.news.learning.compiler.sandbox import (
-    CompilerSandboxLaunchReceipt,
-)
 from tracefold.news.learning.compiler.security import (
-    CompileCorpusReceipt,
-    CompileReceiptChain,
-    CompilerEndpointIdentity,
+    CompileBudgetV3,
+    CompilerBuildAttestation,
+    CompileRecordV1,
+    CompilerProxyCall,
+    CompilerProxyExecution,
     CompilerProxyTariff,
-    CompilerRoleBindingV3,
-    ContentAddressedCompileReceipt,
-    OptimizerCompileProvenanceV3,
-    validate_compile_receipt_chain_v3,
+    ModelExecutionIdentity,
 )
 from tracefold.news.learning.evaluator import (
     LEARNING_EPOCH,
@@ -516,53 +507,62 @@ def _judge_call_count(judges: Mapping[object, object]) -> int:
 
 
 def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
+    """A real compiled child artifact, and the one record that says how it was produced."""
+
     base = load_stable_program_artifact()
     cold = DspyCompileProgram(base)
     cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
         "A sealed replay integration candidate instruction"
     )
     patch = extract_optimizer_patch(cold, base)
-    patch_payload = patch.model_dump(mode="json")
-    provenance, compile_receipt_chain = _optimizer_provenance(
+    artifact = apply_program_patch(base, patch)
+    record = _compile_record(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch_payload=patch_payload,
+        program_sha256=artifact.program_sha256,
+        patch_payload=patch.model_dump(mode="json"),
     )
-    artifact = apply_program_patch(base, patch)
-    return artifact, provenance, patch_payload, compile_receipt_chain
+    return artifact, record
 
 
-def _optimizer_provenance(
+def _compile_record(
     conn,
     *,
     development_sha: str,
     stable: ArmManifest,
+    program_sha256: str,
     patch_payload: dict[str, object] | None = None,
     metric_calls: int = 12,
-) -> tuple[dict[str, object], dict[str, object]]:
+    **overrides: object,
+) -> CompileRecordV1:
+    """One whole trusted compile, embedded.
+
+    This one document replaced seven content-addressed receipts, a chain root, a runner receipt, an
+    optimizer provenance record and a machine diff.  Between them those restated the same four
+    identities — parent Program, dataset, runtime manifest, patch — up to four times, cross-bound by
+    hashes each party computed from a payload it already held.  Here every operand is a field of one
+    object, addressed once by `compile_record_sha256`, which is also the learning ledger's key for it.
+    """
+
     epoch = conn.execute(
         "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
         (LEARNING_EPOCH,),
     ).fetchone()
     assert epoch is not None
     exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
-    episodes = list(exported.episodes)
-    case_ids = [str(episode["case_id"]) for episode in episodes]
-    cluster_ids = [str(episode["cluster_id"]) for episode in episodes]
-    selected_patch = patch_payload or _fixture_program_patch(parent_program_sha256=stable.program_sha256)
-    # The patch document no longer declares its own digest: its identity is `canonical_sha` of the four
-    # write-set keys, computed by whoever cross-binds the chain.
-    selected_patch_sha = _sha(selected_patch)
-    metric = {"metric_id": "accepted_review_feedback_v1"}
-    trajectory = {"steps": [], "status": "fixture_complete"}
-    checkpoint = {
-        "schema": "tracefold.news.compile_checkpoint_receipt.v2",
-        "factory": PROGRAM_FACTORY_ID,
-        "predictors": {
-            "event_semantics": {"instruction": str(selected_patch["event_semantics_instruction"])},
-            "reader_card": {"instruction": str(selected_patch["reader_card_instruction"])},
-        },
+    episode_count = len(exported.episodes)
+    train_count = max(1, episode_count - 1)
+    val_count = episode_count - train_count
+    minibatch = min(2, train_count)
+    parent_program_sha256 = str(overrides.pop("parent_program_sha256", stable.program_sha256))
+    # The optimizer's whole write-set: a parent identity and the two advisory instructions. Four keys
+    # exactly — the record rejects any other key set — and no self-declared digest.
+    patch = patch_payload or {
+        "schema_version": "news_program_strategy_patch_v1",
+        "parent_program_sha256": parent_program_sha256,
+        "event_semantics_instruction": "A bounded fixture optimizer strategy.",
+        "reader_card_instruction": "Keep reader language direct and evidence-bound.",
     }
     tariff = CompilerProxyTariff(
         tariff_id="candidate-evaluator-fixture-v1",
@@ -574,94 +574,70 @@ def _optimizer_provenance(
         metric_judge_input_microusd_per_million=1_000_000,
         metric_judge_output_microusd_per_million=1_000_000,
     )
-    task_endpoint = CompilerEndpointIdentity.issue(
-        model="fixture/task",
-        api_base="https://task.fixture.invalid/v1",
-    )
-    reflection_endpoint = CompilerEndpointIdentity.issue(
-        model="fixture/reflection",
-        api_base="https://reflection.fixture.invalid/v1",
-    )
-    metric_judge_endpoint = CompilerEndpointIdentity.issue(
-        model="fixture/metric-judge",
-        api_base="https://metric-judge.fixture.invalid/v1",
-    )
-    task = CompilerRoleBindingV3.issue(
-        role="task",
-        endpoint=task_endpoint,
-        max_output_tokens=1_200,
-        timeout_seconds=20,
-        temperature=0,
-        model_kwargs={},
-    )
-    reflection = CompilerRoleBindingV3.issue(
-        role="reflection",
-        endpoint=reflection_endpoint,
-        max_output_tokens=32_000,
-        timeout_seconds=300,
-        temperature=1,
-        model_kwargs={},
-    )
-    metric_judge = CompilerRoleBindingV3.issue(
-        role="metric_judge",
-        endpoint=metric_judge_endpoint,
-        max_output_tokens=4_096,
-        timeout_seconds=120,
-        temperature=0,
-        model_kwargs={},
-    )
-    grant = CompilerModelProxyGrant.issue(
-        task=task,
-        reflection=reflection,
-        metric_judge=metric_judge,
-        max_task_model_calls=40,
-        max_reflection_model_calls=40,
-        max_metric_judge_model_calls=40,
-        max_cost_microusd=1_000_000,
-        tariff=tariff,
-        proxy_config_sha256="6" * 64,
-        proxy_source_sha256="5" * 64,
-        max_request_bytes=32_768,
-        max_response_bytes=32_768,
-    )
-    proxy_calls: list[CompilerProxyCallLeaf] = []
-    for role, count, cost_microusd in (
-        ("task", 20, 1_000),
-        ("reflection", 10, 500),
-        ("metric_judge", 2, 250),
-    ):
+    models = {
+        "task": ModelExecutionIdentity.issue(
+            role="task",
+            model="fixture/task",
+            api_base="https://task.fixture.invalid/v1",
+            max_output_tokens=1_200,
+            timeout_seconds=20,
+            temperature=0,
+            model_kwargs={},
+        ),
+        "reflection": ModelExecutionIdentity.issue(
+            role="reflection",
+            model="fixture/reflection",
+            api_base="https://reflection.fixture.invalid/v1",
+            max_output_tokens=32_000,
+            timeout_seconds=300,
+            temperature=1,
+            model_kwargs={},
+        ),
+        "metric_judge": ModelExecutionIdentity.issue(
+            role="metric_judge",
+            model="fixture/metric-judge",
+            api_base="https://metric-judge.fixture.invalid/v1",
+            max_output_tokens=4_096,
+            timeout_seconds=120,
+            temperature=0,
+            model_kwargs={},
+        ),
+    }
+    calls: list[CompilerProxyCall] = []
+    for role, count, cost_microusd in (("task", 20, 1_000), ("reflection", 10, 500), ("metric_judge", 2, 250)):
         for sequence in range(1, count + 1):
             request_bytes = 256
-            max_output_tokens = grant.binding(role).max_output_tokens
-            call_payload: dict[str, object] = {
-                "role": role,
-                "sequence": sequence,
-                "request_sha256": _sha({"role": role, "sequence": sequence, "kind": "request"}),
-                "response_sha256": _sha({"role": role, "sequence": sequence, "kind": "response"}),
-                "runtime_identity_sha256": _sha({"role": role, "kind": "runtime"}),
-                "provider_invoked": True,
-                "request_bytes": request_bytes,
-                "max_output_tokens": max_output_tokens,
-                "reserved_cost_microusd": grant.reservation_microusd(
+            max_output_tokens = models[role].max_output_tokens
+            calls.append(
+                CompilerProxyCall(
                     role=role,
+                    sequence=sequence,
+                    request_sha256=_sha({"role": role, "sequence": sequence, "kind": "request"}),
+                    response_sha256=_sha({"role": role, "sequence": sequence, "kind": "response"}),
+                    responding_model=models[role].model,
+                    provider_invoked=True,
                     request_bytes=request_bytes,
-                ),
-                "input_tokens": 10,
-                "output_tokens": 5,
-                "cached_tokens": 0,
-                "total_tokens": 15,
-                "provider_cost_microusd": cost_microusd,
-                "finish_reason": "stop",
-                "error_code": None,
-            }
-            proxy_calls.append(
-                CompilerProxyCallLeaf(
-                    **call_payload,
-                    leaf_sha256=_sha(call_payload),
+                    max_output_tokens=max_output_tokens,
+                    # Every physical call is reserved at the trusted worst-case rate before it is made.
+                    reserved_cost_microusd=tariff.worst_case_cost_microusd(
+                        role=role,
+                        request_bytes=request_bytes,
+                        max_output_tokens=max_output_tokens,
+                    ),
+                    input_tokens=10,
+                    output_tokens=5,
+                    cached_tokens=0,
+                    total_tokens=15,
+                    provider_cost_microusd=cost_microusd,
+                    finish_reason="stop",
+                    error_code=None,
                 )
             )
-    proxy_execution = CompilerProxyExecutionReceipt.issue(
-        grant_sha256=grant.grant_sha256,
+    _policy, launch = _valid_sandbox_launch_receipt()
+    usage = CompilerProxyExecution(
+        # The ledger has to belong to the grant the container was actually launched under, which is the
+        # one the sandbox receipt's egress manifest names.
+        grant_sha256=str(launch.egress_manifest["proxy_grant_sha256"]),
         task_model_calls=20,
         reflection_model_calls=10,
         metric_judge_model_calls=2,
@@ -671,132 +647,82 @@ def _optimizer_provenance(
         task_failures=0,
         reflection_failures=0,
         metric_judge_failures=0,
-        actual_cost_microusd=sum(call.provider_cost_microusd for call in proxy_calls),
-        reserved_cost_microusd=sum(call.reserved_cost_microusd for call in proxy_calls),
-        tariff_sha256=tariff.tariff_sha256,
-        request_sha256s=tuple(call.request_sha256 for call in proxy_calls),
-        response_sha256s=tuple(call.response_sha256 for call in proxy_calls),
+        actual_cost_microusd=sum(call.provider_cost_microusd for call in calls),
+        reserved_cost_microusd=sum(call.reserved_cost_microusd for call in calls),
+        calls=tuple(calls),
         error_codes=(),
-        calls=proxy_calls,
     )
-    train_count = max(1, len(episodes) - 1)
-    val_count = len(episodes) - train_count
-    optimizer_config = {
-        "runner_optimizer_config": {
+    budget = CompileBudgetV3(
+        max_metric_calls=20,
+        max_task_model_calls=40,
+        max_reflection_model_calls=40,
+        max_metric_judge_model_calls=40,
+        max_cost_microusd=1_000_000,
+        max_call_cost_microusd=40_000,
+        seed=129,
+    )
+    preflight = launch.image_preflight
+    values: dict[str, object] = {
+        "parent_program_sha256": parent_program_sha256,
+        "program_sha256": program_sha256,
+        "development_dataset_sha256": development_sha,
+        "learning_epoch_started_at_ms": int(epoch["starts_at_ms"]),
+        "review_rubric_version": REVIEW_RUBRIC_VERSION,
+        "episode_count": episode_count,
+        # The corpus by content: `development_compile_export` re-projects episodes from live reviews, so
+        # a count alone would not notice a review edited between compile and evaluate.
+        "episode_projection_root_sha256": _sha(list(exported.episodes)),
+        "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
+        "task_model": models["task"],
+        "reflection_model": models["reflection"],
+        "metric_judge_model": models["metric_judge"],
+        "optimizer": {
             "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
-            "seed": 129,
+            "seed": budget.seed,
             "constructor_scalar_arguments": {
-                "max_metric_calls": 20,
-                "reflection_minibatch_size": min(2, train_count),
+                "max_metric_calls": budget.max_metric_calls,
+                "reflection_minibatch_size": minibatch,
             },
             "compile_call": {
-                "example_count": len(episodes),
+                "example_count": episode_count,
                 "trainset_count": train_count,
                 "valset_count": val_count,
             },
         },
-        "proxy_grant": grant.model_dump(mode="json"),
-        "proxy_execution": proxy_execution.model_dump(mode="json"),
-        "input_bundle_sha256": "1" * 64,
-    }
-    sandbox_policy, launch_template = _valid_sandbox_launch_receipt()
-    launch_values = launch_template.model_dump(mode="json", exclude={"launch_receipt_sha256"})
-    egress_payload = dict(launch_values["egress_manifest_payload"])
-    egress_payload["proxy_grant_sha256"] = grant.grant_sha256
-    launch_values.update(
-        proxy_identity_sha256=grant.grant_sha256,
-        proxy_config_sha256=grant.proxy_config_sha256,
-        proxy_source_sha256=grant.proxy_source_sha256,
-        proxy_tariff_sha256=tariff.tariff_sha256,
-        proxy_execution_receipt_sha256=proxy_execution.receipt_sha256,
-        egress_manifest_payload=egress_payload,
-        egress_manifest_sha256=_sha(egress_payload),
-    )
-    launch = CompilerSandboxLaunchReceipt.issue(**launch_values)
-    corpus = CompileCorpusReceipt(
-        development_dataset_sha=development_sha,
-        development_dataset_payload_sha256=_sha(exported.dataset_payload),
-        learning_epoch_started_at_ms=int(epoch["starts_at_ms"]),
-        projection_schema_id="tracefold.news.development_compile_episode.v3",
-        case_root_sha256=_sha(case_ids),
-        cluster_root_sha256=_sha(cluster_ids),
-        episode_projection_root_sha256=_sha(episodes),
-        episode_count=len(episodes),
-        review_rubric_version=REVIEW_RUBRIC_VERSION,
-    )
-    chain = CompileReceiptChain.issue(
-        (
-            ContentAddressedCompileReceipt.issue("corpus", corpus),
-            ContentAddressedCompileReceipt.issue("metric", metric),
-            ContentAddressedCompileReceipt.issue("optimizer_config", optimizer_config),
-            ContentAddressedCompileReceipt.issue("trajectory", trajectory),
-            ContentAddressedCompileReceipt.issue("checkpoint", checkpoint),
-            ContentAddressedCompileReceipt.issue("sandbox_launch", launch),
-            ContentAddressedCompileReceipt.issue("patch", selected_patch),
-        )
-    )
-    provenance: dict[str, object] = {
-        "mode": "optimizer_candidate",
-        "development_dataset_sha": development_sha,
-        "learning_epoch": LEARNING_EPOCH,
-        "learning_epoch_started_at_ms": int(epoch["starts_at_ms"]),
-        "projection_schema_id": "tracefold.news.development_compile_episode.v3",
-        "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
-        "dspy_version": "3.3.0",
-        "gepa_version": "0.1.1",
-        "metric_sha256": _sha(metric),
-        "optimizer_config_sha256": _sha(optimizer_config),
-        "seed": 129,
-        "max_metric_calls": 20,
-        "max_task_model_calls": 40,
-        "max_reflection_model_calls": 40,
-        "max_metric_judge_model_calls": 40,
-        "max_cost_microusd": 1_000_000,
-        "max_call_cost_microusd": grant.max_call_cost_microusd,
+        "metric": {"metric_id": "accepted_review_feedback_v1"},
+        # Computed in the container and now carried out: the winner was selected on clusters it never
+        # trained on, and the model saw the evidence it was scored against.
+        "split": {"schema": "tracefold.news.compile_split_receipt.v1", "disjoint": True},
+        "retrieval": {"schema": "tracefold.news.compile_retrieval_receipt.v1", "target_visible": True},
+        "budget": budget,
+        "tariff": tariff,
+        "usage": usage,
         "metric_calls": metric_calls,
-        "task_model_calls": 20,
-        "reflection_model_calls": 10,
         "metric_judge_attempts": 2,
-        "metric_judge_model_calls": 2,
-        "metric_judge_failures": 0,
-        "task_cost_microusd": 20_000,
-        "reflection_cost_microusd": 5_000,
-        "metric_judge_cost_microusd": 500,
-        "actual_cost_microusd": proxy_execution.actual_cost_microusd,
-        "trajectory_sha256": _sha(trajectory),
-        "checkpoint_sha256": _sha(checkpoint),
-        "parent_program_sha256": stable.program_sha256,
-        "development_dataset_payload_sha256": _sha(exported.dataset_payload),
-        "case_root_sha256": _sha(case_ids),
-        "cluster_root_sha256": _sha(cluster_ids),
-        "episode_projection_root_sha256": _sha(episodes),
-        "episode_count": len(episodes),
-        "patch_sha256": selected_patch_sha,
-        "receipt_payload_root_sha256": chain.receipt_payload_root_sha256,
-        "sandbox_launch_receipt_sha256": launch.launch_receipt_sha256,
-        "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
-        "task_endpoint_identity_sha256": task_endpoint.binding_sha256,
-        "reflection_endpoint_identity_sha256": reflection_endpoint.binding_sha256,
-        "metric_judge_endpoint_identity_sha256": metric_judge_endpoint.binding_sha256,
-        "compiler_source_sha256": launch.compiler_source_sha256,
-        "compiler_lock_sha256": launch.compiler_lock_sha256,
-        "sandbox_policy_sha256": sandbox_policy.policy_sha256,
+        "sandbox": launch,
+        # The one place two independent parties look at the same thing: the host's tree, the pinned
+        # image's copy of it, and what the runner recomputed from inside the container.
+        "compiler_build": CompilerBuildAttestation(
+            compiler_image_digest=launch.compiler_image_digest,
+            proxy_image_digest=launch.proxy_image_digest,
+            host_source_sha256=preflight["compiler_source_sha256"],
+            host_proxy_source_sha256=preflight["proxy_source_sha256"],
+            host_lock_sha256=preflight["compiler_lock_sha256"],
+            image_source_sha256=preflight["compiler_source_sha256"],
+            image_proxy_source_sha256=preflight["proxy_source_sha256"],
+            image_lock_sha256=preflight["compiler_lock_sha256"],
+            container_source_sha256=preflight["compiler_source_sha256"],
+            container_proxy_source_sha256=preflight["proxy_source_sha256"],
+        ),
+        "patch": patch,
+        "failure_cluster_ids": ["cluster-fixture"],
+        "target_dimensions": ["why_support"],
+        "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 0},
+        "checkpoint": {"schema": "tracefold.news.compile_checkpoint_receipt.v2", "factory": PROGRAM_FACTORY_ID},
+        "created_at_ms": NOW,
     }
-    return provenance, chain.model_dump(mode="json")
-
-
-def _fixture_program_patch(*, parent_program_sha256: str) -> dict[str, object]:
-    """The whole optimizer write-set: a parent identity and the two advisory instructions.
-
-    Four keys exactly — the receipt chain rejects any other key set — and no self-declared digest.
-    """
-
-    return {
-        "schema_version": "news_program_strategy_patch_v1",
-        "parent_program_sha256": parent_program_sha256,
-        "event_semantics_instruction": "A bounded fixture optimizer strategy.",
-        "reader_card_instruction": "Keep reader language direct and evidence-bound.",
-    }
+    values.update(overrides)
+    return CompileRecordV1.issue(**values)
 
 
 def _program_candidate(
@@ -806,8 +732,10 @@ def _program_candidate(
     development_sha: str,
     cluster_id: str,
     persist_receipt: bool = True,
-    compile_provenance_override: dict[str, object] | None = None,
-    compile_receipt_chain_override: dict[str, object] | None = None,
+    record: CompileRecordV1 | None = None,
+    record_payload: dict[str, object] | None = None,
+    record_parent_sha: str | None = None,
+    persist_record: bool = True,
     generator_kind: str = "model",
     program_version: str | None = None,
     program_sha256: str | None = None,
@@ -818,47 +746,39 @@ def _program_candidate(
         program_sha256=program_sha256 or _sha({"program": "candidate", "cluster_id": cluster_id}),
     )
     candidate_arm = ArmManifest.model_validate(arm_payload)
-    registered_at_ms = NOW
-    if compile_provenance_override is None:
-        compile_provenance, compile_receipt_chain = _optimizer_provenance(
+    compile_record = record or _compile_record(
+        conn,
+        development_sha=development_sha,
+        stable=stable,
+        program_sha256=candidate_arm.program_sha256,
+    )
+    payload = compile_record.model_dump(mode="json") if record_payload is None else record_payload
+    # What the receipt names is the record's own root; where the ledger stores it is a different address.
+    record_root = compile_record.compile_record_sha256
+    if persist_record:
+        _persist_compile_record(
             conn,
-            development_sha=development_sha,
-            stable=stable,
+            development_sha=record_parent_sha or development_sha,
+            payload=payload,
+            # The address the receipt names. For an honest record this is the payload's own root; the
+            # tamper cases deliberately store something else there, which is what the evaluator has to
+            # catch rather than trusting the key.
+            artifact_sha=record_root,
         )
-    else:
-        compile_provenance = compile_provenance_override
-        compile_receipt_chain = compile_receipt_chain_override
-    # `factory_id` is the whole immutable surface, and both roots already commit to the instruction bytes,
-    # so the diff carries no component root and no digest of its own payload.
-    machine_diff = {
-        "schema_version": "tracefold.news.program_machine_diff.v4",
-        "factory_id": PROGRAM_FACTORY_ID,
-        "parent_program_sha256": stable.program_sha256,
-        "candidate_program_sha256": candidate_arm.program_sha256,
-    }
-    patch_sha = str(compile_provenance.get("patch_sha256") or "0" * 64)
     receipt_values = {
         "development_dataset_sha": development_sha,
         "failure_cluster_ids": (cluster_id,),
         "generator_kind": generator_kind,
-        "generator_prompt_sha": "9" * 64,
-        "generator_model_sha": "a" * 64,
-        "generator_execution_sha": _sha(compile_provenance),
-        "registered_at_ms": registered_at_ms,
-        "candidate_patch_sha": patch_sha,
+        # For a Program candidate the compile record is the generator execution identity: the receipt
+        # used to carry a prompt digest and a model digest that re-hashed the same compile twice more.
+        "generator_execution_sha": record_root,
+        "registered_at_ms": NOW,
         "declared_target_dimensions": ("why_support",),
         "guardrails": ("must_push_recall", "reader_load"),
         "program_parent_sha256": stable.program_sha256,
         "program_candidate_sha256": candidate_arm.program_sha256,
-        "program_machine_diff": machine_diff,
-        "compile_provenance": compile_provenance,
+        "compile_record_sha256": record_root,
     }
-    if compile_receipt_chain is not None:
-        _persist_compile_receipt_chain(
-            conn,
-            development_sha=development_sha,
-            payload=compile_receipt_chain,
-        )
     proposal_receipt = _proposal(conn, **receipt_values) if persist_receipt else ProposalReceipt.issue(**receipt_values)
     return CandidateManifest(
         target="program",
@@ -871,21 +791,31 @@ def _program_candidate(
     )
 
 
-def _persist_compile_receipt_chain(
+def _persist_compile_record(
     conn,
     *,
     development_sha: str,
     payload: dict[str, object],
+    artifact_sha: str | None = None,
 ) -> str:
-    artifact_sha = _sha({"kind": "compile_receipt", "payload": payload})
+    """Stage one record row directly, so a test can plant an address the document does not answer to.
+
+    `append_proposal_artifact` stores this kind under the record's own root, because the document already
+    carries an identity and a second address would force every reader to know both. This fixture writes
+    the row by hand precisely so the tamper cases can put something *else* in `artifact_sha` — which is
+    also why it proves nothing about the real writer, and why
+    `test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names` exists beside it.
+    """
+
+    address = artifact_sha or str(payload["compile_record_sha256"])
     conn.execute(
         "INSERT INTO news_learning_artifacts "
         "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
-        "VALUES (%s, 'compile_receipt', %s, %s::jsonb, 'test', %s) "
+        "VALUES (%s, 'compile_record', %s, %s::jsonb, 'test', %s) "
         "ON CONFLICT (artifact_sha) DO NOTHING",
-        (artifact_sha, development_sha, json.dumps(payload, sort_keys=True), NOW),
+        (address, development_sha, json.dumps(payload, sort_keys=True), NOW),
     )
-    return artifact_sha
+    return address
 
 
 def _insert_validation_dataset(conn, *, development, candidate: CandidateManifest) -> str:
@@ -1412,7 +1342,6 @@ def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(co
         failure_cluster_ids=(development.cases[0].cluster_id,),
         generator_kind="human",
         registered_at_ms=registered_at_ms,
-        candidate_patch_sha=_sha({"similarity_max": candidate_policy["similarity_max"]}),
         declared_target_dimensions=("reader_load",),
         guardrails=("must_push_recall",),
     )
@@ -1603,6 +1532,68 @@ def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) 
         evaluator.development_compile_export(forged_sha)
 
 
+def test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names(conn) -> None:
+    """The real writer against the real reader, with no fixture standing between them.
+
+    Every other test here stages the row by hand so it can plant a wrong address, which is exactly how the
+    writer and the reader came to disagree without a single test noticing: `append_proposal_artifact`
+    addressed the row as `sha({kind, payload})` while `_compile_record` looked it up by
+    `receipt.compile_record_sha256`. Every record written through `learning propose` was reported missing,
+    and no compiled Program candidate could be evaluated. This drives both sides.
+    """
+
+    # Two, because the record's own budget check requires a non-empty validation split: a corpus of one
+    # cannot be split, and a record over it is refused before it is ever written.
+    _accepted_event(conn, why="pass")
+    _accepted_event(conn, why="pass", hit_id=112042, title="A second reviewed Event, so the split is real")
+    stable = _arm()
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        evaluator.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    record = _compile_record(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        program_sha256=_sha({"program": "written-through-the-repository"}),
+    )
+    written = repositories_for_connection(conn).news.append_proposal_artifact(
+        kind="compile_record",
+        payload=record.model_dump(mode="json"),
+        parent_sha=development.artifact_sha,
+        created_at_ms=NOW,
+    )
+
+    assert written == record.compile_record_sha256
+
+    candidate = CandidateManifest(
+        target="program",
+        parent_stable_sha=stable.bundle_sha,
+        candidate_arm=ArmManifest.model_validate(
+            {**stable.model_dump(mode="json"), "program_sha256": record.program_sha256}
+        ),
+        hypothesis="Name the comparison base the reader needs.",
+        target_dimensions=("why_support",),
+        development_dataset_sha=development.artifact_sha,
+        proposal_receipt=ProposalReceipt.issue(
+            development_dataset_sha=development.artifact_sha,
+            failure_cluster_ids=("cluster-0",),
+            generator_kind="model",
+            generator_execution_sha=record.compile_record_sha256,
+            registered_at_ms=NOW,
+            declared_target_dimensions=("why_support",),
+            guardrails=("must_push_recall", "reader_load"),
+            program_parent_sha256=stable.program_sha256,
+            program_candidate_sha256=record.program_sha256,
+            compile_record_sha256=record.compile_record_sha256,
+        ),
+    )
+
+    assert evaluator._compile_record(candidate).compile_record_sha256 == record.compile_record_sha256
+
+
 def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
     stale = _arm(program_sha256=_sha({"program": "other"}))
     judges = _static_judges(stale)
@@ -1646,8 +1637,14 @@ def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> No
         evaluator.development_compile_episodes("f" * 64)
 
 
-def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
-    _accepted_event(conn)
+def test_program_candidate_requires_a_valid_compile_record(conn) -> None:
+    """A Program candidate is only as good as the one record it names.
+
+    A compile needs a train/validation split, so the development corpus here is the two-case one; a
+    single-episode corpus cannot produce a record at all.
+    """
+
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -1658,18 +1655,21 @@ def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
             )
         )
     )
-    invalid_provenance = _program_candidate(
+    invalid_record = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        compile_provenance_override={"development_dataset_sha": development.artifact_sha},
+        program_sha256=_sha({"program": "candidate", "case": "invalid_record"}),
+        # Stored under the root the receipt names, but not a record.
+        record_payload={"development_dataset_sha": development.artifact_sha},
     )
     human_program = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
+        program_sha256=_sha({"program": "candidate", "case": "human_generator"}),
         generator_kind="human",
     )
     legacy_program = _program_candidate(
@@ -1677,22 +1677,23 @@ def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
+        program_sha256=_sha({"program": "candidate", "case": "legacy_program_version"}),
         program_version="news_semantic_program_v1",
     )
-    judges = _static_judges(stable, invalid_provenance.candidate_arm)
+    judges = _static_judges(stable, invalid_record.candidate_arm)
     evaluator = CandidateEvaluator(
         conn,
         stable=stable,
         judges=judges,
-        candidate_catalog=(invalid_provenance, human_program, legacy_program),
+        candidate_catalog=(invalid_record, human_program, legacy_program),
     )
 
-    with pytest.raises(ValueError, match="news_learning_program_compile_provenance_invalid"):
+    with pytest.raises(ValueError, match="news_learning_program_compile_record_invalid"):
         asyncio.run(
             evaluator.evaluate(
                 EvaluationRequest(
                     development_dataset_sha=development.artifact_sha,
-                    candidate_sha=invalid_provenance.candidate_sha,
+                    candidate_sha=invalid_record.candidate_sha,
                     stage="offline",
                 )
             )
@@ -1721,6 +1722,13 @@ def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
 
 
 def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receipt(conn) -> None:
+    """The metric ceiling is now arithmetic the record performs on its own fields.
+
+    GEPA checks `max_metric_calls` between steps, so a started step may still spend one reflection
+    minibatch and one full validation pass. That overshoot is admissible only when the split it is
+    computed from is the split the optimizer was actually constructed with — which the record embeds.
+    """
+
     _accepted_compilable_event(conn)
     stable = _arm()
     development = asyncio.run(
@@ -1736,52 +1744,46 @@ def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receip
     val_count = episode_count - train_count
     metric_call_ceiling = 20 + val_count + min(2, train_count)
 
-    allowed, chain = _optimizer_provenance(
+    allowed = _compile_record(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
+        program_sha256=_sha({"program": "candidate", "metric_calls": metric_call_ceiling}),
         metric_calls=metric_call_ceiling,
     )
-    proof = OptimizerCompileProvenanceV3.model_validate(allowed)
-    validate_compile_receipt_chain_v3(
-        chain,
-        provenance=proof,
-        patch_sha256=proof.patch_sha256,
-        parent_program_sha256=proof.parent_program_sha256,
-        target_runtime_manifest_sha256=proof.target_runtime_manifest_sha256,
-    )
+    assert allowed.metric_calls == metric_call_ceiling
 
-    excessive, excessive_chain = _optimizer_provenance(
-        conn,
-        development_sha=development.artifact_sha,
-        stable=stable,
-        metric_calls=metric_call_ceiling + 1,
-    )
-    excessive_proof = OptimizerCompileProvenanceV3.model_validate(excessive)
-    with pytest.raises(ValueError, match="metric_budget"):
-        validate_compile_receipt_chain_v3(
-            excessive_chain,
-            provenance=excessive_proof,
-            patch_sha256=excessive_proof.patch_sha256,
-            parent_program_sha256=excessive_proof.parent_program_sha256,
-            target_runtime_manifest_sha256=excessive_proof.target_runtime_manifest_sha256,
+    with pytest.raises(ValueError, match="news_program_compile_record_budget_exceeded"):
+        _compile_record(
+            conn,
+            development_sha=development.artifact_sha,
+            stable=stable,
+            program_sha256=_sha({"program": "candidate", "metric_calls": metric_call_ceiling + 1}),
+            metric_calls=metric_call_ceiling + 1,
         )
 
 
 @pytest.mark.parametrize(
-    ("persist_forged", "error_code"),
+    ("mode", "error_code"),
     [
-        (False, "news_learning_program_compile_receipt_missing"),
-        (True, "news_learning_program_compile_receipt_artifact_hash_mismatch"),
+        ("absent", "news_learning_program_compile_record_missing"),
+        ("tampered_byte", "news_learning_program_compile_record_invalid"),
+        ("re_addressed_tamper", "news_learning_program_compile_record_identity_mismatch"),
+        ("wrong_dataset_parent", "news_learning_program_compile_record_parent_mismatch"),
     ],
 )
-def test_program_candidate_requires_the_exact_persisted_compile_receipt_chain(
+def test_program_candidate_requires_the_exact_persisted_compile_record(
     conn,
-    *,
-    persist_forged: bool,
+    mode: str,
     error_code: str,
 ) -> None:
-    _accepted_event(conn)
+    """The ledger row the receipt names has to be that compile, byte for byte.
+
+    `compile_record_sha256` is both the record's own root and the key it is stored under, so a byte
+    changed in the stored payload either stops validating or stops resolving at the key it claims.
+    """
+
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -1792,25 +1794,39 @@ def test_program_candidate_requires_the_exact_persisted_compile_receipt_chain(
             )
         )
     )
-    provenance, chain = _optimizer_provenance(
+    program_sha256 = _sha({"program": "candidate", "mode": mode})
+    record = _compile_record(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
+        program_sha256=program_sha256,
     )
+    payload = record.model_dump(mode="json")
+    tampered = dict(payload, metric_calls=payload["metric_calls"] + 1)
+    overrides: dict[str, object] = {}
+    if mode == "absent":
+        overrides = {"persist_record": False}
+    elif mode == "tampered_byte":
+        overrides = {"record_payload": tampered}
+    elif mode == "re_addressed_tamper":
+        # The tamperer re-derives the record's own root, so the document validates — and no longer
+        # answers to the ledger key the receipt points at.
+        re_addressed = dict(tampered)
+        re_addressed["compile_record_sha256"] = _sha(
+            {key: value for key, value in tampered.items() if key != "compile_record_sha256"}
+        )
+        overrides = {"record_payload": re_addressed}
+    else:
+        overrides = {"record_parent_sha": _sha({"dataset": "some-other-development-corpus"})}
     candidate = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        compile_provenance_override=provenance,
+        record=record,
+        program_sha256=program_sha256,
+        **overrides,
     )
-    if persist_forged:
-        conn.execute(
-            "INSERT INTO news_learning_artifacts "
-            "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
-            "VALUES (%s, 'compile_receipt', %s, %s::jsonb, 'forged', %s)",
-            ("f" * 64, development.artifact_sha, json.dumps(chain, sort_keys=True), NOW),
-        )
     judges = _static_judges(stable, candidate.candidate_arm)
     evaluator = CandidateEvaluator(
         conn,
@@ -1830,6 +1846,142 @@ def test_program_candidate_requires_the_exact_persisted_compile_receipt_chain(
             )
         )
     assert _judge_call_count(judges) == 0
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["parent_program_sha256", "development_dataset_sha256", "target_runtime_manifest_sha256", "program_sha256"],
+)
+def test_compile_record_identity_must_match_the_candidate_that_claims_it(conn, mismatch: str) -> None:
+    """The four identities the compile has to prove, each checked once against the candidate.
+
+    It ran against this parent Program, this development corpus and this runtime target, and it
+    produced this Program. `program_sha256` is the artifact rebuilt from the record's own patch, so a
+    record whose Program identity disagrees is a candidate artifact that does not come from that patch.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    program_sha256 = _sha({"program": "candidate", "mismatch": mismatch})
+    record_values: dict[str, object] = {
+        "development_sha": development.artifact_sha,
+        "stable": stable,
+        "program_sha256": program_sha256,
+    }
+    # One field at a time, replaced by an identity that belongs to some other compile.
+    record_values[mismatch] = _sha({"identity": "belongs-to-another-compile", "field": mismatch})
+    record = _compile_record(conn, **record_values)
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        record=record,
+        program_sha256=program_sha256,
+    )
+    judges = _static_judges(stable, candidate.candidate_arm)
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(candidate,),
+    )
+
+    with pytest.raises(ValueError, match="news_learning_program_compile_record_invalid"):
+        asyncio.run(
+            evaluator.evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=development.artifact_sha,
+                    candidate_sha=candidate.candidate_sha,
+                    stage="offline",
+                )
+            )
+        )
+    assert _judge_call_count(judges) == 0
+
+
+def test_compile_record_binds_the_per_call_ledger_to_the_container_that_was_launched(conn) -> None:
+    """The ledger and the sandbox have to name the same grant, and the compile has to have finished.
+
+    The sidecar writes its execution receipt whether it served a call or refused one, so a refusal in
+    that receipt is evidence the boundary held rather than a malformed document.  A *record*, though,
+    only exists for a compile that completed: a task or reflection call that never reached the provider
+    means the optimizer did not run to the end, and the metric judge is the one role whose refusal the
+    metric already scores as zero.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    development = asyncio.run(
+        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    program_sha256 = _sha({"program": "candidate", "case": "proxy-grant-binding"})
+    record = _compile_record(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        program_sha256=program_sha256,
+    )
+    _policy, launch = _valid_sandbox_launch_receipt()
+    assert record.usage.grant_sha256 == launch.egress_manifest["proxy_grant_sha256"]
+
+    foreign_ledger = record.usage.model_copy(update={"grant_sha256": _sha({"grant": "some-other-compile"})})
+    with pytest.raises(ValueError, match="news_program_compile_record_proxy_grant_mismatch"):
+        _compile_record(
+            conn,
+            development_sha=development.artifact_sha,
+            stable=stable,
+            program_sha256=program_sha256,
+            usage=foreign_ledger,
+        )
+
+    refused = record.usage.calls[0]
+    unfinished = record.usage.model_copy(
+        update={
+            "calls": (
+                refused.model_copy(
+                    update={
+                        "provider_invoked": False,
+                        "reserved_cost_microusd": 0,
+                        "provider_cost_microusd": 0,
+                        "total_tokens": 0,
+                        "finish_reason": None,
+                        "error_code": "news_program_compile_proxy_call_refused",
+                    }
+                ),
+                *record.usage.calls[1:],
+            ),
+            "task_model_calls": record.usage.task_model_calls - 1,
+            "task_cost_microusd": record.usage.task_cost_microusd - refused.provider_cost_microusd,
+            "task_failures": 1,
+            "actual_cost_microusd": record.usage.actual_cost_microusd - refused.provider_cost_microusd,
+            "reserved_cost_microusd": record.usage.reserved_cost_microusd - refused.reserved_cost_microusd,
+            "error_codes": ("news_program_compile_proxy_call_refused",),
+        }
+    )
+    assert unfinished.task_failures == 1
+    with pytest.raises(ValueError, match="news_program_compile_record_task_call_failed"):
+        _compile_record(
+            conn,
+            development_sha=development.artifact_sha,
+            stable=stable,
+            program_sha256=program_sha256,
+            usage=unfinished,
+        )
 
 
 def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> None:
@@ -1956,8 +2108,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "candidate_program_version": candidate.candidate_arm.program_version,
         "stable_program_sha256": stable.program_sha256,
         "candidate_program_sha256": candidate.candidate_arm.program_sha256,
-        "machine_diff": candidate.proposal_receipt.program_machine_diff,
-        "compile_provenance": candidate.proposal_receipt.compile_provenance,
+        "compile_record_sha256": candidate.proposal_receipt.compile_record_sha256,
     }
 
 
@@ -1983,16 +2134,13 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
             )
         )
     )
-    candidate_artifact, provenance, _patch, compile_receipt_chain = _compiled_candidate_artifact(
-        conn, development=development, stable=stable
-    )
+    candidate_artifact, record = _compiled_candidate_artifact(conn, development=development, stable=stable)
     candidate = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        compile_provenance_override=provenance,
-        compile_receipt_chain_override=compile_receipt_chain,
+        record=record,
         program_sha256=candidate_artifact.program_sha256,
     )
     semantics = {
@@ -2112,16 +2260,13 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
             )
         )
     )
-    candidate_artifact, provenance, _patch, compile_receipt_chain = _compiled_candidate_artifact(
-        conn, development=development, stable=stable
-    )
+    candidate_artifact, record = _compiled_candidate_artifact(conn, development=development, stable=stable)
     candidate = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        compile_provenance_override=provenance,
-        compile_receipt_chain_override=compile_receipt_chain,
+        record=record,
         program_sha256=candidate_artifact.program_sha256,
     )
     judges = _static_judges(stable, candidate.candidate_arm)
@@ -2339,7 +2484,9 @@ def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> N
 
 
 def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:
-    _accepted_event(conn)
+    # The two-case corpus is what a compile record needs: GEPA is constructed with a train/validation
+    # split, and the record's budget arithmetic reads that split back out of its own optimizer config.
+    _accepted_compilable_event(conn)
     stable = _arm()
     judges: dict[tuple[str, str], object] = {}
     evaluator = CandidateEvaluator(conn, stable=stable, judges=judges)

@@ -163,14 +163,43 @@ which lives next to the attestation that reads it instead of in the Program
 artifact: it crosses a real trust boundary — host to container — and says
 nothing about how the Program behaves. A drift test keeps it equal to the
 source `uv.lock`, and a wheel that has no `uv.lock` still runs the Program.
-Tags and registry manifest references are rejected. The sidecar reserves each
-call from the complete positive `llm.news_compiler_tariff`. Task, reflection
-and `metric_judge` each have a typed sealed role configuration from which the
-secret-free identity, grant, bundle and proxy enforcement are derived.
+Tags and registry manifest references are rejected.
+
+`CompilerBuildAttestation` is that boundary written down as three independent
+answers to one question: the host's hash of its own tree and lock, the hash of
+the payload copied out of the pinned image before any secret is staged, and the
+container's own recomputation from inside the running image. All three must
+agree, and their agreement *is* the attestation. It is the only check in this
+workflow where producer and verifier sit in different trust domains, which is
+the only condition under which a digest can meaningfully fail.
+
+Issue #193 collapsed the compile's evidence without touching its enforcement.
+One trusted compile now produces one `CompileRecordV1`, embedded whole and
+addressed by `compile_record_sha256`, which is also its key in
+`news_learning_artifacts` under the new `compile_record` kind. It replaces
+seven content-addressed receipts, a chain root, a runner receipt, an optimizer
+provenance record and a machine diff that between them carried the same four
+identities up to four times. A digest survives that cut only if it addresses
+independently stored bytes, crosses a real trust boundary, is a durable key,
+fingerprints an external mutable identity that cannot be stored whole, or
+serves a consumer that cannot read the parent payload. Nothing else was doing
+security work: a hash computed and checked inside one package, over a payload
+printed directly beside it, detects that package's own accidental drift and
+nothing an attacker would have to defeat. Calling that an attestation is how a
+self-proof gets mistaken for one.
+
+The sidecar reserves each call from the complete positive
+`llm.news_compiler_tariff`. Task, reflection and `metric_judge` are each one
+`ModelExecutionIdentity` — the complete secret-free execution contract, from
+which grant, bundle and proxy enforcement derive — in place of the
+`endpoint_sha256 -> model_sha256 -> binding_sha256` chain and the role binding
+that sat above it. Its single digest is `endpoint_fingerprint`: the endpoint
+URL names the host a credential is presented to, so it is fingerprinted rather
+than stored.
 Reflection alone owns its 32k-token ceiling; the judge has its own endpoint,
 instruction/schema/adapter identity, budget, tariff, calls, cost and failure
-receipt. The proxy forces each role's output/cache/retry/timeout/temperature/LM
-parameters and records canonical per-call usage/cost/finish/error leaves.
+facts. The proxy forces each role's output/cache/retry/timeout/temperature/LM
+parameters and records canonical per-call usage/cost/finish/error observations.
 Judge failure is explicit unavailable and scores the affected free-text
 dimension as failure-as-zero; it never falls back to byte equality, hidden
 retry, or a cached failure. Missing actual provider cost or any mismatch fails
@@ -178,12 +207,21 @@ before candidate construction. The optimizer can emit only a typed
 `ProgramStrategyPatchV1` containing the two advisory instructions. It cannot
 modify RulePacks, the graph, Signatures, execution, routes, policy or
 stable identity, and it has no demo surface to write to at all. The trusted
-side rehashes every receipt payload, applies the
-patch to the exact active stable root, and emits an unaccepted candidate.
+side cross-checks the untrusted runner's own counters against the sidecar's
+ledger — two parties, two independent counts — then issues the record, applies
+the patch to the exact active stable root, and emits an unaccepted candidate.
 Timeout, denied access, missing cost, quota breach, invalid patch or extra
 output produces no Artifact. Bounded stdout/stderr capture and exact-name
-container/network/volume cleanup are part of the signed launch receipt; a
-Docker transport failure is never interpreted as proof of cleanup.
+container/network/volume cleanup are part of the launch receipt the record
+embeds; a Docker transport failure is never interpreted as proof of cleanup.
+
+Every property that was actually load-bearing is unchanged: the sealed input
+bundle, the container revalidating policy, source and grant for itself, the
+per-call worst-case reservation taken before every provider call, the sidecar
+owning the only credentials, the boundary evidence — commands, mounts, egress,
+cleanup, termination — and fail-closed on any tamper. What moved is where the
+tamper-evidence comes from: one record root, checked once, instead of a chain
+of digests each party computed over bytes it already held.
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293`, `0294` and `0295` append the corrected semantic, expert-quality
@@ -196,8 +234,12 @@ reissues the sole v7 root when canonical identity starts rejecting
 NaN/Infinity, and Issue #193 reissues it again as the single-document strategy
 artifact under factory v6; in both cases the earlier root is not executable by
 the new image. `0304` carries that last cut into the database by tripping every
-armed or active canary and writing one migration receipt. It does not re-open
-the epoch — identity changed, evidence did not — so accepted `news_review_v4`
+armed or active canary and writing one migration receipt. `0305` carries #193's
+compile-record cut the same way: it admits the `compile_record` artifact kind,
+keeps `compile_receipt` in the constraint so retired rows stay readable, and
+trips open activations again, because a candidate registered against the old
+chain names a receipt that no longer validates. Neither re-opens the epoch —
+identity changed, evidence did not — so accepted `news_review_v4`
 truth stays eligible. Every earlier
 review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v4,

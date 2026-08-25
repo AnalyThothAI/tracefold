@@ -25,7 +25,7 @@ from ..program.dspy_adapter import (
     ExactProviderCallCapture,
     PredictorAdapterError,
 )
-from .compiler.security import METRIC_JUDGE_MAX_TOKENS, CompilerRoleBindingV3
+from .compiler.security import METRIC_JUDGE_MAX_TOKENS, ModelExecutionIdentity
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"
 
@@ -157,7 +157,7 @@ class CardEquivalenceJudge:
         if require_exact_accounting and not callable(getattr(lm, "observe_exact_call", None)):
             raise ValueError("news_program_compile_metric_judge_metadata_seam_required")
         binding = getattr(lm, "tracefold_compiler_role_binding", None)
-        if isinstance(binding, CompilerRoleBindingV3) and (
+        if isinstance(binding, ModelExecutionIdentity) and (
             binding.role != "metric_judge" or int(max_tokens) != binding.max_output_tokens
         ):
             raise ValueError("news_program_compile_metric_judge_role_binding_mismatch")
@@ -194,29 +194,26 @@ class CardEquivalenceJudge:
         """Pinned into the metric receipt: two runs judged by different models are not comparable."""
 
         binding = getattr(self.lm, "tracefold_compiler_role_binding", None)
-        role_binding = binding.model_dump(mode="json") if isinstance(binding, CompilerRoleBindingV3) else None
+        # The whole role contract, embedded. It used to be printed here beside an endpoint digest, a
+        # kwargs digest and three fields already inside it.
+        role_binding = binding.model_dump(mode="json") if isinstance(binding, ModelExecutionIdentity) else None
         kwargs = getattr(self.lm, "kwargs", {})
         safe_kwargs = dict(kwargs) if isinstance(kwargs, Mapping) else {}
         owned = {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
         extra_kwargs = {key: value for key, value in safe_kwargs.items() if key not in owned}
         execution = {
             "role_binding": role_binding,
-            "endpoint_identity_sha256": (
-                binding.endpoint.binding_sha256 if isinstance(binding, CompilerRoleBindingV3) else None
-            ),
             "max_output_tokens": self._max_tokens,
             "max_model_calls": self._max_model_calls,
             "timeout_seconds": (
-                binding.timeout_seconds if isinstance(binding, CompilerRoleBindingV3) else safe_kwargs.get("timeout")
+                binding.timeout_seconds if isinstance(binding, ModelExecutionIdentity) else safe_kwargs.get("timeout")
             ),
             "temperature": (
-                binding.temperature if isinstance(binding, CompilerRoleBindingV3) else safe_kwargs.get("temperature", 0)
+                binding.temperature
+                if isinstance(binding, ModelExecutionIdentity)
+                else safe_kwargs.get("temperature", 0)
             ),
-            "model_kwargs_sha256": (
-                binding.model_kwargs_sha256
-                if isinstance(binding, CompilerRoleBindingV3)
-                else canonical_sha(extra_kwargs)
-            ),
+            "model_kwargs": (binding.model_kwargs if isinstance(binding, ModelExecutionIdentity) else extra_kwargs),
             "cache": False,
             "num_retries": 0,
             "require_exact_accounting": self._require_exact_accounting,
