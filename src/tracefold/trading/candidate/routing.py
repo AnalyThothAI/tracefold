@@ -4,9 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
-from ..contracts import InstrumentCandidateRow, InstrumentRef, canonical_base_symbol
+from ..contracts import InstrumentCandidateRow, InstrumentRef, LiveExchangeId, canonical_base_symbol
 
 _NATIVE_PERP_VENUE: Mapping[str, str] = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
+# The provider's own venue tag on an OI frame, mapped to the venue that would execute it. Deliberately
+# a closed table: an unrecognised tag has to fail closed, because the alternative is the defect #211
+# names — a Hyperliquid frame quietly routed to a Binance book whose open interest did nothing of the
+# kind. The measured venue split (Hyperliquid +1.35% vs Binance -0.26% at 4 h) is why that matters.
+_SIGNAL_VENUE: Mapping[str, LiveExchangeId] = {"binance": "binance", "hyperliquid": "hyperliquid"}
+
+
+def signal_exchange_id(venue: object) -> LiveExchangeId | None:
+    """The venue an OI frame's own provider tag names, or `None` when it names nothing executable."""
+
+    return _SIGNAL_VENUE.get(str(venue or "").strip().lower())
 
 
 def resolve_instrument(
@@ -47,4 +58,4 @@ def resolve_instrument(
     return None
 
 
-__all__ = ["resolve_instrument"]
+__all__ = ["resolve_instrument", "signal_exchange_id"]

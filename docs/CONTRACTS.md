@@ -147,12 +147,16 @@ startup-owned — a prompt or a tool argument cannot change it, and paper never
 reads the OpenTrade token. `trading.candidates.*` bounds what may become a case
 (`max_age_seconds`, `news_lookback_seconds`, `oi_lookback_seconds`,
 `symbol_cooldown_seconds`, `max_rank_in_window`, `min_oi_value_usd`,
-`max_dspy_cases_per_day`); `trading.regime.*` is the OI/price band
+`max_dspy_cases_per_day`) — `max_age_seconds` gates the **trigger** and the two
+lookbacks gate the **counterpart** it may attach, which are separate windows
+with separate meanings (#211); `trading.regime.*` is the OI/price band
 (`lookback_seconds`, `min_price_move_bps`, `max_price_move_bps` — a band with no
 ceiling is rejected at startup); `trading.policy.*` gates the pure mapping
 (`allow_short` defaults to false, `live_min_surprise`, `live_max_price_in`,
-`min_whale_long_profit_bps`); `trading.venues.*` is the static priority over
-`binance` and `hyperliquid`; `trading.order.*` is every order parameter
+`min_whale_long_profit_bps`); `trading.venues.*` is the operator's permission list over
+`binance` and `hyperliquid` — it is a priority order only for a case with no OI
+frame, because an OI-bearing case routes at the venue its own frame named and
+refuses rather than substituting another (#211); `trading.order.*` is every order parameter
 (`fixed_notional_usd`, `leverage` fixed at 1, `fixed_stop_bps`,
 `take_profit_bps`, `max_holding_seconds`, `max_spread_bps`,
 `max_open_underlyings`, `max_orders_per_day`), so
@@ -1167,8 +1171,10 @@ peeks, republishes, or purges `news.dead`.
 
 The `trading` family is read-mostly, and deliberately has no command that
 places, amends or cancels an order. `trading status` reports mode, control
-state, the day's counters and funnel, `nominal_daily_stop_loss_usd`,
-the configured `live_symbol`,
+state, the day's counters and funnel, `stage_latency_ms` (p50/p95 and an
+evidence count `n` for each pipeline stage from `source_observed` to
+`position_opened`, keyed by stage and by nothing else),
+`nominal_daily_stop_loss_usd`, the configured `live_symbol`,
 `execution_backend`, `execution_configured`, `live_mode_supported`,
 `live_ready`, and `live_readiness`; `live_reviewed` reports
 `opentrade_reviewed` support but still `live_ready=false/not_proven`, because a
@@ -1186,10 +1192,11 @@ settles one order bound to its exact frozen payload digest, idempotent by state
 so a second approval of an already-approved order changes nothing.
 
 Trading's News projection contract is `program_v7` / policy v10 only.
-`trading_manifest_v2` freezes the learning epoch, lane-specific Program
+`trading_manifest_v3` freezes the learning epoch, lane-specific Program
 version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
-and runtime-manifest SHA. Older v1 cases remain readable audit rows but cannot
-advance: an undecided case is terminalized as
+and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211).
+Cases frozen under any earlier manifest version remain readable audit rows but
+cannot advance: an undecided case is terminalized as
 `BLOCKED/no_trade/news_generation_retired`; an already prepared order is not
 rewritten and remains owned by the reconciliation state machine.
 

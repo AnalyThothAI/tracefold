@@ -7,6 +7,7 @@ reach and what happens when it misbehaves, not because of what the prompt asks f
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,7 @@ def _manifest(kind: str = "news_oi", *, news: NewsTradeCandidate | None = None) 
         oi=OiTradeCandidate(
             event_id="e1",
             observed_at_ms=NOW,
+            verdict_created_at_ms=NOW,
             base_symbol="DOGE",
             venue="hyperliquid",
             oi_direction="rise",
@@ -160,6 +162,21 @@ def test_the_model_never_receives_an_account_credential_or_order_field(news: New
     blob = " ".join(inputs.values()).lower()
     for forbidden in ("account", "api_key", "balance", "quantity", "notional", "stop_price", "hedged", "token"):
         assert forbidden not in blob, forbidden
+
+
+def test_the_oi_audit_stamp_never_reaches_the_prompt_that_program_sha256_addresses() -> None:
+    """#211 added `verdict_created_at_ms` to `OiTradeCandidate`, and the prompt must not notice.
+
+    `program_sha256` hashes the version, the model, the instruction and the signature — not the
+    inputs — so a new field in the serialised candidate would change what the model reads while every
+    case kept the same program identity, and any replay or A/B keyed on that identity would pool two
+    populations. The News side's field of the same name is its own point-in-time cutoff and is real
+    evidence, so this is an exclusion at the OI document, not a forbidden name.
+    """
+
+    inputs = build_inputs(_manifest(news=_NEWS))
+    assert "verdict_created_at_ms" not in json.loads(inputs["oi_context_json"])
+    assert "verdict_created_at_ms" in json.loads(inputs["news_snapshot_json"])
 
 
 def test_a_document_carrying_a_forbidden_key_refuses_to_become_a_prompt() -> None:

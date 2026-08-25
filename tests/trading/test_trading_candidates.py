@@ -12,10 +12,18 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.trading.candidate.blacklist import Blacklist
-from tracefold.trading.candidate.eligibility import EligibilityPolicy, Funnel, Rejected, news_candidate, oi_candidate
-from tracefold.trading.candidate.fusion import attach_news, attach_oi
-from tracefold.trading.candidate.routing import resolve_instrument
+from tracefold.trading.candidate.eligibility import (
+    EligibilityPolicy,
+    Funnel,
+    Rejected,
+    is_fresh_trigger,
+    news_candidate,
+    oi_candidate,
+)
+from tracefold.trading.candidate.fusion import attach_news, attach_oi, plan_triggers
+from tracefold.trading.candidate.routing import resolve_instrument, signal_exchange_id
 from tracefold.trading.contracts import NewsTradeCandidate, OiTradeCandidate
+from tracefold.trading.pipeline.candidate import scan_horizon_ms
 
 NOW = 1_787_000_000_000
 OPEN_DENY = Blacklist.from_rows([{"base_symbol": "BTC", "reason": "benchmark_large_cap"}])
@@ -36,6 +44,7 @@ def _oi_row(**kwargs: Any) -> dict[str, Any]:
         "whale_oi_ratio_bps": 21_097,
         "rank_in_window": 1,
         "observed_at_ms": NOW - 10_000,
+        "verdict_created_at_ms": NOW - 9_000,
         "venue": "hyperliquid",
         "learning_epoch": "program_v7",
         "program_sha256": "a" * 64,
@@ -46,6 +55,11 @@ def _oi_row(**kwargs: Any) -> dict[str, Any]:
         "runtime_manifest_sha": "d" * 64,
     }
     row.update(kwargs)
+    # A frame observed long ago was judged long ago. Moving the two independently is a real case, but
+    # a caller that only says "this is old" means both, and leaving the verdict at `NOW` would make
+    # every age test silently exercise a frame the projection could not have returned.
+    if "observed_at_ms" in kwargs and "verdict_created_at_ms" not in kwargs:
+        row["verdict_created_at_ms"] = row["observed_at_ms"]
     return row
 
 
@@ -86,6 +100,11 @@ def _news_row(**kwargs: Any) -> dict[str, Any]:
         "source_published_at_ms": NOW - 30_000,
     }
     row.update(kwargs)
+    # The Event opened before the verdict that judged it. A caller that moves the verdict alone would
+    # otherwise build a row the projection could not have returned, and every latency assertion over
+    # it would exercise a negative stage that cannot happen — the same coupling `_oi_row` needs.
+    if "verdict_created_at_ms" in kwargs and "opened_at_ms" not in kwargs:
+        row["opened_at_ms"] = min(int(row["opened_at_ms"]), int(row["verdict_created_at_ms"]) - 5_000)
     return row
 
 
@@ -105,18 +124,32 @@ def test_the_deny_list_rejects_before_anything_else_spends_work() -> None:
     assert result.rule.startswith("blacklisted:")
 
 
-def test_rank_staleness_and_thin_open_interest_are_all_named_rejections() -> None:
+def test_rank_and_thin_open_interest_are_all_named_rejections() -> None:
     for row, rule in (
         (_oi_row(rank_in_window=6), "rank_exhausted"),
-        (_oi_row(observed_at_ms=NOW - 10_000_000), "stale"),
         (_oi_row(oi_value_usd=3_000_000), "oi_value_below_floor"),
         (_oi_row(direction="sideways"), "oi_direction_unknown"),
         (_oi_row(ingest_mode="recovery"), "not_live_ingest"),
         (_oi_row(final_decision="drop"), "not_pushed"),
+        (_oi_row(verdict_created_at_ms=None), "verdict_time_missing"),
     ):
         result = oi_candidate(row, now_ms=NOW, blacklist=OPEN_DENY)
         assert isinstance(result, Rejected)
         assert result.rule == rule
+
+
+def test_age_is_not_an_eligibility_rule_it_is_a_trigger_rule() -> None:
+    """#211: an hour-old frame is not garbage, it is context. Only triggering has a freshness budget."""
+
+    policy = EligibilityPolicy()
+    old_row = _oi_row(observed_at_ms=NOW - 10_000_000)
+    aged = oi_candidate(old_row, now_ms=NOW, blacklist=OPEN_DENY, policy=policy)
+    assert isinstance(aged, OiTradeCandidate)
+    assert is_fresh_trigger(aged.observed_at_ms, now_ms=NOW, policy=policy) is False
+
+    fresh = oi_candidate(_oi_row(), now_ms=NOW, blacklist=OPEN_DENY, policy=policy)
+    assert isinstance(fresh, OiTradeCandidate)
+    assert is_fresh_trigger(fresh.observed_at_ms, now_ms=NOW, policy=policy) is True
 
 
 # ---------------------------------------------------------------------------- News eligibility
@@ -245,3 +278,288 @@ def test_hip3_builder_markets_are_not_execution_venues_in_v1() -> None:
         {"venue": "hl.spot", "venue_symbol": "@107", "base_symbol": "HYPE", "instrument_class": "crypto"},
     )
     assert resolve_instrument(rows, priority=("binance", "hyperliquid"), observed_at_ms=NOW) is None
+
+
+# ---------------------------------------------------------------------------- #211 trigger windows
+MINUTE = 60_000
+
+
+def _eligible_oi(**kwargs: Any) -> OiTradeCandidate:
+    candidate = oi_candidate(_oi_row(**kwargs), now_ms=NOW, blacklist=OPEN_DENY)
+    assert isinstance(candidate, OiTradeCandidate)
+    return candidate
+
+
+def _eligible_news(**kwargs: Any) -> NewsTradeCandidate:
+    candidate = news_candidate(_news_row(**kwargs), now_ms=NOW, blacklist=OPEN_DENY)
+    assert isinstance(candidate, NewsTradeCandidate)
+    return candidate
+
+
+def _kinds(plans: Any) -> list[str]:
+    return [plan.kind for plan in plans]
+
+
+def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_honoured() -> None:
+    """The four boundary cases #211 names, at the configured 60 m / 30 m rather than the 5 m budget.
+
+    Before the split, both sides were re-checked against `max_age_ms`, so a counterpart older than
+    five minutes could never attach and `news_oi` was effectively unreachable at the configured
+    windows. These four assertions are the whole of the corrected contract.
+    """
+
+    policy = EligibilityPolicy()
+    inside_news = plan_triggers(
+        oi=[_eligible_oi()],
+        news=[_eligible_news(verdict_created_at_ms=NOW - 45 * MINUTE)],
+        now_ms=NOW,
+        policy=policy,
+    )
+    assert _kinds(inside_news) == ["news_oi"]
+
+    outside_news = plan_triggers(
+        oi=[_eligible_oi()],
+        news=[_eligible_news(verdict_created_at_ms=NOW - 61 * MINUTE)],
+        now_ms=NOW,
+        policy=policy,
+    )
+    assert _kinds(outside_news) == ["oi_only"]
+
+    inside_oi = plan_triggers(
+        oi=[_eligible_oi(observed_at_ms=NOW - 20 * MINUTE)],
+        news=[_eligible_news()],
+        now_ms=NOW,
+        policy=policy,
+    )
+    assert _kinds(inside_oi) == ["news_oi"]
+
+    outside_oi = plan_triggers(
+        oi=[_eligible_oi(observed_at_ms=NOW - 31 * MINUTE)],
+        news=[_eligible_news()],
+        now_ms=NOW,
+        policy=policy,
+    )
+    assert _kinds(outside_oi) == ["news_only"]
+
+
+def test_context_older_than_the_trigger_budget_attaches_but_never_triggers_on_its_own() -> None:
+    """Two windows, two jobs. A 45-minute-old verdict is context; it is not a reason to act now."""
+
+    policy = EligibilityPolicy()
+    aged_news = _eligible_news(verdict_created_at_ms=NOW - 45 * MINUTE)
+    funnel = Funnel()
+    alone = plan_triggers(oi=[], news=[aged_news], now_ms=NOW, policy=policy, funnel=funnel)
+    assert alone == []
+    assert funnel.as_dict()["news_context_only"] == 1
+
+    with_trigger = plan_triggers(oi=[_eligible_oi()], news=[aged_news], now_ms=NOW, policy=policy)
+    assert _kinds(with_trigger) == ["news_oi"]
+    assert with_trigger[0].news is aged_news
+
+
+def test_no_plan_ever_carries_a_fact_later_than_its_own_cutoff() -> None:
+    """Whichever lane fired last owns the cutoff, and the other side is read strictly at or before it."""
+
+    policy = EligibilityPolicy()
+    for signal_at, verdict_at in ((NOW, NOW - MINUTE), (NOW - MINUTE, NOW), (NOW, NOW)):
+        plans = plan_triggers(
+            oi=[_eligible_oi(observed_at_ms=signal_at)],
+            news=[_eligible_news(verdict_created_at_ms=verdict_at)],
+            now_ms=NOW,
+            policy=policy,
+        )
+        assert len(plans) == 1
+        plan = plans[0]
+        assert plan.observed_at_ms == max(signal_at, verdict_at)
+        if plan.oi is not None:
+            assert plan.oi.observed_at_ms <= plan.observed_at_ms
+        if plan.news is not None:
+            assert plan.news.verdict_created_at_ms <= plan.observed_at_ms
+
+
+def test_a_counterpart_that_cannot_attach_never_hides_an_older_one_that_can() -> None:
+    """The counterpart is chosen from the whole eligible set, not from a pre-selected newest row.
+
+    Reducing each lane to its newest row and validating afterwards is what made this possible: one
+    row written a millisecond after the frame, or outside the lane's own lookback, answered for the
+    entire lane and the legal older row was never considered.
+    """
+
+    policy = EligibilityPolicy()
+    signal = _eligible_oi(observed_at_ms=NOW - MINUTE)
+    valid = _eligible_news(event_id="n-valid", verdict_created_at_ms=NOW - 45 * MINUTE)
+    future = _eligible_news(event_id="n-future", verdict_created_at_ms=NOW - MINUTE + 1)
+    assert attach_news(signal, [future, valid], policy=policy) is valid
+
+    verdict = _eligible_news(verdict_created_at_ms=NOW - MINUTE)
+    older_signal = _eligible_oi(event_id="e-valid", observed_at_ms=NOW - 20 * MINUTE)
+    later_signal = _eligible_oi(event_id="e-future", observed_at_ms=NOW - MINUTE + 1)
+    assert attach_oi(verdict, [later_signal, older_signal], policy=policy) is older_signal
+
+
+def test_two_triggers_for_one_underlying_coalesce_to_the_newest_and_say_so() -> None:
+    """Latest wins, deterministically, and the loser is counted rather than disappearing."""
+
+    policy = EligibilityPolicy()
+    funnel = Funnel()
+    older = _eligible_oi(event_id="e-old", observed_at_ms=NOW - 2 * MINUTE)
+    newer = _eligible_oi(event_id="e-new", observed_at_ms=NOW - MINUTE)
+    plans = plan_triggers(oi=[older, newer], news=[], now_ms=NOW, policy=policy, funnel=funnel)
+
+    assert len(plans) == 1
+    assert plans[0].source_key == newer.source_key
+    assert funnel.as_dict()["plan_reject:superseded_by_newer_trigger"] == 1
+
+
+def test_an_oi_frame_wins_a_dead_heat_with_a_news_verdict() -> None:
+    """A tie needs a written-down winner, or two identical scans coalesce to different cases.
+
+    OI wins because this stage is OI-first: its side is deterministic and costs no model call.
+    """
+
+    policy = EligibilityPolicy()
+    plans = plan_triggers(
+        oi=[_eligible_oi(observed_at_ms=NOW)],
+        news=[_eligible_news(verdict_created_at_ms=NOW)],
+        now_ms=NOW,
+        policy=policy,
+    )
+    assert len(plans) == 1
+    assert plans[0].oi is not None
+    assert plans[0].source_key == plans[0].oi.source_key
+
+
+def test_an_underlying_with_an_undecided_case_gets_no_second_thesis() -> None:
+    """One frozen research decision per issuer at a time; the second would buy the same answer twice."""
+
+    policy = EligibilityPolicy()
+    funnel = Funnel()
+    plans = plan_triggers(
+        oi=[_eligible_oi()],
+        news=[],
+        now_ms=NOW,
+        policy=policy,
+        underlyings_in_flight={"crypto:DOGE"},
+        funnel=funnel,
+    )
+    assert plans == []
+    assert funnel.as_dict()["plan_reject:case_in_flight"] == 1
+
+    # A settled case is not a block. Nothing is in flight, so the same trigger plans normally.
+    assert _kinds(plan_triggers(oi=[_eligible_oi()], news=[], now_ms=NOW, policy=policy)) == ["oi_only"]
+
+
+def test_the_scan_horizon_covers_the_whole_configured_context_window() -> None:
+    """The query has to reach back far enough for fusion to have anything to honour."""
+
+    policy = EligibilityPolicy()
+    assert scan_horizon_ms(policy) == policy.max_age_ms + policy.news_lookback_ms
+
+    oi_heavy = EligibilityPolicy(news_lookback_ms=60_000, oi_lookback_ms=7_200_000)
+    assert scan_horizon_ms(oi_heavy) == oi_heavy.max_age_ms + oi_heavy.oi_lookback_ms
+
+    # The recovery overlap is the floor when both lookbacks are short: a restarted lane still has to
+    # re-see triggers it never turned into cases.
+    tight = EligibilityPolicy(news_lookback_ms=1_000, oi_lookback_ms=1_000)
+    assert scan_horizon_ms(tight) == tight.max_age_ms * 3
+
+
+# ---------------------------------------------------------------------------- #211 venue truth
+def test_a_frame_venue_maps_to_exactly_one_execution_venue_or_to_nothing() -> None:
+    """Fail closed. The alternative is a Hyperliquid frame executed against a Binance book."""
+
+    assert signal_exchange_id("hyperliquid") == "hyperliquid"
+    assert signal_exchange_id("Binance") == "binance"
+    for unusable in ("", None, "hl.xyz", "okx", "binance_futures"):
+        assert signal_exchange_id(unusable) is None
+
+
+def test_a_news_triggered_plan_stamps_the_event_open_and_the_verdict_apart() -> None:
+    """The News half of the two upstream stages, and the clamp that keeps the report honest.
+
+    For a News trigger the cutoff *is* the verdict, so the ingest stage has to come from the Event's
+    own open time or it collapses to zero. `opened_at_ms` is not guaranteed to precede the verdict —
+    a re-opened family, a corrected leader item, provider clock skew — and a negative stage in
+    `trading status` is indistinguishable from a real measurement.
+    """
+
+    policy = EligibilityPolicy()
+    verdict = _eligible_news(opened_at_ms=NOW - 90_000, verdict_created_at_ms=NOW - 30_000)
+    plans = plan_triggers(oi=[], news=[verdict], now_ms=NOW, policy=policy)
+    assert len(plans) == 1
+    assert (plans[0].source_observed_at_ms, plans[0].trigger_persisted_at_ms) == (NOW - 90_000, NOW - 30_000)
+
+    inverted = _eligible_news(opened_at_ms=NOW, verdict_created_at_ms=NOW - 30_000)
+    clamped = plan_triggers(oi=[], news=[inverted], now_ms=NOW, policy=policy)
+    assert clamped[0].source_observed_at_ms == clamped[0].trigger_persisted_at_ms == NOW - 30_000
+
+
+def test_an_oi_triggered_plan_stamps_the_frame_and_its_verdict_apart() -> None:
+    policy = EligibilityPolicy()
+    plans = plan_triggers(
+        oi=[_eligible_oi(observed_at_ms=NOW - 20_000, verdict_created_at_ms=NOW - 15_000)],
+        news=[],
+        now_ms=NOW,
+        policy=policy,
+    )
+    assert (plans[0].source_observed_at_ms, plans[0].trigger_persisted_at_ms) == (NOW - 20_000, NOW - 15_000)
+
+
+def test_a_counterpart_folded_into_the_manifest_is_not_also_counted_as_superseded() -> None:
+    """One fresh frame plus one fresh verdict is the ordinary `news_oi` shape, not a rejection.
+
+    Both are triggers, so one loses the coalescing — but the loser is inside the winner's lookback by
+    construction and gets attached, so counting it as superseded would report the same row as both a
+    rejection and a survivor in a funnel whose whole claim is to be the report and the rule at once.
+    """
+
+    funnel = Funnel()
+    plans = plan_triggers(
+        oi=[_eligible_oi(observed_at_ms=NOW)],
+        news=[_eligible_news(verdict_created_at_ms=NOW - MINUTE)],
+        now_ms=NOW,
+        policy=EligibilityPolicy(),
+        funnel=funnel,
+    )
+    assert _kinds(plans) == ["news_oi"]
+    assert "plan_reject:superseded_by_newer_trigger" not in funnel.as_dict()
+
+    # A second frame for the same underlying genuinely is dropped, and that one is counted.
+    dropped = Funnel()
+    plan_triggers(
+        oi=[_eligible_oi(event_id="e-old", observed_at_ms=NOW - 2 * MINUTE), _eligible_oi(observed_at_ms=NOW)],
+        news=[],
+        now_ms=NOW,
+        policy=EligibilityPolicy(),
+        funnel=dropped,
+    )
+    assert dropped.as_dict()["plan_reject:superseded_by_newer_trigger"] == 1
+
+
+def test_a_trigger_that_already_produced_a_case_stops_winning_the_coalescing() -> None:
+    """Otherwise the winner keeps beating the trigger it beat, for its whole freshness window.
+
+    Nothing durable records a coalesced loser, so the promise that it gets a turn later depends
+    entirely on the winner dropping out of the running once it has become a case. Without that, every
+    scan for the next `max_age` re-selects the same newest trigger and the freeze refuses it as
+    already seen, while the older one goes stale untried.
+    """
+
+    policy = EligibilityPolicy()
+    older = _eligible_oi(event_id="e-old", observed_at_ms=NOW - 2 * MINUTE)
+    newer = _eligible_oi(event_id="e-new", observed_at_ms=NOW - MINUTE)
+    funnel = Funnel()
+
+    first = plan_triggers(oi=[older, newer], news=[], now_ms=NOW, policy=policy, funnel=funnel)
+    assert first[0].source_key == newer.source_key
+
+    second = plan_triggers(
+        oi=[older, newer],
+        news=[],
+        now_ms=NOW,
+        policy=policy,
+        cased_source_keys={newer.source_key},
+        funnel=funnel,
+    )
+    assert second[0].source_key == older.source_key
+    assert funnel.as_dict()["oi_already_cased"] == 1

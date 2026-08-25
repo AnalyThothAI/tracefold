@@ -18,9 +18,24 @@ from typing import Any, TypedDict
 
 from ..opennews import source_artifact_identity
 
-# Bump when a key is added, removed or retyped below. The consumer's mapper is versioned against it,
-# so a silently widened projection cannot reach Trading as an unnoticed extra field.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v1"
+# Bump when a key is added, removed or retyped below — and when what a key *means* changes without the
+# key moving. The consumer's mapper is versioned against it, so neither a silently widened projection
+# nor a silently re-scoped one can reach Trading unnoticed.
+#
+# v2 (#211): the two candidate reads return the *newest* rows in the window rather than the oldest.
+# Trading's scan horizon grew from `max_age x 3` to `max_age + max(lookback)` so a legal counterpart is
+# actually visible, and with an ascending `LIMIT` a busy hour of that wider window would have been
+# answered entirely with its oldest rows — spending the whole budget on context and returning none of
+# the fresh triggers the scan exists to find.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v2"
+
+# One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
+# 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
+# is about eleven rows an hour on the News lane and nothing like a full lane on the OI one, so this is
+# roughly twenty times the volume it has to carry. It is still a ceiling, not a promise: a lane that
+# comes back with exactly this many rows was truncated, and the funnel's `oi_rows` / `news_rows`
+# counters are where that shows.
+TRADE_PROJECTION_ROW_LIMIT = 256
 
 
 class OiTradeProjectionRow(TypedDict):
@@ -106,7 +121,7 @@ class TradeProjectionStorage:
         until_created_at_ms: int,
         max_rank_in_window: int,
         min_oi_value_usd: int,
-        limit: int = 64,
+        limit: int = TRADE_PROJECTION_ROW_LIMIT,
     ) -> list[OiTradeProjectionRow]:
         """Deterministic telemetry verdicts that pushed, with their rank-ledger row and the frame's venue.
 
@@ -114,6 +129,11 @@ class TradeProjectionStorage:
         not store it. That field is the single strongest discriminator the OI research measured
         (Hyperliquid +1.35% vs Binance -0.26% at 4 h), so a projection that dropped it would leave the
         trading lane unable to test its best-supported hypothesis.
+
+        Newest first at the limit (#211). The consumer reads a window wide enough to hold an hour of
+        attachable context, and every row it can act on *now* is at the recent end of it. Truncating
+        the far end drops rows that could only ever have been superseded context; truncating the near
+        end would drop the triggers.
         """
 
         rows = self.conn.execute(
@@ -165,7 +185,7 @@ class TradeProjectionStorage:
                AND v.created_at_ms <= %s
                AND s.rank_in_window <= %s
                AND s.oi_value_usd >= %s
-             ORDER BY v.created_at_ms, v.event_id
+             ORDER BY v.created_at_ms DESC, v.event_id DESC
              LIMIT %s
             """,
             (
@@ -184,13 +204,15 @@ class TradeProjectionStorage:
         *,
         after_created_at_ms: int,
         until_created_at_ms: int,
-        limit: int = 64,
+        limit: int = TRADE_PROJECTION_ROW_LIMIT,
     ) -> list[NewsTradeProjectionRow]:
         """Model Triage verdicts that pushed on a crypto-class Event, frozen at the verdict cutoff.
 
         Only the structural conditions live in SQL. Single-primary, grounding, novelty and magnitude are
         the trading lane's own eligibility rules and stay pure functions over the verdict document, so
         they are testable without a database and cannot silently diverge from the funnel report.
+
+        Newest first at the limit, for the reason given on the OI read.
         """
 
         rows = self.conn.execute(
@@ -239,7 +261,7 @@ class TradeProjectionStorage:
                AND e.asset_class = 'crypto'
                AND v.created_at_ms > %s
                AND v.created_at_ms <= %s
-             ORDER BY v.created_at_ms, v.event_id
+             ORDER BY v.created_at_ms DESC, v.event_id DESC
              LIMIT %s
             """,
             (int(after_created_at_ms), int(until_created_at_ms), int(limit)),

@@ -408,7 +408,7 @@ port it needs from the process — `NewsDatabasePort`, `MarketReviewDatabasePort
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v1` and Trading's own candidate
+row contracts, News's `news_trade_projection_v2` and Trading's own candidate
 input rows, translated field by field in `news_to_trading.py`, so a rename on
 either side fails at the seam rather than inside a runner.
 
@@ -1397,10 +1397,13 @@ channel being reachable.
 only post-epoch `program_v7` / policy-v10 judgments with the complete Program,
 editorial, scored-judgment and runtime-manifest identity. Model judgments must
 come from executable v5; deterministic OI keeps its arithmetic Program v1.
-`trading_manifest_v2` freezes those identities with the case. A pre-cut v1
-manifest that is still `PENDING`, or whose `RUNNING` lease expires, is blocked
-as `news_generation_retired` before a model call or order; prepared orders keep
-their immutable payload and continue through reconciliation.
+`trading_manifest_v3` freezes those identities with the case. A manifest frozen
+under any earlier version that is still `PENDING`, or whose `RUNNING` lease
+expires, is blocked as `news_generation_retired` before a model call or order;
+prepared orders keep their immutable payload and continue through
+reconciliation. The version is a Python constant in `tracefold.trading.contracts`
+and is owned by the deployed image, never by the schema — rolling the image back
+retires every case frozen since the deploy, and no migration reverses that.
 
 **Three case kinds, three authorities.** `oi_only` is arithmetic and is the
 execution-kernel trial lane — it never reaches a live mode, and it never calls
@@ -1634,9 +1637,74 @@ real funds.
 **Three case kinds, three authorities for the side.** `oi_only` takes its side
 from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the
 **model** owns the side — tolerable only because the kind is paper-only. `news_oi`
-requires both to agree. Fusion is computed once per underlying from that
-underlying's newest frame and newest verdict, in whichever order they fired;
-planning them in two passes made the News-driven direction unreachable.
+requires both to agree.
+
+**One trigger, one cutoff, at most one prior counterpart.** A new OI frame at
+`T` attaches the newest eligible News in `[T - news_lookback, T]`; a new News
+verdict at `T` attaches the newest eligible OI in `[T - oi_lookback, T]`. Three
+rules make that hold, and each closes a specific defect (#211).
+
+*Freshness gates the trigger only.* `max_age_seconds` says whether a row is a
+reason to act **now**; `news_lookback_seconds` and `oi_lookback_seconds` say how
+far back of that row's own cutoff the other lane may be read for **context**.
+Applying the trigger budget to both sides is what made the configured 60 m / 30 m
+windows unreachable: nothing older than five minutes could attach, so `news_oi`
+was all but impossible at any configuration. An hour-old verdict is now perfectly
+good context and still cannot start a case on its own.
+
+*The query has to reach what fusion is allowed to use.* The scan reads
+`max_age + max(news_lookback, oi_lookback)` of history, floored at the recovery
+overlap, and takes the newest rows in that window at its limit. Reading
+`max_age x overlap` made the lookbacks dead at the query, before the rules ever
+saw them; taking the *oldest* rows of the wider window would have spent the whole
+budget on context and returned none of the triggers.
+
+*The counterpart is chosen from the whole eligible set.* Reducing each lane to
+its newest row and validating afterwards let one row written a millisecond after
+the frame answer for the entire lane, hiding an older row that was legal.
+Nothing later than the trigger ever enters a manifest — a manifest that can see
+the future is a backtest that proves nothing.
+
+Two triggers for one underlying in one turn coalesce onto the newest, with an OI
+frame winning a dead heat and the source key settling the rest, and the losers
+are counted as `superseded_by_newer_trigger` rather than disappearing. Nothing
+durable records a loser, so what gives it a turn later is that the winner stops
+being offered once it has produced a case: the scan reads back the trigger
+identities already turned into cases over its own horizon and drops them before
+choosing. Without that the same newest trigger would win every scan for the rest
+of its freshness window and be refused at the freeze each time, while the trigger
+it beat went stale untried. A partial
+unique index over `trading_cases (underlying_key)` while the case is
+`PENDING`/`RUNNING` is the durable half of the same rule: one frozen research
+decision per issuer at a time, so a second trigger cannot buy a second model
+answer to the same question. It holds only while a case is undecided, so a
+settled or no-trade case never blocks a later genuinely new trigger.
+
+**An OI frame names its own venue, and the static priority may not answer for
+it.** `trading.venues.enabled` is the operator's *permission* list, not a
+routing rule. Open interest is a claim about one venue's book — the measured
+split is Hyperliquid +1.35% vs Binance -0.26% at 4 h — so an OI-bearing case
+resolves its instrument at the venue the frame itself tagged, and only there. A
+tag naming nothing executable is `venue_unresolved` and a venue the operator has
+not enabled is `venue_not_enabled`; both are decided at the scan, before fusion,
+so an unroutable frame can neither win coalescing from an older frame that *is*
+routable nor be attached as context to a News trigger it would then take down
+with it. An issuer not listed at the signal venue is `no_perp_at_signal_venue`
+and is only knowable at the freeze. None of the three is a reason to pick a
+different book. `news_only` has no frame and therefore no signal venue, so it
+keeps the static priority.
+
+Measured before shipping it: of the pushed OI frames in the last seven days,
+every one carried a venue tag and 36 of 38 named Hyperliquid. So the practical
+effect of this rule is not refusals — it is that the OI lane stops executing on
+Binance, which is where the static priority had been sending frames about
+Hyperliquid's book. That is also the venue the research favours (+1.35% vs
+-0.26% at 4 h).
+
+The live lane inherits source-aligned routing and nothing more: there is no read
+of the chosen venue's own OI or funding, so the "confirm the trigger at the venue
+that will execute it" half of #211 is **not** implemented and `live_bounded`
+stays disabled.
 
 **Deterministic gates run before the model call.** `pre_model_reject()` holds
 every rejection that needs no model answer — quadrant, long-only, the whale and
@@ -1652,6 +1720,19 @@ real exit and is the only thing the symbol cooldown and the realised-PnL
 denominator read. The scanner keeps no cursor — it re-reads a bounded overlap window and lets
 `trading_cases.primary_source_key` reject what it has already seen, which is
 what makes a crash or a redeploy idempotent without a checkpoint to corrupt.
+
+`trading_cases` also carries the two upstream instants Trading does not own:
+`source_observed_at_ms` (when the provider fact was observed) and
+`trigger_persisted_at_ms` (when the verdict naming it became durable). With
+`created_at_ms`, `decided_at_ms` and the order's own timestamps, every stage from
+`source_observed` to `position_opened` is a difference between two durable
+numbers, and `trading status` reports p50/p95 per stage with an `n` beside each.
+The two middle stages are both measured from `case_created` rather than chained,
+because the runner commits the order and only then settles the case: `case_created
+-> order_prepared` is nested inside `case_created -> case_decided`, and the model
+call — the one step with a daily budget — is inside both. The report is read off
+the same rows the audit reads: there is no second store to disagree with it, and
+no symbol, event or order id anywhere in it.
 
 **What it is not.** No separate service, database, queue or UI. No agent
 framework, subagent, tool loop or model-visible filesystem. No portfolio

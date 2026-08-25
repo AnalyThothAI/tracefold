@@ -125,7 +125,14 @@ def build_inputs(manifest: TradingCaseManifest) -> dict[str, str]:
     """Three bounded JSON documents. Everything in them was knowable at the manifest cutoff."""
 
     news = {} if manifest.news is None else manifest.news.model_dump(mode="json")
-    oi = {} if manifest.oi is None else manifest.oi.model_dump(mode="json")
+    # The OI frame's `verdict_created_at_ms` is an audit stamp (#211), not a decision input: it says
+    # when the deterministic verdict became durable, which is a fact about this system's own latency
+    # and not about the market. Letting it in would change the bytes the model sees without moving
+    # `program_sha256`, so two populations of cases would carry one program identity — and it would
+    # hand the model a staleness signal the design never granted it. It cannot go in
+    # `_FORBIDDEN_INPUT_KEYS` because the *News* side has always carried the same field name as its
+    # own point-in-time cutoff, which is legitimate evidence; one test pins this exclusion instead.
+    oi = {} if manifest.oi is None else manifest.oi.model_dump(mode="json", exclude={"verdict_created_at_ms"})
     oi["regime"] = manifest.regime.model_dump(mode="json")
     market = {
         "exchange_id": manifest.instrument.exchange_id,

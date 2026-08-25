@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 
 from .sql_values import _dumps
+
+# The pipeline stages #211 asks to be able to report, each as the difference between two durable
+# timestamps. Named here once so the SELECT list and the returned document cannot drift apart, and
+# deliberately keyed by stage rather than by symbol, event or order: this is one bounded document.
+#
+# Both middle stages are measured from `case_created` rather than chained, because the runner writes
+# the order *before* it settles the case — `_place` commits its own transaction and `_settle` is what
+# terminalises the case afterwards. `case_decided -> order_prepared` would therefore always be
+# negative or zero however the clock is sampled. `order_prepared` is nested inside `case_decided`, and
+# the difference between the two is the settle write; the model call is inside both.
+_STAGES: Final[tuple[tuple[str, str], ...]] = (
+    ("source_observed_to_verdict_persisted", "c.trigger_persisted_at_ms - c.source_observed_at_ms"),
+    ("verdict_persisted_to_case_created", "c.created_at_ms - c.trigger_persisted_at_ms"),
+    ("case_created_to_order_prepared", "o.created_at_ms - c.created_at_ms"),
+    ("case_created_to_case_decided", "c.decided_at_ms - c.created_at_ms"),
+    ("order_prepared_to_position_opened", "o.position_opened_at_ms - o.created_at_ms"),
+)
 
 
 class QueryStorage:
@@ -73,6 +90,43 @@ class QueryStorage:
             "closed_orders": 0 if realized is None else int(realized["n"]),
             "closed_realized_bps": 0 if realized is None else int(realized["total_bps"]),
         }
+
+    def stage_latency_ms(self, *, since_ms: int) -> dict[str, dict[str, int]]:
+        """Median and p95 for each pipeline stage over the window, read from the ledger itself.
+
+        A latency report computed from the same rows the audit reads is exactly as replayable as the
+        audit — there is no second store to disagree with, and no per-symbol, per-event or per-order
+        key anywhere in it. Cases written before the upstream stamps existed simply do not count
+        towards the two upstream stages: an ordered-set aggregate skips NULL inputs, so `n` says how
+        much evidence each number rests on rather than the number quietly averaging over absence.
+        """
+
+        selects = ",\n                   ".join(
+            f"count({expression}) AS {name}_n,\n"
+            f"                   percentile_disc(0.5) WITHIN GROUP (ORDER BY {expression}) AS {name}_p50,\n"
+            f"                   percentile_disc(0.95) WITHIN GROUP (ORDER BY {expression}) AS {name}_p95"
+            for name, expression in _STAGES
+        )
+        row = self.conn.execute(
+            f"""
+            SELECT {selects}
+              FROM trading_cases c
+              LEFT JOIN trading_orders o ON o.case_id = c.case_id
+             WHERE c.created_at_ms >= %s
+            """,
+            (int(since_ms),),
+        ).fetchone()
+        if row is None:  # pragma: no cover - an aggregate query always returns one row
+            return {name: {"n": 0} for name, _ in _STAGES}
+        report: dict[str, dict[str, int]] = {}
+        for name, _ in _STAGES:
+            stage: dict[str, int] = {"n": int(row[f"{name}_n"] or 0)}
+            for quantile in ("p50", "p95"):
+                value = row[f"{name}_{quantile}"]
+                if value is not None:
+                    stage[quantile] = int(value)
+            report[name] = stage
+        return report
 
 
 __all__ = ["QueryStorage"]

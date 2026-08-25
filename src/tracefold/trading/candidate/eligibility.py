@@ -7,6 +7,13 @@ the report eventually describes a filter the scanner no longer applies.
 Eligibility fails closed on everything it cannot prove. An unknown asset class, a symbol that
 canonicalises to nothing, a verdict with two primaries, a missing rank — all of them are a named
 rejection, never a default.
+
+**Age is not one of those rules (#211).** `oi_candidate` and `news_candidate` answer "may this row be
+used at all", which is the *context* question: an hour-old verdict is perfectly good point-in-time
+context to freeze into a manifest. Whether a row is fresh enough to *create* a case on its own is a
+separate question with a separate budget, and `is_fresh_trigger` is the whole of it. Conflating the
+two is what made the configured 60 m / 30 m counterpart lookbacks unreachable: both sides were
+re-checked against the 5 m trigger budget, so nothing older than 5 m could ever be attached.
 """
 
 from __future__ import annotations
@@ -40,6 +47,14 @@ def blacklist_rule(reason: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class EligibilityPolicy:
+    """Two independent time budgets, and they are not interchangeable.
+
+    `max_age_ms` gates a **trigger**: how new a row must be to create a case now. `news_lookback_ms`
+    and `oi_lookback_ms` gate a **counterpart**: how far back of the trigger's own cutoff the other
+    lane may be read for context. A counterpart is never required to be fresh — it is required to be
+    older than the trigger and inside its own lookback.
+    """
+
     max_age_ms: int = 300_000
     min_magnitude: int = 2
     max_rank_in_window: int = 2
@@ -54,7 +69,14 @@ DEFAULT_ELIGIBILITY = EligibilityPolicy()
 
 @dataclass(slots=True)
 class Funnel:
-    """One counter per named rejection, plus the survivors. This is the report and the rule at once."""
+    """One counter per named rejection, plus the survivors. This is the report and the rule at once.
+
+    Counted per **scan**, not per distinct row. The scanner keeps no cursor, so one verdict inside the
+    context horizon is re-read every turn and contributes to `news_rows` — and to `news_context_only`
+    if it is too old to trigger — on each of them. The key set is what is bounded and what an operator
+    reads; the magnitudes are a function of the poll interval and the horizon, and #211 widened the
+    horizon from `max_age x 3` to `max_age + max(lookback)`, so they stepped up with it.
+    """
 
     stages: dict[str, int] = field(default_factory=dict)
 
@@ -78,6 +100,20 @@ def _int(value: Any, default: int | None = None) -> int | None:
         return default
 
 
+def is_fresh_trigger(at_ms: object, *, now_ms: int, policy: EligibilityPolicy = DEFAULT_ELIGIBILITY) -> bool:
+    """Whether one eligible row is new enough to create a case on its own.
+
+    The single implementation of trigger freshness. The scanner splits its rows with it and nothing
+    else applies an age rule, so the funnel's `*_context_only` counters and the trigger set cannot
+    describe different windows. A row stamped slightly ahead of this process's clock is fresh, exactly
+    as it was before the split: clock skew between the writer and the runner must not silently
+    demote a brand-new trigger to context.
+    """
+
+    parsed = _int(at_ms)
+    return parsed is not None and now_ms - parsed <= policy.max_age_ms
+
+
 # ---------------------------------------------------------------------------- OI
 def oi_candidate(
     row: OiCandidateRow,
@@ -87,7 +123,7 @@ def oi_candidate(
     policy: EligibilityPolicy = DEFAULT_ELIGIBILITY,
     funnel: Funnel | None = None,
 ) -> OiTradeCandidate | Rejected:
-    """One projected telemetry verdict, or a named rejection."""
+    """One projected telemetry verdict, or a named rejection. Eligible as *context*; age is not read here."""
 
     def _no(rule: str, symbol: str = "") -> Rejected:
         if funnel is not None:
@@ -105,8 +141,10 @@ def oi_candidate(
     observed = _int(row.get("observed_at_ms"))
     if observed is None:
         return _no("observed_at_missing", symbol)
-    if now_ms - observed > policy.max_age_ms:
-        return _no("stale", symbol)
+
+    verdict_at = _int(row.get("verdict_created_at_ms"))
+    if verdict_at is None:
+        return _no("verdict_time_missing", symbol)
 
     rank = _int(row.get("rank_in_window"))
     if rank is None or rank > policy.max_rank_in_window:
@@ -134,6 +172,7 @@ def oi_candidate(
     return OiTradeCandidate(
         event_id=str(row.get("event_id") or ""),
         observed_at_ms=observed,
+        verdict_created_at_ms=verdict_at,
         base_symbol=symbol,
         venue=venue,
         oi_direction=direction,
@@ -173,7 +212,10 @@ def news_candidate(
     policy: EligibilityPolicy = DEFAULT_ELIGIBILITY,
     funnel: Funnel | None = None,
 ) -> NewsTradeCandidate | Rejected:
-    """One projected model verdict, or a named rejection. Every field is knowable at the verdict cutoff."""
+    """One projected model verdict, or a named rejection. Every field is knowable at the verdict cutoff.
+
+    Eligible as *context*. Whether it is new enough to trigger a case of its own is `is_fresh_trigger`.
+    """
 
     def _no(rule: str, symbol: str = "") -> Rejected:
         if funnel is not None:
@@ -209,8 +251,6 @@ def news_candidate(
     verdict_at = _int(row.get("verdict_created_at_ms"))
     if verdict_at is None:
         return _no("verdict_time_missing", symbol)
-    if now_ms - verdict_at > policy.max_age_ms:
-        return _no("stale", symbol)
 
     blocked = blacklist.blocked(symbol, now_ms=now_ms)
     if blocked is not None:
@@ -280,6 +320,7 @@ __all__ = [
     "Funnel",
     "Rejected",
     "blacklist_rule",
+    "is_fresh_trigger",
     "news_candidate",
     "oi_candidate",
 ]

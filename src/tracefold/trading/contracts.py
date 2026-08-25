@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v2"
+TRADING_MANIFEST_VERSION = "trading_manifest_v3"
 TRADING_POLICY_VERSION = "trading_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
@@ -263,6 +263,9 @@ class OiTradeCandidate(_Frozen):
 
     event_id: str
     observed_at_ms: int
+    # When the deterministic verdict became durable, as opposed to when the frame was observed. The
+    # two are separate stages and the gap between them is the one latency Trading does not own (#211).
+    verdict_created_at_ms: int
     base_symbol: str
     venue: str
 
