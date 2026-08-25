@@ -49,6 +49,7 @@ from ..program.contracts import TriageContext
 from ..program.dspy_adapter import DspyStrictJSONAdapter
 from ..program.graph import DspyCompileProgram
 from ..program.runtime import PROGRAM_VERSION
+from .compiler.security import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 from .judge import CardEquivalenceJudge
 from .metric import (
     COMPONENT_FIELDS,
@@ -335,30 +336,40 @@ def build_judge(
     api_key: str,
     api_base: str,
     model_kwargs: Mapping[str, Any] | None = None,
-    timeout: float = 120.0,
-    max_tokens: int = 4_096,
     max_model_calls: int | None = None,
 ) -> CardEquivalenceJudge:
     """The semantic-equivalence judge, built here so the CLI layer never imports DSPy.
 
     `max_model_calls` is the judge's own ceiling, admitted atomically before a slow provider call. A caller
-    that spends unattended — the experiment loop's `optimize`, which can run for hours — passes one; the
-    interactive baseline does not, because an operator watching a bounded `--max-model-cases` run is the
-    ceiling.
+    that spends unattended — `learning optimize`, which can run for hours — passes one; the interactive
+    baseline does not, because an operator watching a bounded `--max-model-cases` run is the ceiling.
+
+    The role contract is exact, not a floor, for the same reason the reflection role's is: the identity
+    stamped below is what the record attests, so a caller's larger ceiling or deadline would be accepted
+    and then contradict the thing meant to prove it. Every caller already passed exactly these values;
+    they are simply no longer the caller's to pass. Without the stamp `optimize` refuses the judge, and it
+    is right to — a candidate that retained judge-derived scores without naming the endpoint that produced
+    them would make two runs judged by different models indistinguishable in provenance.
     """
 
-    return CardEquivalenceJudge(
-        build_metric_lm(
-            model_name=model_name,
-            api_key=api_key,
-            api_base=api_base,
-            model_kwargs=model_kwargs or {},
-            timeout=timeout,
-            max_tokens=max_tokens,
-        ),
-        max_tokens=int(max_tokens),
-        max_model_calls=max_model_calls,
+    lm = build_metric_lm(
+        model_name=model_name,
+        api_key=api_key,
+        api_base=api_base,
+        model_kwargs=model_kwargs or {},
+        timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
+        max_tokens=METRIC_JUDGE_MAX_TOKENS,
     )
+    lm.tracefold_compiler_role_binding = ModelExecutionIdentity.issue(
+        role="metric_judge",
+        model=str(model_name),
+        api_base=str(api_base),
+        max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
+        timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
+        temperature=0,
+        model_kwargs=dict(model_kwargs or {}),
+    )
+    return CardEquivalenceJudge(lm, max_tokens=METRIC_JUDGE_MAX_TOKENS, max_model_calls=max_model_calls)
 
 
 def _percentile(values: Sequence[int], fraction: float) -> int:

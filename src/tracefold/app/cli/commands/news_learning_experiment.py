@@ -161,8 +161,6 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     from tracefold.news.learning.baseline import build_judge
     from tracefold.news.learning.compiler.gepa import build_compile_lm
     from tracefold.news.learning.compiler.security import (
-        METRIC_JUDGE_MAX_TOKENS,
-        METRIC_JUDGE_TIMEOUT_SECONDS,
         REFLECTION_MAX_TOKENS,
         REFLECTION_TIMEOUT_SECONDS,
     )
@@ -190,6 +188,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     with postgres_connection(settings, role="serve") as conn:
         export = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(str(args.development))
     dataset = FrozenDevelopmentDataset.bind(
+        dataset_payload=export.dataset_payload,
         ref=DevelopmentDatasetRef(
             development_dataset_sha256=export.dataset_sha,
             episode_projection_root_sha256=export.episode_projection_root_sha256,
@@ -236,9 +235,9 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         model_name=reflection.model_name,
         api_key=reflection.api_key,
         api_base=reflection.api_base,
-        timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
-        max_tokens=METRIC_JUDGE_MAX_TOKENS,
         model_kwargs=reflection.model_kwargs,
+        # Bound to the declared budget, because `optimize` refuses a judge whose own ceiling is larger:
+        # the metric calls the judge directly, so this admission check is the only pre-call bound there is.
         max_model_calls=int(args.max_metric_judge_model_calls),
     )
     result = optimize(
@@ -312,15 +311,12 @@ def _semantic_judge(settings: Any, *, model: str) -> Any:
     if not model.strip():
         return None
     from tracefold.news.learning.baseline import build_judge
-    from tracefold.news.learning.compiler.security import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS
 
     endpoint = _arm_endpoint(settings, arm="teacher", model=model)
     return build_judge(
         model_name=endpoint.model_name,
         api_key=endpoint.api_key,
         api_base=endpoint.api_base,
-        timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
-        max_tokens=METRIC_JUDGE_MAX_TOKENS,
         model_kwargs=endpoint.model_kwargs,
     )
 
