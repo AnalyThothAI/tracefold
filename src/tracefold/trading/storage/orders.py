@@ -22,6 +22,22 @@ _MAX_EXIT_ATTEMPTS: Final = 3
 class OrderStorage:
     conn: Any
 
+    def lock_entry_attempt(self, *, order_id: str) -> bool:
+        """Serialize a live entry claim before its final wall-clock sample.
+
+        Sampling first would let a concurrent row lock consume the remaining approval or preflight
+        window while this caller waits. The subsequent guarded claim runs in the same transaction.
+        """
+
+        row = self.conn.execute(
+            "SELECT order_id FROM trading_orders WHERE order_id = %s FOR UPDATE",
+            (order_id,),
+        ).fetchone()
+        # The same claim transaction charges the daily ceiling. Lock its singleton before sampling
+        # too, so contention on that UPDATE cannot carry a valid sample across a UTC-day boundary.
+        self.conn.execute("SELECT id FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
+        return row is not None
+
     def active_underlyings(self) -> list[str]:
         rows = self.conn.execute(
             f"SELECT DISTINCT underlying_key FROM trading_orders WHERE state IN ({_ACTIVE_SQL})"

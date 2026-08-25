@@ -38,7 +38,7 @@ async def attempt_once(
     claim_clock: Callable[[], int] | None = None,
     entry_approval_window: tuple[int, int] | None = None,
     entry_preflight_window: tuple[int, int] | None = None,
-) -> tuple[ExecutionReceipt | None, str]:
+) -> tuple[ExecutionReceipt | None, str, int]:
     """The durable one-attempt contract, shared by the entry and the exit.
 
     OpenTrade publishes no client idempotency key, so nothing downstream can deduplicate a resend.
@@ -53,7 +53,11 @@ async def attempt_once(
     untouched and the same close was re-issued every thirty seconds forever.
     """
 
-    def _claim(repos: Any) -> str:
+    def _claim(repos: Any) -> tuple[str, int]:
+        if entry_approval_window is not None:
+            # Take the order-row lock before sampling the final live windows. Otherwise lock
+            # contention can consume their remaining lifetime after a seemingly valid sample.
+            repos.trading.lock_entry_attempt(order_id=order.order_id)
         claim_now = int(claim_clock()) if claim_clock is not None else now
         claim_kwargs: dict[str, Any] = {}
         if entry_approval_window is not None:
@@ -71,21 +75,21 @@ async def attempt_once(
         if result == "claimed" and kind == "entry":
             # This is an attempt/write ceiling, not a receipt counter. Charge it in the same commit as
             # SUBMITTING so process death after the provider call cannot make another entry admissible.
-            repos.trading.bump_orders_today(day_key=utc_day_key(now), now_ms=now)
-        return result
+            repos.trading.bump_orders_today(day_key=utc_day_key(claim_now), now_ms=claim_now)
+        return result, claim_now
 
-    claim = await db.tx(
+    claim, claim_now = await db.tx(
         "trading_attempt_claim",
         _claim,
         timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
     )
     if claim != "claimed":
         log.info("trading %s attempt refused order=%s reason=%s", kind, order.order_id, claim)
-        return None, claim
+        return None, claim, claim_now
 
     try:
         pending = call()
-        return await (observe_call(pending) if observe_call is not None else pending), "claimed"
+        return await (observe_call(pending) if observe_call is not None else pending), "claimed", claim_now
     except Exception as exc:
         reason = f"provider_exception:{type(exc).__name__}"
         log.warning("trading %s attempt did not answer: %s", kind, type(exc).__name__)
@@ -95,12 +99,12 @@ async def attempt_once(
                 order_id=order.order_id,
                 state=OrderState.AMBIGUOUS.value,
                 state_reason=f"{kind}_{reason}",
-                next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
-                now_ms=now,
+                next_reconcile_at_ms=claim_now + _RECONCILE_BACKOFF_MS,
+                now_ms=claim_now,
             ),
             timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
         )
-        return None, "ambiguous"
+        return None, "ambiguous", claim_now
 
 
 async def commit_order(
@@ -117,7 +121,7 @@ async def commit_order(
 ) -> bool:
     """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
-    receipt, claim = await attempt_once(
+    receipt, claim, claim_now = await attempt_once(
         db=db,
         order=order,
         kind="entry",
@@ -153,22 +157,22 @@ async def commit_order(
             average_price=None,
             position_opened_at_ms=None,
             must_close_at_ms=None,
-            next_reconcile_at_ms=now,
-            closed_at_ms=now if state is OrderState.REJECTED else None,
-            now_ms=now,
+            next_reconcile_at_ms=claim_now,
+            closed_at_ms=claim_now if state is OrderState.REJECTED else None,
+            now_ms=claim_now,
         )
         repos.trading.record_observation(
             order_id=order.order_id,
             observation_kind="submit",
             content_sha256=canonical_sha256(receipt.model_dump(mode="json")),
             content=receipt.model_dump(mode="json"),
-            now_ms=now,
+            now_ms=claim_now,
         )
         if state is OrderState.REJECTED:
             # A definitive rejection proves no exposure. Releasing the conservative claim in the
             # receipt transaction preserves the nominal loss-envelope semantics. A crash before this
             # proof stays charged, which is the safe side of the uncertainty.
-            repos.trading.release_order_day_charge(day_key=utc_day_key(now), now_ms=now)
+            repos.trading.release_order_day_charge(day_key=utc_day_key(claim_now), now_ms=claim_now)
 
     await db.tx("trading_order_receipt", _apply, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
     if count is not None:

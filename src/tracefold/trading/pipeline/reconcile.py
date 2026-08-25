@@ -828,7 +828,7 @@ class ReconcileRunner:
         reason: str,
         now: int,
     ) -> bool:
-        receipt, claim = await attempt_once(
+        receipt, claim, _claim_now = await attempt_once(
             db=self._db,
             order=order,
             kind="exit",
@@ -1015,7 +1015,7 @@ class ReconcileRunner:
             await self._defer(order_id, current_state, now)
             return False
 
-        receipt, claim = await attempt_once(
+        receipt, claim, _claim_now = await attempt_once(
             db=self._db,
             order=order,
             kind="exit",

@@ -1465,6 +1465,42 @@ def test_live_repreflight_rechecks_inside_the_attempt_claim(conn, at_claim: int,
     assert adapter.submit_calls == 0
 
 
+def test_live_attempt_claim_crossing_utc_midnight_charges_the_new_day(conn) -> None:
+    day_ms = 86_400_000
+    next_midnight = (NOW // day_ms + 1) * day_ms
+    before_midnight = next_midnight - 1
+    adapter = _LiveLifecycleAdapter(
+        repreflight_update={"observed_at_ms": before_midnight, "server_time_ms": before_midnight},
+        submit_fault="crash",
+    )
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    conn.execute(
+        "UPDATE trading_orders SET created_at_ms = %s, updated_at_ms = %s WHERE order_id = %s",
+        (next_midnight - 30_000, next_midnight - 30_000, str(row["order_id"])),
+    )
+    conn.commit()
+    _approve_live(conn, row, now=before_midnight)
+    clock_values = iter((before_midnight, before_midnight, before_midnight, next_midnight))
+
+    with pytest.raises(SystemExit, match="process died after provider call"):
+        asyncio.run(
+            ReconcileRunner(
+                db=_DirectDb(conn),
+                config=config,
+                bars=lambda _venue: None,
+                adapter=adapter,
+                clock=lambda: next(clock_values),
+            ).turn()
+        )
+
+    claimed = _order_row(conn, str(row["order_id"]))
+    assert claimed["state"] == "SUBMITTING"
+    assert claimed["updated_at_ms"] == next_midnight
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(before_midnight)) == 0
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(next_midnight)) == 1
+    assert adapter.submit_calls == 1
+
+
 @pytest.mark.parametrize(
     ("quantity", "protected", "expected_state", "expected_closes"),
     [
