@@ -27,8 +27,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...artifact_identity import canonical_json, canonical_sha
+from ..compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
 
-RUN_MANIFEST_SCHEMA: Literal["tracefold.news.experiment_run_manifest.v1"] = "tracefold.news.experiment_run_manifest.v1"
+# v2 (#199): the manifest names the episode projection its cases were frozen under. A run frozen before
+# the Objective Plan existed carries no `first_bad_owner_explicit`, so every failure case in it now
+# classifies as `owner_absent` and `experiment optimize` refuses with
+# `news_program_compile_no_verified_failure_clusters` — which reads as "this corpus has no targets" when
+# the truth is "this snapshot predates the projection that can tell". Nothing in v1 could detect that.
+RUN_MANIFEST_SCHEMA: Literal["tracefold.news.experiment_run_manifest.v2"] = "tracefold.news.experiment_run_manifest.v2"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
@@ -57,7 +63,8 @@ class ExperimentRunManifest(_ExactModel):
     compile receipt, no candidate registration and no release evidence, because it produces none.
     """
 
-    schema_version: Literal["tracefold.news.experiment_run_manifest.v1"] = RUN_MANIFEST_SCHEMA
+    schema_version: Literal["tracefold.news.experiment_run_manifest.v2"] = RUN_MANIFEST_SCHEMA
+    projection_schema_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     window: ExperimentWindow
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -131,9 +138,19 @@ class ExperimentRun:
         _write_json(self.manifest_path, manifest.model_dump(mode="json"))
 
     def manifest(self) -> ExperimentRunManifest:
+        """The run's own identity, refused by name when it predates the current episode projection.
+
+        A stale run is not a corrupt one — its cases were a faithful projection when they were frozen —
+        but it cannot answer a question the projection has since learned to ask. Re-snapshot the window.
+        """
+
         if not self.manifest_path.is_file():
             raise ValueError("news_experiment_run_manifest_missing")
-        return ExperimentRunManifest.model_validate(_read_json(self.manifest_path))
+        payload = _read_json(self.manifest_path)
+        declared = str(payload.get("projection_schema_id") or payload.get("schema_version") or "")
+        if str(payload.get("projection_schema_id") or "") != COMPILE_EPISODE_PROJECTION_SCHEMA:
+            raise ValueError(f"news_experiment_run_projection_schema_stale:{declared}")
+        return ExperimentRunManifest.model_validate(payload)
 
     def write_case(self, case: ExperimentCase) -> None:
         self.cases_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

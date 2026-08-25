@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
 from ..contracts import ArmManifest, ClosedWindow
 from ..evaluator import CandidateEvaluator
 from .run import ExperimentCase, ExperimentRun, ExperimentRunManifest, ExperimentWindow, case_root_sha256
@@ -55,6 +56,9 @@ def freeze_window(
     for case in cases:
         run.write_case(case)
     manifest = ExperimentRunManifest.issue(
+        # The projection these cases were frozen under, so a run outlives the shape it was taken in only
+        # as an explicit refusal rather than as a corpus that quietly answers the wrong question.
+        projection_schema_id=COMPILE_EPISODE_PROJECTION_SCHEMA,
         name=name,
         window=ExperimentWindow(from_ms=window.from_ms, to_ms=window.to_ms),
         parent_program_sha256=stable.program_sha256,

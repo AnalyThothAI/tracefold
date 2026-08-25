@@ -862,6 +862,7 @@ def test_no_second_implementation_guesses_failure_clusters() -> None:
         "src/tracefold/news/learning/contracts.py",
         "src/tracefold/news/learning/experiment/compare.py",
         "src/tracefold/news/learning/experiment/optimize.py",
+        "src/tracefold/news/learning/experiment/run.py",
         "src/tracefold/news/learning/review.py",
     ]
 

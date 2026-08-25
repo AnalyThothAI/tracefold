@@ -146,6 +146,10 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         "stable_bundle_sha": stable.bundle_sha,
         "policy_sha256": stable.policy_sha256,
         "model_targets": _readiness_model_targets(settings),
+        # Present on every path, including the one that never reaches a projection: a consumer keying on
+        # `identity.episode_count` must read 0, not fall off the end of the object.
+        "episode_count": 0,
+        "episode_projection_root_sha256": None,
     }
     episodes: tuple[Any, ...] = ()
     plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))

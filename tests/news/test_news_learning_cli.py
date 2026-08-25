@@ -17,6 +17,7 @@ from tracefold.app.cli.commands.news_learning_baseline import (
 )
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.learning.compiler.security import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.experiment.run import (
     ExperimentRun,
     ExperimentRunManifest,
@@ -745,6 +746,7 @@ def _run_with_window(root: Any, *, from_ms: int, to_ms: int) -> ExperimentRun:
     run = ExperimentRun(root, create=True)
     run.write_manifest(
         ExperimentRunManifest.issue(
+            projection_schema_id=COMPILE_EPISODE_PROJECTION_SCHEMA,
             name="run",
             window=ExperimentWindow(from_ms=from_ms, to_ms=to_ms),
             parent_program_sha256=load_stable_program_artifact().program_sha256,

@@ -923,7 +923,13 @@ outcome loop keeps writing prices for minutes after an Event opens, so a
 snapshot taken to the current instant measures a corpus that changes underneath
 the comparison. `run_sha256` is issued over the window, the parent Program, the
 policy, the case counts and a root over the frozen case ids, so a run cannot
-silently change what it measured. `case_sha256` is the evaluator's own case id,
+silently change what it measured. The manifest is
+`tracefold.news.experiment_run_manifest.v2` and names the episode projection its
+cases were frozen under; a run frozen under an older one is refused by name
+(`news_experiment_run_projection_schema_stale`) rather than silently answering a
+question its cases cannot support — a snapshot taken before the Objective Plan
+existed carries no explicit owner, so every failure case in it would classify as
+`owner_absent`. `case_sha256` is the evaluator's own case id,
 which is what makes `--resume` a directory listing rather than a stored cursor.
 
 `compare` scores three arms that are never averaged together — `recorded` is
