@@ -7,8 +7,8 @@ from typing import Any
 
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest
+from tracefold.news.learning.evaluate import CandidateEvaluator
 from tracefold.news.learning.evaluation_history import ArmState, Receipt
-from tracefold.news.learning.evaluator import CandidateEvaluator
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.reader_history import (
     READER_HISTORY_SHA256,
@@ -103,7 +103,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
     state = ArmState()
     state.receipts.extend(receipts)
 
-    offline = evaluator._build_context(case, state)
+    offline = evaluator._datasets.build_context(case, state)
     online_history = build_reader_history(
         [receipt.as_told_row() for receipt in receipts],
         now_ms=NOW_MS,
@@ -121,7 +121,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
 
     assert offline.model_dump(mode="json") == online.model_dump(mode="json")
     assert [entry.event_id for entry in offline.told.entries] == ["targeted", "recent"]
-    metric = evaluator._policy_metric_projection(case, state, context=offline)
+    metric = evaluator._datasets._policy_metric_projection(case, state, context=offline)
     assert [row["event_id"] for row in metric["seen"]] == ["recent"]
 
 

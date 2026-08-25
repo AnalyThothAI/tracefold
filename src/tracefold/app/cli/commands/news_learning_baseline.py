@@ -124,7 +124,8 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.evaluator import LEARNING_EPOCH, LEARNING_PROFILE_ID, CandidateEvaluator
+    from tracefold.news.learning.contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID
+    from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import (
         DevelopmentEpisode,
         GepaObjectivePlan,
@@ -154,9 +155,9 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     episodes: tuple[Any, ...] = ()
     plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))
     with postgres_connection(settings, role="serve") as conn:
-        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        datasets = DevelopmentDatasetStore(conn, stable=stable)
         try:
-            export = evaluator.development_compile_export(dataset_sha)
+            export = datasets.development_compile_export(dataset_sha)
         except ValueError as exc:
             # The one blocker in the #199 §4 vocabulary that has no episodes behind it: a dataset frozen
             # under a different arm cannot be projected at all. It is a readiness answer, so it is reported
@@ -168,7 +169,7 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         else:
             episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
             identity["episode_count"] = len(episodes)
-            # The exact root `CompileRecordV1` commits to and `CandidateEvaluator` re-derives, computed from
+            # The exact root a candidate's `ProposalReceipt` records and the release gate re-derives, computed from
             # the same raw projection dicts rather than from the parsed models — same bytes, same address.
             identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
             plan = build_gepa_objective_plan(episodes)
@@ -180,7 +181,7 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     return 0, {"ok": True, "data": summary}
 
 
-def _dataset_corpus(evaluator: Any, dataset_sha: str) -> tuple[tuple[Any, ...], tuple[Any, ...], Any, dict[str, Any]]:
+def _dataset_corpus(datasets: Any, dataset_sha: str) -> tuple[tuple[Any, ...], tuple[Any, ...], Any, dict[str, Any]]:
     """The frozen development corpus, its Objective Plan, and the identity the report has to publish.
 
     One projection, read once. `_project_episodes` is a per-case `_load_case` plus a reader-history
@@ -197,14 +198,14 @@ def _dataset_corpus(evaluator: Any, dataset_sha: str) -> tuple[tuple[Any, ...], 
     from tracefold.news.artifact_identity import canonical_sha
     from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
 
-    export = evaluator.development_compile_export(dataset_sha)
+    export = datasets.development_compile_export(dataset_sha)
     episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
     plan = build_gepa_objective_plan(episodes)
     optimizer = set(plan.optimizer_case_ids)
     scored = tuple(episode for episode in export.episodes if str(episode["case_id"]) in optimizer)
     identity = {
         "development_dataset_sha": dataset_sha,
-        # The exact root `CompileRecordV1` commits to and `CandidateEvaluator` re-derives, over the sealed
+        # The exact root a candidate's `ProposalReceipt` records and the release gate re-derives, over the sealed
         # export rather than over the scored subset: readiness, this baseline, the record and the evaluator
         # have to agree about the corpus before they can agree about the split.
         "episode_projection_root_sha256": canonical_sha(list(export.episodes)),
@@ -229,7 +230,8 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         compile_program_factory,
         run_baseline,
     )
-    from tracefold.news.learning.evaluator import CandidateEvaluator, ClosedWindow
+    from tracefold.news.learning.contracts import ClosedWindow
+    from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.program.artifact import load_program_artifact
 
     mode = _baseline_mode(args.mode)
@@ -285,13 +287,13 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     dataset_identity: dict[str, Any] = {}
     retrieval_population: tuple[Any, ...] | None = None
     with postgres_connection(settings, role="serve") as conn:
-        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        datasets = DevelopmentDatasetStore(conn, stable=stable)
         if dataset_sha:
-            episodes, retrieval_population, plan, dataset_identity = _dataset_corpus(evaluator, dataset_sha)
+            episodes, retrieval_population, plan, dataset_identity = _dataset_corpus(datasets, dataset_sha)
         else:
             window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
             limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
-            episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
+            episodes = datasets.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
     if not episodes:
         code = (
             "news_program_baseline_dataset_has_no_optimizer_corpus"
@@ -363,7 +365,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
 def _drafter_context(view: Mapping[str, Any]) -> Any:
     """Rebuild the bounded TriageContext from a ReviewDesk evidence view.
 
-    Mirrors `CandidateEvaluator._build_context`: the focus fact is what the Program treats as the headline,
+    Mirrors `DevelopmentDatasetStore.build_context`: the focus fact is what the Program treats as the headline,
     and the card carries the Gate facts.
     """
 

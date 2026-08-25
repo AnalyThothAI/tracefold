@@ -316,12 +316,17 @@ tracefold.news
   review/
     desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
     drafter.py        model-proposed rubrics a human accepts or rewrites; writes a file, never the DB
-  learning/           content-addressed program_v7 datasets, offline optimization, and stable/candidate evaluation
-  learning/objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or must exclude
-  learning/optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
-  learning/experiment/       operator run directories: frozen window and arm comparison
+  learning/
+    dataset.py        freeze / load / project the immutable corpora; holds no release authority
+    objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
+    optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
+    evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
+    ledger.py / epoch.py / profile.py  the learning plane's own rows, epoch identity, and release profile
+    experiment/       operator run directories: frozen window and arm comparison
+  release/
+    candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
+    canary.py         deterministic one-arm assignment and durable trip/close control
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
-  canary.py           deterministic one-arm assignment and durable trip/close control
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   program/            SemanticJudge, DSPy Program artifacts/adapters, code-owned quality baseline, artifact_tool
   delivery.py / control.py  cards, control commands
@@ -1199,7 +1204,7 @@ anything else. Rows written under the old chain stay in `news_learning_artifacts
 as append-only audit and no longer parse, so they cannot be re-armed.
 
 What replaced provenance is binding, checked at registration by a party that did
-not produce the candidate. `learning register` re-applies the patch to the
+not produce the candidate. `release register` re-applies the patch to the
 running stable Program to *derive* the arm's identity, re-projects the frozen
 corpus, records its own `development_episode_projection_root_sha256`, and
 re-derives the #199 Objective Plan rather than trusting the candidate's summary.

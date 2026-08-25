@@ -1078,7 +1078,16 @@ development or future temporal validation dataset. Every current dataset is in
 the deployment-time `program_v7` epoch and accepts only `news_review_v4`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
 dataset or metric-v4 denominator.
-`learning register --development SHA --candidate FILE --artifact-root DIR
+The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
+learning` freezes a corpus, explains what GEPA may optimize, scores the stable
+Program and runs the one optimization — `readiness`, `baseline`,
+`draft-reviews`, `snapshot`, `compare`, `optimize`, `freeze` — and none of them
+can ship anything. `news release` admits a candidate and moves it: `register`,
+`evaluate`, `shadow`, `canary`. The split is what an operator reads off
+`--help`, and it is the same boundary the packages carry: `news.learning`
+never imports `news.release`.
+
+`release register --development SHA --candidate FILE --artifact-root DIR
 [--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v1` to
 the active stable Program and a frozen development dataset. Whatever wrote the
 two instructions — `learning optimize`, a research run, or a person — enters
@@ -1100,7 +1109,7 @@ proposed and no metric scored. Rows registered under the old contract stay in
 `news_learning_artifacts` as append-only audit and no longer parse, so they
 cannot be re-armed (migration `20260825_0307` trips anything still open).
 
-`learning evaluate` runs the
+`release evaluate` runs the
 development/offline or validation/holdout release gate; validation calls both
 arms sequentially and `--live-program` can append exact per-Predictor
 recordings. Its mutually exclusive `--verify-recordings` mode is limited to
@@ -1109,10 +1118,10 @@ re-executes both real arm-scoped Program graphs with no live provider fallback,
 and seals the matching corpus/observation roots into the evaluation report. A
 missing corpus or recording produces an `incomplete`/`UNKNOWN` evaluation with
 no live fallback; an identity or tamper mismatch fails closed.
-`learning shadow --live-program` cold-runs the candidate over the closed
+`release shadow --live-program` cold-runs the candidate over the closed
 validation window and seals the observations; an existing sealed shadow
 observation manifest can be replayed instead.
-`learning canary arm|status|hold|resume|trip|close` owns the durable one-arm
+`release canary arm|status|hold|resume|trip|close` owns the durable one-arm
 rollout. A candidate may advance only when the prior
 stage has a sealed PASS; a tool or optimizer may propose but cannot accept,
 deploy or promote. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes

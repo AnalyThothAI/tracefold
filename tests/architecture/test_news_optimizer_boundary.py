@@ -109,8 +109,8 @@ def test_the_offline_entry_point_reaches_no_database_review_or_release_seam() ->
     """
 
     forbidden = {
-        "tracefold.news.learning.canary",
-        "tracefold.news.learning.evaluator",
+        "tracefold.news.release.canary",
+        "tracefold.news.learning.evaluate",
         "tracefold.news.learning.projection",
         "tracefold.news.learning.review",
         "tracefold.news.learning.review_drafter",
@@ -130,9 +130,48 @@ def test_the_research_package_cannot_reach_promotion_or_the_release_seam() -> No
     buys is that promoting a winner cannot be written here by accident.
     """
 
-    forbidden = {"tracefold.news.learning.canary", "tracefold.news.learning.optimizer"}
+    forbidden = {"tracefold.news.release.canary", "tracefold.news.learning.optimizer"}
     experiment = SRC / "news" / "learning" / "experiment"
     for path in sorted(experiment.rglob("*.py")):
         modules = _imports(path)
         assert not (modules & forbidden), (path, sorted(modules & forbidden))
         assert not any(module.startswith("tracefold.news.storage") for module in modules), path
+
+
+def test_the_learning_plane_never_reaches_into_the_release_plane() -> None:
+    """#202 §8, the direction that makes the split real rather than cosmetic.
+
+    Release reads frozen datasets; datasets never reach back. Before the cut, `freeze_dataset(role=
+    "validation")` called candidate validation, and candidate validation re-derived the Objective Plan
+    from `development_compile_export` — a cycle, and the reason freezing a corpus and admitting a
+    candidate could not be told apart. `freeze_dataset` now takes an `AdmittedCandidate` instead.
+
+    `evaluate.py` is the one exception and it is the right way round: judging a candidate needs to know
+    which candidate, so it composes the registry. It still decides no state — it returns evidence.
+    """
+
+    learning = SRC / "news" / "learning"
+    offenders = {
+        path.relative_to(ROOT).as_posix()
+        for path in sorted(learning.rglob("*.py"))
+        if path.name != "evaluate.py" and any(module.startswith("tracefold.news.release") for module in _imports(path))
+    }
+    assert offenders == set()
+
+
+def test_only_the_release_plane_can_admit_a_candidate() -> None:
+    """`AdmittedCandidate` is the token that keeps the dependency one-way.
+
+    A value anyone could construct would make the check it exists for a formality: `freeze_dataset` would
+    be back to trusting its caller that a candidate was admitted. Naming the one producer is what makes
+    "the release plane admitted this" a fact rather than an assertion in a docstring.
+    """
+
+    producers = {
+        path.relative_to(ROOT).as_posix()
+        for path in sorted(SRC.rglob("*.py"))
+        if "AdmittedCandidate(" in path.read_text(encoding="utf-8")
+    }
+    # Exactly one, and it is not the module that declares the type: `dataset.py` names
+    # `AdmittedCandidate` in a signature and never fills one in.
+    assert producers == {"src/tracefold/news/release/candidate.py"}

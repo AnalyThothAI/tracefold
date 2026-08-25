@@ -28,7 +28,6 @@ from tracefold.app.workers.wiring.market_review import (
 )
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
-from tracefold.news.learning.canary import CanaryRuntimeArm
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_review.loops import MarketReviewDatabasePort
 from tracefold.news.oi_signals import OiPolicy
@@ -46,6 +45,7 @@ from tracefold.news.program.artifact import (
 )
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.observability import TelemetryRegistry
@@ -331,7 +331,7 @@ def _trip_unavailable_active_canary(
     """Fail closed a nonterminal candidate that this image cannot execute."""
 
     with db.worker_session("news_canary_startup_validation", 3.0) as repos, repos.transaction():
-        from tracefold.news.learning.canary import (
+        from tracefold.news.release.canary import (
             CANARY_ELIGIBILITY_PROFILE_SHA,
             CANARY_ROLLING_PROFILE_SHA,
             CANARY_SELECTOR_VERSION,

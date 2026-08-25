@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tracefold.news.learning.canary import (
+from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE,
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,

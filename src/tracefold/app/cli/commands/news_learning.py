@@ -32,7 +32,7 @@ from .news_learning_runtime import (
 
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.learning.evaluator import (
+    from tracefold.news.learning.evaluate import (
         LEARNING_EPOCH,
         CandidateEvaluator,
         CandidateManifest,
@@ -43,15 +43,15 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     )
 
     settings = load_settings(require_ws_token=False)
-    action = str(args.learning_command)
+    action = str(getattr(args, "learning_command", "") or getattr(args, "release_command", ""))
     from tracefold.app.learning_runtime import active_arm_manifest
 
     try:
         if action == "canary":
             from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
             from tracefold.app.repository_session import repositories
-            from tracefold.news.learning.canary import apply_canary_control, parse_canary_control
             from tracefold.news.program.resources.candidates import compiled_canary_candidates
+            from tracefold.news.release.canary import apply_canary_control, parse_canary_control
 
             subcommand = str(args.canary_command)
             payload = {
@@ -229,19 +229,32 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if action == "freeze":
                 if args.role == "validation" and candidate is None:
                     raise ValueError("news_learning_validation_candidate_required")
-                evaluator = CandidateEvaluator(
-                    conn,
-                    stable=stable,
-                    judges={},
-                    candidate_catalog=catalog,
-                )
+                from tracefold.news.learning.dataset import DevelopmentDatasetStore
+                from tracefold.news.learning.ledger import LearningLedger
+                from tracefold.news.release.candidate import CandidateRegistry
+
+                ledger = LearningLedger(conn, stable=stable, principal="operator")
+                datasets = DevelopmentDatasetStore(conn, stable=stable, ledger=ledger)
+                # Admission is the release plane's, and it happens here rather than inside the freeze:
+                # candidate validation re-derives the Objective Plan from the corpus this store exports,
+                # so the reverse edge would be a cycle (#202 §8).
+                admitted = None
+                if candidate is not None:
+                    admitted = CandidateRegistry(
+                        conn,
+                        datasets=datasets,
+                        ledger=ledger,
+                        stable=stable,
+                        catalog={item.candidate_sha: item for item in catalog},
+                    ).admit_for_validation(candidate.candidate_sha)
                 manifest = asyncio.run(
-                    evaluator.freeze_dataset(
+                    datasets.freeze_dataset(
                         DatasetSpec(
                             role=str(args.role),
                             window=ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms)),
                             observation_ref=candidate.candidate_sha if candidate is not None else None,
-                        )
+                        ),
+                        admitted=admitted,
                     )
                 )
                 payload = manifest.model_dump(mode="json")
@@ -266,7 +279,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             recording_replay = None
             if verify_recordings:
-                from tracefold.news.learning.evaluator import evaluation_run_sha
+                from tracefold.news.learning.evaluate import evaluation_run_sha
 
                 run_sha = evaluation_run_sha(
                     request,

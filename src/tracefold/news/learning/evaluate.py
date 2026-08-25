@@ -1,14 +1,17 @@
-"""Production CandidateEvaluator for the News learning loop (#112).
+"""Judging one registered candidate against the stable arm, and returning evidence.
 
-The module owns dataset freezing, exact-one-variable validation, true semantic
-arm execution, arm-local sequential reader ledgers, strict model recordings,
-and sealed release evidence.  It never changes the active agent, delivery,
-broker, or canary controls.
+`CandidateEvaluator` was 3,031 lines and three lifecycles (#202 §8). Freezing a corpus moved to
+`learning/dataset.py`; admitting a candidate moved to `news/release/candidate.py`; the release profile,
+the epoch identity and the ledger have their own modules. What is left here is the judging: run both arms
+over a frozen corpus, compare them, and publish what was observed.
+
+It decides no state. `evaluate` returns a sealed report with a gate outcome and a recommended action; the
+release plane is what acts on it. That separation is the point of the split — while judging and advancing
+shared a class, "the evidence says pass" and "the candidate advances" were one statement.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import random
@@ -22,40 +25,38 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
 from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
-from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
-from ..program.artifact import apply_program_patch, load_stable_program_artifact
-from ..program.contracts import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
+from ..program.contracts import ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.runtime import PROGRAM_FACTORY_ID
+from ..release.candidate import CandidateRegistry
 from ..review.desk import (
     READER_CONTRACT_SHA256,
     READER_CONTRACT_VERSION,
-    REVIEW_RUBRIC_VERSION,
-    REVIEW_RUBRIC_VERSIONS,
 )
 from ..storage.root import NewsRepository
 from .contracts import (
     LEARNING_EPOCH,
     LEARNING_PROFILE_ID,
-    LEARNING_PROGRAM_VERSION,
     ArmManifest,
     CandidateManifest,
     ClosedWindow,
     DatasetCaseRef,
-    PromptCandidateV1,
     ProposalReceipt,
 )
+from .dataset import (
+    DatasetManifest,
+    DatasetSpec,
+    DevelopmentDatasetStore,
+)
+from .dataset import _fact_cluster as _dataset_fact_cluster
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
 from .ledger import LearningLedger
 from .objective import (
-    DevelopmentEpisode,
     _expected_delivery,
-    build_gepa_objective_plan,
     production_decision,
 )
+from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA
 from .projection import (
-    _arm_exact_diff,
     _call_cost_microusd,
-    _connected_fact_clusters,
     _observation_root,
     _observed_production_output,
     _percentile95,
@@ -65,114 +66,12 @@ from .projection import (
     _recording_verification_roots,
 )
 
-DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
-EVALUATOR_VERSION = "news_candidate_evaluator_v1"
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating, and it would drift silently the first time the factory is bumped.
 LEARNING_PROGRAM_FACTORY_ID = PROGRAM_FACTORY_ID
-SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
 ArmJudgeKey = tuple[ArmName, str]
-
-_PROFILE: dict[str, Any] = {
-    "profile_id": LEARNING_PROFILE_ID,
-    "learning_epoch": LEARNING_EPOCH,
-    "development": {
-        "boundary_clusters_min": 30,
-        "retention_clusters_min": 100,
-        "negative_clusters_min": 50,
-        "natural_days_min": 3,
-        "strata_min": 3,
-        "safety_required": True,
-    },
-    "validation": {
-        "duration_hours_min": 24,
-        "eligible_events_min": 200,
-        "planned_primary_clusters": 50,
-        "primary_clusters_min": 30,
-        "max_review_budget": 100,
-    },
-    "guardrails": {
-        "mean_total_tokens_growth_pct": 0.10,
-        "mean_call_growth_pct": 0.10,
-        "mean_provider_cost_growth_pct": 0.10,
-        "candidate_latency_p95_ms_max": 30_000,
-        "candidate_degraded_or_error_rate_max": 0.05,
-        "canary_candidate_min_n": 8,
-        "critical_regressions": 0,
-    },
-    "bootstrap": {"seed": 112, "replicates": 2_000, "confidence": 0.95},
-    # One kind, since #202: a bounded Prompt patch. A policy change is a configuration release.
-    "supported_candidates": ["prompt"],
-}
-TRUSTED_ROOT_SHA = hashlib.sha256(
-    json.dumps(
-        {
-            "profile": _PROFILE,
-            "rubric": REVIEW_RUBRIC_VERSION,
-            "reader_contract_version": READER_CONTRACT_VERSION,
-            "reader_contract_sha256": READER_CONTRACT_SHA256,
-            "evaluator": EVALUATOR_VERSION,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-).hexdigest()
-
-
-class DatasetSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    window: ClosedWindow
-    role: Literal["development", "validation"]
-    profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
-    observation_ref: str | None = None
-
-
-class DatasetManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    artifact_sha: str
-    dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
-    role: Literal["development", "validation"]
-    profile_id: str
-    learning_epoch: Literal["program_v7"]
-    learning_epoch_started_at_ms: int = Field(ge=0)
-    window: ClosedWindow
-    freeze_as_of_ms: int
-    settlement_grace_ms: int
-    reader_contract_version: str
-    agent_cohort: dict[str, str]
-    observation_ref: str | None = None
-    cases: tuple[DatasetCaseRef, ...]
-    seed_receipts: tuple[dict[str, Any], ...] = ()
-    counts: dict[str, Any]
-    hashes: dict[str, str]
-
-
-class DevelopmentCompileExport(BaseModel):
-    """Exact read-only corpus projection handed to the offline optimizer.
-
-    It carries the projection root and the epoch it was taken under, rather than leaving each caller to
-    recompute them: the export *is* the corpus receipt, and two callers deriving the same identity two ways
-    is how the two stopped agreeing before.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    dataset_payload: dict[str, Any]
-    episodes: tuple[dict[str, Any], ...] = Field(min_length=1)
-    episode_projection_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch_started_at_ms: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def _root_addresses_these_episodes(self) -> DevelopmentCompileExport:
-        if self.episode_projection_root_sha256 != _sha(list(self.episodes)):
-            raise ValueError("news_learning_compile_export_projection_root_mismatch")
-        return self
 
 
 class EvaluationRequest(BaseModel):
@@ -262,365 +161,25 @@ class CandidateEvaluator:
         # package's storage module; this class had 25 statements inlined, which is why splitting it three
         # ways (#202 §8) would otherwise have copied one violation into three files.
         self._repository = NewsRepository(conn)
-        self._trusted_root_sha = trusted_root_sha
         self._history = EvaluationReaderHistory(conn)
-
-    async def freeze_dataset(self, spec: DatasetSpec) -> DatasetManifest:
-        self._ledger.assert_active_stable()
-        if spec.learning_epoch != LEARNING_EPOCH:
-            raise ValueError("news_learning_epoch_mismatch")
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
-        if spec.window.from_ms < epoch_started_at_ms:
-            raise ValueError("news_learning_window_precedes_program_epoch")
-        freeze_as_of_ms = self._ledger.now_ms()
-        if spec.window.to_ms > freeze_as_of_ms - SETTLEMENT_GRACE_MS:
-            raise ValueError("news_learning_window_not_settled")
-        if spec.role == "validation":
-            if not spec.observation_ref:
-                raise ValueError("news_learning_validation_candidate_required")
-            candidate = self._candidate(spec.observation_ref)
-            self._validate_candidate_static(candidate)
-            self._persist_candidate(candidate)
-            registered_at_ms = max(
-                candidate.proposal_receipt.registered_at_ms,
-                self._candidate_registered_at(candidate.candidate_sha),
-            )
-            if spec.window.from_ms <= registered_at_ms:
-                raise ValueError("news_learning_holdout_precedes_candidate_registration")
-        elif spec.observation_ref is not None:
-            raise ValueError("news_learning_development_observation_ref_not_allowed")
-
-        cases = self._accepted_cases(
-            spec.window,
-            freeze_as_of_ms=freeze_as_of_ms,
-            epoch_started_at_ms=epoch_started_at_ms,
+        # The three lifecycles, composed rather than merged (#202 §8). Freezing a corpus, admitting a
+        # candidate and judging one are separate objects now; what is left in this class is the judging.
+        self._datasets = DevelopmentDatasetStore(
+            conn,
+            stable=stable,
+            history=self._history,
+            ledger=self._ledger,
+            principal=principal,
+            trusted_root_sha=trusted_root_sha,
         )
-        seed = self._seed_receipts(spec.window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
-        counts = self._dataset_counts(spec, cases)
-        payload = {
-            "dataset_version": DATASET_VERSION,
-            "role": spec.role,
-            "profile_id": spec.profile_id,
-            "learning_epoch": spec.learning_epoch,
-            "learning_epoch_started_at_ms": epoch_started_at_ms,
-            "window": spec.window.model_dump(mode="json"),
-            "freeze_as_of_ms": freeze_as_of_ms,
-            "settlement_grace_ms": SETTLEMENT_GRACE_MS,
-            "reader_contract_version": READER_CONTRACT_VERSION,
-            "agent_cohort": self._ledger.agent_cohort(),
-            "observation_ref": spec.observation_ref,
-            "cases": [case.model_dump(mode="json") for case in cases],
-            "seed_receipts": seed,
-            "counts": counts,
-            "hashes": {
-                "trusted_root_sha": self._trusted_root_sha,
-                "learning_epoch_sha": _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms}),
-                "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
-                "reader_contract_sha": READER_CONTRACT_SHA256,
-                "agent_bundle_sha": self._stable.bundle_sha,
-                "extraction_sha": _text_sha("news_learning_freeze_query_v1"),
-            },
-        }
-        artifact_sha = self._ledger.persist_artifact("dataset", payload)
-        return DatasetManifest(artifact_sha=artifact_sha, **payload)
-
-    def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
-        """Seal the sole read-only development export for the cold compiler."""
-
-        self._ledger.assert_active_stable()
-        dataset_payload = self._load_dataset_payload(dataset_sha)
-        dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
-        if dataset.role != "development":
-            raise ValueError("news_learning_compile_requires_development_dataset")
-        if dataset.agent_cohort != self._ledger.agent_cohort():
-            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
-
-        episodes = self._project_episodes(
-            sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)),
-            dataset.seed_receipts,
+        self._registry = CandidateRegistry(
+            conn,
+            datasets=self._datasets,
+            ledger=self._ledger,
+            stable=stable,
+            catalog=self._candidates,
         )
-        frozen_episodes = tuple(episodes)
-        return DevelopmentCompileExport(
-            dataset_sha=dataset_sha,
-            dataset_payload=dataset_payload,
-            episodes=frozen_episodes,
-            episode_projection_root_sha256=_sha(list(frozen_episodes)),
-            learning_epoch_started_at_ms=self._ledger.epoch_started_at_ms(),
-        )
-
-    def baseline_episodes(
-        self,
-        window: ClosedWindow,
-        *,
-        cohort: bool = True,
-        limit: int = 500,
-    ) -> tuple[dict[str, Any], ...]:
-        """Project accepted reviews in a window for the offline baseline. Freezes nothing, writes nothing.
-
-        ``cohort=True`` applies the release-plane eligibility for the exact active Program bundle — the
-        population a candidate would later be judged on. ``cohort=False`` drops it and takes every accepted
-        event review in the window, which is what a metric-wiring proof needs: the only labelled corpus this
-        project has was produced by an arm that has since been retired, and refusing to read it would mean the
-        baseline could never be checked against a known number.
-
-        Each episode carries the persisted ``DecisionResult`` projection so a caller can score history as it
-        happened instead of as today's ``decide()`` would replay it.  A final-action string is insufficient:
-        the same shared ruler also reports the rule and duplicate outcome that produced that action.
-        """
-
-        if limit <= 0:
-            raise ValueError("news_program_baseline_limit_invalid")
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms() if cohort else 0
-        cases = (
-            self._accepted_cases(window, freeze_as_of_ms=self._ledger.now_ms(), epoch_started_at_ms=epoch_started_at_ms)
-            if cohort
-            else self._baseline_cases(window)
-        )
-        cases = tuple(sorted(cases, key=lambda case: (case.opened_at_ms, case.case_id))[:limit])
-        if not cases:
-            return ()
-        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms, cohort=cohort)
-        return self._with_recorded_decisions(cases, self._project_episodes(cases, seed))
-
-    def _with_recorded_decisions(
-        self, cases: Sequence[DatasetCaseRef], episodes: Sequence[Mapping[str, Any]]
-    ) -> tuple[dict[str, Any], ...]:
-        """Attach the Event id and the persisted ``DecisionResult`` the ``recorded`` arm scores against."""
-
-        decisions = self._recorded_decisions([case.event_id for case in cases if case.event_id])
-        return tuple(
-            {**episode, "recorded_decision_result": decisions.get(str(episode.get("event_id") or ""))}
-            if episode.get("event_id")
-            else episode
-            for episode in self._with_event_ids(cases, episodes)
-        )
-
-    @staticmethod
-    def _with_event_ids(
-        cases: Sequence[DatasetCaseRef], episodes: Sequence[Mapping[str, Any]]
-    ) -> tuple[dict[str, Any], ...]:
-        by_case = {case.case_id: case for case in cases}
-        return tuple(
-            {**dict(episode), "event_id": by_case[str(episode["case_id"])].event_id or ""} for episode in episodes
-        )
-
-    def _recorded_decisions(self, event_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
-        """The persisted production decision, projected into the one shared ``DecisionResult`` contract."""
-
-        if not event_ids:
-            return {}
-        rows = self._repository.recorded_triage_decisions(event_ids)
-        decisions: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            trace = dict(row.get("trace") or {})
-            decisions[str(row["event_id"])] = {
-                "final": str(row["final_decision"] or ""),
-                "override_rule": str(row["override_rule"] or "") or None,
-                "throttled_by": str(row["throttled_by"] or "") or None,
-                "rule_baseline": str(row["rule_baseline_decision"] or ""),
-                "watchlist_hits": [str(value) for value in row.get("watchlist_hits") or ()],
-                "seen_similarity": trace.get("seen_similarity"),
-                # Production persists the matched Event rather than an unstable list offset.  The offset is
-                # not needed to score a recorded action, so the typed projection uses its declared sentinel.
-                "seen_against": -1,
-                "seen_scope": str(trace.get("seen_scope") or ""),
-            }
-        return decisions
-
-    def _baseline_cases(self, window: ClosedWindow) -> tuple[DatasetCaseRef, ...]:
-        """Every accepted event review in the window, with no cohort filter. Baseline-only."""
-
-        rows = self._repository.accepted_event_review_sources(
-            rubric_versions=REVIEW_RUBRIC_VERSIONS,
-            reader_contract_version=READER_CONTRACT_VERSION,
-            from_ms=window.from_ms,
-            to_ms=window.to_ms,
-        )
-        drafts: list[tuple[DatasetCaseRef, str, str]] = []
-        for row in rows:
-            snapshot = dict(row["evidence_snapshot"] or {})
-            selection = dict(row.get("selection") or {})
-            case_id = _sha(
-                {
-                    "subject_kind": "event",
-                    "event_id": row.get("event_id"),
-                    "external_snapshot_id": None,
-                    "evidence_sha256": row["evidence_sha256"],
-                    "review_id": row["review_id"],
-                }
-            )
-            novelty = dict(row.get("novelty") or {})
-            drafts.append(
-                (
-                    DatasetCaseRef(
-                        case_id=case_id,
-                        subject_kind="event",
-                        event_id=row.get("event_id"),
-                        evidence_version=row.get("evidence_version"),
-                        evidence_sha256=row["evidence_sha256"],
-                        review_id=row["review_id"],
-                        cluster_id=_fact_cluster(str((snapshot.get("focus_fact") or {}).get("text") or "")),
-                        stratum=str(selection.get("stratum") or "eventless_miss"),
-                        should_push=str(row.get("should_push") or "uncertain"),
-                        opened_at_ms=int(row["opened_at_ms"]),
-                        delivery_truth=(
-                            "observed_sent" if str(row.get("delivery_state") or "") == "sent" else "observed_not_sent"
-                        ),
-                    ),
-                    str(novelty.get("duplicate_of") or "")
-                    if str(novelty.get("judgment") or "") == "restatement"
-                    else "",
-                    _sha(
-                        {
-                            "url": (snapshot.get("card") or {}).get("leader_url"),
-                            "focus_fact_id": (snapshot.get("focus_fact") or {}).get("fact_id"),
-                        }
-                    ),
-                )
-            )
-        return tuple(_connected_fact_clusters(drafts))
-
-    def _project_episodes(
-        self,
-        cases: Sequence[DatasetCaseRef],
-        seed_receipts: Sequence[Mapping[str, Any]],
-    ) -> tuple[dict[str, Any], ...]:
-        """Replay the sent ledger forward over ordered cases and project each one for scoring.
-
-        The compiler export and the offline baseline both call this. Two implementations would let the number
-        an operator reads drift from the number GEPA maximizes, which is the whole reason #143 exists.
-        """
-
-        state = ArmState(deque(Receipt(**receipt) for receipt in seed_receipts))
-        pending: list[Receipt] = []
-        episodes: list[dict[str, Any]] = []
-        for case_ref in sorted(cases, key=lambda item: (item.opened_at_ms, item.case_id)):
-            ready = [receipt for receipt in pending if receipt.at_ms <= case_ref.opened_at_ms]
-            pending = [receipt for receipt in pending if receipt.at_ms > case_ref.opened_at_ms]
-            state.receipts.extend(sorted(ready, key=lambda item: (item.at_ms, item.event_id)))
-            state.expire(case_ref.opened_at_ms)
-            case = self._load_case(case_ref)
-            context = self._build_context(case, state)
-            review = dict(case["review"])
-            episodes.append(
-                {
-                    "case_id": case_ref.case_id,
-                    "cluster_id": case_ref.cluster_id,
-                    "stratum": case_ref.stratum,
-                    "context": context.model_dump(mode="json"),
-                    "policy_metric": self._policy_metric_projection(case, state, context=context),
-                    "accepted_review": {
-                        "review_id": case_ref.review_id,
-                        "should_push": review.get("should_push"),
-                        "dimensions": dict(review.get("dimensions") or {}),
-                        "novelty": dict(review.get("novelty") or {}),
-                        "first_bad_owner": review.get("first_bad_owner"),
-                        # The column is `submission.first_bad_owner or _derive_owner(submission)` and cannot
-                        # tell the two apart. The submission itself is persisted verbatim, so the payload —
-                        # not a new column — is what says whether a human actually blamed the Prompt (#199).
-                        "first_bad_owner_explicit": (dict(review.get("payload") or {}).get("first_bad_owner")),
-                        "evidence_refs": list(review.get("evidence_refs") or []),
-                        "expected": dict((dict(review.get("payload") or {}).get("expected")) or {}),
-                        "expected_correction": str(review.get("expected_correction") or ""),
-                        "note": str(review.get("note") or ""),
-                    },
-                    "production_judgment": case.get("production_judgment"),
-                }
-            )
-            judgment_payload = case.get("production_judgment")
-            receipt_at_ms = case.get("receipt_at_ms")
-            if case_ref.delivery_truth == "observed_sent" and judgment_payload and receipt_at_ms is not None:
-                verdict = ScoredJudgment.model_validate(judgment_payload).verdict
-                card = dict((case.get("snapshot") or {}).get("card") or {})
-                pending.append(
-                    Receipt(
-                        event_id=str(case_ref.event_id or case_ref.case_id),
-                        at_ms=int(receipt_at_ms),
-                        storyline_key=str(card.get("storyline_key") or "macro:general"),
-                        magnitude=verdict.magnitude,
-                        direction=verdict.direction,
-                        headline_zh=verdict.headline_zh,
-                        comparison_title=str(card.get("comparison_title") or ""),
-                        comparison_fingerprint=str(card.get("comparison_fingerprint") or ""),
-                        family=str(card.get("family") or "general"),
-                        event_type=verdict.event_type,
-                        grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
-                        assets=tuple(asset.symbol for asset in verdict.assets),
-                        canonical_assets=self._history.canonical_assets(
-                            tuple(str(value) for value in card.get("grounded_assets") or ())
-                        ),
-                    )
-                )
-        return tuple(episodes)
-
-    def _policy_metric_projection(
-        self,
-        case: Mapping[str, Any],
-        state: ArmState,
-        *,
-        context: TriageContext,
-        arm: ArmManifest | None = None,
-    ) -> dict[str, Any]:
-        """Everything the cold metric needs to run the exact production ``decide()``, and nothing else.
-
-        The optimizer scores the action the reader would have seen, not the model's intermediate ``decision``
-        field, so the compiler needs the Gate facts and the ordered sent ledger that ``decide()`` reads. None of
-        it is model-visible: it never reaches a rendered payload, and it carries no control state — operational
-        mute and pause are excluded on purpose, because a card muted for operational reasons must not teach the
-        Program that its editorial judgment was wrong.
-        """
-
-        event = dict((case.get("snapshot") or {}).get("card") or {})
-        policy_arm = self._stable if arm is None else arm
-        return {
-            "gate": {
-                "grounded_assets": [str(value) for value in event.get("grounded_assets") or ()],
-                "watchlist_symbols": sorted(str(value) for value in case.get("watchlist") or ()),
-                "admission": str(event.get("admission") or "candidate"),
-                # #154: the optimizer metric has to see what production `decide()` saw, or it is rewarded for
-                # an action production would not have taken.
-                "source_age_s": event.get("source_age_s"),
-            },
-            "storyline": {
-                "title": str(event.get("leader_title") or ""),
-                "family": str(event.get("family") or "general"),
-            },
-            "seen": [row.as_told_row() for row in self._history.build(case, state).recent_seen_rows],
-            "told": [
-                {
-                    "event_id": entry.event_id,
-                    "at_ms": entry.at_ms,
-                    "storyline_key": entry.storyline_key,
-                    "event_type": entry.event_type,
-                    "magnitude": entry.magnitude,
-                    "direction": entry.direction,
-                    "dir": entry.direction,
-                    "headline_zh": entry.headline_zh,
-                    "assets": list(entry.symbols),
-                }
-                for entry in context.told.entries
-            ],
-            # The policy frozen into the example. Production builds `DecidePolicy(**arm.policy)`; the metric
-            # used to import `DEFAULT_POLICY` and call itself a production-action metric regardless, so an
-            # operator changing `similarity_max` would have made every offline score describe a policy
-            # production never used.
-            #
-            # `policy_source` is the honest part. This is the *active* arm manifest, which is the arm that
-            # ran only for current-cohort episodes. `--all-cohorts` deliberately reaches retired cohorts
-            # whose own policy was never sealed, so replaying `decide()` over them applies today's rules to
-            # yesterday's corpus. That is a legitimate question and a different one, and the receipt has to
-            # say which was asked rather than let a verified hash imply the arm's own policy.
-            "policy_version": TRIAGE_POLICY_VERSION,
-            "policy_values": dict(policy_arm.policy),
-            "policy_source": "active_arm_manifest",
-            # The manifest already validated this against its own `policy`; reusing it keeps one convention.
-            "policy_sha256": policy_arm.policy_sha256,
-        }
-
-    def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:
-        """Return the ordered episodes from the sealed compiler export."""
-
-        return self.development_compile_export(dataset_sha).episodes
+        self._trusted_root_sha = trusted_root_sha
 
     async def evaluate(
         self,
@@ -636,9 +195,11 @@ class CandidateEvaluator:
         # model call. Re-read after execution as well, because a deployment can
         # legitimately change the active root while a long evaluation runs.
         self._ledger.assert_active_stable()
-        development = self._load_dataset(request.development_dataset_sha)
+        development = self._datasets.load_dataset(request.development_dataset_sha)
         validation = (
-            development if request.stage == "offline" else self._load_dataset(str(request.validation_dataset_sha))
+            development
+            if request.stage == "offline"
+            else self._datasets.load_dataset(str(request.validation_dataset_sha))
         )
         if development.role != "development" or (request.stage != "offline" and validation.role != "validation"):
             raise ValueError("news_learning_dataset_role_invalid")
@@ -650,11 +211,11 @@ class CandidateEvaluator:
             request.stage != "offline" and validation.reader_contract_version != READER_CONTRACT_VERSION
         ):
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
-        candidate = self._candidate(request.candidate_sha)
-        self._validate_candidate_static(candidate)
-        self._persist_candidate(candidate)
+        candidate = self._registry.load(request.candidate_sha)
+        self._registry.validate(candidate)
+        self._registry.persist(candidate)
         prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
-        if prior_stage and not self._has_passed_stage(candidate.candidate_sha, prior_stage):
+        if prior_stage and not self._registry.has_passed_stage(candidate.candidate_sha, prior_stage):
             raise ValueError(f"news_learning_prior_{prior_stage}_evidence_not_passed")
         if candidate.development_dataset_sha != development.artifact_sha:
             raise ValueError("news_learning_candidate_development_dataset_mismatch")
@@ -821,239 +382,6 @@ class CandidateEvaluator:
         )
         return EvaluationReport(report_sha=report_sha, **report_payload)
 
-    def _validate_candidate_static(self, candidate: CandidateManifest) -> None:
-        if self._stable.program_version != LEARNING_PROGRAM_VERSION:
-            raise ValueError("news_learning_program_v1_unsupported")
-        if candidate.parent_stable_sha != self._stable.bundle_sha:
-            raise ValueError("news_learning_candidate_parent_stable_mismatch")
-        if candidate.candidate_arm.program_version != LEARNING_PROGRAM_VERSION:
-            raise ValueError("news_learning_program_v1_unsupported")
-        stable = self._stable.model_dump(mode="json")
-        proposed = candidate.candidate_arm.model_dump(mode="json")
-        changed = {key for key in stable if stable[key] != proposed[key]}
-        allowed = {"program_sha256"}
-        if not changed or not changed <= allowed:
-            raise ValueError(f"news_learning_exact_one_variable_violation:{','.join(sorted(changed))}")
-        development = self._load_dataset(candidate.development_dataset_sha)
-        if development.role != "development":
-            raise ValueError("news_learning_proposal_requires_development_dataset")
-        receipt = candidate.proposal_receipt
-        if candidate.candidate_arm.program_sha256 == self._stable.program_sha256:
-            raise ValueError("news_learning_program_sha_unchanged")
-        if receipt.program_parent_sha256 != self._stable.program_sha256:
-            raise ValueError("news_learning_program_parent_mismatch")
-        if receipt.program_candidate_sha256 != candidate.candidate_arm.program_sha256:
-            raise ValueError("news_learning_program_candidate_mismatch")
-        # The write-set itself, re-applied. Until #202 this position held a `CompileRecordV1` carrying a
-        # sandbox launch receipt, a proxy call ledger, a three-party build attestation and a tariff — a
-        # proof about *where* two strings were produced. What actually has to hold is that these two
-        # strings, applied to the running stable Program, are the Program this arm will execute; a patch a
-        # person wrote and a patch GEPA wrote are then admissible on identical terms (§7).
-        prompt = self._prompt_candidate(candidate)
-        if prompt.parent_program_sha256 != self._stable.program_sha256:
-            raise ValueError("news_learning_prompt_candidate_parent_mismatch")
-        if prompt.development_dataset_sha256 != candidate.development_dataset_sha:
-            raise ValueError("news_learning_prompt_candidate_dataset_mismatch")
-        if prompt.target_runtime_manifest_sha256 != self._stable.runtime_model_bindings_sha256:
-            raise ValueError("news_learning_prompt_candidate_runtime_manifest_mismatch")
-        parent_artifact = load_stable_program_artifact()
-        rebuilt = apply_program_patch(parent_artifact, prompt.patch.applied_to(parent_artifact))
-        if rebuilt.program_sha256 != candidate.candidate_arm.program_sha256:
-            raise ValueError("news_learning_prompt_candidate_program_identity_mismatch")
-        episodes = list(self.development_compile_export(candidate.development_dataset_sha).episodes)
-        plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
-        # Not the count: the episodes themselves. `development_compile_export` re-projects them from live
-        # reviews and recorded decisions, so a review edited between registration and evaluation leaves the
-        # dataset SHA and the case count identical and the corpus different — and the candidate would then
-        # be judged against evidence nobody generated it from.
-        if receipt.development_episode_projection_root_sha256 != _sha(episodes):
-            raise ValueError("news_learning_candidate_corpus_mismatch")
-        # A GEPA candidate names the projection it optimized on; an external proposal names none, and is
-        # bound to whatever registration re-projected. Disagreement is the one case that must fail.
-        declared_root = str(prompt.objective_summary.get("episode_projection_root_sha256") or "")
-        if declared_root and declared_root != receipt.development_episode_projection_root_sha256:
-            raise ValueError("news_learning_candidate_corpus_mismatch")
-        # The Objective Plan, rebuilt from the same frozen corpus. A candidate that declares clusters the
-        # plan does not call targets was optimized against something else.
-        if set(receipt.failure_cluster_ids) != set(plan.target_failure_cluster_ids):
-            unknown = ",".join(sorted(set(receipt.failure_cluster_ids) ^ set(plan.target_failure_cluster_ids)))
-            raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
-        if tuple(candidate.target_dimensions) != plan.target_dimensions:
-            raise ValueError("news_learning_proposal_target_dimensions_unverified")
-        # The split roots, not the split's shape: `readiness`, the optimization and this re-projection must
-        # all name the same train and development-selection halves, or the winner was picked on a different
-        # corpus than the one this gate is about to judge it against.
-        declared_split = prompt.objective_summary.get("split")
-        if declared_split and declared_split != plan.split:
-            raise ValueError("news_learning_proposal_split_roots_unverified")
-        if candidate.development_dataset_sha != candidate.proposal_receipt.development_dataset_sha:
-            raise ValueError("news_learning_proposal_dataset_mismatch")
-        if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):
-            raise ValueError("news_learning_target_dimensions_mismatch")
-        self._verify_registration_receipt(candidate.proposal_receipt)
-
-    def _accepted_cases(
-        self,
-        window: ClosedWindow,
-        *,
-        freeze_as_of_ms: int,
-        epoch_started_at_ms: int,
-    ) -> tuple[DatasetCaseRef, ...]:
-        rows = self._repository.accepted_event_reviews_in_window(
-            epoch_started_at_ms=epoch_started_at_ms,
-            freeze_as_of_ms=freeze_as_of_ms,
-            rubric_versions=REVIEW_RUBRIC_VERSIONS,
-            reader_contract_version=READER_CONTRACT_VERSION,
-            from_ms=window.from_ms,
-            to_ms=window.to_ms,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-            policy_version=TRIAGE_POLICY_VERSION,
-            bundle_sha=self._stable.bundle_sha,
-        )
-        external = self._repository.accepted_external_miss_reviews_in_window(
-            epoch_started_at_ms=epoch_started_at_ms,
-            freeze_as_of_ms=freeze_as_of_ms,
-            rubric_versions=REVIEW_RUBRIC_VERSIONS,
-            reader_contract_version=READER_CONTRACT_VERSION,
-            from_ms=window.from_ms,
-            to_ms=window.to_ms,
-        )
-        drafts: list[tuple[DatasetCaseRef, str, str]] = []
-        for row in [*rows, *external]:
-            subject_kind = str(row["subject_kind"])
-            snapshot = dict(row["evidence_snapshot"] or {})
-            text = (
-                str((snapshot.get("focus_fact") or {}).get("text") or "")
-                if subject_kind == "event"
-                else str(snapshot.get("title") or "")
-            )
-            cluster_id = _fact_cluster(text)
-            selection = dict(row.get("selection") or {})
-            case_id = _sha(
-                {
-                    "subject_kind": subject_kind,
-                    "event_id": row.get("event_id"),
-                    "external_snapshot_id": row.get("external_snapshot_id"),
-                    "evidence_sha256": row["evidence_sha256"],
-                    "review_id": row["review_id"],
-                }
-            )
-            case = DatasetCaseRef(
-                case_id=case_id,
-                subject_kind=subject_kind,
-                event_id=row.get("event_id"),
-                evidence_version=row.get("evidence_version"),
-                external_snapshot_id=row.get("external_snapshot_id"),
-                evidence_sha256=row["evidence_sha256"],
-                review_id=row["review_id"],
-                cluster_id=cluster_id,
-                stratum=str(selection.get("stratum") or "eventless_miss"),
-                should_push=str(row.get("should_push") or "uncertain"),
-                opened_at_ms=int(row["opened_at_ms"]),
-                delivery_truth=(
-                    "observed_not_sent"
-                    if subject_kind == "external_miss"
-                    else "observed_sent"
-                    if str(row.get("delivery_state") or "") == "sent"
-                    else "observed_not_sent"
-                ),
-            )
-            novelty = dict(row.get("novelty") or {})
-            duplicate_of = (
-                str(novelty.get("duplicate_of") or "") if str(novelty.get("judgment") or "") == "restatement" else ""
-            )
-            if subject_kind == "event":
-                source_identity = _sha(
-                    {
-                        "url": (snapshot.get("card") or {}).get("leader_url"),
-                        "focus_fact_id": (snapshot.get("focus_fact") or {}).get("fact_id"),
-                    }
-                )
-            else:
-                source_identity = _sha({"url": snapshot.get("source_url"), "title": snapshot.get("title")})
-            drafts.append((case, duplicate_of, source_identity))
-        cases = _connected_fact_clusters(drafts)
-        cases.sort(key=lambda case: (case.opened_at_ms, case.case_id))
-        return tuple(cases)
-
-    def _dataset_counts(self, spec: DatasetSpec, cases: Sequence[DatasetCaseRef]) -> dict[str, Any]:
-        reviews = self._ledger.reviews_by_id([case.review_id for case in cases])
-        boundary: set[str] = set()
-        retention: set[str] = set()
-        negative: set[str] = set()
-        safety: set[str] = set()
-        strata: set[str] = set()
-        days: set[int] = set()
-        for case in cases:
-            review = reviews.get(case.review_id, {})
-            dimensions = dict(review.get("dimensions") or {})
-            is_boundary = (
-                case.should_push in {"must_push", "must_hold"}
-                or "fail" in dimensions.values()
-                or bool(review.get("expected_correction"))
-            )
-            (boundary if is_boundary else retention).add(case.cluster_id)
-            if (
-                case.should_push in {"should_hold", "must_hold"}
-                or (review.get("novelty") or {}).get("judgment") == "restatement"
-            ):
-                negative.add(case.cluster_id)
-            if case.should_push in {"must_push", "must_hold"} or dimensions.get("factual_fidelity") == "fail":
-                safety.add(case.cluster_id)
-            strata.add(case.stratum)
-            days.add(case.opened_at_ms // 86_400_000)
-        # A release cohort is the whole runtime bundle. Mixing model bindings or retrieval identity into a
-        # Program/policy cohort would score a candidate against evidence produced by a different executable arm.
-        eligible = self._repository.eligible_stable_arm_event_count(
-            from_ms=spec.window.from_ms,
-            to_ms=spec.window.to_ms,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-            policy_version=TRIAGE_POLICY_VERSION,
-            bundle_sha=self._stable.bundle_sha,
-        )
-        return {
-            "case_n": len(cases),
-            "independent_cluster_n": len({case.cluster_id for case in cases}),
-            "boundary_cluster_n": len(boundary),
-            "retention_cluster_n": len(retention),
-            "negative_cluster_n": len(negative),
-            "safety_cluster_n": len(safety),
-            "natural_day_n": len(days),
-            "stratum_n": len(strata),
-            "strata": sorted(strata),
-            "eligible_event_n": int((eligible or {}).get("n") or 0),
-            "eligibility": {
-                "unit": "agent_bundle_sha",
-                "bundle_sha": self._stable.bundle_sha,
-                "program_sha256": self._stable.program_sha256,
-                "policy_version": TRIAGE_POLICY_VERSION,
-                "rubric_versions": list(REVIEW_RUBRIC_VERSIONS),
-            },
-            "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
-        }
-
-    def _seed_receipts(
-        self, from_ms: int, *, epoch_started_at_ms: int, cohort: bool = True
-    ) -> tuple[dict[str, Any], ...]:
-        """The 48 h receipt source the first cases replay against.
-
-        `cohort=False` drops the arm filter for the same reason `_baseline_cases` does. The ledger is what
-        `decide()` reads for the restatement drop and the similarity throttle; scoping it to the current arm
-        while the corpus is not would hand the earliest cases an empty ledger and bias every
-        `--action-source policy` score toward push, silently.
-        """
-
-        return self._history.seed_receipts(
-            from_ms=from_ms,
-            epoch_started_at_ms=epoch_started_at_ms,
-            cohort=cohort,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-            bundle_sha=self._stable.bundle_sha,
-        )
-
     async def _run_sequential(
         self,
         *,
@@ -1070,7 +398,7 @@ class CandidateEvaluator:
         review_case_ids = self._review_case_ids(dataset, candidate=candidate)
         observations: list[dict[str, Any]] = []
         for case_ref in dataset.cases:
-            case = self._load_case(case_ref)
+            case = self._datasets.load_case(case_ref)
             case_outputs: dict[str, dict[str, Any]] = {}
             order: list[ArmName] = ["stable", "candidate"]
             if int(case_ref.case_id[:2], 16) % 2:
@@ -1083,7 +411,7 @@ class CandidateEvaluator:
                 # A hidden holdout must call the same SemanticJudge separately
                 # for each arm because their simulated reader ledgers can
                 # diverge and therefore change the next model input.
-                context = self._build_context(case, state)
+                context = self._datasets.build_context(case, state)
                 first = await self._invoke_and_record(
                     run_sha=run_sha,
                     case_id=case_ref.case_id,
@@ -1112,7 +440,7 @@ class CandidateEvaluator:
                     if not case_outputs.get(arm_name, {}).get("scored_judgment"):
                         continue
                     state = states[arm_name]
-                    context = self._build_context(case, state)
+                    context = self._datasets.build_context(case, state)
                     trials = [
                         await self._invoke_and_record(
                             run_sha=run_sha,
@@ -1151,7 +479,7 @@ class CandidateEvaluator:
                                 trial_observation["scored_judgment"],
                                 state,
                                 arms[arm_name],
-                                self._build_context(case, state),
+                                self._datasets.build_context(case, state),
                             )
                             trial_result.update(
                                 delivered=bool(replayed.get("delivered")),
@@ -1331,12 +659,12 @@ class CandidateEvaluator:
                 "external_snapshot_id": None,
                 "evidence_sha256": row["evidence_sha256"],
                 "review_id": None,
-                "cluster_id": _fact_cluster(str(focus.get("text") or case_id)),
+                "cluster_id": _dataset_fact_cluster(str(focus.get("text") or case_id)),
                 "stratum": "shadow_distribution",
                 "opened_at_ms": opened_at_ms,
             }
             case = {"snapshot": snapshot, "opened_at_ms": opened_at_ms}
-            context = self._build_context(case, state)
+            context = self._datasets.build_context(case, state)
             program_observation = await self._invoke_and_record(
                 run_sha=run_sha,
                 case_id=case_id,
@@ -1465,7 +793,7 @@ class CandidateEvaluator:
                         "external_snapshot_id": None,
                         "evidence_sha256": row.get("evidence_sha256") or "0" * 64,
                         "review_id": None,
-                        "cluster_id": _fact_cluster(str(focus.get("text") or case_id)),
+                        "cluster_id": _dataset_fact_cluster(str(focus.get("text") or case_id)),
                         "stratum": f"canary_{arm}",
                         "opened_at_ms": int(row["opened_at_ms"]),
                     },
@@ -1511,22 +839,6 @@ class CandidateEvaluator:
         }
         return observations, dimensions
 
-    def _build_context(self, case: Mapping[str, Any], state: ArmState) -> TriageContext:
-        snapshot = case["snapshot"]
-        event = dict(snapshot.get("card") or {})
-        focus = dict(snapshot.get("focus_fact") or {})
-        event["focus_fact_id"] = focus.get("fact_id")
-        event["leader_title"] = focus.get("text") or event.get("leader_title")
-        event["leader_description"] = focus.get("context") or event.get("leader_description")
-        told_rows = [row.as_told_row() for row in self._history.build(case, state).told_source_rows]
-        return TriageContext.from_card(
-            event,
-            watchlist=tuple(str(value) for value in case.get("watchlist") or ()),
-            told_rows=told_rows,
-            now_ms=int(case["opened_at_ms"]),
-            queue_lag_ms=0,
-        )
-
     def _apply_policy(
         self,
         case: Mapping[str, Any],
@@ -1554,7 +866,7 @@ class CandidateEvaluator:
         )
         decision = production_decision(
             judgment,
-            self._policy_metric_projection(case, state, context=context, arm=arm),
+            self._datasets._policy_metric_projection(case, state, context=context, arm=arm),
         )
         delivered = decision.final in {"push", "escalate"}
         return {
@@ -1877,7 +1189,7 @@ class CandidateEvaluator:
                 blockers.append("development_safety_empty")
         else:
             prior = "holdout" if request.stage == "shadow" else "shadow"
-            if not self._has_passed_stage(candidate.candidate_sha, prior):
+            if not self._registry.has_passed_stage(candidate.candidate_sha, prior):
                 blockers.append(f"prior_{prior}_evidence_not_passed")
         if execution_errors:
             blockers.extend(execution_errors)
@@ -2251,68 +1563,6 @@ class CandidateEvaluator:
             "candidate_peak_per_hour": peaks["candidate"],
         }
 
-    def _load_case(self, case: DatasetCaseRef) -> dict[str, Any]:
-        review = self._repository.review(case.review_id)
-        if review is None:
-            raise ValueError("news_learning_review_missing")
-        if case.subject_kind == "event":
-            row = self._repository.review_task_source(
-                event_id=str(case.event_id), evidence_version=int(case.evidence_version or 0)
-            )
-            if row is None or row["evidence_sha256"] != case.evidence_sha256:
-                raise ValueError("news_learning_evidence_changed")
-            production_judgment: dict[str, Any] | None = None
-            if row.get("verdict") is not None and row.get("editorial") is not None:
-                scored = ScoredJudgment.issue(
-                    verdict=TriageVerdict.model_validate(row["verdict"]),
-                    editorial=EditorialEnvelope.model_validate(row["editorial"]),
-                )
-                if str(row.get("scored_judgment_sha256") or "") != scored.scored_judgment_sha256:
-                    raise ValueError("news_learning_scored_judgment_identity_mismatch")
-                production_judgment = scored.model_dump(mode="json")
-            return {
-                "snapshot": dict(row["evidence_snapshot"] or {}),
-                "opened_at_ms": int(row["opened_at_ms"]),
-                "receipt_at_ms": int(row["settled_at_ms"]) if row.get("settled_at_ms") is not None else None,
-                "production_judgment": production_judgment,
-                "review": dict(review),
-                "watchlist": list((row.get("trace") or {}).get("watchlist") or []),
-            }
-        row = self._repository.external_miss_snapshot(str(case.external_snapshot_id))
-        if row is None or row["evidence_sha256"] != case.evidence_sha256:
-            raise ValueError("news_learning_external_evidence_changed")
-        snapshot = dict(row["snapshot"] or {})
-        synthetic = {
-            "schema_version": "news_event_evidence_v2",
-            "focus_fact": {"fact_id": case.case_id, "text": snapshot["title"], "context": snapshot.get("body", "")},
-            "card": {
-                "event_id": case.case_id,
-                "evidence_version": 0,
-                "evidence_sha256": case.evidence_sha256,
-                "focus_fact_id": case.case_id,
-                "leader_title": snapshot["title"],
-                "leader_description": snapshot.get("body", ""),
-                "leader_url": snapshot["source_url"],
-                "reporting_origin": snapshot.get("provenance", "operator"),
-                "family": "general",
-                "admission": "external_miss",
-                "queue_priority": "normal",
-                "asset_class": "none",
-                "grounded_assets": [],
-                "storyline_key": "macro:general",
-                "opened_at_ms": case.opened_at_ms,
-                "member_count": 1,
-            },
-        }
-        return {
-            "snapshot": synthetic,
-            "opened_at_ms": case.opened_at_ms,
-            "receipt_at_ms": None,
-            "production_judgment": None,
-            "review": dict(review),
-            "watchlist": [],
-        }
-
     def _persist_run_cases(
         self,
         run_sha: str,
@@ -2357,116 +1607,6 @@ class CandidateEvaluator:
             }
             for row in rows
         ]
-
-    def _persist_candidate(self, candidate: CandidateManifest) -> None:
-        self._verify_registration_receipt(candidate.proposal_receipt)
-        proposal = candidate.proposal_receipt.model_dump(mode="json")
-        proposal_sha = self._ledger.persist_artifact("proposal", proposal, parent_sha=candidate.development_dataset_sha)
-        payload = {
-            "candidate_sha": candidate.candidate_sha,
-            "candidate_bundle_sha": candidate.candidate_arm.bundle_sha,
-            "proposal_sha": proposal_sha,
-            "manifest": candidate.model_dump(mode="json"),
-            "exact_diff": _arm_exact_diff(
-                self._stable,
-                candidate.candidate_arm,
-                proposal=candidate.proposal_receipt,
-            ),
-        }
-        self._ledger.persist_artifact("candidate", payload, parent_sha=candidate.parent_stable_sha)
-
-    def _verify_registration_receipt(self, receipt: ProposalReceipt) -> None:
-        row = self._repository.learning_artifact(receipt.registration_receipt_sha)
-        if row is None or str(row["kind"]) != "candidate_registration":
-            raise ValueError("news_learning_candidate_registration_missing")
-        payload = dict(row["payload"] or {})
-        if payload != receipt.registration_payload:
-            raise ValueError("news_learning_candidate_registration_mismatch")
-        if _sha({"kind": "candidate_registration", "payload": payload}) != receipt.registration_receipt_sha:
-            raise ValueError("news_learning_candidate_registration_hash_mismatch")
-
-    def _prompt_candidate(self, candidate: CandidateManifest) -> PromptCandidateV1:
-        """Load the typed write-set this candidate names, and re-verify it against the candidate.
-
-        Stored under its own hash, so a byte changed in the payload either stops the document validating
-        or stops it answering to the key the receipt points at. That is the whole provenance requirement
-        now: the document is the two instructions, and what makes them admissible is what registration and
-        evaluation check about them — not the process that emitted them.
-        """
-
-        receipt = candidate.proposal_receipt
-        rows = self._repository.learning_artifacts_of_kind("prompt_candidate", receipt.prompt_candidate_sha256)
-        if not rows:
-            raise ValueError("news_learning_prompt_candidate_missing")
-        row = rows[0]
-        payload = dict(row["payload"] or {})
-        if str(row.get("parent_sha") or "") != candidate.development_dataset_sha:
-            raise ValueError("news_learning_prompt_candidate_parent_mismatch")
-        try:
-            prompt = PromptCandidateV1.model_validate(payload)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("news_learning_prompt_candidate_invalid") from exc
-        if prompt.candidate_sha256 != str(row["artifact_sha"]):
-            raise ValueError("news_learning_prompt_candidate_identity_mismatch")
-        if prompt.model_dump(mode="json") != payload:
-            raise ValueError("news_learning_prompt_candidate_noncanonical")
-        return prompt
-
-    def _candidate(self, candidate_sha: str) -> CandidateManifest:
-        candidate = self._candidates.get(candidate_sha)
-        if candidate is not None:
-            return candidate
-        for payload in self._repository.registered_candidate_payloads():
-            parsed = CandidateManifest.model_validate(payload.get("manifest") or payload)
-            if parsed.candidate_sha == candidate_sha:
-                self._candidates[candidate_sha] = parsed
-                return parsed
-        raise ValueError("news_learning_candidate_not_found")
-
-    def _candidate_registered_at(self, candidate_sha: str) -> int:
-        registered_at_ms = self._repository.candidate_registered_at_ms(candidate_sha)
-        if registered_at_ms is None:
-            raise ValueError("news_learning_candidate_registration_missing")
-        return registered_at_ms
-
-    def _load_dataset_payload(self, artifact_sha: str) -> dict[str, Any]:
-        row = self._repository.learning_artifact(artifact_sha, kind="dataset")
-        if row is None:
-            raise ValueError("news_learning_dataset_not_found")
-        payload = dict(row["payload"] or {})
-        if _sha({"kind": "dataset", "payload": payload}) != artifact_sha:
-            raise ValueError("news_learning_dataset_artifact_hash_mismatch")
-        return payload
-
-    def _validate_dataset_payload(self, artifact_sha: str, payload: Mapping[str, Any]) -> DatasetManifest:
-        exact_payload = dict(payload)
-        if exact_payload.get("learning_epoch") != LEARNING_EPOCH:
-            raise ValueError("news_learning_epoch_mismatch")
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
-        if exact_payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
-            raise ValueError("news_learning_epoch_deployment_mismatch")
-        hashes = dict(exact_payload.get("hashes") or {})
-        expected_epoch_sha = _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms})
-        if hashes.get("learning_epoch_sha") != expected_epoch_sha:
-            raise ValueError("news_learning_epoch_hash_mismatch")
-        if exact_payload.get("profile_id") != LEARNING_PROFILE_ID:
-            raise ValueError("news_learning_profile_mismatch")
-        expected_hashes = {
-            "trusted_root_sha": self._trusted_root_sha,
-            "learning_epoch_sha": expected_epoch_sha,
-            "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
-            "reader_contract_sha": READER_CONTRACT_SHA256,
-            "agent_bundle_sha": self._stable.bundle_sha,
-            "extraction_sha": _text_sha("news_learning_freeze_query_v1"),
-        }
-        if hashes != expected_hashes:
-            raise ValueError("news_learning_dataset_contract_hash_mismatch")
-        if exact_payload.get("reader_contract_version") != READER_CONTRACT_VERSION:
-            raise ValueError("news_learning_dataset_reader_contract_mismatch")
-        return DatasetManifest(artifact_sha=artifact_sha, **exact_payload)
-
-    def _load_dataset(self, artifact_sha: str) -> DatasetManifest:
-        return self._validate_dataset_payload(artifact_sha, self._load_dataset_payload(artifact_sha))
 
     def _load_production_observations(
         self,
@@ -2574,9 +1714,6 @@ class CandidateEvaluator:
             raise ValueError("news_learning_production_observation_dimensions_missing")
         return str(row["artifact_sha"]), dict(dimensions)
 
-    def _has_passed_stage(self, candidate_sha: str, stage: str) -> bool:
-        return self._repository.candidate_passed_stage(candidate_sha, stage)
-
     @staticmethod
     def _needs_stability_trials(case_id: str, outputs: Mapping[str, Mapping[str, Any]]) -> bool:
         stable = outputs.get("stable") or {}
@@ -2667,15 +1804,6 @@ def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:
     lower = means[max(0, math.floor(alpha * len(means)))]
     upper = means[min(len(means) - 1, math.ceil((1 - alpha) * len(means)) - 1)]
     return {"lower": lower, "upper": upper}
-
-
-def _fact_cluster(text: str) -> str:
-    normalized = "".join(str(text or "").lower().split())
-    return _text_sha(normalized)
-
-
-def _text_sha(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _sha(value: Any) -> str:

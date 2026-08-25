@@ -123,9 +123,11 @@ def test_workers_root_owns_lifecycle_but_not_capability_construction() -> None:
 # only test here that measures what a *process* loads rather than what a file names, because that is the
 # claim: an import three hops down a wiring chain reaches the optimizer exactly as surely as a direct one.
 FORBIDDEN_IN_WORKERS = (
+    "tracefold.news.learning.dataset",
+    "tracefold.news.release.candidate",
     "tracefold.news.learning.optimizer",
     "tracefold.news.learning.baseline",
-    "tracefold.news.learning.evaluator",
+    "tracefold.news.learning.evaluate",
     "tracefold.news.learning.judge",
     "tracefold.news.learning.replay",
     "tracefold.news.review.drafter",
@@ -202,13 +204,17 @@ def test_the_online_worker_can_never_reach_the_offline_learning_plane() -> None:
     """
 
     reachable = _worker_import_closure()
-    learning = {m for m in reachable if m.startswith(("tracefold.news.learning", "tracefold.news.review"))}
+    learning = {
+        m
+        for m in reachable
+        if m.startswith(("tracefold.news.learning", "tracefold.news.review", "tracefold.news.release"))
+    }
 
     assert not (learning & set(FORBIDDEN_IN_WORKERS)), sorted(learning & set(FORBIDDEN_IN_WORKERS))
     # Named, not merely bounded: a new learning module reaching the online graph is a decision someone
     # makes here rather than one that arrives with an unrelated import.
     assert learning == {
-        "tracefold.news.learning.canary",
+        "tracefold.news.release.canary",
         "tracefold.news.learning.contracts",
     }, sorted(learning)
 
@@ -225,7 +231,7 @@ def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> N
         "import tracefold.app.workers.root\n"
         "from tracefold.app.workers import wiring\n"
         "print(json.dumps(sorted(m for m in sys.modules "
-        "if m.startswith(('tracefold.news.learning', 'tracefold.news.review')))))\n"
+        "if m.startswith(('tracefold.news.learning', 'tracefold.news.review', 'tracefold.news.release')))))\n"
     )
     completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
     assert completed.returncode == 0, completed.stderr[-2000:]
