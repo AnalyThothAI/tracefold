@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,6 +117,52 @@ def test_workers_root_owns_lifecycle_but_not_capability_construction() -> None:
     )
     imports = _import_targets(root, ast.parse(root.read_text(encoding="utf-8"), filename=str(root)))
     assert sorted(imported for imported in imports if imported.startswith(forbidden)) == []
+
+
+# #202 §12. The online plane may observe, review and monitor a canary; it may not optimize. This is the
+# only test here that measures what a *process* loads rather than what a file names, because that is the
+# claim: an import three hops down a wiring chain reaches the optimizer exactly as surely as a direct one.
+FORBIDDEN_IN_WORKERS = (
+    "tracefold.news.learning.optimizer",
+    "tracefold.news.learning.baseline",
+    "tracefold.news.learning.evaluator",
+    "tracefold.news.learning.judge",
+    "tracefold.news.learning.replay",
+    "tracefold.news.review.drafter",
+    "tracefold.news.learning.experiment",
+)
+
+
+def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> None:
+    """A fresh interpreter, because `sys.modules` in a test session has already loaded half the repo.
+
+    What the online route legitimately loads is `dspy` — it *runs* a DSPy Program, and dspy's own package
+    pulls `dspy.teleprompt`, and that pulls `gepa`. That is the optimizer library, not this repository's
+    optimizer, and nothing in the worker can start a run with it. What must stay out is ours: the offline
+    entry point, the baseline harness, the release evaluator, the semantic judge, recording replay, the
+    review drafter and the research package. `learning.canary` and `learning.contracts` are in, and belong
+    in — arming, tripping and validating an image-carried candidate is online release control.
+    """
+
+    probe = (
+        "import json, sys\n"
+        "import tracefold.app.workers.root\n"
+        "from tracefold.app.workers import wiring\n"
+        "print(json.dumps(sorted(m for m in sys.modules "
+        "if m.startswith(('tracefold.news.learning', 'tracefold.news.review')))))\n"
+    )
+    completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    loaded = set(json.loads(completed.stdout.strip().splitlines()[-1]))
+
+    assert not (loaded & set(FORBIDDEN_IN_WORKERS)), sorted(loaded & set(FORBIDDEN_IN_WORKERS))
+    # Named, not merely bounded: a new learning module reaching the online graph is a decision someone
+    # makes here rather than one that arrives with an unrelated import.
+    assert loaded == {
+        "tracefold.news.learning",
+        "tracefold.news.learning.canary",
+        "tracefold.news.learning.contracts",
+    }
 
 
 BUSINESS_WRITE_SQL_RE = re.compile(
