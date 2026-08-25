@@ -19,7 +19,7 @@ from tracefold.news.learning.compiler.proxy import (
     CompilerProxyTariff,
     TrustedCompilerModelProxy,
 )
-from tracefold.news.learning.compiler.security import CompilerEndpointIdentity, CompilerRoleBindingV3
+from tracefold.news.learning.compiler.security import CompilerRole, ModelExecutionIdentity
 from tracefold.news.learning.judge import CardEquivalenceJudge
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.dspy_adapter import (
@@ -34,7 +34,7 @@ class _ExactFakeLM:
     cache = False
     num_retries = 0
 
-    def __init__(self, identity: CompilerEndpointIdentity, *, cost_microusd: int) -> None:
+    def __init__(self, identity: ModelExecutionIdentity, *, cost_microusd: int) -> None:
         self.tracefold_compiler_endpoint_identity = identity
         self.cost_microusd = cost_microusd
         self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
@@ -69,45 +69,37 @@ def _short_socket_path() -> Iterator[Path]:
         yield Path(root) / "p.sock"
 
 
+def _identity(
+    role: CompilerRole,
+    *,
+    max_output_tokens: int | None = None,
+    model_kwargs: dict[str, Any] | None = None,
+) -> ModelExecutionIdentity:
+    """One role's complete secret-free execution contract, at the code-owned ceilings."""
+
+    defaults: dict[CompilerRole, tuple[str, str, int, float, float]] = {
+        "task": ("provider/task-model", "https://task.internal.example/v1", 512, 20.0, 0.0),
+        "reflection": ("provider/reflection-model", "https://reflection.internal.example/v1", 32_000, 300.0, 1.0),
+        "metric_judge": ("provider/judge-model", "https://judge.internal.example/v1", 4_096, 120.0, 0.0),
+    }
+    model, api_base, tokens, timeout_seconds, temperature = defaults[role]
+    return ModelExecutionIdentity.issue(
+        role=role,
+        model=model,
+        api_base=api_base,
+        max_output_tokens=tokens if max_output_tokens is None else max_output_tokens,
+        timeout_seconds=timeout_seconds,
+        temperature=temperature,
+        model_kwargs=model_kwargs or {},
+    )
+
+
 def _grant(*, max_calls: int = 4, max_cost: int = 100, max_request_bytes: int = 1_024) -> CompilerModelProxyGrant:
     tariff = _tariff()
-    task_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/task-model",
-        api_base="https://task.internal.example/v1",
-    )
-    reflection_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/reflection-model",
-        api_base="https://reflection.internal.example/v1",
-    )
-    judge_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/judge-model",
-        api_base="https://judge.internal.example/v1",
-    )
     return CompilerModelProxyGrant.issue(
-        task=CompilerRoleBindingV3.issue(
-            role="task",
-            endpoint=task_endpoint,
-            max_output_tokens=512,
-            timeout_seconds=20,
-            temperature=0,
-            model_kwargs={},
-        ),
-        reflection=CompilerRoleBindingV3.issue(
-            role="reflection",
-            endpoint=reflection_endpoint,
-            max_output_tokens=32_000,
-            timeout_seconds=300,
-            temperature=1,
-            model_kwargs={},
-        ),
-        metric_judge=CompilerRoleBindingV3.issue(
-            role="metric_judge",
-            endpoint=judge_endpoint,
-            max_output_tokens=4_096,
-            timeout_seconds=120,
-            temperature=0,
-            model_kwargs={},
-        ),
+        task=_identity("task"),
+        reflection=_identity("reflection"),
+        metric_judge=_identity("metric_judge"),
         max_task_model_calls=max_calls,
         max_reflection_model_calls=max_calls,
         max_metric_judge_model_calls=max_calls,
@@ -146,39 +138,9 @@ def test_reflection_endpoint_accepts_the_code_owned_32k_output_ceiling() -> None
 
 
 def test_proxy_accounts_task_reflection_and_metric_judge_as_three_sealed_roles() -> None:
-    task_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/task-model", api_base="https://task.internal.example/v1"
-    )
-    reflection_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/reflection-model", api_base="https://reflection.internal.example/v1"
-    )
-    judge_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/judge-model", api_base="https://judge.internal.example/v1"
-    )
-    task = CompilerRoleBindingV3.issue(
-        role="task",
-        endpoint=task_endpoint,
-        max_output_tokens=1_200,
-        timeout_seconds=20,
-        temperature=0,
-        model_kwargs={},
-    )
-    reflection = CompilerRoleBindingV3.issue(
-        role="reflection",
-        endpoint=reflection_endpoint,
-        max_output_tokens=32_000,
-        timeout_seconds=300,
-        temperature=1,
-        model_kwargs={},
-    )
-    metric_judge = CompilerRoleBindingV3.issue(
-        role="metric_judge",
-        endpoint=judge_endpoint,
-        max_output_tokens=4_096,
-        timeout_seconds=120,
-        temperature=0,
-        model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
-    )
+    task = _identity("task", max_output_tokens=1_200)
+    reflection = _identity("reflection")
+    metric_judge = _identity("metric_judge", model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}})
     grant = CompilerModelProxyGrant.issue(
         task=task,
         reflection=reflection,
@@ -194,9 +156,9 @@ def test_proxy_accounts_task_reflection_and_metric_judge_as_three_sealed_roles()
     )
     proxy = TrustedCompilerModelProxy(
         grant=grant,
-        task_lm=_ExactFakeLM(task_endpoint, cost_microusd=7),
-        reflection_lm=_ExactFakeLM(reflection_endpoint, cost_microusd=11),
-        metric_judge_lm=_ExactFakeLM(judge_endpoint, cost_microusd=13),
+        task_lm=_ExactFakeLM(task, cost_microusd=7),
+        reflection_lm=_ExactFakeLM(reflection, cost_microusd=11),
+        metric_judge_lm=_ExactFakeLM(metric_judge, cost_microusd=13),
     )
 
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
@@ -224,9 +186,9 @@ def test_metric_judge_provider_failure_is_unavailable_charged_and_never_cached()
     grant = _grant(max_calls=2, max_request_bytes=32_768)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
-        task_lm=_ExactFakeLM(grant.task.endpoint, cost_microusd=7),
-        reflection_lm=_ExactFakeLM(grant.reflection.endpoint, cost_microusd=7),
-        metric_judge_lm=FailingJudgeLM(grant.metric_judge.endpoint, cost_microusd=7),
+        task_lm=_ExactFakeLM(grant.task, cost_microusd=7),
+        reflection_lm=_ExactFakeLM(grant.reflection, cost_microusd=7),
+        metric_judge_lm=FailingJudgeLM(grant.metric_judge, cost_microusd=7),
     )
     accepted = {"headline_zh": "原始标题", "why_zh": "原始理由"}
     candidate = {"headline_zh": "不同标题", "why_zh": "不同理由"}
@@ -263,9 +225,9 @@ def test_metric_judge_failure_without_usage_still_counts_the_physical_call() -> 
     grant = _grant(max_calls=1, max_request_bytes=32_768)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
-        task_lm=_ExactFakeLM(grant.task.endpoint, cost_microusd=7),
-        reflection_lm=_ExactFakeLM(grant.reflection.endpoint, cost_microusd=7),
-        metric_judge_lm=FailingBeforeMetadataLM(grant.metric_judge.endpoint, cost_microusd=0),
+        task_lm=_ExactFakeLM(grant.task, cost_microusd=7),
+        reflection_lm=_ExactFakeLM(grant.reflection, cost_microusd=7),
+        metric_judge_lm=FailingBeforeMetadataLM(grant.metric_judge, cost_microusd=0),
     )
 
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
@@ -290,13 +252,13 @@ def test_metric_judge_failure_without_usage_still_counts_the_physical_call() -> 
 
 def test_unix_proxy_keeps_endpoint_and_credentials_out_of_child_protocol(monkeypatch: Any) -> None:
     grant = _grant()
-    task_lm = _ExactFakeLM(grant.task.endpoint, cost_microusd=7)
-    reflection_lm = _ExactFakeLM(grant.reflection.endpoint, cost_microusd=11)
+    task_lm = _ExactFakeLM(grant.task, cost_microusd=7)
+    reflection_lm = _ExactFakeLM(grant.reflection, cost_microusd=11)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
         task_lm=task_lm,
         reflection_lm=reflection_lm,
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=13),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=13),
     )
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross-proxy")
     monkeypatch.setenv("DATABASE_URL", "postgresql://must-not-cross-proxy")
@@ -325,13 +287,13 @@ def test_unix_proxy_keeps_endpoint_and_credentials_out_of_child_protocol(monkeyp
 
 def test_proxy_enforces_call_budget_in_trusted_server_before_provider_call() -> None:
     grant = _grant(max_calls=1)
-    task_lm = _ExactFakeLM(grant.task.endpoint, cost_microusd=7)
-    reflection_lm = _ExactFakeLM(grant.reflection.endpoint, cost_microusd=11)
+    task_lm = _ExactFakeLM(grant.task, cost_microusd=7)
+    reflection_lm = _ExactFakeLM(grant.reflection, cost_microusd=11)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
         task_lm=task_lm,
         reflection_lm=reflection_lm,
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=13),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=13),
     )
 
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
@@ -348,13 +310,13 @@ def test_proxy_enforces_call_budget_in_trusted_server_before_provider_call() -> 
 
 def test_proxy_reserves_worst_case_cost_before_each_provider_call() -> None:
     grant = _grant(max_calls=4, max_cost=20)
-    task_lm = _ExactFakeLM(grant.task.endpoint, cost_microusd=7)
-    reflection_lm = _ExactFakeLM(grant.reflection.endpoint, cost_microusd=7)
+    task_lm = _ExactFakeLM(grant.task, cost_microusd=7)
+    reflection_lm = _ExactFakeLM(grant.reflection, cost_microusd=7)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
         task_lm=task_lm,
         reflection_lm=reflection_lm,
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=13),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=13),
     )
 
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
@@ -408,8 +370,18 @@ def test_ephemeral_proxy_secret_config_repr_and_identities_are_secret_free() -> 
     rendered = repr(config)
     assert "private-gateway" not in rendered
     assert "sk-private" not in rendered
-    assert "api_base" not in config.task.identity.model_dump_json()
-    assert "api_key" not in config.task.identity.model_dump_json()
+    # `.identity` is gone; `.binding(role)` is the secret-free projection the grant and the record carry.
+    for role in ("task", "reflection", "metric_judge"):
+        binding = getattr(config, role).binding(role)
+        serialized = binding.model_dump_json()
+        assert binding.role == role
+        assert "private-gateway" not in serialized
+        assert "api_base" not in serialized
+        assert "api_key" not in serialized
+    # The config's own address is computed from those bindings and the tariff, so it can be named by the
+    # sealed bundle without the 0600 file itself ever leaving the sidecar.
+    assert len(config.secret_free_config_sha256) == 64
+    assert "private-gateway" not in config.secret_free_config_sha256
 
 
 def test_proxy_request_rejects_credential_and_endpoint_capability_keys() -> None:
@@ -448,12 +420,12 @@ def test_proxy_request_rejects_optimizer_owned_generation_transport_and_tools(fo
 
 def test_proxy_client_strips_only_exact_trusted_dspy_generation_options() -> None:
     grant = _grant()
-    task_lm = _ExactFakeLM(grant.task.endpoint, cost_microusd=7)
+    task_lm = _ExactFakeLM(grant.task, cost_microusd=7)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
         task_lm=task_lm,
-        reflection_lm=_ExactFakeLM(grant.reflection.endpoint, cost_microusd=7),
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=7),
+        reflection_lm=_ExactFakeLM(grant.reflection, cost_microusd=7),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=7),
     )
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
         client = CompilerProxyLM(socket_path=socket_path, grant=grant, role="task")
@@ -480,7 +452,7 @@ def test_proxy_client_strips_only_exact_trusted_dspy_generation_options() -> Non
 
 def test_real_compile_program_adapter_can_use_proxy_without_forwarding_generation_controls() -> None:
     class ProgramFakeLM(_ExactFakeLM):
-        def __init__(self, identity: CompilerEndpointIdentity) -> None:
+        def __init__(self, identity: ModelExecutionIdentity) -> None:
             super().__init__(identity, cost_microusd=7)
             self.responses = [
                 (
@@ -509,43 +481,10 @@ def test_real_compile_program_adapter_can_use_proxy_without_forwarding_generatio
             )
             return [self.responses.pop(0)]
 
-    task_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/task-model",
-        api_base="https://task.internal.example/v1",
-    )
-    reflection_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/reflection-model",
-        api_base="https://reflection.internal.example/v1",
-    )
-    judge_endpoint = CompilerEndpointIdentity.issue(
-        model="provider/judge-model",
-        api_base="https://judge.internal.example/v1",
-    )
     grant = CompilerModelProxyGrant.issue(
-        task=CompilerRoleBindingV3.issue(
-            role="task",
-            endpoint=task_endpoint,
-            max_output_tokens=1_200,
-            timeout_seconds=20,
-            temperature=0,
-            model_kwargs={},
-        ),
-        reflection=CompilerRoleBindingV3.issue(
-            role="reflection",
-            endpoint=reflection_endpoint,
-            max_output_tokens=32_000,
-            timeout_seconds=300,
-            temperature=1,
-            model_kwargs={},
-        ),
-        metric_judge=CompilerRoleBindingV3.issue(
-            role="metric_judge",
-            endpoint=judge_endpoint,
-            max_output_tokens=4_096,
-            timeout_seconds=120,
-            temperature=0,
-            model_kwargs={},
-        ),
+        task=_identity("task", max_output_tokens=1_200),
+        reflection=_identity("reflection"),
+        metric_judge=_identity("metric_judge"),
         max_task_model_calls=4,
         max_reflection_model_calls=4,
         max_metric_judge_model_calls=4,
@@ -555,12 +494,12 @@ def test_real_compile_program_adapter_can_use_proxy_without_forwarding_generatio
         proxy_source_sha256="d" * 64,
         max_request_bytes=32_768,
     )
-    task_lm = ProgramFakeLM(grant.task.endpoint)
+    task_lm = ProgramFakeLM(grant.task)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
         task_lm=task_lm,
-        reflection_lm=_ExactFakeLM(grant.reflection.endpoint, cost_microusd=7),
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=7),
+        reflection_lm=_ExactFakeLM(grant.reflection, cost_microusd=7),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=7),
     )
 
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
@@ -608,9 +547,9 @@ def test_proxy_imputes_the_tariff_reservation_when_the_provider_reports_no_price
     grant = _grant()
     proxy = TrustedCompilerModelProxy(
         grant=grant,
-        task_lm=NoPriceLM(grant.task.endpoint, cost_microusd=0),
-        reflection_lm=_ExactFakeLM(grant.reflection.endpoint, cost_microusd=7),
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=7),
+        task_lm=NoPriceLM(grant.task, cost_microusd=0),
+        reflection_lm=_ExactFakeLM(grant.reflection, cost_microusd=7),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=7),
     )
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
         client = CompilerProxyLM(socket_path=socket_path, grant=grant, role="task")
@@ -649,12 +588,12 @@ def test_proxy_provider_accounting_failure_never_yields_a_successful_execution_r
             return ["output-must-be-discarded"]
 
     grant = _grant()
-    task_lm = IncompleteAccountingLM(grant.task.endpoint, cost_microusd=7)
+    task_lm = IncompleteAccountingLM(grant.task, cost_microusd=7)
     proxy = TrustedCompilerModelProxy(
         grant=grant,
         task_lm=task_lm,
-        reflection_lm=_ExactFakeLM(grant.reflection.endpoint, cost_microusd=7),
-        metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=7),
+        reflection_lm=_ExactFakeLM(grant.reflection, cost_microusd=7),
+        metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=7),
     )
 
     with _short_socket_path() as path, proxy.serve(path) as socket_path:
@@ -670,18 +609,25 @@ def test_proxy_provider_accounting_failure_never_yields_a_successful_execution_r
 def test_proxy_rejects_lm_whose_endpoint_identity_does_not_match_grant() -> None:
     grant = _grant()
     wrong = _ExactFakeLM(
-        CompilerEndpointIdentity.issue(
-            model=grant.task.endpoint.model,
+        ModelExecutionIdentity.issue(
+            role="task",
+            model=grant.task.model,
+            # Same model, same generation contract, different host: the fingerprint is the only field that
+            # moves, and it is the one that says which endpoint a credential is presented to.
             api_base="https://different.internal.example/v1",
+            max_output_tokens=grant.task.max_output_tokens,
+            timeout_seconds=grant.task.timeout_seconds,
+            temperature=grant.task.temperature,
+            model_kwargs=grant.task.model_kwargs,
         ),
         cost_microusd=1,
     )
-    reflection = _ExactFakeLM(grant.reflection.endpoint, cost_microusd=1)
+    reflection = _ExactFakeLM(grant.reflection, cost_microusd=1)
 
     with pytest.raises(ValueError, match="endpoint_identity_mismatch"):
         TrustedCompilerModelProxy(
             grant=grant,
             task_lm=wrong,
             reflection_lm=reflection,
-            metric_judge_lm=_ExactFakeLM(grant.metric_judge.endpoint, cost_microusd=1),
+            metric_judge_lm=_ExactFakeLM(grant.metric_judge, cost_microusd=1),
         )

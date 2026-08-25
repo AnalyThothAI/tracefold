@@ -498,17 +498,10 @@ def _program_candidate_document() -> CandidateManifest:
         failure_cluster_ids=("cluster-1",),
         generator_kind="human",
         registered_at_ms=1,
-        candidate_patch_sha="1" * 64,
         declared_target_dimensions=("why_support",),
         program_parent_sha256="b" * 64,
         program_candidate_sha256=candidate_arm.program_sha256,
-        program_machine_diff={
-            "schema_version": "tracefold.news.program_machine_diff.v4",
-            "factory_id": "tracefold.news.program.factory_v6",
-            "parent_program_sha256": "b" * 64,
-            "candidate_program_sha256": candidate_arm.program_sha256,
-        },
-        compile_provenance={"mode": "test"},
+        compile_record_sha256="1" * 64,
     )
     return CandidateManifest(
         target="program",

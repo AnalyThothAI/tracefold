@@ -32,19 +32,18 @@ from ...program.dspy_adapter import (
     PredictorAdapterError,
 )
 from .security import (
-    CompilerEndpointIdentity,
+    PROXY_EXECUTION_SCHEMA,
+    CompilerProxyCall,
+    CompilerProxyExecution,
     CompilerProxyTariff,
     CompilerRole,
-    CompilerRoleBindingV3,
+    ModelExecutionIdentity,
 )
 
 PROXY_GRANT_SCHEMA: Literal["tracefold.news.compiler_proxy_grant.v3"] = "tracefold.news.compiler_proxy_grant.v3"
 PROXY_REQUEST_SCHEMA: Literal["tracefold.news.compiler_proxy_request.v3"] = "tracefold.news.compiler_proxy_request.v3"
 PROXY_RESPONSE_SCHEMA: Literal["tracefold.news.compiler_proxy_response.v3"] = (
     "tracefold.news.compiler_proxy_response.v3"
-)
-PROXY_EXECUTION_SCHEMA: Literal["tracefold.news.compiler_proxy_execution.v3"] = (
-    "tracefold.news.compiler_proxy_execution.v3"
 )
 PROXY_READY_SCHEMA: Literal["tracefold.news.compiler_proxy_ready.v3"] = "tracefold.news.compiler_proxy_ready.v3"
 
@@ -91,14 +90,11 @@ class CompilerProviderEndpointSecret(_ExactModel):
     temperature: float = Field(ge=0, le=2)
     model_kwargs: dict[str, Any] = Field(default_factory=dict, repr=False)
 
-    @property
-    def identity(self) -> CompilerEndpointIdentity:
-        return CompilerEndpointIdentity.issue(model=self.model, api_base=self.api_base)
-
-    def binding(self, role: CompilerRole) -> CompilerRoleBindingV3:
-        return CompilerRoleBindingV3.issue(
+    def binding(self, role: CompilerRole) -> ModelExecutionIdentity:
+        return ModelExecutionIdentity.issue(
             role=role,
-            endpoint=self.identity,
+            model=self.model,
+            api_base=self.api_base,
             max_output_tokens=self.max_tokens,
             timeout_seconds=self.timeout,
             temperature=self.temperature,
@@ -122,17 +118,19 @@ class CompilerProxySecretConfig(_ExactModel):
         return self
 
     @property
-    def tariff_sha256(self) -> str:
-        return self.tariff.tariff_sha256
-
-    @property
     def secret_free_config_sha256(self) -> str:
+        """The identity of a configuration that exists only as a 0600 file in the sidecar.
+
+        The bundle names it; nothing carries it, which is what makes this digest an address rather than
+        a restatement.
+        """
+
         return canonical_sha(
             {
                 "task": self.task.binding("task").model_dump(mode="json"),
                 "reflection": self.reflection.binding("reflection").model_dump(mode="json"),
                 "metric_judge": self.metric_judge.binding("metric_judge").model_dump(mode="json"),
-                "tariff_sha256": self.tariff_sha256,
+                "tariff": self.tariff.model_dump(mode="json"),
             }
         )
 
@@ -141,16 +139,15 @@ class CompilerModelProxyGrant(_ExactModel):
     """Secret-free authority and budget visible to both sides of the socket."""
 
     schema_version: Literal["tracefold.news.compiler_proxy_grant.v3"] = PROXY_GRANT_SCHEMA
-    task: CompilerRoleBindingV3
-    reflection: CompilerRoleBindingV3
-    metric_judge: CompilerRoleBindingV3
+    task: ModelExecutionIdentity
+    reflection: ModelExecutionIdentity
+    metric_judge: ModelExecutionIdentity
     max_task_model_calls: int = Field(gt=0, le=100_000)
     max_reflection_model_calls: int = Field(gt=0, le=100_000)
     max_metric_judge_model_calls: int = Field(gt=0, le=100_000)
     max_cost_microusd: int = Field(gt=0)
     max_call_cost_microusd: int = Field(gt=0)
     tariff: CompilerProxyTariff
-    tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_config_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
     max_request_bytes: int = Field(default=2_000_000, ge=1_024, le=8_000_000)
@@ -161,9 +158,9 @@ class CompilerModelProxyGrant(_ExactModel):
     def issue(
         cls,
         *,
-        task: CompilerRoleBindingV3,
-        reflection: CompilerRoleBindingV3,
-        metric_judge: CompilerRoleBindingV3,
+        task: ModelExecutionIdentity,
+        reflection: ModelExecutionIdentity,
+        metric_judge: ModelExecutionIdentity,
         max_task_model_calls: int,
         max_reflection_model_calls: int,
         max_metric_judge_model_calls: int,
@@ -194,7 +191,6 @@ class CompilerModelProxyGrant(_ExactModel):
             "max_cost_microusd": max_cost_microusd,
             "max_call_cost_microusd": max_call_cost_microusd,
             "tariff": tariff.model_dump(mode="json"),
-            "tariff_sha256": tariff.tariff_sha256,
             "proxy_config_sha256": proxy_config_sha256,
             "proxy_source_sha256": proxy_source_sha256,
             "max_request_bytes": max_request_bytes,
@@ -217,19 +213,12 @@ class CompilerModelProxyGrant(_ExactModel):
         expected_max_call = max(
             self.reservation_microusd(role=role, request_bytes=self.max_request_bytes) for role in roles
         )
-        if (
-            self.tariff_sha256 != self.tariff.tariff_sha256
-            or self.max_call_cost_microusd != expected_max_call
-            or self.max_call_cost_microusd > self.max_cost_microusd
-        ):
+        if self.max_call_cost_microusd != expected_max_call or self.max_call_cost_microusd > self.max_cost_microusd:
             raise ValueError("news_program_compile_proxy_call_cost_reservation_invalid")
         return self
 
-    def binding(self, role: CompilerRole) -> CompilerRoleBindingV3:
+    def binding(self, role: CompilerRole) -> ModelExecutionIdentity:
         return {"task": self.task, "reflection": self.reflection, "metric_judge": self.metric_judge}[role]
-
-    def endpoint(self, role: CompilerRole) -> CompilerEndpointIdentity:
-        return self.binding(role).endpoint
 
     def max_model_calls(self, role: CompilerRole) -> int:
         return {
@@ -346,197 +335,18 @@ class CompilerProxyResponse(_ExactModel):
         return self
 
 
-class CompilerProxyCallLeaf(_ExactModel):
-    """Canonical trusted observation for one socket request."""
-
-    role: CompilerRole
-    sequence: int = Field(gt=0)
-    request_sha256: str = Field(pattern=_SHA256_PATTERN)
-    response_sha256: str = Field(pattern=_SHA256_PATTERN)
-    runtime_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    provider_invoked: bool
-    request_bytes: int = Field(gt=0)
-    max_output_tokens: int = Field(ge=64, le=32_000)
-    reserved_cost_microusd: int = Field(ge=0)
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
-    provider_cost_microusd: int = Field(ge=0)
-    finish_reason: str | None = None
-    error_code: str | None = None
-    leaf_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-    @classmethod
-    def issue(
-        cls,
-        *,
-        request: CompilerProxyRequest,
-        response: CompilerProxyResponse,
-        endpoint: CompilerEndpointIdentity,
-        provider_invoked: bool,
-        request_bytes: int,
-        max_output_tokens: int,
-        reserved_cost_microusd: int,
-    ) -> CompilerProxyCallLeaf:
-        if provider_invoked is not response.provider_invoked:
-            raise ValueError("news_program_compile_proxy_provider_invocation_mismatch")
-        metadata = response.metadata
-        values = {
-            "role": request.role,
-            "sequence": request.sequence,
-            "request_sha256": request.request_sha256,
-            "response_sha256": response.response_sha256,
-            "runtime_identity_sha256": canonical_sha(
-                {
-                    "endpoint_binding_sha256": endpoint.binding_sha256,
-                    "response_model": metadata.response_model if metadata is not None else None,
-                }
-            ),
-            "provider_invoked": provider_invoked,
-            "request_bytes": request_bytes,
-            "max_output_tokens": max_output_tokens,
-            "reserved_cost_microusd": reserved_cost_microusd,
-            "input_tokens": metadata.input_tokens if metadata is not None else 0,
-            "output_tokens": metadata.output_tokens if metadata is not None else 0,
-            "cached_tokens": metadata.cached_tokens if metadata is not None else 0,
-            "total_tokens": metadata.total_tokens if metadata is not None else 0,
-            "provider_cost_microusd": (
-                metadata.provider_cost_microusd
-                if metadata is not None and metadata.provider_cost_microusd is not None
-                else 0
-            ),
-            "finish_reason": metadata.finish_reason if metadata is not None else None,
-            "error_code": response.error_code,
-        }
-        return cls(**values, leaf_sha256=canonical_sha(values))
-
-    @model_validator(mode="after")
-    def _leaf_matches(self) -> CompilerProxyCallLeaf:
-        if self.leaf_sha256 != canonical_sha(self.model_dump(mode="json", exclude={"leaf_sha256"})):
-            raise ValueError("news_program_compile_proxy_call_leaf_hash_mismatch")
-        if (
-            (self.provider_invoked and self.reserved_cost_microusd <= 0)
-            or (not self.provider_invoked and self.reserved_cost_microusd != 0)
-            or (not self.provider_invoked and self.error_code is None)
-            or (self.error_code is None and self.total_tokens <= 0)
-            or self.provider_cost_microusd > self.reserved_cost_microusd
-        ):
-            raise ValueError("news_program_compile_proxy_call_leaf_reservation_invalid")
-        return self
-
-
-class CompilerProxyExecutionReceipt(_ExactModel):
-    """Trusted server observations used to cross-check runner counters."""
-
-    schema_version: Literal["tracefold.news.compiler_proxy_execution.v3"] = PROXY_EXECUTION_SCHEMA
-    grant_sha256: str = Field(pattern=_SHA256_PATTERN)
-    task_model_calls: int = Field(ge=0)
-    reflection_model_calls: int = Field(ge=0)
-    metric_judge_model_calls: int = Field(ge=0)
-    task_cost_microusd: int = Field(ge=0)
-    reflection_cost_microusd: int = Field(ge=0)
-    metric_judge_cost_microusd: int = Field(ge=0)
-    task_failures: int = Field(ge=0)
-    reflection_failures: int = Field(ge=0)
-    metric_judge_failures: int = Field(ge=0)
-    actual_cost_microusd: int = Field(ge=0)
-    reserved_cost_microusd: int = Field(ge=0)
-    tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
-    calls: tuple[CompilerProxyCallLeaf, ...]
-    call_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    request_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    response_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    error_codes: tuple[str, ...] = ()
-    receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
-
-    @classmethod
-    def issue(
-        cls,
-        *,
-        grant_sha256: str,
-        task_model_calls: int,
-        reflection_model_calls: int,
-        metric_judge_model_calls: int,
-        task_cost_microusd: int,
-        reflection_cost_microusd: int,
-        metric_judge_cost_microusd: int,
-        task_failures: int,
-        reflection_failures: int,
-        metric_judge_failures: int,
-        actual_cost_microusd: int,
-        reserved_cost_microusd: int,
-        tariff_sha256: str,
-        request_sha256s: Sequence[str],
-        response_sha256s: Sequence[str],
-        error_codes: Sequence[str],
-        calls: Sequence[CompilerProxyCallLeaf],
-    ) -> CompilerProxyExecutionReceipt:
-        values = {
-            "schema_version": PROXY_EXECUTION_SCHEMA,
-            "grant_sha256": grant_sha256,
-            "task_model_calls": task_model_calls,
-            "reflection_model_calls": reflection_model_calls,
-            "metric_judge_model_calls": metric_judge_model_calls,
-            "task_cost_microusd": task_cost_microusd,
-            "reflection_cost_microusd": reflection_cost_microusd,
-            "metric_judge_cost_microusd": metric_judge_cost_microusd,
-            "task_failures": task_failures,
-            "reflection_failures": reflection_failures,
-            "metric_judge_failures": metric_judge_failures,
-            "actual_cost_microusd": actual_cost_microusd,
-            "reserved_cost_microusd": reserved_cost_microusd,
-            "tariff_sha256": tariff_sha256,
-            "calls": [call.model_dump(mode="json") for call in calls],
-            "call_root_sha256": canonical_sha([call.model_dump(mode="json") for call in calls]),
-            "request_root_sha256": canonical_sha(list(request_sha256s)),
-            "response_root_sha256": canonical_sha(list(response_sha256s)),
-            "error_codes": list(error_codes),
-        }
-        return cls(**values, receipt_sha256=canonical_sha(values))
-
-    @model_validator(mode="after")
-    def _receipt_matches(self) -> CompilerProxyExecutionReceipt:
-        values = self.model_dump(mode="json", exclude={"receipt_sha256"})
-        if self.receipt_sha256 != canonical_sha(values):
-            raise ValueError("news_program_compile_proxy_execution_hash_mismatch")
-        if (
-            self.call_root_sha256 != canonical_sha([call.model_dump(mode="json") for call in self.calls])
-            or self.request_root_sha256 != canonical_sha([call.request_sha256 for call in self.calls])
-            or self.response_root_sha256 != canonical_sha([call.response_sha256 for call in self.calls])
-            or len({(call.role, call.sequence) for call in self.calls}) != len(self.calls)
-            or self.task_model_calls != sum(call.provider_invoked and call.role == "task" for call in self.calls)
-            or self.reflection_model_calls
-            != sum(call.provider_invoked and call.role == "reflection" for call in self.calls)
-            or self.metric_judge_model_calls
-            != sum(call.provider_invoked and call.role == "metric_judge" for call in self.calls)
-            or self.task_cost_microusd != sum(call.provider_cost_microusd for call in self.calls if call.role == "task")
-            or self.reflection_cost_microusd
-            != sum(call.provider_cost_microusd for call in self.calls if call.role == "reflection")
-            or self.metric_judge_cost_microusd
-            != sum(call.provider_cost_microusd for call in self.calls if call.role == "metric_judge")
-            or self.task_failures != sum(call.error_code is not None and call.role == "task" for call in self.calls)
-            or self.reflection_failures
-            != sum(call.error_code is not None and call.role == "reflection" for call in self.calls)
-            or self.metric_judge_failures
-            != sum(call.error_code is not None and call.role == "metric_judge" for call in self.calls)
-            or self.actual_cost_microusd
-            != self.task_cost_microusd + self.reflection_cost_microusd + self.metric_judge_cost_microusd
-            or self.actual_cost_microusd != sum(call.provider_cost_microusd for call in self.calls)
-            or self.reserved_cost_microusd != sum(call.reserved_cost_microusd for call in self.calls)
-            or self.error_codes != tuple(call.error_code for call in self.calls if call.error_code is not None)
-        ):
-            raise ValueError("news_program_compile_proxy_execution_calls_mismatch")
-        return self
-
-
 class CompilerProxyReadyReceipt(_ExactModel):
+    """What the sidecar tells the launcher before the compiler container starts.
+
+    Each field addresses an object that reaches the sidecar by a different channel and is not carried
+    here: the grant over the socket, the secret config as a 0600 mount, the proxy source inside the
+    image. The receipt has no digest of itself — the launcher compares the three values it already holds.
+    """
+
     schema_version: Literal["tracefold.news.compiler_proxy_ready.v3"] = PROXY_READY_SCHEMA
     grant_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_config_sha256: str = Field(pattern=_SHA256_PATTERN)
-    tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
     proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    ready_sha256: str = Field(pattern=_SHA256_PATTERN)
 
     @classmethod
     def issue(
@@ -545,21 +355,11 @@ class CompilerProxyReadyReceipt(_ExactModel):
         grant: CompilerModelProxyGrant,
         proxy_source_sha256: str,
     ) -> CompilerProxyReadyReceipt:
-        values = {
-            "schema_version": PROXY_READY_SCHEMA,
-            "grant_sha256": grant.grant_sha256,
-            "proxy_config_sha256": grant.proxy_config_sha256,
-            "tariff_sha256": grant.tariff_sha256,
-            "proxy_source_sha256": proxy_source_sha256,
-        }
-        return cls(**values, ready_sha256=canonical_sha(values))
-
-    @model_validator(mode="after")
-    def _ready_matches(self) -> CompilerProxyReadyReceipt:
-        values = self.model_dump(mode="json", exclude={"ready_sha256"})
-        if self.ready_sha256 != canonical_sha(values):
-            raise ValueError("news_program_compile_proxy_ready_hash_mismatch")
-        return self
+        return cls(
+            grant_sha256=grant.grant_sha256,
+            proxy_config_sha256=grant.proxy_config_sha256,
+            proxy_source_sha256=proxy_source_sha256,
+        )
 
 
 class CompilerProxyError(RuntimeError):
@@ -570,7 +370,7 @@ class CompilerProxyError(RuntimeError):
         super().__init__(code)
 
 
-def build_proxy_provider_lm(config: CompilerProviderEndpointSecret) -> Any:
+def build_proxy_provider_lm(config: CompilerProviderEndpointSecret, *, role: CompilerRole) -> Any:
     """Build one credential-owning LM only inside the trusted proxy sidecar."""
 
     extras = dict(config.model_kwargs)
@@ -598,7 +398,7 @@ def build_proxy_provider_lm(config: CompilerProviderEndpointSecret) -> Any:
         num_retries=0,
         **extras,
     )
-    lm.tracefold_compiler_endpoint_identity = config.identity
+    lm.tracefold_compiler_endpoint_identity = config.binding(role)
     return lm
 
 
@@ -622,9 +422,8 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
         self._sequence = 0
         self._capture: ExactProviderCallCapture | None = None
         binding = grant.binding(role)
-        identity = binding.endpoint
         super().__init__(
-            model=identity.model,
+            model=binding.model,
             model_type="chat",
             temperature=binding.temperature,
             max_tokens=binding.max_output_tokens,
@@ -632,7 +431,7 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
             num_retries=0,
             timeout=grant.timeout_seconds(role),
         )
-        self.tracefold_compiler_endpoint_identity = identity
+        self.tracefold_compiler_endpoint_identity = binding
         self.tracefold_compiler_role_binding = binding
 
     @contextmanager
@@ -671,7 +470,7 @@ class CompilerProxyLM(dspy.BaseLM):  # type: ignore[misc]
             # explicit unavailability, not an assertion that the provider call was free.
             self._capture.record_metadata(
                 ExactProviderMetadata(
-                    response_model=self._grant.endpoint(self._role).model,
+                    response_model=self._grant.binding(self._role).model,
                     total_tokens=0,
                     provider_cost_microusd=0,
                 )
@@ -737,7 +536,7 @@ class TrustedCompilerModelProxy:
                 raise ValueError("news_program_compile_proxy_lm_policy_invalid")
             if not callable(getattr(lm, "observe_exact_call", None)):
                 raise ValueError("news_program_compile_proxy_metadata_seam_required")
-            if getattr(lm, "tracefold_compiler_endpoint_identity", None) != grant.endpoint(role):
+            if getattr(lm, "tracefold_compiler_endpoint_identity", None) != grant.binding(role):
                 raise ValueError("news_program_compile_proxy_endpoint_identity_mismatch")
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -747,7 +546,7 @@ class TrustedCompilerModelProxy:
         self._request_sha256s: list[str] = []
         self._response_sha256s: list[str] = []
         self._error_codes: list[str] = []
-        self._calls: list[CompilerProxyCallLeaf] = []
+        self._calls: list[CompilerProxyCall] = []
         self._role_calls: dict[CompilerRole, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
         self._role_costs: dict[CompilerRole, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
         self._role_failures: dict[CompilerRole, int] = {"task": 0, "reflection": 0, "metric_judge": 0}
@@ -788,11 +587,11 @@ class TrustedCompilerModelProxy:
         if self._server_error is not None:
             raise RuntimeError(self._server_error)
 
-    def execution_receipt(self) -> CompilerProxyExecutionReceipt:
+    def execution_receipt(self) -> CompilerProxyExecution:
         if self._thread is not None and self._thread.is_alive():
             raise ValueError("news_program_compile_proxy_receipt_before_shutdown")
         calls = tuple(self._calls)
-        return CompilerProxyExecutionReceipt.issue(
+        return CompilerProxyExecution(
             grant_sha256=self._grant.grant_sha256,
             task_model_calls=sum(call.provider_invoked and call.role == "task" for call in calls),
             reflection_model_calls=sum(call.provider_invoked and call.role == "reflection" for call in calls),
@@ -807,10 +606,7 @@ class TrustedCompilerModelProxy:
             metric_judge_failures=sum(call.error_code is not None and call.role == "metric_judge" for call in calls),
             actual_cost_microusd=sum(call.provider_cost_microusd for call in calls),
             reserved_cost_microusd=sum(call.reserved_cost_microusd for call in calls),
-            tariff_sha256=self._grant.tariff_sha256,
-            request_sha256s=[call.request_sha256 for call in calls],
-            response_sha256s=[call.response_sha256 for call in calls],
-            error_codes=[call.error_code for call in calls if call.error_code is not None],
+            error_codes=tuple(call.error_code for call in calls if call.error_code is not None),
             calls=calls,
         )
 
@@ -873,15 +669,29 @@ class TrustedCompilerModelProxy:
             )
             encoded = canonical_json(response.model_dump(mode="json")).encode("utf-8")
         self._response_sha256s.append(response.response_sha256)
+        metadata = response.metadata
         self._calls.append(
-            CompilerProxyCallLeaf.issue(
-                request=request,
-                response=response,
-                endpoint=self._grant.endpoint(request.role),
+            CompilerProxyCall(
+                role=request.role,
+                sequence=request.sequence,
+                request_sha256=request.request_sha256,
+                response_sha256=response.response_sha256,
+                responding_model=metadata.response_model if metadata is not None else None,
                 provider_invoked=provider_invoked,
                 request_bytes=len(request_payload),
                 max_output_tokens=self._grant.binding(request.role).max_output_tokens,
                 reserved_cost_microusd=reserved,
+                input_tokens=metadata.input_tokens if metadata is not None else 0,
+                output_tokens=metadata.output_tokens if metadata is not None else 0,
+                cached_tokens=metadata.cached_tokens if metadata is not None else 0,
+                total_tokens=metadata.total_tokens if metadata is not None else 0,
+                provider_cost_microusd=(
+                    metadata.provider_cost_microusd
+                    if metadata is not None and metadata.provider_cost_microusd is not None
+                    else 0
+                ),
+                finish_reason=metadata.finish_reason if metadata is not None else None,
+                error_code=response.error_code,
             )
         )
         _send_frame(connection, encoded, max_bytes=self._grant.max_response_bytes)
@@ -1125,9 +935,7 @@ __all__ = [
     "PROXY_RESPONSE_SCHEMA",
     "CompilerModelProxyGrant",
     "CompilerProviderEndpointSecret",
-    "CompilerProxyCallLeaf",
     "CompilerProxyError",
-    "CompilerProxyExecutionReceipt",
     "CompilerProxyLM",
     "CompilerProxyReadyReceipt",
     "CompilerProxyRequest",

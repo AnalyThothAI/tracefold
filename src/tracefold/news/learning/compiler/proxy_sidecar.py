@@ -82,16 +82,15 @@ def _run(grant_path: Path, secret_path: Path, socket_path: Path, output_path: Pa
         or secrets.reflection.binding("reflection") != grant.reflection
         or secrets.metric_judge.binding("metric_judge") != grant.metric_judge
         or secrets.tariff != grant.tariff
-        or secrets.tariff_sha256 != grant.tariff_sha256
         or secrets.secret_free_config_sha256 != grant.proxy_config_sha256
         or proxy_source_sha256() != grant.proxy_source_sha256
     ):
         raise ValueError("news_program_compile_proxy_sidecar_grant_mismatch")
     proxy = TrustedCompilerModelProxy(
         grant=grant,
-        task_lm=build_proxy_provider_lm(secrets.task),
-        reflection_lm=build_proxy_provider_lm(secrets.reflection),
-        metric_judge_lm=build_proxy_provider_lm(secrets.metric_judge),
+        task_lm=build_proxy_provider_lm(secrets.task, role="task"),
+        reflection_lm=build_proxy_provider_lm(secrets.reflection, role="reflection"),
+        metric_judge_lm=build_proxy_provider_lm(secrets.metric_judge, role="metric_judge"),
     )
     stop = threading.Event()
 

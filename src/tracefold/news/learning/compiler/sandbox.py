@@ -22,8 +22,8 @@ from ...artifact_identity import canonical_sha
 SANDBOX_POLICY_SCHEMA: Literal["tracefold.news.compiler_sandbox_policy.v2"] = (
     "tracefold.news.compiler_sandbox_policy.v2"
 )
-SANDBOX_LAUNCH_SCHEMA: Literal["tracefold.news.compiler_sandbox_launch.v2"] = (
-    "tracefold.news.compiler_sandbox_launch.v2"
+SANDBOX_LAUNCH_SCHEMA: Literal["tracefold.news.compiler_sandbox_launch.v3"] = (
+    "tracefold.news.compiler_sandbox_launch.v3"
 )
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -147,39 +147,29 @@ class CompilerSandboxPolicy(_ExactModel):
 
 
 class CompilerSandboxLaunchReceipt(_ExactModel):
-    """Trusted parent receipt; never self-attested by the optimizer child."""
+    """Trusted parent receipt; never self-attested by the optimizer child.
 
-    schema_version: Literal["tracefold.news.compiler_sandbox_launch.v2"] = SANDBOX_LAUNCH_SCHEMA
-    policy_payload: dict[str, Any] = Field(repr=False)
-    policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    Nine `*_payload` fields used to travel beside a `*_sha256` of that same embedded payload, and the
+    receipt then hashed itself and five sibling receipts it already named. None of that survived into a
+    second document, so none of it proved anything: what makes this tamper-evident is the compile record
+    that embeds it, which is what the learning ledger is keyed on. The payloads themselves stay — they
+    are the boundary evidence, and `_validate_boundary_semantics` still reads every one of them.
+    """
+
+    schema_version: Literal["tracefold.news.compiler_sandbox_launch.v3"] = SANDBOX_LAUNCH_SCHEMA
+    policy: dict[str, Any] = Field(repr=False)
     input_bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
-    compiler_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    compiler_lock_sha256: str = Field(pattern=_SHA256_PATTERN)
-    image_preflight_payload: dict[str, Any] = Field(repr=False)
-    image_preflight_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_preflight: dict[str, Any] = Field(repr=False)
     compiler_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     proxy_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    proxy_source_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_identity_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_config_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_tariff_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_ready_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
-    proxy_execution_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
-    socket_volume_payload: dict[str, Any] = Field(repr=False)
-    socket_volume_sha256: str = Field(pattern=_SHA256_PATTERN)
-    lifecycle_payload: dict[str, Any] = Field(repr=False)
-    lifecycle_sha256: str = Field(pattern=_SHA256_PATTERN)
-    boundary_command_payload: dict[str, Any] = Field(repr=False)
-    boundary_command_root_sha256: str = Field(pattern=_SHA256_PATTERN)
-    boundary_inspect_payload: dict[str, Any] = Field(repr=False)
-    boundary_inspect_root_sha256: str = Field(pattern=_SHA256_PATTERN)
+    socket_volume: dict[str, Any] = Field(repr=False)
+    lifecycle: dict[str, Any] = Field(repr=False)
+    boundary_command: dict[str, Any] = Field(repr=False)
+    boundary_inspect: dict[str, Any] = Field(repr=False)
     boundary_actuals_available: bool
-    environment_payload: dict[str, Any] = Field(repr=False)
-    environment_sha256: str = Field(pattern=_SHA256_PATTERN)
-    mount_manifest_payload: dict[str, Any] = Field(repr=False)
-    mount_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    egress_manifest_payload: dict[str, Any] = Field(repr=False)
-    egress_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    environment: dict[str, Any] = Field(repr=False)
+    mount_manifest: dict[str, Any] = Field(repr=False)
+    egress_manifest: dict[str, Any] = Field(repr=False)
     holdout_mounted: Literal[False] = False
     db_credentials_present: Literal[False] = False
     ambient_credentials_present: Literal[False] = False
@@ -199,65 +189,49 @@ class CompilerSandboxLaunchReceipt(_ExactModel):
     container_max_rss_bytes: int = Field(gt=0)
     output_bytes: int = Field(ge=0)
     output_file_count: int = Field(ge=0)
+    # These three address bytes the receipt deliberately does not retain.
     stdout_sha256: str = Field(pattern=_SHA256_PATTERN)
     stderr_sha256: str = Field(pattern=_SHA256_PATTERN)
     output_root_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    launch_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
 
     @classmethod
     def issue(cls, **values: Any) -> CompilerSandboxLaunchReceipt:
-        payload = {
-            "schema_version": SANDBOX_LAUNCH_SCHEMA,
-            "boundary_actuals_available": True,
-            **values,
-        }
-        return cls(**payload, launch_receipt_sha256=canonical_sha(payload))
+        """The launcher states what it observed; this never asserts it on the launcher's behalf.
+
+        `boundary_actuals_available` is computed from whether all four daemon inspections came back, and
+        `_receipt_matches` then holds it to that. Defaulting it to True here both collided with the
+        caller's own keyword and would have made the *failure* receipt — the one `CompilerSandboxFailure`
+        carries, whose actuals are by definition incomplete — impossible to construct.
+        """
+
+        return cls(schema_version=SANDBOX_LAUNCH_SCHEMA, **values)
 
     @model_validator(mode="after")
     def _receipt_matches(self) -> CompilerSandboxLaunchReceipt:
-        values = self.model_dump(mode="json", exclude={"launch_receipt_sha256"})
-        if self.launch_receipt_sha256 != canonical_sha(values):
-            raise ValueError("news_program_compile_sandbox_launch_hash_mismatch")
         try:
-            policy = CompilerSandboxPolicy.model_validate(self.policy_payload)
+            policy = CompilerSandboxPolicy.model_validate(self.policy)
         except ValueError as exc:
             raise ValueError("news_program_compile_sandbox_boundary_semantics_invalid") from exc
-        if policy.policy_sha256 != self.policy_sha256:
-            raise ValueError("news_program_compile_sandbox_boundary_semantics_invalid")
-        preimages = (
-            (self.image_preflight_sha256, self.image_preflight_payload),
-            (self.socket_volume_sha256, self.socket_volume_payload),
-            (self.lifecycle_sha256, self.lifecycle_payload),
-            (self.boundary_command_root_sha256, self.boundary_command_payload),
-            (self.boundary_inspect_root_sha256, self.boundary_inspect_payload),
-            (self.environment_sha256, self.environment_payload),
-            (self.mount_manifest_sha256, self.mount_manifest_payload),
-            (self.egress_manifest_sha256, self.egress_manifest_payload),
-        )
-        if any(root != canonical_sha(payload) for root, payload in preimages):
-            raise ValueError("news_program_compile_sandbox_boundary_preimage_hash_mismatch")
         expected_schemas = (
-            (self.image_preflight_payload, "tracefold.news.compiler_image_preflight.v2"),
-            (self.socket_volume_payload, "tracefold.news.compiler_socket_volume.v2"),
-            (self.lifecycle_payload, "tracefold.news.compiler_container_lifecycle.v2"),
-            (self.boundary_command_payload, "tracefold.news.compiler_boundary_commands.v2"),
-            (self.boundary_inspect_payload, "tracefold.news.compiler_boundary_inspections.v2"),
-            (self.environment_payload, "tracefold.news.compiler_container_environment.v2"),
-            (self.mount_manifest_payload, "tracefold.news.compiler_mount_manifest.v2"),
-            (self.egress_manifest_payload, "tracefold.news.compiler_egress_manifest.v2"),
+            (self.image_preflight, "tracefold.news.compiler_image_preflight.v2"),
+            (self.socket_volume, "tracefold.news.compiler_socket_volume.v2"),
+            (self.lifecycle, "tracefold.news.compiler_container_lifecycle.v2"),
+            (self.boundary_command, "tracefold.news.compiler_boundary_commands.v2"),
+            (self.boundary_inspect, "tracefold.news.compiler_boundary_inspections.v2"),
+            (self.environment, "tracefold.news.compiler_container_environment.v2"),
+            (self.mount_manifest, "tracefold.news.compiler_mount_manifest.v2"),
+            (self.egress_manifest, "tracefold.news.compiler_egress_manifest.v2"),
         )
         if any(payload.get("schema") != schema for payload, schema in expected_schemas):
             raise ValueError("news_program_compile_sandbox_boundary_preimage_schema_invalid")
         inspect_keys = {"schema", "image_preflight", "network", "volume", "proxy", "compiler"}
         command_keys = {"schema", "volume_init", "proxy", "compiler"}
         actuals_complete = (
-            set(self.boundary_inspect_payload) == inspect_keys
-            and self.boundary_inspect_payload.get("image_preflight") == self.image_preflight_payload
-            and all(
-                self.boundary_inspect_payload.get(key) is not None for key in ("network", "volume", "proxy", "compiler")
-            )
+            set(self.boundary_inspect) == inspect_keys
+            and self.boundary_inspect.get("image_preflight") == self.image_preflight
+            and all(self.boundary_inspect.get(key) is not None for key in ("network", "volume", "proxy", "compiler"))
         )
-        if set(self.boundary_command_payload) != command_keys:
+        if set(self.boundary_command) != command_keys:
             raise ValueError("news_program_compile_sandbox_boundary_command_payload_invalid")
         if self.boundary_actuals_available != actuals_complete:
             raise ValueError("news_program_compile_sandbox_boundary_actuals_claim_invalid")
@@ -268,25 +242,18 @@ class CompilerSandboxLaunchReceipt(_ExactModel):
             "socket_volume_removed": self.socket_volume_removed,
             "egress_network_removed": self.egress_network_removed,
         }
-        if any(self.lifecycle_payload.get(key) is not value for key, value in lifecycle_flags.items()):
-            raise ValueError("news_program_compile_sandbox_lifecycle_payload_mismatch")
+        if any(self.lifecycle.get(key) is not value for key, value in lifecycle_flags.items()):
+            raise ValueError("news_program_compile_sandbox_lifecycle_claim_invalid")
         _validate_boundary_semantics(self, policy=policy)
-        if self.termination == "succeeded" and (self.exit_code != 0 or self.output_root_sha256 is None):
-            raise ValueError("news_program_compile_sandbox_success_receipt_invalid")
-        if self.termination == "succeeded" and not self.boundary_actuals_available:
-            raise ValueError("news_program_compile_sandbox_success_actuals_unavailable")
-        if self.termination != "succeeded" and self.output_root_sha256 is not None:
+        if self.termination == "succeeded":
+            if not all(lifecycle_flags.values()):
+                raise ValueError("news_program_compile_sandbox_cleanup_incomplete")
+            if self.exit_code != 0 or self.output_root_sha256 is None:
+                raise ValueError("news_program_compile_sandbox_success_receipt_invalid")
+            if not self.boundary_actuals_available:
+                raise ValueError("news_program_compile_sandbox_success_actuals_unavailable")
+        elif self.output_root_sha256 is not None:
             raise ValueError("news_program_compile_sandbox_failed_output_forbidden")
-        if self.termination == "succeeded" and not all(
-            (
-                self.compiler_container_removed,
-                self.proxy_container_removed,
-                self.init_container_removed,
-                self.socket_volume_removed,
-                self.egress_network_removed,
-            )
-        ):
-            raise ValueError("news_program_compile_sandbox_cleanup_incomplete")
         return self
 
 
@@ -300,12 +267,12 @@ def _validate_boundary_semantics(
     try:
         _validate_boundary_payload_shapes(receipt)
         _validate_boundary_commands(receipt, policy=policy)
-        network = receipt.boundary_inspect_payload.get("network")
-        volume = receipt.boundary_inspect_payload.get("volume")
-        proxy = receipt.boundary_inspect_payload.get("proxy")
-        compiler = receipt.boundary_inspect_payload.get("compiler")
-        network_sha = str(receipt.egress_manifest_payload["proxy_network_sha256"])
-        volume_name = str(receipt.socket_volume_payload["name"])
+        network = receipt.boundary_inspect.get("network")
+        volume = receipt.boundary_inspect.get("volume")
+        proxy = receipt.boundary_inspect.get("proxy")
+        compiler = receipt.boundary_inspect.get("compiler")
+        network_sha = str(receipt.egress_manifest["proxy_network_sha256"])
+        volume_name = str(receipt.socket_volume["name"])
         if network is not None:
             _validate_resource_actual(network, kind="network")
             if network["name_sha256"] != network_sha or network["driver"] != "bridge":
@@ -364,7 +331,7 @@ def _validate_boundary_semantics(
 
 
 def _validate_boundary_payload_shapes(receipt: CompilerSandboxLaunchReceipt) -> None:
-    image = receipt.image_preflight_payload
+    image = receipt.image_preflight
     if set(image) != {
         "schema",
         "image_id",
@@ -377,18 +344,20 @@ def _validate_boundary_payload_shapes(receipt: CompilerSandboxLaunchReceipt) -> 
         "pull_policy",
     } or (
         image["image_id"] != receipt.compiler_image_digest
-        or image["compiler_source_sha256"] != receipt.compiler_source_sha256
-        or image["proxy_source_sha256"] != receipt.proxy_source_sha256
-        or image["compiler_lock_sha256"] != receipt.compiler_lock_sha256
+        # The three source identities live in this payload alone now; the compile record's build
+        # attestation is where they are compared against what the host and the container computed.
+        or not _is_sha256(image["compiler_source_sha256"])
+        or not _is_sha256(image["proxy_source_sha256"])
+        or not _is_sha256(image["compiler_lock_sha256"])
         or image["image_code_executed"] is not False
         or image["provider_config_mounted"] is not False
         or image["network"] != "none"
         or image["pull_policy"] != "never"
     ):
         raise ValueError
-    if set(receipt.socket_volume_payload) != {"schema", "name"} or not str(
-        receipt.socket_volume_payload["name"]
-    ).startswith("tracefold-compiler-"):
+    if set(receipt.socket_volume) != {"schema", "name"} or not str(receipt.socket_volume["name"]).startswith(
+        "tracefold-compiler-"
+    ):
         raise ValueError
     expected_environment = {
         "schema": "tracefold.news.compiler_container_environment.v2",
@@ -403,7 +372,7 @@ def _validate_boundary_payload_shapes(receipt: CompilerSandboxLaunchReceipt) -> 
         "ambient_forwarded": False,
         "image_environment_cleared_before_package_import": True,
     }
-    if receipt.environment_payload != expected_environment:
+    if receipt.environment != expected_environment:
         raise ValueError
     expected_mount = {
         "schema": "tracefold.news.compiler_mount_manifest.v2",
@@ -422,9 +391,9 @@ def _validate_boundary_payload_shapes(receipt: CompilerSandboxLaunchReceipt) -> 
         "docker_socket_mounted": False,
         "host_home_mounted": False,
     }
-    if receipt.mount_manifest_payload != expected_mount:
+    if receipt.mount_manifest != expected_mount:
         raise ValueError
-    egress = receipt.egress_manifest_payload
+    egress = receipt.egress_manifest
     if set(egress) != {
         "schema",
         "compiler_network",
@@ -434,13 +403,13 @@ def _validate_boundary_payload_shapes(receipt: CompilerSandboxLaunchReceipt) -> 
         "trusted_proxy_egress",
     } or (
         egress["compiler_network"] != "none"
-        or egress["proxy_grant_sha256"] != receipt.proxy_identity_sha256
+        or not _is_sha256(egress["proxy_grant_sha256"])
         or egress["compiler_other_network_allowed"] is not False
         or egress["trusted_proxy_egress"] is not True
         or not _is_sha256(egress["proxy_network_sha256"])
     ):
         raise ValueError
-    lifecycle = receipt.lifecycle_payload
+    lifecycle = receipt.lifecycle
     if set(lifecycle) != {
         "schema",
         "compiler_container_sha256",
@@ -453,7 +422,7 @@ def _validate_boundary_payload_shapes(receipt: CompilerSandboxLaunchReceipt) -> 
         "socket_volume_removed",
         "egress_network_removed",
     } or (
-        lifecycle["socket_volume_sha256"] != receipt.socket_volume_sha256
+        lifecycle["socket_volume_sha256"] != canonical_sha({"name": receipt.socket_volume["name"]})
         or lifecycle["egress_network_sha256"] != egress["proxy_network_sha256"]
         or not _is_sha256(lifecycle["compiler_container_sha256"])
         or not _is_sha256(lifecycle["proxy_container_sha256"])
@@ -466,9 +435,9 @@ def _validate_boundary_commands(
     *,
     policy: CompilerSandboxPolicy,
 ) -> None:
-    init = _string_command(receipt.boundary_command_payload["volume_init"])
-    proxy = _string_command(receipt.boundary_command_payload["proxy"])
-    compiler = _string_command(receipt.boundary_command_payload["compiler"])
+    init = _string_command(receipt.boundary_command["volume_init"])
+    proxy = _string_command(receipt.boundary_command["proxy"])
+    compiler = _string_command(receipt.boundary_command["compiler"])
     for command in (init, proxy, compiler):
         if len(command) < 4 or command[1] != "run" or _command_option(command, "--network") == "":
             raise ValueError
@@ -491,7 +460,7 @@ def _validate_boundary_commands(
     ):
         raise ValueError
     proxy_network = _command_option(proxy, "--network")
-    if canonical_sha({"name": proxy_network}) != receipt.egress_manifest_payload["proxy_network_sha256"]:
+    if canonical_sha({"name": proxy_network}) != receipt.egress_manifest["proxy_network_sha256"]:
         raise ValueError
     max_file_bytes = max(policy.max_output_bytes, policy.max_stdout_bytes, policy.max_stderr_bytes)
     if (
@@ -510,8 +479,8 @@ def _validate_boundary_commands(
         }
     ):
         raise ValueError
-    proxy_actual = receipt.boundary_inspect_payload.get("proxy")
-    compiler_actual = receipt.boundary_inspect_payload.get("compiler")
+    proxy_actual = receipt.boundary_inspect.get("proxy")
+    compiler_actual = receipt.boundary_inspect.get("compiler")
     if proxy_actual is not None and _command_option(proxy, "--user") != proxy_actual.get("user"):
         raise ValueError
     if compiler_actual is not None and _command_option(compiler, "--user") != compiler_actual.get("user"):

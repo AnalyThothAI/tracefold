@@ -240,7 +240,9 @@ def _valid_sandbox_launch_receipt() -> tuple[CompilerSandboxPolicy, CompilerSand
         "schema": "tracefold.news.compiler_container_lifecycle.v2",
         "compiler_container_sha256": "c" * 64,
         "proxy_container_sha256": "d" * 64,
-        "socket_volume_sha256": canonical_sha(socket_volume_payload),
+        # The launcher addresses the volume by its name alone, and the receipt is now checked against
+        # exactly that: `canonical_sha({"name": <volume>})`, not a hash of the whole socket payload.
+        "socket_volume_sha256": canonical_sha({"name": volume_name}),
         "egress_network_sha256": network_sha,
         "compiler_container_removed": True,
         "proxy_container_removed": True,
@@ -249,36 +251,21 @@ def _valid_sandbox_launch_receipt() -> tuple[CompilerSandboxPolicy, CompilerSand
         "egress_network_removed": True,
     }
     receipt = CompilerSandboxLaunchReceipt.issue(
-        policy_payload=policy.model_dump(mode="json"),
-        policy_sha256=policy.policy_sha256,
+        policy=policy.model_dump(mode="json"),
         input_bundle_sha256="1" * 64,
-        compiler_source_sha256="2" * 64,
-        compiler_lock_sha256="3" * 64,
-        image_preflight_payload=image_preflight_payload,
-        image_preflight_sha256=canonical_sha(image_preflight_payload),
+        image_preflight=image_preflight_payload,
         compiler_image_digest=image,
         proxy_image_digest=image,
-        proxy_source_sha256="5" * 64,
-        proxy_identity_sha256="5" * 64,
-        proxy_config_sha256="6" * 64,
-        proxy_tariff_sha256="7" * 64,
-        proxy_ready_receipt_sha256="8" * 64,
-        proxy_execution_receipt_sha256="9" * 64,
-        socket_volume_payload=socket_volume_payload,
-        socket_volume_sha256=canonical_sha(socket_volume_payload),
-        lifecycle_payload=lifecycle_payload,
-        lifecycle_sha256=canonical_sha(lifecycle_payload),
-        boundary_command_payload=command_payload,
-        boundary_command_root_sha256=canonical_sha(command_payload),
-        boundary_inspect_payload=inspect_payload,
-        boundary_inspect_root_sha256=canonical_sha(inspect_payload),
+        socket_volume=socket_volume_payload,
+        lifecycle=lifecycle_payload,
+        boundary_command=command_payload,
+        boundary_inspect=inspect_payload,
+        # Stated by the launcher, never defaulted by `issue`: a failed launch has incomplete actuals and
+        # must still be able to build the receipt its failure is reported with.
         boundary_actuals_available=True,
-        environment_payload=environment_payload,
-        environment_sha256=canonical_sha(environment_payload),
-        mount_manifest_payload=mount_payload,
-        mount_manifest_sha256=canonical_sha(mount_payload),
-        egress_manifest_payload=egress_payload,
-        egress_manifest_sha256=canonical_sha(egress_payload),
+        environment=environment_payload,
+        mount_manifest=mount_payload,
+        egress_manifest=egress_payload,
         holdout_mounted=False,
         db_credentials_present=False,
         ambient_credentials_present=False,
@@ -306,56 +293,93 @@ def _valid_sandbox_launch_receipt() -> tuple[CompilerSandboxPolicy, CompilerSand
     return policy, receipt
 
 
-def test_compiler_sandbox_policy_and_launch_receipt_are_content_addressed() -> None:
+def test_compiler_sandbox_policy_and_launch_receipt_fail_closed_on_boundary_tampering() -> None:
+    """The policy is still self-addressed; the launch receipt is addressed by the record that embeds it.
+
+    The receipt's own `launch_receipt_sha256` and its eight `*_payload`/`*_sha256` preimage pairs are gone,
+    so a tamper that used to be caught by re-hashing is now caught by `compile_record_sha256` — see
+    `test_compile_record_fails_closed_on_every_tampered_embedded_payload`. What stays here is the part no
+    digest ever proved: the boundary *semantics* read out of the retained daemon payloads.
+    """
+
     policy, receipt = _valid_sandbox_launch_receipt()
 
     assert CompilerSandboxPolicy.model_validate(policy.model_dump(mode="json")) == policy
     assert CompilerSandboxLaunchReceipt.model_validate(receipt.model_dump(mode="json")) == receipt
 
-    tampered = receipt.model_dump(mode="json")
-    tampered["exit_code"] = 7
-    with pytest.raises(ValidationError, match="launch_hash_mismatch"):
-        CompilerSandboxLaunchReceipt.model_validate(tampered)
-
-    tampered = receipt.model_dump(mode="json")
-    tampered["boundary_inspect_payload"]["compiler"]["pids_limit"] = 2
-    tampered["launch_receipt_sha256"] = canonical_sha(
-        {key: value for key, value in tampered.items() if key != "launch_receipt_sha256"}
-    )
-    with pytest.raises(ValidationError, match="boundary_preimage_hash_mismatch"):
-        CompilerSandboxLaunchReceipt.model_validate(tampered)
+    tampered_policy = policy.model_dump(mode="json")
+    tampered_policy["max_cpu_seconds"] = 3_600
+    with pytest.raises(ValidationError, match="sandbox_policy_hash_mismatch"):
+        CompilerSandboxPolicy.model_validate(tampered_policy)
 
     semantically_tampered = receipt.model_dump(mode="json")
-    semantically_tampered["boundary_inspect_payload"]["compiler"]["pids_limit"] = 2
-    semantically_tampered["boundary_inspect_root_sha256"] = canonical_sha(
-        semantically_tampered["boundary_inspect_payload"]
-    )
-    semantically_tampered["launch_receipt_sha256"] = canonical_sha(
-        {key: value for key, value in semantically_tampered.items() if key != "launch_receipt_sha256"}
-    )
+    semantically_tampered["boundary_inspect"]["compiler"]["pids_limit"] = 2
     with pytest.raises(ValidationError, match="boundary_semantics_invalid"):
         CompilerSandboxLaunchReceipt.model_validate(semantically_tampered)
+
+    relabelled_volume = receipt.model_dump(mode="json")
+    relabelled_volume["socket_volume"]["name"] = "tracefold-compiler-other-socket"
+    with pytest.raises(ValidationError, match="boundary_semantics_invalid"):
+        CompilerSandboxLaunchReceipt.model_validate(relabelled_volume)
+
+    uncleaned = receipt.model_dump(mode="json")
+    uncleaned["socket_volume_removed"] = False
+    uncleaned["lifecycle"]["socket_volume_removed"] = False
+    with pytest.raises(ValidationError, match="cleanup_incomplete"):
+        CompilerSandboxLaunchReceipt.model_validate(uncleaned)
+
+    lying_lifecycle = receipt.model_dump(mode="json")
+    lying_lifecycle["lifecycle"]["egress_network_removed"] = False
+    with pytest.raises(ValidationError, match="lifecycle_claim_invalid"):
+        CompilerSandboxLaunchReceipt.model_validate(lying_lifecycle)
 
     failed = receipt.model_dump(mode="json")
     failed["termination"] = "failed"
     failed["exit_code"] = 1
     failed["output_root_sha256"] = None
     failed["boundary_actuals_available"] = False
-    failed["boundary_inspect_payload"]["compiler"] = None
-    failed["boundary_inspect_root_sha256"] = canonical_sha(failed["boundary_inspect_payload"])
-    failed["launch_receipt_sha256"] = canonical_sha(
-        {key: value for key, value in failed.items() if key != "launch_receipt_sha256"}
-    )
+    failed["boundary_inspect"]["compiler"] = None
     parsed_failure = CompilerSandboxLaunchReceipt.model_validate(failed)
     assert parsed_failure.boundary_actuals_available is False
 
     false_claim = dict(failed)
     false_claim["boundary_actuals_available"] = True
-    false_claim["launch_receipt_sha256"] = canonical_sha(
-        {key: value for key, value in false_claim.items() if key != "launch_receipt_sha256"}
-    )
     with pytest.raises(ValidationError, match="boundary_actuals_claim_invalid"):
         CompilerSandboxLaunchReceipt.model_validate(false_claim)
+
+
+def test_sandbox_launch_receipt_rejects_a_success_that_did_not_actually_succeed() -> None:
+    """Three outcome invariants no digest ever covered, and no test guarded until #193.
+
+    A receipt claiming `succeeded` is what makes the launcher hand the runner's patch to the record, so
+    every part of that claim has to be self-consistent: the process exited 0, an output root was verified,
+    and the daemon was actually observed. The inverse matters as much — a run that did not succeed may
+    not carry an output root, because that root is what the patch is read against.
+    """
+
+    _, receipt = _valid_sandbox_launch_receipt()
+
+    non_zero_exit = receipt.model_dump(mode="json")
+    non_zero_exit["exit_code"] = 7
+    with pytest.raises(ValidationError, match="success_receipt_invalid"):
+        CompilerSandboxLaunchReceipt.model_validate(non_zero_exit)
+
+    no_output_root = receipt.model_dump(mode="json")
+    no_output_root["output_root_sha256"] = None
+    with pytest.raises(ValidationError, match="success_receipt_invalid"):
+        CompilerSandboxLaunchReceipt.model_validate(no_output_root)
+
+    unobserved = receipt.model_dump(mode="json")
+    unobserved["boundary_actuals_available"] = False
+    unobserved["boundary_inspect"]["compiler"] = None
+    with pytest.raises(ValidationError, match="success_actuals_unavailable"):
+        CompilerSandboxLaunchReceipt.model_validate(unobserved)
+
+    failed_with_output = receipt.model_dump(mode="json")
+    failed_with_output["termination"] = "timed_out"
+    failed_with_output["exit_code"] = None
+    with pytest.raises(ValidationError, match="failed_output_forbidden"):
+        CompilerSandboxLaunchReceipt.model_validate(failed_with_output)
 
 
 def test_scrubbed_compiler_environment_never_copies_parent_credentials(tmp_path: Path) -> None:

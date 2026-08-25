@@ -25,12 +25,7 @@ from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.runtime import PROGRAM_FACTORY_ID
-from .compiler.security import (
-    COMPILE_EPISODE_PROJECTION_SCHEMA,
-    OptimizerCompileProvenanceV3,
-    ProgramMachineDiffV4,
-    validate_compile_receipt_chain_v3,
-)
+from .compiler.security import CompileRecordV1, validate_compile_record
 from .contracts import (
     LEARNING_EPOCH,
     LEARNING_PROFILE_ID,
@@ -842,67 +837,30 @@ class CandidateEvaluator:
                 raise ValueError("news_learning_program_parent_mismatch")
             if receipt.program_candidate_sha256 != candidate.candidate_arm.program_sha256:
                 raise ValueError("news_learning_program_candidate_mismatch")
-            if not receipt.program_machine_diff:
-                raise ValueError("news_learning_program_machine_diff_required")
-            machine_diff = dict(receipt.program_machine_diff)
-            try:
-                parsed_diff = ProgramMachineDiffV4.model_validate(machine_diff)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("news_learning_program_machine_diff_invalid") from exc
-            if parsed_diff.model_dump(mode="json") != machine_diff:
-                raise ValueError("news_learning_program_machine_diff_invalid")
-            provenance = dict(receipt.compile_provenance or {})
-            try:
-                parsed_provenance = OptimizerCompileProvenanceV3.model_validate(provenance)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("news_learning_program_compile_provenance_invalid") from exc
-            canonical_provenance = parsed_provenance.model_dump(mode="json")
-            if parsed_provenance.mode != "optimizer_candidate" or canonical_provenance != provenance:
-                raise ValueError("news_learning_program_compile_provenance_invalid")
-            if provenance.get("development_dataset_sha") != candidate.development_dataset_sha:
-                raise ValueError("news_learning_program_compile_dataset_mismatch")
-            if parsed_provenance.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
+            # One record, checked once. This was five documents cross-bound by hash — a provenance record,
+            # a machine diff, a receipt chain, seven content-addressed receipts and a runner receipt — and
+            # the same four identities appeared in most of them. What the compile actually has to prove is
+            # unchanged: it ran against this parent, this dataset, this runtime target, and produced this
+            # Program.
+            record = self._compile_record(candidate)
+            if record.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
                 raise ValueError("news_learning_program_compile_epoch_mismatch")
             compile_export = self.development_compile_export(candidate.development_dataset_sha)
-            episode_payloads = list(compile_export.episodes)
-            case_ids = [str(episode["case_id"]) for episode in episode_payloads]
-            cluster_ids = [str(episode["cluster_id"]) for episode in episode_payloads]
-            if (
-                parsed_provenance.projection_schema_id != COMPILE_EPISODE_PROJECTION_SCHEMA
-                or parsed_provenance.development_dataset_payload_sha256 != _sha(compile_export.dataset_payload)
-                or parsed_provenance.case_root_sha256 != _sha(case_ids)
-                or parsed_provenance.cluster_root_sha256 != _sha(cluster_ids)
-                or parsed_provenance.episode_projection_root_sha256 != _sha(episode_payloads)
-                or parsed_provenance.episode_count != len(episode_payloads)
-            ):
+            episodes = list(compile_export.episodes)
+            # Not the count: the episodes themselves. `development_compile_export` re-projects them from
+            # live reviews and recorded decisions, so a review edited between compile and evaluate leaves
+            # the count identical and the corpus different — and the candidate would then be judged
+            # against evidence it never compiled on.
+            if record.episode_count != len(episodes) or record.episode_projection_root_sha256 != _sha(episodes):
                 raise ValueError("news_learning_program_compile_corpus_mismatch")
-            if parsed_provenance.parent_program_sha256 != receipt.program_parent_sha256:
-                raise ValueError("news_learning_program_compile_parent_mismatch")
-            if (
-                parsed_diff.parent_program_sha256 != receipt.program_parent_sha256
-                or parsed_diff.candidate_program_sha256 != receipt.program_candidate_sha256
-            ):
-                raise ValueError("news_learning_program_machine_diff_identity_mismatch")
-            if (
-                parsed_provenance.target_runtime_manifest_sha256
-                != candidate.candidate_arm.runtime_model_bindings_sha256
-            ):
-                raise ValueError("news_learning_program_compile_runtime_manifest_mismatch")
-            if receipt.generator_execution_sha != _sha(provenance):
+            if receipt.generator_execution_sha != record.compile_record_sha256:
                 raise ValueError("news_learning_program_generator_execution_mismatch")
-            if parsed_provenance.patch_sha256 != receipt.candidate_patch_sha:
-                raise ValueError("news_learning_program_patch_sha_mismatch")
-            self._verify_compile_receipt_chain(
-                candidate=candidate,
-                provenance=parsed_provenance,
-            )
         elif any(
             value is not None
             for value in (
                 receipt.program_parent_sha256,
                 receipt.program_candidate_sha256,
-                receipt.program_machine_diff,
-                receipt.compile_provenance,
+                receipt.compile_record_sha256,
             )
         ):
             raise ValueError("news_learning_policy_receipt_contains_program_change")
@@ -2653,42 +2611,38 @@ class CandidateEvaluator:
         if _sha({"kind": "candidate_registration", "payload": payload}) != receipt.registration_receipt_sha:
             raise ValueError("news_learning_candidate_registration_hash_mismatch")
 
-    def _verify_compile_receipt_chain(
-        self,
-        *,
-        candidate: CandidateManifest,
-        provenance: OptimizerCompileProvenanceV3,
-    ) -> None:
+    def _compile_record(self, candidate: CandidateManifest) -> CompileRecordV1:
+        """Load the one persisted record this candidate names, and re-verify it against the candidate."""
+
+        receipt = candidate.proposal_receipt
         rows = self._conn.execute(
             "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
-            "WHERE kind = 'compile_receipt' "
-            "AND payload ->> 'receipt_payload_root_sha256' = %s",
-            (provenance.receipt_payload_root_sha256,),
+            "WHERE kind = 'compile_record' AND artifact_sha = %s",
+            (receipt.compile_record_sha256,),
         ).fetchall()
         if not rows:
-            raise ValueError("news_learning_program_compile_receipt_missing")
-        if len(rows) != 1:
-            raise ValueError("news_learning_program_compile_receipt_ambiguous")
+            raise ValueError("news_learning_program_compile_record_missing")
         row = rows[0]
         payload = dict(row["payload"] or {})
-        expected_artifact_sha = _sha({"kind": "compile_receipt", "payload": payload})
-        if str(row["artifact_sha"]) != expected_artifact_sha:
-            raise ValueError("news_learning_program_compile_receipt_artifact_hash_mismatch")
         if str(row.get("parent_sha") or "") != candidate.development_dataset_sha:
-            raise ValueError("news_learning_program_compile_receipt_parent_mismatch")
-        receipt = candidate.proposal_receipt
+            raise ValueError("news_learning_program_compile_record_parent_mismatch")
         try:
-            chain = validate_compile_receipt_chain_v3(
+            record = validate_compile_record(
                 payload,
-                provenance=provenance,
-                patch_sha256=receipt.candidate_patch_sha,
                 parent_program_sha256=str(receipt.program_parent_sha256),
+                program_sha256=str(receipt.program_candidate_sha256),
+                development_dataset_sha256=candidate.development_dataset_sha,
                 target_runtime_manifest_sha256=candidate.candidate_arm.runtime_model_bindings_sha256,
             )
         except (TypeError, ValueError) as exc:
-            raise ValueError("news_learning_program_compile_receipt_invalid") from exc
-        if chain.model_dump(mode="json") != payload:
-            raise ValueError("news_learning_program_compile_receipt_noncanonical")
+            raise ValueError("news_learning_program_compile_record_invalid") from exc
+        # The record is stored under its own root, so a byte changed in the payload either stops the
+        # document validating or stops it answering to the key the receipt points at.
+        if record.compile_record_sha256 != str(row["artifact_sha"]):
+            raise ValueError("news_learning_program_compile_record_identity_mismatch")
+        if record.model_dump(mode="json") != payload:
+            raise ValueError("news_learning_program_compile_record_noncanonical")
+        return record
 
     def _candidate(self, candidate_sha: str) -> CandidateManifest:
         candidate = self._candidates.get(candidate_sha)

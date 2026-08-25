@@ -117,6 +117,12 @@ two-file artifact the new image cannot load. Expect `canary status` to report
 upgrade; a candidate has to be recompiled against the new root and re-armed
 from the start of the promotion ladder. Rolling back to the previous
 same-schema image does not un-trip it, and `0304` has no downgrade.
+Migration `0305` trips them a second time for the same reason on the compile
+side: a candidate registered against the retired receipt chain names a
+`compile_receipt` row the new image cannot validate, so it cannot be evaluated.
+Expect reason `compile_record_v1_hard_cut` there, recompile, and re-arm. Old
+`compile_receipt` rows stay readable as audit history; they are simply not
+release evidence any more. `0305` has no downgrade either.
 
 For the #160 drill and rollback, use the full image ID printed by
 `build-news-rollback-image` directly. After both sides of a later deployment
@@ -555,13 +561,18 @@ Diagnose News in this order:
    provider-cost limits, an exact local `--compiler-image sha256:<64 hex>`, and
    a seed. The operator YAML must also carry one complete positive
    `llm.news_compiler_tariff`; then `learning propose` exactly one
-   `program` or `policy` variable and run `learning evaluate`. Compiler
-   protocol/receipt v3 seals the three role identities and accounts calls/cost/
-   failures separately before summing them. The trusted
+   `program` or `policy` variable and run `learning evaluate`. Each of the three
+   roles is one `ModelExecutionIdentity`, and calls/cost/failures are accounted
+   separately before they are summed. The trusted
    exporter seals accepted development only; the isolated compiler runner has
    no DB/holdout/application credentials and can emit only a bounded
    `ProgramStrategyPatchV1` of the two advisory instructions; the trusted
-   applier verifies all receipts before creating an unaccepted candidate.
+   applier cross-checks the runner's counters against the sidecar ledger and
+   issues one `CompileRecordV1` before creating an unaccepted candidate.
+   `learning compile` writes that record under `compile_record` /
+   `compile_record_sha256` alongside the operator-facing `changed_predictors`,
+   and `learning propose` persists it as a `compile_record` learning artifact
+   keyed by its own root — that root is what the evaluator later loads.
    Production promotion additionally requires a
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
    observation, and then `learning canary arm`; inspect with `canary status`
@@ -754,6 +765,11 @@ one migration receipt to `news_learning_artifacts`. It leaves `program_v7`
 open on purpose — the artifact serialization and the Program root changed, the
 evidence did not — so accepted `news_review_v4` rows stay eligible and the
 epoch row goes on naming what the epoch was opened with. It is irreversible.
+`0305` is the #193 compile-record hard cut: it adds `compile_record` to the
+learning-artifact kind constraint while keeping `compile_receipt` in it, and
+trips every armed or active canary whose candidate was registered against the
+retired receipt chain. It leaves `program_v7` open for the same reason and is
+irreversible as well.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
