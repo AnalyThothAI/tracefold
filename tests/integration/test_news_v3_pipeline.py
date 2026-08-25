@@ -1153,3 +1153,83 @@ def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
     assert held["outcome_kind"] == "held_gate" and [s["stage"] for s in held["timeline"]] == ["received", "gate"]
     assert [step["stage"] for step in held["chain"]] == ["item", "gate"]
     assert explain_event(repos, "does-not-exist") is None
+
+
+def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> None:
+    """`?oi=` names the deterministic lane's gate, so it must not answer for any other admission.
+
+    `triage.py` enters its OI branch under `admission = 'telemetry_deterministic'` and nothing else writes
+    `trace['oi_signal']`, so pairing the two costs no rows. It is what keeps the filter off the whole
+    retention's TOAST: without the admission the planner reads `trace` — 26 MB over 24 h of verdicts — for
+    every candidate row before it can tell whether the rule matches, and a rare rule finds nothing to stop
+    early on. Measured live on 2026-08-25, unbounded `?oi=parse_failed` was a 500 at 1.24 s against the serve
+    role's 1 s statement timeout, and 0.44 s once the admission came with it.
+    """
+
+    repos = repositories_for_connection(conn)
+    telemetry_id, other_id = _admit_test_events(
+        conn,
+        hit_base=1_795_000,
+        titles=("Zeta OI Rise 4.55 percent", "Eta publishes an unrelated update"),
+        hour=11,
+    )
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        event_type="oi_spike",
+        assets=[],
+        direction="bullish",
+        scope="single_name",
+        magnitude=1,
+        actionable=False,
+        confidence=0.5,
+        decision="drop",
+        headline_zh="测试帧",
+        why_zh="",
+    )
+    judgment = scored_judgment(verdict, editorial_origin="telemetry_deterministic")
+    with repos.transaction():
+        conn.execute(
+            "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
+            (telemetry_id,),
+        )
+        # The same trace key on both rows: the filter must separate them by lane, not by what the trace holds.
+        for offset, event_id in enumerate((telemetry_id, other_id)):
+            repos.news.insert_verdict(
+                event_id=event_id,
+                stage="triage",
+                policy_version=TRIAGE_POLICY_VERSION,
+                model_decision=None,
+                rule_baseline_decision="drop",
+                final_decision="drop",
+                override_rule="telemetry_deterministic",
+                throttled_by=None,
+                verdict=verdict.model_dump(),
+                editorial=judgment.editorial.model_dump(mode="json"),
+                scored_judgment_sha256=judgment.scored_judgment_sha256,
+                runtime_manifest_sha="c" * 64,
+                model=None,
+                program_version="news_oi_signal_v1",
+                program_sha256="d" * 64,
+                degraded=False,
+                error_code=None,
+                trace={"oi_signal": {"parsed": False, "rule": "oi_parse_failed", "symbol": "ZETA"}},
+                evidence_version=1,
+                evidence_sha256="e" * 64,
+                focus_fact_id="f" * 64,
+                now_ms=1_790_000_000_000 + offset,
+            )
+
+    served = repos.news.list_feed(
+        family=None,
+        admission=None,
+        decision=None,
+        symbol=None,
+        q=None,
+        limit=10_000,
+        cursor=None,
+        oi="parse_failed",
+    )
+    served_ids = {event["event_id"] for event in served["events"]}
+    assert telemetry_id in served_ids
+    assert other_id not in served_ids
+    conn.commit()
