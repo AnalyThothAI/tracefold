@@ -1465,6 +1465,40 @@ def test_live_repreflight_rechecks_inside_the_attempt_claim(conn, at_claim: int,
     assert adapter.submit_calls == 0
 
 
+@pytest.mark.parametrize(
+    ("before_call", "reason"),
+    [
+        (NOW + 61_001, "approval_expired"),
+        (NOW + 11_001, "live_repreflight_stale"),
+    ],
+)
+def test_live_repreflight_rechecks_after_claim_commit_before_provider_call(
+    conn,
+    before_call: int,
+    reason: str,
+) -> None:
+    adapter = _LiveLifecycleAdapter()
+    config, row = _prepare_live_reviewed(conn, adapter=adapter)
+    _approve_live(conn, row)
+    clock_values = iter((NOW + 1_000, NOW + 1_000, NOW + 1_000, NOW + 1_000, before_call))
+
+    asyncio.run(
+        ReconcileRunner(
+            db=_DirectDb(conn),
+            config=config,
+            bars=lambda _venue: None,
+            adapter=adapter,
+            clock=lambda: next(clock_values),
+        ).turn()
+    )
+    rejected = _order_row(conn, str(row["order_id"]))
+    assert rejected["state"] == "REJECTED"
+    assert rejected["state_reason"] == reason
+    assert int(rejected["provider_attempt_count"]) == 0
+    assert _repos(conn).trading.orders_today(day_key=_day_key_for(NOW + 1_000)) == 0
+    assert adapter.submit_calls == 0
+
+
 def test_live_attempt_claim_crossing_utc_midnight_charges_the_new_day(conn) -> None:
     day_ms = 86_400_000
     next_midnight = (NOW // day_ms + 1) * day_ms
@@ -1480,7 +1514,7 @@ def test_live_attempt_claim_crossing_utc_midnight_charges_the_new_day(conn) -> N
     )
     conn.commit()
     _approve_live(conn, row, now=before_midnight)
-    clock_values = iter((before_midnight, before_midnight, before_midnight, next_midnight))
+    clock_values = iter((before_midnight, before_midnight, before_midnight, next_midnight, next_midnight))
 
     with pytest.raises(SystemExit, match="process died after provider call"):
         asyncio.run(

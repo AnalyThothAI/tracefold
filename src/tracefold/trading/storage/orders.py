@@ -573,6 +573,32 @@ class OrderStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
+    def reject_unstarted_attempt(self, *, order_id: str, reason: str, now_ms: int) -> bool:
+        """Cancel a committed entry reservation only while its provider call is still unstarted.
+
+        The submit protocol owns that proof and calls this immediately after its post-commit time
+        guard fails. Resetting the counter is safe at this exact boundary; a crash before this write
+        remains conservatively `SUBMITTING` with the reservation spent.
+        """
+
+        cursor = self.conn.execute(
+            """
+            UPDATE trading_orders
+               SET state = 'REJECTED',
+                   state_reason = %s,
+                   provider_attempt_count = 0,
+                   closed_at_ms = %s,
+                   next_reconcile_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE order_id = %s
+               AND state = 'SUBMITTING'
+               AND provider_attempt_count = 1
+               AND remote_order_id IS NULL
+            """,
+            (reason, int(now_ms), int(now_ms), order_id),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
     def reject_order(self, *, order_id: str, payload_sha256: str, reason: str, now_ms: int) -> bool:
         cursor = self.conn.execute(
             """

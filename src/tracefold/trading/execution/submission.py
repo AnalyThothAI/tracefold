@@ -53,6 +53,10 @@ async def attempt_once(
     untouched and the same close was re-issued every thirty seconds forever.
     """
 
+    guard_clock = claim_clock
+    if entry_approval_window is not None and guard_clock is None:
+        raise ValueError("trading_guarded_entry_claim_clock_required")
+
     def _claim(repos: Any) -> tuple[str, int]:
         if entry_approval_window is not None:
             # Take the order-row lock before sampling the final live windows. Otherwise lock
@@ -87,9 +91,45 @@ async def attempt_once(
         log.info("trading %s attempt refused order=%s reason=%s", kind, order.order_id, claim)
         return None, claim, claim_now
 
+    attempt_now = claim_now
+    if entry_approval_window is not None:
+        if guard_clock is None:  # pragma: no cover - validated before the claim transaction
+            raise RuntimeError("trading_guarded_entry_claim_clock_missing")
+        attempt_now = int(guard_clock())
+        refusal: str | None = None
+        if not (entry_approval_window[0] <= attempt_now <= entry_approval_window[1]):
+            refusal = "approval_expired"
+        elif entry_preflight_window is not None and not (
+            entry_preflight_window[0] <= attempt_now <= entry_preflight_window[1]
+        ):
+            refusal = "live_repreflight_stale"
+        elif utc_day_key(attempt_now) != utc_day_key(claim_now):
+            refusal = "live_submission_day_changed"
+        if refusal is not None:
+
+            def _cancel(repos: Any) -> bool:
+                cancelled = bool(
+                    repos.trading.reject_unstarted_attempt(
+                        order_id=order.order_id,
+                        reason=refusal,
+                        now_ms=attempt_now,
+                    )
+                )
+                if cancelled:
+                    repos.trading.release_order_day_charge(day_key=utc_day_key(claim_now), now_ms=attempt_now)
+                return cancelled
+
+            await db.tx(
+                "trading_attempt_cancel_unstarted",
+                _cancel,
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
+            log.info("trading entry attempt cancelled before provider call order=%s reason=%s", order.order_id, refusal)
+            return None, refusal, attempt_now
+
     try:
         pending = call()
-        return await (observe_call(pending) if observe_call is not None else pending), "claimed", claim_now
+        return await (observe_call(pending) if observe_call is not None else pending), "claimed", attempt_now
     except Exception as exc:
         reason = f"provider_exception:{type(exc).__name__}"
         log.warning("trading %s attempt did not answer: %s", kind, type(exc).__name__)
@@ -99,12 +139,12 @@ async def attempt_once(
                 order_id=order.order_id,
                 state=OrderState.AMBIGUOUS.value,
                 state_reason=f"{kind}_{reason}",
-                next_reconcile_at_ms=claim_now + _RECONCILE_BACKOFF_MS,
-                now_ms=claim_now,
+                next_reconcile_at_ms=attempt_now + _RECONCILE_BACKOFF_MS,
+                now_ms=attempt_now,
             ),
             timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
         )
-        return None, "ambiguous", claim_now
+        return None, "ambiguous", attempt_now
 
 
 async def commit_order(
