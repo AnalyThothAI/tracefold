@@ -4,7 +4,6 @@ import type { NewsOiWindowSymbol } from "../../api/newsQueries";
 import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
-
 /**
  * Which symbols have already spent their rank slots inside the live window.
  *

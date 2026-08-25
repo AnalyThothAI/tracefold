@@ -6,7 +6,6 @@ import { formatCount } from "../../model/newsLabels";
 import { oiPercent, oiRuleLabel, oiValueZh, oiWindowLabel } from "../../model/oiSignals";
 import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
-
 /**
  * The two threshold sets, side by side and never merged (#207 principle 4).
  *

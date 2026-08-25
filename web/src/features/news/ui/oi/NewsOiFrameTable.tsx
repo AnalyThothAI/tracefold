@@ -24,7 +24,6 @@ import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
-
 import "./newsOiFrameTable.css";
 
 /**
