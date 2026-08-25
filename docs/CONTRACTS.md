@@ -75,9 +75,10 @@ the manual cold compiler. Its `tariff_id`, positive `input_token_overhead`, and
 positive task/reflection/metric-judge input/output micro-USD-per-million-token rates are all
 required together; a partial or zero-rate tariff fails configuration. It does
 not affect Workers or hot-path model calls. `tracefold config` reports only
-whether this tariff is configured and its non-secret ID. `learning compile`
-also requires an explicit local `--compiler-image sha256:<64 hex>`; tags and
-registry manifest references are rejected. Each of the three compiler roles —
+whether this tariff is configured and its non-secret ID. It is unused by
+`learning optimize`, which meters an unpriced call at the operator's declared
+`--max-call-cost-microusd` instead; #202 removes it along with the proxy that
+reserved against it. Each of the three compiler roles —
 task, reflection and `metric_judge` — is one `ModelExecutionIdentity` holding
 the complete secret-free execution contract; its only digest is
 `endpoint_fingerprint` over the canonical endpoint URL, which is fingerprinted
@@ -952,16 +953,15 @@ evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
-`news learning experiment snapshot|compare|optimize` (#193) is the operator's
-fast research loop, and it is not part of the release plane. It reads the
-database once as `serve`, writes only into a run directory the operator names,
-and produces nothing any gate can accept:
+`news learning snapshot|compare` (#193, flattened out of an `experiment` group
+by #202) is the operator's research window, and it is not part of the release
+plane. It reads the database once as `serve`, writes only into a run directory
+the operator names, and can propose nothing:
 
 | Command | Reads | Writes | Spends |
 | --- | --- | --- | --- |
 | `snapshot --hours N --limit N --out DIR` | one closed window through `CandidateEvaluator.baseline_episodes` | `DIR/manifest.json`, `DIR/cases/<case>.json` | nothing |
 | `compare --run DIR --student MODEL [--teacher MODEL] --max-model-cases N [--resume]` | the frozen cases | `DIR/compare/<case>.json`, `DIR/report.json` | one live arm per named model |
-| `optimize --run DIR --student MODEL --reflection MODEL --semantic-judge MODEL --max-metric-calls N [--seed N]` | the frozen cases | `DIR/experiment_candidate.json` | task, reflection and judge endpoints |
 
 The window ends at a ten-minute settlement grace rather than at `now`: the
 outcome loop keeps writing prices for minutes after an Event opens, so a
@@ -985,14 +985,32 @@ route that serves that role. A case with no accepted review is listed in
 size times mean regression, so a broad small regression outranks one bad case
 and an improvement never enters the queue.
 
-`optimize` runs `run_gepa` — literally the same function object the trusted
-compiler calls — in this process, against accepted reviews only. It is the one
-News CLI module that loads the optimizer, and it holds no promotion authority:
-no Docker, no compiler image, no sandbox, no proxy sidecar, no tariff. Its
-output is a `tracefold.news.experiment_candidate.v1` carrying `promotable:
-false` and no compile-record identity at all, so `CompileRecordV1` refuses it.
-Promoting a winner means re-running `learning compile` in the sealed container;
-this loop only says whether that container is worth spending.
+`news learning optimize --development SHA --out DIR --max-metric-calls N
+--max-task-model-calls N --max-reflection-model-calls N
+--max-metric-judge-model-calls N --max-cost-microusd N
+--max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]` (#202) is
+the one optimization entry point in the repository. It reads the frozen
+development corpus once as `serve` and then holds three model endpoints and a
+typed budget — no database write credential, no broker, no delivery, no canary,
+no promotion, no Docker, no compiler image, no sandbox, no proxy sidecar, no
+tariff. The task LM is the configured production Program route rather than a
+command-line model, because a number optimized against a different route
+predicts nothing about production.
+
+It ends in exactly one of three terminal states, and every one of them writes
+`DIR/optimization_report.json` (`news_optimization_run_report_v1`):
+
+| Outcome | Meaning | Candidate | Exit |
+| --- | --- | --- | --- |
+| `NO_OP` | the optimizer kept the seed; no verifiable improvement | none | 1 |
+| `REJECTED` | the run violated a quality, safety or budget bound, or the Objective Plan refused the corpus before any call | none | 1 |
+| `ADVANCE` | one bounded Prompt patch, still with no production authority | `DIR/prompt_candidate.json` | 0 |
+
+A `REJECTED` caused by the Objective Plan costs nothing: the plan is built
+before any endpoint is touched, which is the same answer `readiness` gives with
+zero model calls. The per-call cost ceiling is also the rate an unpriced
+provider call is charged at — neither endpoint this project runs on returns a
+price litellm can resolve — so over-charging stops a run early rather than late.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
 [--include-reviewed] [--events-from DIR]` proposes `news_review_v4` rubrics for
@@ -1031,29 +1049,29 @@ development or future temporal validation dataset. Every current dataset is in
 the deployment-time `program_v7` epoch and accepts only `news_review_v4`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
 dataset or metric-v4 denominator.
-`learning compile --development SHA --artifact-root DIR --out FILE
---max-metric-calls N --max-task-model-calls N --max-reflection-model-calls N
---max-metric-judge-model-calls N --max-cost-microusd N [--seed N]` is the
-manual cold DSPy GEPA workflow. A trusted exporter recomputes the
-development dataset and ordered episode roots, then launches an isolated runner
-without DB/holdout/application credentials. The runner is bounded by the
-declared per-role calls, combined cost, seed and resource policy and can emit
-only a typed `ProgramStrategyPatchV1` carrying the two advisory instructions.
-The trusted side cross-checks the runner's own counters against the sidecar
-ledger, then issues one `CompileRecordV1` embedding the whole compile — role
-identities, budget, tariff, per-call usage, the sandbox launch receipt, the
-`CompilerBuildAttestation` and the two-instruction patch — and builds an
-unaccepted content-addressed Artifact from the exact stable root. The command
-writes `compile_record`, `compile_record_sha256` and the operator-facing
-`changed_predictors`. `learning propose` reads `spec["compile_record"]`,
-rebuilds the candidate from `record.run.patch`, and stores the record under kind
-`compile_record` keyed by its own root. A Program `ProposalReceipt` carries
-that root as `compile_record_sha256`, and its `generator_execution_sha` equals
-it; `CandidateEvaluator` loads that one row rather than walking a chain. The
-runner cannot read holdout, register, accept, deploy or promote its output.
+`learning register --development SHA --candidate FILE --artifact-root DIR
+[--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v1` to
+the active stable Program and a frozen development dataset. Whatever wrote the
+two instructions — `learning optimize`, a research run, or a person — enters
+here on identical terms, because the generator is audit, not permission. The
+command re-applies the patch to the running stable to derive the candidate's
+Program identity, re-projects the corpus and re-derives the #199 Objective Plan
+rather than trusting the candidate's own `objective_summary`, and refuses a
+candidate whose declared projection root or split disagrees. It stores the
+candidate under kind `prompt_candidate` keyed by its own `candidate_sha256`, and
+the `ProposalReceipt` carries that root plus
+`development_episode_projection_root_sha256` — the registrar's own projection,
+which is what makes a review edited between generation and evaluation visible.
 
-`learning propose` seals exactly one candidate variable (`program` or
-`policy`) against a development dataset. `learning evaluate` runs the
+There is one candidate kind. `CandidateManifest.target` (`program | policy`) is
+gone: a policy change is a configuration release with its own gradual-rollout
+capability, and dressing it as a learning candidate gave it an Objective Plan, a
+development dataset and a blind pairwise stage for a change no optimizer
+proposed and no metric scored. Rows registered under the old contract stay in
+`news_learning_artifacts` as append-only audit and no longer parse, so they
+cannot be re-armed (migration `20260825_0307` trips anything still open).
+
+`learning evaluate` runs the
 development/offline or validation/holdout release gate; validation calls both
 arms sequentially and `--live-program` can append exact per-Predictor
 recordings. Its mutually exclusive `--verify-recordings` mode is limited to

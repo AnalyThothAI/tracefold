@@ -14,7 +14,6 @@ import pytest
 
 import tracefold.news.learning.evaluator as candidate_evaluator_module
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
-from tests.news.test_news_program_compiler_sandbox import _valid_sandbox_launch_receipt
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
@@ -23,17 +22,7 @@ from tracefold.news.learning.canary import (
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
-from tracefold.news.learning.compiler.security import (
-    CompileBudgetV3,
-    CompilerBuildAttestation,
-    CompileRecordV1,
-    CompilerProxyCall,
-    CompilerProxyExecution,
-    CompilerProxyTariff,
-    CompileSpend,
-    GepaRunResult,
-    ModelExecutionIdentity,
-)
+from tracefold.news.learning.contracts import PromptCandidateV1, PromptPatchV1
 from tracefold.news.learning.evaluator import (
     LEARNING_EPOCH,
     ArmManifest,
@@ -51,7 +40,17 @@ from tracefold.news.learning.objective import (
     GepaObjectivePlan,
     build_gepa_objective_plan,
 )
+from tracefold.news.learning.optimizer import objective_summary as objective_plan_summary
 from tracefold.news.learning.replay import ReplayArmSpec, load_recording_replay_capability
+from tracefold.news.review.desk import (
+    BlindPairwiseSubmission,
+    DeskQuery,
+    ExternalMissSubmission,
+    TaskRef,
+)
+from tracefold.news.review.desk import (
+    ReviewDesk as _ReviewDesk,
+)
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -525,14 +524,13 @@ def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
     )
     patch = extract_optimizer_patch(cold, base)
     artifact = apply_program_patch(base, patch)
-    record = _compile_record(
+    registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        program_sha256=artifact.program_sha256,
-        patch_payload=patch.model_dump(mode="json"),
+        patch=PromptPatchV1.of(patch),
     )
-    return artifact, record
+    return artifact, registered
 
 
 def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaObjectivePlan:
@@ -542,237 +540,44 @@ def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaO
     return build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
 
 
-def _compile_record(
+def _prompt_candidate(
     conn,
     *,
     development_sha: str,
     stable: ArmManifest,
-    program_sha256: str,
-    patch_payload: dict[str, object] | None = None,
-    metric_calls: int = 12,
+    patch: PromptPatchV1,
+    objective_summary: dict[str, object] | None = None,
     **overrides: object,
-) -> CompileRecordV1:
-    """One whole trusted compile, embedded.
+) -> PromptCandidateV1:
+    """One registered write-set: two advisory instructions, and what they were optimized against.
 
-    This one document replaced seven content-addressed receipts, a chain root, a runner receipt, an
-    optimizer provenance record and a machine diff.  Between them those restated the same four
-    identities — parent Program, dataset, runtime manifest, patch — up to four times, cross-bound by
-    hashes each party computed from a payload it already held.  Here every operand is a field of one
-    object, addressed once by `compile_record_sha256`, which is also the learning ledger's key for it.
+    It replaced a `CompileRecordV1` that carried a sandbox launch receipt, a metered proxy ledger, a
+    three-party build attestation and a tariff — none of which said anything about the two instructions.
+    The objective summary is the real plan for the real frozen corpus, not a plausible pair of numbers:
+    `_validate_candidate_static` rebuilds that plan from the same dataset, so a hand-picked summary here
+    would be a fixture asserting its own fiction.
     """
 
-    epoch = conn.execute(
-        "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-        (LEARNING_EPOCH,),
-    ).fetchone()
-    assert epoch is not None
     exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
-    episode_count = len(exported.episodes)
-    # The real split of the real optimizer corpus, not a plausible pair of numbers. `run_gepa` derives
-    # both from the Objective Plan, and `_validate_candidate_static` rebuilds that plan from the same
-    # frozen dataset — so a hand-picked split here would be a fixture asserting its own fiction.
-    plan = _objective_plan(conn, stable=stable, development_sha=development_sha)
-    # A corpus the plan refuses cannot produce a real split, and several tests build exactly that on
-    # purpose to prove the release gate rejects the candidate rather than trusting its receipt. Those get
-    # a declared split the plan will not confirm, which is the shape the gate is supposed to catch.
-    split = plan.split or {"schema": "tracefold.news.compile_split_receipt.v1", "unverifiable_fixture": True}
-    train_count = len(plan.train_episodes) or max(1, episode_count - 1)
-    val_count = len(plan.development_selection_episodes) or max(1, episode_count - train_count)
-    minibatch = min(2, train_count)
-    parent_program_sha256 = str(overrides.pop("parent_program_sha256", stable.program_sha256))
-    # The optimizer's whole write-set: a parent identity and the two advisory instructions. Four keys
-    # exactly — the record rejects any other key set — and no self-declared digest.
-    patch = patch_payload or {
-        "schema_version": "news_program_strategy_patch_v1",
-        "parent_program_sha256": parent_program_sha256,
-        "event_semantics_instruction": "A bounded fixture optimizer strategy.",
-        "reader_card_instruction": "Keep reader language direct and evidence-bound.",
-    }
-    tariff = CompilerProxyTariff(
-        tariff_id="candidate-evaluator-fixture-v1",
-        input_token_overhead=64,
-        task_input_microusd_per_million=1_000_000,
-        task_output_microusd_per_million=1_000_000,
-        reflection_input_microusd_per_million=1_000_000,
-        reflection_output_microusd_per_million=1_000_000,
-        metric_judge_input_microusd_per_million=1_000_000,
-        metric_judge_output_microusd_per_million=1_000_000,
-    )
-    models = {
-        "task": ModelExecutionIdentity.issue(
-            role="task",
-            model="fixture/task",
-            api_base="https://task.fixture.invalid/v1",
-            max_output_tokens=1_200,
-            timeout_seconds=20,
-            temperature=0,
-            model_kwargs={},
-        ),
-        "reflection": ModelExecutionIdentity.issue(
-            role="reflection",
-            model="fixture/reflection",
-            api_base="https://reflection.fixture.invalid/v1",
-            max_output_tokens=32_000,
-            timeout_seconds=300,
-            temperature=1,
-            model_kwargs={},
-        ),
-        "metric_judge": ModelExecutionIdentity.issue(
-            role="metric_judge",
-            model="fixture/metric-judge",
-            api_base="https://metric-judge.fixture.invalid/v1",
-            max_output_tokens=4_096,
-            timeout_seconds=120,
-            temperature=0,
-            model_kwargs={},
-        ),
-    }
-    calls: list[CompilerProxyCall] = []
-    for role, count, cost_microusd in (("task", 20, 1_000), ("reflection", 10, 500), ("metric_judge", 2, 250)):
-        for sequence in range(1, count + 1):
-            request_bytes = 256
-            max_output_tokens = models[role].max_output_tokens
-            calls.append(
-                CompilerProxyCall(
-                    role=role,
-                    sequence=sequence,
-                    request_sha256=_sha({"role": role, "sequence": sequence, "kind": "request"}),
-                    response_sha256=_sha({"role": role, "sequence": sequence, "kind": "response"}),
-                    responding_model=models[role].model,
-                    provider_invoked=True,
-                    request_bytes=request_bytes,
-                    max_output_tokens=max_output_tokens,
-                    # Every physical call is reserved at the trusted worst-case rate before it is made.
-                    reserved_cost_microusd=tariff.worst_case_cost_microusd(
-                        role=role,
-                        request_bytes=request_bytes,
-                        max_output_tokens=max_output_tokens,
-                    ),
-                    input_tokens=10,
-                    output_tokens=5,
-                    cached_tokens=0,
-                    total_tokens=15,
-                    provider_cost_microusd=cost_microusd,
-                    finish_reason="stop",
-                    error_code=None,
-                )
-            )
-    _policy, launch = _valid_sandbox_launch_receipt()
-    usage = CompilerProxyExecution(
-        # The ledger has to belong to the grant the container was actually launched under, which is the
-        # one the sandbox receipt's egress manifest names.
-        grant_sha256=str(launch.egress_manifest["proxy_grant_sha256"]),
-        task_model_calls=20,
-        reflection_model_calls=10,
-        metric_judge_model_calls=2,
-        task_cost_microusd=20_000,
-        reflection_cost_microusd=5_000,
-        metric_judge_cost_microusd=500,
-        task_failures=0,
-        reflection_failures=0,
-        metric_judge_failures=0,
-        actual_cost_microusd=sum(call.provider_cost_microusd for call in calls),
-        reserved_cost_microusd=sum(call.reserved_cost_microusd for call in calls),
-        calls=tuple(calls),
-        error_codes=(),
-    )
-    budget = CompileBudgetV3(
-        max_metric_calls=20,
-        max_task_model_calls=40,
-        max_reflection_model_calls=40,
-        max_metric_judge_model_calls=40,
-        max_cost_microusd=1_000_000,
-        max_call_cost_microusd=40_000,
-        seed=129,
-    )
-    preflight = launch.image_preflight
+    plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
     values: dict[str, object] = {
-        "parent_program_sha256": parent_program_sha256,
-        "program_sha256": program_sha256,
+        "parent_program_sha256": stable.program_sha256,
         "development_dataset_sha256": development_sha,
-        "learning_epoch_started_at_ms": int(epoch["starts_at_ms"]),
-        "review_rubric_version": REVIEW_RUBRIC_VERSION,
-        "episode_count": episode_count,
-        # The corpus by content: `development_compile_export` re-projects episodes from live reviews, so
-        # a count alone would not notice a review edited between compile and evaluate.
-        "episode_projection_root_sha256": _sha(list(exported.episodes)),
         "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
-        "task_model": models["task"],
-        "reflection_model": models["reflection"],
-        "metric_judge_model": models["metric_judge"],
-        # One optimization, carried whole. The record embeds the object the runner produced; it used to
-        # restate ten of its fields and copy each one across the container boundary by hand.
-        "run": GepaRunResult.model_validate(
-            {
-                "patch": patch,
-                "metric": {"metric_id": "accepted_review_feedback_v1"},
-                "optimizer_config": {
-                    "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
-                    "seed": budget.seed,
-                    "constructor_scalar_arguments": {
-                        "max_metric_calls": budget.max_metric_calls,
-                        "reflection_minibatch_size": minibatch,
-                    },
-                    "compile_call": {
-                        # The optimizer corpus, not the frozen corpus: since #199 GEPA is handed
-                        # `target + control` only, so an example count taken from the dataset would
-                        # describe a run that never happened.
-                        "example_count": train_count + val_count,
-                        "trainset_count": train_count,
-                        "valset_count": val_count,
-                    },
-                },
-                "trajectory": {"schema": "tracefold.news.compile_trajectory_receipt.v1", "best_idx": 0},
-                "checkpoint": {
-                    "schema": "tracefold.news.compile_checkpoint_receipt.v2",
-                    "factory": PROGRAM_FACTORY_ID,
-                },
-                # Computed in the container and now carried out: the winner was selected on clusters it
-                # never trained on, and the model saw the evidence it was scored against.
-                "split": split,
-                "retrieval": {"schema": "tracefold.news.compile_retrieval_receipt.v1", "target_visible": True},
-                "failure_cluster_ids": list(plan.target_failure_cluster_ids) or ["cluster-fixture"],
-                "target_dimensions": list(plan.target_dimensions) or ["why_support"],
-                "metric_calls": metric_calls,
-                "train_count": train_count,
-                "val_count": val_count,
-            }
+        "patch": patch,
+        "objective_summary": (
+            objective_summary
+            if objective_summary is not None
+            else objective_plan_summary(plan, episode_projection_root_sha256=exported.episode_projection_root_sha256)
         ),
-        "budget": budget,
-        "tariff": tariff,
-        "usage": usage,
-        "spend": CompileSpend(
-            task_model_calls=usage.task_model_calls,
-            reflection_model_calls=usage.reflection_model_calls,
-            metric_judge_attempts=2,
-            metric_judge_model_calls=usage.metric_judge_model_calls,
-            metric_judge_failures=0,
-            task_cost_microusd=usage.task_cost_microusd,
-            reflection_cost_microusd=usage.reflection_cost_microusd,
-            metric_judge_cost_microusd=usage.metric_judge_cost_microusd,
-            actual_cost_microusd=(
-                usage.task_cost_microusd + usage.reflection_cost_microusd + usage.metric_judge_cost_microusd
-            ),
-        ),
-        "sandbox": launch,
-        # The one place two independent parties look at the same thing: the host's tree, the pinned
-        # image's copy of it, and what the runner recomputed from inside the container.
-        "compiler_build": CompilerBuildAttestation(
-            compiler_image_digest=launch.compiler_image_digest,
-            proxy_image_digest=launch.proxy_image_digest,
-            host_source_sha256=preflight["compiler_source_sha256"],
-            host_proxy_source_sha256=preflight["proxy_source_sha256"],
-            host_lock_sha256=preflight["compiler_lock_sha256"],
-            image_source_sha256=preflight["compiler_source_sha256"],
-            image_proxy_source_sha256=preflight["proxy_source_sha256"],
-            image_lock_sha256=preflight["compiler_lock_sha256"],
-            container_source_sha256=preflight["compiler_source_sha256"],
-            container_proxy_source_sha256=preflight["proxy_source_sha256"],
-        ),
+        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v1"},
+        "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
+        "budget": {"max_metric_calls": 12},
+        "usage": {"metric_calls": 12},
         "created_at_ms": NOW,
     }
     values.update(overrides)
-    return CompileRecordV1.issue(**values)
+    return PromptCandidateV1.issue(**values)
 
 
 def _program_candidate(
@@ -782,61 +587,69 @@ def _program_candidate(
     development_sha: str,
     cluster_id: str,
     persist_receipt: bool = True,
-    record: CompileRecordV1 | None = None,
-    record_payload: dict[str, object] | None = None,
-    record_parent_sha: str | None = None,
-    persist_record: bool = True,
+    prompt: PromptCandidateV1 | None = None,
+    prompt_payload: dict[str, object] | None = None,
+    prompt_parent_sha: str | None = None,
+    persist_prompt: bool = True,
     generator_kind: str = "model",
     program_version: str | None = None,
     program_sha256: str | None = None,
     failure_cluster_ids: tuple[str, ...] | None = None,
     target_dimensions: tuple[str, ...] | None = None,
+    projection_root: str | None = None,
+    variant: str = "",
 ) -> CandidateManifest:
-    arm_payload = stable.model_dump(mode="json")
-    arm_payload.update(
-        program_version=program_version or PROGRAM_VERSION,
-        program_sha256=program_sha256 or _sha({"program": "candidate", "cluster_id": cluster_id}),
-    )
-    candidate_arm = ArmManifest.model_validate(arm_payload)
-    compile_record = record or _compile_record(
+    base = load_stable_program_artifact()
+    registered = prompt or _prompt_candidate(
         conn,
         development_sha=development_sha,
         stable=stable,
-        program_sha256=candidate_arm.program_sha256,
+        # One distinct instruction per cluster and variant, so two fixtures in one test are two different
+        # Programs — and two different registration receipts, which the ledger addresses uniquely.
+        patch=PromptPatchV1(
+            event_semantics_instruction=f"A bounded fixture advisory for {cluster_id}{variant}.",
+            reader_card_instruction="Keep reader language direct and evidence-bound.",
+        ),
     )
-    payload = compile_record.model_dump(mode="json") if record_payload is None else record_payload
-    # What the receipt names is the record's own root; where the ledger stores it is a different address.
-    record_root = compile_record.compile_record_sha256
-    if persist_record:
-        _persist_compile_record(
+    # The arm's Program identity is *derived* now, not declared: the release gate re-applies the
+    # registered patch to the running stable and refuses anything else. A fixture that invented a program
+    # SHA was asserting a lineage nobody checked.
+    applied = apply_program_patch(base, registered.patch.applied_to(base))
+    arm_payload = stable.model_dump(mode="json")
+    arm_payload.update(
+        program_version=program_version or PROGRAM_VERSION,
+        program_sha256=program_sha256 or applied.program_sha256,
+    )
+    candidate_arm = ArmManifest.model_validate(arm_payload)
+    payload = registered.model_dump(mode="json") if prompt_payload is None else prompt_payload
+    if persist_prompt:
+        _persist_prompt_candidate(
             conn,
-            development_sha=record_parent_sha or development_sha,
+            development_sha=prompt_parent_sha or development_sha,
             payload=payload,
-            # The address the receipt names. For an honest record this is the payload's own root; the
+            # The address the receipt names. For an honest candidate this is the payload's own root; the
             # tamper cases deliberately store something else there, which is what the evaluator has to
             # catch rather than trusting the key.
-            artifact_sha=record_root,
+            artifact_sha=registered.candidate_sha256,
         )
+    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development_sha)
     plan = _objective_plan(conn, stable=stable, development_sha=development_sha)
     receipt_values = {
         "development_dataset_sha": development_sha,
+        "development_episode_projection_root_sha256": projection_root or exported.episode_projection_root_sha256,
         # The plan's verified Prompt targets, not one cluster the caller happened to name. #199 made this
         # an equality: a candidate that declares anything else was optimized against a different corpus.
         "failure_cluster_ids": failure_cluster_ids or plan.target_failure_cluster_ids or (cluster_id,),
         "generator_kind": generator_kind,
-        # For a Program candidate the compile record is the generator execution identity: the receipt
-        # used to carry a prompt digest and a model digest that re-hashed the same compile twice more.
-        "generator_execution_sha": record_root,
         "registered_at_ms": NOW,
         "declared_target_dimensions": target_dimensions or plan.target_dimensions or ("why_support",),
         "guardrails": ("must_push_recall", "reader_load"),
         "program_parent_sha256": stable.program_sha256,
         "program_candidate_sha256": candidate_arm.program_sha256,
-        "compile_record_sha256": record_root,
+        "prompt_candidate_sha256": registered.candidate_sha256,
     }
     proposal_receipt = _proposal(conn, **receipt_values) if persist_receipt else ProposalReceipt.issue(**receipt_values)
     return CandidateManifest(
-        target="program",
         parent_stable_sha=stable.bundle_sha,
         candidate_arm=candidate_arm,
         hypothesis="Remove unsupported priced-in dismissals without changing reader load.",
@@ -846,27 +659,27 @@ def _program_candidate(
     )
 
 
-def _persist_compile_record(
+def _persist_prompt_candidate(
     conn,
     *,
     development_sha: str,
     payload: dict[str, object],
     artifact_sha: str | None = None,
 ) -> str:
-    """Stage one record row directly, so a test can plant an address the document does not answer to.
+    """Stage one candidate row directly, so a test can plant an address the document does not answer to.
 
-    `append_proposal_artifact` stores this kind under the record's own root, because the document already
+    `learning register` stores this kind under the candidate's own root, because the document already
     carries an identity and a second address would force every reader to know both. This fixture writes
     the row by hand precisely so the tamper cases can put something *else* in `artifact_sha` — which is
     also why it proves nothing about the real writer, and why
-    `test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names` exists beside it.
+    `test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_names` exists beside it.
     """
 
-    address = artifact_sha or str(payload["compile_record_sha256"])
+    address = artifact_sha or str(payload["candidate_sha256"])
     conn.execute(
         "INSERT INTO news_learning_artifacts "
         "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
-        "VALUES (%s, 'compile_record', %s, %s::jsonb, 'test', %s) "
+        "VALUES (%s, 'prompt_candidate', %s, %s::jsonb, 'test', %s) "
         "ON CONFLICT (artifact_sha) DO NOTHING",
         (address, development_sha, json.dumps(payload, sort_keys=True), NOW),
     )
@@ -1433,91 +1246,6 @@ def test_seed_receipts_match_production_latest_delivered_verdict_with_multiple_r
     assert evaluation.recent_seen_rows[0].direction == "bearish"
 
 
-def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(conn) -> None:
-    event_id = _accepted_event(conn)
-    stable = _arm()
-    judges: dict[tuple[str, str], object] = {}
-    evaluator = CandidateEvaluator(conn, stable=stable, judges=judges)
-    development = asyncio.run(
-        evaluator.freeze_dataset(
-            DatasetSpec(
-                role="development",
-                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-            )
-        )
-    )
-    assert development.counts["case_n"] == 1
-    assert development.cases[0].event_id == event_id
-
-    candidate_policy = dict(DEFAULT_POLICY.as_dict())
-    candidate_policy["similarity_max"] = 0.30
-    candidate_arm = _arm(policy=candidate_policy)
-    registered_at_ms = int(
-        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS n").fetchone()["n"]
-    )
-    proposal = _proposal(
-        conn,
-        development_dataset_sha=development.artifact_sha,
-        failure_cluster_ids=(development.cases[0].cluster_id,),
-        generator_kind="human",
-        registered_at_ms=registered_at_ms,
-        declared_target_dimensions=("reader_load",),
-        guardrails=("must_push_recall",),
-    )
-    candidate = CandidateManifest(
-        target="policy",
-        parent_stable_sha=stable.bundle_sha,
-        candidate_arm=candidate_arm,
-        hypothesis="Tighten duplicate similarity without changing semantic judgment.",
-        target_dimensions=("reader_load",),
-        development_dataset_sha=development.artifact_sha,
-        proposal_receipt=proposal,
-    )
-    evaluator = CandidateEvaluator(
-        conn,
-        stable=stable,
-        judges=judges,
-        candidate_catalog=(candidate,),
-    )
-    report = asyncio.run(
-        evaluator.evaluate(
-            EvaluationRequest(
-                development_dataset_sha=development.artifact_sha,
-                candidate_sha=candidate.candidate_sha,
-                stage="offline",
-            )
-        )
-    )
-    conn.commit()
-
-    assert _judge_call_count(judges) == 0
-    assert report.gate_outcome == "unknown"
-    assert report.run_state == "complete"
-    assert "development_boundary_cluster_n_insufficient" in report.evidence["blockers"]
-    stored = conn.execute(
-        "SELECT review_id, opened_at_ms, stable_observation, candidate_observation "
-        "FROM news_learning_cases WHERE run_sha = %s",
-        (report.run_sha,),
-    ).fetchone()
-    assert stored["review_id"] == development.cases[0].review_id
-    assert stored["opened_at_ms"] == development.cases[0].opened_at_ms
-    assert stored["stable_observation"]["delivery"] == "simulated"
-    assert stored["candidate_observation"]["delivery"] == "simulated"
-    candidate_artifact = conn.execute(
-        "SELECT payload FROM news_learning_artifacts WHERE kind = 'candidate' AND payload->>'candidate_sha' = %s",
-        (candidate.candidate_sha,),
-    ).fetchone()["payload"]
-    exact_diff = candidate_artifact["exact_diff"]
-    assert exact_diff["target"] == "policy"
-    assert exact_diff["changed_fields"] == ["policy", "policy_sha256"]
-    assert exact_diff["values"] == {
-        "similarity_max": {
-            "stable": DEFAULT_POLICY.similarity_max,
-            "candidate": candidate_policy["similarity_max"],
-        }
-    }
-
-
 def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit_json(conn) -> None:
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
@@ -1651,18 +1379,17 @@ def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) 
         evaluator.development_compile_export(forged_sha)
 
 
-def test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names(conn) -> None:
+def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_names(conn) -> None:
     """The real writer against the real reader, with no fixture standing between them.
 
     Every other test here stages the row by hand so it can plant a wrong address, which is exactly how the
     writer and the reader came to disagree without a single test noticing: `append_proposal_artifact`
-    addressed the row as `sha({kind, payload})` while `_compile_record` looked it up by
-    `receipt.compile_record_sha256`. Every record written through `learning propose` was reported missing,
-    and no compiled Program candidate could be evaluated. This drives both sides.
+    addressed the row as `sha({kind, payload})` while the reader looked it up by the SHA the receipt
+    names. Every record written through registration was reported missing, and no candidate could be
+    evaluated. This drives both sides.
     """
 
-    # Two, because the record's own budget check requires a non-empty validation split: a corpus of one
-    # cannot be split, and a record over it is refused before it is ever written.
+    # Two, because the Objective Plan needs a non-empty validation split: a corpus of one cannot be split.
     _accepted_event(conn, why="pass")
     _accepted_event(conn, why="pass", hit_id=112042, title="A second reviewed Event, so the split is real")
     stable = _arm()
@@ -1672,45 +1399,51 @@ def test_the_ledger_stores_a_compile_record_under_the_identity_its_receipt_names
             DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
         )
     )
-    record = _compile_record(
+    base = load_stable_program_artifact()
+    registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        program_sha256=_sha({"program": "written-through-the-repository"}),
+        patch=PromptPatchV1(
+            event_semantics_instruction="Written through the repository.",
+            reader_card_instruction="",
+        ),
     )
     written = repositories_for_connection(conn).news.append_proposal_artifact(
-        kind="compile_record",
-        payload=record.model_dump(mode="json"),
+        kind="prompt_candidate",
+        payload=registered.model_dump(mode="json"),
         parent_sha=development.artifact_sha,
         created_at_ms=NOW,
     )
 
-    assert written == record.compile_record_sha256
+    assert written == registered.candidate_sha256
 
+    applied = apply_program_patch(base, registered.patch.applied_to(base))
     candidate = CandidateManifest(
-        target="program",
         parent_stable_sha=stable.bundle_sha,
         candidate_arm=ArmManifest.model_validate(
-            {**stable.model_dump(mode="json"), "program_sha256": record.program_sha256}
+            {**stable.model_dump(mode="json"), "program_sha256": applied.program_sha256}
         ),
         hypothesis="Name the comparison base the reader needs.",
         target_dimensions=("why_support",),
         development_dataset_sha=development.artifact_sha,
         proposal_receipt=ProposalReceipt.issue(
             development_dataset_sha=development.artifact_sha,
+            development_episode_projection_root_sha256=evaluator.development_compile_export(
+                development.artifact_sha
+            ).episode_projection_root_sha256,
             failure_cluster_ids=("cluster-0",),
             generator_kind="model",
-            generator_execution_sha=record.compile_record_sha256,
             registered_at_ms=NOW,
             declared_target_dimensions=("why_support",),
             guardrails=("must_push_recall", "reader_load"),
             program_parent_sha256=stable.program_sha256,
-            program_candidate_sha256=record.program_sha256,
-            compile_record_sha256=record.compile_record_sha256,
+            program_candidate_sha256=applied.program_sha256,
+            prompt_candidate_sha256=registered.candidate_sha256,
         ),
     )
 
-    assert evaluator._compile_record(candidate).compile_record_sha256 == record.compile_record_sha256
+    assert evaluator._prompt_candidate(candidate).candidate_sha256 == registered.candidate_sha256
 
 
 def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
@@ -1756,11 +1489,13 @@ def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> No
         evaluator.development_compile_episodes("f" * 64)
 
 
-def test_program_candidate_requires_a_valid_compile_record(conn) -> None:
-    """A Program candidate is only as good as the one record it names.
+def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
+    """#202 §7: what a candidate has to prove, and what it no longer has to.
 
-    A compile needs a train/validation split, so the development corpus here is the two-case one; a
-    single-episode corpus cannot produce a record at all.
+    It must name a typed write-set that validates, and that write-set applied to the running stable must
+    be the Program its arm will execute. It does *not* have to have been produced by a trusted compiler —
+    a patch a person wrote passes the same static gate as one GEPA wrote, which is the whole point of
+    deleting the second generation lifecycle.
     """
 
     _accepted_compilable_event(conn)
@@ -1774,134 +1509,91 @@ def test_program_candidate_requires_a_valid_compile_record(conn) -> None:
             )
         )
     )
-    invalid_record = _program_candidate(
+    cluster_id = development.cases[0].cluster_id
+    invalid_write_set = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
-        cluster_id=development.cases[0].cluster_id,
-        program_sha256=_sha({"program": "candidate", "case": "invalid_record"}),
-        # Stored under the root the receipt names, but not a record.
-        record_payload={"development_dataset_sha": development.artifact_sha},
+        cluster_id=cluster_id,
+        variant=" (invalid)",
+        # Stored under the root the receipt names, but not a candidate.
+        prompt_payload={"development_dataset_sha256": development.artifact_sha},
     )
-    human_program = _program_candidate(
+    human_written = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
-        cluster_id=development.cases[0].cluster_id,
-        program_sha256=_sha({"program": "candidate", "case": "human_generator"}),
+        cluster_id=cluster_id,
         generator_kind="human",
+        prompt=_prompt_candidate(
+            conn,
+            development_sha=development.artifact_sha,
+            stable=stable,
+            patch=PromptPatchV1(
+                event_semantics_instruction="An operator wrote this advisory by hand.",
+                reader_card_instruction="",
+            ),
+            # No optimizer receipt and no objective summary: an external proposal claims nothing about how
+            # it was produced, and registration binds it to the corpus it re-projected.
+            optimizer={},
+            objective_summary={},
+        ),
+    )
+    forged_identity = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=cluster_id,
+        variant=" (forged)",
+        program_sha256=_sha({"program": "candidate", "case": "not_the_applied_patch"}),
     )
     legacy_program = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
-        cluster_id=development.cases[0].cluster_id,
-        program_sha256=_sha({"program": "candidate", "case": "legacy_program_version"}),
+        cluster_id=cluster_id,
+        variant=" (legacy)",
         program_version="news_semantic_program_v1",
     )
-    judges = _static_judges(stable, invalid_record.candidate_arm)
+    judges = _static_judges(stable, invalid_write_set.candidate_arm)
     evaluator = CandidateEvaluator(
         conn,
         stable=stable,
         judges=judges,
-        candidate_catalog=(invalid_record, human_program, legacy_program),
+        candidate_catalog=(invalid_write_set, human_written, forged_identity, legacy_program),
     )
 
-    with pytest.raises(ValueError, match="news_learning_program_compile_record_invalid"):
-        asyncio.run(
-            evaluator.evaluate(
-                EvaluationRequest(
-                    development_dataset_sha=development.artifact_sha,
-                    candidate_sha=invalid_record.candidate_sha,
-                    stage="offline",
-                )
-            )
-        )
-    with pytest.raises(ValueError, match="news_learning_program_generator_must_be_model"):
-        asyncio.run(
-            evaluator.evaluate(
-                EvaluationRequest(
-                    development_dataset_sha=development.artifact_sha,
-                    candidate_sha=human_program.candidate_sha,
-                    stage="offline",
-                )
-            )
-        )
-    with pytest.raises(ValueError, match="news_learning_program_v1_unsupported"):
-        asyncio.run(
-            evaluator.evaluate(
-                EvaluationRequest(
-                    development_dataset_sha=development.artifact_sha,
-                    candidate_sha=legacy_program.candidate_sha,
-                    stage="offline",
-                )
-            )
-        )
+    for candidate, code in (
+        (invalid_write_set, "news_learning_prompt_candidate_invalid"),
+        (forged_identity, "news_learning_prompt_candidate_program_identity_mismatch"),
+        (legacy_program, "news_learning_program_v1_unsupported"),
+    ):
+        with pytest.raises(ValueError, match=code):
+            evaluator._validate_candidate_static(candidate)
+    # The one that must *not* raise. Provenance is audit, not permission.
+    evaluator._validate_candidate_static(human_written)
+    assert human_written.proposal_receipt.generator_kind == "human"
     assert _judge_call_count(judges) == 0
-
-
-def test_gepa_completed_step_overshoot_is_bounded_by_its_sealed_optimizer_receipt(conn) -> None:
-    """The metric ceiling is now arithmetic the record performs on its own fields.
-
-    GEPA checks `max_metric_calls` between steps, so a started step may still spend one reflection
-    minibatch and one full validation pass. That overshoot is admissible only when the split it is
-    computed from is the split the optimizer was actually constructed with — which the record embeds.
-    """
-
-    _accepted_compilable_event(conn)
-    stable = _arm()
-    development = asyncio.run(
-        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
-            DatasetSpec(
-                role="development",
-                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-            )
-        )
-    )
-    # The split the record embeds is the Objective Plan's, so the admissible overshoot is arithmetic on
-    # that split rather than on the raw case count.
-    plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
-    train_count = len(plan.train_episodes)
-    val_count = len(plan.development_selection_episodes)
-    metric_call_ceiling = 20 + val_count + min(2, train_count)
-
-    allowed = _compile_record(
-        conn,
-        development_sha=development.artifact_sha,
-        stable=stable,
-        program_sha256=_sha({"program": "candidate", "metric_calls": metric_call_ceiling}),
-        metric_calls=metric_call_ceiling,
-    )
-    assert allowed.run.metric_calls == metric_call_ceiling
-
-    with pytest.raises(ValueError, match="news_program_compile_record_budget_exceeded"):
-        _compile_record(
-            conn,
-            development_sha=development.artifact_sha,
-            stable=stable,
-            program_sha256=_sha({"program": "candidate", "metric_calls": metric_call_ceiling + 1}),
-            metric_calls=metric_call_ceiling + 1,
-        )
 
 
 @pytest.mark.parametrize(
     ("mode", "error_code"),
     [
-        ("absent", "news_learning_program_compile_record_missing"),
-        ("tampered_byte", "news_learning_program_compile_record_invalid"),
-        ("re_addressed_tamper", "news_learning_program_compile_record_identity_mismatch"),
-        ("wrong_dataset_parent", "news_learning_program_compile_record_parent_mismatch"),
+        ("absent", "news_learning_prompt_candidate_missing"),
+        ("tampered_byte", "news_learning_prompt_candidate_invalid"),
+        ("re_addressed_tamper", "news_learning_prompt_candidate_identity_mismatch"),
+        ("wrong_dataset_parent", "news_learning_prompt_candidate_parent_mismatch"),
     ],
 )
-def test_program_candidate_requires_the_exact_persisted_compile_record(
+def test_a_candidate_requires_the_exact_persisted_write_set(
     conn,
     mode: str,
     error_code: str,
 ) -> None:
-    """The ledger row the receipt names has to be that compile, byte for byte.
+    """The ledger row the receipt names has to be that write-set, byte for byte.
 
-    `compile_record_sha256` is both the record's own root and the key it is stored under, so a byte
-    changed in the stored payload either stops validating or stops resolving at the key it claims.
+    `candidate_sha256` is both the document's own root and the key it is stored under, so a byte changed
+    in the stored payload either stops validating or stops resolving at the key it claims.
     """
 
     _accepted_compilable_event(conn)
@@ -1915,37 +1607,38 @@ def test_program_candidate_requires_the_exact_persisted_compile_record(
             )
         )
     )
-    program_sha256 = _sha({"program": "candidate", "mode": mode})
-    record = _compile_record(
+    registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        program_sha256=program_sha256,
+        patch=PromptPatchV1(
+            event_semantics_instruction=f"A bounded fixture advisory for {mode}.",
+            reader_card_instruction="",
+        ),
     )
-    payload = record.model_dump(mode="json")
-    tampered = dict(payload, run=dict(payload["run"], metric_calls=payload["run"]["metric_calls"] + 1))
+    payload = registered.model_dump(mode="json")
+    tampered = dict(payload, created_at_ms=int(payload["created_at_ms"]) + 1)
     overrides: dict[str, object] = {}
     if mode == "absent":
-        overrides = {"persist_record": False}
+        overrides = {"persist_prompt": False}
     elif mode == "tampered_byte":
-        overrides = {"record_payload": tampered}
+        overrides = {"prompt_payload": tampered}
     elif mode == "re_addressed_tamper":
-        # The tamperer re-derives the record's own root, so the document validates — and no longer
-        # answers to the ledger key the receipt points at.
+        # The tamperer re-derives the document's own root, so it validates — and no longer answers to the
+        # ledger key the receipt points at.
         re_addressed = dict(tampered)
-        re_addressed["compile_record_sha256"] = _sha(
-            {key: value for key, value in tampered.items() if key != "compile_record_sha256"}
+        re_addressed["candidate_sha256"] = _sha(
+            {key: value for key, value in tampered.items() if key != "candidate_sha256"}
         )
-        overrides = {"record_payload": re_addressed}
+        overrides = {"prompt_payload": re_addressed}
     else:
-        overrides = {"record_parent_sha": _sha({"dataset": "some-other-development-corpus"})}
+        overrides = {"prompt_parent_sha": _sha({"dataset": "some-other-development-corpus"})}
     candidate = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        record=record,
-        program_sha256=program_sha256,
+        prompt=registered,
         **overrides,
     )
     judges = _static_judges(stable, candidate.candidate_arm)
@@ -1967,142 +1660,6 @@ def test_program_candidate_requires_the_exact_persisted_compile_record(
             )
         )
     assert _judge_call_count(judges) == 0
-
-
-@pytest.mark.parametrize(
-    "mismatch",
-    ["parent_program_sha256", "development_dataset_sha256", "target_runtime_manifest_sha256", "program_sha256"],
-)
-def test_compile_record_identity_must_match_the_candidate_that_claims_it(conn, mismatch: str) -> None:
-    """The four identities the compile has to prove, each checked once against the candidate.
-
-    It ran against this parent Program, this development corpus and this runtime target, and it
-    produced this Program. `program_sha256` is the artifact rebuilt from the record's own patch, so a
-    record whose Program identity disagrees is a candidate artifact that does not come from that patch.
-    """
-
-    _accepted_compilable_event(conn)
-    stable = _arm()
-    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
-    development = asyncio.run(
-        bootstrap.freeze_dataset(
-            DatasetSpec(
-                role="development",
-                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-            )
-        )
-    )
-    program_sha256 = _sha({"program": "candidate", "mismatch": mismatch})
-    record_values: dict[str, object] = {
-        "development_sha": development.artifact_sha,
-        "stable": stable,
-        "program_sha256": program_sha256,
-    }
-    # One field at a time, replaced by an identity that belongs to some other compile.
-    record_values[mismatch] = _sha({"identity": "belongs-to-another-compile", "field": mismatch})
-    record = _compile_record(conn, **record_values)
-    candidate = _program_candidate(
-        conn,
-        stable=stable,
-        development_sha=development.artifact_sha,
-        cluster_id=development.cases[0].cluster_id,
-        record=record,
-        program_sha256=program_sha256,
-    )
-    judges = _static_judges(stable, candidate.candidate_arm)
-    evaluator = CandidateEvaluator(
-        conn,
-        stable=stable,
-        judges=judges,
-        candidate_catalog=(candidate,),
-    )
-
-    with pytest.raises(ValueError, match="news_learning_program_compile_record_invalid"):
-        asyncio.run(
-            evaluator.evaluate(
-                EvaluationRequest(
-                    development_dataset_sha=development.artifact_sha,
-                    candidate_sha=candidate.candidate_sha,
-                    stage="offline",
-                )
-            )
-        )
-    assert _judge_call_count(judges) == 0
-
-
-def test_compile_record_binds_the_per_call_ledger_to_the_container_that_was_launched(conn) -> None:
-    """The ledger and the sandbox have to name the same grant, and the compile has to have finished.
-
-    The sidecar writes its execution receipt whether it served a call or refused one, so a refusal in
-    that receipt is evidence the boundary held rather than a malformed document.  A *record*, though,
-    only exists for a compile that completed: a task or reflection call that never reached the provider
-    means the optimizer did not run to the end, and the metric judge is the one role whose refusal the
-    metric already scores as zero.
-    """
-
-    _accepted_compilable_event(conn)
-    stable = _arm()
-    development = asyncio.run(
-        CandidateEvaluator(conn, stable=stable, judges={}).freeze_dataset(
-            DatasetSpec(
-                role="development",
-                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-            )
-        )
-    )
-    program_sha256 = _sha({"program": "candidate", "case": "proxy-grant-binding"})
-    record = _compile_record(
-        conn,
-        development_sha=development.artifact_sha,
-        stable=stable,
-        program_sha256=program_sha256,
-    )
-    _policy, launch = _valid_sandbox_launch_receipt()
-    assert record.usage.grant_sha256 == launch.egress_manifest["proxy_grant_sha256"]
-
-    foreign_ledger = record.usage.model_copy(update={"grant_sha256": _sha({"grant": "some-other-compile"})})
-    with pytest.raises(ValueError, match="news_program_compile_record_proxy_grant_mismatch"):
-        _compile_record(
-            conn,
-            development_sha=development.artifact_sha,
-            stable=stable,
-            program_sha256=program_sha256,
-            usage=foreign_ledger,
-        )
-
-    refused = record.usage.calls[0]
-    unfinished = record.usage.model_copy(
-        update={
-            "calls": (
-                refused.model_copy(
-                    update={
-                        "provider_invoked": False,
-                        "reserved_cost_microusd": 0,
-                        "provider_cost_microusd": 0,
-                        "total_tokens": 0,
-                        "finish_reason": None,
-                        "error_code": "news_program_compile_proxy_call_refused",
-                    }
-                ),
-                *record.usage.calls[1:],
-            ),
-            "task_model_calls": record.usage.task_model_calls - 1,
-            "task_cost_microusd": record.usage.task_cost_microusd - refused.provider_cost_microusd,
-            "task_failures": 1,
-            "actual_cost_microusd": record.usage.actual_cost_microusd - refused.provider_cost_microusd,
-            "reserved_cost_microusd": record.usage.reserved_cost_microusd - refused.reserved_cost_microusd,
-            "error_codes": ("news_program_compile_proxy_call_refused",),
-        }
-    )
-    assert unfinished.task_failures == 1
-    with pytest.raises(ValueError, match="news_program_compile_record_task_call_failed"):
-        _compile_record(
-            conn,
-            development_sha=development.artifact_sha,
-            stable=stable,
-            program_sha256=program_sha256,
-            usage=unfinished,
-        )
 
 
 def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> None:
@@ -2221,14 +1778,18 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
         == report.subsets["train"]["case_n"] + report.subsets["development_selection"]["case_n"]
     )
 
-    record = _compile_record(
+    # The same corpus, seen by the other reader: what a candidate is registered against has to be what
+    # the dataset-bound baseline scored, or the "before" number belongs to a different corpus.
+    exported = CandidateEvaluator(conn, stable=stable, judges={}).development_compile_export(development.artifact_sha)
+    registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        program_sha256=_sha({"program": "candidate", "case": "dataset-baseline-parity"}),
+        patch=PromptPatchV1(event_semantics_instruction="Dataset baseline parity.", reader_card_instruction=""),
     )
-    assert record.episode_projection_root_sha256 == report.identity["episode_projection_root_sha256"]
-    assert record.run.split == report.objective["split"] == plan.split
+    assert exported.episode_projection_root_sha256 == report.identity["episode_projection_root_sha256"]
+    assert registered.objective_summary["episode_projection_root_sha256"] == exported.episode_projection_root_sha256
+    assert registered.objective_summary["split"] == report.objective["split"] == plan.split
 
 
 def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(conn) -> None:
@@ -2249,20 +1810,25 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
     plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
     assert plan.split is not None and len(plan.target_failure_cluster_ids) == 2
 
-    honest = _compile_record(
-        conn,
-        development_sha=development.artifact_sha,
-        stable=stable,
-        program_sha256=_sha({"program": "candidate", "case": "objective-tamper"}),
+    honest_summary = dict(
+        _prompt_candidate(
+            conn,
+            development_sha=development.artifact_sha,
+            stable=stable,
+            patch=PromptPatchV1(event_semantics_instruction="Objective tamper baseline.", reader_card_instruction=""),
+        ).objective_summary
     )
-    tampered_split = _compile_record(
+    tampered_split = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        program_sha256=_sha({"program": "candidate", "case": "split-tamper"}),
-        run=honest.run.model_copy(
-            update={"split": {**dict(honest.run.split), "train": {"cluster_root_sha256": "0" * 64}}}
+        patch=PromptPatchV1(
+            event_semantics_instruction="A split this corpus never produced.", reader_card_instruction=""
         ),
+        objective_summary={
+            **honest_summary,
+            "split": {**dict(honest_summary["split"]), "train": {"cluster_root_sha256": "0" * 64}},
+        },
     )
 
     cases: list[tuple[str, dict[str, Any]]] = [
@@ -2276,20 +1842,18 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         ),
         (
             "news_learning_proposal_split_roots_unverified",
-            {"record": tampered_split},
+            {"prompt": tampered_split},
         ),
     ]
     for error, overrides in cases:
+        # The Program identity is derived from the registered patch, so each case gets its own write-set
+        # rather than a forged SHA — a forged one would trip the identity check before the objective one.
         candidate = _program_candidate(
             conn,
             stable=stable,
             development_sha=development.artifact_sha,
             cluster_id=development.cases[0].cluster_id,
-            program_sha256=(
-                overrides["record"].program_sha256
-                if "record" in overrides
-                else _sha({"program": "candidate", "case": error})
-            ),
+            variant=f" ({error})",
             **overrides,
         )
         evaluator = CandidateEvaluator(
@@ -2393,7 +1957,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         (candidate.candidate_sha,),
     ).fetchone()["payload"]
     assert candidate_artifact["exact_diff"] == {
-        "target": "program",
+        "candidate_kind": "prompt",
         "changed_fields": ["program_sha256"],
         "stable_bundle_sha": stable.bundle_sha,
         "candidate_bundle_sha": candidate.candidate_arm.bundle_sha,
@@ -2401,7 +1965,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "candidate_program_version": candidate.candidate_arm.program_version,
         "stable_program_sha256": stable.program_sha256,
         "candidate_program_sha256": candidate.candidate_arm.program_sha256,
-        "compile_record_sha256": candidate.proposal_receipt.compile_record_sha256,
+        "prompt_candidate_sha256": candidate.proposal_receipt.prompt_candidate_sha256,
     }
 
 
@@ -2427,13 +1991,13 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
             )
         )
     )
-    candidate_artifact, record = _compiled_candidate_artifact(conn, development=development, stable=stable)
+    candidate_artifact, registered = _compiled_candidate_artifact(conn, development=development, stable=stable)
     candidate = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        record=record,
+        prompt=registered,
         program_sha256=candidate_artifact.program_sha256,
     )
     semantics = {
@@ -2557,13 +2121,13 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
             )
         )
     )
-    candidate_artifact, record = _compiled_candidate_artifact(conn, development=development, stable=stable)
+    candidate_artifact, registered = _compiled_candidate_artifact(conn, development=development, stable=stable)
     candidate = _program_candidate(
         conn,
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
-        record=record,
+        prompt=registered,
         program_sha256=candidate_artifact.program_sha256,
     )
     judges = _static_judges(stable, candidate.candidate_arm)

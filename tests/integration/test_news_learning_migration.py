@@ -72,7 +72,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260825_0306"
+        assert revision["version_num"] == "20260825_0307"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -176,7 +176,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
     finally:
         if conn is not None:
             conn.close()
@@ -218,7 +218,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -541,7 +541,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -698,6 +698,9 @@ _HARD_CUT_TRIP_REASON = "program_strategy_artifact_v1_hard_cut"
 # document. Pinned as a literal for the same reason as everything above.
 _COMPILE_RECORD_TRIP_REASON = "compile_record_v1_hard_cut"
 _RUN_SPEND_TRIP_REASON = "compile_record_run_spend_embed"
+# #202: one candidate lifecycle. Release eligibility stops coming from where a candidate was
+# produced, so a candidate registered under the compile chain can no longer be armed.
+_PROMPT_CANDIDATE_TRIP_REASON = "prompt_candidate_v1_hard_cut"
 
 
 def _ledger_artifact_sha(kind: str, payload: dict[str, Any]) -> str:
@@ -779,7 +782,7 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -932,7 +935,7 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -1052,7 +1055,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0306"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
 
         activation = dict(
             conn.execute(
@@ -1063,6 +1066,8 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         )
         assert activation["state"] == "tripped"
         assert activation["revision"] == 4
+        # `_upgrade("head")` runs 0307 after this, and it finds nothing armed to trip: each hard cut closes
+        # what it is about, once. An activation cannot be tripped twice.
         assert activation["trip_reason"] == _RUN_SPEND_TRIP_REASON
         assert deployed_after_ms <= activation["tripped_at_ms"] <= deployed_before_ms
 
@@ -1075,3 +1080,90 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
     finally:
         if conn is not None:
             conn.close()
+
+
+def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_registrations() -> None:
+    """#202: one candidate lifecycle, so the two-lifecycle rows become audit and nothing else.
+
+    Two facts are database facts here. `news_learning_artifacts` gains `prompt_candidate` while keeping
+    `compile_receipt` and `compile_record` in the constraint — old rows are append-only history and must
+    stay readable (§10.3) — and any activation still open is closed, because the manifest it points at no
+    longer parses: `target: program | policy` is gone.
+    """
+
+    _fresh_schema_at("20260825_0306")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        settled_at_ms = int(time.time() * 1000) - 60_000
+        conn.execute(
+            """
+            INSERT INTO news_canary_activations (
+              activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+              selector_version, exposure_bps, eligibility_profile_sha, rolling_profile_sha,
+              state, revision, created_at_ms
+            ) VALUES (%s, %s, %s, %s, 'news_canary_selector_v1', 1000, %s, %s, 'active', 2, %s)
+            """,
+            ("e" * 32, "1" * 64, "2" * 64, "3" * 64, "4" * 64, "5" * 64, settled_at_ms),
+        )
+        # One row of the retired kind, so the constraint's backward readability is a fact rather than a claim.
+        conn.execute(
+            "INSERT INTO news_learning_artifacts (artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+            "VALUES (%s, 'compile_record', NULL, %s::jsonb, 'test', %s)",
+            ("9" * 64, json.dumps({"schema_version": "news_program_compile_record_v1"}), 1),
+        )
+        prior_epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        conn.commit()
+        conn.close()
+        conn = None
+
+        deployed_after_ms = int(time.time() * 1000) - 5_000
+        _upgrade("head")
+        deployed_before_ms = int(time.time() * 1000) + 5_000
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260825_0307"
+
+        activation = dict(
+            conn.execute(
+                "SELECT state, revision, trip_reason, tripped_at_ms FROM news_canary_activations "
+                "WHERE activation_id = %s",
+                ("e" * 32,),
+            ).fetchone()
+        )
+        assert activation["state"] == "tripped"
+        assert activation["revision"] == 3
+        assert activation["trip_reason"] == _PROMPT_CANDIDATE_TRIP_REASON
+        assert deployed_after_ms <= activation["tripped_at_ms"] <= deployed_before_ms
+
+        # The new kind is writable; the retired one is still readable and still refuses to be re-armed by
+        # anything, because the manifest that names it no longer parses.
+        conn.execute(
+            "INSERT INTO news_learning_artifacts (artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+            "VALUES (%s, 'prompt_candidate', NULL, %s::jsonb, 'test', %s)",
+            ("a" * 64, json.dumps({"schema_version": "news_prompt_candidate_v1"}), 1),
+        )
+        assert (
+            conn.execute("SELECT kind FROM news_learning_artifacts WHERE artifact_sha = %s", ("9" * 64,)).fetchone()[
+                "kind"
+            ]
+            == "compile_record"
+        )
+
+        # Accepted `news_review_v4` truth does not depend on how a candidate is serialized, and #199's
+        # frozen bundle keeps its start.
+        epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        assert epochs == prior_epochs
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()

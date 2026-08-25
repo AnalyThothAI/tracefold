@@ -453,43 +453,26 @@ def _arm_exact_diff(
     stable: ArmManifest,
     candidate: ArmManifest,
     *,
-    target: str,
     proposal: ProposalReceipt,
 ) -> dict[str, Any]:
     """Return the exact, reviewable single-variable delta sealed with a candidate.
 
-    This is operator evidence, not an executable patch. Program candidates
-    carry the compiler's content-addressed Predictor diff; policy candidates
-    carry the exact changed values. The evaluator's static validator remains
-    the authority that rejects mixed changes.
+    This is operator evidence, not an executable patch: the write-set itself is the registered
+    `PromptCandidateV1` the receipt names, and the evaluator's static validator remains the authority that
+    rejects mixed changes. Since #202 there is one shape here, because there is one kind of candidate.
     """
 
     stable_payload = stable.model_dump(mode="json")
     candidate_payload = candidate.model_dump(mode="json")
     changed_fields = sorted(key for key in stable_payload if stable_payload[key] != candidate_payload[key])
-    common = {
-        "target": target,
+    return {
+        "candidate_kind": "prompt",
         "changed_fields": changed_fields,
         "stable_bundle_sha": stable.bundle_sha,
         "candidate_bundle_sha": candidate.bundle_sha,
-    }
-    if target == "program":
-        return {
-            **common,
-            "stable_program_version": stable.program_version,
-            "candidate_program_version": candidate.program_version,
-            "stable_program_sha256": stable.program_sha256,
-            "candidate_program_sha256": candidate.program_sha256,
-            "compile_record_sha256": proposal.compile_record_sha256,
-        }
-    changed_keys = sorted(
-        key for key in set(stable.policy) | set(candidate.policy) if stable.policy.get(key) != candidate.policy.get(key)
-    )
-    return {
-        **common,
-        "stable_policy_sha256": stable.policy_sha256,
-        "candidate_policy_sha256": candidate.policy_sha256,
-        "values": {
-            key: {"stable": stable.policy.get(key), "candidate": candidate.policy.get(key)} for key in changed_keys
-        },
+        "stable_program_version": stable.program_version,
+        "candidate_program_version": candidate.program_version,
+        "stable_program_sha256": stable.program_sha256,
+        "candidate_program_sha256": candidate.program_sha256,
+        "prompt_candidate_sha256": proposal.prompt_candidate_sha256,
     }

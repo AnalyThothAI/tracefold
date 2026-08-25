@@ -300,21 +300,24 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {compile,readiness,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary} ...
+                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,register,freeze,evaluate,shadow,canary} ...
 
 positional arguments:
-  {compile,readiness,baseline,draft-reviews,experiment,propose,freeze,evaluate,shadow,canary}
-    compile             compile a bounded DSPy Program candidate from accepted
-                        development evidence
+  {readiness,baseline,draft-reviews,snapshot,compare,optimize,register,freeze,evaluate,shadow,canary}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
     draft-reviews       propose news_review_v4 rubrics with exact gold for a
                         human to accept (writes a file, never the DB)
-    experiment          closed-window snapshot / paired comparison / in-
-                        process GEPA; never writes to the database
-    propose             seal a Program or policy candidate manifest
+    snapshot            freeze one closed window into a run directory; never
+                        writes to the database
+    compare             score a frozen snapshot under recorded / student /
+                        teacher and report the differences
+    optimize            run the one bounded GEPA optimization over a frozen
+                        development dataset; ADVANCE is not a release
+    register            bind a Prompt candidate to the active stable and a
+                        frozen dataset
     freeze              freeze accepted reviews into a dataset
     evaluate            run the evaluate release-evidence gate
     shadow              run the shadow release-evidence gate
@@ -323,38 +326,6 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-
-```
-
-## `news learning compile`
-
-```
-usage: tracefold news learning compile [-h] --development DEVELOPMENT
-                                       --artifact-root ARTIFACT_ROOT --out OUT
-                                       --compiler-image COMPILER_IMAGE
-                                       --max-metric-calls MAX_METRIC_CALLS
-                                       --max-task-model-calls MAX_TASK_MODEL_CALLS
-                                       --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-                                       --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-                                       --max-cost-microusd MAX_COST_MICROUSD
-                                       [--seed SEED]
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --artifact-root ARTIFACT_ROOT
-                        write the candidate <program-sha>.json artifact
-                        document
-  --out OUT             write compile receipt and proposal input JSON
-  --compiler-image COMPILER_IMAGE
-                        exact local compiler image ID (sha256:<64 hex>)
-  --max-metric-calls MAX_METRIC_CALLS
-  --max-task-model-calls MAX_TASK_MODEL_CALLS
-  --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-  --max-cost-microusd MAX_COST_MICROUSD
-  --seed SEED
 
 ```
 
@@ -446,29 +417,11 @@ options:
 
 ```
 
-## `news learning experiment`
+## `news learning snapshot`
 
 ```
-usage: tracefold news learning experiment [-h] {snapshot,compare,optimize} ...
-
-positional arguments:
-  {snapshot,compare,optimize}
-    snapshot            freeze one closed window into a run directory
-    compare             score a frozen snapshot under recorded / student /
-                        teacher and report the differences
-    optimize            run the shared GEPA core in process; produces a
-                        proposal that cannot be promoted
-
-options:
-  -h, --help            show this help message and exit
-
-```
-
-## `news learning experiment snapshot`
-
-```
-usage: tracefold news learning experiment snapshot [-h] [--hours HOURS]
-                                                   [--limit LIMIT] --out OUT
+usage: tracefold news learning snapshot [-h] [--hours HOURS] [--limit LIMIT]
+                                        --out OUT
 
 options:
   -h, --help     show this help message and exit
@@ -478,19 +431,18 @@ options:
 
 ```
 
-## `news learning experiment compare`
+## `news learning compare`
 
 ```
-usage: tracefold news learning experiment compare [-h] --run RUN
-                                                  --student STUDENT
-                                                  [--teacher TEACHER]
-                                                  --max-model-cases MAX_MODEL_CASES
-                                                  [--semantic-judge SEMANTIC_JUDGE]
-                                                  [--resume]
+usage: tracefold news learning compare [-h] --run RUN --student STUDENT
+                                       [--teacher TEACHER]
+                                       --max-model-cases MAX_MODEL_CASES
+                                       [--semantic-judge SEMANTIC_JUDGE]
+                                       [--resume]
 
 options:
   -h, --help            show this help message and exit
-  --run RUN             run directory created by `experiment snapshot`
+  --run RUN             run directory created by `snapshot`
   --student STUDENT     student model, e.g. the local route
   --teacher TEACHER     optional reference model, e.g. deepseek-v4-pro
   --max-model-cases MAX_MODEL_CASES
@@ -501,42 +453,56 @@ options:
 
 ```
 
-## `news learning experiment optimize`
+## `news learning optimize`
 
 ```
-usage: tracefold news learning experiment optimize [-h] --run RUN
-                                                   --student STUDENT
-                                                   --reflection REFLECTION
-                                                   --semantic-judge SEMANTIC_JUDGE
-                                                   --max-metric-calls MAX_METRIC_CALLS
-                                                   --max-judge-model-calls MAX_JUDGE_MODEL_CALLS
-                                                   [--seed SEED]
-
-options:
-  -h, --help            show this help message and exit
-  --run RUN             run directory created by `experiment snapshot`
-  --student STUDENT     task model GEPA optimizes against
-  --reflection REFLECTION
-                        reflection model, e.g. deepseek-v4-pro
-  --semantic-judge SEMANTIC_JUDGE
-                        equivalence judge model
-  --max-metric-calls MAX_METRIC_CALLS
-  --max-judge-model-calls MAX_JUDGE_MODEL_CALLS
-  --seed SEED
-
-```
-
-## `news learning propose`
-
-```
-usage: tracefold news learning propose [-h] --development DEVELOPMENT
-                                       --file FILE --out OUT
+usage: tracefold news learning optimize [-h] --development DEVELOPMENT
+                                        --out OUT
+                                        --max-metric-calls MAX_METRIC_CALLS
+                                        --max-task-model-calls MAX_TASK_MODEL_CALLS
+                                        --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+                                        --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
+                                        --max-cost-microusd MAX_COST_MICROUSD
+                                        --max-call-cost-microusd MAX_CALL_COST_MICROUSD
+                                        [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
+                                        [--seed SEED]
 
 options:
   -h, --help            show this help message and exit
   --development DEVELOPMENT
                         development dataset artifact SHA
-  --file FILE           candidate proposal JSON/YAML
+  --out OUT             directory for the run report and any candidate
+  --max-metric-calls MAX_METRIC_CALLS
+  --max-task-model-calls MAX_TASK_MODEL_CALLS
+  --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
+  --max-cost-microusd MAX_COST_MICROUSD
+  --max-call-cost-microusd MAX_CALL_COST_MICROUSD
+  --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
+                        deadline checked before each call
+  --seed SEED
+
+```
+
+## `news learning register`
+
+```
+usage: tracefold news learning register [-h] --development DEVELOPMENT
+                                        --candidate CANDIDATE
+                                        --artifact-root ARTIFACT_ROOT
+                                        [--hypothesis HYPOTHESIS] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --candidate CANDIDATE
+                        news_prompt_candidate_v1 JSON/YAML
+  --artifact-root ARTIFACT_ROOT
+                        write the candidate <program-sha>.json artifact
+                        document
+  --hypothesis HYPOTHESIS
+                        what this candidate is expected to repair
   --out OUT             write the sealed candidate manifest
 
 ```

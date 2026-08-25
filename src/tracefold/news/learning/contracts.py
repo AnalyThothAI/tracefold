@@ -87,20 +87,26 @@ class ProposalReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The corpus this registration bound the candidate to, as the registrar projected it — not as the
+    # generator claimed it. A frozen dataset pins which cases are in scope; the reviews behind them can
+    # still be edited, so without this a corpus that changed between generation and evaluation would keep
+    # the same dataset SHA and the same case count while being a different corpus.
+    development_episode_projection_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
+    # Audit only, and deliberately not a permission (#202 §5). Until then a Program candidate had to
+    # declare `model`, and "produced by the trusted compiler" was what made it registrable at all — so an
+    # instruction a person wrote could not be evaluated without a container reproducing it first.
     generator_kind: Literal["human", "model"]
-    # For a Program candidate this is the compile record's own identity. It used to sit beside a prompt
-    # digest and a model digest that re-hashed the same compile from two other angles.
-    generator_execution_sha: str | None = None
     registered_at_ms: int = Field(ge=0)
     registration_receipt_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     declared_target_dimensions: tuple[str, ...] = Field(min_length=1)
     guardrails: tuple[str, ...] = ()
-    program_parent_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    program_candidate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    # The one compile this candidate came out of. The receipt used to carry the whole provenance record
-    # and a machine diff inline, so the same identities were stored twice and could disagree.
-    compile_record_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    program_parent_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    program_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The typed write-set this candidate is, stored under its own hash. It replaced a compile record
+    # carrying a sandbox launch receipt, a proxy ledger, a three-party build attestation and a tariff:
+    # none of which said anything about the two instructions being registered.
+    prompt_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
     def issue(cls, **values: Any) -> ProposalReceipt:
@@ -118,17 +124,8 @@ class ProposalReceipt(BaseModel):
 
     @model_validator(mode="after")
     def registration_is_exact(self) -> ProposalReceipt:
-        if self.generator_kind == "model" and not self.generator_execution_sha:
-            raise ValueError("news_learning_model_generator_receipt_incomplete")
-        program_fields = (
-            self.program_parent_sha256,
-            self.program_candidate_sha256,
-            self.compile_record_sha256,
-        )
-        if any(value is not None for value in program_fields) and not all(
-            value is not None for value in program_fields
-        ):
-            raise ValueError("news_learning_program_receipt_incomplete")
+        if self.program_parent_sha256 == self.program_candidate_sha256:
+            raise ValueError("news_learning_program_sha_unchanged")
         expected = _sha({"kind": "candidate_registration", "payload": self.registration_payload})
         if self.registration_receipt_sha != expected:
             raise ValueError("news_learning_registration_receipt_sha_mismatch")
@@ -140,9 +137,20 @@ class ProposalReceipt(BaseModel):
 
 
 class CandidateManifest(BaseModel):
+    """One registered candidate arm, and the only kind there is.
+
+    `target: program | policy` is gone (#202 §1.3). A policy change is a configuration release with its
+    own gradual-rollout capability; dressing it as a News learning candidate gave it GEPA's release
+    vocabulary — an Objective Plan, a development dataset, a blind pairwise stage — for a change no
+    optimizer proposed and no metric scored. It also meant this contract's state space was strictly larger
+    than the one write-set #199 allows.
+
+    Old `program|policy` rows stay in the ledger as append-only audit and no longer parse here, which is
+    what makes "audit-only, never re-activatable" a property rather than a promise (§10.3).
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    target: Literal["program", "policy"]
     parent_stable_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_arm: ArmManifest
     hypothesis: str = Field(min_length=1, max_length=2_000)

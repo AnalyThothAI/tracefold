@@ -231,18 +231,16 @@ macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
 semantic view and never ToldContext or reader intent. Queue priority remains a
 broker scheduling/audit fact and is absent from reader HTTP/OpenAPI/React.
 
-Changes are
-exact-one-variable `program` or `policy` candidates:
+A change is one candidate kind — a bounded two-instruction Prompt patch:
 record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
-The optional `learning compile` workflow seals accepted development, runs
-bounded DSPy GEPA without DB/holdout/application credentials, and accepts only
-a typed patch carrying the two advisory instructions. It
-requires the complete trusted tariff above, an exact local
-`--compiler-image sha256:<64 hex>`, explicit metric/task/reflection/metric-judge
-call limits, total-cost/resource limits and a seed; it cannot accept,
-deploy or promote. Migration
+The optional `learning optimize` workflow reads the frozen development corpus
+once, runs bounded DSPy GEPA with no database write, broker, delivery, canary or
+promotion credential, and emits at most a typed patch carrying the two advisory
+instructions. It requires explicit metric/task/reflection/metric-judge call
+limits, a total and a per-call cost limit and a seed; it cannot register,
+accept, deploy or promote. Migration
 `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality

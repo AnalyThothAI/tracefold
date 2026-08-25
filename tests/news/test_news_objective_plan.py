@@ -909,38 +909,38 @@ def test_no_second_implementation_guesses_failure_clusters() -> None:
             offenders.append(str(path.relative_to(ROOT)))
     assert offenders == [
         # Every one of these carries the field — through a CLI flag, a manifest, a receipt or a reader
-        # view. None of them decides what belongs in it. Adding a sixth is a decision someone makes on
+        # view. None of them decides what belongs in it. Adding another is a decision someone makes on
         # purpose, in this list, rather than by writing one more `if "fail" in dimensions` somewhere.
-        "src/tracefold/app/cli/commands/news_learning.py",
         "src/tracefold/app/cli/commands/news_learning_experiment.py",
         "src/tracefold/news/learning/baseline.py",
         "src/tracefold/news/learning/compiler/security.py",
         "src/tracefold/news/learning/contracts.py",
         "src/tracefold/news/learning/experiment/compare.py",
-        "src/tracefold/news/learning/experiment/optimize.py",
         "src/tracefold/news/learning/experiment/run.py",
         "src/tracefold/news/review/desk.py",
     ]
 
 
 def test_every_plane_reaches_the_objective_through_the_same_function() -> None:
-    """Readiness, the trusted compiler, the experiment loop and the release evaluator, structurally.
+    """Readiness, the offline optimizer, the GEPA core and the release evaluator, structurally.
 
-    `run_gepa` is the single entry both optimizer planes share, so the experiment loop reaches the plan
-    through it rather than building a second one — which is what this asserts about `optimize.py`.
+    Four readers, one function. The CLI that starts an optimization reaches the plan through
+    `optimizer.optimize`, which is why it is not on this list: a fifth caller building its own plan is
+    exactly the drift #199 removed.
     """
 
     src = ROOT / "src" / "tracefold"
     readiness = src / "app" / "cli" / "commands" / "news_learning_baseline.py"
     gepa = src / "news" / "learning" / "compiler" / "gepa.py"
     evaluator = src / "news" / "learning" / "evaluator.py"
-    optimize = src / "news" / "learning" / "experiment" / "optimize.py"
+    optimizer = src / "news" / "learning" / "optimizer.py"
+    research_cli = src / "app" / "cli" / "commands" / "news_learning_experiment.py"
 
-    for path in (readiness, gepa, evaluator):
+    for path in (readiness, gepa, evaluator, optimizer):
         assert "build_gepa_objective_plan" in path.read_text(encoding="utf-8"), path
-    optimize_source = optimize.read_text(encoding="utf-8")
-    assert "run_gepa" in optimize_source
-    assert "build_gepa_objective_plan" not in optimize_source
+    cli_source = research_cli.read_text(encoding="utf-8")
+    assert "optimizer import" in cli_source
+    assert "build_gepa_objective_plan" not in cli_source
 
 
 def test_readiness_explains_the_same_plan_without_asking_a_model_anything() -> None:

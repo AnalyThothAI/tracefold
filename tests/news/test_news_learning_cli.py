@@ -28,20 +28,24 @@ from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
 
 
-def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
+def test_learning_optimize_requires_every_budget_and_takes_no_model_flags() -> None:
+    """The one optimization entry point (#202 §7).
+
+    No `--compiler-image`, because there is no image; no `--student`/`--reflection`, because the task LM
+    has to be the route production Triage answers on or the number this maximizes predicts nothing. What
+    the command line still owns is the spend, which is why every ceiling is required — including the
+    per-call one, which is also the rate an unpriced provider call is charged at.
+    """
+
     args = build_parser().parse_args(
         [
             "news",
             "learning",
-            "compile",
+            "optimize",
             "--development",
             "d" * 64,
-            "--artifact-root",
-            "programs",
             "--out",
-            "proposal.json",
-            "--compiler-image",
-            "sha256:" + "1" * 64,
+            "artifacts/run-1",
             "--max-metric-calls",
             "30",
             "--max-task-model-calls",
@@ -52,28 +56,46 @@ def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
             "45",
             "--max-cost-microusd",
             "500000",
+            "--max-call-cost-microusd",
+            "5000",
             "--seed",
             "17",
         ]
     )
 
-    assert args.learning_command == "compile"
-    assert args.compiler_image == "sha256:" + "1" * 64
+    assert args.learning_command == "optimize"
     assert (
         args.max_metric_calls,
         args.max_task_model_calls,
         args.max_reflection_model_calls,
         args.max_metric_judge_model_calls,
         args.max_cost_microusd,
+        args.max_call_cost_microusd,
         args.seed,
-    ) == (
-        30,
-        90,
-        12,
-        45,
-        500000,
-        17,
-    )
+    ) == (30, 90, 12, 45, 500000, 5000, 17)
+    assert not hasattr(args, "compiler_image")
+    for dropped in ("--compiler-image", "--student", "--reflection"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(
+                ["news", "learning", "optimize", "--development", "d" * 64, "--out", "o", dropped, "x"]
+            )
+
+
+def test_the_retired_compile_and_propose_commands_are_gone_without_an_alias() -> None:
+    """#202 §10.5: one hard cut, no compatibility layer.
+
+    They are not deprecated spellings of `optimize` and `register` — `compile` sealed a container against
+    a metered proxy and `propose` sealed either a Program or a policy candidate. Leaving either name
+    parsing would keep a second lifecycle alive in an operator's muscle memory.
+    """
+
+    for retired in (
+        ["news", "learning", "compile", "--development", "d" * 64],
+        ["news", "learning", "propose", "--development", "d" * 64, "--file", "c.json", "--out", "o.json"],
+        ["news", "learning", "experiment", "snapshot", "--out", "runs/a"],
+    ):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(retired)
 
 
 def test_learning_evaluation_exposes_program_live_opt_in_not_legacy_model_flag() -> None:
@@ -783,30 +805,32 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
     assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_decision"
 
 
-def _experiment_args(action: str, **overrides: Any) -> Any:
+def _research_args(action: str, **overrides: Any) -> Any:
     values: dict[str, Any] = {
         "command": "news",
         "news_command": "learning",
-        "learning_command": "experiment",
-        "experiment_action": action,
+        "learning_command": action,
         "config": "",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
-def test_the_experiment_group_parses_its_three_actions() -> None:
+def test_the_research_commands_sit_beside_the_other_learning_commands() -> None:
+    """#202 §7 flattens `experiment snapshot|compare` up a level.
+
+    The group existed because that plane produced a second kind of candidate. It does not any more, so a
+    snapshot is a closed window an operator can score, named where every other learning command is named.
+    """
+
     parser = build_parser()
-    snapshot = parser.parse_args(
-        ["news", "learning", "experiment", "snapshot", "--hours", "48", "--limit", "300", "--out", "runs/a"]
-    )
-    assert (snapshot.experiment_action, snapshot.hours, snapshot.limit, snapshot.out) == ("snapshot", 48, 300, "runs/a")
+    snapshot = parser.parse_args(["news", "learning", "snapshot", "--hours", "48", "--limit", "300", "--out", "runs/a"])
+    assert (snapshot.learning_command, snapshot.hours, snapshot.limit, snapshot.out) == ("snapshot", 48, 300, "runs/a")
 
     compare = parser.parse_args(
         [
             "news",
             "learning",
-            "experiment",
             "compare",
             "--run",
             "runs/a",
@@ -817,38 +841,11 @@ def test_the_experiment_group_parses_its_three_actions() -> None:
             "--resume",
         ]
     )
-    assert (compare.experiment_action, compare.max_model_cases, compare.resume) == ("compare", 20, True)
+    assert (compare.learning_command, compare.max_model_cases, compare.resume) == ("compare", 20, True)
     # The bound is required, not defaulted: the student route is the same single slot production Triage
     # runs on, so an unbounded comparison is an unbounded load on the live path.
     with pytest.raises(SystemExit):
-        parser.parse_args(["news", "learning", "experiment", "compare", "--run", "runs/a", "--student", "q"])
-
-    optimize = parser.parse_args(
-        [
-            "news",
-            "learning",
-            "experiment",
-            "optimize",
-            "--run",
-            "runs/a",
-            "--student",
-            "qwen3-30b",
-            "--reflection",
-            "deepseek-v4-pro",
-            "--semantic-judge",
-            "deepseek-v4-pro",
-            "--max-metric-calls",
-            "60",
-            "--max-judge-model-calls",
-            "200",
-            "--seed",
-            "7",
-        ]
-    )
-    assert (optimize.experiment_action, optimize.max_metric_calls, optimize.seed) == ("optimize", 60, 7)
-    # The metric-call bound is not a spend bound: each metric call drives two task calls plus N judge
-    # calls, so the judge carries its own required ceiling.
-    assert optimize.max_judge_model_calls == 200
+        parser.parse_args(["news", "learning", "compare", "--run", "runs/a", "--student", "q"])
 
 
 def test_a_snapshot_ends_at_the_settlement_grace_and_closes_its_connection_first(monkeypatch: Any) -> None:
@@ -902,7 +899,7 @@ def test_a_snapshot_ends_at_the_settlement_grace_and_closes_its_connection_first
     monkeypatch.setattr("time.time", lambda: 1_787_086_400.0)
 
     with tempfile.TemporaryDirectory() as directory:
-        code, payload = _handle_learning(_experiment_args("snapshot", hours=24, limit=500, out=f"{directory}/run"))
+        code, payload = _handle_learning(_research_args("snapshot", hours=24, limit=500, out=f"{directory}/run"))
 
     assert code == 0 and payload["ok"] is True
     now_ms = 1_787_086_400_000
