@@ -12,6 +12,10 @@ SRC = ROOT / "src" / "tracefold"
 CLI_NEWS = tuple(sorted((SRC / "app" / "cli" / "commands").glob("news_*.py")))
 COMPILER = SRC / "news" / "learning" / "compiler"
 OPTIMIZER_MODULE = "tracefold.news.learning.compiler.root"
+# #202 PR-A. The one offline entry point that produces a Prompt candidate. It replaces "which plane
+# generated this" with "what may this process do", so the boundary worth asserting is no longer where
+# the optimizer runs but what it can reach from there.
+OFFLINE_ENTRY_MODULE = "tracefold.news.learning.optimizer"
 GEPA_CORE_MODULE = "tracefold.news.learning.compiler.gepa"
 # #193 PR-C. The experiment loop runs GEPA in this process on purpose, and it is its own module for exactly
 # that reason. It is not the trusted seam: it holds no promotion authority, reads the database once as
@@ -96,6 +100,44 @@ def test_the_experiment_plane_cannot_reach_promotion_or_the_trusted_compile_seam
         modules = _imports(path)
         assert not (modules & forbidden), (path, sorted(modules & forbidden))
         assert not any(module.startswith("tracefold.news.storage") for module in modules), path
+
+
+def test_the_one_offline_entry_point_has_named_importers() -> None:
+    """Who may start an optimization is a decision, not an accident.
+
+    The trusted compiler is on this list because #202 PR-A moved the budget meter it always used into the
+    entry point rather than leaving two copies; PR-C removes the compiler and this list shrinks with it.
+    """
+
+    importers = {
+        path.relative_to(ROOT).as_posix() for path in SRC.rglob("*.py") if OFFLINE_ENTRY_MODULE in _imports(path)
+    }
+    assert importers == {"src/tracefold/news/learning/compiler/root.py"}
+
+
+def test_the_offline_entry_point_reaches_no_database_review_or_release_seam() -> None:
+    """The offline job's powers, asserted from its import graph rather than from its docstring.
+
+    It may read a frozen corpus it was handed and talk to three model endpoints. It may not register a
+    candidate, arm a canary, promote anything, or open a database session — an `ADVANCE` is a proposal, and
+    a process that could ship one would make every gate downstream advisory.
+    """
+
+    forbidden = {
+        "tracefold.news.learning.canary",
+        "tracefold.news.learning.evaluator",
+        "tracefold.news.learning.projection",
+        "tracefold.news.learning.review",
+        "tracefold.news.learning.review_drafter",
+        "tracefold.platform.postgres",
+        "psycopg",
+    } | {
+        f"tracefold.news.learning.compiler.{name}"
+        for name in ("launcher", "proxy", "root", "runner", "sandbox", "trusted")
+    }
+    modules = _imports(SRC / "news" / "learning" / "optimizer.py")
+    assert not (modules & forbidden), sorted(modules & forbidden)
+    assert not any(module.startswith("tracefold.news.storage") for module in modules)
 
 
 def test_compiler_source_identity_includes_package_initializer_before_secrets_mount(tmp_path: Path) -> None:

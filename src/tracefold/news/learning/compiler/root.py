@@ -8,7 +8,6 @@ and content-addressable optimizer receipt payloads.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Literal
 
 import dspy  # type: ignore[import-untyped]
@@ -18,18 +17,13 @@ from ...program.artifact import (
     ProgramStrategyArtifactV1,
     load_stable_program_artifact,
 )
-from ...program.dspy_adapter import (
-    ExactProviderCallCapture,
-    ExactProviderMetadata,
-    PredictorAdapterError,
-    _is_retryable_exception,
-)
 from ..metric import (
     METRIC_ID,
     _json_safe,
     accepted_review_metric,
 )
 from ..objective import DevelopmentEpisode, _ExactModel
+from ..optimizer import OptimizationBudgetExceeded, _BudgetedLM, _BudgetMeter
 from .gepa import GepaRunResult, OptimizerFactory, build_compile_lm, require_model_identity, run_gepa
 from .security import (
     CompileBudgetV3,
@@ -91,158 +85,6 @@ class ProgramCompileResult(_ExactModel):
         ):
             _json_safe(payload)
         return self
-
-
-class CompileBudgetExceeded(RuntimeError):
-    """Raised before another model call, or after a provider reports overspend."""
-
-
-class _BudgetMeter:
-    def __init__(self, budget: CompileBudget, *, tariff: CompilerProxyTariff | None = None) -> None:
-        self.budget = budget
-        # Neither the local llama.cpp endpoint nor DeepSeek returns a price litellm can resolve, so
-        # `provider_cost_microusd` is `None` for every endpoint this project actually uses and the meter used
-        # to fail closed on the first call. The tariff is the trusted worst-case rate the proxy sidecar already
-        # applies; accepting it here is what lets the compiler be metered with or without that sidecar, rather
-        # than making the budget proof depend on a price map the provider does not publish.
-        self.tariff = tariff
-        self.task_model_calls = 0
-        self.reflection_model_calls = 0
-        self.task_cost_microusd = 0
-        self.reflection_cost_microusd = 0
-        self.actual_cost_microusd = 0
-        self.imputed_cost_calls = 0
-
-    @property
-    def total_model_calls(self) -> int:
-        return self.task_model_calls + self.reflection_model_calls
-
-    def before(self, role: Literal["task", "reflection"]) -> None:
-        used = self.task_model_calls if role == "task" else self.reflection_model_calls
-        limit = self.budget.max_task_model_calls if role == "task" else self.budget.max_reflection_model_calls
-        if used >= limit:
-            raise CompileBudgetExceeded(f"news_program_compile_{role}_model_call_budget_exhausted")
-        if self.actual_cost_microusd + self.budget.max_call_cost_microusd > self.budget.max_cost_microusd:
-            raise CompileBudgetExceeded("news_program_compile_cost_reservation_exhausted")
-        self._role = role
-        if role == "task":
-            self.task_model_calls += 1
-        else:
-            self.reflection_model_calls += 1
-
-    def _cost(self, metadata: ExactProviderMetadata) -> int:
-        if metadata.provider_cost_microusd is not None:
-            return metadata.provider_cost_microusd
-        if self.tariff is None:
-            raise CompileBudgetExceeded("news_program_compile_provider_cost_unavailable")
-        self.imputed_cost_calls += 1
-        # Charged at the trusted worst-case rate, from tokens the provider did report. Over-charging is the
-        # safe direction: the budget stops the run early rather than late.
-        return self.tariff.worst_case_cost_microusd(
-            role=getattr(self, "_role", "task"),
-            request_bytes=metadata.input_tokens,
-            max_output_tokens=max(1, metadata.output_tokens),
-        )
-
-    def after(self, metadata: ExactProviderMetadata) -> None:
-        cost = self._cost(metadata)
-        if cost > self.budget.max_call_cost_microusd:
-            raise CompileBudgetExceeded("news_program_compile_call_cost_reservation_exceeded")
-        self.actual_cost_microusd += cost
-        if getattr(self, "_role", "task") == "task":
-            self.task_cost_microusd += cost
-        else:
-            self.reflection_cost_microusd += cost
-        if self.actual_cost_microusd > self.budget.max_cost_microusd:
-            raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
-
-
-def _is_transport_failure(exc: BaseException) -> bool:
-    """The Program's own classifier, so "the provider did not answer" means one thing in both planes."""
-
-    return _is_retryable_exception(exc)
-
-
-class _BudgetedLM(dspy.BaseLM):  # type: ignore[misc]
-    """Transparent LM proxy that makes every provider attempt observable."""
-
-    def __init__(self, lm: dspy.LM, *, role: Literal["task", "reflection"], meter: _BudgetMeter) -> None:
-        if getattr(lm, "cache", True) is not False:
-            raise ValueError("news_program_compile_lm_cache_must_be_disabled")
-        if int(getattr(lm, "num_retries", -1)) != 0:
-            raise ValueError("news_program_compile_lm_hidden_retries_must_be_zero")
-        if not callable(getattr(lm, "observe_exact_call", None)):
-            raise ValueError("news_program_compile_lm_exact_metadata_seam_required")
-        self._lm = lm
-        self._role = role
-        self._meter = meter
-        self.transport_failures = 0
-        self.transport_retries = 0
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._lm, name)
-
-    def _attempt(self, call: Callable[[], Any]) -> Any:
-        """One metered attempt, retried only on transport-class failures.
-
-        The retry is here rather than in the provider client because `_BudgetedLM` is what proves the budget:
-        every physical request has to pass `before`/`after`. Without it, one transient 5xx from the single-slot
-        local server made GEPA score that example as `failure_score` — indistinguishable, on the Pareto front,
-        from a candidate that genuinely answered badly.
-        """
-
-        last: BaseException | None = None
-        for attempt in range(_COMPILE_NUM_RETRIES + 1):
-            self._meter.before(self._role)
-            with self._lm.observe_exact_call() as capture:
-                try:
-                    output = call()
-                except BaseException as exc:
-                    # A transport failure means the provider never returned a response, so nothing recorded
-                    # usage or cost and `_require_compile_metadata` would raise here — aborting the compile and
-                    # masking the original error. `before()` has already reserved this attempt's worst-case
-                    # cost, so the budget stays bounded without a settle-up the provider never supplied.
-                    transport = _is_transport_failure(exc)
-                    if not transport:
-                        self._meter.after(_require_compile_metadata(capture))
-                        raise
-                    if attempt == _COMPILE_NUM_RETRIES:
-                        self.transport_failures += 1
-                        raise
-                    self.transport_retries += 1
-                    last = exc
-                    continue
-            self._meter.after(_require_compile_metadata(capture))
-            return output
-        raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        return self._attempt(lambda: self._lm(*args, **kwargs))
-
-    async def acall(self, *args: Any, **kwargs: Any) -> Any:
-        # The async path keeps one metered attempt: DSPy's GEPA adapter drives this synchronously, and a second
-        # retry implementation nobody exercises is a place for the budget proof to rot.
-        self._meter.before(self._role)
-        with self._lm.observe_exact_call() as capture:
-            try:
-                output = await self._lm.acall(*args, **kwargs)
-            except BaseException:
-                self._meter.after(_require_compile_metadata(capture))
-                raise
-        self._meter.after(_require_compile_metadata(capture))
-        return output
-
-
-def _require_compile_metadata(capture: ExactProviderCallCapture) -> ExactProviderMetadata:
-    try:
-        return capture.require_exactly_one()
-    except PredictorAdapterError as exc:
-        raise CompileBudgetExceeded("news_program_compile_provider_metadata_unavailable") from exc
-
-
-# One transient 5xx from a single-slot local server is not evidence that a candidate is bad, but with
-# `num_retries=0` GEPA scored it as `failure_score` and moved on. The production route keeps retries off.
-_COMPILE_NUM_RETRIES = 2
 
 
 class ProgramCompiler:
@@ -312,7 +154,7 @@ class ProgramCompiler:
             raise ValueError("news_program_compile_metric_judge_accounting_invalid")
         total_cost_microusd = meter.actual_cost_microusd + metric_judge_cost_microusd
         if total_cost_microusd > request.budget.max_cost_microusd:
-            raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
+            raise OptimizationBudgetExceeded("news_program_compile_cost_budget_exceeded")
         return ProgramCompileResult(
             run=result,
             spend=CompileSpend(
@@ -334,7 +176,6 @@ __all__ = [
     "LEARNING_EPOCH",
     "METRIC_ID",
     "CompileBudget",
-    "CompileBudgetExceeded",
     "CompileRequest",
     "DevelopmentEpisode",
     "ProgramCompileResult",

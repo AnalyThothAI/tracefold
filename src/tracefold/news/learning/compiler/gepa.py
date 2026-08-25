@@ -129,6 +129,20 @@ class _FeedbackCompileProgram(DspyCompileProgram):
             trace[before + offset] = (named[offset], entry[1], entry[2])
 
 
+class GepaNoProgramChange(ValueError):
+    """The optimizer kept the seed: a complete run that learned nothing.
+
+    A `ValueError` whose message is the code this has always raised, so every existing caller and every
+    existing assertion is unchanged. What it adds is the run itself: "no candidate" is a terminal answer,
+    and the one entry point has to be able to publish the metric, split and trajectory that produced it
+    rather than an empty report (#202 §5).
+    """
+
+    def __init__(self, result: GepaRunResult) -> None:
+        super().__init__("news_program_compile_no_program_change")
+        self.result = result
+
+
 class _Optimizer(Protocol):
     def compile(
         self,
@@ -233,12 +247,7 @@ def run_gepa(
     restore_empty_advisories(compiled)
     checkpoint = checkpoint_receipt(compiled)
     patch = extract_optimizer_patch(compiled, base_program)
-    if (
-        patch.event_semantics_instruction == base_program.event_semantics_instruction
-        and patch.reader_card_instruction == base_program.reader_card_instruction
-    ):
-        raise ValueError("news_program_compile_no_program_change")
-    return GepaRunResult(
+    result = GepaRunResult(
         patch=patch,
         metric=metric_receipt,
         optimizer_config=config_receipt,
@@ -252,6 +261,12 @@ def run_gepa(
         train_count=len(train_examples),
         val_count=len(val_examples),
     )
+    if (
+        patch.event_semantics_instruction == base_program.event_semantics_instruction
+        and patch.reader_card_instruction == base_program.reader_card_instruction
+    ):
+        raise GepaNoProgramChange(result)
+    return result
 
 
 def optimizer_constructor(
@@ -490,6 +505,7 @@ def _json_scalars(value: Any) -> Any:
 
 
 __all__ = [
+    "GepaNoProgramChange",
     "GepaRunResult",
     "OptimizerFactory",
     "_FeedbackCompileProgram",
