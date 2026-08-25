@@ -61,7 +61,10 @@ def test_the_news_specific_compiler_platform_is_gone() -> None:
     would defeat the whole point, so the absence is asserted by path and by import.
     """
 
-    assert not (SRC / "news" / "learning" / "compiler").exists()
+    # Sources, not the directory: anyone who had the package imported before pulling this change is left
+    # with a stray `__pycache__/`, and a bare `.exists()` fails on their checkout for a reason that has
+    # nothing to do with the boundary. What must be gone is every module.
+    assert list((SRC / "news" / "learning" / "compiler").rglob("*.py")) == []
     assert not (SRC / "news" / "learning" / "proposer.py").exists()
     offenders = {
         path.relative_to(ROOT).as_posix()
