@@ -43,11 +43,6 @@ from .contracts import (
     PromptCandidateV1,
     ProposalReceipt,
 )
-from .epoch import (
-    LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
-    LEARNING_EPOCH_OPENED_FACTORY_ID,
-    LEARNING_EPOCH_RESET_REASON,
-)
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
 from .ledger import LearningLedger
 from .objective import (
@@ -2935,9 +2930,6 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "LEARNING_EPOCH",
-    "LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION",
-    "LEARNING_EPOCH_OPENED_FACTORY_ID",
-    "LEARNING_EPOCH_RESET_REASON",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "CandidateEvaluator",
