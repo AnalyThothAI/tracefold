@@ -39,6 +39,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
             }
 
         news_event_columns = columns("news_events")
+        news_verdict_columns = columns("news_verdicts")
         news_delivery_columns = columns("news_deliveries")
         news_ingest_columns = columns("news_ingest_state")
         news_v3_indexes = {
@@ -90,6 +91,13 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "focus_span_start",
         "focus_span_end",
     } <= news_event_columns
+    assert {
+        "latency_ms",
+        "queue_lag_ms",
+        "reasked_after_told_change",
+        "novelty_defaulted",
+        "seen_scope",
+    } <= news_verdict_columns
     assert news_delivery_columns == {
         "event_id",
         "kind",
@@ -142,7 +150,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     unpublished_index = news_v3_indexes["ix_news_events_unpublished"]
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260826_0310"
+    assert version == latest_migration_version() == "20260826_0311"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -167,4 +175,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260826_0310"
+    assert version == latest_migration_version() == "20260826_0311"
