@@ -229,7 +229,11 @@ queue sampler/selection version
 
 ### 5.1 角色分离
 
-**建议/推论。** 推荐四个逻辑角色；人数不足时同一人可以在不同时间承担，但记录中不能混成一个动作：
+**建议/推论。** 推荐四个逻辑角色。Production Gold 的 `Primary reviewer` 与
+`Second reviewer` 必须是两个不同的人；同一人在不同时间重复作答只能用于
+rubric 校准或 `silver`，不能计作独立双审、agreement/kappa 或 Production Gold
+证据。`Adjudicator` 可以由其中一名 reviewer 兼任，但必须作为独立裁决动作留下
+身份、时间和依据；若争议涉及 reviewer 自己不确定的事实，则升级给第三人。
 
 1. `Drafter`：LLM 生成 proposal，不可接受；
 2. `Primary reviewer`：逐证据独立作答；
@@ -350,11 +354,20 @@ Notebook/report        = read-only QA projection
 
 1. 从 ReviewDesk 导出 `task_id + task_version + evidence projection`；
 2. 模型 draft 导入为 suggestion，绝不导入为 response/ground truth；
-3. 两名 reviewer 独立 response；
-4. adjudicator 生成最终 Review v4；
-5. 通过 ReviewDesk API 的 If-Match/Idempotency-Key 提交；
-6. PostgreSQL 返回 acceptance receipt 才算完成；stale task 必须拒绝；
-7. Freeze 永远不读 Label Studio/Argilla DB。
+3. 两名不同 reviewer 独立 response；
+4. 在最终接受前，把每份独立 response 与 adjudication 作为 append-only
+   PostgreSQL material fact 保存，并绑定 reviewer identity、task/version、evidence
+   SHA、时间与幂等键；
+5. adjudicator 依据这些 durable facts 生成最终 Review v4；
+6. 通过 ReviewDesk API 的 If-Match/Idempotency-Key 提交；
+7. PostgreSQL 返回 acceptance receipt 才算完成；stale task 必须拒绝；
+8. Freeze 永远不读 Label Studio/Argilla DB，但必须能从 PostgreSQL 重算双审覆盖、
+   agreement 和 adjudication gate。
+
+当前 Review v4 只持久化最终 submission/acceptance，不足以证明外部平台中的两份
+独立 response 与裁决曾经存在。因此，上述 append-only response/adjudication
+事实面落地前，Label Studio/Argilla 流程只能产出 proposal/`silver`，不得宣称
+auditable Production Gold。不能用外部平台中可变或可删除的记录补这个证据缺口。
 
 选择倾向：若只是 News 文本 rubric、suggestion/response/overlap，Argilla 的概念映射更直接；若未来需要多模态、复杂区域标注或企业级 reviewer 管理，Label Studio 更广。两者都不能替代 Tracefold 的 domain truth。
 
