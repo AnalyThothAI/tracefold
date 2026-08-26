@@ -16,6 +16,7 @@ import {
 import { useTradingStatusWithToken, type TradingStatus } from "@features/trading/shell";
 import { newsPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
 
 /** What the frame calls each surface. The page keeps its own `h1`; this is the "where am I" line. */
@@ -44,6 +45,7 @@ export type ShellChromeData = {
 export function useShellChromeData(session: AppSession): ShellChromeData {
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const statusQuery = useCockpitStatusQuery({ token: session.token });
   // The same query key the feed header and the status route use, so React Query serves all three from one
   // poll. The sidebar shows the 24 h intake behind the Event feed.
@@ -93,6 +95,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       outletContext: routeContext,
       topbar: {
+        eventFeed: location.pathname === "/news",
         health: healthLamp(
           newsStatusQuery.data,
           newsStatusQuery.isError,
@@ -102,6 +105,8 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
         // material fact from the two status reads this shell shares with the pages; switching routes never
         // starts a new request or asks the browser to invent a KPI.
         figures: topbarFigures(location.pathname, newsStatusQuery.data, tradingStatusQuery.data),
+        onRefresh:
+          location.pathname === "/news" ? undefined : () => void queryClient.invalidateQueries(),
         search: {
           onSubmitQuery: submitTopbarSearch,
           query: currentSearchQuery,

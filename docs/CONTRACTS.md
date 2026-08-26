@@ -389,6 +389,8 @@ projections; there is no public alias.
   `docs/OPERATIONS.md`), `funnel_24h` (`received`, `parsed`, `admitted`, `candidates`, `triaged`,
   `tagged`, `grounded`, `decided_push`, `delivered`, plus
   `received_1h`/`delivered_1h`),
+  whose five Event-feed stages (`received`/`parsed`/`admitted`/`triaged`/`delivered`) all start from Events
+  opened in the same rolling 24 h cohort and test those Events' durable stage facts,
   `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
   `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
   connected, last frame/publish, error, open incidents, token configured; no
@@ -397,7 +399,9 @@ projections; there is no public alias.
   error code), `pipeline` (events and candidates per hour/day, Triage counts,
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
   throttled, OI telemetry received/parsed/parse-failed/pushed counts, Triage
-  p50/p95, queue lag p95, the Triage model name, and the
+  p50/p95, queue lag p95, the Triage model name, the cohort fields
+  `funnel_received_24h`/`funnel_parsed_24h`/`funnel_admitted_24h`/`funnel_triaged_24h`/
+  `funnel_delivered_24h`, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
   `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
   (`all` is the current content-only path; historical rows may retain the old

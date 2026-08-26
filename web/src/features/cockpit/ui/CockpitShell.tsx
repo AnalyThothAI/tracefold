@@ -32,7 +32,7 @@ export type CockpitShellProps = {
 /**
  * The console frame. Three widths, three navigations, one model:
  *
- *   ≥1280  the sidebar is fixed in the page, matching the approved desktop frame.
+ *   ≥1280  the sidebar is part of the page; the Event feed keeps it fixed to match its approved frame.
  *   768–   the same sidebar inside a left drawer the topbar trigger opens.
  *   ≤767   no sidebar in either form: a drawer charges a tap before the reader can even see where they could
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
@@ -46,6 +46,8 @@ export function CockpitShell({
 }: CockpitShellProps) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
+  const fixedDesktopSidebar = Boolean(topbar.eventFeed);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // A rotated tablet must not keep the previous orientation's drawer open after navigation moves on-screen.
   useEffect(() => {
@@ -54,18 +56,23 @@ export function CockpitShell({
 
   return (
     <div className="cockpit-shell">
-      {desktop ? <AppSidebar badges={navBadges} counts={navCounts} /> : null}
+      {desktop && (fixedDesktopSidebar || sidebarOpen) ? (
+        <AppSidebar badges={navBadges} counts={navCounts} />
+      ) : null}
       <div className="cockpit-main">
         <CockpitTopbar
           {...topbar}
           navigationTrigger={
-            desktop || phone ? null : (
+            phone || (desktop && fixedDesktopSidebar) ? null : (
               <IconButton
-                aria-controls="cockpit-nav-drawer"
-                aria-expanded={drawerOpen}
+                aria-controls={desktop ? undefined : "cockpit-nav-drawer"}
+                aria-expanded={desktop ? undefined : drawerOpen}
                 aria-label="切换侧栏"
+                aria-pressed={desktop ? sidebarOpen : undefined}
                 className="topbar-sidebar-trigger"
-                onClick={() => setDrawerOpen((open) => !open)}
+                onClick={() =>
+                  desktop ? setSidebarOpen((open) => !open) : setDrawerOpen((open) => !open)
+                }
                 size="sm"
                 title="切换侧栏"
               >

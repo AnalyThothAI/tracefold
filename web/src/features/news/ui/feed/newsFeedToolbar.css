@@ -116,9 +116,6 @@
   }
 
   .news-menu-popover {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
     z-index: 25;
     display: grid;
     gap: 3px;
@@ -129,7 +126,7 @@
     box-shadow: var(--shadow-elevated);
   }
 
-  .news-menu-popover > button {
+  .news-menu-popover [role="menuitemradio"] {
     min-height: 30px;
     padding: 0 9px;
     border: 0;
@@ -138,10 +135,13 @@
     background: transparent;
     font-size: var(--font-size-meta);
     text-align: left;
+    cursor: pointer;
+    outline: none;
   }
 
-  .news-menu-popover > button:hover,
-  .news-menu-popover > button[aria-checked="true"] {
+  .news-menu-popover [role="menuitemradio"]:hover,
+  .news-menu-popover [role="menuitemradio"][data-highlighted],
+  .news-menu-popover [role="menuitemradio"][aria-checked="true"] {
     color: var(--text-primary);
     background: var(--surface-slot);
     font-weight: 640;

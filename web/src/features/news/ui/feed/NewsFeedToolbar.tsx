@@ -1,4 +1,5 @@
 import { ChevronDown, SlidersHorizontal } from "lucide-react";
+import { DropdownMenu } from "radix-ui";
 import { useState } from "react";
 
 import {
@@ -140,30 +141,38 @@ function TimeMenu({
   open: boolean;
 }) {
   return (
-    <div className="news-menu">
-      <button aria-expanded={open} onClick={() => onOpenChange(!open)} type="button">
-        {hoursLabel(hours)}
-        <ChevronDown aria-hidden />
-      </button>
-      {open ? (
-        <div aria-label="时间范围" className="news-menu-popover" role="menu">
-          {NEWS_FEED_HOURS.map((value) => (
-            <button
-              aria-checked={hours === value}
-              key={value}
-              onClick={() => {
-                onChange(value);
-                onOpenChange(false);
-              }}
-              role="menuitemradio"
-              type="button"
-            >
-              {hoursLabel(value)}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <DropdownMenu.Root onOpenChange={onOpenChange} open={open}>
+      <span className="news-menu">
+        <DropdownMenu.Trigger asChild>
+          <button aria-label={`时间范围，${hoursLabel(hours)}`} type="button">
+            {hoursLabel(hours)}
+            <ChevronDown aria-hidden />
+          </button>
+        </DropdownMenu.Trigger>
+      </span>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          aria-label="时间范围"
+          align="end"
+          className="news-menu-popover"
+          sideOffset={6}
+        >
+          <DropdownMenu.RadioGroup
+            onValueChange={(value) => {
+              onChange(Number(value));
+              onOpenChange(false);
+            }}
+            value={String(hours)}
+          >
+            {NEWS_FEED_HOURS.map((value) => (
+              <DropdownMenu.RadioItem key={value} value={String(value)}>
+                {hoursLabel(value)}
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 

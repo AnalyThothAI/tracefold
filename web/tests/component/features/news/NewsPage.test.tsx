@@ -78,7 +78,7 @@ describe("NewsPage", () => {
       "true",
     );
     expect(screen.getByText("1 / 41 条")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "最近 1 天" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "时间范围，最近 1 天" })).toBeInTheDocument();
     expect(screen.getByText("TIME")).toBeInTheDocument();
     expect(screen.getByText("EVENT")).toBeInTheDocument();
     expect(screen.getByText("OUTCOME")).toBeInTheDocument();
@@ -301,7 +301,7 @@ describe("NewsPage", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("button", { name: "最近 7 天" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "筛选" }));
     expect(screen.getByRole("button", { name: "▲ 利多" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "◆ 中性" })).toHaveAttribute("aria-pressed", "true");
@@ -317,8 +317,10 @@ describe("NewsPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "全部 320" }));
     await waitFor(() => expect(observed.outcome).toBeNull());
     expect(screen.getByTestId("location")).toHaveTextContent("outcome=all");
-    fireEvent.click(screen.getByRole("button", { name: "最近 7 天" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "最近 1 小时" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "时间范围，最近 7 天" }), {
+      key: "ArrowDown",
+    });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "最近 1 小时" }));
     await waitFor(() => expect(observed.hours).toBe("1"));
     expect(screen.getByTestId("location")).toHaveTextContent("hours=1");
   });
@@ -346,8 +348,10 @@ describe("NewsPage", () => {
     expect(observed.outcome).toBe("pushed");
     expect(observed.hours).toBe("24");
     expect(screen.queryByRole("group", { name: "已启用筛选" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "最近 1 天" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "最近 7 天" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "时间范围，最近 1 天" }), {
+      key: "ArrowDown",
+    });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "最近 7 天" }));
     await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("priority="));
     expect(screen.getByTestId("location")).not.toHaveTextContent("sort=");
   });

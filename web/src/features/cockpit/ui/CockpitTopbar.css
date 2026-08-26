@@ -13,7 +13,7 @@
     gap: 10px;
     height: var(--shell-topbar-height);
     min-height: var(--shell-topbar-height);
-    padding: 0 14px;
+    padding: 0 12px;
     border-bottom: 1px solid var(--border-subtle);
     background: var(--surface-glass);
     backdrop-filter: blur(14px);
@@ -22,13 +22,13 @@
   .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
   }
 
   .topbar-page-title {
     color: var(--text-primary);
-    font-size: var(--font-size-body);
+    font-size: var(--font-size-meta);
     font-weight: 620;
     white-space: nowrap;
   }
@@ -39,22 +39,27 @@
 
   /*
    * The health lamp (#207). Nothing renders while the pipeline is `ok`, so every rule below describes a state
-   * the reader is meant to act on. The button stays neutral and only the dot carries pipeline state — never
-   * direction red or green, which would state a market opinion this lamp does not have.
+   * the reader is meant to act on. Amber and brick are the pipeline's own caution/alert tokens — never the
+   * direction red and green, which state a market opinion this lamp does not have.
    */
   .topbar-health-lamp {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--border-subtle);
+    min-height: 26px;
+    padding: 0 9px;
+    border: 1px solid var(--signal-caution-border);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    background: var(--surface-panel);
+    background: var(--signal-caution-soft);
     font: inherit;
-    font-size: var(--font-size-meta);
+    font-size: var(--font-size-mono-meta);
     cursor: pointer;
+  }
+
+  .topbar-health-lamp[data-level="bad"] {
+    border-color: var(--signal-alert-border);
+    background: var(--signal-alert-soft);
   }
 
   .topbar-health-dot {
@@ -68,14 +73,6 @@
   .topbar-health-lamp[data-level="bad"] .topbar-health-dot,
   .topbar-health-dot[data-level="bad"] {
     background: var(--signal-alert);
-  }
-
-  .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
-    background: var(--signal-done);
-  }
-
-  .topbar-health-lamp[data-level="off"] .topbar-health-dot {
-    background: var(--signal-neutral);
   }
 
   .topbar-health-dot[data-level="ok"] {
@@ -175,7 +172,7 @@
     gap: 8px;
     min-width: 0;
     width: 100%;
-    max-width: 360px;
+    max-width: 420px;
     height: 30px;
     padding: 0 10px;
     border: 1px solid var(--border-subtle);
@@ -221,6 +218,40 @@
     border-radius: var(--radius-xs);
     color: var(--text-muted);
     font: var(--type-eyebrow);
+  }
+
+  /* Issue #235 scopes the approved Event-feed chrome to `/news`; other routes retain the shared shell. */
+  .topbar[data-event-feed] {
+    padding: 0 14px;
+  }
+
+  .topbar[data-event-feed] .brand {
+    gap: 10px;
+  }
+
+  .topbar[data-event-feed] .topbar-page-title {
+    font-size: var(--font-size-body);
+  }
+
+  .topbar[data-event-feed] .topbar-health-lamp {
+    min-height: 28px;
+    padding: 0 10px;
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+    background: var(--surface-panel);
+    font-size: var(--font-size-meta);
+  }
+
+  .topbar[data-event-feed] .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
+    background: var(--signal-done);
+  }
+
+  .topbar[data-event-feed] .topbar-health-lamp[data-level="off"] .topbar-health-dot {
+    background: var(--signal-neutral);
+  }
+
+  .topbar[data-event-feed] .searchbar {
+    max-width: 360px;
   }
 
   .topbar-right {
@@ -304,6 +335,10 @@
       padding: 0 10px;
     }
 
+    .topbar[data-event-feed] {
+      padding: 0 10px;
+    }
+
     .topbar-page-title,
     .topbar-anomaly span,
     .topbar-health-summary {
@@ -318,10 +353,15 @@
     .topbar-health-lamp {
       padding: 0 7px;
     }
+
+    .topbar[data-event-feed] .topbar-health-lamp {
+      padding: 0 7px;
+    }
   }
 
   /*
-   * Phone: search, the anomaly dot, and refresh. There is no sidebar trigger to place (#87) and the brand is
+   * Phone: search, the anomaly dot, and the route's refresh control when present. There is no sidebar trigger
+   * to place (#87) and the brand is
    * not a control, so the row spends its width on the one input a thumb actually uses. The figures go too —
    * the same two numbers lead the feed's funnel card.
    *

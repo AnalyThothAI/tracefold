@@ -12,6 +12,11 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .news-funnel-summary {
+    font-size: var(--font-size-meta);
+    line-height: 1.5;
+  }
+
   .news-funnel-summary b[data-tone="caution"] {
     color: var(--signal-caution);
   }

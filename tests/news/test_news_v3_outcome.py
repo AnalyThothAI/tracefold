@@ -395,6 +395,22 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 38} in reasons
 
 
+def test_status_funnel_prefers_the_single_event_cohort_over_throughput_ledgers() -> None:
+    inputs = _status_inputs()
+    inputs["pipeline"] = {
+        **inputs["pipeline"],
+        "funnel_received_24h": 12,
+        "funnel_parsed_24h": 12,
+        "funnel_admitted_24h": 9,
+        "funnel_triaged_24h": 8,
+        "funnel_delivered_24h": 3,
+    }
+    out = status_health(**inputs)  # type: ignore[arg-type]
+    assert {
+        stage: out["funnel_24h"][stage] for stage in ("received", "parsed", "admitted", "triaged", "delivered")
+    } == {"received": 12, "parsed": 12, "admitted": 9, "triaged": 8, "delivered": 3}
+
+
 def test_status_health_thresholds_turn_amber_and_red() -> None:
     degraded = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "triage_degraded_24h": 30}))  # type: ignore[arg-type]
     assert degraded["health"]["model"]["level"] == "bad" and "20%" in degraded["health"]["model"]["summary_zh"]

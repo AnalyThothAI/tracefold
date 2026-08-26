@@ -570,7 +570,10 @@ running; broker is `warn` at 50 and `bad` at 200 queued messages on a business
 queue, `bad` when a business queue has no consumer, `warn` with dead letters;
 model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
 names the error codes); delivery is `warn` when 10 % of 24 h attempts
-are terminal, `bad` at 30 %. `funnel_24h` and `reasons_24h` (Chinese labels
+are terminal, `bad` at 30 %. The five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
+in the rolling 24 h window, tested for parsed/admitted/Triage/sent durable facts. The independent Triage and
+delivery rolling ledgers remain throughput/health facts, so late work does not make a later funnel stage exceed
+its intake cohort. `reasons_24h` (Chinese labels
 over `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
 `pushed_by_rule`, `triage_degraded_by_code_24h`) say where the day went. Every
 Event's `outcome` (feed, detail, `news why`) is the same ten-kind conclusion:

@@ -1573,6 +1573,31 @@ export interface components {
              */
             events_24h: number;
             /**
+             * Funnel Admitted 24H
+             * @default 0
+             */
+            funnel_admitted_24h: number;
+            /**
+             * Funnel Delivered 24H
+             * @default 0
+             */
+            funnel_delivered_24h: number;
+            /**
+             * Funnel Parsed 24H
+             * @default 0
+             */
+            funnel_parsed_24h: number;
+            /**
+             * Funnel Received 24H
+             * @default 0
+             */
+            funnel_received_24h: number;
+            /**
+             * Funnel Triaged 24H
+             * @default 0
+             */
+            funnel_triaged_24h: number;
+            /**
              * Grounded 24H
              * @default 0
              */

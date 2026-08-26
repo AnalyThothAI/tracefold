@@ -1,4 +1,9 @@
 @layer app.features {
+  .news-feed-shell .news-heading-copy h1 {
+    font-weight: 660;
+    line-height: 1.5;
+  }
+
   .news-feed-results {
     position: relative;
     display: grid;

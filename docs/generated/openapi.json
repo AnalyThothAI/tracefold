@@ -3373,6 +3373,31 @@
             "title": "Events 24H",
             "type": "integer"
           },
+          "funnel_admitted_24h": {
+            "default": 0,
+            "title": "Funnel Admitted 24H",
+            "type": "integer"
+          },
+          "funnel_delivered_24h": {
+            "default": 0,
+            "title": "Funnel Delivered 24H",
+            "type": "integer"
+          },
+          "funnel_parsed_24h": {
+            "default": 0,
+            "title": "Funnel Parsed 24H",
+            "type": "integer"
+          },
+          "funnel_received_24h": {
+            "default": 0,
+            "title": "Funnel Received 24H",
+            "type": "integer"
+          },
+          "funnel_triaged_24h": {
+            "default": 0,
+            "title": "Funnel Triaged 24H",
+            "type": "integer"
+          },
           "grounded_24h": {
             "default": 0,
             "title": "Grounded 24H",

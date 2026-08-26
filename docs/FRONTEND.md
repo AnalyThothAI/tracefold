@@ -57,8 +57,8 @@ the route components into the eager shell chunk.
   so the ground is a cool grey `#eaedf1` and the ink is near-black. A panel is white,
   radius 10, separated from the canvas by a 1px *inset* ring (`--ring-panel`) — never by
   lightening and never by a drop shadow. Real elevation is spent on exactly four things:
-  the segmented control's selected pill, the drawer, the command palette, and the filter
-  popover. `styles/tokens.css` is the only semantic colour, type, radius, depth, focus
+  the segmented control's selected pill, the drawer, the pipeline-health popover, and the
+  time menu. `styles/tokens.css` is the only semantic colour, type, radius, depth, focus
   and shell token contract; production code must not add a parallel theme or
   compatibility alias, and it must not define a colour, a type step or a radius outside
   it. The type scale is seven steps (`--type-page-title` … `--type-eyebrow`) and there is
@@ -83,11 +83,13 @@ the route components into the eager shell chunk.
   socket provider, no live-market cache patching, and no subscription registry;
   the shell status pill derives only from `/api/status.runtime`.
 - **Topbar search.** The single topbar search box is News-only: its label is
-  `news search`, its placeholder is `事件 / base_symbol / 场所`, and submit
+  `news search`. On `/news` its approved placeholder is `事件 / base_symbol / 场所` and
+  the `/` key is an inert visual keycap; other routes retain the shared
+  `搜索新闻事件 / 标题 / 资产` copy and no keycap. Submit
   navigates to `/news?q=<query>` from every route (on `/news` it preserves the
   other feed filters and rewrites `q`; an empty submit clears `q`). The `/`
-  key is an inert visual keycap and has no special behaviour. The server matches Event text and title,
-  reporting origin, raw and canonical asset symbols, venue, and venue symbol. There is no global token/handle/CA search, no resolver, and
+  key has no special behaviour. The server matches Event text and title, reporting origin, raw and canonical
+  asset symbols, venue, and venue symbol. There is no global token/handle/CA search, no resolver, and
   no second search entry inside the News feed.
 - **Topbar context figures.** The right side identifies the active workbench with facts already present in
   the shared News and Trading status queries. The Event feed shows `PUSHED 24H / E2E P50`; other News
@@ -162,7 +164,8 @@ the route components into the eager shell chunk.
   the browser never resolves tokens or symbols itself. The backend searches Event text/title, reporting origin,
   raw/canonical symbols, venue and venue symbol,
   and filters before cursor pagination. Direction and channel are multi-select buttons in one compact
-  disclosure; the time window is a custom three-item menu, not a native select.
+  disclosure; the time window is a Radix three-item radio menu, not a native select. Radix owns
+  Arrow/Home/End/Escape focus semantics and returns focus to the trigger on dismissal.
   Pagination is an explicit `加载更多事件` action, loaded pages deduplicate by
   `event_id`, and there is no automatic infinite scroll. A refreshed first
   page inserts new Events at the top when the reader is already there; when
@@ -184,7 +187,9 @@ the route components into the eager shell chunk.
   bar and a sentence naming the biggest drop. Every figure here is a
   `funnel_24h` field or the difference between two of them. `parsed` equals the Event population because a
   provider parse failure never becomes an Event; `admitted` is the actual count whose Gate admission belongs
-  to the admitted set; `triaged` and `delivered` remain the judgment and sent-card ledgers. The summary may
+  to the admitted set. All five figures use Events opened in the same 24 h cohort; `triaged` and `delivered`
+  ask whether each Event in that cohort has a durable Triage verdict and sent first delivery. The independent
+  rolling judgment and delivery ledgers remain health/throughput facts and do not leak into the funnel. The summary may
   still name `tagged - grounded` as the instrument-universe warning, but it is not one of the five stages.
 
   The task tabs carry the server's `counts` for the current filter and window
@@ -494,7 +499,7 @@ the route components into the eager shell chunk.
   because open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is fixed in the page exactly as the approved desktop chrome specifies; from `768px` to `1279px` the same sidebar is the left `Drawer` that the topbar trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds (three today), reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail, remembered collapse state, or desktop sidebar toggle. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries four working surfaces (`事件流` `/news`, `持仓异动` `/news/oi`, `交易` `/trading`, `学习复盘` `/news/review`); `/news/events/:eventId` highlights `事件流`, and `/news/status` is a route without a slot, reached from the topbar health lamp. The feed entry shows the 24 h `funnel_24h.received` count and the 持仓异动 entry shows `pipeline.telemetry_received_24h`, the 交易 entry carries the capital lane's `mode` as a word rather than a count (`PAPER` today) because "is any of this real money" is what a reader needs before opening it, both compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and both `aria-hidden` so they decorate the link without renaming it. The sidebar carries no health dot: health is the lamp's, in one place, on every frame. The shell reads these through `@features/news/shell` — the same query key the funnel card, the OI monitor and the status route use, so React Query serves all of them from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/oi`, `/news/review`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent except for the Event feed's approved `流水线` affordance. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame; `/news` keeps it fixed with no toggle to match the approved Event-feed chrome, while other routes retain the shared desktop fold control. From `768px` to `1279px` the same sidebar is the left `Drawer` that the topbar trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds (three today), reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail or remembered collapse state. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries four working surfaces (`事件流` `/news`, `持仓异动` `/news/oi`, `交易` `/trading`, `学习复盘` `/news/review`); `/news/events/:eventId` highlights `事件流`, and `/news/status` is a route without a slot, reached from the topbar health lamp. The feed entry shows the 24 h `funnel_24h.received` count and the 持仓异动 entry shows `pipeline.telemetry_received_24h`, the 交易 entry carries the capital lane's `mode` as a word rather than a count (`PAPER` today) because "is any of this real money" is what a reader needs before opening it, both compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and both `aria-hidden` so they decorate the link without renaming it. The sidebar carries no health dot: health is the lamp's, in one place, on every frame. The shell reads these through `@features/news/shell` — the same query key the funnel card, the OI monitor and the status route use, so React Query serves all of them from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The Event feed alone uses the approved placeholder `事件 / base_symbol / 场所`, visible `/` keycap, no refresh icon, `PUSHED 24H`, and `E2E P50`; other routes retain the shared search copy, refresh action and metrics. The public SPA routes are `/`, `/news`, `/news/oi`, `/news/review`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent except for the Event feed's approved `流水线` affordance. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
@@ -575,16 +580,16 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    same page as `/news/symbols/WIF`.
 2. Submit the topbar search from `/news/status` and from `/news` and confirm
    the URL becomes `/news?q=<submitted-query>` (existing News filters survive).
-   The box has no submit button: `Enter` submits; the visible `/` keycap is inert.
+   The box has no submit button: `Enter` submits; `/news`'s visible `/` keycap is inert and other routes have none.
 3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not, and that the feed
    header shows no health pill while `health.overall` is `ok`.
-6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, and no filter/Tape/task bar exists.
+6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists.
 7. At tablet width around `834px`, confirm the desktop sidebar is not mounted, the topbar trigger opens the drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
-   At `1280px` and above, confirm the sidebar is fixed in the frame, no sidebar trigger is rendered, all four destinations are present and 交易 carries
-   its mode word,
+   At `1280px` and above, confirm `/news` keeps the sidebar fixed in the frame with no trigger, other routes
+   retain the shared fold trigger, all four destinations are present and 交易 carries its mode word,
    `/news/events/:eventId` keeps `事件流` current, and the feed count matches
    the funnel's `收到`.
 8. Confirm the keyboard binds nothing on `/news`: `⌘K`, `?`, `J`, `K`,

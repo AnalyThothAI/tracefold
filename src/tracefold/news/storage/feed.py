@@ -709,16 +709,40 @@ class FeedStorage:
             """,
             (day_ago,),
         ).fetchone()
+        # The five Event-feed stages are one cohort, not five independent rolling windows. A verdict created
+        # today for yesterday's Event still belongs in model-health throughput, but it must not make the
+        # feed's 24 h funnel grow after the intake cohort has fallen out of the window. Every predicate below
+        # therefore starts from the same set of Events opened in the window and asks how far each one got.
         totals = self.conn.execute(
             f"""
             SELECT count(*) AS events,
-                   count(*) FILTER (WHERE admission IN ({_ADMITTED_SQL})) AS admitted
+                   count(*) FILTER (WHERE admission IN ({_ADMITTED_SQL})) AS admitted,
+                   count(*) FILTER (
+                     WHERE admission IN ({_ADMITTED_SQL})
+                       AND EXISTS (
+                         SELECT 1 FROM news_verdicts v
+                          WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
+                       )
+                   ) AS triaged,
+                   count(*) FILTER (
+                     WHERE admission IN ({_ADMITTED_SQL})
+                       AND EXISTS (
+                         SELECT 1 FROM news_verdicts v
+                          WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
+                       )
+                       AND EXISTS (
+                         SELECT 1 FROM news_deliveries d
+                          WHERE d.event_id = news_events.event_id AND d.kind = 'first' AND d.state = 'sent'
+                       )
+                   ) AS delivered
               FROM news_events WHERE opened_at_ms >= %s
             """,
             (day_ago,),
         ).fetchone()
         events = int(totals["events"] or 0) if totals else 0
         admitted = int(totals["admitted"] or 0) if totals else 0
+        triaged = int(totals["triaged"] or 0) if totals else 0
+        delivered = int(totals["delivered"] or 0) if totals else 0
         return {
             "suppressed_by_reason": {str(r["admission"]): int(r["n"]) for r in suppressed},
             "dropped_by_rule": dict(sorted(dropped.items(), key=lambda kv: -kv[1])),
@@ -730,6 +754,13 @@ class FeedStorage:
             "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
             "admitted_24h": admitted,
+            # A material Event exists only after the provider parser succeeds, so `parsed` truthfully equals
+            # the received Event cohort. Provider frames are transport input, never an alternate fact table.
+            "funnel_received_24h": events,
+            "funnel_parsed_24h": events,
+            "funnel_admitted_24h": admitted,
+            "funnel_triaged_24h": triaged,
+            "funnel_delivered_24h": delivered,
         }
 
 

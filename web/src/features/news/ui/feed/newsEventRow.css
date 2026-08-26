@@ -72,7 +72,7 @@
 
   .news-event-headline {
     margin: 0;
-    font: var(--type-item-title);
+    font: 640 var(--font-size-body) / 1.42 var(--font-sans);
     letter-spacing: -0.006em;
   }
 

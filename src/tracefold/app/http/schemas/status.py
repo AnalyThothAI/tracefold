@@ -101,6 +101,12 @@ class NewsPipelineStatusData(ExactApiSchema):
     ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)
     candidate_share_24h: float | None = None
     admitted_24h: int = 0
+    # Event-feed funnel: one cohort selected by Event.opened_at_ms, then tested for each durable stage.
+    funnel_received_24h: int = 0
+    funnel_parsed_24h: int = 0
+    funnel_admitted_24h: int = 0
+    funnel_triaged_24h: int = 0
+    funnel_delivered_24h: int = 0
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
 

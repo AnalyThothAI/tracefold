@@ -194,13 +194,13 @@ def status_health(
     }
     overall = _worst(*(item.level for item in items.values()))
     funnel = {
-        "received": int(pipeline.get("events_24h") or 0),
+        "received": int(pipeline.get("funnel_received_24h", pipeline.get("events_24h")) or 0),
         # Every persisted Event has completed the provider parser; standard-news parse failures never become
         # Events. Keeping this explicit makes the visual contract truthful even when the two counts match.
-        "parsed": int(pipeline.get("events_24h") or 0),
-        "admitted": int(pipeline.get("admitted_24h") or 0),
+        "parsed": int(pipeline.get("funnel_parsed_24h", pipeline.get("events_24h")) or 0),
+        "admitted": int(pipeline.get("funnel_admitted_24h", pipeline.get("admitted_24h")) or 0),
         "candidates": int(pipeline.get("candidates_24h") or 0),
-        "triaged": int(pipeline.get("triage_24h") or 0),
+        "triaged": int(pipeline.get("funnel_triaged_24h", pipeline.get("triage_24h")) or 0),
         # #87: between "sent to the model" and "decided", the reader wants to know how many Events named an
         # asset that actually exists on a venue. It is a property of the same Events, not a separate stage.
         # `tagged` travels with it because it is the only population `grounded` can honestly be compared
@@ -208,7 +208,7 @@ def status_health(
         "tagged": int(pipeline.get("tagged_24h") or 0),
         "grounded": int(pipeline.get("grounded_24h") or 0),
         "decided_push": int(pipeline.get("decided_push_24h") or 0),
-        "delivered": int(delivery.get("sent_24h") or 0),
+        "delivered": int(pipeline.get("funnel_delivered_24h", delivery.get("sent_24h")) or 0),
         "received_1h": int(pipeline.get("events_1h") or 0),
         "delivered_1h": int(delivery.get("sent_1h") or 0),
     }

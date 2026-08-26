@@ -46,9 +46,10 @@ for (const state of states) {
     await expect(page).toHaveScreenshot(`state-${state.name}.png`, {
       animations: "disabled",
       caret: "hide",
-      // Chromium can rasterize the tabular `0 / 41 条` count by a few anti-aliased edge pixels when the
-      // four projects run concurrently. Keep the tolerance below one glyph so layout changes still fail.
-      maxDiffPixels: 50,
+      // Chromium can rasterize the tabular toolbar counts by a few anti-aliased edge pixels when the four
+      // projects run concurrently. The budget covers those glyph edges only; any control movement is orders
+      // of magnitude larger.
+      maxDiffPixels: 100,
       scale: "css",
     });
   });

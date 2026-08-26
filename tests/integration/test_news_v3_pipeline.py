@@ -534,6 +534,54 @@ def _admit_test_events(conn, *, hit_base: int, titles: tuple[str, ...], hour: in
     return event_ids
 
 
+def _insert_test_verdict(
+    repos,
+    *,
+    event_id: str,
+    direction: str,
+    now_ms: int,
+    final_decision: str = "drop",
+) -> None:
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        event_type="macro" if final_decision == "push" else "noise",
+        assets=[],
+        direction=direction,
+        scope="single_name",
+        magnitude=1,
+        actionable=final_decision == "push",
+        confidence=0.5,
+        decision=final_decision,
+        headline_zh="筛选测试",
+        why_zh="",
+    )
+    judgment = scored_judgment(verdict, editorial_origin="model")
+    assert repos.news.insert_verdict(
+        event_id=event_id,
+        stage="triage",
+        policy_version=TRIAGE_POLICY_VERSION,
+        model_decision=final_decision,
+        rule_baseline_decision=final_decision,
+        final_decision=final_decision,
+        override_rule="model_push_actionable" if final_decision == "push" else "noise",
+        throttled_by=None,
+        verdict=verdict.model_dump(),
+        editorial=judgment.editorial.model_dump(mode="json"),
+        scored_judgment_sha256=judgment.scored_judgment_sha256,
+        runtime_manifest_sha="c" * 64,
+        model="test",
+        program_version="test",
+        program_sha256="d" * 64,
+        degraded=False,
+        error_code=None,
+        trace={},
+        evidence_version=1,
+        evidence_sha256="e" * 64,
+        focus_fact_id="f" * 64,
+        now_ms=now_ms,
+    )
+
+
 def test_oi_rank_ignores_ineligible_frames_in_the_same_window(conn) -> None:
     """#179: low-concentration frames remain auditable without spending a later signal's rank."""
 
@@ -1345,42 +1393,10 @@ def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query
             (bearish_oi_id,),
         )
         for offset, (event_id, direction) in enumerate(((bullish_id, "bullish"), (bearish_oi_id, "bearish"))):
-            verdict = TriageVerdict(
-                novelty="new_fact",
-                event_type="noise",
-                assets=[],
-                direction=direction,
-                scope="single_name",
-                magnitude=1,
-                actionable=False,
-                confidence=0.5,
-                decision="drop",
-                headline_zh="筛选测试",
-                why_zh="",
-            )
-            judgment = scored_judgment(verdict, editorial_origin="model")
-            repos.news.insert_verdict(
+            _insert_test_verdict(
+                repos,
                 event_id=event_id,
-                stage="triage",
-                policy_version=TRIAGE_POLICY_VERSION,
-                model_decision="drop",
-                rule_baseline_decision="drop",
-                final_decision="drop",
-                override_rule="noise",
-                throttled_by=None,
-                verdict=verdict.model_dump(),
-                editorial=judgment.editorial.model_dump(mode="json"),
-                scored_judgment_sha256=judgment.scored_judgment_sha256,
-                runtime_manifest_sha="c" * 64,
-                model="test",
-                program_version="test",
-                program_sha256="d" * 64,
-                degraded=False,
-                error_code=None,
-                trace={},
-                evidence_version=1,
-                evidence_sha256="e" * 64,
-                focus_fact_id="f" * 64,
+                direction=direction,
                 now_ms=1_790_000_100_000 + offset,
             )
 
@@ -1403,6 +1419,78 @@ def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query
     assert ids(channels=("oi",)) == {bearish_oi_id}
     assert ids(channels=("news", "oi")) == {bullish_id, bearish_oi_id}
     assert ids(directions=("bullish",), channels=("oi",)) == set()
+    conn.commit()
+
+
+def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(conn) -> None:
+    repos = repositories_for_connection(conn)
+    old_event, current_event = _admit_test_events(
+        conn,
+        hit_base=1_795_400,
+        titles=(
+            "An older event completes delivery after the window boundary",
+            "A current event completes delivery inside its intake cohort",
+        ),
+        hour=11,
+    )
+    now_ms = 2_000_000_000_000
+    with repos.transaction():
+        conn.execute(
+            "UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s",
+            (now_ms - 25 * 3600_000, old_event),
+        )
+        conn.execute(
+            "UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s",
+            (now_ms - 3600_000, current_event),
+        )
+        for offset, event_id in enumerate((old_event, current_event)):
+            _insert_test_verdict(
+                repos,
+                event_id=event_id,
+                direction="bullish",
+                final_decision="push",
+                now_ms=now_ms - 10 * 60_000 + offset,
+            )
+            assert (
+                repos.news.begin_delivery(
+                    event_id=event_id,
+                    kind="first",
+                    card={"event_id": event_id},
+                    now_ms=now_ms - 5 * 60_000 + offset,
+                )
+                == "new"
+            )
+            assert repos.news.settle_delivery(
+                event_id=event_id,
+                kind="first",
+                state="sent",
+                receipt={"ok": True},
+                error_code=None,
+                now_ms=now_ms - 4 * 60_000 + offset,
+            )
+
+    status = repos.news.status_snapshot(now_ms=now_ms)
+    pipeline = status["pipeline"]
+    # Throughput ledgers keep their own 24 h clocks and therefore see both late completions.
+    assert pipeline["triage_24h"] == 2
+    assert status["delivery"]["sent_24h"] == 2
+    # The reader funnel follows only Events opened in its one intake cohort, so every stage remains monotonic.
+    assert {
+        key: pipeline[key]
+        for key in (
+            "funnel_received_24h",
+            "funnel_parsed_24h",
+            "funnel_admitted_24h",
+            "funnel_triaged_24h",
+            "funnel_delivered_24h",
+        )
+    } == {
+        "funnel_received_24h": 1,
+        "funnel_parsed_24h": 1,
+        "funnel_admitted_24h": 1,
+        "funnel_triaged_24h": 1,
+        "funnel_delivered_24h": 1,
+    }
     conn.commit()
 
 

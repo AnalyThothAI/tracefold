@@ -24,7 +24,7 @@ describe("CockpitTopbar", () => {
     };
     const { rerender } = render(
       <MemoryRouter>
-        <CockpitTopbar title="新闻事件流" search={search} status={healthyStatus} />
+        <CockpitTopbar eventFeed title="新闻事件流" search={search} status={healthyStatus} />
       </MemoryRouter>,
     );
     const input = screen.getByRole("textbox", { name: "news search" });
@@ -37,6 +37,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
+          eventFeed
           title="新闻事件流"
           search={{ ...search, query: "ethereum" }}
           status={healthyStatus}
@@ -48,6 +49,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
+          eventFeed
           title="新闻事件流"
           search={{ ...search, query: "" }}
           status={healthyStatus}
@@ -55,6 +57,26 @@ describe("CockpitTopbar", () => {
       </MemoryRouter>,
     );
     expect(input).toHaveValue("");
+  });
+
+  it("keeps the shared search copy and refresh action outside the Event feed", () => {
+    render(
+      <MemoryRouter>
+        <CockpitTopbar
+          onRefresh={vi.fn()}
+          search={{ onSubmitQuery: vi.fn() }}
+          status={healthyStatus}
+          title="学习复盘"
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("textbox", { name: "news search" })).toHaveAttribute(
+      "placeholder",
+      "搜索新闻事件 / 标题 / 资产",
+    );
+    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+    expect(document.querySelector(".cockpit-searchbar-keycap")).toBeNull();
   });
 
   it("submits the trimmed News query from the single search entry", () => {
