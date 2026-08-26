@@ -299,19 +299,23 @@ def admit_trigger(
         return frame
     blocked = blacklist.blocked(candidate.base_symbol, now_ms=now_ms)
     if blocked is not None:
-        # A failed deny-list read blocks every symbol — the list is the last thing that may fail open —
-        # but it is infrastructure state, not a property of the frame, so it is `DEFERRED`. Filing it as
-        # a terminal `REJECTED` froze the row: one database hiccup would permanently record every source
-        # in the scan window as denied, and the `CASE_CREATED` that followed on the next healthy scan
-        # could not move a terminal row. A real deny-list entry stays terminal, because an operator
-        # excluded the issuer and the frame goes stale long before that is lifted.
-        unavailable = str(blocked.reason) == "blacklist_unavailable"
+        # `DEFERRED`, always. The deny list is the one input here that is *mutable while the frame is
+        # still actionable*: an operator can remove an entry, and a timed entry can reach its
+        # `expires_at_ms`, both well inside the five-minute trigger budget. A terminal `REJECTED` froze
+        # the row — the ledger only advances a row out of `DEFERRED` — so the next scan would create a
+        # case while the ledger went on claiming `blacklisted` with no case link, which is exactly the
+        # "one and only one answer per frame" this table exists to guarantee. A failed *read* of the
+        # list blocks every symbol and lands here too, and it is infrastructure state rather than a
+        # property of the frame, so it wants the same answer for the same reason.
+        #
+        # The expiry sweep is what stops these accumulating: a frame nobody un-blocked goes `EXPIRED`
+        # the moment it is past the trigger budget, keeping its reason.
         return _result(
             candidate=candidate,
-            status="DEFERRED" if unavailable else "REJECTED",
+            status="DEFERRED",
             stage="eligibility",
             reason="blacklisted",
-            retryable=unavailable,
+            retryable=True,
             evidence={"blacklist_reason": str(blocked.reason)},
         )
     if now_ms - candidate.observed_at_ms > config.max_age_ms:

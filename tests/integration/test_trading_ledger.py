@@ -1006,6 +1006,81 @@ def test_editing_a_threshold_starts_a_new_record_rather_than_reusing_the_old_ans
     ]
 
 
+def test_a_threshold_edit_does_not_make_one_frame_count_twice(conn) -> None:
+    """The table keeps a row per configuration on purpose; the *report* is a frame count.
+
+    #254 moved the OI floor from 20M to 5M, which is exactly the edit that starts a second row for
+    every source still in the window. Grouping the raw table then counted that frame once under each
+    configuration — potentially under two different statuses at once — so the page's `上游帧` total
+    stopped being a number of frames and the reason distribution stopped summing to it.
+    """
+
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="NO_TRADE")
+    # Under the old floor the frame was too thin; under the new one it created a case.
+    _gate(conn, digest="a" * 64, status="REJECTED", reason="oi_value_below_floor", retryable=False)
+    _gate(
+        conn,
+        digest="b" * 64,
+        status="CASE_CREATED",
+        stage="freeze",
+        reason="case_created",
+        retryable=False,
+        case_id="case-1",
+        now_ms=NOW + 1_000,
+    )
+    # A second frame nobody re-evaluated, so it has exactly one row.
+    _gate(
+        conn,
+        source_key="oi:e2:oi_signal_v1",
+        digest="a" * 64,
+        status="REJECTED",
+        reason="rank_above_limit",
+        retryable=False,
+    )
+
+    assert len(_gate_rows(conn)) == 3
+    counts = _repos(conn).trading.gate_decision_counts(since_ms=NOW - 86_400_000)
+    # Two frames, two answers — not three.
+    assert sum(counts["status"].values()) == 2
+    assert counts["status"] == {"CASE_CREATED": 1, "REJECTED": 1}
+    assert counts["reasons"] == {"freeze:case_created": 1, "eligibility:rank_above_limit": 1}
+
+
+def test_a_frame_that_created_a_case_keeps_that_answer_when_a_later_config_refuses_it(conn) -> None:
+    """`CASE_CREATED` outranks recency, and that is the subtlety, not an accident.
+
+    A source that produced a case is re-read under the next configuration and refused as
+    `already_consumed` — correct as an admission answer, wrong as *the* answer about the frame. It did
+    become a case, and both the report and the console's per-frame lookup have to say so.
+    """
+
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="ORDER_PREPARED")
+    _gate(
+        conn,
+        digest="a" * 64,
+        status="CASE_CREATED",
+        stage="freeze",
+        reason="case_created",
+        retryable=False,
+        case_id="case-1",
+    )
+    _gate(
+        conn,
+        digest="b" * 64,
+        status="REJECTED",
+        reason="already_consumed",
+        retryable=False,
+        now_ms=NOW + 60_000,
+    )
+
+    found = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert found is not None
+    assert (found["status"], found["case_id"]) == ("CASE_CREATED", "case-1")
+    assert _repos(conn).trading.gate_decision_counts(since_ms=NOW - 86_400_000)["status"] == {"CASE_CREATED": 1}
+    # And the milestone still knows the lane cleared admission, rather than forgetting it.
+    assert _repos(conn).trading.latest_gate_milestones()["latest_gate_eligible_at_ms"] == NOW
+
+
 def test_an_open_decision_the_clock_has_answered_is_expired_not_left_pending(conn) -> None:
     """A `DEFERRED` row promises a later scan could answer differently. Past freshness it cannot."""
 
@@ -3454,7 +3529,10 @@ def test_a_blacklisted_underlying_never_reaches_an_order(conn) -> None:
     assert funnel["oi_gate:eligibility:blacklisted"] == 1
     decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
     assert decision is not None
-    assert (decision["status"], decision["stage"], decision["reason"]) == ("REJECTED", "eligibility", "blacklisted")
+    # `DEFERRED`, because an operator can lift the entry and a timed one expires — both inside the
+    # trigger budget. A terminal row here would go on claiming `blacklisted` after the next scan had
+    # created a case, since the ledger only advances a row out of `DEFERRED`.
+    assert (decision["status"], decision["stage"], decision["reason"]) == ("DEFERRED", "eligibility", "blacklisted")
     assert decision["evidence"]["blacklist_reason"] == "benchmark_large_cap"
 
 

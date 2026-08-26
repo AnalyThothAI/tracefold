@@ -18,6 +18,25 @@ from .sql_values import _dumps
 # 90-day backlog in a handful of turns and is a no-op on every turn after that.
 _PURGE_BATCH = 500
 
+# One row per source, whatever configurations have looked at it.
+#
+# The table deliberately keeps a row per `(source_key, gate_version, gate_config_digest)` — that is what
+# stops a threshold edit from rewriting the record of what the previous threshold decided. But a report
+# that groups over the raw table counts a frame once per configuration that ever saw it, so after any
+# edit the "upstream frames" total stops being a frame count and one frame can appear under two
+# different statuses at once.
+#
+# `CASE_CREATED` wins over recency, and that ordering is the whole subtlety. A source that produced a
+# case under one configuration is re-read under the next one and refused as `already_consumed`, which
+# is correct as an admission answer and wrong as *the* answer about the frame: it did become a case,
+# and a report that showed the newer row would forget it.
+_LATEST_PER_SOURCE = """
+    SELECT DISTINCT ON (source_key) *
+      FROM trading_candidate_gate_decisions
+     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
+"""
+
 
 class CandidateGateStorage:
     conn: Any
@@ -134,10 +153,13 @@ class CandidateGateStorage:
         return int(cursor.rowcount or 0)
 
     def gate_decision_for_source_key(self, *, source_key: str) -> dict[str, Any] | None:
-        """The current admission answer for one source, newest configuration first.
+        """The one admission answer for one source, across every configuration that has seen it.
 
-        A source evaluated under two configurations has two rows; the console asks "what happened to
-        this frame", and the answer is the decision taken under the configuration that ran last.
+        A source evaluated under two configurations has two rows, and the console asks "what happened
+        to this frame". `CASE_CREATED` is that answer whenever one exists — a source that produced a
+        case is re-read under the next configuration and refused as `already_consumed`, and showing
+        that newer row would report a refusal for a frame that is linked to a live case. Otherwise the
+        most recent decision wins.
         """
 
         row = self.conn.execute(
@@ -147,7 +169,7 @@ class CandidateGateStorage:
                    first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
               FROM trading_candidate_gate_decisions
              WHERE source_key = %s
-             ORDER BY last_evaluated_at_ms DESC, gate_config_digest
+             ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
              LIMIT 1
             """,
             (source_key,),
@@ -160,24 +182,18 @@ class CandidateGateStorage:
         The axis is the source's own observation time rather than the evaluation time, so a runner that
         restarts and re-reads a backlog cannot move yesterday's facts into today's counts — the exact
         failure mode that made `funnel_today` unable to explain a cross-midnight question.
+
+        One row per *source*, not per stored row: see `_LATEST_PER_SOURCE`. Grouping the raw table
+        counted a frame once per configuration that had ever looked at it, so a single threshold edit
+        turned the "upstream frames" total into something that was not a frame count.
         """
 
         status_rows = self.conn.execute(
-            """
-            SELECT status, count(*) AS n
-              FROM trading_candidate_gate_decisions
-             WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-             GROUP BY status
-            """,
+            f"SELECT status, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY status",
             (trigger_kind, int(since_ms)),
         ).fetchall()
         reason_rows = self.conn.execute(
-            """
-            SELECT stage, reason, count(*) AS n
-              FROM trading_candidate_gate_decisions
-             WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-             GROUP BY stage, reason
-            """,
+            f"SELECT stage, reason, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY stage, reason",
             (trigger_kind, int(since_ms)),
         ).fetchall()
         return {
@@ -194,14 +210,13 @@ class CandidateGateStorage:
         """
 
         row = self.conn.execute(
-            """
+            f"""
             SELECT max(source_observed_at_ms) AS latest_source_at_ms,
                    max(source_observed_at_ms) FILTER (WHERE status = 'CASE_CREATED')
                      AS latest_gate_eligible_at_ms
-              FROM trading_candidate_gate_decisions
-             WHERE trigger_kind = %s
+              FROM ({_LATEST_PER_SOURCE}) latest
             """,
-            (trigger_kind,),
+            (trigger_kind, 0),
         ).fetchone()
         if row is None:
             return {"latest_source_at_ms": None, "latest_gate_eligible_at_ms": None}

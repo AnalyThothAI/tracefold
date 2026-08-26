@@ -88,7 +88,7 @@ def test_a_fully_qualifying_frame_is_admitted_with_no_answer_at_all() -> None:
     [
         ({"rank_in_window": 6}, "REJECTED", "eligibility", "rank_above_limit"),
         ({"oi_value_usd": 3_190_000}, "REJECTED", "eligibility", "oi_value_below_floor"),
-        ({"symbol": "BTC"}, "REJECTED", "eligibility", "blacklisted"),
+        ({"symbol": "BTC"}, "DEFERRED", "eligibility", "blacklisted"),
         ({"observed_at_ms": NOW - 3_600_000}, "EXPIRED", "eligibility", "trigger_stale"),
         ({"venue": "okx"}, "REJECTED", "routing", "venue_unresolved"),
     ],
@@ -122,11 +122,15 @@ def test_a_thin_frame_carries_the_number_it_failed_on_and_the_floor_it_failed_ag
 def test_the_reversible_refusals_defer_and_the_frozen_ones_do_not() -> None:
     """`retryable` is a promise. A rank or a liquidity number is frozen in the frame itself."""
 
-    deferred = _verdict(_fact(), underlyings_in_flight={"crypto:DOGE"})
-    assert (deferred.status, deferred.retryable, deferred.terminal) == ("DEFERRED", True, False)
+    for reversible in (
+        _verdict(_fact(), underlyings_in_flight={"crypto:DOGE"}),
+        # The deny list is mutable while the frame is still actionable, so it belongs on this side.
+        _verdict(_fact(symbol="BTC")),
+    ):
+        assert (reversible.status, reversible.retryable, reversible.terminal) == ("DEFERRED", True, False)
 
-    frozen = _verdict(_fact(oi_value_usd=1))
-    assert (frozen.status, frozen.retryable, frozen.terminal) == ("REJECTED", False, True)
+    for frozen in (_verdict(_fact(oi_value_usd=1)), _verdict(_fact(rank_in_window=99))):
+        assert (frozen.status, frozen.retryable, frozen.terminal) == ("REJECTED", False, True)
 
 
 def test_idempotency_is_answered_before_any_rule_about_the_frame() -> None:
@@ -170,25 +174,32 @@ def test_a_retired_generation_is_a_named_source_failure_not_an_exception() -> No
     )
 
 
-def test_a_failed_deny_list_read_defers_rather_than_freezing_the_row_forever() -> None:
-    """The deny list fails closed, and that must not become a permanent verdict.
+def test_every_deny_list_refusal_stays_retryable_because_the_list_is_mutable() -> None:
+    """A terminal `blacklisted` row is a promise the ledger cannot keep.
 
-    `Blacklist.unavailable()` blocks every symbol — the list is the last thing that may fail open — but
-    that is infrastructure state, not a property of the frame. Filed as a terminal `REJECTED` it froze
-    the row: one database hiccup recorded a whole scan window as denied, and because the ledger only
-    advances a row out of `DEFERRED`, the `CASE_CREATED` that followed on the next healthy scan could
-    not move it. The ledger would then permanently report a refusal for a source that has a case.
+    The deny list is the one input here that can change while the frame is still actionable: an
+    operator can remove an entry, and a timed one reaches its `expires_at_ms`, both well inside the
+    five-minute trigger budget. Since the ledger only advances a row out of `DEFERRED`, a terminal
+    `REJECTED` meant the next scan could create a case while the ledger went on claiming `blacklisted`
+    with no case link — the exact "one and only one answer per frame" this table exists to guarantee.
+
+    A failed *read* of the list blocks every symbol and lands here too. That is infrastructure state
+    rather than a property of the frame, and it wants the same answer for the same reason: otherwise
+    one database hiccup records a whole scan window as permanently denied.
     """
 
-    unavailable = _verdict(_fact(), blacklist=Blacklist.unavailable())
-    assert (unavailable.status, unavailable.reason, unavailable.retryable) == ("DEFERRED", "blacklisted", True)
-    assert unavailable.evidence["blacklist_reason"] == "blacklist_unavailable"
+    for blacklist, expected_reason in (
+        (OPEN_DENY, "benchmark_large_cap"),
+        (Blacklist.unavailable(), "blacklist_unavailable"),
+    ):
+        symbol = "BTC" if expected_reason == "benchmark_large_cap" else "DOGE"
+        result = _verdict(_fact(symbol=symbol), blacklist=blacklist)
+        assert (result.status, result.reason, result.retryable) == ("DEFERRED", "blacklisted", True)
+        assert result.evidence["blacklist_reason"] == expected_reason
 
-    # A real operator entry is still terminal: the issuer was excluded, and the frame goes stale long
-    # before that is lifted.
-    denied = _verdict(_fact(symbol="BTC"))
-    assert (denied.status, denied.retryable) == ("REJECTED", False)
-    assert denied.evidence["blacklist_reason"] == "benchmark_large_cap"
+    # A timed entry that has already expired is not a refusal at all.
+    expired = Blacklist.from_rows([{"base_symbol": "DOGE", "reason": "operator", "expires_at_ms": NOW - 1}])
+    assert admit_trigger(_fact(), now_ms=NOW, config=CONFIG, blacklist=expired) is None
 
 
 def test_the_frames_own_frozen_numbers_bind_it_as_context_too() -> None:
