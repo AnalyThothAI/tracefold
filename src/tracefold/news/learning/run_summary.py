@@ -27,8 +27,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from ..artifact_identity import canonical_sha, reject_nonfinite_json, reject_secret_material
+from .contracts import dataset_coverage
 
-RUN_SUMMARY_SCHEMA = "tracefold.news.gepa_run_summary.v1"
+# v2 (#259): `dataset` carries the frozen corpus's `coverage` block, forwarded from readiness. Bumped for
+# the same reason the readiness schema was — a consumer keying off this string has to be able to tell
+# whether the block is there, rather than discovering it by indexing into an object that predates it.
+RUN_SUMMARY_SCHEMA = "tracefold.news.gepa_run_summary.v2"
 
 CheckStatus = Literal["match", "mismatch", "not_comparable"]
 
@@ -422,6 +426,11 @@ def build_run_summary(
             "selection_root": _at(readiness, "split.development_selection.case_root_sha256"),
             "train_cluster_n": _at(readiness, "split.train.cluster_n"),
             "selection_cluster_n": _at(readiness, "split.development_selection.cluster_n"),
+            # The frozen corpus's own coverage, forwarded from readiness (#259 §5.2). The release profile
+            # decides `offline` on the cluster-role and stratum counts here; `natural_day_n` and
+            # `window_duration_hours` are in the block so an operator can see how concentrated the samples
+            # are, and are read by no gate — a corpus that lands inside one UTC date is not thereby worse.
+            "coverage": _coverage(readiness),
         },
         # Three baselines with three different jobs, named so they cannot be quoted as one another (#253 §3.2).
         "baseline": {
@@ -465,6 +474,19 @@ def build_run_summary(
     reject_nonfinite_json(summary, path="gepa_run_summary")
     reject_secret_material(summary, path="gepa_run_summary")
     return summary
+
+
+def _coverage(readiness: Mapping[str, Any]) -> dict[str, Any]:
+    """Readiness's `coverage` block, in the one shape every producer of it publishes.
+
+    Forwarded rather than restated field by field, and projected through the same `dataset_coverage` the
+    readiness command uses, so a `gepa_readiness_report.v1` in an archived run directory yields the block
+    with `null` values instead of an object a consumer falls off the end of. `null` rather than `0`
+    throughout: those counts were never measured, and zeros would read as a measured corpus of nothing.
+    """
+
+    coverage = _at(readiness, "coverage")
+    return dataset_coverage(coverage if isinstance(coverage, Mapping) else {})
 
 
 def _usage_cost(optimization: Mapping[str, Any]) -> dict[str, Any]:

@@ -462,7 +462,31 @@ makes `same_population` false and the command exit `2`: the two scalars are
 still written, because they are facts about two runs that happened, but the
 claim that they may be subtracted from each other is withheld. Two physical runs
 of one graph can differ in the last digits; that is reported, and it is not on
-its own evidence that a dataset identity is wrong.
+its own evidence that a dataset identity is wrong. It also forwards readiness's
+`coverage` block — the frozen dataset's own sealed counts — so the corpus behind
+those numbers is readable in the same file.
+
+**When a corpus is big enough (#259).** Coverage decides it: independent
+connected fact clusters by role, at least one safety case, the required strata
+on both sides of the split, verified Prompt targets and Stable-correct controls.
+A day count never did. `natural_days_min` is gone from the release profile; it
+counted how many distinct UTC dates the accepted cases opened on, so two cases
+two minutes apart across midnight were two and a hundred cases spread over 23 h
+inside one date were one, and combined with the active-bundle filter it made a
+Stable deployed this morning unusable until the calendar caught up. Phase A runs
+as soon as `news learning readiness` says `ready`, whatever the age of the
+bundle. `natural_day_n` and `window_duration_hours` remain in the dataset counts,
+the readiness `coverage` block and `run_summary.json` as diagnostics of case
+concentration — read together, since a 72 h freeze whose reviews all landed in
+one afternoon reads `1` and `72.0`; a corpus that concentrated is worth
+*looking* at, and observing several settled days before trusting a result is
+reasonable operator advice — but neither is a code admission contract.
+Out-of-time generalization stays entirely with the Future Holdout:
+a ValidationDataset frozen strictly after candidate registration, ≥ 24 h, with
+its own eligible-Event and reviewed-cluster floors. The profile change is a hard
+cut — it moves `TRUSTED_ROOT_SHA`, and the profile is named
+`news_learning_release_v2` — so datasets and candidates frozen under v1 stay as
+audit history and a new experiment re-freezes.
 
 `learning optimize` (#202) is a cold, operator-invoked DSPy GEPA workflow, not a
 Worker and not a release gate. It reads the frozen development corpus once as

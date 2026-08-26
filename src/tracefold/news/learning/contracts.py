@@ -21,7 +21,10 @@ from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_
 from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_learned_instruction
 from ..triage_rules import DecidePolicy
 
-LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
+# v2 (#259): the development gate dropped `natural_days_min`. The profile is inside `TRUSTED_ROOT_SHA`,
+# so a corpus frozen under v1 already fails closed — but the root is a digest and this is the name a
+# report prints, and one readable name must not stand for two different sets of gates.
+LEARNING_PROFILE_ID: Literal["news_learning_release_v2"] = "news_learning_release_v2"
 LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"
@@ -535,6 +538,38 @@ class DatasetCaseRef(BaseModel):
     delivery_truth: Literal["observed_sent", "observed_not_sent", "unknown"] = "unknown"
 
 
+# The dataset coverage a report publishes, in one fixed order (#259 §5.2). Here rather than beside
+# `_dataset_counts`, because the two consumers are the readiness command and the run summary, and the
+# summary is a pure projection that must not import the dataset store and its database dependencies to
+# learn the shape of a block it forwards.
+_COVERAGE_FIELDS: tuple[str, ...] = (
+    "case_n",
+    "independent_cluster_n",
+    "boundary_cluster_n",
+    "retention_cluster_n",
+    "negative_cluster_n",
+    "safety_cluster_n",
+    "stratum_n",
+    "eligible_event_n",
+    # Below this line: how concentrated the accepted cases are in time, and nothing a gate reads (#259).
+    "natural_day_n",
+    "window_duration_hours",
+)
+
+
+def dataset_coverage(counts: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a frozen dataset's sealed counts into the fixed coverage block reports publish.
+
+    A projection, not a second tally: it reads what `DevelopmentDatasetStore._dataset_counts` sealed and
+    re-derives nothing. Absent keys come back as `None` rather than `0`, because "this corpus was never
+    projected" and "this corpus has none of these" are different answers and a reader has to be able to
+    tell them apart. One shape on every path is the whole point, so callers with nothing to report pass
+    `{}` here rather than publishing an empty object.
+    """
+
+    return {field: counts.get(field) for field in _COVERAGE_FIELDS}
+
+
 __all__ = [
     "COMPILE_EPISODE_PROJECTION_SCHEMA",
     "LEARNING_EPOCH",
@@ -561,5 +596,6 @@ __all__ = [
     "PromptCandidateV1",
     "PromptPatchV1",
     "ProposalReceipt",
+    "dataset_coverage",
     "endpoint_fingerprint",
 ]

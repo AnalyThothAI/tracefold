@@ -53,7 +53,13 @@ _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f1
 # #248 changes the Objective Plan's representative policy and therefore the committed objective source
 # identity. This fixture has no frozen objective, so its corpus, case results and score pins remain unchanged;
 # only the report content address moves with that source receipt.
-_EXPECTED_REPORT_SHA256 = "0fcac26882fdd69833400e3b277b34577ba1d2049f9f9d5ce069b918ba5f57d3"
+#
+# #259 moves it once more, and this time nothing about the *plan* moved either: the readiness report gained
+# the frozen dataset's `coverage` block and its schema went to v2, both inside `learning/objective.py`, which
+# the metric receipt commits to whole. Diffing the report against `main@f56f9a67` changes exactly two lines —
+# the `tracefold.news.learning.objective` source hash and the root over the helper hashes. Every score, case
+# result and dimension outcome below is byte-identical, which is the whole claim this pin exists to check.
+_EXPECTED_REPORT_SHA256 = "11823a13abaed1a837c33ce96c37f4a7ba3655252e8fff3a3dd86be5788f53f4"
 
 
 @pytest.fixture(scope="module")

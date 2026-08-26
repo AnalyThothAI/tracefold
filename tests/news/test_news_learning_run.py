@@ -37,9 +37,28 @@ _TASK_ROUTE = {
 }
 
 
+# The coverage block the readiness report below publishes, agreeing with its own `corpus` counts and with
+# the rule `_dataset_counts` applies: every cluster is boundary *or* retention, so the two sum to
+# `independent_cluster_n`. What this fixture is for is the forwarding, so the numbers are a realistic
+# corpus rather than a passing one — and its `natural_day_n` of 1 over a 21 h window is the shape #259
+# stops refusing.
+_COVERAGE = {
+    "case_n": 84,
+    "independent_cluster_n": 71,
+    "boundary_cluster_n": 21,
+    "retention_cluster_n": 50,
+    "negative_cluster_n": 26,
+    "safety_cluster_n": 7,
+    "stratum_n": 4,
+    "eligible_event_n": 612,
+    "natural_day_n": 1,
+    "window_duration_hours": 21.0,
+}
+
+
 def _readiness(**updates: Any) -> dict[str, Any]:
     report = {
-        "schema": "tracefold.news.gepa_readiness_report.v1",
+        "schema": "tracefold.news.gepa_readiness_report.v2",
         "outcome": "ready",
         "blocking_reasons": [],
         "identity": {
@@ -48,6 +67,7 @@ def _readiness(**updates: Any) -> dict[str, Any]:
             "episode_count": 84,
             "program_sha256": _PROGRAM,
         },
+        "coverage": dict(_COVERAGE),
         "corpus": {"case_n": 84, "cluster_n": 71},
         "objective": {
             "target_case_n": 19,
@@ -308,6 +328,26 @@ def test_a_run_with_no_baseline_leg_is_not_comparable_rather_than_matching_or_mi
     assert summary["next_action"] == "collect_more_gold"
 
 
+def test_the_coverage_block_has_one_shape_whether_or_not_readiness_carried_one() -> None:
+    """#259 §5.2: a thin projection of the corpus, and the same ten keys on both paths.
+
+    `run_summary` is a projection over files an operator may have kept, so it can be handed a
+    `gepa_readiness_report.v1` from an archived run that never had a `coverage` block. Publishing `{}`
+    there would make `dataset.coverage["natural_day_n"]` a `KeyError` on exactly the reports a reader
+    reaches for when comparing an old run with a new one; `null` says the same thing and survives being
+    read. `null` rather than `0` throughout, because these were never measured.
+    """
+
+    forwarded = _summary()["dataset"]["coverage"]
+    archived = _summary(readiness={key: value for key, value in _readiness().items() if key != "coverage"})["dataset"][
+        "coverage"
+    ]
+
+    assert forwarded == _COVERAGE
+    assert forwarded.keys() == archived.keys()
+    assert set(archived.values()) == {None}
+
+
 def test_the_future_test_baseline_is_named_and_left_empty_because_this_command_cannot_produce_one() -> None:
     """§3.2 and §7 Phase E: the third baseline exists, is not this one, and is not inferable from it."""
 
@@ -410,6 +450,7 @@ def test_the_summary_carries_counts_and_addresses_and_no_business_content() -> N
         "selection_root": _SELECTION_ROOT,
         "train_cluster_n": 46,
         "selection_cluster_n": 19,
+        "coverage": dict(_COVERAGE),
     }
     for forbidden in ("headline", "why_zh", "instruction", "api_key", "case_id", "event_id"):
         assert forbidden not in document
@@ -808,6 +849,7 @@ def test_a_real_baseline_and_a_real_optimization_over_one_corpus_reconcile_field
 def _real_readiness(plan: Any, *, dataset_sha: str, episode_root: str, corpus: Any) -> dict[str, Any]:
     """The readiness report the CLI would have written for this plan, built by its own builder."""
 
+    from tracefold.news.learning.contracts import dataset_coverage
     from tracefold.news.learning.objective import build_readiness_report
     from tracefold.news.program.artifact import load_stable_program_artifact
 
@@ -820,6 +862,7 @@ def _real_readiness(plan: Any, *, dataset_sha: str, episode_root: str, corpus: A
             "episode_count": len(corpus),
             "program_sha256": load_stable_program_artifact().program_sha256,
         },
+        coverage=dataset_coverage(_COVERAGE),
     )
 
 

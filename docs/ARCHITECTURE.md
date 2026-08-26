@@ -1272,7 +1272,28 @@ representative ids/count/root; registration re-derives that population and refus
 carry the current identity, while leaving their artifact bytes intact.
 `news learning readiness --development SHA` publishes the plan with zero model
 calls, and `optimize` rebuilds it and refuses on the same conditions before any
-endpoint is touched.
+endpoint is touched. Its report (`gepa_readiness_report.v2`) also carries the
+frozen dataset's own sealed `coverage` counts, so one document answers both
+whether a corpus may be optimized and how much separable evidence is in it.
+
+Whether a development corpus is *enough* is decided by coverage, never by the
+calendar (#259). The release profile asks for independent connected fact
+clusters by role — boundary, retention, negative, at least one safety — plus the
+strata both split halves must carry, and the Objective Plan asks for verified
+Prompt targets, Stable-correct controls and a cluster-disjoint, time-ordered
+split. `natural_day_n` — how many distinct UTC dates the accepted cases opened
+on — and `window_duration_hours` are published beside those counts as
+diagnostics of case concentration and gate nothing. The two say different things
+and may disagree freely: a 72 h freeze whose reviews all landed in one afternoon
+reads `1` and `72.0`. Counting dates measures midnights rather than evidence,
+and because a frozen corpus admits only cases produced by the *active* Stable
+bundle, a calendar gate delayed every Stable iteration by days it had no way to
+produce. Out-of-time generalization is
+proven once, later, by the Future Holdout — a ValidationDataset frozen strictly
+after candidate registration, at least 24 h long, with its own eligible-Event
+and reviewed-cluster floors. No stable-age, window-age or calendar-day gate may
+stand in for it, and a development temporal diagnostic is never holdout
+evidence.
 
 `news learning run` (#253) is the recommended way to reach a terminal report:
 one command that runs readiness, the standalone `compile_live` baseline and the

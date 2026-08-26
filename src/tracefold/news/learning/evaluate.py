@@ -1173,20 +1173,8 @@ class CandidateEvaluator:
     ) -> dict[str, Any]:
         blockers: list[str] = []
         failures: list[str] = []
-        dev = development.counts
-        requirements = _PROFILE["development"]
         if request.stage in {"offline", "holdout"}:
-            for field_name, threshold_name in (
-                ("boundary_cluster_n", "boundary_clusters_min"),
-                ("retention_cluster_n", "retention_clusters_min"),
-                ("negative_cluster_n", "negative_clusters_min"),
-                ("natural_day_n", "natural_days_min"),
-                ("stratum_n", "strata_min"),
-            ):
-                if int(dev.get(field_name) or 0) < int(requirements[threshold_name]):
-                    blockers.append(f"development_{field_name}_insufficient")
-            if requirements["safety_required"] and int(dev.get("safety_cluster_n") or 0) == 0:
-                blockers.append("development_safety_empty")
+            blockers.extend(development_coverage_blockers(development.counts))
         else:
             prior = "holdout" if request.stage == "shadow" else "shadow"
             if not self._registry.has_passed_stage(candidate.candidate_sha, prior):
@@ -1806,6 +1794,43 @@ def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:
     return {"lower": lower, "upper": upper}
 
 
+# Which counts decide whether a frozen development corpus can support a release evaluation at all. Read
+# by `_evaluate_evidence` at `offline` and `holdout`, and by nothing else — one gate, one vocabulary.
+_DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
+    ("boundary_cluster_n", "boundary_clusters_min"),
+    ("retention_cluster_n", "retention_clusters_min"),
+    ("negative_cluster_n", "negative_clusters_min"),
+    ("stratum_n", "strata_min"),
+)
+
+
+def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:
+    """The development corpus refusals, from the frozen dataset's own counts and nothing else.
+
+    Every input is a count of independent connected fact clusters or of strata: how much separable
+    evidence this corpus carries, per role. #259 removed the one input that was neither — `natural_day_n`,
+    the number of distinct UTC calendar dates the accepted cases opened on. It could refuse a corpus of a
+    hundred independent clusters for landing inside one date and admit three restatements of one storyline
+    for straddling one midnight, and because a frozen corpus only holds cases from the *active* Stable
+    bundle, it also made every new Stable unusable until the calendar caught up. Time-out-of-sample is
+    proven once, later, by a Future Holdout frozen after the candidate was registered.
+
+    `natural_day_n` and `window_duration_hours` stay in the counts this reads from, and stay out of the
+    answer: together they say how concentrated the accepted cases are inside the frozen window. Nothing
+    here may be replaced by a stable-age, window-age or calendar-day threshold.
+    """
+
+    requirements = _PROFILE["development"]
+    blockers = [
+        f"development_{field_name}_insufficient"
+        for field_name, threshold_name in _DEVELOPMENT_COVERAGE_GATES
+        if int(counts.get(field_name) or 0) < int(requirements[threshold_name])
+    ]
+    if requirements["safety_required"] and int(counts.get("safety_cluster_n") or 0) == 0:
+        blockers.append("development_safety_empty")
+    return tuple(blockers)
+
+
 def _sha(value: Any) -> str:
     return canonical_sha(value)
 
@@ -1835,5 +1860,6 @@ __all__ = [
     "EvaluationReport",
     "EvaluationRequest",
     "ProposalReceipt",
+    "development_coverage_blockers",
     "evaluation_run_sha",
 ]

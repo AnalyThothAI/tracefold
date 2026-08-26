@@ -124,7 +124,7 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID
+    from tracefold.news.learning.contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID, dataset_coverage
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import (
         DevelopmentEpisode,
@@ -154,6 +154,13 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     }
     episodes: tuple[Any, ...] = ()
     plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))
+    # Present on every path for the same reason `identity.episode_count` is: a consumer must read `null`,
+    # not fall off the end of the object. It stays `null` on the `dataset_agent_cohort_mismatch` path even
+    # though the export loaded that payload before refusing, and that is deliberate: those counts —
+    # `eligible_event_n` above all — were measured against a different arm's cohort, and this report's
+    # `identity` names the current stable bundle. Publishing them here would file another arm's corpus
+    # under this arm's name, which is a worse answer than "unknown".
+    coverage: dict[str, Any] = dataset_coverage({})
     with postgres_connection(settings, role="serve") as conn:
         datasets = DevelopmentDatasetStore(conn, stable=stable)
         try:
@@ -169,11 +176,15 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         else:
             episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
             identity["episode_count"] = len(episodes)
+            # The dataset's own sealed counts, republished rather than re-tallied from the episodes: the
+            # eligible-Event and cluster-role numbers were computed against production at freeze time and
+            # cannot be recovered from a projection of the cases that survived it.
+            coverage = dataset_coverage(dict(export.dataset_payload.get("counts") or {}))
             # The exact root a candidate's `ProposalReceipt` records and the release gate re-derives, computed from
             # the same raw projection dicts rather than from the parsed models — same bytes, same address.
             identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
             plan = build_gepa_objective_plan(episodes)
-    report = build_readiness_report(plan, episodes=episodes, identity=identity)
+    report = build_readiness_report(plan, episodes=episodes, identity=identity, coverage=coverage)
     if str(args.out):
         _write_json(str(args.out), report)
     summary: dict[str, Any] = {key: value for key, value in report.items() if key != "case_dispositions"}

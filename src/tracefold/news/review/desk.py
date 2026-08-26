@@ -2247,6 +2247,10 @@ def _release_code_zh(code: str) -> str:
             "boundary_cluster_n": "边界事实簇",
             "retention_cluster_n": "保留集事实簇",
             "negative_cluster_n": "负例事实簇",
+            # #259 deleted the natural-day gate, so no evaluation written after it can carry this code.
+            # The row stays because `news_learning_artifacts` is append-only: a report sealed before the
+            # cut still says `development_natural_day_n_insufficient`, and archived evidence a reader
+            # cannot read is archived evidence nobody can audit.
             "natural_day_n": "自然日",
             "stratum_n": "抽样分层",
         }.get(field, "开发集证据")

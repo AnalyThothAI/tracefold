@@ -699,7 +699,9 @@ def test_the_optimizer_elects_one_representative_per_connected_fact_cluster() ->
 
     plan = build_gepa_objective_plan(inflated)
     optimizer_clusters = [episode.cluster_id for episode in plan.optimizer_episodes]
-    readiness = build_readiness_report(plan, episodes=inflated, identity={"development_dataset_sha": "0" * 64})
+    readiness = build_readiness_report(
+        plan, episodes=inflated, identity={"development_dataset_sha": "0" * 64}, coverage={}
+    )
 
     assert len(plan.optimizer_case_ids) == len(set(optimizer_clusters))
     assert optimizer_clusters.count(seed.cluster_id) == 1
@@ -1060,7 +1062,7 @@ def test_every_plane_reaches_the_objective_through_the_same_function() -> None:
 def test_readiness_explains_the_same_plan_without_asking_a_model_anything() -> None:
     corpus = _mixed_corpus()
     plan = build_gepa_objective_plan(corpus)
-    report = build_readiness_report(plan, episodes=corpus, identity={"development_dataset_sha": "0" * 64})
+    report = build_readiness_report(plan, episodes=corpus, identity={"development_dataset_sha": "0" * 64}, coverage={})
 
     assert report["outcome"] == "ready"
     assert report["objective"]["schema"] == "tracefold.news.gepa_objective_plan.v2"

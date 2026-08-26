@@ -1148,7 +1148,7 @@ goes straight to `optimize`, whose `REJECTED` for that corpus costs nothing.
 The directory holds `readiness.json`, `baseline-compile-live.json`,
 `optimization/optimization_report.json`, `optimization/prompt_candidate.json` on
 `ADVANCE`, and `run_summary.json`
-(`tracefold.news.gepa_run_summary.v1`). Freezing with `--out
+(`tracefold.news.gepa_run_summary.v2`). Freezing with `--out
 DIR/development.json` makes the same directory loadable by
 `docs/research/news-gepa-frozen-run-evaluation.ipynb`.
 
@@ -1165,6 +1165,13 @@ evaluate --stage holdout` against a post-registration ValidationDataset can
 produce one. `numeric_drift` is `seed - standalone`, published rather than
 reconciled: two physical runs of one graph may differ, and a difference is not
 by itself evidence that a dataset identity is wrong.
+
+`dataset` carries the corpus counts and roots plus a `coverage` block forwarded
+from readiness, so the numbers and the population behind them read together. The
+block always has the same ten keys: a `gepa_readiness_report.v1` in an archived
+run directory carried none of these counts, so every value is `null` — never `0`,
+which would read as a measured corpus of nothing, and never an empty object,
+which a consumer would fall off the end of.
 
 `same_population` is a verdict over named `population_checks` — dataset SHA,
 episode projection root, episode count, representative case root and counts,
@@ -1236,6 +1243,26 @@ the Objective Plan schema plus the representative case ids, count and root. Regi
 re-derives and compares that population. A
 candidate that declares split roots with an older or missing plan identity is
 registration-ineligible; its append-only artifact remains historical evidence.
+
+The report is `tracefold.news.gepa_readiness_report.v2`. v2 adds a `coverage`
+block carrying the frozen dataset's own sealed counts — `case_n`,
+`independent_cluster_n`, `boundary_cluster_n`, `retention_cluster_n`,
+`negative_cluster_n`, `safety_cluster_n`, `stratum_n`, `eligible_event_n`,
+`natural_day_n`, `window_duration_hours` — republished verbatim rather than
+re-tallied, and present with `null` values on the one path that cannot project a
+corpus at all. The last two are diagnostics and are read by no gate (#259):
+`natural_day_n` is how many distinct UTC dates the accepted cases opened on and
+`window_duration_hours` is the length of the frozen window, so the pair says how
+concentrated the corpus is and the two may disagree freely — a 72 h freeze whose
+reviews all landed in one afternoon reads `1` and `72.0`.
+`release evaluate --stage offline|holdout` decides
+development evidence on the cluster-role, stratum and safety counts alone.
+Out-of-time generalization remains the Future Holdout's alone — `validation`
+still requires a window strictly after candidate registration, ≥ 24 h, ≥ 200
+eligible Events and ≥ 30 primary clusters. Removing the day gate moves
+`TRUSTED_ROOT_SHA`, and the profile is named `news_learning_release_v2` so one
+readable name cannot stand for two sets of gates; a v1 dataset or candidate is
+audit history and a new experiment re-freezes.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in

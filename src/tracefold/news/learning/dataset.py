@@ -47,7 +47,7 @@ class DatasetSpec(BaseModel):
 
     window: ClosedWindow
     role: Literal["development", "validation"]
-    profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
+    profile_id: Literal["news_learning_release_v2"] = LEARNING_PROFILE_ID
     learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
@@ -632,6 +632,11 @@ class DevelopmentDatasetStore:
             "retention_cluster_n": len(retention),
             "negative_cluster_n": len(negative),
             "safety_cluster_n": len(safety),
+            # Diagnostics, not gates (#259). `natural_day_n` is how many distinct UTC dates the accepted
+            # *cases* opened on — not a property of the window, which `window_duration_hours` reports
+            # separately, and the two can disagree freely: a 72 h freeze whose reviews all landed in one
+            # afternoon reads 1 and 72.0. That is exactly what makes the pair worth publishing and worth
+            # refusing to gate on. Neither is read by `development_coverage_blockers`.
             "natural_day_n": len(days),
             "stratum_n": len(strata),
             "strata": sorted(strata),
