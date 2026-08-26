@@ -478,8 +478,8 @@ the route components into the eager shell chunk.
   `strategy_id`: `oi_smart_money_momentum_v1 → oi_smart_money`,
   `oi_momentum_v1 → oi_only` and
   `news_oi_alignment_v1 → news_oi`; the raw identity remains in the chip title.
-  `oi_momentum_v1` is kept as a label because Cases frozen under it are still
-  read; #265 routes no new Case to it.
+  `oi_momentum_v1` keeps its label unchanged because Cases frozen under it are
+  still read; #265 routes no new Case to it.
   The UI never reconstructs a case kind from symbol, time, or nearby News data,
   and no `news_only` strategy exists. The primary surface follows the approved
   mandate / exposure / daily closes / operational snapshot frame. The snapshot

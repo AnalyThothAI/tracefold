@@ -257,7 +257,9 @@ describe("TradingPage", () => {
 
     const funnel = (await screen.findByText(/案例去向/)).closest("section") as HTMLElement;
     // Matched on the label alone; the clock is a nested `<em>` and rides on `textContent` below.
-    const rows = within(funnel).getAllByText(/^(上游帧|过准入|成案|政策放行|提交订单|已了结|在场)$/);
+    const rows = within(funnel).getAllByText(
+      /^(上游帧|过准入|成案|政策放行|提交订单|已了结|在场)$/,
+    );
     expect(rows.map((node) => node.textContent)).toEqual([
       "上游帧24h",
       "过准入24h",

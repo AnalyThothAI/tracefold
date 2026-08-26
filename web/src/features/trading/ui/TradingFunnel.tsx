@@ -100,11 +100,7 @@ export function TradingAdmission({ counts }: { counts: TradingCounts }) {
   const week = sourcesSeen(counts.candidate_counts_7d);
 
   return (
-    <Card
-      flush
-      hint="24 小时 · 按帧观测时刻，跨 UTC 日仍可查"
-      title="未成案的来源帧"
-    >
+    <Card flush hint="24 小时 · 按帧观测时刻，跨 UTC 日仍可查" title="未成案的来源帧">
       <div className="trading-admission">
         {seen === 0 ? (
           <TradingEmptyNote>

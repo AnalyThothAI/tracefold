@@ -62,8 +62,10 @@ export const STRATEGY_ZH: Record<string, string> = {
   liquidation_continuation_shadow_v1: "清算延续（影子）",
   liquidation_exhaustion_shadow_v1: "清算衰竭（影子）",
   news_oi_alignment_v1: "新闻 × OI 对齐",
-  // Retained because historical Cases still carry it; no new Case is routed to it since #265.
-  oi_momentum_v1: "OI 动量（历史）",
+  // Retained because historical Cases still carry it; no new Case is routed to it since #265. The label
+  // is unchanged on purpose: a "（历史）" suffix wrapped the cell to two lines on the token page and told
+  // a reader nothing the case's own date does not.
+  oi_momentum_v1: "OI 动量",
   oi_smart_money_momentum_v1: "OI × 聪明钱动量",
 };
 

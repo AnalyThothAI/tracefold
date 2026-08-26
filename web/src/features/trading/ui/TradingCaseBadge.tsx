@@ -36,7 +36,8 @@ export function TradingCaseBadge({
   const data = query.data;
   if (!data || !data.joinable) return null;
   if (!data.case) {
-    const reason = data.gate_stage && data.gate_reason ? `${data.gate_stage}:${data.gate_reason}` : "";
+    const reason =
+      data.gate_stage && data.gate_reason ? `${data.gate_stage}:${data.gate_reason}` : "";
     return (
       <span
         className="trading-case-badge"
