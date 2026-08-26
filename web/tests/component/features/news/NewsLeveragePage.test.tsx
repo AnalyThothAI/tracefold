@@ -131,7 +131,8 @@ describe("NewsLeveragePage", () => {
         }),
       ),
     );
-    renderLeverage("/news/leverage?lev=live&case=evt-oi-hype");
+    // The URL holds the ledger's own `case_id`; `event_id` is null for most of the lane.
+    renderLeverage("/news/leverage?lev=live&case=case-hype");
 
     const detail = await screen.findByRole("region", { name: /^案例 / });
     expect(detail).toHaveTextContent("NO TRADE · 不交易");
@@ -173,6 +174,110 @@ describe("NewsLeveragePage", () => {
 
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(screen.queryByText("未配置地板", { exact: false })).toBeNull();
+  });
+
+  it("lists news-triggered cases, which never carry an event id", async () => {
+    /*
+     * The shape production actually serves: on 2026-08-26 the ledger held nine cases, every one
+     * `trigger_kind: news` with `event_id: null`, and the page rendered zero rows and told the operator
+     * 「24 小时内没有成案」. `event_id` is published only for the deterministic OI trigger — a model-lane
+     * source key is a content hash no Event id rebuilds — so the lane must be keyed by `case_id`.
+     */
+    server.use(
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersFixture({
+            cases_without_orders: ["AAVE", "AVAX", "ZEC"].map((base) =>
+              tradingCaseFixture({
+                base_symbol: base,
+                case_id: `case-${base}`,
+                event_id: null,
+                policy_reason: "oi_context_missing",
+                state: "POLICY_REJECTED",
+                strategy_id: "news_oi_alignment_v1",
+                trigger_kind: "news",
+                underlying_key: `crypto:${base}`,
+              }),
+            ),
+            orders: [],
+          }),
+        }),
+      ),
+    );
+    renderLeverage("/news/leverage?lev=no_trade");
+
+    const list = await screen.findByRole("region", { name: "案例列表" });
+    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    expect(screen.queryByText("24 小时内没有成案")).toBeNull();
+    // A news case never had a telemetry frame: not a page boundary, not a parse failure.
+    expect(within(list).getAllByText("非 OI 触发 · 无遥测帧")).toHaveLength(3);
+  });
+
+  it("names a non-OI trigger the same way in the card and in the detail", async () => {
+    /*
+     * The card and the pane must not contradict each other: saying 非 OI 触发 on the left while the kv row
+     * reads `OI 帧`, the timeline says `OI 帧落库` and the raw block blames a page boundary would tell the
+     * operator a frame existed and was merely not loaded.
+     */
+    server.use(
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersFixture({
+            cases_without_orders: [
+              tradingCaseFixture({
+                case_id: "case-news",
+                event_id: null,
+                state: "POLICY_REJECTED",
+                trigger_kind: "news",
+              }),
+            ],
+            orders: [],
+          }),
+        }),
+      ),
+    );
+    renderLeverage("/news/leverage?lev=no_trade");
+
+    const detail = await screen.findByRole("region", { name: /^案例 / });
+    expect(detail).toHaveTextContent("新闻 · ");
+    expect(detail).not.toHaveTextContent("OI 帧落库");
+    expect(detail).not.toHaveTextContent("原帧不在本页帧里");
+    expect(detail).toHaveTextContent("这条通道没有遥测帧");
+  });
+
+  it("opens the case a pre-rename event-id link names, not a different one", async () => {
+    // Identity moved from `event_id` to `case_id` (#262); a link shared before that must still resolve to
+    // its own case rather than silently falling through to the first row.
+    server.use(
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersFixture({
+            cases_without_orders: [],
+            orders: [
+              tradingOrderFixture({
+                base_symbol: "WIF",
+                case_id: "case-wif",
+                event_id: "evt-oi-wif",
+              }),
+              tradingOrderFixture({
+                base_symbol: "DOGE",
+                case_id: "case-doge",
+                event_id: "evt-oi-doge",
+                order_id: "order-doge",
+                state: "AMBIGUOUS",
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+    // AMBIGUOUS sorts first, so a silent fallback would show DOGE.
+    renderLeverage("/news/leverage?case=evt-oi-wif");
+
+    expect(await screen.findByRole("region", { name: "案例 WIF" })).toBeInTheDocument();
   });
 
   it("says the lane produced nothing rather than drawing an empty frame", async () => {

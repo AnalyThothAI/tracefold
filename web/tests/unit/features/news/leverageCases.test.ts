@@ -8,7 +8,7 @@ import {
   leverageTimeline,
   parseLeverageTab,
 } from "@features/news/model/leverageCases";
-import { tradingOiLedgerByEventId } from "@features/trading";
+import { tradingLedgerEntries } from "@features/trading";
 import { newsOiFrameFixture, newsStatusFixture } from "@tests/fixtures/newsFixture";
 import {
   tradingCaseFixture,
@@ -21,7 +21,7 @@ const FLOORS: NewsOiTradeFloors = newsStatusFixture().oi!.trade_floors!;
 const NOW_MS = 1_756_000_000_000;
 
 function build(events = [newsOiFrameFixture()], orders = tradingOrdersFixture()) {
-  return leverageCases(events, tradingOiLedgerByEventId(orders), FLOORS, NOW_MS);
+  return leverageCases(events, tradingLedgerEntries(orders), FLOORS, NOW_MS);
 }
 
 describe("leverageCases", () => {
@@ -37,14 +37,21 @@ describe("leverageCases", () => {
       newsOiFrameFixture({ event_id: "evt-never-judged" }),
     ];
     const ledger = tradingOrdersFixture({
-      cases_without_orders: [tradingCaseFixture({ event_id: "evt-off-page" })],
-      orders: [tradingOrderFixture({ event_id: "evt-oi-wif" })],
+      cases_without_orders: [
+        tradingCaseFixture({ case_id: "case-off-page", event_id: "evt-off-page" }),
+        // A news-triggered case: the server publishes `event_id: null` by design, and this is the row an
+        // `event_id`-keyed index silently dropped — which is most of the live lane.
+        tradingCaseFixture({ case_id: "case-news", event_id: null, trigger_kind: "news" }),
+      ],
+      orders: [tradingOrderFixture({ case_id: "case-framed", event_id: "evt-oi-wif" })],
     });
 
     const ids = build(frames, ledger).map((item) => item.id);
-    expect(ids).toContain("evt-oi-wif");
-    expect(ids).toContain("evt-off-page");
-    expect(ids).not.toContain("evt-never-judged");
+    expect(ids).toEqual(expect.arrayContaining(["case-framed", "case-off-page", "case-news"]));
+    // The frame nothing judged is still not a case.
+    expect(build(frames, ledger).some((item) => item.event?.event_id === "evt-never-judged")).toBe(
+      false,
+    );
   });
 
   it("treats a blocked case as terminal, not as one still forming", () => {
@@ -81,19 +88,28 @@ describe("leverageCases", () => {
     ];
     const ledger = tradingOrdersFixture({
       cases_without_orders: [
-        tradingCaseFixture({ event_id: "evt-rejected", state: "POLICY_REJECTED" }),
+        tradingCaseFixture({
+          case_id: "case-rejected",
+          event_id: "evt-rejected",
+          state: "POLICY_REJECTED",
+        }),
       ],
       orders: [
-        tradingOrderFixture({ event_id: "evt-open", state: "OPEN" }),
-        tradingOrderFixture({ event_id: "evt-closed", order_id: "o2", state: "CLOSED" }),
+        tradingOrderFixture({ case_id: "case-open", event_id: "evt-open", state: "OPEN" }),
+        tradingOrderFixture({
+          case_id: "case-closed",
+          event_id: "evt-closed",
+          order_id: "o2",
+          state: "CLOSED",
+        }),
       ],
     });
 
     const byId = Object.fromEntries(build(frames, ledger).map((item) => [item.id, item.phase]));
     expect(byId).toEqual({
-      "evt-closed": "resolved",
-      "evt-open": "active",
-      "evt-rejected": "no_trade",
+      "case-closed": "resolved",
+      "case-open": "active",
+      "case-rejected": "no_trade",
     });
   });
 
@@ -104,18 +120,21 @@ describe("leverageCases", () => {
       orders: [
         // Newest, but merely open.
         tradingOrderFixture({
+          case_id: "case-a",
           case_observed_at_ms: NOW_MS - 1_000,
           event_id: "evt-a",
           state: "OPEN",
         }),
         // Older, and unreconciled: this is the row an operator has to see first.
         tradingOrderFixture({
+          case_id: "case-b",
           case_observed_at_ms: NOW_MS - 900_000,
           event_id: "evt-b",
           order_id: "o2",
           state: "AMBIGUOUS",
         }),
         tradingOrderFixture({
+          case_id: "case-c",
           case_observed_at_ms: NOW_MS - 500_000,
           event_id: "evt-c",
           order_id: "o3",
@@ -124,7 +143,7 @@ describe("leverageCases", () => {
       ],
     });
 
-    expect(build(frames, ledger).map((item) => item.id)).toEqual(["evt-b", "evt-a", "evt-c"]);
+    expect(build(frames, ledger).map((item) => item.id)).toEqual(["case-b", "case-a", "case-c"]);
   });
 
   it("names the rule rather than paraphrasing a thesis nobody wrote", () => {
@@ -174,7 +193,7 @@ describe("evidenceRows", () => {
      * The pre-frame move, funding and liquidity are inputs the capital lane consumes and does not publish.
      * A matrix that dropped the rows it cannot fill would read as "everything checked out".
      */
-    const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", FLOORS);
+    const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", "oi", FLOORS);
 
     expect(rows.map((row) => row.key)).toEqual([
       "oi",
@@ -204,7 +223,7 @@ describe("evidenceRows", () => {
      * and none of them reaches this browser. Stamping 支持 on the strategy id put "the news supports this"
      * on a case rejected because the news contradicted the regime.
      */
-    const rows = evidenceRows(newsOiFrameFixture().oi, "news_oi_alignment_v1", FLOORS);
+    const rows = evidenceRows(newsOiFrameFixture().oi, "news_oi_alignment_v1", "news", FLOORS);
 
     expect(rows.find((row) => row.key === "news")?.status).toBe("missing");
   });
@@ -212,7 +231,7 @@ describe("evidenceRows", () => {
   it("refuses to call an unconfigured floor a pass", () => {
     // A zero floor arrives when the console is newer than the API. `measured >= 0` would stamp 支持 on
     // every frame against a threshold nobody set.
-    const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", {
+    const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", "oi", {
       ...FLOORS,
       min_oi_value_usd: 0,
       min_whale_long_profit_bps: 0,

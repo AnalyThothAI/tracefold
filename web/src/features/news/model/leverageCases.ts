@@ -41,6 +41,17 @@ export type LeverageEvidenceRow = {
 
 export type LeveragePlaneItem = { key: string; label: string; note?: string; value: string };
 
+/** How a lane names its own trigger. The card and the detail read this same map. */
+export const TRIGGER_LABEL: Record<string, string> = {
+  liquidation: "清算帧",
+  news: "新闻",
+  oi: "OI 帧",
+};
+
+export function triggerLabel(triggerKind: string): string {
+  return TRIGGER_LABEL[triggerKind] ?? triggerKind;
+}
+
 export type LeverageTimelineStep = {
   at: string;
   key: string;
@@ -50,7 +61,7 @@ export type LeverageTimelineStep = {
 };
 
 export type LeverageCase = {
-  /** The Event the frame and the case share. It is the row's identity and its URL state. */
+  /** `case_id` — the ledger's own identity, present on every case. It is the row's URL state. */
   id: string;
   age: string;
   base: string;
@@ -61,6 +72,11 @@ export type LeverageCase = {
   entry: TradingOiLedgerEntry;
   /** The frame, when the loaded frame page holds it. `undefined` is a page boundary, not a missing case. */
   event: NewsFeedEvent | undefined;
+  /**
+   * The Event id the ledger published, independent of whether the frame is loaded. Non-null only for the
+   * deterministic OI trigger; it is not the row's identity, only a legacy link target and a frame key.
+   */
+  eventId: string | null;
   evidence: LeverageEvidenceRow[];
   /** The capital state as the ledger's own word, or `null` when the frame never authored an intent. */
   capital: string | null;
@@ -74,6 +90,8 @@ export type LeverageCase = {
   /** The immutable strategy identity, and the compact label the console prints for it. */
   strategyId: string;
   strategyLabel: string;
+  /** `oi` | `news` | `liquidation` — which lane fired. Only `oi` ever has a telemetry frame. */
+  triggerKind: string;
   /** `crypto:WIF` — the ledger's own subject key. Not a venue: this lane publishes none. */
   underlyingKey: string;
   why: string;
@@ -90,6 +108,7 @@ type CaseFacts = {
   policyReason: string | null;
   regime: string | null;
   strategyId: string;
+  triggerKind: string;
 };
 
 function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
@@ -107,6 +126,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
       policyReason: order.policy_reason ?? null,
       regime: order.regime ?? null,
       strategyId: order.strategy_id,
+      triggerKind: order.trigger_kind,
     };
   }
   const record = entry.value;
@@ -120,6 +140,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
     policyReason: record.policy_reason ?? null,
     regime: record.regime ?? null,
     strategyId: record.strategy_id,
+    triggerKind: record.trigger_kind,
   };
 }
 
@@ -132,12 +153,15 @@ const DECISION_BY_POLICY: Record<string, LeverageDecision> = {
 /**
  * One case per ledger entry, with its frame attached when the loaded frame page happens to hold it.
  *
- * The iteration is over the *ledger*, not over the frames, and that direction is the whole correctness of
- * this page. The ledger is the authority for "which cases exist"; the frames arrive one bounded page at a
- * time (50 of a day's ~190), so walking frames and looking up cases would silently drop every case older
- * than that page — while this page's figures are labelled as the lane's whole load and its empty state
- * claims 24 hours. Walking the ledger costs only the wire line and the OI measurements for those cases,
- * and the evidence matrix already has a word for a fact it does not have.
+ * The iteration is over the *ledger*, not over the frames, and it is keyed by `case_id`. Both halves of
+ * that matter and the second one was wrong first: keying by `event_id` looks natural on a page about OI
+ * frames, but the server publishes an `event_id` only for the deterministic OI trigger — a news- or
+ * liquidation-triggered case carries `null` by design, because its source key is a content hash no Event id
+ * rebuilds. Indexing by it dropped every case the lane actually produced, and the page told the operator
+ * 「24 小时内没有成案」 while nine sat in the ledger. `case_id` is the ledger's own identity and always there.
+ *
+ * The frame is attached when the loaded frame page happens to hold it, and is decoration either way: it
+ * carries the wire line and the OI measurements, not the case's identity.
  *
  * A frame with no ledger entry is still not a case and is still not listed: the OI audit owns "this frame
  * existed and nothing opened on it" in full.
@@ -149,8 +173,8 @@ export function leverageCases(
   nowMs: number,
 ): LeverageCase[] {
   const byEventId = new Map(frames.map((frame) => [frame.event_id, frame]));
-  return [...ledger.entries()]
-    .map(([eventId, entry]) => buildCase(byEventId.get(eventId), entry, floors, nowMs))
+  return [...ledger.values()]
+    .map((entry) => buildCase(byEventId.get(entry.value.event_id ?? ""), entry, floors, nowMs))
     .sort(leverageOrder);
 }
 
@@ -173,15 +197,17 @@ function buildCase(
     decision,
     entry,
     event,
-    evidence: evidenceRows(event?.oi, facts.strategyId, floors),
-    id: entry.value.event_id ?? facts.caseId,
-    numbers: frameNumbers(event?.oi),
+    eventId: entry.value.event_id ?? null,
+    evidence: evidenceRows(event?.oi, facts.strategyId, facts.triggerKind, floors),
+    id: facts.caseId,
+    numbers: frameNumbers(event?.oi, facts.triggerKind),
     observedAtMs: facts.observedAtMs,
     phase: phaseOf(entry, decision),
     regime: facts.regime ? (REGIME_ZH[facts.regime] ?? facts.regime) : "象限未定",
     rule: facts.policyReason ?? "—",
     strategyId: facts.strategyId,
     strategyLabel: strategyCaseLabel(facts.strategyId),
+    triggerKind: facts.triggerKind,
     underlyingKey: entry.value.underlying_key,
     why: whySentence(entry, facts, decision, nowMs),
   };
@@ -217,8 +243,10 @@ function phaseOf(entry: TradingOiLedgerEntry, decision: LeverageDecision): Lever
  * the other is a frame the provider's line broke on. Collapsing them would blame the parser for a page
  * boundary.
  */
-function frameNumbers(oi: NewsFeedOi | null | undefined): string {
-  if (oi === undefined) return "原帧不在本页帧里";
+function frameNumbers(oi: NewsFeedOi | null | undefined, triggerKind: string): string {
+  // Three different absences, three different sentences. A news-triggered case never had a telemetry frame
+  // at all; blaming a page boundary or a parser for that would invent a fault that does not exist.
+  if (oi === undefined) return triggerKind === "oi" ? "原帧不在本页帧里" : "非 OI 触发 · 无遥测帧";
   if (!oi?.parsed) return "帧未解析";
   const change =
     oi.oi_change_bps == null
@@ -272,6 +300,7 @@ const STALE_PENDING_MS = 5 * 60_000;
 export function evidenceRows(
   oi: NewsFeedOi | null | undefined,
   strategyId: string,
+  triggerKind: string,
   floors: NewsOiTradeFloors,
 ): LeverageEvidenceRow[] {
   const parsed = Boolean(oi?.parsed);
@@ -285,7 +314,9 @@ export function evidenceRows(
       label: "OI",
       note:
         oi === undefined
-          ? "原帧不在本页帧里（帧按页取）"
+          ? triggerKind === "oi"
+            ? "原帧不在本页帧里（帧按页取）"
+            : "非 OI 触发的案例，本来就没有遥测帧"
           : !parsed
             ? "帧未解析"
             : change == null
@@ -392,7 +423,14 @@ export function leveragePlanes(
       {
         key: "oi",
         label: "OI 事实",
-        note: oi == null ? "帧按页取" : oi.parsed ? "帧内测量" : "帧未解析",
+        note:
+          oi == null
+            ? item.triggerKind === "oi"
+              ? "帧按页取"
+              : "本通道无帧"
+            : oi.parsed
+              ? "帧内测量"
+              : "帧未解析",
         value: item.numbers,
       },
       {
@@ -460,7 +498,10 @@ export function leverageTimeline(item: LeverageCase): LeverageTimelineStep[] {
       at: clockTime(item.event?.opened_at_ms ?? item.observedAtMs),
       key: "trigger",
       label: "Trigger",
-      note: "OI 帧落库 · telemetry_deterministic",
+      note:
+        item.triggerKind === "oi"
+          ? "OI 帧落库 · telemetry_deterministic"
+          : `${triggerLabel(item.triggerKind)}落库 · 触发资本通道`,
       tone: "step",
     },
     {

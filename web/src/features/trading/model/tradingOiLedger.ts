@@ -20,7 +20,37 @@ export type TradingOiCellCopy = {
   title?: string;
 };
 
-/** Index only the Event identities the server explicitly published from deterministic OI source keys. */
+/**
+ * Every case and order the ledger batch holds, keyed by `case_id`.
+ *
+ * `case_id` is the ledger's own identity and is always present. `event_id` is not: the server recovers it
+ * only when `primary_source_key` round-trips as `oi:{event_id}:{metric_version}`, so a news- or
+ * liquidation-triggered case publishes `null` by design (a model-lane source key is a content hash and is
+ * not joinable). Indexing the lane by `event_id` therefore drops every case that did not come from the
+ * deterministic OI trigger — which is most of them.
+ */
+export function tradingLedgerEntries(
+  trading: TradingOrders | undefined,
+): Map<string, TradingOiLedgerEntry> {
+  const result = new Map<string, TradingOiLedgerEntry>();
+  for (const value of trading?.cases_without_orders ?? []) {
+    result.set(value.case_id, { kind: "case", value });
+  }
+  // An order supersedes the case row it was authored from; the API returns the two sets disjoint, and
+  // keying both by `case_id` keeps them that way if it ever stops.
+  for (const value of trading?.orders ?? []) {
+    result.set(value.case_id, { kind: "order", value });
+  }
+  return result;
+}
+
+/**
+ * Index only the Event identities the server explicitly published from deterministic OI source keys.
+ *
+ * This is the *frame-join* index and is correct only for a surface that starts from Events — the OI audit
+ * table asking "did this frame become a case". Anything enumerating the lane itself wants
+ * `tradingLedgerEntries`.
+ */
 export function tradingOiLedgerByEventId(
   trading: TradingOrders | undefined,
 ): Map<string, TradingOiLedgerEntry> {
