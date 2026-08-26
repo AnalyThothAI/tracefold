@@ -167,6 +167,25 @@ class _FakeTradingRepository:
             "attempt_count": 30,
         }
 
+    def gate_decisions_since(self, *, since_ms: int, trigger_kind: str = "oi", limit: int) -> list[dict[str, Any]]:
+        self.calls.append(
+            ("gate_decisions_since", {"since_ms": since_ms, "trigger_kind": trigger_kind, "limit": limit})
+        )
+        refused = self.gate_decision_for_source_key(source_key="oi:evt-oi-storj:oi_signal_v1")
+        assert refused is not None
+        admitted = {
+            **refused,
+            "source_key": "oi:evt-oi-hype:oi_signal_v1",
+            "underlying_key": "crypto:HYPE",
+            "status": "CASE_CREATED",
+            "stage": "freeze",
+            "reason": "case_created",
+            "case_id": "case-hype",
+        }
+        # A source key that is not the deterministic OI contract. It is still one of the lane's answers.
+        foreign = {**refused, "source_key": "news:6f2a", "underlying_key": None, "trigger_kind": "news"}
+        return [refused, admitted, foreign]
+
     def console_orders(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("console_orders", kwargs))
         return [_order()]
@@ -399,6 +418,56 @@ def test_an_event_the_gate_has_never_evaluated_reports_an_absence_not_a_refusal(
     # version" is an answer, and a missing key would read as the console forgetting to ask.
     assert data["gate_status"] is None
     assert "gate_reason" not in data
+
+
+def test_the_gate_batch_answers_a_whole_window_of_frames_at_once(client) -> None:
+    """#269. A frame table renders a page of rows; asking `/events/{id}` per row is a hundred reads."""
+
+    api, trading = client
+    response = api.get("/api/trading/gate", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["complete"] is True
+    assert data["window_hours"] == 24
+    by_event = {row["event_id"]: row for row in data["decisions"]}
+    # Keyed on the Event id the source key round-trips to, exactly as the order projection recovers it.
+    assert by_event["evt-oi-storj"]["gate_reason"] == "oi_value_below_floor"
+    assert by_event["evt-oi-storj"]["gate_evidence"]["floor"] == 5_000_000
+    assert by_event["evt-oi-storj"]["base_symbol"] == "STORJ"
+    assert by_event["evt-oi-hype"]["gate_status"] == "CASE_CREATED"
+    assert by_event["evt-oi-hype"]["case_id"] == "case-hype"
+    # A source whose key is not the deterministic contract is listed with no Event link rather than
+    # dropped: the distributions in `/status` count it, and the page's own total has to agree.
+    assert by_event[None]["source_key"] == "news:6f2a"
+    assert by_event[None]["trigger_kind"] == "news"
+    window = next(kwargs for name, kwargs in trading.calls if name == "gate_decisions_since")
+    assert window["limit"] > len(data["decisions"])
+
+
+def test_the_status_publishes_the_rules_that_actually_decide_a_frame(client) -> None:
+    """#269. `floors` is the settings document; these two are the rules the lane holds and files under."""
+
+    api, _ = client
+    data = api.get("/api/trading/status", params={"token": TOKEN}).json()["data"]
+
+    gate = data["gate"]
+    assert gate["version"] == "trading_candidate_gate_v1"
+    assert len(gate["config_digest"]) == 64
+    assert (gate["max_rank_in_window"], gate["min_oi_value_usd"]) == (2, 20_000_000)
+    assert gate["venue_priority"] == ["binance", "hyperliquid"]
+
+    strategies = {row["strategy_id"]: row for row in data["strategies"]}
+    smart_money = strategies["oi_smart_money_momentum_v1"]
+    assert smart_money["trigger_kinds"] == ["oi"]
+    # The template's own numbers, not the 95 % whale-profit floor of the strategy beside it. A console
+    # measuring a smart-money case against `floors.min_whale_long_profit_bps` was using the wrong rule.
+    assert smart_money["config"]["min_whale_oi_ratio_bps"] == "5000"
+    assert smart_money["config"]["min_oi_change_bps"] == "1000"
+    assert smart_money["config"]["min_whale_long_profit_bps"] == "0"
+    assert strategies["news_oi_alignment_v1"]["config"]["min_whale_long_profit_bps"] == "9500"
+    # The admission floor stays out of every strategy: one owner, and the digest says which (#264).
+    assert "min_oi_value_usd" not in smart_money["config"]
 
 
 def test_orders_carry_the_ledgers_own_state_and_no_frozen_payload(client) -> None:

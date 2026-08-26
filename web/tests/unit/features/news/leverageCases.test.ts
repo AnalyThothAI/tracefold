@@ -1,27 +1,32 @@
-import type { NewsOiTradeFloors } from "@features/news/api/newsQueries";
 import {
   LEVERAGE_TABS,
   evidenceRows,
   leverageCases,
   leverageFramelessCount,
+  leverageFunnel,
+  leverageListRows,
   leverageTabCount,
   leverageTimeline,
+  leverageTopReasons,
   parseLeverageTab,
+  type LeverageThresholds,
 } from "@features/news/model/leverageCases";
 import { tradingLedgerEntries } from "@features/trading";
-import { newsOiFrameFixture, newsStatusFixture } from "@tests/fixtures/newsFixture";
+import { newsOiFrameFixture } from "@tests/fixtures/newsFixture";
 import {
   tradingCaseFixture,
   tradingOrderFixture,
   tradingOrdersFixture,
+  tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 import { describe, expect, it } from "vitest";
 
-const FLOORS: NewsOiTradeFloors = newsStatusFixture().oi!.trade_floors!;
+const STATUS = tradingStatusFixture();
+const THRESHOLDS: LeverageThresholds = { gate: STATUS.gate, strategies: STATUS.strategies ?? [] };
 const NOW_MS = 1_756_000_000_000;
 
 function build(events = [newsOiFrameFixture()], orders = tradingOrdersFixture()) {
-  return leverageCases(events, tradingLedgerEntries(orders), FLOORS, NOW_MS);
+  return leverageCases(events, tradingLedgerEntries(orders), THRESHOLDS, NOW_MS);
 }
 
 describe("leverageCases", () => {
@@ -193,7 +198,7 @@ describe("evidenceRows", () => {
      * The pre-frame move, funding and liquidity are inputs the capital lane consumes and does not publish.
      * A matrix that dropped the rows it cannot fill would read as "everything checked out".
      */
-    const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", "oi", FLOORS);
+    const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", "oi", THRESHOLDS);
 
     expect(rows.map((row) => row.key)).toEqual([
       "oi",
@@ -209,9 +214,10 @@ describe("evidenceRows", () => {
       "funding",
       "liquidity",
     ]);
-    // The WIF fixture is below both capital floors and above zero OI change — three real answers.
+    // The WIF fixture clears the gate's admission floor, misses this strategy's whale floor, and has a
+    // positive OI change — three real answers, each from the rule that owns it.
     expect(rows.find((row) => row.key === "oi")?.status).toBe("support");
-    expect(rows.find((row) => row.key === "value")?.status).toBe("conflict");
+    expect(rows.find((row) => row.key === "value")?.status).toBe("support");
     expect(rows.find((row) => row.key === "whale")?.status).toBe("conflict");
     expect(rows.find((row) => row.key === "news")?.status).toBe("na");
   });
@@ -223,22 +229,151 @@ describe("evidenceRows", () => {
      * and none of them reaches this browser. Stamping 支持 on the strategy id put "the news supports this"
      * on a case rejected because the news contradicted the regime.
      */
-    const rows = evidenceRows(newsOiFrameFixture().oi, "news_oi_alignment_v1", "news", FLOORS);
+    const rows = evidenceRows(newsOiFrameFixture().oi, "news_oi_alignment_v1", "news", THRESHOLDS);
 
     expect(rows.find((row) => row.key === "news")?.status).toBe("missing");
   });
 
   it("refuses to call an unconfigured floor a pass", () => {
-    // A zero floor arrives when the console is newer than the API. `measured >= 0` would stamp 支持 on
-    // every frame against a threshold nobody set.
+    // Zero thresholds arrive when the console is newer than the API, or when the status read failed.
+    // `measured >= 0` would stamp 支持 on every frame against a threshold nobody set.
     const rows = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", "oi", {
-      ...FLOORS,
-      min_oi_value_usd: 0,
-      min_whale_long_profit_bps: 0,
+      gate: undefined,
+      strategies: [],
     });
 
     expect(rows.find((row) => row.key === "value")?.status).toBe("na");
     expect(rows.find((row) => row.key === "whale")?.status).toBe("na");
+  });
+
+  it("measures a case against the thresholds of the strategy that decided it", () => {
+    /*
+     * #269. The smart-money template binds on `whale / OI > 50%` and sets no profit floor at all; the
+     * strategy beside it binds on 95% whale profit. Comparing every case against one lane-wide number
+     * put 冲突 on a row this case had passed, and named a rule it never faced.
+     */
+    const oi = newsOiFrameFixture().oi;
+    const smartMoney = evidenceRows(oi, "oi_smart_money_momentum_v1", "oi", THRESHOLDS);
+    const alignment = evidenceRows(oi, "news_oi_alignment_v1", "oi", THRESHOLDS);
+
+    const whale = smartMoney.find((row) => row.key === "whale");
+    expect(whale?.label).toBe("鲸鱼占比");
+    expect(whale?.note).toContain("策略 oi_smart_money_momentum_v1");
+    // The fixture frame is 65.93% concentrated: above this strategy's 50%, below the other's 95% profit.
+    expect(whale?.status).toBe("support");
+    expect(alignment.find((row) => row.key === "whale")?.label).toBe("鲸鱼盈利");
+    expect(alignment.find((row) => row.key === "whale")?.status).toBe("conflict");
+  });
+
+  it("compares scale against the admission gate rather than the settings document", () => {
+    // #264 gave the liquidity floor one owner. The page was still reading the operator's 20M while
+    // admission ran at 5M, so a frame the gate admitted showed 冲突 on 规模.
+    const row = evidenceRows(newsOiFrameFixture().oi, "oi_momentum_v1", "oi", THRESHOLDS).find(
+      (item) => item.key === "value",
+    );
+
+    expect(row?.note).toContain("准入闸");
+    // 11.03M against the gate's 5M. Read out of `floors.min_oi_value_usd` — still 20M in this fixture,
+    // exactly as production's settings document was — the same frame reported 冲突.
+    expect(row?.status).toBe("support");
+    expect(STATUS.floors.min_oi_value_usd).toBe("20000000");
+  });
+});
+
+describe("leverageFunnel", () => {
+  it("describes a day the lane produced nothing, from the ledger that outlives it", () => {
+    /*
+     * #269. Production runs about 110 frames and one case a day, so every tab on the page reads zero and
+     * the list is blank — a true statement that reads as an outage. This is the same 24 hours as a
+     * sentence, and it comes from the durable admission ledger rather than the midnight-reset counter.
+     */
+    const steps = leverageFunnel(STATUS.counts, []);
+
+    expect(steps.map((step) => [step.label, step.value])).toEqual([
+      ["遥测帧", 91],
+      ["过闸", 1],
+      ["案例", 0],
+      ["有方向", 0],
+      ["订单", 0],
+    ]);
+  });
+
+  it("names the rules that are actually binding, and never counts admission as a refusal", () => {
+    const reasons = leverageTopReasons(STATUS.counts);
+
+    expect(reasons.map((reason) => reason.label)).toEqual([
+      "窗口内名次超限",
+      "持仓额低于流动性地板",
+      "该场所无原生永续",
+    ]);
+    expect(reasons.some((reason) => reason.key === "freeze:case_created")).toBe(false);
+  });
+
+  it("reports an unreadable status as unknown rather than as zero frames", () => {
+    expect(leverageFunnel(undefined, []).every((step) => step.value === 0)).toBe(true);
+  });
+});
+
+describe("leverageListRows", () => {
+  const noTrade = (caseId: string, overrides: Record<string, unknown> = {}) =>
+    tradingCaseFixture({
+      case_id: caseId,
+      event_id: null,
+      policy_reason: "oi_context_missing",
+      strategy_id: "news_oi_alignment_v1",
+      trigger_kind: "news",
+      ...overrides,
+    });
+
+  it("collapses repeated identical refusals into one counted row", () => {
+    /*
+     * `news_oi_alignment_v1` needs a News trigger and a fresh OI frame for one issuer to meet inside a
+     * scan window, which is structurally near-zero — so this outcome is the lane's resting state, and
+     * production listed 59 near-identical cards of it with the day's one OI case in the middle.
+     */
+    const cases = leverageCases(
+      [],
+      tradingLedgerEntries(
+        tradingOrdersFixture({
+          cases_without_orders: [noTrade("c1"), noTrade("c2"), noTrade("c3")],
+          orders: [],
+        }),
+      ),
+      THRESHOLDS,
+      NOW_MS,
+    );
+
+    const rows = leverageListRows(cases);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("group");
+    expect(rows[0].kind === "group" && rows[0].items).toHaveLength(3);
+  });
+
+  it("never collapses an OI-triggered case, and leaves two of a kind alone", () => {
+    // The OI lane is the population this page exists for; one of its cases is worth a row even when it
+    // says what yesterday's said. And two identical rows are a coincidence a reader can read past.
+    const cases = leverageCases(
+      [],
+      tradingLedgerEntries(
+        tradingOrdersFixture({
+          cases_without_orders: [
+            noTrade("c1"),
+            noTrade("c2"),
+            noTrade("oi-1", {
+              event_id: "evt-oi-a",
+              policy_reason: "smart_money_oi_change_below_floor",
+              strategy_id: "oi_smart_money_momentum_v1",
+              trigger_kind: "oi",
+            }),
+          ],
+          orders: [],
+        }),
+      ),
+      THRESHOLDS,
+      NOW_MS,
+    );
+
+    expect(leverageListRows(cases).every((row) => row.kind === "case")).toBe(true);
   });
 });
 

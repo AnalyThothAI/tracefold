@@ -1,0 +1,93 @@
+@layer app.features {
+  /* --------------------------------------------------- 24 h admission funnel */
+
+  .news-leverage-funnel {
+    display: grid;
+    gap: 8px;
+    padding: 11px 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+  }
+
+  .news-leverage-funnel-steps {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-leverage-funnel-step {
+    display: grid;
+    gap: 1px;
+    align-content: start;
+    min-width: 0;
+  }
+
+  /* Every step after the first is one stage narrower; the rule marks the boundary without a chart. */
+  .news-leverage-funnel-step + .news-leverage-funnel-step {
+    padding-left: 8px;
+    border-left: 1px solid var(--border-subtle);
+  }
+
+  .news-leverage-funnel-step b {
+    color: var(--text-primary);
+    font: var(--type-item-title);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-leverage-funnel-step span {
+    color: var(--text-secondary);
+    font: var(--type-meta);
+  }
+
+  .news-leverage-funnel-step small {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font: var(--type-meta);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-leverage-funnel-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .news-leverage-funnel-reasons small {
+    color: var(--text-subtle);
+    font: var(--type-meta);
+  }
+
+  .news-leverage-funnel-reason {
+    display: inline-flex;
+    gap: 5px;
+    align-items: baseline;
+    padding: 2px 7px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-slot);
+    color: var(--text-secondary);
+    font: var(--type-meta);
+  }
+
+  .news-leverage-funnel-reason b {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (width <= 900px) {
+    .news-leverage-funnel-steps {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* The vertical rule marks a step boundary, and at two columns it lands mid-row instead. */
+    .news-leverage-funnel-step + .news-leverage-funnel-step {
+      padding-left: 0;
+      border-left: 0;
+    }
+  }
+}

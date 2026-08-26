@@ -1,5 +1,7 @@
 import type {
   TradingCase,
+  TradingGate,
+  TradingGateDecision,
   TradingOrder,
   TradingOrders,
   TradingStatus,
@@ -135,6 +137,62 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       min_price_move_bps: 100,
       min_whale_long_profit_bps: 9_500,
     },
+    // #269: the rules the lane actually holds, as opposed to the settings document above. The two
+    // deliberately disagree in this fixture — the gate admits at 5M while `floors` still reports the
+    // operator's 20M — because that drift is exactly what a page comparing against the wrong one shows.
+    gate: {
+      config_digest: "c".repeat(64),
+      max_age_ms: 300_000,
+      max_rank_in_window: 2,
+      min_oi_value_usd: 5_000_000,
+      symbol_cooldown_ms: 1_800_000,
+      venue_priority: ["binance", "hyperliquid"],
+      version: "trading_candidate_gate_v1",
+    },
+    strategies: [
+      {
+        config: {
+          allow_short: "False",
+          max_price_move_bps: "600",
+          measurement_window_ms: "300000",
+          min_oi_change_bps: "1000",
+          min_price_move_bps: "0",
+          min_whale_long_profit_bps: "0",
+          min_whale_oi_ratio_bps: "5000",
+        },
+        config_digest: "a".repeat(64),
+        permission: "paper",
+        strategy_id: "oi_smart_money_momentum_v1",
+        strategy_version: "oi_smart_money_momentum_v1",
+        trigger_kinds: ["oi"],
+      },
+      {
+        config: {
+          allow_short: "False",
+          live_max_price_in: "1",
+          live_min_surprise: "2",
+          min_whale_long_profit_bps: "9500",
+        },
+        config_digest: "b".repeat(64),
+        permission: "live_reviewed",
+        strategy_id: "news_oi_alignment_v1",
+        strategy_version: "news_oi_alignment_v1",
+        trigger_kinds: ["news", "oi"],
+      },
+      {
+        config: {
+          allow_short: "False",
+          max_price_move_bps: "600",
+          min_price_move_bps: "100",
+          min_whale_long_profit_bps: "9500",
+        },
+        config_digest: "d".repeat(64),
+        permission: "paper",
+        strategy_id: "oi_momentum_v1",
+        strategy_version: "oi_momentum_v1",
+        trigger_kinds: ["oi"],
+      },
+    ],
     measured_at_ms: TRADING_NOW_MS,
     readiness: {
       control: "RUNNING",
@@ -211,6 +269,94 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     regime: "buildup_up",
     state: "POLICY_REJECTED",
     underlying_key: "crypto:HYPE",
+    ...overrides,
+  };
+}
+
+/** The evidence document's own defaults, so a fixture states only the keys its rule compared. */
+function gateEvidence(
+  overrides: Partial<NonNullable<TradingGateDecision["gate_evidence"]>> = {},
+): NonNullable<TradingGateDecision["gate_evidence"]> {
+  return {
+    blacklist_reason: "",
+    rule: "",
+    source_decision: "drop",
+    source_rule: "opening_move_with_whale_concentration",
+    venue: "binance",
+    ...overrides,
+  };
+}
+
+/**
+ * The admission ledger's window (#269): one answer per source, the refusals included.
+ *
+ * The refusals are the point of the fixture. Production's whole 24 h is refusals — 87 of them against one
+ * case — and a fixture that only held admitted frames would let a page that cannot render a named refusal
+ * pass its tests.
+ */
+export function tradingGateDecisionFixture(
+  overrides: Partial<TradingGateDecision> = {},
+): TradingGateDecision {
+  return {
+    base_symbol: "STORJ",
+    case_id: null,
+    event_id: "evt-oi-storj",
+    gate_attempt_count: 30,
+    gate_config_digest: "c".repeat(64),
+    gate_evidence: gateEvidence({
+      floor: 5_000_000,
+      oi_value_usd: 3_190_000,
+      source_decision: "drop",
+      source_rule: "whale_ratio_below_threshold",
+      whale_oi_ratio_bps: 6_593,
+    }),
+    gate_first_evaluated_at_ms: TRADING_NOW_MS - 119_000,
+    gate_last_evaluated_at_ms: TRADING_NOW_MS - 60_000,
+    gate_reason: "oi_value_below_floor",
+    gate_retryable: false,
+    gate_stage: "eligibility",
+    gate_status: "REJECTED",
+    gate_version: "trading_candidate_gate_v1",
+    source_key: "oi:evt-oi-storj:oi_signal_v1",
+    source_observed_at_ms: TRADING_NOW_MS - 120_000,
+    trigger_kind: "oi",
+    underlying_key: "crypto:STORJ",
+    ...overrides,
+  };
+}
+
+export function tradingGateFixture(overrides: Partial<TradingGate> = {}): TradingGate {
+  return {
+    complete: true,
+    decisions: [
+      tradingGateDecisionFixture(),
+      // A Binance stock perpetual this crypto-only lane can never route, closed by the clock while it
+      // waited — and still naming the instrument it was waiting for (#268).
+      tradingGateDecisionFixture({
+        base_symbol: "NVDA",
+        event_id: "evt-oi-nvda",
+        gate_evidence: gateEvidence({ oi_value_usd: 63_700_000 }),
+        gate_reason: "no_native_perp",
+        gate_stage: "routing",
+        gate_status: "EXPIRED",
+        source_key: "oi:evt-oi-nvda:oi_signal_v1",
+        underlying_key: "crypto:NVDA",
+      }),
+      tradingGateDecisionFixture({
+        base_symbol: "HYPE",
+        case_id: "case-hype",
+        event_id: "evt-oi-hype",
+        gate_evidence: gateEvidence({ oi_value_usd: 45_200_000 }),
+        gate_reason: "case_created",
+        gate_retryable: false,
+        gate_stage: "freeze",
+        gate_status: "CASE_CREATED",
+        source_key: "oi:evt-oi-hype:oi_signal_v1",
+        underlying_key: "crypto:HYPE",
+      }),
+    ],
+    measured_at_ms: TRADING_NOW_MS,
+    window_hours: 24,
     ...overrides,
   };
 }

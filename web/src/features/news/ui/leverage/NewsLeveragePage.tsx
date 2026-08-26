@@ -1,19 +1,23 @@
-import { tradingLedgerEntries, useTradingOrdersWithToken } from "@features/trading";
+import {
+  tradingLedgerEntries,
+  useTradingOrdersWithToken,
+  useTradingStatusWithToken,
+} from "@features/trading";
 import { newsOiPath, newsSymbolPath, tradingPath } from "@shared/routing/paths";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
+import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import {
-  useNewsOiFeedWithToken,
-  useNewsQuotesWithToken,
-  useNewsStatusWithToken,
-} from "../../api/newsQueries";
+import { useNewsOiFeedWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
 import {
   LEVERAGE_TABS,
   leverageCases,
+  leverageFunnel,
+  leverageListRows,
   leverageTabCount,
+  leverageTopReasons,
   leverageFramelessCount,
   parseLeverageTab,
   type LeverageCase,
@@ -23,6 +27,8 @@ import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
 
 import { NewsLeverageCard } from "./NewsLeverageCard";
 import { NewsLeverageDetail } from "./NewsLeverageDetail";
+import { NewsLeverageFunnel } from "./NewsLeverageFunnel";
+import { NewsLeverageGroupCard } from "./NewsLeverageGroupCard";
 
 import "./newsLeverage.css";
 
@@ -36,9 +42,15 @@ import "./newsLeverage.css";
  *
  * Three bounded reads, all of them already served and all of them shared with pages that were reading them
  * anyway: `/api/news/feed` filtered to the deterministic lane, one `/api/trading/orders` batch, and
- * `/api/news/status` for the capital floors the evidence matrix compares against. Current quotes are a
- * fourth, on their own 15 s rhythm, and they never write back into a case: the frozen plane and the live
- * one sit side by side and are labelled as such.
+ * `/api/trading/status` for the durable admission funnel and the rules the evidence matrix compares
+ * against. Current quotes are a fourth, on their own 15 s rhythm, and they never write back into a case:
+ * the frozen plane and the live one sit side by side and are labelled as such.
+ *
+ * The status read is the capital lane's, not News' (#269). News republishes the operator's `trading`
+ * settings document, and since #264/#265 that is no longer the rule set that decides an OI frame:
+ * admission belongs to the Candidate Gate and every Alpha threshold to a versioned strategy. A page
+ * comparing a smart-money case against `min_whale_long_profit_bps` was measuring it with the 95% floor of
+ * the strategy beside it, and printing 冲突 on a row that case had passed.
  *
  * What this page deliberately does not do. It binds no keys — the console cut its keyboard layer whole in
  * #82 and `keyboardLayerHardCut.test.ts` keeps it cut, so the artifact's `j/k/f` bindings are not here and
@@ -65,7 +77,13 @@ export function NewsLeveragePage({ token }: { token: string }) {
    * order to be found through.
    */
   const tradingQuery = useTradingOrdersWithToken(token);
-  const statusQuery = useNewsStatusWithToken(token);
+  /*
+   * The capital lane's own status, not News' (#269). Two things live only here: the durable 24 h
+   * admission funnel — the only description of a day the lane produced no case in — and the rules the
+   * lane actually holds, which after #264/#265 are the Candidate Gate's and each strategy's own, not
+   * the operator settings document `/api/news/status` republishes.
+   */
+  const statusQuery = useTradingStatusWithToken(token);
 
   /*
    * Recomputed on every render rather than memoised. The wall clock is one of the inputs — ages, hold
@@ -73,15 +91,24 @@ export function NewsLeveragePage({ token }: { token: string }) {
    * as a dependency and never hit. The list is a day's cases, not a day's frames; there is nothing here
    * worth freezing a clock for.
    */
-  const floors = statusQuery.data?.oi?.trade_floors ?? EMPTY_FLOORS;
+  const thresholds = {
+    gate: statusQuery.data?.gate,
+    strategies: statusQuery.data?.strategies ?? [],
+  };
   const cases = leverageCases(
     feedQuery.data?.events ?? [],
     tradingLedgerEntries(tradingQuery.data),
-    floors,
+    thresholds,
     Date.now(),
   );
   const frameless = leverageFramelessCount(cases);
   const visible = cases.filter((item) => LEVERAGE_TABS[tab].predicate(item));
+  const rows = leverageListRows(visible);
+  const funnel = leverageFunnel(statusQuery.data?.counts, cases);
+  const reasons = leverageTopReasons(statusQuery.data?.counts);
+  // Which collapsed groups the reader opened. Local because it is a disclosure, not a destination: a
+  // URL that carried it would make a shared link open someone else's reading of the same list.
+  const [expanded, setExpanded] = useState<readonly string[]>([]);
   /*
    * A `?case=` the current tab filters out is still shown. The URL named one case, and substituting a
    * different one silently — which is what falling straight through to `visible[0]` would do — makes a
@@ -102,9 +129,9 @@ export function NewsLeveragePage({ token }: { token: string }) {
 
   const loading = feedQuery.isLoading || tradingQuery.isPending || statusQuery.isLoading;
   /*
-   * A cold status failure counts. Without it `loading` ends, `failed` stays false, and the page renders the
-   * evidence matrix against `EMPTY_FLOORS` — printing 未配置地板 / 不适用 for thresholds the operator has
-   * very much configured. A failed read must read as a failed read, not as "there is no floor".
+   * A cold status failure counts. Without it `loading` ends, `failed` stays false, and the page renders
+   * the evidence matrix against no thresholds at all — printing 未配置地板 / 不适用 for rules the lane is
+   * very much applying. A failed read must read as a failed read, not as "there is no floor".
    */
   const failed =
     (feedQuery.isError && !feedQuery.data) ||
@@ -146,6 +173,17 @@ export function NewsLeveragePage({ token }: { token: string }) {
         <small className="news-leverage-order">排序：资本风险 → 有方向 → 最近触发；无综合分</small>
       </div>
 
+      {/*
+       * The lane's own 24 h funnel, and it stays on the page whether or not anything came of it (#269).
+       * On a normal day every tab above reads zero — about 110 frames and one case — and a page that
+       * answered that with a blank panel taught its reader that the console was broken.
+       */}
+      <NewsLeverageFunnel
+        reasons={reasons}
+        steps={funnel}
+        unavailable={statusQuery.isError && !statusQuery.data}
+      />
+
       {loading && !cases.length ? (
         <PageState.Loading label="正在读取杠杆案例" layout="panel" rows={4} />
       ) : null}
@@ -173,7 +211,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
           hint={
             cases.length
               ? "换一个标签看看：这一格没有案例，不代表通道没有在跑。"
-              : "过去 24 小时的账本批次里没有一条案例。帧与闸门在 OI 遥测审计。"
+              : "上面的漏斗是同一段 24 小时：闸门看到了多少帧、卡在哪条规则。0 成案是当前规则的正常输出。"
           }
           title={cases.length ? `${LEVERAGE_TABS[tab].label}里没有案例` : "24 小时内没有成案"}
         />
@@ -185,14 +223,33 @@ export function NewsLeveragePage({ token }: { token: string }) {
           updating={feedQuery.isFetching || tradingQuery.isFetching}
         >
           <section aria-label="案例列表" className="news-leverage-list">
-            {visible.map((item) => (
-              <NewsLeverageCard
-                item={item}
-                key={item.id}
-                onSelect={() => setSearchParams(nextParams(tab, item.id), { replace: true })}
-                selected={item.id === selected?.id}
-              />
-            ))}
+            {rows.map((row) =>
+              row.kind === "case" ? (
+                <NewsLeverageCard
+                  item={row.item}
+                  key={row.item.id}
+                  onSelect={() => setSearchParams(nextParams(tab, row.item.id), { replace: true })}
+                  selected={row.item.id === selected?.id}
+                />
+              ) : (
+                <NewsLeverageGroupCard
+                  expanded={expanded.includes(row.key)}
+                  key={row.key}
+                  onSelect={(item) =>
+                    setSearchParams(nextParams(tab, item.id), { replace: true })
+                  }
+                  onToggle={() =>
+                    setExpanded((keys) =>
+                      keys.includes(row.key)
+                        ? keys.filter((value) => value !== row.key)
+                        : [...keys, row.key],
+                    )
+                  }
+                  row={row}
+                  selectedId={selected?.id}
+                />
+              ),
+            )}
           </section>
           {selected ? (
             <NewsLeverageDetail
@@ -243,17 +300,3 @@ function nextParams(tab: LeverageTab, caseId: string | null): URLSearchParams {
   return params;
 }
 
-/**
- * A console older than the API it is talking to still has to render. Zeroes here are honest: they are the
- * schema's own defaults, and `evidenceRows` reports an unconfigured floor as 不适用 rather than as a pass.
- */
-const EMPTY_FLOORS = {
-  allow_short: false,
-  enabled: false,
-  max_price_move_bps: 0,
-  min_oi_value_usd: 0,
-  min_price_move_bps: 0,
-  min_whale_long_profit_bps: 0,
-  mode: "paper",
-  pre_move_lookback_ms: 0,
-};

@@ -8,6 +8,11 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
+from tracefold.app.trading_config import (
+    CANDIDATE_GATE_VERSION,
+    trading_settings_gate,
+    trading_settings_strategies,
+)
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.platform.config.secret_file import secret_file_configured
 
@@ -21,9 +26,13 @@ router = APIRouter()
 _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
 _OrdersEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOrdersData]
 _EventCaseEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingEventCaseData]
+_GateEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _ORDER_LIMIT: Final = 100
+# The lane persists about 110 OI facts a day, so one page of this covers the window the frame table
+# shows with room to spare; past that the response says so rather than looking like a quiet day.
+_GATE_LIMIT: Final = 400
 # The half of `OiTradeCandidate.source_key` that is not the Event id. Imported from News rather than
 # retyped: it is the News lane's own measurement version, and a literal here would silently stop matching
 # the day `oi_signals` bumps it.
@@ -96,6 +105,14 @@ def get_trading_status(request: Request) -> Response:
                 "min_price_move_bps": settings.trading.regime.min_price_move_bps,
                 "min_whale_long_profit_bps": settings.trading.policy.min_whale_long_profit_bps,
             },
+            # #269. `floors` above is the operator's settings document, and after #264/#265 it is no
+            # longer the set of numbers that decides an OI frame: admission is the Candidate Gate's,
+            # and the Alpha thresholds belong to whichever versioned strategy answers the Case. A
+            # console comparing a frame against `min_whale_long_profit_bps` was measuring it with the
+            # 95% floor of a strategy that did not decide it. These two are the rules as the lane
+            # actually holds them, digest included, so a page can name the threshold it is showing.
+            "gate": _gate_config(settings),
+            "strategies": _strategy_configs(settings),
             # `merge_funnel` resets the document on `day_key`, so this is the current UTC *calendar day*,
             # not a rolling window — publishing it as `funnel_24h` beside genuinely rolling counts made two
             # different intervals look like one, and a Workers process stopped over midnight would leave
@@ -190,6 +207,38 @@ def get_trading_orders(
     )
 
 
+@router.get("/trading/gate", response_model=_GateEnvelope)
+def get_trading_gate(request: Request) -> Response:
+    """Every OI source the lane admitted or refused in the window, one answer each (#269).
+
+    `/trading/events/{id}` answers this for one Event, which is the Event detail's question. A frame
+    *table* asks it for a page of frames at once, and asking it one row at a time would be a hundred
+    round trips to render a screen — so the console read this column as "未成案" for every row and the
+    durable reason the ledger holds never reached anyone.
+
+    Keyed on `event_id` for the deterministic lane, recovered from the source key the same way the
+    order and case projections recover theirs. A source whose key does not round-trip is still listed,
+    with `event_id: null`: the counts above the table include it, and dropping it here would make the
+    page's own total disagree with them.
+    """
+
+    _validate_query_params(request, supported={"token"})
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    with runtime.repositories() as repos:
+        rows = repos.trading.gate_decisions_since(since_ms=now_ms - _WINDOW_MS, limit=_GATE_LIMIT + 1)
+    return _etagged(
+        {
+            "decisions": [_gate_decision(row) for row in rows[:_GATE_LIMIT]],
+            "complete": len(rows) <= _GATE_LIMIT,
+            "window_hours": _WINDOW_MS // 3_600_000,
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_GateEnvelope,
+    )
+
+
 @router.get("/trading/events/{event_id}", response_model=_EventCaseEnvelope)
 def get_trading_event_case(request: Request, event_id: str) -> Response:
     """Whether one News Event became a case — the Event detail's 成案 badge (#207 PR-W4).
@@ -243,6 +292,62 @@ def get_trading_event_case(request: Request, event_id: str) -> Response:
         request,
         envelope=_EventCaseEnvelope,
     )
+
+
+def _gate_config(settings: Any) -> dict[str, Any]:
+    """The Candidate Gate exactly as the scanner builds it, digest and all (#269).
+
+    Assembled through the one shared helper, so the digest published here is the digest the ledger's
+    rows are filed under. Reporting the settings fields directly would let the two drift the moment
+    the gate reads one of them differently.
+    """
+
+    config = trading_settings_gate(settings)
+    return {"version": CANDIDATE_GATE_VERSION, "config_digest": config.digest, **config.snapshot}
+
+
+def _strategy_configs(settings: Any) -> list[dict[str, Any]]:
+    """Every code-owned strategy with the numbers it executes, in the lane's own configuration.
+
+    The whole set rather than the OI one: a Case names the strategy that decided it, and a console
+    row has to compare against *that* strategy's thresholds. Publishing one of them would put the
+    same wrong-floor comparison back, one strategy later.
+
+    Every value is rendered as text. A config snapshot mixes booleans, basis points and millisecond
+    windows under keys each strategy owns, and a schema that promised `int` would break the day a
+    strategy adds a decimal threshold — the console prints these beside their own labels anyway.
+    """
+
+    return [
+        {
+            "strategy_id": strategy.strategy_id,
+            "strategy_version": strategy.strategy_version,
+            "config_digest": strategy.config_digest,
+            "permission": strategy.permission,
+            "trigger_kinds": sorted(strategy.trigger_kinds),
+            "config": {key: str(value) for key, value in sorted(strategy.config_snapshot.items())},
+        }
+        for strategy in trading_settings_strategies(settings)
+    ]
+
+
+def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
+    """One durable admission answer, in the table's own vocabulary.
+
+    `underlying_key` rather than a venue: this lane publishes no market for a frame, and the gate's own
+    `evidence.venue` is the venue whose open interest moved, which is a different claim.
+    """
+
+    return {
+        "source_key": str(row["source_key"]),
+        "event_id": _oi_event_id(row.get("source_key")),
+        "underlying_key": row.get("underlying_key"),
+        "base_symbol": _base_symbol(row.get("underlying_key")),
+        "trigger_kind": str(row["trigger_kind"]),
+        "source_observed_at_ms": int(row["source_observed_at_ms"]),
+        "case_id": row.get("case_id"),
+        **_gate(row),
+    }
 
 
 def _gate(row: dict[str, Any] | None) -> dict[str, Any]:

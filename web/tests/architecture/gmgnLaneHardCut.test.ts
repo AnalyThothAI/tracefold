@@ -93,13 +93,16 @@ describe("GMGN lane hard cut", () => {
     const openapi = readFileSync(join(srcRoot, "lib/types/openapi.ts"), "utf8");
     const paths = [...openapi.matchAll(/^ {4}"(\/[^"]+)": \{$/gm)].map((match) => match[1]);
 
-    // The three `/api/trading/*` entries are named rather than matched by prefix (#207 PR-W4): the capital
-    // lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix would let a
-    // fourth route into the mirror without anyone reading this line.
+    // The `/api/trading/*` entries are named rather than matched by prefix (#207 PR-W4): the capital
+    // lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix would let
+    // another route into the mirror without anyone reading this line. `/api/trading/gate` is the fourth
+    // and is a read of the admission ledger (#269) — the durable answer to "why is there no case", which
+    // the console previously had no way to ask for a page of frames at once. It carries no write.
     expect(paths.filter((path) => !path.startsWith("/api/news/"))).toEqual([
       "/api/bootstrap",
       "/api/status",
       "/api/trading/events/{event_id}",
+      "/api/trading/gate",
       "/api/trading/orders",
       "/api/trading/status",
       "/healthz",

@@ -195,6 +195,31 @@ class CandidateGateStorage:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def gate_decisions_since(self, *, since_ms: int, trigger_kind: str = "oi", limit: int) -> list[dict[str, Any]]:
+        """One admission answer per source in the window, newest frame first (#269).
+
+        The same one-row-per-source rule the counts use, so the table a reader scrolls and the
+        distribution above it cannot disagree: a frame two configurations have looked at appears once,
+        and `CASE_CREATED` is that appearance whenever one exists.
+
+        Ordered by the *frame's* observation time rather than by evaluation time, because that is the
+        order the frame table itself is in — a row here has to line up with the frame on the same line.
+        Bounded, and the caller reports the truncation rather than quietly showing a short page.
+        """
+
+        rows = self.conn.execute(
+            f"""
+            SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+                   source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+                   first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+              FROM ({_LATEST_PER_SOURCE}) latest
+             ORDER BY source_observed_at_ms DESC, source_key
+             LIMIT %s
+            """,
+            (trigger_kind, int(since_ms), int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def gate_decision_counts(self, *, since_ms: int, trigger_kind: str = "oi") -> dict[str, dict[str, int]]:
         """Durable status and reason distributions for one lane, keyed on when the *frame* was observed.
 

@@ -1,4 +1,8 @@
-import { useTradingOrdersWithToken } from "@features/trading";
+import {
+  useTradingGateWithToken,
+  useTradingOrdersWithToken,
+  useTradingStatusWithToken,
+} from "@features/trading";
 import { newsLeveragePath } from "@shared/routing/paths";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
@@ -43,6 +47,18 @@ export function NewsOiPage({ token }: { token: string }) {
   const statusQuery = useNewsStatusWithToken(token);
   const feedQuery = useNewsOiFeedWithToken(token, tab);
   const tradingQuery = useTradingOrdersWithToken(token);
+  /*
+   * The admission ledger for the same window (#269). Its own read rather than a field on the orders
+   * batch: it is a different population — every source the lane saw, not the ones that became a case —
+   * and it is the only thing that can tell a reader *why* a frame has no case.
+   */
+  const gateQuery = useTradingGateWithToken(token);
+  /*
+   * And the rules that ledger's rows are filed under. `oi.trade_floors` is News republishing the
+   * operator's `trading` settings document; since #264 admission has one owner with its own digest, and
+   * the panel was printing 持仓规模 ≥2000 万 while the gate admitted at 500 万.
+   */
+  const tradingStatusQuery = useTradingStatusWithToken(token);
   /*
    * Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
    * which is what the reader means by switching tabs.
@@ -112,12 +128,20 @@ export function NewsOiPage({ token }: { token: string }) {
       {status ? (
         <PageState.Stale
           failedRefresh={
-            tradingQuery.isError && tradingQuery.data
+            (tradingQuery.isError && tradingQuery.data) || (gateQuery.isError && gateQuery.data)
               ? "交易账本刷新失败，继续显示上次读取。"
               : undefined
           }
-          onRetry={() => void tradingQuery.refetch()}
-          updating={statusQuery.isFetching || feedQuery.isFetching || tradingQuery.isFetching}
+          onRetry={() => {
+            void tradingQuery.refetch();
+            void gateQuery.refetch();
+          }}
+          updating={
+            statusQuery.isFetching ||
+            feedQuery.isFetching ||
+            tradingQuery.isFetching ||
+            gateQuery.isFetching
+          }
         >
           <div className="news-oi-body">
             <MetricRow className="news-oi-metrics" columns={5} label="过去 24 小时的遥测帧">
@@ -147,7 +171,9 @@ export function NewsOiPage({ token }: { token: string }) {
               <NewsOiGates
                 byRule={byRule ?? {}}
                 floors={oi?.trade_floors ?? EMPTY_FLOORS}
+                gate={tradingStatusQuery.data?.gate}
                 policy={oi?.policy ?? null}
+                strategies={tradingStatusQuery.data?.strategies ?? []}
               />
             </div>
 
@@ -159,6 +185,7 @@ export function NewsOiPage({ token }: { token: string }) {
               counts={counts}
               error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
               floors={oi?.trade_floors ?? EMPTY_FLOORS}
+              gate={gateQuery.data}
               hasMore={hasMore}
               loadingMore={
                 historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
@@ -172,7 +199,9 @@ export function NewsOiPage({ token }: { token: string }) {
               rows={rows}
               tab={tab}
               trading={tradingQuery.data}
-              tradingError={tradingQuery.isError && !tradingQuery.data}
+              tradingError={
+                (tradingQuery.isError && !tradingQuery.data) || (gateQuery.isError && !gateQuery.data)
+              }
             />
           </div>
         </PageState.Stale>

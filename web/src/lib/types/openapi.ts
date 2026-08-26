@@ -162,6 +162,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading/gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Gate
+         * @description Every OI source the lane admitted or refused in the window, one answer each (#269).
+         *
+         *     `/trading/events/{id}` answers this for one Event, which is the Event detail's question. A frame
+         *     *table* asks it for a page of frames at once, and asking it one row at a time would be a hundred
+         *     round trips to render a screen — so the console read this column as "未成案" for every row and the
+         *     durable reason the ledger holds never reached anyone.
+         *
+         *     Keyed on `event_id` for the deterministic lane, recovered from the source key the same way the
+         *     order and case projections recover theirs. A source whose key does not round-trip is still listed,
+         *     with `event_id: null`: the counts above the table include it, and dropping it here would make the
+         *     page's own total disagree with them.
+         */
+        get: operations["get_trading_gate_api_trading_gate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/trading/orders": {
         parameters: {
             query?: never;
@@ -341,6 +371,16 @@ export interface components {
         /** ApiEnvelope[TradingEventCaseData] */
         ApiEnvelope_TradingEventCaseData_: {
             data?: components["schemas"]["TradingEventCaseData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingGateData] */
+        ApiEnvelope_TradingGateData_: {
+            data?: components["schemas"]["TradingGateData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2297,6 +2337,88 @@ export interface components {
             min_whale_long_profit_bps: number;
         };
         /**
+         * TradingGateConfigData
+         * @description The Candidate Gate as the scanner holds it (#269).
+         *
+         *     `floors` is the operator's settings document. This is the rule set that actually admits an OI fact,
+         *     and its `config_digest` is the second half of the key every row in the admission ledger is filed
+         *     under — so a console can say which configuration decided the frame it is showing, rather than
+         *     comparing it against whichever number happens to be in settings now.
+         */
+        TradingGateConfigData: {
+            /** Config Digest */
+            config_digest: string;
+            /** Max Age Ms */
+            max_age_ms: number;
+            /** Max Rank In Window */
+            max_rank_in_window: number;
+            /** Min Oi Value Usd */
+            min_oi_value_usd: number;
+            /** Symbol Cooldown Ms */
+            symbol_cooldown_ms: number;
+            /** Venue Priority */
+            venue_priority?: string[];
+            /** Version */
+            version: string;
+        };
+        /** TradingGateData */
+        TradingGateData: {
+            /** Complete */
+            complete: boolean;
+            /** Decisions */
+            decisions?: components["schemas"]["TradingGateDecisionData"][];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Window Hours */
+            window_hours: number;
+        };
+        /**
+         * TradingGateDecisionData
+         * @description One durable admission answer, for a page showing a whole window of frames at once (#269).
+         *
+         *     `event_id` is null for a source whose key is not the deterministic OI contract. The row is still
+         *     listed: the distributions in `/trading/status` count it, and omitting it here would make a page's
+         *     own total disagree with the number printed above it.
+         */
+        TradingGateDecisionData: {
+            /**
+             * Base Symbol
+             * @default
+             */
+            base_symbol: string;
+            /** Case Id */
+            case_id?: string | null;
+            /** Event Id */
+            event_id?: string | null;
+            /** Gate Attempt Count */
+            gate_attempt_count?: number | null;
+            /** Gate Config Digest */
+            gate_config_digest?: string | null;
+            gate_evidence?: components["schemas"]["TradingGateEvidenceData"] | null;
+            /** Gate First Evaluated At Ms */
+            gate_first_evaluated_at_ms?: number | null;
+            /** Gate Last Evaluated At Ms */
+            gate_last_evaluated_at_ms?: number | null;
+            /** Gate Reason */
+            gate_reason?: string | null;
+            /** Gate Retryable */
+            gate_retryable?: boolean | null;
+            /** Gate Stage */
+            gate_stage?: ("source" | "eligibility" | "routing" | "market_context" | "freeze") | null;
+            /** Gate Status */
+            gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
+            /** Gate Version */
+            gate_version?: string | null;
+            /** Source Key */
+            source_key: string;
+            /** Source Observed At Ms */
+            source_observed_at_ms: number;
+            /** Trigger Kind */
+            trigger_kind: string;
+            /** Underlying Key */
+            underlying_key?: string | null;
+        };
+        /**
          * TradingGateEvidenceData
          * @description What one admission decision was taken on. Every key is code-owned and named here on purpose.
          *
@@ -2553,11 +2675,37 @@ export interface components {
             budget: components["schemas"]["TradingBudgetData"];
             counts: components["schemas"]["TradingCountsData"];
             floors: components["schemas"]["TradingFloorsData"];
+            gate: components["schemas"]["TradingGateConfigData"];
             /** Measured At Ms */
             measured_at_ms: number;
             readiness: components["schemas"]["TradingReadinessData"];
+            /** Strategies */
+            strategies?: components["schemas"]["TradingStrategyConfigData"][];
             /** Window Hours */
             window_hours: number;
+        };
+        /**
+         * TradingStrategyConfigData
+         * @description One versioned strategy and the numbers it executes.
+         *
+         *     `config` is rendered as text per key on purpose: each strategy owns its own keys, mixing booleans,
+         *     basis points and millisecond windows, and this surface reports them rather than interpreting them.
+         */
+        TradingStrategyConfigData: {
+            /** Config */
+            config?: {
+                [key: string]: string;
+            };
+            /** Config Digest */
+            config_digest: string;
+            /** Permission */
+            permission: string;
+            /** Strategy Id */
+            strategy_id: string;
+            /** Strategy Version */
+            strategy_version: string;
+            /** Trigger Kinds */
+            trigger_kinds?: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -2828,6 +2976,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trading_gate_api_trading_gate_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingGateData_"];
                 };
             };
         };

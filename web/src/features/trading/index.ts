@@ -2,13 +2,22 @@ export { TradingPage } from "./ui/TradingPage";
 export { TradingCaseBadge } from "./ui/TradingCaseBadge";
 export { TradingSymbolSection } from "./ui/TradingSymbolSection";
 export {
+  useTradingGateWithToken,
   useTradingOrdersWithToken,
+  useTradingStatusWithToken,
   type TradingCase,
+  type TradingCounts,
+  type TradingGate,
+  type TradingGateConfig,
+  type TradingGateDecision,
   type TradingOrder,
   type TradingOrders,
+  type TradingStatus,
+  type TradingStrategyConfig,
 } from "./api/tradingQueries";
 export {
   policyRuleZh,
+  tradingGateByEventId,
   tradingLedgerEntries,
   tradingOiCellCopy,
   tradingOiLedgerByEventId,
@@ -23,9 +32,11 @@ export {
  */
 export {
   CASE_STATE_ZH,
+  GATE_STATUS_ZH,
   ORDER_STATE_NOTE,
   REGIME_ZH,
   STRATEGY_ZH,
+  gateReasonLabel,
   holdCeiling,
   isActiveOrder,
   stopVerified,

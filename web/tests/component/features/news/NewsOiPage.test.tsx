@@ -7,7 +7,11 @@ import {
   newsReactionFixture,
   newsStatusFixture,
 } from "@tests/fixtures/newsFixture";
-import { tradingOrdersFixture } from "@tests/fixtures/tradingFixture";
+import {
+  tradingGateFixture,
+  tradingOrdersFixture,
+  tradingStatusFixture,
+} from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -29,6 +33,14 @@ describe("NewsOiPage", () => {
       ),
       http.get(/.*\/api\/trading\/orders$/, () =>
         HttpResponse.json({ ok: true, data: tradingOrdersFixture() }),
+      ),
+      // #269: the admission ledger the capital column reads for the frames that authored no case, and
+      // the rules those rows are filed under — the Candidate Gate's own, not the settings document.
+      http.get(/.*\/api\/trading\/gate$/, () =>
+        HttpResponse.json({ ok: true, data: tradingGateFixture() }),
+      ),
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({ ok: true, data: tradingStatusFixture() }),
       ),
     );
   });
@@ -82,7 +94,7 @@ describe("NewsOiPage", () => {
 
   it("shows whether Trading is running and reads direction from its policy", async () => {
     renderOi();
-    expect(await screen.findByText("PAPER · 资本通道关闭")).toBeInTheDocument();
+    expect(await screen.findByText("PAPER · 资本通道关闭 · Alpha 地板在 3 条策略各自")).toBeInTheDocument();
 
     cleanup();
     const baseStatus = newsStatusFixture();
@@ -107,8 +119,9 @@ describe("NewsOiPage", () => {
       ),
     );
     renderOi();
-    expect(await screen.findByText("LIVE_REVIEWED · 已启用 · 四条另判")).toBeInTheDocument();
-    expect(screen.getByText("方向").parentElement).toHaveTextContent("多 / 空");
+    expect(
+      await screen.findByText("LIVE_REVIEWED · 已启用 · Alpha 地板在 3 条策略各自"),
+    ).toBeInTheDocument();
   });
 
   it("marks a frame no threshold let through as having spent no window slot", async () => {
@@ -419,12 +432,23 @@ describe("NewsOiPage", () => {
     expect(gatesCard).toHaveTextContent("30");
     expect(gatesCard).toHaveTextContent("拦下 0");
 
-    const floors = screen.getByRole("heading", { name: "交易地板 · TRADING" });
-    const floorsCard = floors.closest("article") as HTMLElement;
-    expect(within(floorsCard).getByText("≥95%")).toBeInTheDocument();
-    expect(within(floorsCard).getByText("≥2000 万")).toBeInTheDocument();
-    expect(floorsCard).toHaveTextContent("1%–6% / 1h");
-    expect(floorsCard).toHaveTextContent("只多");
+    /*
+     * The capital half is the Candidate Gate's own configuration (#269). It used to read the operator's
+     * `trading` settings document that News republishes — printing 持仓规模 ≥2000 万 while admission ran
+     * at 500 万 — and to show `min_whale_long_profit_bps` as a lane-wide 交易地板 when it is one
+     * strategy's Alpha threshold and a different strategy decides most cases.
+     */
+    const admission = screen.getByRole("heading", { name: "准入闸 · TRADING" });
+    const admissionCard = admission.closest("article") as HTMLElement;
+    expect(within(admissionCard).getByText("≥500 万")).toBeInTheDocument(); // 5_000_000
+    expect(within(admissionCard).getByText("≤ 2")).toBeInTheDocument();
+    expect(within(admissionCard).getByText("binance / hyperliquid")).toBeInTheDocument();
+    expect(admissionCard).toHaveTextContent("5m");
+    // Where the Alpha floors live is said; none of them is printed here. They are per-strategy, and a
+    // single figure over a table of every frame is the comparison this panel just stopped making.
+    expect(admissionCard).toHaveTextContent("Alpha 地板在 3 条策略各自");
+    expect(admissionCard).not.toHaveTextContent("≥95%");
+    expect(screen.queryByRole("heading", { name: "交易地板 · TRADING" })).toBeNull();
   });
 
   it("expands to Event, token, OI and exact Trading traces", async () => {
@@ -442,6 +466,48 @@ describe("NewsOiPage", () => {
     expect(screen.getByText("判定痕迹 · OI_JUDGMENT_TRACE")).toBeInTheDocument();
     expect(screen.getByText("交易判定 · ?LANE=OI")).toBeInTheDocument();
     expect(screen.getByText("order-wif")).toBeInTheDocument();
+  });
+
+  it("names why a frame has no case, instead of one 未成案 for four different facts", async () => {
+    /*
+     * #269. The admission ledger has held a named reason per source since #264, and this column could
+     * not ask for it: `/trading/events/{id}` answers one Event, and a page of frames is a hundred round
+     * trips. So 未成案 was the same cell for "below the liquidity floor", "no perp at the venue whose OI
+     * moved" and "the lane never evaluated it" — three different operational answers.
+     */
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({ event_id: "evt-oi-storj", leader_title: "STORJ OI Rise 3.10%" }),
+              newsOiFrameFixture({ event_id: "evt-oi-nvda", leader_title: "NVDA OI Rise 4.55%" }),
+              newsOiFrameFixture({ event_id: "evt-unseen", leader_title: "ZETA OI Rise 1.10%" }),
+            ],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersFixture({ cases_without_orders: [], orders: [] }),
+        }),
+      ),
+    );
+    renderOi();
+
+    const rows = await screen.findAllByRole("button", { expanded: false });
+    expect(rows[0]).toHaveTextContent("已拒绝 · 持仓额低于流动性地板");
+    // A Binance stock perpetual this crypto-only lane can never route, closed by the clock while it
+    // waited — and still naming the instrument, which is the fix #268 made in the ledger itself.
+    expect(rows[1]).toHaveTextContent("已过期 · 该场所无原生永续");
+    // And a frame with no ledger row at all is an absence, not a refusal.
+    expect(rows[2]).toHaveTextContent("未评估");
+
+    fireEvent.click(rows[0]);
+    expect(screen.getByText("oi_value_below_floor")).toBeInTheDocument();
+    expect(screen.getByText("5000000")).toBeInTheDocument();
   });
 
   it("says so plainly when the window holds no eligible frame", async () => {

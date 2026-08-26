@@ -16,13 +16,13 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
+from tracefold.app.trading_config import trading_settings_gate
 from tracefold.app.workers.wiring.news_to_trading import to_oi_candidate_row
 from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.trading.candidate.blacklist import Blacklist
-from tracefold.trading.candidate.eligibility import EligibilityPolicy
-from tracefold.trading.candidate.gate import CANDIDATE_GATE_VERSION, GateConfig
+from tracefold.trading.candidate.gate import CANDIDATE_GATE_VERSION
 from tracefold.trading.contracts import canonical_base_symbol
 from tracefold.trading.research.oi_replay import replay_oi_facts
 from tracefold.trading.strategy.oi_smart_money_momentum import OiSmartMoneyMomentumStrategy
@@ -34,25 +34,6 @@ _READ_COMMANDS = frozenset({"status", "cases", "show", "replay-oi"})
 # scan window; a seven-day replay is about four hundred rows at the measured rate, and a caller that
 # comes back with exactly this many was truncated and says so in `truncated`.
 _REPLAY_ROW_LIMIT = 20_000
-
-
-def trading_settings_gate(settings: Any) -> GateConfig:
-    """The Candidate Gate's configuration as the running lane would build it.
-
-    Assembled from the same settings the Workers wiring reads, so a replay cannot describe a floor the
-    scanner is not applying — the digest in the report is the digest the ledger's rows are filed under.
-    """
-
-    candidates = settings.trading.candidates
-    return GateConfig.from_policy(
-        EligibilityPolicy(
-            max_age_ms=candidates.max_age_seconds * 1000,
-            max_rank_in_window=candidates.max_rank_in_window,
-            min_oi_value_usd=candidates.min_oi_value_usd,
-            symbol_cooldown_ms=candidates.symbol_cooldown_seconds * 1000,
-        ),
-        venue_priority=settings.trading.venues.enabled,
-    )
 
 
 def _now_ms() -> int:

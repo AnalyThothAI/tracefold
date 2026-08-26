@@ -1,16 +1,31 @@
+import type { TradingGateConfig, TradingStrategyConfig } from "@features/trading";
+
 import type { NewsOiPolicy, NewsOiTradeFloors } from "../../api/newsQueries";
 import { formatCount } from "../../model/newsLabels";
 import { oiValueZh } from "../../model/oiSignals";
 
-/** The two independent policy sets, condensed to the approved at-a-glance comparison. */
+/**
+ * The two independent policy sets, condensed to the approved at-a-glance comparison.
+ *
+ * The capital half is the Candidate Gate's, not the operator's settings document (#269). After #264 the
+ * lane has exactly one admission owner and `trading.candidates.min_oi_value_usd` is only one of its
+ * inputs; the console was printing the settings figure — 2000 万 — while admission actually ran at 500 万,
+ * and 鲸鱼盈利 ≥95% was a *strategy* threshold shown as though it were the lane's. Alpha thresholds
+ * belong to whichever versioned strategy answers a Case and are not a property of the lane, so this
+ * panel names the admission rules and links out rather than picking one strategy's numbers to display.
+ */
 export function NewsOiGates({
   byRule,
   floors,
+  gate,
   policy,
+  strategies,
 }: {
   byRule: Record<string, number>;
   floors: NewsOiTradeFloors;
+  gate: TradingGateConfig | undefined;
   policy: NewsOiPolicy | null;
+  strategies: readonly TradingStrategyConfig[];
 }) {
   const windowLabel = compactDuration(policy?.window_ms);
   const changeFloor = policy?.oi_change_at_least_bps ?? 0;
@@ -45,23 +60,29 @@ export function NewsOiGates({
 
       <PolicyPanel
         className="news-oi-policy-trading"
-        hint={
-          floors.enabled
-            ? `${floors.mode.toUpperCase()} · 已启用 · 四条另判`
-            : `${floors.mode.toUpperCase()} · 资本通道关闭`
-        }
-        title="交易地板 · TRADING"
+        /*
+         * The strategy count rides in the hint rather than as a fifth tile: the tile row is a fixed
+         * four-column band of a fixed height, and a fifth wrapped into a second row the panel clips.
+         * Naming where the Alpha floors live is the whole job here anyway — the numbers themselves are
+         * per-strategy and belong beside the case that a strategy decided, on 杠杆异动.
+         */
+        hint={`${floors.mode.toUpperCase()} · ${floors.enabled ? "已启用" : "资本通道关闭"}${
+          strategies.length ? ` · Alpha 地板在 ${strategies.length} 条策略各自` : ""
+        }`}
+        title="准入闸 · TRADING"
       >
+        <PolicyTile label="持仓规模" value={gate ? `≥${oiValueZh(gate.min_oi_value_usd)}` : "—"} />
         <PolicyTile
-          label="鲸鱼盈利"
-          value={`≥${compactPercent(floors.min_whale_long_profit_bps)}`}
+          label="交易窗口名次"
+          note="与推送名次同名不同闸"
+          value={gate ? `≤ ${gate.max_rank_in_window}` : "—"}
         />
-        <PolicyTile label="持仓规模" value={`≥${oiValueZh(floors.min_oi_value_usd)}`} />
+        <PolicyTile label="帧时效" value={gate ? compactDuration(gate.max_age_ms) : "—"} />
         <PolicyTile
-          label="已走行情带"
-          value={`${compactPercent(floors.min_price_move_bps)}–${compactPercent(floors.max_price_move_bps)} / 1h`}
+          label="可路由场所"
+          note={gate ? `冷却 ${compactDuration(gate.symbol_cooldown_ms)}` : undefined}
+          value={gate?.venue_priority?.length ? gate.venue_priority.join(" / ") : "—"}
         />
-        <PolicyTile label="方向" value={floors.allow_short ? "多 / 空" : "只多"} />
       </PolicyPanel>
     </>
   );

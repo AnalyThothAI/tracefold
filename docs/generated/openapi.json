@@ -369,6 +369,52 @@
         "title": "ApiEnvelope[TradingEventCaseData]",
         "type": "object"
       },
+      "ApiEnvelope_TradingGateData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingGateData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingGateData]",
+        "type": "object"
+      },
       "ApiEnvelope_TradingOrdersData_": {
         "additionalProperties": false,
         "properties": {
@@ -5164,6 +5210,269 @@
         "title": "TradingFloorsData",
         "type": "object"
       },
+      "TradingGateConfigData": {
+        "additionalProperties": false,
+        "description": "The Candidate Gate as the scanner holds it (#269).\n\n`floors` is the operator's settings document. This is the rule set that actually admits an OI fact,\nand its `config_digest` is the second half of the key every row in the admission ledger is filed\nunder \u2014 so a console can say which configuration decided the frame it is showing, rather than\ncomparing it against whichever number happens to be in settings now.",
+        "properties": {
+          "config_digest": {
+            "title": "Config Digest",
+            "type": "string"
+          },
+          "max_age_ms": {
+            "title": "Max Age Ms",
+            "type": "integer"
+          },
+          "max_rank_in_window": {
+            "title": "Max Rank In Window",
+            "type": "integer"
+          },
+          "min_oi_value_usd": {
+            "title": "Min Oi Value Usd",
+            "type": "integer"
+          },
+          "symbol_cooldown_ms": {
+            "title": "Symbol Cooldown Ms",
+            "type": "integer"
+          },
+          "venue_priority": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Venue Priority",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "config_digest",
+          "max_age_ms",
+          "max_rank_in_window",
+          "min_oi_value_usd",
+          "symbol_cooldown_ms"
+        ],
+        "title": "TradingGateConfigData",
+        "type": "object"
+      },
+      "TradingGateData": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/TradingGateDecisionData"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "window_hours": {
+            "title": "Window Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "window_hours",
+          "measured_at_ms"
+        ],
+        "title": "TradingGateData",
+        "type": "object"
+      },
+      "TradingGateDecisionData": {
+        "additionalProperties": false,
+        "description": "One durable admission answer, for a page showing a whole window of frames at once (#269).\n\n`event_id` is null for a source whose key is not the deterministic OI contract. The row is still\nlisted: the distributions in `/trading/status` count it, and omitting it here would make a page's\nown total disagree with the number printed above it.",
+        "properties": {
+          "base_symbol": {
+            "default": "",
+            "title": "Base Symbol",
+            "type": "string"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "gate_attempt_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Attempt Count"
+          },
+          "gate_config_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Config Digest"
+          },
+          "gate_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingGateEvidenceData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gate_first_evaluated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate First Evaluated At Ms"
+          },
+          "gate_last_evaluated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Last Evaluated At Ms"
+          },
+          "gate_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Reason"
+          },
+          "gate_retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Retryable"
+          },
+          "gate_stage": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source",
+                  "eligibility",
+                  "routing",
+                  "market_context",
+                  "freeze"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Stage"
+          },
+          "gate_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DEFERRED",
+                  "REJECTED",
+                  "CASE_CREATED",
+                  "EXPIRED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Status"
+          },
+          "gate_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Version"
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          },
+          "source_observed_at_ms": {
+            "title": "Source Observed At Ms",
+            "type": "integer"
+          },
+          "trigger_kind": {
+            "title": "Trigger Kind",
+            "type": "string"
+          },
+          "underlying_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Underlying Key"
+          }
+        },
+        "required": [
+          "source_key",
+          "trigger_kind",
+          "source_observed_at_ms"
+        ],
+        "title": "TradingGateDecisionData",
+        "type": "object"
+      },
       "TradingGateEvidenceData": {
         "additionalProperties": false,
         "description": "What one admission decision was taken on. Every key is code-owned and named here on purpose.\n\nPassing the stored document straight through would put the next evidence key in a browser without\nanyone deciding that it should, which is the same rule the order and case projections follow. The\nfour measurements are always present past the source stage; the rest are the threshold or the\nprovider detail that the specific rule failed on.",
@@ -5858,12 +6167,22 @@
           "floors": {
             "$ref": "#/components/schemas/TradingFloorsData"
           },
+          "gate": {
+            "$ref": "#/components/schemas/TradingGateConfigData"
+          },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
           },
           "readiness": {
             "$ref": "#/components/schemas/TradingReadinessData"
+          },
+          "strategies": {
+            "items": {
+              "$ref": "#/components/schemas/TradingStrategyConfigData"
+            },
+            "title": "Strategies",
+            "type": "array"
           },
           "window_hours": {
             "title": "Window Hours",
@@ -5874,11 +6193,56 @@
           "budget",
           "readiness",
           "floors",
+          "gate",
           "counts",
           "window_hours",
           "measured_at_ms"
         ],
         "title": "TradingStatusData",
+        "type": "object"
+      },
+      "TradingStrategyConfigData": {
+        "additionalProperties": false,
+        "description": "One versioned strategy and the numbers it executes.\n\n`config` is rendered as text per key on purpose: each strategy owns its own keys, mixing booleans,\nbasis points and millisecond windows, and this surface reports them rather than interpreting them.",
+        "properties": {
+          "config": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Config",
+            "type": "object"
+          },
+          "config_digest": {
+            "title": "Config Digest",
+            "type": "string"
+          },
+          "permission": {
+            "title": "Permission",
+            "type": "string"
+          },
+          "strategy_id": {
+            "title": "Strategy Id",
+            "type": "string"
+          },
+          "strategy_version": {
+            "title": "Strategy Version",
+            "type": "string"
+          },
+          "trigger_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Trigger Kinds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "strategy_id",
+          "strategy_version",
+          "config_digest",
+          "permission"
+        ],
+        "title": "TradingStrategyConfigData",
         "type": "object"
       },
       "ValidationError": {
@@ -6447,6 +6811,28 @@
           }
         },
         "summary": "Get Trading Event Case",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/trading/gate": {
+      "get": {
+        "description": "Every OI source the lane admitted or refused in the window, one answer each (#269).\n\n`/trading/events/{id}` answers this for one Event, which is the Event detail's question. A frame\n*table* asks it for a page of frames at once, and asking it one row at a time would be a hundred\nround trips to render a screen \u2014 so the console read this column as \"\u672a\u6210\u6848\" for every row and the\ndurable reason the ledger holds never reached anyone.\n\nKeyed on `event_id` for the deterministic lane, recovered from the source key the same way the\norder and case projections recover theirs. A source whose key does not round-trip is still listed,\nwith `event_id: null`: the counts above the table include it, and dropping it here would make the\npage's own total disagree with them.",
+        "operationId": "get_trading_gate_api_trading_gate_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingGateData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Trading Gate",
         "tags": [
           "api"
         ]
