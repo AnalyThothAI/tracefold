@@ -126,13 +126,13 @@
 
 **仓库事实。** Tracefold 把“已知复述却到达读者”作为 hard gate，并另行报告 accepted restatement 的 retrieval recall；没有 restatement cases 就无法评估重复拦截是否真的改善。[Objective retrieval receipt](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/learning/objective.py#L322-L359)、[Metric hard gates](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/docs/CONTRACTS.md#L958-L978)
 
-**建议/推论。** 每个事实簇建议最多选：
+**建议/推论。** 对没有发生 reader leak 的普通事实簇，抽样时建议最多选：
 
 - 1 个最早、证据最完整的 canonical fact；
-- 1 个最容易误推的 restatement；
+- 1 个最容易误推、但被正确 hold 的 restatement control；
 - 如确有新的状态变化，再选 1 个 progression，但它应是独立事实簇。
 
-这不是修改当前 Freeze 算法的硬编码要求，而是标注抽样规则。原始成员继续留在 PostgreSQL 供审计；统计、抽样和 CI 以 cluster 为单位。需要特别注意：当前 GEPA 接收 split 内的全部 case，而不是每簇自动只取一个代表，因此同簇成员过多仍可能在优化选择中被按 case 数加权。这是现有 contract 的一个缺口，应在正式大规模运行前通过“每簇成员上限/cluster-weighted selection”单独立 Issue 处理，不能靠删光 restatement 掩盖。
+**所有已经送达读者的 restatement/duplicate leaks 都不受上述代表样本上限约束，必须逐条保留、进入高风险队列并完成独立双审/裁决。** 这不是修改当前 Freeze 算法的硬编码要求，而是标注抽样规则。原始成员继续留在 PostgreSQL 供审计；统计、抽样和 CI 以 cluster 为单位。需要特别注意：当前 GEPA 接收 split 内的全部 case，而不是每簇自动只取一个代表，因此同簇成员过多仍可能在优化选择中被按 case 数加权。这是现有 contract 的一个缺口，应在正式大规模运行前通过“只限制未泄漏 control 的每簇成员上限/cluster-weighted selection”单独立 Issue 处理，不能靠删光 restatement 或删除 leak 掩盖。
 
 ## 3. 从过去 24 小时/多日数据构造语料
 
@@ -242,11 +242,11 @@ queue sampler/selection version
 
 **建议/推论。** 第一版可执行规则：
 
-- 100% 双审：`must_push`、`must_hold`、factual failure、GEPA target、restatement/duplicate_of、external miss；
+- 100% 双审：`must_push`、`must_hold`、factual failure、GEPA target、restatement/duplicate_of、external miss、low-confidence；
 - 100% 双审：任何显式 `first_bad_owner=triage_prompt`；
 - 至少 20% 随机双审：普通 stable-correct controls，按 strata 分层；
 - 0% 自动接受：LLM draft；
-- 全部分歧必须裁决，不能用 majority vote 跳过证据。
+- 全部 annotator disagreement 必须裁决，不能用 majority vote 跳过证据。
 
 **外部事实。** 原始 annotation disagreement 研究建议将分歧作为任务定义或指南含糊的信号，经过概念对齐、独立标注和 disagreement resolution，而不是只把分歧平均掉。[Interrater Disagreement Resolution](https://aclanthology.org/2021.humeval-1.15/)
 
@@ -272,9 +272,10 @@ queue sampler/selection version
 - task identity 唯一；
 - `should_push`、novelty 已决定；restatement 有有效 `duplicate_of`；
 - 任一 `fail` 都有 evidence refs；
+- factual/timeliness failure 有明确、可验证的 `expected_correction`；
 - 任一 scored typed failure 都有 exact `expected`；
 - GEPA target 的 `first_bad_owner=triage_prompt` 是人显式填写，不是系统推导；
-- safety/target/duplicate 已完成双审和裁决；
+- safety/target/duplicate/low-confidence 已完成双审，所有分歧已经裁决；
 - 最终 acceptance 只通过 ReviewDesk 写入 PostgreSQL receipt。
 
 **仓库事实。** Review v4 已在 schema 中强制 factual label、push 的 timeliness、fail 的 evidence ref，以及 expected 只能对应 failed dimension。[EventRubricSubmission validator](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/review/desk.py#L321-L364)
@@ -431,7 +432,9 @@ adjudication_hours
 10. readiness；若 insufficient，按 blocker 补自然证据，不加模型预算
 11. 同一 dataset 的 compile_live baseline
 12. bounded GEPA；保存 NO_OP/REJECTED/ADVANCE terminal report
-13. ADVANCE 也不能上线：进入未来 temporal validation、blind pairwise、shadow、canary
+13. 核对 Dataset/Episode/Objective/Split/Program/Policy/Factory/Model-binding identities 完全一致
+14. 从头运行现有 news-gepa-frozen-run-evaluation.ipynb，展示差值、hard gates、预算、轨迹与 caveats
+15. ADVANCE 也不能上线：进入未来 temporal validation、blind pairwise、shadow、canary
 ```
 
 NIST AI RMF 要求记录测试集、指标、TEVV 方法、数据代表性和 human-AI 监督职责；上述角色分离、版本 manifest 和 acceptance receipt 与这一治理方向一致。[NIST AI RMF Core](https://airc.nist.gov/airmf-resources/airmf/5-sec-core/)
@@ -441,7 +444,7 @@ NIST AI RMF 要求记录测试集、指标、TEVV 方法、数据代表性和 hu
 1. 将当前多日 proposal pool 视为待审库存，不执行模型自动接受。
 2. 先抽 30–50 个独立事实簇做 blind calibration：必须同时有 delivered、model_drop、Gate suppress、正确/错误 restatement、must_push/must_hold。
 3. 产出一个版本化 `News Review v4 Annotation Handbook`，至少包含 20 个裁决后的边界例，绑定 rubric/reader-contract SHA。
-4. 在不改 truth 的前提下做一个 read-only QA notebook：事实簇大小、label/owner/expected 覆盖、双标 agreement、split 时间图、泄漏检查、预算 envelope。
+4. Freeze 前生成 read-only QA manifest/report，检查事实簇大小、label/owner/expected 覆盖、双标 agreement、split 时间和泄漏；Freeze 后复用现有 `news-gepa-frozen-run-evaluation.ipynb` 作为唯一正式终态 Notebook，不再建立第二套实验平台。
 5. 单独开 Issue 决定两项缺口：
    - durable independent annotations/adjudication ledger；
    - GEPA selection 是否需要 cluster weighting 或每簇 case 上限。
