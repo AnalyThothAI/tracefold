@@ -2845,13 +2845,17 @@ export interface components {
          *     position but nobody computed a return for it, and counting it turned one +150 bps winner beside three
          *     resolutions into a reported mean of 37.5.
          *
-         *     `funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count
-         *     over the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`
-         *     and is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader
-         *     can see that a Workers process stopped over midnight left yesterday's totals in place instead of having
-         *     to infer it.
+         *     Rolling groupings retain their 24 h window. The `*_today` fields, `policy_allowed_today`, and
+         *     `funnel_today` bind to the UTC `funnel_day_key`; an upper bound keeps a stale Workers day from silently
+         *     becoming a multi-day count. `active_orders` is intentionally unbounded because unresolved exposure does
+         *     not stop mattering after 24 h.
          */
         TradingCountsData: {
+            /**
+             * Active Orders
+             * @default 0
+             */
+            active_orders: number;
             /** Cases By State */
             cases_by_state?: {
                 [key: string]: number;
@@ -2864,11 +2868,20 @@ export interface components {
             cases_by_trigger?: {
                 [key: string]: number;
             };
+            /** Cases Today By State */
+            cases_today_by_state?: {
+                [key: string]: number;
+            };
             /**
              * Closed Orders
              * @default 0
              */
             closed_orders: number;
+            /**
+             * Closed Orders Today
+             * @default 0
+             */
+            closed_orders_today: number;
             /**
              * Closed Realized Bps
              * @default 0
@@ -2899,6 +2912,11 @@ export interface components {
             orders_by_state?: {
                 [key: string]: number;
             };
+            /**
+             * Policy Allowed Today
+             * @default 0
+             */
+            policy_allowed_today: number;
             /** Shadow By Rule */
             shadow_by_rule?: {
                 [key: string]: number;
@@ -3660,6 +3678,7 @@ export interface operations {
     get_trading_orders_api_trading_orders_get: {
         parameters: {
             query?: {
+                day?: string;
                 underlying?: string;
                 state?: string;
             };

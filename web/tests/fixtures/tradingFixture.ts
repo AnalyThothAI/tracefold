@@ -5,13 +5,10 @@ import type {
   TradingStatus,
 } from "@features/trading/api/tradingQueries";
 
-export const TRADING_NOW_MS = 1_779_000_000_000;
+export const TRADING_NOW_MS = Date.parse("2026-08-25T12:00:00Z");
 
 /**
- * The capital lane as it is actually configured today: `enabled: false`, `mode: paper`,
- * `live_readiness: not_applicable`. A fixture that shipped an enabled live lane would let a page pass its
- * tests in a state this deployment has never been in — and would hide the empty-state copy that is, right
- * now, the only thing most readers will see.
+ * The approved paper workbench: real ledger states against the fake exchange, never a live claim.
  */
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
@@ -30,7 +27,11 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       cases_by_strategy: { news_oi_alignment_v1: 5, oi_momentum_v1: 4 },
       cases_by_trigger: { news: 5, oi: 4 },
       cases_by_state: { NO_TRADE: 2, ORDER_PREPARED: 3, POLICY_REJECTED: 4 },
+      cases_today_by_state: { NO_TRADE: 2, ORDER_PREPARED: 3, POLICY_REJECTED: 4 },
+      policy_allowed_today: 3,
+      active_orders: 4,
       closed_orders: 2,
+      closed_orders_today: 2,
       closed_realized_bps: 12,
       // A UTC calendar-day counter, named for the interval it covers — `merge_funnel` resets it
       // on `day_key`, unlike every rolling count beside it.
@@ -118,9 +119,9 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
     measured_at_ms: TRADING_NOW_MS,
     readiness: {
       control: "RUNNING",
-      enabled: false,
-      execution_backend: "disabled",
-      execution_configured: false,
+      enabled: true,
+      execution_backend: "paper",
+      execution_configured: true,
       live_mode_supported: false,
       live_ready: false,
       live_readiness: "not_applicable",
@@ -200,7 +201,80 @@ export function tradingOrdersFixture(overrides: Partial<TradingOrders> = {}): Tr
     cases_without_orders: [tradingCaseFixture()],
     complete: true,
     measured_at_ms: TRADING_NOW_MS,
-    orders: [tradingOrderFixture()],
+    orders: [
+      tradingOrderFixture(),
+      tradingOrderFixture({
+        average_price: null,
+        base_symbol: "HYPE",
+        case_id: "case-hype-order",
+        event_id: "evt-oi-hype-order",
+        filled_quantity: null,
+        order_id: "order-hype",
+        provider_symbol: "HYPEUSDT",
+        side: "sell",
+        state: "AWAITING_APPROVAL",
+        strategy_id: "news_oi_alignment_v1",
+        underlying_key: "crypto:HYPE",
+      }),
+      tradingOrderFixture({
+        average_price: null,
+        base_symbol: "DOGE",
+        case_id: "case-doge",
+        event_id: "evt-oi-doge",
+        filled_quantity: null,
+        order_id: "order-doge",
+        position_opened_at_ms: null,
+        must_close_at_ms: null,
+        provider_symbol: "DOGEUSDT",
+        state: "ACKNOWLEDGED",
+        strategy_id: "oi_momentum_v1",
+        underlying_key: "crypto:DOGE",
+      }),
+      tradingOrderFixture({
+        average_price: null,
+        base_symbol: "SOL",
+        case_id: "case-sol",
+        event_id: "evt-oi-sol",
+        filled_quantity: null,
+        order_id: "order-sol",
+        position_opened_at_ms: null,
+        must_close_at_ms: null,
+        provider_symbol: "SOLUSDT",
+        state: "AMBIGUOUS",
+        strategy_id: "news_oi_alignment_v1",
+        underlying_key: "crypto:SOL",
+      }),
+      tradingOrderFixture({
+        base_symbol: "BTC",
+        case_id: "case-btc-closed",
+        event_id: "evt-oi-btc-closed",
+        exit_price: "1.0040",
+        exit_reason: "max_holding",
+        order_id: "order-btc-closed",
+        position_closed_at_ms: TRADING_NOW_MS - 60_000,
+        position_opened_at_ms: TRADING_NOW_MS - 7_200_000,
+        realized_bps: 52,
+        provider_symbol: "BTCUSDT",
+        state: "CLOSED",
+        strategy_id: "oi_momentum_v1",
+        underlying_key: "crypto:BTC",
+      }),
+      tradingOrderFixture({
+        base_symbol: "PEPE",
+        case_id: "case-pepe-closed",
+        event_id: "evt-oi-pepe-closed",
+        exit_price: "0.8120",
+        exit_reason: "native_stop",
+        order_id: "order-pepe-closed",
+        position_closed_at_ms: TRADING_NOW_MS - 120_000,
+        position_opened_at_ms: TRADING_NOW_MS - 4_200_000,
+        provider_symbol: "PEPEUSDT",
+        realized_bps: -200,
+        state: "CLOSED",
+        strategy_id: "news_oi_alignment_v1",
+        underlying_key: "crypto:PEPE",
+      }),
+    ],
     window_hours: 24,
     ...overrides,
   };

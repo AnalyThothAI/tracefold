@@ -76,8 +76,19 @@ class _FakeTradingRepository:
             "orders_today": 3,
         }
 
-    def status_counts(self, *, since_ms: int) -> dict[str, Any]:
-        self.calls.append(("status_counts", {"since_ms": since_ms}))
+    def status_counts(
+        self,
+        *,
+        since_ms: int,
+        now_ms: int,
+        day_key: str | None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "status_counts",
+                {"since_ms": since_ms, "now_ms": now_ms, "day_key": day_key},
+            )
+        )
         return {
             "cases_by_state": {"ORDER_PREPARED": 3, "POLICY_REJECTED": 4},
             "cases_by_trigger": {"news": 5, "oi": 4},
@@ -96,6 +107,11 @@ class _FakeTradingRepository:
             "orders_by_state": {"OPEN": 1, "CLOSED": 2},
             "closed_orders": 2,
             "closed_realized_bps": 12,
+            "cases_today_by_state": {"ORDER_PREPARED": 3, "POLICY_REJECTED": 4},
+            "policy_allowed_today": 3,
+            "closed_orders_today": 2,
+            "active_orders": 1,
+            "funnel_day_key": "2026-08-25",
         }
 
     def console_orders(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -173,6 +189,13 @@ def test_status_reports_the_mandate_and_never_claims_live_readiness(client) -> N
     # UTC calendar day, not the rolling 24 h the counts beside it are.
     assert data["counts"]["funnel_today"] == {"cases": 9, "orders": 3}
     assert data["counts"]["funnel_day_key"] == "2026-08-25"
+    assert data["counts"]["cases_today_by_state"] == {
+        "ORDER_PREPARED": 3,
+        "POLICY_REJECTED": 4,
+    }
+    assert data["counts"]["closed_orders_today"] == 2
+    assert data["counts"]["policy_allowed_today"] == 3
+    assert data["counts"]["active_orders"] == 1
     assert "funnel_24h" not in data["counts"]
 
 
@@ -234,6 +257,20 @@ def test_orders_accepts_either_spelling_of_one_underlying(client) -> None:
     assert keys == ["crypto:WIF"] * 4
 
 
+def test_orders_can_bind_closed_rows_to_one_utc_budget_day(client) -> None:
+    api, trading = client
+
+    response = api.get(
+        "/api/trading/orders",
+        params={"token": TOKEN, "day": "2026-08-25"},
+    )
+
+    assert response.status_code == 200
+    call = next(call for call in trading.calls if call[0] == "console_orders")
+    assert call[1]["closed_from_ms"] == 1_787_616_000_000
+    assert call[1]["closed_until_ms"] == 1_787_702_400_000
+
+
 def test_an_order_state_filter_asks_only_about_orders(client) -> None:
     api, trading = client
 
@@ -268,6 +305,10 @@ def test_bad_query_values_are_refused_by_name(client) -> None:
     bad_symbol = api.get("/api/trading/orders", params={"token": TOKEN, "underlying": "WIF USD"})
     assert bad_symbol.status_code == 400
     assert bad_symbol.json()["error"] == "trading_orders_underlying_invalid"
+
+    bad_day = api.get("/api/trading/orders", params={"token": TOKEN, "day": "2026-02-30"})
+    assert bad_day.status_code == 400
+    assert bad_day.json()["error"] == "trading_orders_day_invalid"
 
     unknown = api.get("/api/trading/orders", params={"token": TOKEN, "limit": "10"})
     assert unknown.status_code == 400

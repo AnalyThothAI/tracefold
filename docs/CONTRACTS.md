@@ -738,18 +738,25 @@ reader/writer.
   order ceiling and today's count), `readiness` (`enabled`, `mode`, `control`,
   `execution_backend`, `execution_configured`, `live_mode_supported`,
   `live_ready`, `live_readiness`, `venues`), `floors` (the capital lane's own
-  thresholds, never the News gates) and `counts` (the 24 h funnel by the ledger's
-  own grouping keys). Same facts as CLI `trading status`, from the same reads.
+  thresholds, never the News gates) and `counts` (rolling 24 h groupings plus
+  `cases_today_by_state`, exact `policy_allowed_today`, `closed_orders_today`,
+  and the unbounded active-order count for the UTC `funnel_day_key`). Same facts
+  as CLI `trading status`, from the same reads.
   `live_ready` is never `true` from a read: a serve process cannot observe the
   Workers process's startup and canary result, so it reports `not_proven` rather
   than guessing (#185 P1-2). Money is an exact decimal string end to end.
-- `GET /api/trading/orders?underlying={base|crypto:BASE}&state={active|closed|all}`
+- `GET /api/trading/orders?underlying={base|crypto:BASE}&state={active|closed|all}&day={YYYY-MM-DD}`
   returns `orders[]` — one economic intent each, with the case that authored it —
   and `cases_without_orders[]`, the cases that stopped before authoring one and
   the rule they stopped on. Both halves, because a `POLICY_REJECTED` case is
   where the capital floors bite and has no order to join through. An explicit
   `state` filter suppresses the second list: it is a question about orders.
-  `underlying` accepts either spelling and the response carries both. **Neither
+  `underlying` accepts either spelling and the response carries both. When `day`
+  is present, the order batch contains every active order plus closes
+  whose authoritative `position_closed_at_ms` falls within that UTC day; this is
+  how the workbench binds its daily ledger without reconstructing the interval
+  from rows in the browser. `day` does not change the rolling
+  `cases_without_orders` evidence list. **Neither
   `trading_orders.payload` nor `trading_cases.manifest` is ever returned**, and
   neither is `account_ref` or `remote_order_id`; the frozen provider request body
   and the frozen decision input do not reach a browser. `state` is the ledger's

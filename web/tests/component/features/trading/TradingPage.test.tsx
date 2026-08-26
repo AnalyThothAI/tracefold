@@ -1,6 +1,6 @@
 import { TradingPage } from "@features/trading";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   tradingOrderFixture,
   tradingOrdersFixture,
@@ -34,6 +34,24 @@ describe("TradingPage", () => {
 
   it("says the lane is switched off rather than letting empty panels read as an outage", async () => {
     server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            counts: {
+              ...tradingStatusFixture().counts,
+              active_orders: 0,
+              closed_orders_today: 0,
+            },
+            readiness: {
+              ...tradingStatusFixture().readiness,
+              enabled: false,
+              execution_backend: "disabled",
+              execution_configured: false,
+            },
+          }),
+        }),
+      ),
       http.get(/.*\/api\/trading\/orders$/, () =>
         HttpResponse.json({
           ok: true,
@@ -45,7 +63,7 @@ describe("TradingPage", () => {
     renderTrading();
 
     expect(await screen.findByText(/资本通道未启用/)).toBeInTheDocument();
-    expect(screen.getByText("当前没有任何持仓或未决意图。")).toBeInTheDocument();
+    expect(await screen.findByText("当前没有任何持仓或未决意图。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
   });
 
@@ -137,13 +155,33 @@ describe("TradingPage", () => {
   it("reports live readiness and offers no way to change it", async () => {
     renderTrading();
 
-    expect(await screen.findByText("not_applicable")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("MODE paper · LIVE READY not_applicable"),
+    ).toBeInTheDocument();
     // `live` appears nowhere as a control — no switch, no toggle, no button naming it.
     for (const control of screen.queryAllByRole("button")) {
       expect(control.textContent ?? "").not.toMatch(/live/i);
     }
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("takes the unrealized label from the row mode instead of assuming paper", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersFixture({
+            orders: [tradingOrderFixture({ mode: "live_reviewed" })],
+          }),
+        }),
+      ),
+    );
+
+    renderTrading();
+
+    expect(await screen.findByText("未实现")).toBeInTheDocument();
+    expect(screen.queryByText("未实现（纸面）")).not.toBeInTheDocument();
   });
 
   it("never reads as ready when the lane is enabled but its provider contract is not", async () => {
@@ -180,12 +218,8 @@ describe("TradingPage", () => {
      * matching the block's text would compare against `LIVE READYnot_proven`, where the two run together
      * and no word-boundary assertion can tell them apart.
      */
-    const readiness = (await screen.findByText("LIVE READY")).closest(
-      ".trading-stat",
-    ) as HTMLElement;
-    const value = readiness.querySelector("b") as HTMLElement;
-    expect(value).toHaveTextContent("not_proven");
-    expect(value.textContent).not.toMatch(/^(ready|true|ok)$/i);
+    const readiness = await screen.findByLabelText("MODE live_reviewed · LIVE READY not_proven");
+    expect(readiness).toBeInTheDocument();
     // Enabled, so the "lane is switched off" banner is not the explanation here.
     expect(screen.queryByText(/资本通道未启用/)).not.toBeInTheDocument();
   });
@@ -195,9 +229,7 @@ describe("TradingPage", () => {
 
     // The rejected population has no order to join through and is where the capital floors actually bite.
     expect(await screen.findByText("whale_profit_below_floor")).toBeInTheDocument();
-    // Twice on purpose: once as a funnel bar with its count, once as the named row underneath it. The
-    // funnel is what happened; the row is which case and why.
-    expect(screen.getAllByText("地板拒绝")).toHaveLength(2);
+    expect(screen.getByText("地板拒绝")).toBeInTheDocument();
     // The floors are beside it: a rejection reason means nothing without the number it failed.
     await waitFor(() => expect(screen.getByText(/鲸鱼盈利 ≥ 95%/)).toBeInTheDocument());
   });
@@ -205,6 +237,7 @@ describe("TradingPage", () => {
   it("shows real liquidation shadow cohorts without presenting them as orders", async () => {
     renderTrading();
 
+    fireEvent.click(await screen.findByText(/技术证据/));
     const continuation = await screen.findByText(/清算延续（影子） 2（完成 1） · 1h 均值 0.25%/);
     const cohort = continuation.closest(".trading-floors") as HTMLElement;
     expect(cohort).toHaveTextContent("清算衰竭（影子） 2（完成 1） · 1h 均值 0.25%");
@@ -261,7 +294,7 @@ describe("TradingPage", () => {
   });
 });
 
-const TRADING_CLOSED_MS = 1_779_000_000_000 - 60_000;
+const TRADING_CLOSED_MS = Date.parse("2026-08-25T11:59:00Z");
 
 function renderTrading() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
