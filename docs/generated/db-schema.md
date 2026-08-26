@@ -482,6 +482,11 @@
 | `editorial` | `JSONB` | True | `None` |
 | `scored_judgment_sha256` | `TEXT` | True | `None` |
 | `runtime_manifest_sha` | `TEXT` | True | `None` |
+| `latency_ms` | `DOUBLE PRECISION` | True | `None` |
+| `queue_lag_ms` | `DOUBLE PRECISION` | True | `None` |
+| `reasked_after_told_change` | `BOOLEAN` | True | `None` |
+| `novelty_defaulted` | `BOOLEAN` | True | `None` |
+| `seen_scope` | `TEXT` | True | `None` |
 
 ## `trading_cases`
 

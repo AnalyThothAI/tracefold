@@ -30,8 +30,8 @@ Before enabling it, from the clean primary checkout:
 1. run `uv run tracefold config` and confirm the reported path is
    `~/.tracefold/config.yaml`, `trading.mode=paper`, and no redacted config
    error is present;
-2. deploy the exact reviewed image and migration `20260826_0310`, then require
-   `make status` to pass;
+2. deploy the exact reviewed image at the current Alembic head, which must include
+   the Strategy Kernel migration `20260826_0310`, then require `make status` to pass;
 3. set only `trading.enabled=true`, leaving the mode `paper`, and run
    `make up` followed by `make status` again;
 4. require `uv run tracefold trading status` to report `enabled=true`,

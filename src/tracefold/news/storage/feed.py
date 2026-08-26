@@ -477,61 +477,44 @@ class FeedStorage:
         hour_ago = int(now_ms) - 3600_000
         pipeline = self.conn.execute(
             """
-            SELECT
-              (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_1h,
-              (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_24h,
-              (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s AND admission = 'candidate') AS candidates_24h,
-              -- Two denominators on purpose. The funnel is the reader's view — 收到 ⊇ 送审 ⊇ 模型判断
-              -- ⊇ 决定推送 ⊇ 已送达, subtracted band by band by the console — and a telemetry judgment
-              -- is a judgment and its push is a card the reader received, so both count here or the
-              -- containment breaks at one end or the other. Model health is a different question and
-              -- gets its own denominator below: ~190 arithmetic judgments a day, never degraded,
-              -- would otherwise dilute the degraded share and make the model look healthier than it is.
-              (SELECT count(*) FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s) AS triage_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s
-                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS model_triage_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND degraded AND created_at_ms >= %s) AS triage_degraded_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND final_decision IN ('push','escalate')
-                  AND created_at_ms >= %s) AS decided_push_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s) AS throttled_24h,
-              -- WARNING: the five subqueries below are why `/api/news/status` 500s intermittently, and it is
-              -- not a `news.oi` problem — it predates #207 and needs a migration to fix properly.
-              --
-              -- Each reads one scalar out of `news_verdicts.trace`, a TOASTed JSONB column holding 26 MB
-              -- across a day's ~1950 verdicts. Measured 2026-08-25 with EXPLAIN (BUFFERS): the bitmap heap
-              -- scan itself is 11 ms / 506 buffers, and adding the `trace` reads takes it to 354 ms /
-              -- 27544 buffers — the whole cost is decompressing the column to reach three numbers. The five
-              -- together measure ~1.1 s against the serve role's 1 s `statement_timeout`, so the endpoint
-              -- fails whenever the cache is cold or the host is busy.
-              --
-              -- Folding them into one `FILTER` pass was measured and returns identical values, but only
-              -- saves about a tenth (1107 -> 1009 ms) because the planner already shares most of that work
-              -- — still over the limit, so it is not worth the churn here. (Write no bare per-cent sign in
-              -- this string: psycopg scans the whole statement for placeholders, comments included, and one
-              -- raises `incomplete placeholder`.) The real fix is to stop reading a 26 MB
-              -- column for three scalars: promote `latency_ms` / `queue_lag_ms` to real columns, or add a
-              -- partial expression index the percentile can scan in order. Both are migrations. See #207.
-              (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
-                 FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p50_ms,
-              (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
-                 FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p95_ms,
-              (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY (trace ->> 'queue_lag_ms')::double precision)
-                 FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'queue_lag_ms') AS queue_lag_p95_ms,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s
-                  AND COALESCE((trace ->> 'reasked_after_told_change')::boolean, false)) AS reasked_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s
-                  AND COALESCE((trace ->> 'novelty_defaulted')::boolean, false)) AS novelty_defaulted_24h
+            WITH event_counts AS (
+              SELECT
+                count(*) FILTER (WHERE opened_at_ms >= %s) AS events_1h,
+                count(*) AS events_24h,
+                count(*) FILTER (WHERE admission = 'candidate') AS candidates_24h
+                FROM news_events
+               WHERE opened_at_ms >= %s
+            ), verdict_counts AS (
+              SELECT
+                -- Two denominators on purpose. The funnel is the reader's view — 收到 ⊇ 送审 ⊇ 模型判断
+                -- ⊇ 决定推送 ⊇ 已送达, subtracted band by band by the console — and a telemetry judgment
+                -- is a judgment and its push is a card the reader received, so both count here or the
+                -- containment breaks at one end or the other. Model health is a different question and
+                -- gets its own denominator below: ~190 arithmetic judgments a day, never degraded,
+                -- would otherwise dilute the degraded share and make the model look healthier than it is.
+                count(*) AS triage_24h,
+                count(*) FILTER (
+                  WHERE program_version IS DISTINCT FROM 'news_oi_signal_v1'
+                ) AS model_triage_24h,
+                count(*) FILTER (WHERE degraded) AS triage_degraded_24h,
+                count(*) FILTER (WHERE final_decision IN ('push','escalate')) AS decided_push_24h,
+                count(*) FILTER (WHERE final_decision = 'throttled') AS throttled_24h,
+                -- #221: generated stored columns preserve the status values without decompressing the 26 MB
+                -- daily TOAST corpus. One aggregate pass then replaces the old ten verdict scans.
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)
+                  FILTER (WHERE latency_ms IS NOT NULL) AS triage_p50_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                  FILTER (WHERE latency_ms IS NOT NULL) AS triage_p95_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY queue_lag_ms)
+                  FILTER (WHERE queue_lag_ms IS NOT NULL) AS queue_lag_p95_ms,
+                count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h,
+                count(*) FILTER (WHERE novelty_defaulted) AS novelty_defaulted_24h
+                FROM news_verdicts
+               WHERE stage = 'triage' AND created_at_ms >= %s
+            )
+            SELECT * FROM event_counts CROSS JOIN verdict_counts
             """,
-            (hour_ago, *([day_ago] * 12)),
+            (hour_ago, day_ago, day_ago),
         ).fetchone()
         delivery = self.conn.execute(
             """
@@ -642,7 +625,7 @@ class FeedStorage:
             """
             SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
                    COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
-                   COALESCE(trace ->> 'seen_scope', '') AS seen_scope,
+                   seen_scope,
                    count(*) AS n
               FROM news_verdicts
              WHERE stage = 'triage' AND created_at_ms >= %s
