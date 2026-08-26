@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 from argparse import Namespace
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +50,17 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
 
     out = Path(str(args.out))
     out.mkdir(parents=True, exist_ok=True)
-    # A directory is the record of *one* run, and an operator reusing `--out` would otherwise read a
-    # current summary beside a baseline the previous run paid for — which is exactly the pair the
-    # population checks exist to refuse, made invisible by both files looking current. `optimize` clears
-    # its own stale candidate for the same reason; these are the two files this command owns and does not
-    # always rewrite.
-    (out / _SUMMARY_FILE).unlink(missing_ok=True)
-    (out / _BASELINE_FILE).unlink(missing_ok=True)
+    # A directory is the record of *one* run. Every artifact of a previous one goes first, because a run
+    # that stops early — a corpus readiness refuses, a provider failure in the baseline — otherwise leaves
+    # a fresh `readiness.json` beside the last run's report and candidate, with no summary to reveal that
+    # they came from different corpora. `optimize` clears its own stale candidate for the same reason.
+    for stale in (
+        out / _SUMMARY_FILE,
+        out / _BASELINE_FILE,
+        out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE,
+        out / _OPTIMIZATION_DIR / _CANDIDATE_FILE,
+    ):
+        stale.unlink(missing_ok=True)
     development = str(args.development).strip()
     # Resolved before the corpus work rather than after it: an unconfigured reflection route is the one
     # identity that would otherwise turn a planned run into an error only once readiness and the baseline
@@ -130,7 +135,7 @@ def _readiness(settings: Any, stable: Any, *, out: Path, development: str) -> di
     path = out / _READINESS_FILE
     code, payload = _handle_learning_readiness(Namespace(development=development, out=str(path)), settings, stable)
     if code != 0:
-        raise ValueError(str(payload.get("error") or "news_learning_run_readiness_failed"))
+        raise ValueError(_error_code(payload, fallback="news_learning_run_readiness_failed"))
     return _read(path)
 
 
@@ -175,7 +180,6 @@ def _baseline(
             to_ms=None,
             all_cohorts=False,
             max_model_cases=int(args.max_baseline_model_cases),
-            max_metric_judge_model_calls=int(args.max_metric_judge_model_calls),
             semantic_judge=judge_model,
             limit=int(args.max_baseline_model_cases),
             out=str(path),
@@ -184,7 +188,7 @@ def _baseline(
         stable,
     )
     if code != 0:
-        raise ValueError(str(payload.get("error") or "news_learning_run_baseline_failed"))
+        raise ValueError(_error_code(payload, fallback="news_learning_run_baseline_failed"))
     return _read(path)
 
 
@@ -217,7 +221,7 @@ def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, develop
         stable,
     )
     if code not in {0, 1}:
-        raise ValueError(str(payload.get("error") or "news_learning_run_optimize_failed"))
+        raise ValueError(_error_code(payload, fallback="news_learning_run_optimize_failed"))
     return _read(directory / _OPTIMIZATION_FILE)
 
 
@@ -257,6 +261,20 @@ def _task_route(settings: Any) -> dict[str, str]:
         "baseline_endpoint_sha256": _endpoint_model_sha256(endpoint),
         "optimizer_endpoint_fingerprint": endpoint_fingerprint(str(endpoint.api_base)),
     }
+
+
+def _error_code(payload: Mapping[str, Any], *, fallback: str) -> str:
+    """The refusal's own vocabulary, whether the handler returned a code or a code plus its detail.
+
+    `_handle_learning_baseline` answers an empty optimizer corpus with a mapping — a code and the blocking
+    reasons behind it. Stringifying that put a Python dict repr inside the CLI's `error` field, where every
+    other refusal in this plane puts a stable code an operator can grep for.
+    """
+
+    error = payload.get("error")
+    if isinstance(error, Mapping):
+        return str(error.get("code") or fallback)
+    return str(error or fallback)
 
 
 def _read(path: Path) -> dict[str, Any]:

@@ -864,8 +864,7 @@ idempotency key.
 
 `news learning baseline (--dataset SHA | --from-ms N --to-ms N [--all-cohorts])
 [--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
-[--max-model-cases N] [--semantic-judge MODEL]
-[--max-metric-judge-model-calls N] [--limit N]
+[--max-model-cases N] [--semantic-judge MODEL] [--limit N]
 [--out FILE]` scores the
 stable Program over accepted reviews and returns one content-addressed
 `tracefold.news.program_baseline_report.v3`. It is read-only — no dataset write,
@@ -895,13 +894,13 @@ refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
 rather than published with an empty `subsets` block that reads as a measured
 zero — `readiness` explains the same blockers for free.
 
-`--max-metric-judge-model-calls` bounds the equivalence judge's own provider
-calls and is absent by default, because an operator watching a bounded
-`--max-model-cases` run is the ceiling. `news learning run` always passes one:
-an unattended composite run needs the bound, and an identical ceiling on both
-legs is what makes this report's metric receipt byte-identical to the
-optimization's — the judge's complete role contract, its admission ceiling
-included, is inside `compile_metric_receipt.v3`.
+The equivalence judge gets no admission ceiling of its own here, and #253 tried
+the other way first: a judge that reaches its ceiling does not raise, it returns
+`unavailable`, `retains()` reads that as not retained, a failed
+`factual_fidelity` arms the `factual_contradiction` hard gate, and the case
+scores zero. An under-sized ceiling would therefore publish a depressed baseline
+that reads as a measurement. `--max-model-cases` pins the corpus and so pins the
+judge's work, which is the bound that exists.
 
 `--dataset` runs `--mode compile_live` and nothing else
 (`news_program_baseline_dataset_requires_compile_live`), and requires
@@ -1197,8 +1196,14 @@ by itself evidence that a dataset identity is wrong.
 
 `same_population` is a verdict over named `population_checks` — dataset SHA,
 episode projection root, episode count, representative case root and counts,
-both split roots, the whole metric receipt, the parent Program, the task model,
-and the task endpoint. The endpoint check compares each report against the
+both split roots, the metric receipt, the parent Program, the task model, and
+the task endpoint. Every corpus check is three-way against readiness, so a run
+explained as one corpus and measured as another is a `mismatch` even when the
+two measured legs agree. The metric receipt is compared whole except for
+`semantic_judge.execution.max_model_calls`, a spend bound that cannot change
+what "better" means; both observed ceilings are printed in the row. A judge that
+went `unavailable` is reported separately under `judge_availability`, because it
+makes its leg a lower bound rather than a different population. The endpoint check compares each report against the
 digest of the route this run composed rather than the two reports against each
 other, because the baseline fingerprints it as `configured_endpoint_model_v1`
 and the optimizer as `model_execution_identity.v1`. Any `mismatch` makes
@@ -1209,7 +1214,9 @@ that never ran is `not_comparable` and `same_population` is `null`, never
 `true`. `next_action` is `future_test` on `ADVANCE`, `keep_stable` on `NO_OP`,
 and on `REJECTED` it is `collect_more_gold` only when the terminal reasons say
 the corpus cannot answer — an exhausted budget keeps Stable and says so in
-`reasons`. Exit `0` is `ADVANCE`; `1` is `NO_OP` or `REJECTED`, both complete
+`reasons`. A `false` `same_population` forces `keep_stable` whatever the
+terminal: the file must not recommend a future test that rests on a `before`
+number the same file just declined to vouch for. Exit `0` is `ADVANCE`; `1` is `NO_OP` or `REJECTED`, both complete
 experiments.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]

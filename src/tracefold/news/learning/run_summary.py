@@ -199,14 +199,9 @@ def _population_checks(
             note="expected is readiness",
         ),
         # The whole ruler, hashed: weights, dimensions, hard gates, the metric's own source, the policy it
-        # scores against, the review rubric and the equivalence judge's complete role contract. Comparing a
-        # projection of it would let the half nobody projected change unobserved.
-        _check(
-            "metric_sha256",
-            _sha_or_none(_at(baseline, "identity.metric")),
-            _sha_or_none(_at(optimization, "metric")),
-            note="tracefold.news.compile_metric_receipt.v3, judge role contract included",
-        ),
+        # scores against, the review rubric and the equivalence judge's endpoint, instruction and schema.
+        # Comparing a projection of it would let the half nobody projected change unobserved.
+        _metric_check(baseline=baseline, optimization=optimization),
         _check(
             "program_sha256",
             _at(baseline, "identity.program_sha256"),
@@ -265,6 +260,59 @@ def _task_endpoint_check(
     }
 
 
+# The one field excluded from the metric-receipt comparison, and the reason it is safe to exclude: the
+# judge's admission ceiling is a *budget*, not a ruler — it cannot change what "better" means. The two legs
+# hold it for different reasons (the optimizer declares one for a run that may last hours; the baseline is
+# bounded by its corpus instead), so comparing the receipts whole would fail closed on every honest run.
+# Both observed ceilings are printed in the row, so the exclusion is stated rather than silent.
+_JUDGE_CEILING_PATH = ("semantic_judge", "execution", "max_model_calls")
+
+
+def _metric_check(*, baseline: Mapping[str, Any] | None, optimization: Mapping[str, Any]) -> dict[str, Any]:
+    """The ruler both legs were scored by, compared whole except for the judge's own call ceiling."""
+
+    standalone_receipt = _at(baseline, "identity.metric")
+    gepa_receipt = _at(optimization, "metric")
+    row = _check(
+        "metric_sha256",
+        _sha_or_none(_without_judge_ceiling(standalone_receipt)),
+        _sha_or_none(_without_judge_ceiling(gepa_receipt)),
+        note=(
+            "tracefold.news.compile_metric_receipt.v3 excluding semantic_judge.execution.max_model_calls, "
+            "which bounds spend and cannot change what better means"
+        ),
+    )
+    row["standalone_judge_max_model_calls"] = _judge_ceiling(standalone_receipt)
+    row["gepa_judge_max_model_calls"] = _judge_ceiling(gepa_receipt)
+    return row
+
+
+def _judge_ceiling(receipt: Any) -> Any:
+    cursor: Any = receipt
+    for part in _JUDGE_CEILING_PATH:
+        if not isinstance(cursor, Mapping):
+            return None
+        cursor = cursor.get(part)
+    return cursor
+
+
+def _without_judge_ceiling(receipt: Any) -> Any:
+    """The receipt with the excluded field normalized away, and everything else byte-identical."""
+
+    if not isinstance(receipt, Mapping):
+        return receipt
+    judge = receipt.get("semantic_judge")
+    if not isinstance(judge, Mapping):
+        return receipt
+    execution = judge.get("execution")
+    if not isinstance(execution, Mapping):
+        return receipt
+    return {
+        **receipt,
+        "semantic_judge": {**judge, "execution": {**execution, "max_model_calls": None}},
+    }
+
+
 def _sha_or_none(value: Any) -> str | None:
     return canonical_sha(value) if isinstance(value, Mapping) else None
 
@@ -280,7 +328,38 @@ def _same_population(checks: Sequence[Mapping[str, Any]]) -> bool | None:
     return True
 
 
-def _next_action(outcome: str, reasons: Sequence[str]) -> str:
+def _judge_availability(*, baseline: Mapping[str, Any] | None, optimization: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether the equivalence judge answered every time it was asked, on each leg separately.
+
+    Not a population identity, and deliberately not folded into `same_population`: the two legs can read
+    one identical corpus with one identical ruler and still produce two numbers that are not comparable,
+    because a judge that went unavailable scores its free-text dimension as failure-as-zero. That makes the
+    affected leg a lower bound rather than a measurement, and a reader comparing the two has to know which
+    one it happened to.
+    """
+
+    standalone = _at(baseline, "semantic_judge.failures")
+    gepa = _at(optimization, "usage.metric_judge_failures")
+    degraded = bool(standalone or 0) or bool(gepa or 0)
+    return {
+        "standalone_judge_failures": standalone,
+        "standalone_judge_model_calls": _at(baseline, "semantic_judge.model_calls"),
+        "gepa_judge_failures": gepa,
+        "gepa_judge_model_calls": _at(optimization, "usage.metric_judge_model_calls"),
+        "degraded": degraded,
+        "note": (
+            "an unavailable judge scores its free-text dimension as failure-as-zero and can arm the "
+            "factual_contradiction hard gate; the affected leg is a lower bound, not a measurement"
+        ),
+    }
+
+
+def _next_action(outcome: str, reasons: Sequence[str], *, same_population: bool | None) -> str:
+    # A refused comparison cannot recommend the step that depends on it. `ADVANCE` still means the
+    # optimizer produced a patch, and the report still says so — but "go test this on future examples"
+    # rests on a `before` number this run just declined to vouch for.
+    if same_population is False:
+        return "keep_stable"
     if outcome == "ADVANCE":
         return "future_test"
     if outcome == "NO_OP":
@@ -367,6 +446,7 @@ def build_run_summary(
             # fact about model execution, not by itself evidence that the dataset identity is wrong.
             "numeric_drift": None if standalone is None or seed is None else round(seed - standalone, 6),
             "numeric_drift_definition": "gepa_seed_selection_score - standalone_selection_score",
+            "judge_availability": _judge_availability(baseline=baseline, optimization=optimization),
             "population_checks": checks,
         },
         "optimization": {
@@ -380,7 +460,7 @@ def build_run_summary(
             "reasons": reasons,
             "report_sha256": _at(optimization, "report_sha256"),
         },
-        "next_action": _next_action(outcome, reasons),
+        "next_action": _next_action(outcome, reasons, same_population=same_population),
     }
     reject_nonfinite_json(summary, path="gepa_run_summary")
     reject_secret_material(summary, path="gepa_run_summary")

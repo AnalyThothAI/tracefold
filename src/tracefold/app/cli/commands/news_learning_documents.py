@@ -53,5 +53,18 @@ def _canonical_model_document(document: str, model_type: Any, *, code: str) -> A
 
 
 def _write_json(path: str, payload: Mapping[str, Any]) -> None:
+    """Write one `--out` document, creating the directory the operator named it in.
+
+    `freeze` reads and seals the corpus first and writes second, so a missing parent directory used to be
+    an `OSError` — outside the `(ValueError, PermissionError, RuntimeError)` the CLI translates — raised
+    after the dataset was already persisted, losing the SHA to a traceback. A `--out` path naming a
+    directory is a request to write there, not a precondition to be checked by the operator.
+    """
+
+    import os
+
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

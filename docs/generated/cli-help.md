@@ -352,7 +352,6 @@ usage: tracefold news learning baseline [-h] [--from-ms FROM_MS]
                                         [--max-model-cases MAX_MODEL_CASES]
                                         [--all-cohorts]
                                         [--semantic-judge MODEL]
-                                        [--max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS]
                                         [--limit LIMIT] [--out OUT]
 
 options:
@@ -388,9 +387,6 @@ options:
                         deepseek-v4-pro). Enum dimensions stay exact. Costs
                         nothing under --mode recorded, where the candidate is
                         the production verdict and the texts already match
-  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-                        bound the equivalence judge's own provider calls;
-                        default 0 leaves it unbounded
   --limit LIMIT
   --out OUT             write the baseline report JSON
 

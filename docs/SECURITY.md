@@ -163,10 +163,12 @@ then holds three model endpoints and a typed in-process budget: no database
 write credential, no broker, no delivery, no canary, no promotion, no artifact
 writer. `news learning run` (#253) composes it with `readiness` and the
 standalone baseline and adds no authority of its own: three `serve` reads, the
-same endpoints under the same declared budget, and files in a directory the
-operator named. Its `run_summary.json` carries identifiers, counts and scalars
-and is rejected before it is written if it names or contains credential
-material. Every physical provider call passes a meter that reserves the operator's
+same endpoints, and files in a directory the operator named. The typed budget
+still bounds only the optimization leg — `run_baseline` has no meter and no
+deadline — so a composite run's spend is the declared budget plus a baseline leg
+bounded by its corpus, which `--max-baseline-model-cases` must cover exactly.
+`run_summary.json` carries identifiers, counts and scalars and is rejected before
+it is written if it names or contains credential material. Every physical provider call passes a meter that reserves the operator's
 declared per-call cost before the request and settles after it, and a wall-clock
 deadline is checked before each call rather than reported after the last. Task,
 reflection and `metric_judge` are each one `ModelExecutionIdentity` — the

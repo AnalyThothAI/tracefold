@@ -192,15 +192,6 @@ def build_parser() -> argparse.ArgumentParser:
             "where the candidate is the production verdict and the texts already match"
         ),
     )
-    # Absent by default: an operator watching a bounded `--max-model-cases` run is the ceiling. `learning
-    # run` passes one, because a composite run is unattended and because an identical judge ceiling is what
-    # makes this report's metric receipt byte-identical to the optimization's (#253 §8).
-    learning_baseline.add_argument(
-        "--max-metric-judge-model-calls",
-        type=_positive_int,
-        default=0,
-        help="bound the equivalence judge's own provider calls; default 0 leaves it unbounded",
-    )
     learning_baseline.add_argument("--limit", type=_positive_int, default=500)
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
     learning_draft = learning_subcommands.add_parser(

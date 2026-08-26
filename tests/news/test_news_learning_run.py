@@ -91,6 +91,7 @@ def _baseline(**updates: Any) -> dict[str, Any]:
                 "development_selection": {"case_root_sha256": _SELECTION_ROOT},
             },
         },
+        "semantic_judge": {"attempts": 19, "model_calls": 19, "failures": 0, "judge_id": "tracefold/judge"},
         "subsets": {
             "development_selection": {
                 "case_n": 19,
@@ -139,6 +140,7 @@ def _optimization(**updates: Any) -> dict[str, Any]:
             "task_model_calls": 192,
             "reflection_model_calls": 7,
             "metric_judge_model_calls": 88,
+            "metric_judge_attempts": 88,
             "metric_judge_failures": 0,
             "actual_cost_microusd": 412_000,
             "metric_judge_cost_imputed": True,
@@ -314,6 +316,50 @@ def test_the_future_test_baseline_is_named_and_left_empty_because_this_command_c
     assert summary["baseline"]["future_test_baseline"] is None
     assert "holdout" in summary["baseline"]["future_test_note"]
     assert "ValidationDataset" in summary["baseline"]["future_test_note"]
+
+
+def test_a_refused_comparison_cannot_recommend_the_step_that_rests_on_it() -> None:
+    """`next_action` is the one line a hurried reader acts on, and it must not outrank the verdict above it.
+
+    An `ADVANCE` whose population checks disagree still produced a patch, and the report still says so.
+    What it did not produce is a `before` number this file is willing to vouch for, so "go collect future
+    examples and test against it" is advice the same document has already refused to support.
+    """
+
+    drifted = _baseline()
+    drifted["identity"]["episode_projection_root_sha256"] = "f" * 64
+
+    summary = _summary(
+        baseline=drifted,
+        optimization=_optimization(outcome="ADVANCE", reasons=[], candidate_sha256="7" * 64),
+    )
+
+    assert summary["optimization"]["terminal"] == "ADVANCE"
+    assert summary["optimization"]["candidate_sha"] == "7" * 64
+    assert summary["baseline"]["same_population"] is False
+    assert summary["next_action"] == "keep_stable"
+
+
+def test_an_unavailable_judge_is_reported_apart_from_the_population_verdict() -> None:
+    """Two legs can read one corpus with one ruler and still not be comparable.
+
+    A judge that went unavailable scores its free-text dimension as failure-as-zero and can arm the
+    `factual_contradiction` hard gate, so the affected leg is a lower bound. That is not a population
+    difference and must not be laundered into one — `same_population` stays true and the fact is stated.
+    """
+
+    healthy = _summary()
+    assert healthy["baseline"]["judge_availability"]["degraded"] is False
+
+    starved = _optimization()
+    starved["usage"]["metric_judge_failures"] = 7
+    summary = _summary(optimization=starved)
+
+    availability = summary["baseline"]["judge_availability"]
+    assert availability["degraded"] is True
+    assert (availability["gepa_judge_failures"], availability["standalone_judge_failures"]) == (7, 0)
+    assert summary["baseline"]["same_population"] is True
+    assert "lower bound" in availability["note"]
 
 
 @pytest.mark.parametrize(
@@ -505,9 +551,9 @@ def _install(monkeypatch: Any, legs: _Legs) -> None:
 def test_the_three_legs_run_in_order_into_one_directory_and_share_one_judge(monkeypatch: Any, tmp_path: Path) -> None:
     """The composition an operator used to do by hand, with the two agreements it could not check.
 
-    The judge model is the configured reflection route rather than a name retyped per command, and the
-    optimizer's judge ceiling is handed to the baseline as well — which is what makes the two metric
-    receipts, and therefore the ruler the two Stable numbers were measured with, byte-identical.
+    The judge model is the configured reflection route rather than a name retyped per command, which is
+    what makes the ruler the two Stable numbers were measured with the same one. The judge's own call
+    ceiling is deliberately *not* forwarded: an under-sized one would score cases zero rather than raise.
     """
 
     legs = _Legs(readiness=_readiness(), baseline=_baseline(), optimization=_optimization())
@@ -518,7 +564,7 @@ def test_the_three_legs_run_in_order_into_one_directory_and_share_one_judge(monk
     assert [name for name, _args in legs.calls] == ["readiness", "baseline", "optimize"]
     baseline_args = dict(legs.calls[1][1]._get_kwargs())
     assert baseline_args["semantic_judge"] == "deepseek-v4-pro"
-    assert baseline_args["max_metric_judge_model_calls"] == 200
+    assert "max_metric_judge_model_calls" not in baseline_args
     assert (baseline_args["mode"], baseline_args["dataset"]) == ("compile_live", _DATASET)
     # A dataset-bound baseline refuses to also carry a moving window, and `0` would read as one.
     assert baseline_args["from_ms"] is None and baseline_args["to_ms"] is None
@@ -777,29 +823,36 @@ def _real_readiness(plan: Any, *, dataset_sha: str, episode_root: str, corpus: A
     )
 
 
-def test_the_baseline_judge_ceiling_is_what_makes_the_two_metric_receipts_one_ruler() -> None:
-    """Why `learning run` hands the optimizer's judge ceiling to the baseline as well.
+def test_the_judge_call_ceiling_is_the_one_field_the_ruler_comparison_excludes() -> None:
+    """Why `metric_sha256` normalizes one field away instead of comparing the receipt whole.
 
-    The ruler both legs are scored by is `compile_metric_receipt.v3`, and the equivalence judge's complete
-    role contract — including its own admission ceiling — is inside it. Left unbounded on one side, the two
-    receipts hash differently and the population check has to be weakened by an exclusion; given the same
-    ceiling they are byte-identical, and the check can compare the whole document.
+    The ruler both legs are scored by is `compile_metric_receipt.v3`, and the equivalence judge's whole
+    role contract is inside it — including `execution.max_model_calls`, which is a spend bound and not a
+    ruler. The optimizer declares one for a run that may last hours; the baseline is bounded by its corpus
+    instead. Comparing the receipts whole would therefore fail closed on every honest run, and giving the
+    baseline the optimizer's ceiling to force equality is worse: an under-sized ceiling makes the judge
+    return `unavailable`, which scores cases zero and publishes a depressed baseline as a measurement.
     """
 
     from tracefold.news.learning.baseline import build_judge
     from tracefold.news.learning.metric import bind_metric, metric_receipt
+    from tracefold.news.learning.run_summary import _sha_or_none, _without_judge_ceiling
 
-    def receipt(*, max_model_calls: int | None) -> str:
+    def receipt(*, max_model_calls: int | None, model: str = "deepseek/deepseek-v4-pro") -> dict[str, Any]:
         judge = build_judge(
-            model_name="deepseek/deepseek-v4-pro",
+            model_name=model,
             api_key="k",
             api_base="https://judge.invalid/v1",
             max_model_calls=max_model_calls,
         )
-        return json.dumps(metric_receipt(bind_metric(judge), review_rubric_version="news_review_v4"), sort_keys=True)
+        return metric_receipt(bind_metric(judge), review_rubric_version="news_review_v4")
 
-    assert receipt(max_model_calls=200) == receipt(max_model_calls=200)
-    assert receipt(max_model_calls=200) != receipt(max_model_calls=None)
+    bounded, unbounded = receipt(max_model_calls=200), receipt(max_model_calls=None)
+    assert json.dumps(bounded, sort_keys=True) != json.dumps(unbounded, sort_keys=True)
+    assert _sha_or_none(_without_judge_ceiling(bounded)) == _sha_or_none(_without_judge_ceiling(unbounded))
+    # The exclusion is exactly one field: a different judge model is still a different ruler.
+    other = receipt(max_model_calls=None, model="deepseek/deepseek-v3")
+    assert _sha_or_none(_without_judge_ceiling(other)) != _sha_or_none(_without_judge_ceiling(unbounded))
 
 
 def test_reusing_a_run_directory_never_leaves_a_previous_baseline_beside_a_current_summary(
@@ -847,3 +900,90 @@ def test_the_terminal_summary_keeps_the_check_table_in_the_file_and_the_numbers_
     assert (printed["standalone_selection_score"], printed["gepa_seed_selection_score"]) == (0.412, 0.437)
     on_disk = json.loads((tmp_path / "run-1" / "run_summary.json").read_text(encoding="utf-8"))
     assert len(on_disk["baseline"]["population_checks"]) == 12
+
+
+def test_an_aborted_run_leaves_no_artifact_of_the_previous_one_in_the_directory(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The stale pair with no summary to reveal it.
+
+    A run that stops between the clear and the optimization — here on the corpus bound — must not leave a
+    fresh `readiness.json` sitting beside the last run's report and candidate. Every artifact of the
+    previous run goes first, so a half-finished directory is visibly half-finished.
+    """
+
+    first = _Legs(
+        readiness=_readiness(),
+        baseline=_baseline(),
+        optimization=_optimization(outcome="ADVANCE", reasons=[], candidate_sha256="7" * 64),
+    )
+    _install(monkeypatch, first)
+
+    def with_candidate(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+        result = first.on_optimize(args, settings, stable)
+        _write(Path(args.out) / "prompt_candidate.json", {"schema_version": "news_prompt_candidate_v1"})
+        return result
+
+    monkeypatch.setattr(
+        "tracefold.app.cli.commands.news_learning_experiment.handle_research",
+        with_candidate,
+    )
+    run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
+    run_root = tmp_path / "run-1"
+    assert (run_root / "optimization" / "prompt_candidate.json").exists()
+
+    second = _Legs(readiness=_readiness(), baseline=_baseline(), optimization=_optimization())
+    _install(monkeypatch, second)
+    with pytest.raises(ValueError, match="news_learning_run_baseline_budget_below_corpus"):
+        run_commands._handle_learning_run(
+            _run_args(tmp_path, max_baseline_model_cases=64), SimpleNamespace(), SimpleNamespace()
+        )
+
+    assert (run_root / "readiness.json").exists()
+    for cleared in ("run_summary.json", "baseline-compile-live.json"):
+        assert not (run_root / cleared).exists(), cleared
+    for cleared in ("optimization_report.json", "prompt_candidate.json"):
+        assert not (run_root / "optimization" / cleared).exists(), cleared
+
+
+def test_a_composed_handler_refusal_keeps_its_own_code_instead_of_a_dict_repr(monkeypatch: Any, tmp_path: Path) -> None:
+    """`baseline` answers an empty optimizer corpus with a code *and* its blocking reasons.
+
+    Stringifying that mapping put a Python dict repr where every other refusal in this plane puts a stable
+    code an operator can grep for.
+    """
+
+    legs = _Legs(readiness=_readiness(), baseline=_baseline(), optimization=_optimization())
+    _install(monkeypatch, legs)
+
+    def refuse(_args: Namespace, _settings: Any, _stable: Any) -> tuple[int, dict[str, Any]]:
+        return 2, {
+            "ok": False,
+            "error": {
+                "code": "news_program_baseline_dataset_has_no_optimizer_corpus",
+                "blocking_reasons": ["train_target_missing"],
+            },
+        }
+
+    monkeypatch.setattr(run_commands, "_handle_learning_baseline", refuse)
+
+    with pytest.raises(ValueError, match=r"^news_program_baseline_dataset_has_no_optimizer_corpus$"):
+        run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
+
+
+def test_an_out_path_naming_a_directory_that_does_not_exist_yet_is_written_not_refused(
+    tmp_path: Path,
+) -> None:
+    """`freeze --out DIR/development.json` runs before `run` creates `DIR`, and seals the corpus first.
+
+    A missing parent used to be an `OSError` — outside the `(ValueError, PermissionError, RuntimeError)`
+    the CLI translates — raised after the dataset was already persisted, so the operator lost the SHA to a
+    traceback with no way to recover it but to freeze again.
+    """
+
+    from tracefold.app.cli.commands.news_learning_documents import _write_json
+
+    target = tmp_path / "run-1" / "development.json"
+    _write_json(str(target), {"artifact_sha": "d" * 64})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"artifact_sha": "d" * 64}
