@@ -709,6 +709,169 @@ def test_delivery_terminal_error_code_distinguishes_unknown_from_known_failure(c
     assert failed["selection"]["stratum"] == "delivery_failed"
 
 
+def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> None:
+    newest = _open_event(
+        conn,
+        hit_id=112101,
+        title="Federal Reserve unexpectedly cuts its policy rate by 50 basis points",
+        relevance_overrides={"impact_breadth": "regional"},
+    )
+    ranked_legacy = _open_event(
+        conn,
+        delivered=False,
+        hit_id=112102,
+        title="Micron opens a new DRAM fabrication plant in Idaho",
+    )
+    oldest = _open_event(
+        conn,
+        hit_id=112103,
+        title="Brazil regulator approves a new US-listed airline route",
+        relevance_overrides={"impact_breadth": "regional"},
+    )
+    repos = repositories_for_connection(conn)
+    epoch_start = int(
+        conn.execute(
+            "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
+            (LEARNING_EPOCH,),
+        ).fetchone()["starts_at_ms"]
+    )
+    queue_now = epoch_start + 3_600_000
+    with repos.transaction():
+        conn.execute(
+            "UPDATE news_events SET opened_at_ms = CASE event_id "
+            "WHEN %s THEN %s WHEN %s THEN %s ELSE %s END WHERE event_id = ANY(%s)",
+            (
+                newest,
+                queue_now - 100,
+                ranked_legacy,
+                queue_now - 200,
+                queue_now - 3_600_000 + 30_000,
+                [newest, ranked_legacy, oldest],
+            ),
+        )
+        # Reproduce the old mixed-order failure: this row uses the legacy rank-0 delivery stratum while
+        # its neighbours use active Review-v4 relevance strata (which the retired rank table treated as 99).
+        conn.execute("UPDATE news_verdicts SET editorial = '{}'::jsonb WHERE event_id = %s", (ranked_legacy,))
+        assert (
+            repos.news.begin_delivery(event_id=ranked_legacy, kind="first", card={}, now_ms=queue_now - 1_000) == "new"
+        )
+        assert repos.news.settle_delivery(
+            event_id=ranked_legacy,
+            kind="first",
+            state="terminal",
+            receipt=None,
+            error_code="ambiguous_after_crash",
+            now_ms=queue_now,
+        )
+
+    query = DeskQuery(cohort=ACTIVE_BUNDLE, status="all", hours=1, limit=2)
+    first = ReviewDesk(conn, now_ms=queue_now).open(query, principal=PRINCIPAL)
+    second = ReviewDesk(conn, now_ms=queue_now + 60_000).open(
+        query.model_copy(update={"cursor": first["next_cursor"]}), principal=PRINCIPAL
+    )
+    tasks = [*first["tasks"], *second["tasks"]]
+
+    assert [task["event_id"] for task in tasks] == [newest, ranked_legacy, oldest]
+    assert len({task["task_id"] for task in tasks}) == 3
+
+    task_by_event = {task["event_id"]: task for task in tasks}
+    accepted_task = task_by_event[newest]
+    with repos.transaction():
+        ReviewDesk(conn, now_ms=queue_now).submit(
+            TaskRef(task_id=accepted_task["task_id"], task_version=accepted_task["task_version"]),
+            _rubric(),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    pending_query = query.model_copy(update={"status": "pending", "limit": 1})
+    pending_first = ReviewDesk(conn, now_ms=queue_now).open(pending_query, principal=PRINCIPAL)
+    pending_second = ReviewDesk(conn, now_ms=queue_now + 60_000).open(
+        pending_query.model_copy(update={"cursor": pending_first["next_cursor"]}), principal=PRINCIPAL
+    )
+    assert [task["event_id"] for task in [*pending_first["tasks"], *pending_second["tasks"]]] == [
+        ranked_legacy,
+        oldest,
+    ]
+    accepted = ReviewDesk(conn, now_ms=queue_now).open(
+        query.model_copy(update={"status": "accepted", "limit": 1}), principal=PRINCIPAL
+    )
+    assert [task["event_id"] for task in accepted["tasks"]] == [newest]
+
+
+def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(conn) -> None:
+    # A temporary view shadows the production projection for this connection while retaining the exact SQL
+    # seam ReviewDesk queries. Every 40th row is the requested 100%-sampled stratum, so the first 2,000 raw
+    # rows contain only 50 eligible tasks and cannot establish queue exhaustion.
+    conn.execute(
+        f"""
+        CREATE TEMP VIEW news_review_task_source_v1 AS
+        SELECT lpad(to_hex(i), 64, '0') AS event_id,
+               1 AS evidence_version,
+               repeat('e', 64) AS evidence_sha256,
+               true AS evidence_release_eligible,
+               jsonb_build_object('card', '{{}}'::jsonb, 'focus_fact', '{{}}'::jsonb) AS evidence_snapshot,
+               {NOW} - i AS opened_at_ms,
+               'candidate'::text AS admission,
+               'normal'::text AS queue_priority,
+               lpad(to_hex(i), 64, '0') AS storyline_key,
+               'live'::text AS ingest_mode,
+               {NOW} - i AS verdict_created_at_ms,
+               1 AS verdict_evidence_version,
+               'drop'::text AS final_decision,
+               false AS degraded,
+               NULL::text AS verdict_error_code,
+               NULL::text AS override_rule,
+               NULL::text AS throttled_by,
+               jsonb_build_object('headline_zh', i::text, 'why_zh', 'x', 'scope', 'macro') AS verdict,
+               jsonb_build_object('agent_assignment', jsonb_build_object('bundle_sha', '{ACTIVE_BUNDLE}')) AS trace,
+               ''::text AS prompt_version,
+               'news_triage_policy_v10'::text AS policy_version,
+               'model'::text AS model,
+               NULL::text AS delivery_state,
+               NULL::jsonb AS delivery_card,
+               NULL::bigint AS settled_at_ms,
+               NULL::text AS delivery_error_code,
+               NULL::integer AS max_abs_return_1h_bps,
+               'news_semantic_program_v5'::text AS program_version,
+               repeat('b', 64) AS program_sha256,
+               jsonb_build_object(
+                   'editorial_origin', 'model',
+                   'relevance', CASE WHEN i % 40 = 0 THEN
+                       jsonb_build_object(
+                           'impact_breadth', 'regional',
+                           'tradability', 'direct',
+                           'reader_value', 'realtime'
+                       )
+                   ELSE
+                       jsonb_build_object(
+                           'impact_breadth', 'global_systemic',
+                           'tradability', 'direct',
+                           'reader_value', 'escalate'
+                       )
+                   END
+               ) AS editorial,
+               repeat('c', 64) AS scored_judgment_sha256,
+               repeat('d', 64) AS runtime_manifest_sha
+          FROM generate_series(1, 5000) AS series(i)
+        """
+    )
+
+    queue = ReviewDesk(conn, now_ms=NOW).open(
+        DeskQuery(
+            cohort=ACTIVE_BUNDLE,
+            stratum="regional_direct_exception",
+            status="all",
+            hours=1,
+            limit=100,
+        ),
+        principal=PRINCIPAL,
+    )
+
+    assert len(queue["tasks"]) == 100
+    assert queue["next_cursor"]
+
+
 def test_external_miss_appends_snapshot_and_accepted_judgment_atomically(conn) -> None:
     epoch_start = int(
         conn.execute(

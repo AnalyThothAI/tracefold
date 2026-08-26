@@ -278,6 +278,9 @@ def build_draft_batch(
 ) -> ReviewDraftBatch:
     """Draft one review per task. Each task carries the three rendered inputs plus its identity."""
 
+    task_ids = [str(task["task_id"]) for task in tasks]
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("news_review_drafter_duplicate_task")
     drafts: list[DraftedReview] = []
     for task in tasks:
         outcome = drafter.draft(

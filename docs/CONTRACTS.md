@@ -767,7 +767,12 @@ reader/writer.
 - `GET /api/news/review` is the ReviewDesk read surface. Query fields are
   `view=queue|coverage|proposals|market`, `mode=event|pairwise`, exact
   `cohort`, `stratum`, `event`, `status`, `hours`, `limit`, and opaque
-  `cursor`. Queue tasks are deterministic and carry `task_id` plus an ETag-like
+  `cursor`. Event queue pages are newest-first by the durable
+  `(opened_at_ms, event_id)` tuple after deterministic sampling and filtering;
+  the opaque cursor pins the first page's upper time bound, so later pages read
+  the same closed window even when wall time advances. Sparse strata are scanned
+  until a full page plus look-ahead is found or the source is truly exhausted.
+  Queue tasks are deterministic and carry `task_id` plus an ETag-like
   `task_version`; coverage separates received, replayable, reviewed, accepted,
   external-miss and holdout-ready counts. `view=market` is explicitly
   non-causal, defaults to the latest homogeneous
@@ -1142,7 +1147,9 @@ the run's own fixed order, one ReviewDesk query per Event, and reports
 `requested_events` beside `tasks` so an Event whose desk task has been
 superseded is visible rather than read as judged. Without it the command keeps
 its queue-by-hours form, which is how a first corpus is grown before any run
-exists.
+exists. A batch refuses duplicate task identities before its first model call
+and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore
+consume at most one drafting call.
 
 `news learning readiness --development SHA [--out FILE]` explains one frozen
 development dataset before anyone spends a provider call on it: it re-projects

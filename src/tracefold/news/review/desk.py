@@ -785,41 +785,56 @@ class ReviewDesk:
             single_tasks = [] if task is None else [_task_public(task, accepted=self._latest_accepted(task))]
             return self._queue_response(query, single_tasks, next_cursor=None)
 
-        lower = self._now_ms - int(query.hours) * 3_600_000
         cohort_sha = _parse_agent_cohort_sha(query.cohort) if query.cohort else self._active_agent_cohort_sha()
         if cohort_sha is None:
             return self._queue_response(query, [], next_cursor=None)
-        cursor = _decode_cursor(query.cursor) if query.cursor else None
-        statement = _event_queue_statement(
-            lower_ms=lower,
-            upper_ms=self._now_ms,
-            cohort_sha=cohort_sha,
-            cursor=cursor,
-            limit=min(2_000, query.limit * 50 + 100),
-        )
-        rows = self._conn.execute(statement.sql, statement.params).fetchall()
-        accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
-        ranked_tasks: list[tuple[int, _VirtualTask, dict[str, Any] | None]] = []
-        for row in rows:
-            task = _virtual_task(row)
-            if not _sampler_selected(task):
-                continue
-            accepted = accepted_by_task.get((task.task_id, task.task_version))
-            stratum = str(task.selection["stratum"])
-            if query.stratum and stratum != query.stratum:
-                continue
-            if query.status == "pending" and accepted is not None:
-                continue
-            if query.status == "accepted" and accepted is None:
-                continue
-            ranked_tasks.append((_stratum_rank(stratum), task, accepted))
-        ranked_tasks.sort(key=lambda item: (item[0], -int(item[1].row["opened_at_ms"]), item[1].task_id))
-        page = ranked_tasks[: query.limit]
-        public = [_task_public(task, accepted=accepted) for _, task, accepted in page]
+        decoded = _decode_cursor(query.cursor) if query.cursor else None
+        if decoded is None:
+            upper_ms, raw_cursor = self._now_ms, None
+        else:
+            upper_ms, cursor_opened_at_ms, cursor_event_id = decoded
+            raw_cursor = (cursor_opened_at_ms, cursor_event_id)
+        lower_ms = upper_ms - int(query.hours) * 3_600_000
+        eligible: list[tuple[_VirtualTask, dict[str, Any] | None]] = []
+        raw_limit = min(2_000, query.limit * 50 + 100)
+        # Selection can be as sparse as 2%. One raw prefix therefore cannot prove that a task page is
+        # exhausted. Scan bounded, durable-time chunks until there is one item of look-ahead or the closed
+        # window is actually exhausted. The returned order and the cursor now use the same relation.
+        while len(eligible) <= query.limit:
+            statement = _event_queue_statement(
+                lower_ms=lower_ms,
+                upper_ms=upper_ms,
+                cohort_sha=cohort_sha,
+                cursor=raw_cursor,
+                limit=raw_limit,
+            )
+            rows = self._conn.execute(statement.sql, statement.params).fetchall()
+            if not rows:
+                break
+            accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
+            for row in rows:
+                task = _virtual_task(row)
+                if not _sampler_selected(task):
+                    continue
+                accepted = accepted_by_task.get((task.task_id, task.task_version))
+                stratum = str(task.selection["stratum"])
+                if query.stratum and stratum != query.stratum:
+                    continue
+                if query.status == "pending" and accepted is not None:
+                    continue
+                if query.status == "accepted" and accepted is None:
+                    continue
+                eligible.append((task, accepted))
+            if len(rows) < raw_limit:
+                break
+            last_raw = rows[-1]
+            raw_cursor = (int(last_raw["opened_at_ms"]), str(last_raw["event_id"]))
+        page = eligible[: query.limit]
+        public = [_task_public(task, accepted=accepted) for task, accepted in page]
         next_cursor = None
-        if len(ranked_tasks) > query.limit and page:
-            last = page[-1][1].row
-            next_cursor = _encode_cursor(int(last["opened_at_ms"]), str(last["event_id"]))
+        if len(eligible) > query.limit and page:
+            last = page[-1][0].row
+            next_cursor = _encode_cursor(upper_ms, int(last["opened_at_ms"]), str(last["event_id"]))
         return self._queue_response(query, public, next_cursor=next_cursor)
 
     def _open_pairwise_queue(self, query: DeskQuery) -> dict[str, Any]:
@@ -2269,18 +2284,21 @@ def _parse_pairwise_task_id(task_id: str) -> tuple[str, str]:
     return parts[1], parts[2]
 
 
-def _encode_cursor(opened_at_ms: int, event_id: str) -> str:
-    raw = json.dumps([int(opened_at_ms), event_id], separators=(",", ":")).encode()
+def _encode_cursor(upper_ms: int, opened_at_ms: int, event_id: str) -> str:
+    raw = json.dumps([int(upper_ms), int(opened_at_ms), event_id], separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> tuple[int, str]:
+def _decode_cursor(cursor: str) -> tuple[int, int, str]:
     try:
         raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
         value = json.loads(raw)
-        if not isinstance(value, list) or len(value) != 2:
+        if not isinstance(value, list) or len(value) != 3:
             raise ValueError
-        return int(value[0]), str(value[1])
+        upper_ms, opened_at_ms, event_id = int(value[0]), int(value[1]), str(value[2])
+        if upper_ms < 0 or opened_at_ms < 0 or not event_id:
+            raise ValueError
+        return upper_ms, opened_at_ms, event_id
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError("news_review_cursor_invalid") from exc
 
@@ -2335,21 +2353,6 @@ def _wilson(successes: int, total: int) -> dict[str, float] | None:
         "lower_pct": round(max(0.0, centre - margin) * 100, 1),
         "upper_pct": round(min(1.0, centre + margin) * 100, 1),
     }
-
-
-def _stratum_rank(value: str) -> int:
-    order = {
-        "delivery_ambiguous": 0,
-        "delivery_failed": 1,
-        "critical": 2,
-        "throttled": 3,
-        "gate_suppress": 4,
-        "model_drop": 5,
-        "delivered": 6,
-        "high_reaction": 7,
-        "random_control": 8,
-    }
-    return order.get(value, 99)
 
 
 def _sampler_selected(task: _VirtualTask) -> bool:
