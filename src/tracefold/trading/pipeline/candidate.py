@@ -85,6 +85,7 @@ from .runtime import (
 from .runtime import (
     InstrumentProjectionReader as _InstrumentProjectionReader,
 )
+from .runtime import cutoff_history_start_ms as _cutoff_history_start_ms
 from .runtime import (
     now_ms as _now_ms,
 )
@@ -551,7 +552,10 @@ class CandidateRunner:
         fetcher = self._bars(instrument.exchange_id)
         if fetcher is None:
             return []
-        start = anchor_at_ms - self._config.regime.lookback_ms - _BAR_INTERVAL_MS
+        start = _cutoff_history_start_ms(
+            anchor_at_ms=anchor_at_ms,
+            lookback_ms=self._config.regime.lookback_ms,
+        )
         try:
             bars = await observe_provider_call(
                 self._telemetry,

@@ -44,6 +44,7 @@ from .runtime import (
     InstrumentProjectionReader,
     TradingConfig,
     TradingDatabasePort,
+    cutoff_history_start_ms,
 )
 
 log = logging.getLogger("tracefold.trading")
@@ -369,7 +370,10 @@ class LiquidationShadowRunner:
         fetcher = self._bars(instrument.exchange_id)
         if fetcher is None:
             return []
-        start = anchor_at_ms - self._config.regime.lookback_ms - BAR_INTERVAL_MS
+        start = cutoff_history_start_ms(
+            anchor_at_ms=anchor_at_ms,
+            lookback_ms=self._config.regime.lookback_ms,
+        )
         try:
             bars = await observe_provider_call(
                 self._telemetry,

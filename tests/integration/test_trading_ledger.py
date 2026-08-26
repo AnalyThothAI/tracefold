@@ -61,8 +61,9 @@ from tracefold.trading.decision.regime import RegimePolicy, assess
 from tracefold.trading.execution.order import OrderPolicy
 from tracefold.trading.execution.paper import PaperAdapter, PaperFaults
 from tracefold.trading.pipeline.candidate import CandidateRunner
+from tracefold.trading.pipeline.liquidation_shadow import LiquidationShadowRunner
 from tracefold.trading.pipeline.reconcile import ReconcileRunner
-from tracefold.trading.pipeline.runtime import TradingConfig
+from tracefold.trading.pipeline.runtime import BAR_INTERVAL_MS, TradingConfig
 from tracefold.trading.strategy.root import strategies
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
@@ -558,6 +559,22 @@ def _regime_bars(now: int) -> tuple[Bar, ...]:
         close_at = open_at + 300_000
         out.append(Bar(open_at_ms=open_at, close_at_ms=close_at, close=Decimal("100" if index < 9 else "102")))
     return tuple(out)
+
+
+def _provider_cutoff_bars(trigger: int, lookback: int) -> tuple[Bar, ...]:
+    """Epoch-aligned bars with a +200 bps move across the requested lookback."""
+
+    target = trigger - lookback
+    first_open = (target // BAR_INTERVAL_MS - 1) * BAR_INTERVAL_MS
+    last_open = (trigger // BAR_INTERVAL_MS - 1) * BAR_INTERVAL_MS
+    return tuple(
+        Bar(
+            open_at_ms=open_at,
+            close_at_ms=open_at + BAR_INTERVAL_MS,
+            close=Decimal("100" if open_at == first_open else "102"),
+        )
+        for open_at in range(first_open, last_open + 1, BAR_INTERVAL_MS)
+    )
 
 
 class _LiveDecisionProgram:
@@ -1102,6 +1119,111 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert order["must_close_at_ms"] is None
     assert int(order["provider_attempt_count"]) == 1
     assert adapter.attempts == 1
+
+
+def test_an_unaligned_trigger_fetches_the_closed_bar_before_the_lookback_cutoff(conn) -> None:
+    """Binance filters ``startTime`` by candle open, while the regime selects by candle close."""
+
+    now = NOW
+    trigger = now - MINUTE
+    lookback = _config().regime.lookback_ms
+    provider_bars = _provider_cutoff_bars(trigger, lookback)
+    requests: list[tuple[int, int]] = []
+
+    async def binance_start_time_filter(_symbol: str, start_ms: int, end_ms: int) -> tuple[Bar, ...]:
+        requests.append((start_ms, end_ms))
+        return tuple(bar for bar in provider_bars if start_ms <= bar.open_at_ms <= end_ms)
+
+    _seed_oi_event(conn, event_id="unaligned", symbol="DOGE", observed_at_ms=trigger)
+    runner = CandidateRunner(
+        db=_DirectDb(conn),
+        config=_config(),
+        bars=lambda _venue: binance_start_time_filter,
+        adapter=PaperAdapter(),
+        candidate_projection=news_trade_candidates,
+        instrument_projection=news_trade_instruments,
+        program=None,
+        clock=lambda: now,
+    )
+
+    report = asyncio.run(runner.turn())
+
+    assert requests[0][0] <= provider_bars[0].open_at_ms
+    assert report["created"] == 1, report
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 1
+
+
+def test_liquidation_shadow_fetches_the_closed_bar_before_an_unaligned_lookback_cutoff(conn) -> None:
+    config = _config()
+    received = NOW + MINUTE
+    provider_bars = _provider_cutoff_bars(received, config.regime.lookback_ms)
+    requests: list[tuple[int, int]] = []
+
+    async def binance_start_time_filter(_symbol: str, start_ms: int, end_ms: int) -> tuple[Bar, ...]:
+        requests.append((start_ms, end_ms))
+        return tuple(bar for bar in provider_bars if start_ms <= bar.open_at_ms <= end_ms)
+
+    runner = LiquidationShadowRunner(
+        db=_DirectDb(conn),
+        config=config,
+        bars=lambda _venue: binance_start_time_filter,
+        instrument_projection=lambda _repos, _base, _venues: (
+            {
+                "venue": "binance.perp",
+                "venue_symbol": "DOGEUSDT",
+                "base_symbol": "DOGE",
+                "instrument_class": "crypto",
+                "quote_asset": "USDT",
+                "status": "trading",
+                "last_seen_ms": received,
+            },
+        ),
+        strategies=strategies(),
+        telemetry=None,
+        clock=lambda: NOW + 2 * MINUTE,
+    )
+    state: dict[str, Any] = {
+        "blacklist": Blacklist.from_rows([]),
+        "liquidation_rows": [],
+        "evaluated_liquidation_identities": set(),
+    }
+    asyncio.run(runner.turn(state, funnel=Funnel(), now=NOW))
+    state["liquidation_rows"] = [
+        {
+            "source_key": "a" * 64,
+            "item_id": "liquidation-item",
+            "fact_id": "liquidation-fact",
+            "symbol": "DOGE",
+            "venue": "binance",
+            "liquidated_position_side": "short",
+            "forced_order_side": "buy",
+            "notional_usd": Decimal("750000"),
+            "quantity": None,
+            "price": Decimal("0.12"),
+            "event_at_ms": received - 1_000,
+            "received_at_ms": received,
+            "parser_version": "liquidation_parser_v1",
+            "provider_record_identity": "liquidation-key",
+            "symbol_contract_identity": "unresolved:binance:DOGE",
+            "position_side_semantics": "short=>forced_buy;long=>forced_sell",
+            "quantity_semantics": "not_provided",
+            "notional_semantics": "provider_reported_usd_notional",
+            "price_semantics": "provider_reported_unspecified_price",
+            "completeness_assumption": "selected_events_without_heartbeat",
+            "throttle_assumption": "provider_throttle_unknown",
+            "source_contract_version": "opennews_liquidation_source_v1",
+            "source_contract_complete": False,
+            "ingest_mode": "live",
+        }
+    ]
+
+    evaluated, completed = asyncio.run(runner.turn(state, funnel=Funnel(), now=NOW + 2 * MINUTE))
+    rows = conn.execute("SELECT manifest FROM trading_strategy_evaluations ORDER BY strategy_id").fetchall()
+
+    assert requests[0][0] <= provider_bars[0].open_at_ms
+    assert (evaluated, completed) == (2, 0)
+    assert len(rows) == 2
+    assert {row["manifest"]["contexts"]["market"]["pre_move_bps"] for row in rows} == {200}
 
 
 def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_orders(conn) -> None:
