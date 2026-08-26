@@ -103,6 +103,17 @@ def test_one_failed_event_does_not_end_the_batch() -> None:
     assert all(entry.draft.should_push == "uncertain" for entry in batch.drafts)
 
 
+def test_duplicate_task_fails_before_any_model_call() -> None:
+    lm = _ScriptedDrafterLM()
+    tasks = _tasks(2)
+    tasks.append(dict(tasks[0]))
+
+    with pytest.raises(ValueError, match="news_review_drafter_duplicate_task"):
+        build_draft_batch(ReviewDrafter(lm), tasks)
+
+    assert lm.calls == 0
+
+
 def test_batch_names_the_drafter_and_disclaims_authority() -> None:
     batch = build_draft_batch(ReviewDrafter(_ScriptedDrafterLM()), _tasks(2))
     assert batch.drafter["drafter_id"] == DRAFTER_ID

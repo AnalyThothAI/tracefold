@@ -565,6 +565,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             # than leaving the reader to assume `--hours`.
             "lookback_hours": hours,
             "drafted": len(drafted),
+            "unique_tasks": len({entry.task_id for entry in batch.drafts}),
             "with_gold": len(with_gold),
             "failed": len(batch.drafts) - len(drafted),
             "note": "proposals only - a human must accept each one through `tracefold news review submit`",
