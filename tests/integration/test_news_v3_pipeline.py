@@ -1377,12 +1377,13 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
 
 def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query(conn) -> None:
     repos = repositories_for_connection(conn)
+    sentinel = "direction-channel-filter-sentinel"
     bullish_id, bearish_oi_id = _admit_test_events(
         conn,
         hit_base=1_795_200,
         titles=(
-            "Semiconductor orders accelerate after a capacity expansion",
-            "Leveraged open interest unwinds across crypto perpetuals",
+            f"{sentinel} semiconductor orders accelerate after a capacity expansion",
+            f"{sentinel} leveraged open interest unwinds across crypto perpetuals",
         ),
         hour=11,
     )
@@ -1406,7 +1407,9 @@ def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query
             admission=None,
             decision=None,
             symbol=None,
-            q=None,
+            # The integration database is intentionally shared across this module. Scope the assertion to
+            # this test's Events so unrelated, valid verdicts cannot make an exact-set assertion flaky.
+            q=sentinel,
             limit=10,
             cursor=None,
             **filters,
