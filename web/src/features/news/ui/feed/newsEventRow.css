@@ -1,36 +1,21 @@
 @layer app.features {
-  /*
-   * `54 / 1fr / 150 / 140` with a 3px rail. Two grounds and nothing else: white at rest, `#f8f9fb` under
-   * the pointer. Selection tints with the accent wash, which is the only place the pipeline's own colour
-   * lands on a whole row.
-   *
-   * The last column is the Event Reaction (#207 PR-W1). It sits outside the conclusion column on purpose:
-   * the pipeline's verdict and what the market did are two different claims, and stacking them in one
-   * column would read as one.
-   */
   .news-event-row {
     --rail: var(--border-strong);
 
     position: relative;
     display: grid;
     grid-template-areas:
-      "time main badge move"
-      "time main reason move";
-    grid-template-columns: 54px minmax(0, 1fr) 150px 140px;
+      "time main badge"
+      "time main reason";
+    grid-template-columns: 54px minmax(0, 1fr) 150px;
     grid-template-rows: auto 1fr;
     gap: 3px 14px;
     align-items: start;
-    padding: 9px 14px 10px;
+    min-height: 82px;
+    padding: 11px 14px;
     border-bottom: 1px solid var(--border-faint);
     border-left: 3px solid var(--rail);
     background: var(--surface-panel);
-  }
-
-  .news-event-row[data-selectable] {
-    grid-template-areas:
-      "select time main badge move"
-      "select time main reason move";
-    grid-template-columns: 18px 54px minmax(0, 1fr) 150px 140px;
   }
 
   .news-event-row:last-child {
@@ -45,10 +30,6 @@
     --rail: var(--dir-bearish);
   }
 
-  /*
-   * A held Event keeps its direction rail at 45%: the call it carried still reads, but the row does not
-   * compete with the ones that got somewhere. Roughly three quarters of a day's Events are held.
-   */
   .news-event-row[data-outcome-group="held"] {
     --rail: var(--border-subtle);
   }
@@ -65,11 +46,6 @@
     background: var(--surface-hover);
   }
 
-  .news-event-row[data-selected] {
-    background: var(--accent-soft);
-  }
-
-  /* A new Event landing at the top while the reader is already there: it arrives, and says so once. */
   @media (prefers-reduced-motion: no-preference) {
     .news-event-row[data-fresh] {
       animation:
@@ -82,7 +58,7 @@
     grid-area: time;
     padding-top: 1px;
     color: var(--text-secondary);
-    font: 500 var(--font-size-mono-meta)/1.6 var(--font-mono);
+    font: 500 var(--font-size-meta) / 1.6 var(--font-mono);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -96,7 +72,7 @@
 
   .news-event-headline {
     margin: 0;
-    font: var(--type-item-title);
+    font: 640 var(--font-size-body) / 1.42 var(--font-sans);
     letter-spacing: -0.006em;
   }
 
@@ -110,10 +86,6 @@
     -webkit-line-clamp: 2;
   }
 
-  /*
-   * The link stretches over the row so the whole thing opens the Event while staying one accessible name.
-   * Everything else interactive in the row has to be lifted above it.
-   */
   .news-event-headline a::after {
     position: absolute;
     inset: 0;
@@ -125,7 +97,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
+    font-size: var(--font-size-meta);
     line-height: 1.45;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
@@ -138,13 +110,13 @@
     align-items: center;
     margin: 0;
     min-width: 0;
-    font-size: var(--font-size-mono-meta);
+    font-size: var(--font-size-meta);
     line-height: 1.4;
   }
 
   .news-event-origin {
     color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    font: 500 var(--font-size-mono-meta) / 1.5 var(--font-mono);
   }
 
   .news-event-divider {
@@ -156,130 +128,41 @@
     font-weight: 600;
   }
 
-  /*
-   * The asset chips became links in #207 PR-W1, which puts them under the headline's stretched `::after`
-   * unless they are lifted the same way the row controls are. Without this the chip renders as a link,
-   * passes every DOM test, and does nothing when clicked — the row's overlay swallows it and opens the
-   * Event instead.
-   */
+  .news-event-row .news-direction {
+    padding: 0 5px;
+    border-radius: var(--radius-xs);
+    font-size: var(--font-size-mono-meta);
+    font-weight: 620;
+  }
+
+  .news-event-row .news-direction[data-dir="bullish"] {
+    background: var(--dir-bullish-soft);
+  }
+
+  .news-event-row .news-direction[data-dir="bearish"] {
+    background: var(--dir-bearish-soft);
+  }
+
+  .news-event-row .news-direction[data-dir="flat"] {
+    background: var(--signal-neutral-soft);
+  }
+
+  .news-event-row .news-outcome {
+    font-size: var(--font-size-meta);
+    font-weight: 640;
+  }
+
   .news-event-meta .news-asset-chips {
     position: relative;
     z-index: 1;
   }
 
-  /* ------------------------------------------------------------------ row controls (pointer widths only) */
-  .news-event-select,
-  .news-event-expand {
-    position: relative;
-    z-index: 1;
-    display: grid;
-    place-items: center;
-    border: 0;
-    background: transparent;
-    transition: opacity 120ms ease;
-  }
-
-  .news-event-select {
-    grid-area: select;
-    width: 15px;
-    height: 15px;
-    margin-top: 3px;
-    border-radius: var(--radius-xs);
-    background: var(--surface-panel);
-    box-shadow: inset 0 0 0 1px var(--border-strong);
-    opacity: 0.25;
-  }
-
-  .news-event-select svg {
-    width: 9px;
-    height: 9px;
-    color: var(--primary-foreground);
-    opacity: 0;
-    stroke-width: 3.4;
-  }
-
-  .news-event-row:hover .news-event-select,
-  .news-event-select:focus-visible {
-    opacity: 1;
-  }
-
-  .news-event-row[data-selected] .news-event-select {
-    background: var(--accent-primary);
-    box-shadow: inset 0 0 0 1px var(--accent-primary);
-    opacity: 1;
-  }
-
-  .news-event-row[data-selected] .news-event-select svg {
-    opacity: 1;
-  }
-
-  .news-event-expand {
-    width: 16px;
-    height: 16px;
-    margin-left: auto;
-    border-radius: var(--radius-xs);
-    color: var(--text-faint);
-    opacity: 0;
-  }
-
-  .news-event-row:hover .news-event-expand,
-  .news-event-row[data-expanded] .news-event-expand,
-  .news-event-expand:focus-visible {
-    opacity: 1;
-  }
-
-  .news-event-expand svg {
-    width: 12px;
-    height: 12px;
-    transition: transform 140ms ease;
-  }
-
-  .news-event-row[data-expanded] .news-event-expand svg {
-    transform: rotate(90deg);
-  }
-
-  /* ------------------------------------------------------------------ inline verdict (proposal ②) */
-  .news-event-verdict {
-    position: relative;
-    z-index: 1;
-    display: grid;
-    gap: 8px;
-    margin-top: 5px;
-    padding: 10px 12px 11px;
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-  }
-
-  .news-event-why {
-    margin: 0;
-    color: var(--text-primary);
-    font-size: var(--font-size-meta);
-    line-height: 1.55;
-    text-wrap: pretty;
-  }
-
-  /* ------------------------------------------------------------------ outcome column */
   .news-event-badge {
     display: inline-flex;
     grid-area: badge;
     justify-content: flex-end;
     min-width: 0;
     padding-top: 1px;
-  }
-
-  /*
-   * The fixed post-Event measurement, anchored at publication (#88). Never a current price: a figure that
-   * ticks beside a decision invites reading the decision as a trade call, and a horizon that has not
-   * matured says 未到期 rather than 0.00%.
-   */
-  .news-event-move {
-    display: flex;
-    grid-area: move;
-    gap: 10px;
-    justify-content: flex-end;
-    align-items: baseline;
-    align-self: center;
-    min-width: 0;
   }
 
   .news-event-reason {
@@ -290,71 +173,33 @@
     font-size: var(--font-size-mono-meta);
     line-height: 1.45;
     text-align: right;
+    text-wrap: pretty;
   }
 
-  /*
-   * Phone: one card per Event, time and conclusion on the first line, then the headline. No row controls —
-   * a hover-only target means nothing under a thumb, and bulk labelling is not a phone task.
-   */
   @media (max-width: 767px) {
-    .news-event-row,
-    .news-event-row[data-selectable] {
+    .news-event-row {
       grid-template-areas:
         "time badge"
         "main main"
-        "reason reason"
-        "move move";
-      grid-template-columns: auto minmax(0, 1fr);
-      grid-template-rows: none;
-      gap: 6px 8px;
-      padding: 11px 12px 12px;
-      border-bottom: 0;
-      border-radius: var(--radius-lg);
+        "reason reason";
+      grid-template-columns: minmax(0, 1fr) auto;
+      min-height: 0;
+      padding: 10px 11px 11px;
+      border: 0;
+      border-radius: var(--radius-md);
       box-shadow: var(--ring-panel);
     }
 
-    .news-event-select,
-    .news-event-expand {
-      display: none;
-    }
-
-    .news-event-time {
-      padding-top: 0;
-    }
-
     .news-event-badge {
-      justify-content: flex-start;
-      padding-top: 0;
+      justify-self: end;
     }
 
-    .news-event-headline {
-      font-size: var(--font-size-item-title);
-    }
-
-    .news-event-headline a {
-      -webkit-line-clamp: 3;
-    }
-
-    /* The wire line is a desktop luxury: on a card it competes with the headline it duplicates. */
-    .news-event-original {
+    .news-event-row[data-outcome-group="held"] .news-event-badge {
       display: none;
-    }
-
-    .news-event-meta {
-      font-size: var(--font-size-mono-meta);
     }
 
     .news-event-reason {
       text-align: left;
-    }
-
-    .news-event-move {
-      justify-content: flex-start;
-    }
-
-    /* Three quarters of a day's Events are held; a grey capsule on each of those cards is noise. */
-    .news-event-row[data-outcome-group="held"] .news-event-badge {
-      display: none;
     }
   }
 }

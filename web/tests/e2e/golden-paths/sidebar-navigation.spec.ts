@@ -6,16 +6,9 @@ import {
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
 /**
- * The sidebar is part of the frame from 1280px up (#82) and the drawer the topbar trigger opens below that
- * (#70). Both widths reach the same four destinations, and both read one navigation model.
+ * The sidebar is fixed in the frame from 1280px up; below that, the topbar trigger opens the same navigation
+ * in a drawer. Both widths reach the same four destinations from one model.
  */
-async function openSidebar(page: Page) {
-  await page.getByRole("button", { name: "切换侧栏" }).click();
-  const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-  await expect(primaryNavigation).toBeVisible();
-  return primaryNavigation;
-}
-
 async function expectSidebarRouteChange(page: Page, routeName: string, expectedPath: string) {
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(primaryNavigation).toBeVisible();
@@ -30,9 +23,7 @@ test.describe("desktop sidebar navigation", () => {
     test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
   });
 
-  test("keeps all four destinations in the desktop frame and folds away on demand", async ({
-    page,
-  }) => {
+  test("keeps all four destinations in the fixed desktop frame", async ({ page }) => {
     await installMockApi(page);
     await page.goto("/");
 
@@ -56,15 +47,7 @@ test.describe("desktop sidebar navigation", () => {
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
-    // The trigger still folds it away when the reader wants the whole column.
-    await page.getByRole("button", { name: "切换侧栏" }).click();
-    await expect(sidebarRoot).toHaveCount(0);
-    await expect
-      .poll(async () => (await page.locator(".center-column").boundingBox())?.x ?? 999)
-      .toBeLessThanOrEqual(1);
-
-    await openSidebar(page);
-    await expect(sidebarRoot).toBeVisible();
+    await expect(page.getByRole("button", { name: "切换侧栏" })).toHaveCount(0);
 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoUnhandledApiRequests(page);

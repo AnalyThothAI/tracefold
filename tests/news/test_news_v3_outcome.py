@@ -328,6 +328,7 @@ def _status_inputs(**over: object) -> dict[str, object]:
             },
         },
         "pipeline": {
+            "admitted_24h": 150,
             "events_1h": 10,
             "events_24h": 200,
             "candidates_24h": 150,
@@ -372,6 +373,8 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     }
     assert out["funnel_24h"] == {
         "received": 200,
+        "parsed": 200,
+        "admitted": 150,
         "candidates": 150,
         "triaged": 150,
         # #87: how many of the same Events named an asset that exists on a venue. It sits between "sent to
@@ -390,6 +393,22 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     assert all(r["label_zh"] for r in reasons)
     # The provider tag is its own label — inventing the English word it collided with would be a guess.
     assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 38} in reasons
+
+
+def test_status_funnel_prefers_the_single_event_cohort_over_throughput_ledgers() -> None:
+    inputs = _status_inputs()
+    inputs["pipeline"] = {
+        **inputs["pipeline"],
+        "funnel_received_24h": 12,
+        "funnel_parsed_24h": 12,
+        "funnel_admitted_24h": 9,
+        "funnel_triaged_24h": 8,
+        "funnel_delivered_24h": 3,
+    }
+    out = status_health(**inputs)  # type: ignore[arg-type]
+    assert {
+        stage: out["funnel_24h"][stage] for stage in ("received", "parsed", "admitted", "triaged", "delivered")
+    } == {"received": 12, "parsed": 12, "admitted": 9, "triaged": 8, "delivered": 3}
 
 
 def test_status_health_thresholds_turn_amber_and_red() -> None:

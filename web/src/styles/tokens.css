@@ -6,8 +6,8 @@
  * The product is a Chinese-language reading surface: a headline, one why sentence, a few chips. Han glyphs
  * carry far more strokes per em than Latin, and light-on-dark blooms them at the small sizes this console
  * uses, so the ground is a cool light grey and the ink is near-black. A panel separates from the canvas by a
- * 1px inset ring, never by lightening and never by a drop shadow — elevation is reserved for the three
- * things that actually float (segmented pill, drawer, hover card).
+ * 1px inset ring, never by lightening and never by a drop shadow — elevation is reserved for the four
+ * things that actually float (segmented pill, drawer, pipeline-health popover, time menu).
  *
  * Colour carries exactly two axes and they never share a hue:
  *

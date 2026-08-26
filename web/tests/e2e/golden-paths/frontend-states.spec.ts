@@ -46,6 +46,10 @@ for (const state of states) {
     await expect(page).toHaveScreenshot(`state-${state.name}.png`, {
       animations: "disabled",
       caret: "hide",
+      // Chromium can rasterize the tabular toolbar counts by a few anti-aliased edge pixels when the four
+      // projects run concurrently. The budget covers those glyph edges only; any control movement is orders
+      // of magnitude larger.
+      maxDiffPixels: 100,
       scale: "css",
     });
   });

@@ -285,7 +285,7 @@ filter, sort or badge for it. The hard-renamed `queue_priority` exists only in
 broker scheduling, storage/audit/measurement and explicit operator review
 projections; there is no public alias.
 
-- `GET /api/news/feed?family={family}&admission={admission}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}&oi={pushed|withheld|parse_failed}`
+- `GET /api/news/feed?family={family}&admission={admission}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}&oi={pushed|withheld|parse_failed}&direction={bullish,bearish,neutral}&channel={news,oi}`
   returns Events newest first with the leader title,
   the derived display `title_zh` (`models.display_title`, normally the current
   verdict's `headline_zh`), admission,
@@ -302,6 +302,15 @@ projections; there is no public alias.
   error code. `outcome` is the feed's task-tab filter (its SQL mirrors the
   outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
   or absent = no bound).
+
+  `direction` and `channel` accept comma-separated, duplicate-free closed sets. `direction` filters the latest
+  stored Triage verdict; `channel=oi` means `admission=telemetry_deterministic`, while `channel=news` means
+  every other admission. Selecting both channels narrows nothing. The axes compose with every existing
+  predicate before the count aggregate and cursor pagination.
+
+  `q` matches the Event search document and leader title, the leader item's `reporting_origin`, and any attached
+  asset's raw symbol, canonical `base_symbol`, instrument `venue`, or `venue_symbol`. Search is applied by the
+  authoritative feed query before counts and cursor pagination; the browser does not maintain a second index.
 
   A `telemetry_deterministic` row additionally carries a nullable `oi` block
   (#207): `parsed`, `rule`, and — depending on which of the two shapes it is —
@@ -325,10 +334,10 @@ projections; there is no public alias.
   exit walked the whole retention into the serve role's 1 s statement timeout.
 
   Unknown query parameters, invalid admission,
-  decision or `oi` values, malformed cursors, and the retired `priority`/`sort`
+  decision, `oi`, `direction` or `channel` values, malformed cursors, and the retired `priority`/`sort`
   parameters return 400; out-of-pattern `outcome`/`hours` return 422. Recovery
   Events are visible with `admission=recovery`. `filters` echoes every parameter incl. `outcome`,
-  `hours` (never the wall-clock bound, so unchanged pages keep their ETag) and `oi`.
+  `hours` (never the wall-clock bound, so unchanged pages keep their ETag), `oi`, `direction`, and `channel`.
   `counts` (`total`, `pushed`, `held`, `pending`) reports how the request's
   filters and window split across the three outcome groups — the same
   predicates the `outcome` filter uses, so the three sum to `total` — and is
@@ -377,9 +386,11 @@ projections; there is no public alias.
   `unavailable`), the Workers state, `health` (four thresholded items
   `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,
   `summary_zh`, `detail_zh`, and `overall`; thresholds are code-owned, see
-  `docs/OPERATIONS.md`), `funnel_24h` (`received`, `candidates`, `triaged`,
+  `docs/OPERATIONS.md`), `funnel_24h` (`received`, `parsed`, `admitted`, `candidates`, `triaged`,
   `tagged`, `grounded`, `decided_push`, `delivered`, plus
   `received_1h`/`delivered_1h`),
+  whose five Event-feed stages (`received`/`parsed`/`admitted`/`triaged`/`delivered`) all start from Events
+  opened in the same rolling 24 h cohort and test those Events' durable stage facts,
   `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
   `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
   connected, last frame/publish, error, open incidents, token configured; no
@@ -388,7 +399,9 @@ projections; there is no public alias.
   error code), `pipeline` (events and candidates per hour/day, Triage counts,
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
   throttled, OI telemetry received/parsed/parse-failed/pushed counts, Triage
-  p50/p95, queue lag p95, the Triage model name, and the
+  p50/p95, queue lag p95, the Triage model name, the cohort fields
+  `funnel_received_24h`/`funnel_parsed_24h`/`funnel_admitted_24h`/`funnel_triaged_24h`/
+  `funnel_delivered_24h`, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
   `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
   (`all` is the current content-only path; historical rows may retain the old
@@ -407,7 +420,7 @@ projections; there is no public alias.
   gates and never merged with them, read from platform configuration so this
   endpoint imports nothing from `tracefold.trading`),
   and `delivery` (sent/terminal
-  counts, last error, end-to-end p95, availability), plus
+  counts, last error, end-to-end p50/p95, availability), plus
   the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
   snapshot time, per-venue and per-class counts, `dangling_aliases`, and

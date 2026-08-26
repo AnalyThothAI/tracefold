@@ -135,6 +135,8 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "limit": 10,
         "outcome": None,
         "hours": None,
+        "direction": None,
+        "channel": None,
         # #207: the deterministic OI lane's outcome. Absent here means the whole lane, the same way every
         # other filter reads — the monitor is the only caller that sets it.
         "oi": None,

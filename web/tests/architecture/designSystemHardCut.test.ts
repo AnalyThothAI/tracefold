@@ -112,6 +112,7 @@ describe("Tracefold design-system hard cut", () => {
     expect(topbar).not.toMatch(/socketStatus|lastSocketMessageAt|providers|main-route-button/);
     expect(topbar).toContain('"news search"');
     expect(topbar).toContain("搜索新闻事件 / 标题 / 资产");
+    expect(topbar).toContain("事件 / base_symbol / 场所");
   });
 
   it("assigns every supported route family to a page archetype", () => {

@@ -7,6 +7,7 @@ describe("route-aware shell figures", () => {
   const news = newsStatusFixture({
     delivery: {
       ...newsStatusFixture().delivery,
+      e2e_p50_ms: 2_100,
       e2e_p95_ms: 3_400,
       sent_24h: 41,
     },
@@ -16,11 +17,12 @@ describe("route-aware shell figures", () => {
   it("identifies the News reading surfaces with delivery facts", () => {
     expect(topbarFigures("/news", news, trading)).toEqual([
       { label: "PUSHED 24H", tone: "accent", value: 41 },
+      { label: "E2E P50", text: "2.1 s" },
+    ]);
+    expect(topbarFigures("/news/events/evt-1", news, trading)).toEqual([
+      { label: "PUSHED 24H", tone: "accent", value: 41 },
       { label: "E2E P95", text: "3.4 s" },
     ]);
-    expect(topbarFigures("/news/events/evt-1", news, trading)).toEqual(
-      topbarFigures("/news", news, trading),
-    );
   });
 
   it("uses the telemetry and capital ledgers on the OI monitor", () => {

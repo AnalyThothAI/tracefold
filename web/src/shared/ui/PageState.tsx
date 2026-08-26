@@ -66,11 +66,19 @@ export function Error({ error, onRetry }: { error: unknown; onRetry?: () => void
   );
 }
 
-export function Stale({ children, updating }: { children: ReactNode; updating: boolean }) {
+export function Stale({
+  children,
+  className,
+  updating,
+}: {
+  children: ReactNode;
+  className?: string;
+  updating: boolean;
+}) {
   return (
     <div
       aria-busy={updating}
-      className={cn("page-state-stale", updating && "page-state-stale-updating")}
+      className={cn("page-state-stale", className, updating && "page-state-stale-updating")}
     >
       {children}
       {updating ? <span className="sr-only">正在更新</span> : null}

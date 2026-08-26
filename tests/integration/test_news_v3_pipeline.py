@@ -378,6 +378,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     assert _feed(hours=1, now_ms=10_000_000_000_000)["events"] == []
     status = repos.news.status_snapshot(now_ms=10_000_000_000_000)
     assert status["delivery"]["sent_24h"] >= 0 and "pipeline" in status
+    assert {"e2e_p50_ms", "e2e_p95_ms"} <= status["delivery"].keys()
     assert status["learning_retention"]["eligible_recordings"] == 0
     conn.commit()
 
@@ -531,6 +532,54 @@ def _admit_test_events(conn, *, hit_base: int, titles: tuple[str, ...], hour: in
             )
         event_ids.append(admitted.event_id)
     return event_ids
+
+
+def _insert_test_verdict(
+    repos,
+    *,
+    event_id: str,
+    direction: str,
+    now_ms: int,
+    final_decision: str = "drop",
+) -> None:
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        event_type="macro" if final_decision == "push" else "noise",
+        assets=[],
+        direction=direction,
+        scope="single_name",
+        magnitude=1,
+        actionable=final_decision == "push",
+        confidence=0.5,
+        decision=final_decision,
+        headline_zh="筛选测试",
+        why_zh="",
+    )
+    judgment = scored_judgment(verdict, editorial_origin="model")
+    assert repos.news.insert_verdict(
+        event_id=event_id,
+        stage="triage",
+        policy_version=TRIAGE_POLICY_VERSION,
+        model_decision=final_decision,
+        rule_baseline_decision=final_decision,
+        final_decision=final_decision,
+        override_rule="model_push_actionable" if final_decision == "push" else "noise",
+        throttled_by=None,
+        verdict=verdict.model_dump(),
+        editorial=judgment.editorial.model_dump(mode="json"),
+        scored_judgment_sha256=judgment.scored_judgment_sha256,
+        runtime_manifest_sha="c" * 64,
+        model="test",
+        program_version="test",
+        program_sha256="d" * 64,
+        degraded=False,
+        error_code=None,
+        trace={},
+        evidence_version=1,
+        evidence_sha256="e" * 64,
+        focus_fact_id="f" * 64,
+        now_ms=now_ms,
+    )
 
 
 def test_oi_rank_ignores_ineligible_frames_in_the_same_window(conn) -> None:
@@ -1326,6 +1375,128 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
     conn.commit()
 
 
+def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query(conn) -> None:
+    repos = repositories_for_connection(conn)
+    sentinel = "direction-channel-filter-sentinel"
+    bullish_id, bearish_oi_id = _admit_test_events(
+        conn,
+        hit_base=1_795_200,
+        titles=(
+            f"{sentinel} semiconductor orders accelerate after a capacity expansion",
+            f"{sentinel} leveraged open interest unwinds across crypto perpetuals",
+        ),
+        hour=11,
+    )
+    assert bullish_id != bearish_oi_id
+    with repos.transaction():
+        conn.execute(
+            "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
+            (bearish_oi_id,),
+        )
+        for offset, (event_id, direction) in enumerate(((bullish_id, "bullish"), (bearish_oi_id, "bearish"))):
+            _insert_test_verdict(
+                repos,
+                event_id=event_id,
+                direction=direction,
+                now_ms=1_790_000_100_000 + offset,
+            )
+
+    def ids(**filters):
+        page = repos.news.list_feed(
+            family=None,
+            admission=None,
+            decision=None,
+            symbol=None,
+            # The integration database is intentionally shared across this module. Scope the assertion to
+            # this test's Events so unrelated, valid verdicts cannot make an exact-set assertion flaky.
+            q=sentinel,
+            limit=10,
+            cursor=None,
+            **filters,
+        )
+        return {event["event_id"] for event in page["events"]}
+
+    assert ids(directions=("bullish",)) == {bullish_id}
+    assert ids(directions=("bearish",)) == {bearish_oi_id}
+    assert ids(channels=("news",)) == {bullish_id}
+    assert ids(channels=("oi",)) == {bearish_oi_id}
+    assert ids(channels=("news", "oi")) == {bullish_id, bearish_oi_id}
+    assert ids(directions=("bullish",), channels=("oi",)) == set()
+    conn.commit()
+
+
+def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(conn) -> None:
+    repos = repositories_for_connection(conn)
+    old_event, current_event = _admit_test_events(
+        conn,
+        hit_base=1_795_400,
+        titles=(
+            "An older event completes delivery after the window boundary",
+            "A current event completes delivery inside its intake cohort",
+        ),
+        hour=11,
+    )
+    now_ms = 2_000_000_000_000
+    with repos.transaction():
+        conn.execute(
+            "UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s",
+            (now_ms - 25 * 3600_000, old_event),
+        )
+        conn.execute(
+            "UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s",
+            (now_ms - 3600_000, current_event),
+        )
+        for offset, event_id in enumerate((old_event, current_event)):
+            _insert_test_verdict(
+                repos,
+                event_id=event_id,
+                direction="bullish",
+                final_decision="push",
+                now_ms=now_ms - 10 * 60_000 + offset,
+            )
+            assert (
+                repos.news.begin_delivery(
+                    event_id=event_id,
+                    kind="first",
+                    card={"event_id": event_id},
+                    now_ms=now_ms - 5 * 60_000 + offset,
+                )
+                == "new"
+            )
+            assert repos.news.settle_delivery(
+                event_id=event_id,
+                kind="first",
+                state="sent",
+                receipt={"ok": True},
+                error_code=None,
+                now_ms=now_ms - 4 * 60_000 + offset,
+            )
+
+    status = repos.news.status_snapshot(now_ms=now_ms)
+    pipeline = status["pipeline"]
+    # Throughput ledgers keep their own 24 h clocks and therefore see both late completions.
+    assert pipeline["triage_24h"] == 2
+    assert status["delivery"]["sent_24h"] == 2
+    # The reader funnel follows only Events opened in its one intake cohort, so every stage remains monotonic.
+    assert {
+        key: pipeline[key]
+        for key in (
+            "funnel_received_24h",
+            "funnel_parsed_24h",
+            "funnel_admitted_24h",
+            "funnel_triaged_24h",
+            "funnel_delivered_24h",
+        )
+    } == {
+        "funnel_received_24h": 1,
+        "funnel_parsed_24h": 1,
+        "funnel_admitted_24h": 1,
+        "funnel_triaged_24h": 1,
+        "funnel_delivered_24h": 1,
+    }
+    conn.commit()
+
+
 def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> None:
     """#87/#207 PR-W1: the asset chip renders the collapsed base, so the filter behind it has to match it.
 
@@ -1373,4 +1544,60 @@ def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> N
     assert tagged_id in _served("SKHX")
     # ...and neither pulls in an Event that answers to a different identity.
     assert plain_id not in _served("SKHY")
+    conn.commit()
+
+
+def test_feed_search_matches_reporting_origin_base_symbol_and_venue(conn) -> None:
+    repos = repositories_for_connection(conn)
+    tagged_id, plain_id = _admit_test_events(
+        conn,
+        hit_base=1_796_200,
+        titles=(
+            "A semiconductor foundry raises advanced packaging capacity",
+            "A tropical cyclone closes a regional airport",
+        ),
+        hour=12,
+    )
+    assert tagged_id != plain_id
+    with repos.transaction():
+        conn.execute(
+            "INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)"
+            " VALUES (%s, %s, 'seed', 0) ON CONFLICT (alias) DO UPDATE"
+            " SET base_symbol = EXCLUDED.base_symbol, source = EXCLUDED.source",
+            ("QSEARCHALIAS", "QSEARCHBASE"),
+        )
+        conn.execute(
+            "INSERT INTO news_market_instruments"
+            " (venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms)"
+            " VALUES (%s, %s, %s, 'crypto', 'USD', 'trading', 0)"
+            " ON CONFLICT (venue, venue_symbol) DO UPDATE SET base_symbol = EXCLUDED.base_symbol",
+            ("qsearch.venue", "QSEARCHBASE-PERP", "QSEARCHBASE"),
+        )
+        conn.execute(
+            "INSERT INTO news_event_assets (event_id, symbol, opened_at_ms)"
+            " SELECT %s, %s, opened_at_ms FROM news_events WHERE event_id = %s ON CONFLICT DO NOTHING",
+            (tagged_id, "QSEARCHALIAS", tagged_id),
+        )
+        conn.execute(
+            "UPDATE news_items SET reporting_origin = 'qsearch-origin'"
+            " WHERE item_id = (SELECT leader_item_id FROM news_events WHERE event_id = %s)",
+            (tagged_id,),
+        )
+
+    def ids(q: str) -> set[str]:
+        page = repos.news.list_feed(
+            family=None,
+            admission=None,
+            decision=None,
+            symbol=None,
+            q=q,
+            limit=10,
+            cursor=None,
+        )
+        return {event["event_id"] for event in page["events"]}
+
+    for query in ("qsearch-origin", "QSEARCHBASE", "qsearch.venue", "QSEARCHBASE-PERP"):
+        matched = ids(query)
+        assert tagged_id in matched
+        assert plain_id not in matched
     conn.commit()

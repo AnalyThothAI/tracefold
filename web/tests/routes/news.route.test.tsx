@@ -25,7 +25,8 @@ describe("news route", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "移除搜索：bitcoin" }));
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.submit(search.closest("form")!);
     await waitFor(() => expect(search).toHaveValue(""));
 
     fireEvent.change(search, { target: { value: "BTC ETF" } });

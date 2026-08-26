@@ -1,6 +1,6 @@
 import type { OpenApiStatusData } from "@lib/types";
 import { IconButton } from "@shared/ui/IconButton";
-import { ChevronRight, RefreshCw, Search, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -8,13 +8,9 @@ import { Link } from "react-router-dom";
 import "./CockpitTopbar.css";
 
 const NEWS_SEARCH_ARIA_LABEL = "news search";
-/*
- * What the box actually searches: the server matches `q` against `search_doc` (context line + leader title)
- * and `leader_title ILIKE`. It does not index venues and does not resolve aliases, so promising
- * `base_symbol / 场所` the way the design does would send readers looking for `hl.perp` into an empty feed
- * (#87 review). Widen the placeholder when the backend widens, not before.
- */
 const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
+/** Approved Event-feed copy. Server-side `q` remains the authority over which Event fields match. */
+const EVENT_FEED_SEARCH_PLACEHOLDER = "事件 / base_symbol / 场所";
 
 /**
  * One route-context fact from a status read. `value` is undefined until the poll answers.
@@ -46,8 +42,9 @@ export type CockpitHealthRow = {
 };
 
 export type CockpitHealth = {
-  /** Only the two levels worth interrupting for. `ok` and `off` arrive as `null` and draw nothing at all. */
-  level: "warn" | "bad";
+  /** Stable visible copy for routes whose approved chrome names the affordance, independent of health. */
+  buttonText?: string;
+  level: "ok" | "warn" | "bad" | "off";
   /** The overall word, e.g. `流水线注意`. */
   headline: string;
   /** The worst item's own sentence. */
@@ -57,10 +54,12 @@ export type CockpitHealth = {
 };
 
 export type CockpitTopbarProps = {
+  /** Route-scoped chrome required by the approved Event-feed visual. */
+  eventFeed?: boolean;
   figures?: CockpitTopbarFigure[];
-  /** `null` while the pipeline is healthy — see `HealthLamp`. */
+  /** `null` while healthy except on the Event feed, whose approved chrome keeps the affordance visible. */
   health?: CockpitHealth | null;
-  onRefresh: () => void;
+  onRefresh?: () => void;
   search: {
     onSubmitQuery: (query: string) => void;
     query?: string;
@@ -76,6 +75,7 @@ export type CockpitTopbarProps = {
 };
 
 export function CockpitTopbar({
+  eventFeed = false,
   figures,
   health,
   navigationTrigger,
@@ -88,11 +88,11 @@ export function CockpitTopbar({
   const anomaly = healthAnomaly(status);
   useEffect(() => setSearchDraft(search.query ?? ""), [search.query]);
   return (
-    <header className="topbar">
+    <header className="topbar" data-event-feed={eventFeed || undefined}>
       <div className="brand">
         {navigationTrigger}
         <span className="topbar-page-title">{title}</span>
-        <HealthLamp health={health} />
+        <HealthLamp health={health} showChevron={eventFeed} />
       </div>
 
       {/* Enter submits. The box is the whole search interaction — there is no hotkey that focuses it. */}
@@ -111,9 +111,14 @@ export function CockpitTopbar({
           aria-label={NEWS_SEARCH_ARIA_LABEL}
           id="news-search-input"
           onChange={(event) => setSearchDraft(event.target.value)}
-          placeholder={NEWS_SEARCH_PLACEHOLDER}
+          placeholder={eventFeed ? EVENT_FEED_SEARCH_PLACEHOLDER : NEWS_SEARCH_PLACEHOLDER}
           value={searchDraft}
         />
+        {eventFeed ? (
+          <span aria-hidden className="cockpit-searchbar-keycap">
+            /
+          </span>
+        ) : null}
       </form>
 
       <div className="topbar-right">
@@ -139,26 +144,32 @@ export function CockpitTopbar({
             <span>{anomaly}</span>
           </span>
         ) : null}
-        <IconButton aria-label="刷新" onClick={onRefresh} title="刷新">
-          <RefreshCw aria-hidden />
-        </IconButton>
+        {onRefresh ? (
+          <IconButton aria-label="刷新" onClick={onRefresh} title="刷新">
+            <RefreshCw aria-hidden />
+          </IconButton>
+        ) : null}
       </div>
     </header>
   );
 }
 
 /**
- * Pipeline health, on every page, and only when there is something to say (#207).
+ * Pipeline health and the Event feed's permanent pipeline affordance.
  *
- * A healthy pipeline renders zero pixels. That is the whole rule: a permanently green light is one the
- * reader learns to stop seeing, and 流水线状态 used to spend a navigation slot proving "everything is fine".
- * When a level is `warn` or `bad` the lamp appears beside the page title with the failing item's own
- * sentence, and one click opens the four stage lines and the door to the page that explains them.
+ * The Event feed keeps the approved `流水线` button visible even while healthy. Other routes still receive
+ * `null` on the healthy path. One click opens the same four server-owned stage lines and status destination.
  *
  * Radix owns `Esc`, the dismiss layer and `aria-expanded`. The console binds no document-level key handler
  * of its own and this must not become the exception.
  */
-function HealthLamp({ health }: { health?: CockpitHealth | null }) {
+function HealthLamp({
+  health,
+  showChevron,
+}: {
+  health?: CockpitHealth | null;
+  showChevron: boolean;
+}) {
   if (!health) return null;
   return (
     <Popover.Root>
@@ -171,7 +182,10 @@ function HealthLamp({ health }: { health?: CockpitHealth | null }) {
           type="button"
         >
           <span aria-hidden className="topbar-health-dot" />
-          <span className="topbar-health-summary">{health.summary || health.headline}</span>
+          <span className="topbar-health-summary">
+            {health.buttonText || health.summary || health.headline}
+          </span>
+          {showChevron ? <ChevronDown aria-hidden className="topbar-health-chevron" /> : null}
         </button>
       </Popover.Trigger>
       <Popover.Portal>

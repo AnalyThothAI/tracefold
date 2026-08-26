@@ -32,7 +32,7 @@ const routeCases: RouteCase[] = [
       // Section navigation is the shell's bottom bar on mobile (#87), not on the route.
       await expect(page.getByRole("navigation", { name: "新闻视图" })).toHaveCount(0);
       await expect(page.getByLabel("news search")).toBeVisible();
-      await expect(page.getByRole("combobox", { name: "时间范围" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "时间范围，最近 1 天" })).toBeVisible();
       await expect(
         page.getByRole("link", { name: /Macro desk flags liquidity rotation/ }),
       ).toBeVisible();

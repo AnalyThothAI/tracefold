@@ -11,11 +11,8 @@ import "./newsFunnel.css";
  * Where the last 24 hours went, above the feed. Every figure is either a `funnel_24h` field or the difference
  * between two of them — the browser reports where the Events went, it does not decide it.
  *
- * Five tiles and no bar. The bar lived here and drew four segments that were differences between layers
- * counted in two different ways (`candidates` by `opened_at_ms`, `triaged` by verdict `created_at_ms`), so at
- * the window edge it read a few percent short and had to be explained. The proportions belong on the status
- * route, where the same numbers get a full-width bar and a sentence naming the biggest drop; here the five
- * counts and one conversion line are the whole answer.
+ * Five approved stages and no bar. `parsed` can equal `received`: every persisted Event has completed the
+ * provider parser. The other three figures are the real Gate, judgment and delivery ledgers.
  */
 export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
   const funnel = status?.funnel_24h;
@@ -70,54 +67,51 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
 }
 
 function funnelTiles(funnel: NewsFunnel) {
-  const gated = Math.max(0, funnel.received - funnel.candidates);
-  const notPushed = Math.max(0, funnel.triaged - funnel.decided_push);
-  const ungrounded = Math.max(0, funnel.tagged - funnel.grounded);
+  const gated = Math.max(0, funnel.parsed - funnel.admitted);
+  const unjudged = Math.max(0, funnel.admitted - funnel.triaged);
   return [
     {
-      caption: "收到",
+      caption: "采集",
       eyebrow: "RECEIVED",
-      note: `1h ${formatCount(funnel.received_1h)}`,
+      note: "",
       title: "过去 24 小时从 provider 收到的事件",
-      to: newsPath(),
+      to: `${newsPath()}?outcome=all&hours=24`,
       tone: "plain" as const,
       value: funnel.received,
     },
     {
-      caption: "送审",
-      eyebrow: "TRIAGED",
-      note: percent(funnel.candidates, funnel.received),
+      caption: "已解析",
+      eyebrow: "PARSED",
+      note: percent(funnel.parsed, funnel.received),
+      title: "已完成解析并形成 Event 的记录",
+      to: null,
+      tone: "plain" as const,
+      value: funnel.parsed,
+    },
+    {
+      caption: "过门禁",
+      eyebrow: "ADMITTED",
+      note: percent(funnel.admitted, funnel.received),
       title: gated ? `门禁挡下 ${formatCount(gated)}` : "门禁全部放行",
       to: null,
       tone: "plain" as const,
-      value: funnel.candidates,
+      value: funnel.admitted,
     },
     {
-      caption: "符号落表",
-      eyebrow: "GROUNDED",
-      // Share of the Events that carried a tag, not of everything received: the denominator has to be the
-      // population the number is actually about.
-      note: percent(funnel.grounded, funnel.tagged),
-      title: ungrounded ? `未落标的表 ${formatCount(ungrounded)}` : "符号全部落表",
+      caption: "已审稿",
+      eyebrow: "JUDGED",
+      note: percent(funnel.triaged, funnel.admitted),
+      title: unjudged ? `尚待审稿 ${formatCount(unjudged)}` : "已全部审稿",
       to: null,
-      tone: ungrounded ? ("caution" as const) : ("plain" as const),
-      value: funnel.grounded,
-    },
-    {
-      caption: "决定推送",
-      eyebrow: "DECIDED",
-      note: percent(funnel.decided_push, funnel.received),
-      title: notPushed ? `模型判不推 ${formatCount(notPushed)}` : "模型全部放行",
-      to: `${newsPath()}?outcome=pushed`,
       tone: "plain" as const,
-      value: funnel.decided_push,
+      value: funnel.triaged,
     },
     {
-      caption: "已送达",
-      eyebrow: "DELIVERED",
-      note: percent(funnel.delivered, funnel.decided_push),
+      caption: "已推送",
+      eyebrow: "PUSHED",
+      note: percent(funnel.delivered, funnel.received),
       title: `最近 1 小时 ${formatCount(funnel.delivered_1h)}`,
-      to: `${newsPath()}?outcome=pushed`,
+      to: `${newsPath()}?outcome=pushed&hours=24`,
       tone: "accent" as const,
       value: funnel.delivered,
     },

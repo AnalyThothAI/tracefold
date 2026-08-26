@@ -122,9 +122,11 @@ describe("News console contract", () => {
     const toolbarCss = readSource("src/features/news/ui/feed/newsFeedToolbar.css");
 
     expect(page).toContain('archetype="scan"');
-    expect(page).toMatch(/<NewsFunnelCard[\s\S]*?<NewsFeedToolbar[\s\S]*?<NewsActiveFilterChips/);
+    expect(page).toMatch(/<NewsFunnelCard[\s\S]*?<NewsFeedToolbar[\s\S]*?news-event-list-header/);
     expect(toolbar).toMatch(/role="tablist"/);
-    expect(toolbar).toContain("NEWS_FEED_OUTCOMES");
+    expect(toolbar).toContain(
+      'const OUTCOME_TABS: Array<NewsFeedOutcome | null> = ["pushed", "held", "pending", null]',
+    );
     expect(toolbar).toContain("NEWS_FEED_HOURS");
     // The counts are the server's split of the current filter — never derived in the browser.
     expect(toolbar).toContain("counts[value]");

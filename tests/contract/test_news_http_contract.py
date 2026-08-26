@@ -74,6 +74,8 @@ class _FakeNewsRepository:
                 "outcome": kwargs.get("outcome"),
                 "hours": kwargs.get("hours"),
                 "oi": kwargs.get("oi"),
+                "direction": ",".join(kwargs.get("directions") or ()) or None,
+                "channel": ",".join(kwargs.get("channels") or ()) or None,
             },
         }
 
@@ -127,7 +129,14 @@ class _FakeNewsRepository:
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
             "oi": {"by_rule_24h": {"opening_move_with_whale_concentration": 3, "whale_ratio_below_threshold": 7}},
-            "delivery": {"sent_24h": 0, "sent_1h": 0, "terminal_24h": 0, "last_error_code": None, "e2e_p95_ms": None},
+            "delivery": {
+                "sent_24h": 0,
+                "sent_1h": 0,
+                "terminal_24h": 0,
+                "last_error_code": None,
+                "e2e_p50_ms": None,
+                "e2e_p95_ms": None,
+            },
             "learning_retention": {
                 "last_run_at_ms": None,
                 "eligible_recordings": 0,
@@ -407,6 +416,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "hours",
         # #207: the deterministic OI lane's outcome, which `decision` cannot express.
         "oi",
+        "direction",
+        "channel",
     }
     assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
         "title_zh",
@@ -471,6 +482,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "terminal_24h",
         "last_error_code",
         "e2e_p95_ms",
+        "e2e_p50_ms",
         "delivery_available",
     }
     assert set(status_schemas.NewsLearningRetentionStatusData.model_fields) == {
@@ -521,6 +533,8 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "outcome": None,
         "hours": None,
         "oi": None,
+        "direction": None,
+        "channel": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
     assert "priority" not in body["data"]["events"][0]
@@ -553,6 +567,23 @@ def test_feed_forwards_outcome_group_and_hours_window(client) -> None:
     assert http.get("/api/news/feed", params={"token": TOKEN, "hours": 999}).status_code == 422
 
 
+def test_feed_forwards_canonical_direction_and_channel_filters(client) -> None:
+    http, news = client
+
+    response = http.get(
+        "/api/news/feed",
+        params={"token": TOKEN, "direction": "neutral,bullish", "channel": "oi,news"},
+    )
+
+    assert response.status_code == 200
+    forwarded = news.calls[0][1]
+    assert forwarded["directions"] == ("bullish", "neutral")
+    assert forwarded["channels"] == ("news", "oi")
+    filters = response.json()["data"]["filters"]
+    assert filters["direction"] == "bullish,neutral"
+    assert filters["channel"] == "news,oi"
+
+
 def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
     http, _ = client
 
@@ -571,6 +602,9 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
         # #207: the OI outcome is a closed set. An unknown value must not fall through to "no filter" —
         # that would serve the whole lane under a tab whose count says otherwise.
         ({"oi": "whale_ratio_below_threshold"}, "news_feed_oi_invalid", "oi"),
+        ({"direction": "up"}, "news_feed_direction_invalid", "direction"),
+        ({"direction": "bullish,bullish"}, "news_feed_direction_invalid", "direction"),
+        ({"channel": "social"}, "news_feed_channel_invalid", "channel"),
         ({"cursor": "broken"}, "news_feed_cursor_invalid", "cursor"),
         ({"priority": "high"}, "unsupported_query_param", "priority"),
         ({"sort": "priority"}, "unsupported_query_param", "sort"),

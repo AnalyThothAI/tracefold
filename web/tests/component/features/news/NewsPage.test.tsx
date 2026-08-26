@@ -9,7 +9,6 @@ import {
   newsFeedEventFixture,
   newsFeedFixture,
   newsOutcomeFixture,
-  newsReactionFixture,
   newsStatusFixture,
   newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
@@ -37,7 +36,7 @@ describe("NewsPage", () => {
   afterEach(cleanup);
 
   // ------------------------------------------------------------------ feed
-  it("defaults to the latest 24 h, every outcome, 25 rows, and no advanced filters", async () => {
+  it("defaults to pushed Events for the latest 24 h, with the approved tab and time controls", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
@@ -51,6 +50,8 @@ describe("NewsPage", () => {
           "admission",
           "outcome",
           "hours",
+          "direction",
+          "channel",
         ]) {
           observed[name] = params.get(name);
         }
@@ -70,20 +71,23 @@ describe("NewsPage", () => {
       within(tabs)
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-      // Label plus the server's count for that group under the current filter. The count is `aria-hidden`,
-      // so the tab's accessible name stays the label alone; the digits that select the tabs are advertised
-      // once in the toolbar's key hints rather than repeated on every tab.
-    ).toEqual(["全部320", "已推送41", "被拦截271", "处理中8"]);
-    expect(within(tabs).getByRole("tab", { name: "全部" })).toHaveAttribute(
+      // Label plus the server's count for that group under the current filter, in the approved tab name.
+    ).toEqual(["已推送41", "被拦截271", "处理中8", "全部320"]);
+    expect(within(tabs).getByRole("tab", { name: "已推送 41" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(screen.getByText("1 / 320 条")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("24");
+    expect(screen.getByText("1 / 41 条")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "时间范围，最近 1 天" })).toBeInTheDocument();
+    expect(screen.getByText("TIME")).toBeInTheDocument();
+    expect(screen.getByText("EVENT")).toBeInTheDocument();
+    expect(screen.getByText("OUTCOME")).toBeInTheDocument();
     await waitFor(() => expect(observed.hours).toBe("24"));
     expect(observed.sort).toBeNull();
     expect(observed.limit).toBe("25");
-    expect(observed.outcome).toBeNull();
+    expect(observed.outcome).toBe("pushed");
+    expect(observed.direction).toBeNull();
+    expect(observed.channel).toBeNull();
     expect(observed.priority).toBeNull();
     expect(observed.decision).toBeNull();
     expect(observed.family).toBeNull();
@@ -129,18 +133,13 @@ describe("NewsPage", () => {
     expect(row).not.toHaveAttribute("data-priority");
     expect(badges[0]).toHaveAttribute("data-variant", "text");
     expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
-    expect(inRow.getByText(/推送于/)).toBeInTheDocument();
+    expect(inRow.getByText("模型判断值得推送")).toBeInTheDocument();
     for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
   });
 
-  it("puts what the market did in its own column, on held rows too", async () => {
-    /*
-     * #207 PR-W1. The verdict and the move are two different claims, so they get two columns — and the
-     * column is rendered for a held row as well: "the pipeline dropped it and it moved 3%" is precisely
-     * what the conclusion cannot tell you, and it is the input the learning loop is fed on.
-     */
+  it("keeps Event Reaction off the approved three-column feed", async () => {
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
@@ -155,7 +154,6 @@ describe("NewsPage", () => {
                   reason_zh: "判为噪声",
                   text_zh: "未推送",
                 }),
-                reaction: newsReactionFixture({ return_1h_bps: -118, return_4h_bps: 262 }),
               }),
             ],
           }),
@@ -168,41 +166,8 @@ describe("NewsPage", () => {
     const row = (
       await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
     ).closest("article");
-    const move = row!.querySelector(".news-event-move");
-    expect(move).toHaveTextContent("1H-1.18%");
-    expect(move).toHaveTextContent("4H+2.62%");
-  });
-
-  it("says 未到期 for a horizon that has not matured, never 0.00%", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/feed$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsFeedFixture({
-            events: [
-              newsFeedEventFixture({
-                reaction: newsReactionFixture({
-                  return_1h_bps: 152,
-                  return_4h_bps: null,
-                  state: "partial",
-                  state_zh: "部分完成",
-                }),
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const row = (
-      await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
-    ).closest("article");
-    const move = row!.querySelector(".news-event-move");
-    expect(move).toHaveTextContent("+1.52%");
-    expect(move).toHaveTextContent("未到期");
-    expect(move).not.toHaveTextContent("0.00%");
+    expect(row!.querySelector(".news-event-move")).toBeNull();
+    expect(row).toHaveTextContent("判为噪声");
   });
 
   it("drops the badge on a held Event and leaves its Chinese reason alone", async () => {
@@ -270,31 +235,14 @@ describe("NewsPage", () => {
     expect(within(recovery).getByRole("heading", { name: "补抄回来的旧闻" })).toBeInTheDocument();
   });
 
-  it("expands one row's judgment in place, without leaving the list", async () => {
-    /*
-     * Design proposal ②. Reading why an Event was held used to cost a full-page navigation and the reader's
-     * scroll position. The expansion carries the model's own sentence and the verdict grid — server copy
-     * only, never the rule key behind the decision, which stays on the Event's page.
-     */
+  it("keeps row-level expansion controls off the approved feed interaction", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
     const row = (
       await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
     ).closest("article")!;
-    expect(row.querySelector(".news-event-verdict")).toBeNull();
-
-    fireEvent.click(within(row).getByRole("button", { name: /展开判定/ }));
-
-    const verdict = row.querySelector(".news-event-verdict")!;
-    expect(verdict).not.toBeNull();
-    expect(verdict).toHaveTextContent("利率指引与市场预期背离，风险资产定价需要重估");
-    expect(within(verdict as HTMLElement).getByLabelText("判定明细")).toBeInTheDocument();
-    for (const raw of ["model_push_actionable", "candidate", "asset:BTC"]) {
-      expect(verdict.textContent).not.toContain(raw);
-    }
-
-    fireEvent.click(within(row).getByRole("button", { name: /收起判定/ }));
-    expect(row.querySelector(".news-event-verdict")).toBeNull();
+    expect(within(row).queryByRole("button", { name: /判定/ })).toBeNull();
+    expect(within(row).getByRole("link", { name: /央行政策转向/ })).toBeInTheDocument();
   });
 
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
@@ -323,12 +271,12 @@ describe("NewsPage", () => {
     expect(heading.closest("[data-page-archetype='scan']")).not.toBeNull();
   });
 
-  it("keeps outcome tab, time window, search, family, admission, decision, and symbol in URL-owned server state", async () => {
+  it("keeps outcome, time, direction, and channel in URL-owned server state", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["q", "family", "admission", "decision", "symbol", "outcome", "hours"]) {
+        for (const name of ["q", "outcome", "hours", "direction", "channel"]) {
           observed[name] = params.get(name);
         }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
@@ -337,49 +285,44 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&family=general&admission=candidate&decision=push&symbol=btc&outcome=held&hours=6",
+      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&channel=news",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
-    await waitFor(() => expect(observed.symbol).toBe("BTC"));
+    await waitFor(() => expect(observed.direction).toBe("bullish,neutral"));
     expect(observed).toEqual({
-      admission: "candidate",
-      decision: "push",
-      family: "general",
-      hours: "6",
+      channel: "news",
+      direction: "bullish,neutral",
+      hours: "168",
       outcome: "held",
       q: "bitcoin",
-      symbol: "BTC",
     });
-    expect(screen.getByRole("tab", { name: "被拦截" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("6");
-    expect(screen.queryByRole("combobox", { name: "事件排序" })).not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "事件家族" })).toHaveValue("general");
-    expect(screen.getByRole("combobox", { name: "事件准入" })).toHaveValue("candidate");
-    expect(screen.queryByRole("combobox", { name: "事件优先级" })).not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Triage 判定" })).toHaveValue("push");
-    expect(screen.getByRole("textbox", { name: "落地资产" })).toHaveValue("BTC");
-    const chips = screen.getByRole("group", { name: "已启用筛选" });
-    expect(
-      within(chips)
-        .getAllByRole("button")
-        .map((chip) => chip.textContent),
-    ).toEqual(["搜索：bitcoin", "来源类别：综合", "门禁：已送审", "决策：推送", "资产：BTC"]);
+    expect(screen.getByRole("tab", { name: "被拦截 271" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    expect(screen.getByRole("button", { name: "▲ 利多" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "◆ 中性" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "新闻" })).toHaveAttribute("aria-pressed", "true");
 
-    fireEvent.click(within(chips).getByRole("button", { name: "移除决策：推送" }));
-    await waitFor(() => expect(observed.decision).toBeNull());
-    expect(screen.getByTestId("location")).toHaveTextContent("outcome=held");
-    expect(screen.getByTestId("location")).not.toHaveTextContent("decision=");
+    fireEvent.click(screen.getByRole("button", { name: "◆ 中性" }));
+    await waitFor(() => expect(observed.direction).toBe("bullish"));
+    fireEvent.click(screen.getByRole("button", { name: "OI 帧" }));
+    await waitFor(() => expect(observed.channel).toBe("news,oi"));
 
-    fireEvent.click(screen.getByRole("tab", { name: "已推送" }));
+    fireEvent.click(screen.getByRole("tab", { name: "已推送 41" }));
     await waitFor(() => expect(observed.outcome).toBe("pushed"));
-    fireEvent.click(screen.getByRole("tab", { name: "全部" }));
+    fireEvent.click(screen.getByRole("tab", { name: "全部 320" }));
     await waitFor(() => expect(observed.outcome).toBeNull());
-    fireEvent.change(screen.getByRole("combobox", { name: "时间范围" }), {
-      target: { value: "all" },
+    expect(screen.getByTestId("location")).toHaveTextContent("outcome=all");
+    fireEvent.keyDown(screen.getByRole("button", { name: "时间范围，最近 7 天" }), {
+      key: "ArrowDown",
     });
-    await waitFor(() => expect(observed.hours).toBeNull());
-    expect(screen.getByTestId("location")).toHaveTextContent("hours=all");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "最近 1 小时" }));
+    await waitFor(() => expect(observed.hours).toBe("1"));
+    expect(screen.getByTestId("location")).toHaveTextContent("hours=1");
   });
 
   it("does not forward retired priority/sort or unknown decision, outcome, and hours values", async () => {
@@ -402,12 +345,13 @@ describe("NewsPage", () => {
     expect(observed.priority).toBeNull();
     expect(observed.sort).toBeNull();
     expect(observed.decision).toBeNull();
-    expect(observed.outcome).toBeNull();
+    expect(observed.outcome).toBe("pushed");
     expect(observed.hours).toBe("24");
     expect(screen.queryByRole("group", { name: "已启用筛选" })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "时间范围" }), {
-      target: { value: "6" },
+    fireEvent.keyDown(screen.getByRole("button", { name: "时间范围，最近 1 天" }), {
+      key: "ArrowDown",
     });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "最近 7 天" }));
     await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("priority="));
     expect(screen.getByTestId("location")).not.toHaveTextContent("sort=");
   });
@@ -527,7 +471,7 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
   });
 
-  it("stays silent about a healthy pipeline and keeps the 24 h funnel on the Feed header", async () => {
+  it("renders the approved five-stage 24 h funnel on the Feed header", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
     const funnel = await screen.findByRole("region", { name: "过去 24 小时漏斗" });
@@ -540,7 +484,7 @@ describe("NewsPage", () => {
     expect(within(funnel).getByLabelText("24 小时漏斗").textContent).toBe(
       // Five counts and the share each came from. #87: 符号落表 is measured against the Events that
       // *carried* a tag, never against the tagless macro headlines that never offered a symbol.
-      "RECEIVED320收到1h 12TRIAGED180送审56%GROUNDED168符号落表98%DECIDED40决定推送13%DELIVERED41已送达102%",
+      "RECEIVED320采集PARSED320已解析100%ADMITTED180过门禁56%JUDGED175已审稿97%PUSHED41已推送13%",
     );
   });
 
@@ -567,7 +511,7 @@ describe("NewsPage", () => {
     );
     renderNews(<NewsPage token="test-token" view="feed" />);
     await screen.findByRole("heading", { name: "新闻事件流" });
-    await waitFor(() => expect(screen.getByText(/收到/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("采集")).toBeInTheDocument());
     expect(screen.queryByRole("link", { name: "查看流水线状态" })).not.toBeInTheDocument();
     expect(screen.queryByText("流水线异常")).not.toBeInTheDocument();
   });

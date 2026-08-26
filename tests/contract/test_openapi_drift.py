@@ -261,6 +261,8 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         # #207: which gate the deterministic OI judge applied. `decision` collapses a threshold withhold and
         # an unparseable provider frame into one `drop`, so the monitor's tabs cannot be built from it.
         "oi",
+        "direction",
+        "channel",
     }
     assert parameters["q"]["schema"]["maxLength"] == 200
     assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
@@ -280,6 +282,8 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "outcome",
         "hours",
         "oi",
+        "direction",
+        "channel",
     }
     assert set(filters["required"]) == {"limit"}
 

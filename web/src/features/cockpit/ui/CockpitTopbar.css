@@ -90,6 +90,13 @@
     white-space: nowrap;
   }
 
+  .topbar-health-chevron {
+    width: 11px;
+    height: 11px;
+    flex: 0 0 auto;
+    color: var(--text-subtle);
+  }
+
   /* Portalled to the body, so this selector stands on its own rather than under `.topbar`. */
   .topbar-health-popover {
     z-index: 60;
@@ -205,6 +212,48 @@
     color: var(--text-subtle);
   }
 
+  .cockpit-searchbar-keycap {
+    padding: 1px 5px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
+    font: var(--type-eyebrow);
+  }
+
+  /* Issue #235 scopes the approved Event-feed chrome to `/news`; other routes retain the shared shell. */
+  .topbar[data-event-feed] {
+    padding: 0 14px;
+  }
+
+  .topbar[data-event-feed] .brand {
+    gap: 10px;
+  }
+
+  .topbar[data-event-feed] .topbar-page-title {
+    font-size: var(--font-size-body);
+  }
+
+  .topbar[data-event-feed] .topbar-health-lamp {
+    min-height: 28px;
+    padding: 0 10px;
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+    background: var(--surface-panel);
+    font-size: var(--font-size-meta);
+  }
+
+  .topbar[data-event-feed] .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
+    background: var(--signal-done);
+  }
+
+  .topbar[data-event-feed] .topbar-health-lamp[data-level="off"] .topbar-health-dot {
+    background: var(--signal-neutral);
+  }
+
+  .topbar[data-event-feed] .searchbar {
+    max-width: 360px;
+  }
+
   .topbar-right {
     display: flex;
     gap: 12px;
@@ -286,6 +335,10 @@
       padding: 0 10px;
     }
 
+    .topbar[data-event-feed] {
+      padding: 0 10px;
+    }
+
     .topbar-page-title,
     .topbar-anomaly span,
     .topbar-health-summary {
@@ -300,10 +353,15 @@
     .topbar-health-lamp {
       padding: 0 7px;
     }
+
+    .topbar[data-event-feed] .topbar-health-lamp {
+      padding: 0 7px;
+    }
   }
 
   /*
-   * Phone: search, the anomaly dot, and refresh. There is no sidebar trigger to place (#87) and the brand is
+   * Phone: search, the anomaly dot, and the route's refresh control when present. There is no sidebar trigger
+   * to place (#87) and the brand is
    * not a control, so the row spends its width on the one input a thumb actually uses. The figures go too —
    * the same two numbers lead the feed's funnel card.
    *

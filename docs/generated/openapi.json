@@ -1376,6 +1376,17 @@
             "title": "Delivery Available",
             "type": "boolean"
           },
+          "e2e_p50_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "E2E P50 Ms"
+          },
           "e2e_p95_ms": {
             "anyOf": [
               {
@@ -2395,6 +2406,17 @@
             ],
             "title": "Admission"
           },
+          "channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel"
+          },
           "decision": {
             "anyOf": [
               {
@@ -2405,6 +2427,17 @@
               }
             ],
             "title": "Decision"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
           },
           "family": {
             "anyOf": [
@@ -2671,6 +2704,11 @@
       "NewsFunnelData": {
         "additionalProperties": false,
         "properties": {
+          "admitted": {
+            "default": 0,
+            "title": "Admitted",
+            "type": "integer"
+          },
           "candidates": {
             "default": 0,
             "title": "Candidates",
@@ -2694,6 +2732,11 @@
           "grounded": {
             "default": 0,
             "title": "Grounded",
+            "type": "integer"
+          },
+          "parsed": {
+            "default": 0,
+            "title": "Parsed",
             "type": "integer"
           },
           "received": {
@@ -3280,6 +3323,11 @@
       "NewsPipelineStatusData": {
         "additionalProperties": false,
         "properties": {
+          "admitted_24h": {
+            "default": 0,
+            "title": "Admitted 24H",
+            "type": "integer"
+          },
           "candidate_share_24h": {
             "anyOf": [
               {
@@ -3323,6 +3371,31 @@
           "events_24h": {
             "default": 0,
             "title": "Events 24H",
+            "type": "integer"
+          },
+          "funnel_admitted_24h": {
+            "default": 0,
+            "title": "Funnel Admitted 24H",
+            "type": "integer"
+          },
+          "funnel_delivered_24h": {
+            "default": 0,
+            "title": "Funnel Delivered 24H",
+            "type": "integer"
+          },
+          "funnel_parsed_24h": {
+            "default": 0,
+            "title": "Funnel Parsed 24H",
+            "type": "integer"
+          },
+          "funnel_received_24h": {
+            "default": 0,
+            "title": "Funnel Received 24H",
+            "type": "integer"
+          },
+          "funnel_triaged_24h": {
+            "default": 0,
+            "title": "Funnel Triaged 24H",
             "type": "integer"
           },
           "grounded_24h": {
@@ -8016,6 +8089,28 @@
               "default": "",
               "maxLength": 40,
               "title": "Oi",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Direction",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 16,
+              "title": "Channel",
               "type": "string"
             }
           }

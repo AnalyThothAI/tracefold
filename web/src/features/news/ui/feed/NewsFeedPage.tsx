@@ -2,11 +2,10 @@ import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { newsFeedIdentity } from "@shared/query/queryKeys";
 import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
-  type NewsFeedEvent,
   type NewsFeedFilters,
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
@@ -19,20 +18,13 @@ import {
   parseFeedFilters,
   type FeedFilterChanges,
 } from "../../model/feedFilters";
-import {
-  absoluteTime,
-  dayBucketLabel,
-  formatCount,
-  hourBucketKey,
-  hourBucketLabel,
-  hoursLabel,
-} from "../../model/newsLabels";
+import { absoluteTime, hoursLabel } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsEventDrawer } from "../detail/NewsEventDrawer";
 
 import { NewsEventRow } from "./NewsEventRow";
-import { NewsActiveFilterChips, NewsFeedToolbar } from "./NewsFeedToolbar";
+import { NewsFeedToolbar } from "./NewsFeedToolbar";
 import { NewsFunnelCard } from "./NewsFunnelCard";
 
 import "./newsFeed.css";
@@ -47,10 +39,8 @@ const DRAWER_QUERY = "(min-width: 1024px)";
  * The decision-first scan surface over the flat Event feed. The browser never clusters, scores, triages,
  * throttles or reorders — it asks the server for a page and renders one row per Event.
  *
- * Four things happen on top of that, all of them about not losing the reader's place: hour headings so two
- * screens of scrolling still say when you are, held-back inserts so a live stream never shifts the row under
- * the pointer, an in-place judgment so "why was this dropped" costs no navigation, and a drawer so opening an
- * Event does not replace the list you were working through.
+ * Live inserts are held back so polling never shifts the row under the pointer. On a wide screen, opening an
+ * Event uses the existing drawer so the list stays visible; every row remains a real detail link.
  */
 export function NewsFeedPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -99,17 +89,12 @@ export function NewsFeedPage({ token }: { token: string }) {
   );
   const feedSearch = nextFeedParams(filters, {}).toString();
   const wideEnoughForDrawer = useMediaQuery(DRAWER_QUERY);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
 
   const updateFeedParams = (changes: FeedFilterChanges) => {
     setSearchParams(nextFeedParams(filters, changes), { replace: true });
   };
 
-  const toggleExpanded = (eventId: string) =>
-    setExpandedId((current) => (current === eventId ? null : eventId));
-
-  const groups = groupByHour(events);
   return (
     <NewsPageShell archetype="scan" className="news-feed-shell" label="新闻事件流">
       {/*
@@ -117,7 +102,7 @@ export function NewsFeedPage({ token }: { token: string }) {
        * is not ok" rule, but on every page instead of this one, and two pills on one screen saying the same
        * thing is one of them the reader learns to skip.
        */}
-      <NewsPageHeader subtitle="每条新闻的判定与去向，动作都在详情页。" title="新闻事件流">
+      <NewsPageHeader subtitle="每条新闻的判定与去向；符号可点进代币页" title="新闻事件流">
         {statusQuery.data ? (
           <NewsPageStamp>
             更新于 {absoluteTime(statusQuery.data.measured_at_ms).slice(11)}
@@ -130,12 +115,9 @@ export function NewsFeedPage({ token }: { token: string }) {
       <NewsFeedToolbar
         counts={firstPage?.counts ?? undefined}
         filters={filters}
-        hasAdvanced={hasAdvanced}
         onChange={updateFeedParams}
         visibleCount={events.length}
       />
-
-      <NewsActiveFilterChips filters={filters} onRemove={updateFeedParams} />
 
       {query.isLoading && !query.data ? (
         <PageState.Loading label="正在读取新闻事件" layout="panel" rows={6} />
@@ -146,14 +128,17 @@ export function NewsFeedPage({ token }: { token: string }) {
       {!query.isLoading && !query.isError && !events.length ? (
         <PageState.Empty
           action={
-            hasAdvanced || filters.hours != null ? (
+            hasAdvanced || filters.outcome !== null || filters.hours !== 24 ? (
               <ActionButton
                 onClick={() =>
                   updateFeedParams({
                     admission: null,
                     decision: null,
+                    directions: [],
+                    channels: [],
                     family: null,
-                    hours: null,
+                    hours: 24,
+                    outcome: null,
                     q: null,
                     symbol: null,
                   })
@@ -164,7 +149,7 @@ export function NewsFeedPage({ token }: { token: string }) {
             ) : null
           }
           hint={
-            hasAdvanced || filters.outcome || filters.hours != null
+            hasAdvanced || filters.outcome !== null || filters.hours !== 24
               ? "换个时间范围、切到「全部」标签或减少筛选条件后再试。"
               : "事件会在 Strategy 命中并完成入库后出现。"
           }
@@ -172,7 +157,10 @@ export function NewsFeedPage({ token }: { token: string }) {
         />
       ) : null}
       {events.length ? (
-        <PageState.Stale updating={query.isFetching && !query.isLoading}>
+        <PageState.Stale
+          className="news-feed-page-state"
+          updating={query.isFetching && !query.isLoading}
+        >
           <div className="news-feed-results">
             {eventFeed.count ? (
               <button className="news-new-events" onClick={eventFeed.reveal} type="button">
@@ -181,34 +169,20 @@ export function NewsFeedPage({ token }: { token: string }) {
               </button>
             ) : null}
             <div className="news-event-list" ref={eventListRef}>
-              {groups.map((group) => (
-                <Fragment key={group.key}>
-                  {group.label ? (
-                    <div className="news-hour-group">
-                      <span className="news-hour-group-label">{group.label}</span>
-                      <span className="news-hour-group-meta">
-                        {formatCount(group.events.length)} 条 · 推送{" "}
-                        {formatCount(
-                          group.events.filter((event) => event.outcome.group === "pushed").length,
-                        )}
-                      </span>
-                    </div>
-                  ) : null}
-                  {group.events.map((event) => (
-                    <NewsEventRow
-                      event={event}
-                      expanded={expandedId === event.event_id}
-                      fresh={eventFeed.freshIds.has(event.event_id)}
-                      key={event.event_id}
-                      onExpand={toggleExpanded}
-                      onOpen={wideEnoughForDrawer ? setDrawerId : undefined}
-                      quotes={quotes}
-                      searchState={feedSearch}
-                      selectable={false}
-                      selected={false}
-                    />
-                  ))}
-                </Fragment>
+              <div aria-hidden className="news-event-list-header">
+                <span>TIME</span>
+                <span>EVENT</span>
+                <span>OUTCOME</span>
+              </div>
+              {events.map((event) => (
+                <NewsEventRow
+                  event={event}
+                  fresh={eventFeed.freshIds.has(event.event_id)}
+                  key={event.event_id}
+                  onOpen={wideEnoughForDrawer ? setDrawerId : undefined}
+                  quotes={quotes}
+                  searchState={feedSearch}
+                />
               ))}
             </div>
             {historyQuery.hasNextPage || (!historyRequested && historyCursor) ? (
@@ -235,37 +209,6 @@ export function NewsFeedPage({ token }: { token: string }) {
       />
     </NewsPageShell>
   );
-}
-
-type FeedGroup = { events: NewsFeedEvent[]; key: string; label: string };
-
-/**
- * Consecutive Events bucketed by the hour they were published (design proposal ⑤).
- *
- * The grouping is presentational — the rows, their order and their count all come from the server exactly
- * as they arrived.
- */
-function groupByHour(events: NewsFeedEvent[]): FeedGroup[] {
-  const groups: FeedGroup[] = [];
-  let day: string | null = null;
-  for (const event of events) {
-    const key = hourBucketKey(event.opened_at_ms);
-    const last = groups[groups.length - 1];
-    if (last && last.key === key) {
-      last.events.push(event);
-      continue;
-    }
-    // The date appears on the first group of each day and nowhere else: enough to place a run of hours,
-    // quiet enough that it does not repeat down a screenful from the same afternoon.
-    const eventDay = dayBucketLabel(event.opened_at_ms);
-    groups.push({
-      events: [event],
-      key,
-      label: hourBucketLabel(event.opened_at_ms, day !== null && eventDay !== day),
-    });
-    day = eventDay;
-  }
-  return groups;
 }
 
 function emptyTitle(filters: NewsFeedFilters): string {

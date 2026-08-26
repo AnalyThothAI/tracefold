@@ -719,6 +719,8 @@ export interface components {
         NewsDeliveryStatusData: {
             /** Delivery Available */
             delivery_available: boolean;
+            /** E2E P50 Ms */
+            e2e_p50_ms?: number | null;
             /** E2E P95 Ms */
             e2e_p95_ms?: number | null;
             /** Last Error Code */
@@ -1123,8 +1125,12 @@ export interface components {
         NewsFeedFiltersData: {
             /** Admission */
             admission?: string | null;
+            /** Channel */
+            channel?: string | null;
             /** Decision */
             decision?: string | null;
+            /** Direction */
+            direction?: string | null;
             /** Family */
             family?: string | null;
             /** Hours */
@@ -1190,6 +1196,11 @@ export interface components {
         /** NewsFunnelData */
         NewsFunnelData: {
             /**
+             * Admitted
+             * @default 0
+             */
+            admitted: number;
+            /**
              * Candidates
              * @default 0
              */
@@ -1214,6 +1225,11 @@ export interface components {
              * @default 0
              */
             grounded: number;
+            /**
+             * Parsed
+             * @default 0
+             */
+            parsed: number;
             /**
              * Received
              * @default 0
@@ -1521,6 +1537,11 @@ export interface components {
         };
         /** NewsPipelineStatusData */
         NewsPipelineStatusData: {
+            /**
+             * Admitted 24H
+             * @default 0
+             */
+            admitted_24h: number;
             /** Candidate Share 24H */
             candidate_share_24h?: number | null;
             /**
@@ -1551,6 +1572,31 @@ export interface components {
              * @default 0
              */
             events_24h: number;
+            /**
+             * Funnel Admitted 24H
+             * @default 0
+             */
+            funnel_admitted_24h: number;
+            /**
+             * Funnel Delivered 24H
+             * @default 0
+             */
+            funnel_delivered_24h: number;
+            /**
+             * Funnel Parsed 24H
+             * @default 0
+             */
+            funnel_parsed_24h: number;
+            /**
+             * Funnel Received 24H
+             * @default 0
+             */
+            funnel_received_24h: number;
+            /**
+             * Funnel Triaged 24H
+             * @default 0
+             */
+            funnel_triaged_24h: number;
             /**
              * Grounded 24H
              * @default 0
@@ -3289,6 +3335,8 @@ export interface operations {
                 outcome?: string;
                 hours?: number;
                 oi?: string;
+                direction?: string;
+                channel?: string;
             };
             header?: never;
             path?: never;
