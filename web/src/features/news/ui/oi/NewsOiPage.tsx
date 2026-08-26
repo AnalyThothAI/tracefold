@@ -1,8 +1,9 @@
 import { useTradingOrdersWithToken } from "@features/trading";
+import { newsLeveragePath } from "@shared/routing/paths";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
   NEWS_OI_TABS,
@@ -85,7 +86,12 @@ export function NewsOiPage({ token }: { token: string }) {
   return (
     <NewsPageShell archetype="scan" className="news-oi-shell" label="OI 遥测审计">
       <NewsPageHeader
-        subtitle="遥测帧、解析、闸门与推送窗口占用——推送答「读者看什么」，交易地板另判"
+        subtitle={
+          <>
+            遥测帧、解析、闸门与推送窗口占用——推送答「读者看什么」；交易判断在{" "}
+            <Link to={newsLeveragePath()}>杠杆异动</Link>
+          </>
+        }
         title="OI 遥测审计"
       />
 

@@ -155,7 +155,7 @@ export function tradingOrderFixture(overrides: Partial<TradingOrder> = {}): Trad
     must_close_at_ms: TRADING_NOW_MS + 3 * 3_600_000,
     notional_usd: "200",
     order_id: "order-wif",
-    policy_decision: "trade",
+    policy_decision: "long",
     policy_reason: null,
     position_closed_at_ms: null,
     position_opened_at_ms: TRADING_NOW_MS - 360_000,

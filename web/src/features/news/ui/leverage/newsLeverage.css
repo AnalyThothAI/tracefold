@@ -1,0 +1,70 @@
+@layer app.features {
+  /*
+   * 杠杆异动 (#256). A list of cases beside one case in full.
+   *
+   * The measure is deliberately lopsided — the pane is wider than the list — because the list is a set
+   * of five-line summaries and the pane is a document. Colour follows the console's two axes: 做多 red
+   * and 做空 green, everything the pipeline decided on indigo / amber / grey, and no third hue.
+   *
+   * The card and the pane own their own sheets beside their own components; this one owns the page.
+   */
+  .news-leverage-shell {
+    display: grid;
+    gap: 12px;
+    align-content: start;
+  }
+
+  .news-leverage-stats {
+    min-width: 320px;
+  }
+
+  .news-leverage-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .news-leverage-order {
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .news-leverage-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.22fr);
+    gap: 12px;
+    align-items: start;
+  }
+
+  .news-leverage-list {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    min-width: 0;
+  }
+
+  /* The pane cannot hold a document beside a list below this; the list becomes the page and the pane
+     follows it, which is also what a tablet in portrait wants. */
+  @media (max-width: 1279px) {
+    .news-leverage-body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .news-leverage-thesis,
+    .news-leverage-columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 767px) {
+    .news-leverage-evidence > div {
+      grid-template-columns: 48px 56px minmax(0, 1fr);
+    }
+
+    .news-leverage-detail-verdict {
+      margin-left: 0;
+    }
+  }
+}

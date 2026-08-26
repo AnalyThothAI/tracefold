@@ -23,6 +23,7 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
   [/^\/news\/oi$/, "OI 遥测审计"],
+  [/^\/news\/leverage$/, "杠杆异动"],
   [/^\/news$/, "事件流"],
   [/^\/trading$/, "交易 · 模拟仓"],
 ];
@@ -143,6 +144,15 @@ export function topbarFigures(
         label: "今日订单",
         text: budget ? `${budget.orders_today} / ${budget.max_orders_per_day}` : undefined,
       },
+    ];
+  }
+
+  if (pathname === "/news/leverage") {
+    // The lane's own load, from the two status reads the frame already holds: how many frames arrived, and
+    // how many of them the capital lane turned into a case today. Neither is derived in the browser.
+    return [
+      { label: "OI 帧 24H", value: newsStatus?.pipeline.telemetry_received_24h },
+      oiDailyFigure(tradingStatus, nowMs),
     ];
   }
 
