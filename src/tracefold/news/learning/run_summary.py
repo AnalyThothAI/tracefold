@@ -214,10 +214,15 @@ def _population_checks(
             expected=_at(readiness, "identity.program_sha256"),
             note="expected is readiness",
         ),
+        # The two model-binding rows are checked against the route this run composed rather than against
+        # readiness, because readiness only names the endpoint a compile *would* use; these two reports say
+        # what one actually ran on.
         _check(
             "task_model",
             _at(baseline, "identity.runtime_model.compile_task_model"),
             _at(optimization, "model_identities.task.model"),
+            expected=task_route.get("model") or None,
+            note="expected is the task route this run composed",
         ),
     ]
     checks.append(_task_endpoint_check(baseline=baseline, optimization=optimization, task_route=task_route))
