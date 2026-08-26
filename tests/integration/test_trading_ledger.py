@@ -1277,7 +1277,6 @@ def test_the_replay_reads_the_whole_window_through_the_rules_the_scanner_applies
         ),
         strategy=OiSmartMoneyMomentumStrategy(),
         blacklist=Blacklist.from_rows(_repos(conn).trading.blacklist_rows()),
-        listed_symbols={},
         now_ms=NOW,
     )
 

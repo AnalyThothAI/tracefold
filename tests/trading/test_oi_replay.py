@@ -65,7 +65,6 @@ def _replay(rows: list[dict[str, Any]]) -> Any:
         gate=GATE,
         strategy=STRATEGY,
         blacklist=OPEN_DENY,
-        listed_symbols={},
         now_ms=NOW,
     )
 
@@ -158,6 +157,26 @@ def test_an_unroutable_frame_is_refused_and_still_counted_in_the_template_cohort
     assert report.by_reason["routing:venue_unresolved"] == 1
     assert [row.symbol for row in report.target_cohort] == ["TUT"]
     assert report.target_cohort[0].routable is False
+    assert report.routable_symbols == set()
+
+
+def test_coverage_is_left_to_the_caller_rather_than_reported_as_a_zero_nobody_measured() -> None:
+    """A `0` for an issuer nobody looked up reads as "no native perp listed", which is a false negative.
+
+    The report names the routable issuers and stops there; the caller owns the catalogue read and fills
+    `instrument_coverage` from exactly that set.
+    """
+
+    report = _replay(
+        [
+            _row(event_id="tut", symbol="TUT"),
+            _row(event_id="thin", symbol="STORJ", oi_value_usd=3_190_000),
+            _row(event_id="okx", symbol="PENGU", venue="okx"),
+        ]
+    )
+    # STORJ was refused by the liquidity floor and is still routable — coverage is a different question.
+    assert report.routable_symbols == {"TUT", "STORJ"}
+    assert report.instrument_coverage == {}
 
 
 def test_the_template_test_reads_only_the_three_conditions_it_names() -> None:

@@ -155,14 +155,13 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 gate=candidates,
                 strategy=strategy,
                 blacklist=blacklist,
-                listed_symbols={},
                 now_ms=now,
             )
-            # Instrument coverage for the population that got that far, one read per issuer. The set is
-            # bounded by the survivors, not by the window: at the measured rate that is a handful.
-            for symbol in sorted(
-                {row.symbol for row in report.surviving} | {row.symbol for row in report.target_cohort}
-            ):
+            # One catalogue read per *routable* issuer, not per survivor. A coverage number is only
+            # meaningful for a symbol that was actually looked up, and reporting `0` for the rest would
+            # read as "no native perp listed" for issuers nobody asked about. The set is bounded by the
+            # distinct issuers in the window, and each read is a single indexed lookup.
+            for symbol in sorted(report.routable_symbols):
                 listed = repos.news.trade_candidate_instrument(base_symbol=symbol, venues=("binance.perp", "hl.perp"))
                 report.instrument_coverage[symbol] = len(listed)
             return 0, {

@@ -17,7 +17,7 @@ tuned to its own history, and #265 §8 forbids it in as many words.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,6 +83,11 @@ class OiReplayReport:
     by_stage: dict[str, int] = field(default_factory=dict)
     by_reason: dict[str, int] = field(default_factory=dict)
     reader_decisions: dict[str, int] = field(default_factory=dict)
+    # The issuers whose frames resolved to a venue this lane may execute. The caller owns the catalogue
+    # read and fills `instrument_coverage` from exactly this set — a count written here for a symbol
+    # nobody looked up would ship as "no native perp listed", which is a false negative in the one
+    # report whose job is establishing which rule is binding.
+    routable_symbols: set[str] = field(default_factory=set)
     instrument_coverage: dict[str, int] = field(default_factory=dict)
     surviving: list[OiReplayOutcome] = field(default_factory=list)
     target_cohort: list[OiReplayOutcome] = field(default_factory=list)
@@ -104,6 +109,7 @@ class OiReplayReport:
             "by_stage": dict(sorted(self.by_stage.items())),
             "by_reason": dict(sorted(self.by_reason.items())),
             "reader_decisions": dict(sorted(self.reader_decisions.items())),
+            "routable_symbols": sorted(self.routable_symbols),
             "instrument_coverage": dict(sorted(self.instrument_coverage.items())),
             "surviving": [row.as_dict() for row in self.surviving],
             "target_cohort": [row.as_dict() for row in self.target_cohort],
@@ -166,7 +172,6 @@ def replay_oi_facts(
     gate: GateConfig,
     strategy: OiSmartMoneyMomentumStrategy,
     blacklist: Blacklist,
-    listed_symbols: Mapping[str, Sequence[str]],
     now_ms: int,
 ) -> OiReplayReport:
     """Every fact in, one named stop each out. Pure; the caller owns every read.
@@ -205,8 +210,7 @@ def replay_oi_facts(
         if meets_target_template(parsed, config=strategy.config):
             report.target_cohort.append(_outcome(parsed, stage="target", reason="template", routable=routable))
         if routable:
-            venues = listed_symbols.get(parsed.base_symbol, ())
-            report.instrument_coverage[parsed.base_symbol] = len(venues)
+            report.routable_symbols.add(parsed.base_symbol)
 
         # Same order as the runner: eligibility, then routing. `now_ms` is the fact's own observation
         # time so the freshness rule is satisfied by construction and cannot mask the rules under test.
