@@ -220,7 +220,7 @@
     font: var(--type-eyebrow);
   }
 
-  /* The approved scan chrome is shared by the Event and deterministic OI surfaces. */
+  /* The approved scan chrome is shared by the Event, deterministic OI, and Trading surfaces. */
   .topbar[data-reference-frame] {
     padding: 0 14px;
   }

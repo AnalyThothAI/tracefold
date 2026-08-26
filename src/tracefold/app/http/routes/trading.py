@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import UTC, datetime
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Query, Request
@@ -28,6 +29,7 @@ _ORDER_LIMIT: Final = 100
 # the day `oi_signals` bumps it.
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
 _BASE_SYMBOL: Final = re.compile(r"^[A-Z0-9._-]{1,24}$")
+_DAY_KEY: Final = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # The ledger's own predicate for "holds, or may yet turn out to hold, exposure" (`20260823_0300`). The page
 # calls this 当前暴露, and the states it deliberately includes are the dangerous ones: an order whose provider
 # write is ambiguous is *more* likely to be carrying a position than one that is merely open.
@@ -63,7 +65,11 @@ def get_trading_status(request: Request) -> Response:
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
         state = repos.trading.runtime_state() or {}
-        counts = repos.trading.status_counts(since_ms=now_ms - _WINDOW_MS)
+        counts = repos.trading.status_counts(
+            since_ms=now_ms - _WINDOW_MS,
+            now_ms=now_ms,
+            day_key=state.get("day_key"),
+        )
     order = settings.trading.order
     return _etagged(
         {
@@ -97,7 +103,6 @@ def get_trading_status(request: Request) -> Response:
             "counts": {
                 **counts,
                 "funnel_today": _int_map(state.get("funnel")),
-                "funnel_day_key": str(state.get("day_key") or ""),
             },
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
@@ -110,6 +115,7 @@ def get_trading_status(request: Request) -> Response:
 @router.get("/trading/orders", response_model=_OrdersEnvelope)
 def get_trading_orders(
     request: Request,
+    day: Annotated[str, Query(max_length=10)] = "",
     underlying: Annotated[str, Query(max_length=32)] = "",
     state: Annotated[str, Query(max_length=16)] = "",
 ) -> Response:
@@ -123,10 +129,20 @@ def get_trading_orders(
     both so a caller never has to build the key itself.
     """
 
-    _validate_query_params(request, supported={"state", "token", "underlying"})
+    _validate_query_params(request, supported={"day", "state", "token", "underlying"})
     if state and state not in _STATE_FILTERS:
         raise ApiBadRequest("trading_orders_state_invalid", field="state")
     underlying_key = _underlying_key(underlying)
+    closed_from_ms: int | None = None
+    closed_until_ms: int | None = None
+    if day:
+        try:
+            if _DAY_KEY.fullmatch(day) is None:
+                raise ValueError
+            closed_from_ms = int(datetime.fromisoformat(day).replace(tzinfo=UTC).timestamp() * 1000)
+        except ValueError as exc:
+            raise ApiBadRequest("trading_orders_day_invalid", field="day") from exc
+        closed_until_ms = closed_from_ms + 86_400_000
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     since_ms = now_ms - _WINDOW_MS
@@ -138,6 +154,8 @@ def get_trading_orders(
     with runtime.repositories() as repos:
         orders = repos.trading.console_orders(
             since_ms=since_ms,
+            closed_from_ms=closed_from_ms,
+            closed_until_ms=closed_until_ms,
             underlying_key=underlying_key,
             states=states,
             limit=_ORDER_LIMIT + 1,

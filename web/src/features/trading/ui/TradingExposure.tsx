@@ -9,11 +9,11 @@ import {
   holdRemaining,
   ORDER_STATE_NOTE,
   pnlLabel,
-  STRATEGY_ZH,
+  strategyCaseLabel,
   stopVerified,
 } from "../model/tradingLabels";
 
-import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
+import { TradingEmptyNote, TradingInvariantLine } from "./TradingChrome";
 
 /**
  * Everything that holds, or may yet turn out to hold, exposure — and what each row has actually proven.
@@ -28,22 +28,28 @@ import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
  * an internet-facing surface cannot reach them.
  */
 export function TradingExposure({
+  count,
   error,
   loading,
+  mode,
   onRetry,
   rows,
 }: {
+  count: number;
   error: unknown;
   loading: boolean;
+  mode: string;
   onRetry: () => void;
   rows: readonly TradingOrder[];
 }) {
   const nowMs = Date.now();
+  const rowModes = new Set(rows.map((row) => row.mode));
+  const displayedMode = rows.length === 0 ? mode : rowModes.size === 1 ? [...rowModes][0] : "mixed";
   return (
     <Card
       flush
       hint="ACK 不是成交，成交不是保护——每行只声称已证明的那一步"
-      title={`当前暴露 · ${rows.length}`}
+      title={`当前暴露 · ${count}`}
     >
       {error ? <PageState.Error error={error} onRetry={onRetry} /> : null}
       {!error && loading && rows.length === 0 ? (
@@ -63,6 +69,7 @@ export function TradingExposure({
             <span>原生止损</span>
             <span>剩余持有</span>
             <span>状态说明</span>
+            <span>{pnlLabel(displayedMode)}</span>
           </div>
           {rows.map((order) => (
             <article
@@ -72,10 +79,10 @@ export function TradingExposure({
             >
               <span className="trading-symbol">
                 <Link to={newsSymbolPath(order.base_symbol)}>{order.base_symbol}</Link>
-                <small data-side={order.side}>{order.side === "buy" ? "做多" : "做空"}</small>
+                <small data-side={order.side}>{order.side === "buy" ? "多" : "空"}</small>
               </span>
-              <span className="trading-kind">
-                {STRATEGY_ZH[order.strategy_id] ?? order.strategy_id}
+              <span className="trading-kind" title={`strategy_id: ${order.strategy_id}`}>
+                {strategyCaseLabel(order.strategy_id)}
               </span>
               {/* The ledger's own word, never translated into 已成交. */}
               <span className="trading-state" data-state={order.state}>
@@ -98,15 +105,16 @@ export function TradingExposure({
               <span className="trading-note">
                 {order.state_reason ?? ORDER_STATE_NOTE[order.state] ?? ""}
               </span>
+              <span className="trading-num trading-unmeasured">—</span>
             </article>
           ))}
         </div>
       ) : null}
 
-      <TradingSourceLine
-        note={`损益列叫「${pnlLabel("paper")}」，因为 paper 以冻结的 entry_reference 成交：没有真实点差、精度、部分成交与清算，永不折算成收益率曲线`}
-        path="GET /api/trading/orders → orders[]"
-      />
+      <TradingInvariantLine>
+        一个 source fact 至多一个案例 · 一个案例至多一笔意图 · provider_attempt_count ≤ 1 ·
+        歧义后只读对账，永不盲重发
+      </TradingInvariantLine>
     </Card>
   );
 }

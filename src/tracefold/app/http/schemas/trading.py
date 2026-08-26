@@ -107,11 +107,10 @@ class TradingCountsData(ExactApiSchema):
     position but nobody computed a return for it, and counting it turned one +150 bps winner beside three
     resolutions into a reported mean of 37.5.
 
-    `funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count
-    over the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`
-    and is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader
-    can see that a Workers process stopped over midnight left yesterday's totals in place instead of having
-    to infer it.
+    Rolling groupings retain their 24 h window. The `*_today` fields, `policy_allowed_today`, and
+    `funnel_today` bind to the UTC `funnel_day_key`; an upper bound keeps a stale Workers day from silently
+    becoming a multi-day count. `active_orders` is intentionally unbounded because unresolved exposure does
+    not stop mattering after 24 h.
     """
 
     cases_by_state: dict[str, int] = Field(default_factory=dict)
@@ -126,6 +125,10 @@ class TradingCountsData(ExactApiSchema):
     orders_by_state: dict[str, int] = Field(default_factory=dict)
     closed_orders: int = 0
     closed_realized_bps: int = 0
+    cases_today_by_state: dict[str, int] = Field(default_factory=dict)
+    policy_allowed_today: int = 0
+    closed_orders_today: int = 0
+    active_orders: int = 0
     funnel_today: dict[str, int] = Field(default_factory=dict)
     funnel_day_key: str = ""
 

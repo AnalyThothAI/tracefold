@@ -1254,7 +1254,11 @@ def test_one_typed_liquidation_trigger_writes_two_shadow_evaluations_and_zero_or
         "liquidation_exhaustion_shadow_v1": {"long", "short"},
     }
     assert all(set(row["market_outcome"]["horizons"]) == {"5s", "30s", "1m", "5m", "15m", "1h"} for row in rows)
-    counts = _repos(conn).trading.status_counts(since_ms=NOW - 24 * 3_600_000)
+    counts = _repos(conn).trading.status_counts(
+        since_ms=NOW - 24 * 3_600_000,
+        now_ms=NOW,
+        day_key=_day_key_for(NOW),
+    )
     assert counts["shadow_by_strategy"] == {
         "liquidation_continuation_shadow_v1": 2,
         "liquidation_exhaustion_shadow_v1": 2,
@@ -3356,15 +3360,23 @@ def test_only_a_real_exit_imposes_the_cooldown_and_enters_the_pnl_denominator(co
 
     trading = _repos(conn).trading
     _case(conn, case_id="c1", source_key="k1")
+    conn.execute("UPDATE trading_cases SET policy_decision = 'no_trade' WHERE case_id = 'c1'")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="PREPARED")
     trading.update_order(order_id="o1", state="REJECTED", closed_at_ms=NOW, now_ms=NOW)
     conn.commit()
 
     assert trading.last_close_at_ms(underlying_key="crypto:DOGE") is None
-    counts = trading.status_counts(since_ms=NOW - 86_400_000)
+    counts = trading.status_counts(
+        since_ms=NOW - 86_400_000,
+        now_ms=NOW,
+        day_key=_day_key_for(NOW),
+    )
     assert counts["closed_orders"] == 0
+    assert counts["closed_orders_today"] == 0
+    assert counts["policy_allowed_today"] == 0
 
     _case(conn, case_id="c2", source_key="k2", underlying="crypto:SOL")
+    conn.execute("UPDATE trading_cases SET policy_decision = 'long' WHERE case_id = 'c2'")
     _order(conn, order_id="o2", case_id="c2", underlying="crypto:SOL", exchange_id="paper", state="OPEN")
     trading.update_order(
         order_id="o2",
@@ -3376,8 +3388,14 @@ def test_only_a_real_exit_imposes_the_cooldown_and_enters_the_pnl_denominator(co
     )
     conn.commit()
     assert trading.last_close_at_ms(underlying_key="crypto:SOL") == NOW
-    counts = trading.status_counts(since_ms=NOW - 86_400_000)
+    counts = trading.status_counts(
+        since_ms=NOW - 86_400_000,
+        now_ms=NOW,
+        day_key=_day_key_for(NOW),
+    )
     assert (counts["closed_orders"], counts["closed_realized_bps"]) == (1, 150)
+    assert counts["closed_orders_today"] == 1
+    assert counts["policy_allowed_today"] == 1
 
 
 def test_a_deferral_cannot_write_back_a_state_the_commit_path_has_advanced(conn) -> None:
@@ -3651,7 +3669,11 @@ def test_an_operator_resolved_close_cools_the_symbol_but_is_not_a_measured_resul
     # The cooldown applies: a position was open and is now confirmed flat.
     assert trading.last_close_at_ms(underlying_key="crypto:DOGE") == NOW
     # The PnL denominator does not: nobody computed a return for it.
-    counts = trading.status_counts(since_ms=NOW - 86_400_000)
+    counts = trading.status_counts(
+        since_ms=NOW - 86_400_000,
+        now_ms=NOW,
+        day_key=_day_key_for(NOW),
+    )
     assert (counts["closed_orders"], counts["closed_realized_bps"]) == (0, 0)
 
 

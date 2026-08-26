@@ -36,15 +36,25 @@ export const useTradingStatusWithToken = (token: string) =>
     staleTime: 5_000,
   });
 
-export const useTradingOrdersWithToken = (token: string, underlying?: string) =>
+export const useTradingOrdersWithToken = (
+  token: string,
+  underlying?: string,
+  budgetDay?: string | null,
+) =>
   useQuery({
-    enabled: Boolean(token),
-    queryKey: queryKeys.tradingOrders(underlying ?? ""),
+    enabled: Boolean(token) && budgetDay !== null,
+    queryKey: queryKeys.tradingOrders(underlying ?? "", budgetDay ?? ""),
     queryFn: async () =>
       (
         await getApi<TradingOrders>("/api/trading/orders", {
           etagKey: `trading-orders:${underlying ?? "all"}`,
-          params: underlying ? { underlying } : undefined,
+          params:
+            underlying || budgetDay
+              ? {
+                  ...(budgetDay ? { day: budgetDay } : {}),
+                  ...(underlying ? { underlying } : {}),
+                }
+              : undefined,
           token,
         })
       ).data,
