@@ -427,7 +427,7 @@ adjudication_hours
 4. 人工建立/确认事实簇；按簇抽 representative + challenge panels
 5. Primary review
 6. Safety/target/restatement 全量 Second review + controls 20% audit
-7. 分歧裁决；记录 guideline change 和 pre-adjudication agreement
+7. 全部预定义高风险案例及所有其它分歧由 adjudicator 最终裁决；记录 guideline change 和 pre-adjudication agreement
 8. 仅通过 ReviewDesk 接受最终 Review v4
 9. Freeze；检查 cluster/count/cohort/rubric/profile SHA
 10. readiness；若 insufficient，按 blocker 补自然证据，不加模型预算
