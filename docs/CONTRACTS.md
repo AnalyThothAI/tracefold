@@ -1162,7 +1162,10 @@ the one recommended GEPA path. It composes `readiness`, `baseline --dataset
 --mode compile_live` and `optimize` into one directory and defines no second
 Objective Plan, Metric, split, budget or optimizer; the budget flags are the
 underlying commands' own, because inventing defaults for them would be a second
-budget. It registers, accepts, promotes and deploys nothing.
+budget. They divide the way those commands do: every ceiling except
+`--max-baseline-model-cases` bounds the optimization leg, and the standalone
+baseline is bounded only by its corpus, which `--max-baseline-model-cases` must
+cover exactly. It registers, accepts, promotes and deploys nothing.
 
 It takes no `--semantic-judge`: the equivalence judge is
 `llm.news_compiler_reflection`, the route `optimize` cannot be told to leave, so

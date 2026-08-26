@@ -297,7 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-metric-judge-model-calls",
         type=_positive_int,
         required=True,
-        help="judge call ceiling, applied to the standalone baseline and to the optimization separately",
+        help=(
+            "judge call ceiling for the optimization only; the standalone baseline's judge takes no "
+            "ceiling (reaching one scores cases zero rather than raising) and is bounded by "
+            "--max-baseline-model-cases"
+        ),
     )
     learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)

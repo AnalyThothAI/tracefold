@@ -509,8 +509,10 @@ options:
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
   --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-                        judge call ceiling, applied to the standalone baseline
-                        and to the optimization separately
+                        judge call ceiling for the optimization only; the
+                        standalone baseline's judge takes no ceiling (reaching
+                        one scores cases zero rather than raising) and is
+                        bounded by --max-baseline-model-cases
   --max-cost-microusd MAX_COST_MICROUSD
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
