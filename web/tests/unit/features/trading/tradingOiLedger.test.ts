@@ -87,6 +87,27 @@ describe("OI Trading ledger presentation", () => {
     ]);
   });
 
+  it("does not report a failed admission read as a frame nobody evaluated", () => {
+    /*
+     * The admission ledger is its own request and fails on its own. 未评估 is a claim about the frame;
+     * "we could not ask" is a claim about this page, and only one of them is true when the read 5xx'd.
+     */
+    const unread = { ...lookup(), gateAnswered: false };
+
+    expect(tradingOiCellCopy(unread)).toEqual({ primary: "未确认", title: "准入台账未读到" });
+    expect(tradingOiTraceEntries(unread)).toContainEqual([
+      "gate",
+      "准入台账这一轮没有读到，无法回答为什么没有案例",
+    ]);
+    // And a row the order batch *did* answer is still answered exactly.
+    expect(
+      tradingOiCellCopy({
+        ...unread,
+        entry: { kind: "case", value: tradingCaseFixture({ policy_reason: "oi_context_missing" }) },
+      }).primary,
+    ).toBe("拒 · OI 上下文缺失");
+  });
+
   it("does not overwrite a case's own state with the admission that opened it", () => {
     /*
      * A frame that produced a case has an admission row too (`freeze:case_created`). Reading the gate
@@ -107,6 +128,7 @@ function lookup(entry?: TradingOiLookup["entry"]): TradingOiLookup {
     entry,
     eventId: "evt-oi-wif",
     gate: undefined,
+    gateAnswered: true,
     loadFailed: false,
     loaded: true,
   };

@@ -22,6 +22,12 @@ export type TradingOiLookup = {
    * never evaluated, and both are different from a frame whose case exists.
    */
   gate: TradingGateDecision | undefined;
+  /**
+   * Whether the admission ledger answered at all — a separate read from the order batch, and a
+   * separately failable one. Without it an absent `gate` is ambiguous between "the lane has no row for
+   * this frame" and "we could not ask", and only the first of those is a statement about the frame.
+   */
+  gateAnswered: boolean;
   loadFailed: boolean;
   loaded: boolean;
 };
@@ -111,6 +117,11 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
   if (!lookup.loaded) return { primary: "读取中" };
   if (!lookup.entry) {
     const gate = lookup.gate;
+    if (!lookup.gateAnswered) {
+      // The admission ledger is its own read and can fail on its own. 未评估 would be this console
+      // asserting something about the frame on the strength of a request that never came back.
+      return { primary: "未确认", title: "准入台账未读到" };
+    }
     if (gate?.gate_status && gate.gate_status !== "CASE_CREATED") {
       const key = `${gate.gate_stage}:${gate.gate_reason}`;
       return {
@@ -157,7 +168,12 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
       return [
         ["event_id", lookup.eventId],
         ["case", lookup.complete ? "未成案" : "未确认（账本批次已截断）"],
-        ["gate", "本帧在任何 gate 版本下都没有落库的准入判定"],
+        [
+          "gate",
+          lookup.gateAnswered
+            ? "本帧在任何 gate 版本下都没有落库的准入判定"
+            : "准入台账这一轮没有读到，无法回答为什么没有案例",
+        ],
         ["join", "只按已发布 event_id；不按 symbol/time 猜"],
       ];
     }

@@ -199,10 +199,12 @@ export function NewsOiPage({ token }: { token: string }) {
               rows={rows}
               tab={tab}
               trading={tradingQuery.data}
-              tradingError={
-                (tradingQuery.isError && !tradingQuery.data) ||
-                (gateQuery.isError && !gateQuery.data)
-              }
+              /*
+               * Only the order batch failing makes the whole column unanswerable. A failed admission
+               * read costs the *reason* a frame has no case, which the cell reports on its own — a row
+               * that does have an order or a case can still be answered exactly.
+               */
+              tradingError={tradingQuery.isError && !tradingQuery.data}
             />
           </div>
         </PageState.Stale>
