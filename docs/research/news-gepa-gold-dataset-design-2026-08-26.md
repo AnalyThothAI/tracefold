@@ -234,7 +234,7 @@ queue sampler/selection version
 1. `Drafter`：LLM 生成 proposal，不可接受；
 2. `Primary reviewer`：逐证据独立作答；
 3. `Second reviewer`：对所有 target/safety/restatement 和随机 controls 盲审，不看第一人的选择；
-4. `Adjudicator`：只处理分歧，给出最终 rubric 和 guideline change。
+4. `Adjudicator`：对全部预定义高风险案例和任何其它分歧做最终裁决，给出最终 rubric 和 guideline change。
 
 模型 draft 会造成锚定风险，因此至少一名 reviewer 应在校准集和审计子集上看不到 suggestion。其结果用来衡量“LLM 辅助节省了多少时间”以及“是否改变了人的 label 分布”，而不是默认模型总能提高质量。
 
@@ -244,6 +244,7 @@ queue sampler/selection version
 
 - 100% 双审：`must_push`、`must_hold`、factual failure、GEPA target、restatement/duplicate_of、external miss、low-confidence；
 - 100% 双审：任何显式 `first_bad_owner=triage_prompt`；
+- 100% 最终裁决：所有 GEPA target、must action、factual failure、sent-restatement leak、low-confidence、显式 `triage_prompt` failure；即使两名 reviewer 一致也不能跳过 adjudicator；
 - 至少 20% 随机双审：普通 stable-correct controls，按 strata 分层；
 - 0% 自动接受：LLM draft；
 - 全部 annotator disagreement 必须裁决，不能用 majority vote 跳过证据。
@@ -275,7 +276,7 @@ queue sampler/selection version
 - factual/timeliness failure 有明确、可验证的 `expected_correction`；
 - 任一 scored typed failure 都有 exact `expected`；
 - GEPA target 的 `first_bad_owner=triage_prompt` 是人显式填写，不是系统推导；
-- safety/target/duplicate/low-confidence 已完成双审，所有分歧已经裁决；
+- safety/target/duplicate/low-confidence 已完成双审；全部预定义高风险案例及所有其它分歧已经由 adjudicator 最终裁决；
 - 最终 acceptance 只通过 ReviewDesk 写入 PostgreSQL receipt。
 
 **仓库事实。** Review v4 已在 schema 中强制 factual label、push 的 timeliness、fail 的 evidence ref，以及 expected 只能对应 failed dimension。[EventRubricSubmission validator](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/review/desk.py#L321-L364)
