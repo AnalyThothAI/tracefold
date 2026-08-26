@@ -94,7 +94,9 @@ describe("NewsOiPage", () => {
 
   it("shows whether Trading is running and reads direction from its policy", async () => {
     renderOi();
-    expect(await screen.findByText("PAPER · 资本通道关闭 · Alpha 地板在 3 条策略各自")).toBeInTheDocument();
+    expect(
+      await screen.findByText("PAPER · 资本通道关闭 · Alpha 地板在 3 条策略各自"),
+    ).toBeInTheDocument();
 
     cleanup();
     const baseStatus = newsStatusFixture();

@@ -762,10 +762,17 @@ export function leverageListRows(cases: readonly LeverageCase[]): LeverageListRo
     counted.set(key, (counted.get(key) ?? 0) + 1);
   }
   const rows: LeverageListRow[] = [];
-  const groups = new Map<string, { kind: "group"; key: string; items: LeverageCase[]; label: string; rule: string }>();
+  const groups = new Map<
+    string,
+    { kind: "group"; key: string; items: LeverageCase[]; label: string; rule: string }
+  >();
   for (const item of cases) {
     const key = groupKey(item);
-    if (item.triggerKind === "oi" || item.phase !== "no_trade" || (counted.get(key) ?? 0) < GROUP_MIN) {
+    if (
+      item.triggerKind === "oi" ||
+      item.phase !== "no_trade" ||
+      (counted.get(key) ?? 0) < GROUP_MIN
+    ) {
       rows.push({ kind: "case", item });
       continue;
     }

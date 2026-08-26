@@ -200,7 +200,8 @@ export function NewsOiPage({ token }: { token: string }) {
               tab={tab}
               trading={tradingQuery.data}
               tradingError={
-                (tradingQuery.isError && !tradingQuery.data) || (gateQuery.isError && !gateQuery.data)
+                (tradingQuery.isError && !tradingQuery.data) ||
+                (gateQuery.isError && !gateQuery.data)
               }
             />
           </div>

@@ -83,7 +83,9 @@ export function tradingOiLedgerByEventId(
  * in this index — it is one of the lane's answers and the distributions count it, but no frame on this
  * page is the frame it is about.
  */
-export function tradingGateByEventId(gate: TradingGate | undefined): Map<string, TradingGateDecision> {
+export function tradingGateByEventId(
+  gate: TradingGate | undefined,
+): Map<string, TradingGateDecision> {
   const result = new Map<string, TradingGateDecision>();
   for (const decision of gate?.decisions ?? []) {
     if (decision.event_id) result.set(decision.event_id, decision);
@@ -217,7 +219,8 @@ function gateEvidenceEntries(gate: TradingGateDecision): Array<[string, string]>
   const entries: Array<[string, string]> = [];
   if (evidence?.floor != null) entries.push(["evidence.floor", String(evidence.floor)]);
   if (evidence?.limit != null) entries.push(["evidence.limit", String(evidence.limit)]);
-  if (evidence?.max_age_ms != null) entries.push(["evidence.max_age_ms", String(evidence.max_age_ms)]);
+  if (evidence?.max_age_ms != null)
+    entries.push(["evidence.max_age_ms", String(evidence.max_age_ms)]);
   if (evidence?.enabled?.length) entries.push(["evidence.enabled", evidence.enabled.join(", ")]);
   return entries;
 }

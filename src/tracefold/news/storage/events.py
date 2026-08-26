@@ -287,9 +287,7 @@ class EventStorage:
         can settle the same Event twice; the row is identical either way.
         """
 
-        rows = [
-            (str(symbol or "").strip().upper().removeprefix("XYZ-"), market_type) for symbol, market_type in assets
-        ]
+        rows = [(str(symbol or "").strip().upper().removeprefix("XYZ-"), market_type) for symbol, market_type in assets]
         rows = [row for row in rows if row[0]]
         if not rows:
             return

@@ -235,9 +235,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
                 <NewsLeverageGroupCard
                   expanded={expanded.includes(row.key)}
                   key={row.key}
-                  onSelect={(item) =>
-                    setSearchParams(nextParams(tab, item.id), { replace: true })
-                  }
+                  onSelect={(item) => setSearchParams(nextParams(tab, item.id), { replace: true })}
                   onToggle={() =>
                     setExpanded((keys) =>
                       keys.includes(row.key)
@@ -299,4 +297,3 @@ function nextParams(tab: LeverageTab, caseId: string | null): URLSearchParams {
   if (caseId) params.set("case", caseId);
   return params;
 }
-
