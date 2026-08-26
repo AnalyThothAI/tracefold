@@ -20,7 +20,6 @@ from .oi_momentum import OiMomentumConfig, oi_gate
 class NewsOiAlignmentConfig:
     allow_short: bool = False
     min_whale_long_profit_bps: int = 9_500
-    min_oi_value_usd: int = 20_000_000
     live_min_surprise: int = 2
     live_max_price_in: int = 1
 
@@ -29,7 +28,6 @@ class NewsOiAlignmentConfig:
         return {
             "allow_short": self.allow_short,
             "min_whale_long_profit_bps": self.min_whale_long_profit_bps,
-            "min_oi_value_usd": self.min_oi_value_usd,
             "live_min_surprise": self.live_min_surprise,
             "live_max_price_in": self.live_max_price_in,
         }
@@ -63,7 +61,6 @@ class NewsOiAlignmentStrategy:
             config=OiMomentumConfig(
                 allow_short=self.config.allow_short,
                 min_whale_long_profit_bps=self.config.min_whale_long_profit_bps,
-                min_oi_value_usd=self.config.min_oi_value_usd,
             ),
             permission=self.permission,
         )

@@ -21,12 +21,155 @@ from tracefold.trading.candidate.eligibility import (
     oi_candidate,
 )
 from tracefold.trading.candidate.fusion import attach_news, attach_oi, plan_triggers
+from tracefold.trading.candidate.gate import GateConfig, admit_route, admit_trigger
 from tracefold.trading.candidate.routing import resolve_instrument, signal_exchange_id
 from tracefold.trading.contracts import NewsTradeCandidate, OiTradeCandidate
 from tracefold.trading.pipeline.candidate import scan_horizon_ms
 
 NOW = 1_787_000_000_000
 OPEN_DENY = Blacklist.from_rows([{"base_symbol": "BTC", "reason": "benchmark_large_cap"}])
+OPEN_GATE = GateConfig.from_policy(EligibilityPolicy(), venue_priority=("binance", "hyperliquid"))
+
+
+def _admitted(
+    signals: Any,
+    *,
+    now_ms: int = NOW,
+    config: GateConfig = OPEN_GATE,
+    blacklist: Blacklist = OPEN_DENY,
+    active_underlyings: Any = (),
+    underlyings_in_flight: Any = (),
+    cased_source_keys: Any = (),
+) -> set[str]:
+    """The OI source keys the Candidate Gate would let trigger, computed exactly as `_plan` does.
+
+    Spelling the set out by hand in each fusion test would let the gate and the planner disagree
+    without anything failing, which is the class of defect #264 exists to remove.
+    """
+
+    keys: set[str] = set()
+    for signal in signals:
+        refused = admit_trigger(
+            signal,
+            now_ms=now_ms,
+            config=config,
+            blacklist=blacklist,
+            active_underlyings=active_underlyings,
+            underlyings_in_flight=underlyings_in_flight,
+            cased_source_keys=cased_source_keys,
+        ) or admit_route(signal, config=config)
+        if refused is None:
+            keys.add(signal.source_key)
+    return keys
+
+
+def _plans(
+    *,
+    oi: Any = (),
+    news: Any = (),
+    now_ms: int = NOW,
+    policy: Any = None,
+    blacklist: Blacklist = OPEN_DENY,
+    active_underlyings: Any = (),
+    underlyings_in_flight: Any = (),
+    cased_source_keys: Any = (),
+    funnel: Any = None,
+) -> Any:
+    """`plan_triggers` with the OI lane's trigger set taken from the gate, as the runner composes it."""
+
+    resolved = policy or EligibilityPolicy()
+    config = GateConfig.from_policy(resolved, venue_priority=("binance", "hyperliquid"))
+    return plan_triggers(
+        oi=oi,
+        news=news,
+        now_ms=now_ms,
+        policy=resolved,
+        oi_trigger_keys=_admitted(
+            oi,
+            now_ms=now_ms,
+            config=config,
+            blacklist=blacklist,
+            active_underlyings=active_underlyings,
+            underlyings_in_flight=underlyings_in_flight,
+            cased_source_keys=cased_source_keys,
+        ),
+        active_underlyings=active_underlyings,
+        underlyings_in_flight=underlyings_in_flight,
+        cased_source_keys=cased_source_keys,
+        funnel=funnel,
+    )
+
+
+OPEN_GATE = GateConfig.from_policy(EligibilityPolicy(), venue_priority=("binance", "hyperliquid"))
+
+
+def _admitted(
+    signals: Any,
+    *,
+    now_ms: int = NOW,
+    config: GateConfig = OPEN_GATE,
+    blacklist: Blacklist = OPEN_DENY,
+    active_underlyings: Any = (),
+    underlyings_in_flight: Any = (),
+    cased_source_keys: Any = (),
+) -> set[str]:
+    """The OI source keys the Candidate Gate would let trigger, computed exactly as `_plan` does.
+
+    Spelling the set out by hand in each fusion test would let the gate and the planner disagree
+    without anything failing, which is the class of defect #264 exists to remove.
+    """
+
+    keys: set[str] = set()
+    for signal in signals:
+        refused = admit_trigger(
+            signal,
+            now_ms=now_ms,
+            config=config,
+            blacklist=blacklist,
+            active_underlyings=active_underlyings,
+            underlyings_in_flight=underlyings_in_flight,
+            cased_source_keys=cased_source_keys,
+        ) or admit_route(signal, config=config)
+        if refused is None:
+            keys.add(signal.source_key)
+    return keys
+
+
+def _plans(
+    *,
+    oi: Any = (),
+    news: Any = (),
+    now_ms: int = NOW,
+    policy: Any = None,
+    blacklist: Blacklist = OPEN_DENY,
+    active_underlyings: Any = (),
+    underlyings_in_flight: Any = (),
+    cased_source_keys: Any = (),
+    funnel: Any = None,
+) -> Any:
+    """`plan_triggers` with the OI lane's trigger set taken from the gate, as the runner composes it."""
+
+    resolved = policy or EligibilityPolicy()
+    config = GateConfig.from_policy(resolved, venue_priority=("binance", "hyperliquid"))
+    return plan_triggers(
+        oi=oi,
+        news=news,
+        now_ms=now_ms,
+        policy=resolved,
+        oi_trigger_keys=_admitted(
+            oi,
+            now_ms=now_ms,
+            config=config,
+            blacklist=blacklist,
+            active_underlyings=active_underlyings,
+            underlyings_in_flight=underlyings_in_flight,
+            cased_source_keys=cased_source_keys,
+        ),
+        active_underlyings=active_underlyings,
+        underlyings_in_flight=underlyings_in_flight,
+        cased_source_keys=cased_source_keys,
+        funnel=funnel,
+    )
 
 
 def _oi_row(**kwargs: Any) -> dict[str, Any]:
@@ -111,7 +254,7 @@ def _news_row(**kwargs: Any) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------- OI eligibility
 def test_a_qualifying_frame_becomes_a_candidate_and_keeps_its_venue() -> None:
-    candidate = oi_candidate(_oi_row(), now_ms=NOW, blacklist=OPEN_DENY)
+    candidate = oi_candidate(_oi_row())
     assert isinstance(candidate, OiTradeCandidate)
     # Venue is the strongest single discriminator the research measured, so it must survive the
     # projection rather than being dropped with the rest of the frame.
@@ -119,23 +262,30 @@ def test_a_qualifying_frame_becomes_a_candidate_and_keeps_its_venue() -> None:
     assert candidate.source_key == "oi:e1:oi_signal_v1"
 
 
-def test_the_deny_list_rejects_before_anything_else_spends_work() -> None:
-    result = oi_candidate(_oi_row(symbol="BTC"), now_ms=NOW, blacklist=OPEN_DENY)
-    assert isinstance(result, Rejected)
-    assert result.rule.startswith("blacklisted:")
+def test_the_source_stage_names_every_contract_failure_and_owns_no_threshold() -> None:
+    """#264: `oi_candidate` answers "is this a usable OI fact", and nothing about capital.
 
+    The deny list, the rank ceiling and the liquidity floor moved to the Candidate Gate, which is the
+    only place they are executed and the only place that writes down why. What is left is the source
+    contract, and every part of it is still a named rejection rather than a default.
+    """
 
-def test_rank_and_thin_open_interest_are_all_named_rejections() -> None:
     for row, rule in (
-        (_oi_row(rank_in_window=6), "rank_exhausted"),
-        (_oi_row(oi_value_usd=3_000_000), "oi_value_below_floor"),
+        (_oi_row(symbol=""), "symbol_not_canonicalisable"),
         (_oi_row(direction="sideways"), "oi_direction_unknown"),
         (_oi_row(ingest_mode="recovery"), "not_live_ingest"),
         (_oi_row(verdict_created_at_ms=None), "verdict_time_missing"),
+        (_oi_row(observed_at_ms=None), "observed_at_missing"),
+        (_oi_row(rank_in_window=None), "rank_missing"),
+        (_oi_row(program_version="news_oi_signal_v0"), "generation_invalid"),
     ):
-        result = oi_candidate(row, now_ms=NOW, blacklist=OPEN_DENY)
-        assert isinstance(result, Rejected)
+        result = oi_candidate(row)
+        assert isinstance(result, Rejected), rule
         assert result.rule == rule
+    # A rank the gate would refuse and an open interest below the floor are both perfectly usable
+    # facts: the source stage returns them, and the gate is what says no.
+    assert isinstance(oi_candidate(_oi_row(rank_in_window=6, oi_value_usd=3_000_000)), OiTradeCandidate)
+    assert isinstance(oi_candidate(_oi_row(symbol="BTC")), OiTradeCandidate)
 
 
 def test_a_dropped_reader_verdict_is_still_a_visible_oi_fact() -> None:
@@ -147,9 +297,7 @@ def test_a_dropped_reader_verdict_is_still_a_visible_oi_fact() -> None:
     """
 
     result = oi_candidate(
-        _oi_row(final_decision="drop", source_rule="whale_ratio_below_threshold", whale_oi_ratio_bps=5_424),
-        now_ms=NOW,
-        blacklist=OPEN_DENY,
+        _oi_row(final_decision="drop", source_rule="whale_ratio_below_threshold", whale_oi_ratio_bps=5_424)
     )
     assert isinstance(result, OiTradeCandidate)
     assert result.final_decision == "drop"
@@ -162,11 +310,11 @@ def test_age_is_not_an_eligibility_rule_it_is_a_trigger_rule() -> None:
 
     policy = EligibilityPolicy()
     old_row = _oi_row(observed_at_ms=NOW - 10_000_000)
-    aged = oi_candidate(old_row, now_ms=NOW, blacklist=OPEN_DENY, policy=policy)
+    aged = oi_candidate(old_row)
     assert isinstance(aged, OiTradeCandidate)
     assert is_fresh_trigger(aged.observed_at_ms, now_ms=NOW, policy=policy) is False
 
-    fresh = oi_candidate(_oi_row(), now_ms=NOW, blacklist=OPEN_DENY, policy=policy)
+    fresh = oi_candidate(_oi_row())
     assert isinstance(fresh, OiTradeCandidate)
     assert is_fresh_trigger(fresh.observed_at_ms, now_ms=NOW, policy=policy) is True
 
@@ -213,10 +361,10 @@ def test_two_primaries_a_restatement_and_a_weak_magnitude_are_all_rejected() -> 
 
 def test_the_funnel_counts_exactly_the_rules_that_fired() -> None:
     funnel = Funnel()
-    oi_candidate(_oi_row(symbol="BTC"), now_ms=NOW, blacklist=OPEN_DENY, funnel=funnel)
-    oi_candidate(_oi_row(), now_ms=NOW, blacklist=OPEN_DENY, funnel=funnel)
+    oi_candidate(_oi_row(direction="sideways"), funnel=funnel)
+    oi_candidate(_oi_row(), funnel=funnel)
     counts = funnel.as_dict()
-    assert counts["oi_reject:blacklisted:benchmark_large_cap"] == 1
+    assert counts["oi_reject:oi_direction_unknown"] == 1
     assert counts["oi_eligible"] == 1
     assert counts["oi_eligible_venue:hyperliquid"] == 1
 
@@ -224,7 +372,7 @@ def test_the_funnel_counts_exactly_the_rules_that_fired() -> None:
 # ---------------------------------------------------------------------------- fusion
 def test_fusion_is_point_in_time_only() -> None:
     policy = EligibilityPolicy()
-    signal = oi_candidate(_oi_row(observed_at_ms=NOW - 60_000), now_ms=NOW, blacklist=OPEN_DENY)
+    signal = oi_candidate(_oi_row(observed_at_ms=NOW - 60_000))
     assert isinstance(signal, OiTradeCandidate)
 
     earlier = news_candidate(_news_row(verdict_created_at_ms=NOW - 120_000), now_ms=NOW, blacklist=OPEN_DENY)
@@ -239,7 +387,7 @@ def test_fusion_is_point_in_time_only() -> None:
 def test_disjoint_symbol_sets_produce_no_fusion_which_is_the_measured_shape() -> None:
     # In a full day of both lanes running, the OI symbols and the News symbols overlapped once and
     # never inside the window. `news_oi` — the only live-eligible kind — is genuinely rare.
-    signal = oi_candidate(_oi_row(symbol="PENGU"), now_ms=NOW, blacklist=OPEN_DENY)
+    signal = oi_candidate(_oi_row(symbol="PENGU"))
     news = news_candidate(
         _news_row(verdict={"assets": [{"symbol": "ZEC", "role": "primary"}]}, grounded_assets=["ZEC"]),
         now_ms=NOW,
@@ -304,7 +452,7 @@ MINUTE = 60_000
 
 
 def _eligible_oi(**kwargs: Any) -> OiTradeCandidate:
-    candidate = oi_candidate(_oi_row(**kwargs), now_ms=NOW, blacklist=OPEN_DENY)
+    candidate = oi_candidate(_oi_row(**kwargs))
     assert isinstance(candidate, OiTradeCandidate)
     return candidate
 
@@ -328,7 +476,7 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
     """
 
     policy = EligibilityPolicy()
-    inside_news = plan_triggers(
+    inside_news = _plans(
         oi=[_eligible_oi()],
         news=[_eligible_news(verdict_created_at_ms=NOW - 45 * MINUTE)],
         now_ms=NOW,
@@ -337,7 +485,7 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
     assert _kinds(inside_news) == ["oi"]
     assert inside_news[0].news is not None
 
-    outside_news = plan_triggers(
+    outside_news = _plans(
         oi=[_eligible_oi()],
         news=[_eligible_news(verdict_created_at_ms=NOW - 61 * MINUTE)],
         now_ms=NOW,
@@ -346,7 +494,7 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
     assert _kinds(outside_news) == ["oi"]
     assert outside_news[0].news is None
 
-    inside_oi = plan_triggers(
+    inside_oi = _plans(
         oi=[_eligible_oi(observed_at_ms=NOW - 20 * MINUTE)],
         news=[_eligible_news()],
         now_ms=NOW,
@@ -355,7 +503,7 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
     assert _kinds(inside_oi) == ["news"]
     assert inside_oi[0].oi is not None
 
-    outside_oi = plan_triggers(
+    outside_oi = _plans(
         oi=[_eligible_oi(observed_at_ms=NOW - 31 * MINUTE)],
         news=[_eligible_news()],
         now_ms=NOW,
@@ -371,11 +519,11 @@ def test_context_older_than_the_trigger_budget_attaches_but_never_triggers_on_it
     policy = EligibilityPolicy()
     aged_news = _eligible_news(verdict_created_at_ms=NOW - 45 * MINUTE)
     funnel = Funnel()
-    alone = plan_triggers(oi=[], news=[aged_news], now_ms=NOW, policy=policy, funnel=funnel)
+    alone = _plans(oi=[], news=[aged_news], now_ms=NOW, policy=policy, funnel=funnel)
     assert alone == []
     assert funnel.as_dict()["news_context_only"] == 1
 
-    with_trigger = plan_triggers(oi=[_eligible_oi()], news=[aged_news], now_ms=NOW, policy=policy)
+    with_trigger = _plans(oi=[_eligible_oi()], news=[aged_news], now_ms=NOW, policy=policy)
     assert _kinds(with_trigger) == ["oi"]
     assert with_trigger[0].news is aged_news
 
@@ -385,7 +533,7 @@ def test_no_plan_ever_carries_a_fact_later_than_its_own_cutoff() -> None:
 
     policy = EligibilityPolicy()
     for signal_at, verdict_at in ((NOW, NOW - MINUTE), (NOW - MINUTE, NOW), (NOW, NOW)):
-        plans = plan_triggers(
+        plans = _plans(
             oi=[_eligible_oi(observed_at_ms=signal_at)],
             news=[_eligible_news(verdict_created_at_ms=verdict_at)],
             now_ms=NOW,
@@ -427,7 +575,7 @@ def test_two_triggers_for_one_underlying_coalesce_to_the_newest_and_say_so() -> 
     funnel = Funnel()
     older = _eligible_oi(event_id="e-old", observed_at_ms=NOW - 2 * MINUTE)
     newer = _eligible_oi(event_id="e-new", observed_at_ms=NOW - MINUTE)
-    plans = plan_triggers(oi=[older, newer], news=[], now_ms=NOW, policy=policy, funnel=funnel)
+    plans = _plans(oi=[older, newer], news=[], now_ms=NOW, policy=policy, funnel=funnel)
 
     assert len(plans) == 1
     assert plans[0].source_key == newer.source_key
@@ -441,7 +589,7 @@ def test_an_oi_frame_wins_a_dead_heat_with_a_news_verdict() -> None:
     """
 
     policy = EligibilityPolicy()
-    plans = plan_triggers(
+    plans = _plans(
         oi=[_eligible_oi(observed_at_ms=NOW)],
         news=[_eligible_news(verdict_created_at_ms=NOW)],
         now_ms=NOW,
@@ -456,20 +604,28 @@ def test_an_underlying_with_an_undecided_case_gets_no_second_thesis() -> None:
     """One frozen research decision per issuer at a time; the second would buy the same answer twice."""
 
     policy = EligibilityPolicy()
-    funnel = Funnel()
-    plans = plan_triggers(
+    plans = _plans(
         oi=[_eligible_oi()],
         news=[],
         now_ms=NOW,
         policy=policy,
         underlyings_in_flight={"crypto:DOGE"},
-        funnel=funnel,
     )
     assert plans == []
-    assert funnel.as_dict()["plan_reject:case_in_flight"] == 1
+    # The gate is what refuses it now, and it says so durably rather than only in the day's funnel.
+    refused = admit_trigger(
+        _eligible_oi(),
+        now_ms=NOW,
+        config=OPEN_GATE,
+        blacklist=OPEN_DENY,
+        underlyings_in_flight={"crypto:DOGE"},
+    )
+    assert refused is not None
+    assert (refused.status, refused.stage, refused.reason) == ("DEFERRED", "eligibility", "case_in_flight")
+    assert refused.retryable is True
 
     # A settled case is not a block. Nothing is in flight, so the same trigger plans normally.
-    assert _kinds(plan_triggers(oi=[_eligible_oi()], news=[], now_ms=NOW, policy=policy)) == ["oi"]
+    assert _kinds(_plans(oi=[_eligible_oi()], news=[], now_ms=NOW, policy=policy)) == ["oi"]
 
 
 def test_the_scan_horizon_covers_the_whole_configured_context_window() -> None:
@@ -508,18 +664,18 @@ def test_a_news_triggered_plan_stamps_the_event_open_and_the_verdict_apart() -> 
 
     policy = EligibilityPolicy()
     verdict = _eligible_news(opened_at_ms=NOW - 90_000, verdict_created_at_ms=NOW - 30_000)
-    plans = plan_triggers(oi=[], news=[verdict], now_ms=NOW, policy=policy)
+    plans = _plans(oi=[], news=[verdict], now_ms=NOW, policy=policy)
     assert len(plans) == 1
     assert (plans[0].source_observed_at_ms, plans[0].trigger_persisted_at_ms) == (NOW - 90_000, NOW - 30_000)
 
     inverted = _eligible_news(opened_at_ms=NOW, verdict_created_at_ms=NOW - 30_000)
-    clamped = plan_triggers(oi=[], news=[inverted], now_ms=NOW, policy=policy)
+    clamped = _plans(oi=[], news=[inverted], now_ms=NOW, policy=policy)
     assert clamped[0].source_observed_at_ms == clamped[0].trigger_persisted_at_ms == NOW - 30_000
 
 
 def test_an_oi_triggered_plan_stamps_the_frame_and_its_verdict_apart() -> None:
     policy = EligibilityPolicy()
-    plans = plan_triggers(
+    plans = _plans(
         oi=[_eligible_oi(observed_at_ms=NOW - 20_000, verdict_created_at_ms=NOW - 15_000)],
         news=[],
         now_ms=NOW,
@@ -537,7 +693,7 @@ def test_a_counterpart_folded_into_the_manifest_is_not_also_counted_as_supersede
     """
 
     funnel = Funnel()
-    plans = plan_triggers(
+    plans = _plans(
         oi=[_eligible_oi(observed_at_ms=NOW)],
         news=[_eligible_news(verdict_created_at_ms=NOW - MINUTE)],
         now_ms=NOW,
@@ -550,7 +706,7 @@ def test_a_counterpart_folded_into_the_manifest_is_not_also_counted_as_supersede
 
     # A second frame for the same underlying genuinely is dropped, and that one is counted.
     dropped = Funnel()
-    plan_triggers(
+    _plans(
         oi=[_eligible_oi(event_id="e-old", observed_at_ms=NOW - 2 * MINUTE), _eligible_oi(observed_at_ms=NOW)],
         news=[],
         now_ms=NOW,
@@ -572,18 +728,24 @@ def test_a_trigger_that_already_produced_a_case_stops_winning_the_coalescing() -
     policy = EligibilityPolicy()
     older = _eligible_oi(event_id="e-old", observed_at_ms=NOW - 2 * MINUTE)
     newer = _eligible_oi(event_id="e-new", observed_at_ms=NOW - MINUTE)
-    funnel = Funnel()
 
-    first = plan_triggers(oi=[older, newer], news=[], now_ms=NOW, policy=policy, funnel=funnel)
+    first = _plans(oi=[older, newer], news=[], now_ms=NOW, policy=policy)
     assert first[0].source_key == newer.source_key
 
-    second = plan_triggers(
+    second = _plans(
         oi=[older, newer],
         news=[],
         now_ms=NOW,
         policy=policy,
         cased_source_keys={newer.source_key},
-        funnel=funnel,
     )
     assert second[0].source_key == older.source_key
-    assert funnel.as_dict()["oi_already_cased"] == 1
+    consumed = admit_trigger(
+        newer,
+        now_ms=NOW,
+        config=OPEN_GATE,
+        blacklist=OPEN_DENY,
+        cased_source_keys={newer.source_key},
+    )
+    assert consumed is not None
+    assert (consumed.status, consumed.reason) == ("REJECTED", "already_consumed")

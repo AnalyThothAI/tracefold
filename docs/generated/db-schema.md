@@ -488,6 +488,26 @@
 | `novelty_defaulted` | `BOOLEAN` | True | `None` |
 | `seen_scope` | `TEXT` | True | `None` |
 
+## `trading_candidate_gate_decisions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_key` | `TEXT` | False | `None` |
+| `gate_version` | `TEXT` | False | `None` |
+| `gate_config_digest` | `CHAR(64)` | False | `None` |
+| `trigger_kind` | `TEXT` | False | `None` |
+| `underlying_key` | `TEXT` | True | `None` |
+| `source_observed_at_ms` | `BIGINT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `stage` | `TEXT` | False | `None` |
+| `reason` | `TEXT` | False | `None` |
+| `retryable` | `BOOLEAN` | False | `None` |
+| `evidence` | `JSONB` | False | `'{}'::jsonb` |
+| `case_id` | `TEXT` | True | `None` |
+| `first_evaluated_at_ms` | `BIGINT` | False | `None` |
+| `last_evaluated_at_ms` | `BIGINT` | False | `None` |
+| `attempt_count` | `INTEGER` | False | `1` |
+
 ## `trading_cases`
 
 | Column | Type | Nullable | Default |

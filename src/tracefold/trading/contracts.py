@@ -52,6 +52,17 @@ NewsLearningEpoch = Literal["program_v7"]
 # document and `venue` is provider text that may be absent.
 
 
+def oi_source_key(event_id: object, metric_version: object) -> str:
+    """The deterministic OI lane's source identity, from either a raw row or a typed candidate.
+
+    A row rejected at the source stage never becomes an `OiTradeCandidate`, and its admission decision
+    still has to be filed under the same key the case would have used — so the construction lives here
+    rather than only on the model.
+    """
+
+    return f"oi:{event_id}:{metric_version}"
+
+
 class OiCandidateRow(TypedDict):
     """One parsed deterministic OI telemetry fact offered to the candidate scanner."""
 
@@ -334,7 +345,7 @@ class OiTradeCandidate(_Frozen):
 
     @property
     def source_key(self) -> str:
-        return f"oi:{self.event_id}:{self.metric_version}"
+        return oi_source_key(self.event_id, self.metric_version)
 
 
 class NewsTradeCandidate(_Frozen):
@@ -912,6 +923,7 @@ __all__ = [
     "TriggerKind",
     "canonical_base_symbol",
     "canonical_sha256",
+    "oi_source_key",
     "underlying_key",
     "utc_day_key",
 ]

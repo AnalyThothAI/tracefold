@@ -123,8 +123,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # Several migrations have moved the head since that cut, through the Trading exit/kernel work and
     # #221's status metrics (0311). A dict has one key, so the latest intentional migration owns it.
     "migration_head": (
-        "issue_221_news_status_metrics",
-        "20260826_0311",
+        "issue_264_candidate_gate_ledger",
+        "20260826_0312",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
@@ -261,8 +261,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "news_semantic_program_v5",
     ),
     "representative_trading_flow.flow.manifest_sha256": (
-        "issue_213_versioned_strategy_kernel_then_issue_264_oi_fact_projection",
-        "84def8a743f5477e451dab173e8fe04946573f3557e0240004841250f7f4140d",
+        "issue_213_versioned_strategy_kernel_then_issue_264_capital_gate",
+        "cd124ffae256109cdc69b88bbd2001c6093a9e1106af261ec0683a2e58de1f70",
     ),
     "representative_trading_flow.flow.manifest.case_kind": ("issue_213_versioned_strategy_kernel", _MISSING),
     "representative_trading_flow.flow.manifest.mark_price": ("issue_213_versioned_strategy_kernel", _MISSING),
@@ -289,21 +289,20 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "news_oi_alignment_v1",
     ),
     "representative_trading_flow.flow.manifest.strategy_config_digest": (
-        "issue_213_versioned_strategy_kernel",
-        "3cfcec1cac2af3e17a012b39555c15d67dc78bac404fdd26fa149fc210aac05c",
+        "issue_264_candidate_gate_ledger",
+        "a879dde3fdd9f8722f980c8e6cc23b10b408c544ce6d18ac70feb7c28d0b5147",
     ),
     "representative_trading_flow.flow.manifest.strategy_config": (
         "issue_213_freeze_exact_strategy_config",
         {
             "allow_short": False,
             "min_whale_long_profit_bps": 9_500,
-            "min_oi_value_usd": 20_000_000,
             "live_min_surprise": 2,
             "live_max_price_in": 1,
         },
     ),
     "representative_trading_flow.flow.manifest.contexts": (
-        "issue_213_versioned_strategy_kernel_then_issue_264_oi_fact_projection",
+        "issue_213_versioned_strategy_kernel_then_issue_264_capital_gate",
         {
             "mode": "paper",
             "oi": {
@@ -528,8 +527,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         5,
     ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_213_versioned_strategy_kernel_then_issue_264_oi_fact_projection",
-        "09b9f08d1548ffb4c66ec63cbaff120464a3bfe54e747f41883f070364412740",
+        "issue_213_versioned_strategy_kernel_then_issue_264_capital_gate",
+        "3c47c2af79235b2d804a5901ff627b258a9a983622d46dc81ffab5fe0296fe24",
     ),
 }
 
@@ -981,7 +980,7 @@ async def _trading_faults(order: PreparedOrder) -> dict[str, Any]:
 
 def _trading_manifest() -> tuple[OiTradeCandidate, NewsTradeCandidate, TradingCaseManifest]:
     blacklist = Blacklist.from_rows([])
-    oi = oi_candidate(OiCandidateRow(**_oi_row()), now_ms=NOW_MS, blacklist=blacklist)
+    oi = oi_candidate(OiCandidateRow(**_oi_row()))
     projected_news = news_candidate(NewsCandidateRow(**_news_row()), now_ms=NOW_MS, blacklist=blacklist)
     assert isinstance(oi, OiTradeCandidate)
     assert isinstance(projected_news, NewsTradeCandidate)

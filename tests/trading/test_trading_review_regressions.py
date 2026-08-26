@@ -84,7 +84,7 @@ def _news(symbol: str = "DOGE", at: int = NOW) -> NewsTradeCandidate:
 def _one_plan(oi: OiTradeCandidate, news: NewsTradeCandidate, *, policy: EligibilityPolicy) -> Any:
     """The single plan one OI row and one News row produce, or `None` if neither can trigger."""
 
-    plans = plan_triggers(oi=[oi], news=[news], now_ms=NOW, policy=policy)
+    plans = plan_triggers(oi=[oi], news=[news], now_ms=NOW, policy=policy, oi_trigger_keys={oi.source_key})
     return plans[0] if plans else None
 
 

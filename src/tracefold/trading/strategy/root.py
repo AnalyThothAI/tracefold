@@ -39,7 +39,6 @@ def strategies(
     *,
     allow_short: bool = False,
     min_whale_long_profit_bps: int = 9_500,
-    min_oi_value_usd: int = 20_000_000,
     live_min_surprise: int = 2,
     live_max_price_in: int = 1,
 ) -> dict[StrategyId, TradingStrategy]:
@@ -52,7 +51,6 @@ def strategies(
                 OiMomentumConfig(
                     allow_short=allow_short,
                     min_whale_long_profit_bps=min_whale_long_profit_bps,
-                    min_oi_value_usd=min_oi_value_usd,
                 )
             ),
         ),
@@ -62,7 +60,6 @@ def strategies(
                 NewsOiAlignmentConfig(
                     allow_short=allow_short,
                     min_whale_long_profit_bps=min_whale_long_profit_bps,
-                    min_oi_value_usd=min_oi_value_usd,
                     live_min_surprise=live_min_surprise,
                     live_max_price_in=live_max_price_in,
                 )
@@ -94,14 +91,13 @@ def strategy_from_manifest(manifest: TradingCaseManifest) -> TradingStrategy | N
         strategy: TradingStrategy
         config = manifest.strategy_config
         if manifest.strategy_id == "oi_momentum_v1":
-            _exact_keys(config, "allow_short", "min_whale_long_profit_bps", "min_oi_value_usd")
+            _exact_keys(config, "allow_short", "min_whale_long_profit_bps")
             strategy = cast(
                 TradingStrategy,
                 OiMomentumStrategy(
                     OiMomentumConfig(
                         allow_short=_bool(config, "allow_short"),
                         min_whale_long_profit_bps=_int(config, "min_whale_long_profit_bps"),
-                        min_oi_value_usd=_int(config, "min_oi_value_usd"),
                     )
                 ),
             )
@@ -110,7 +106,6 @@ def strategy_from_manifest(manifest: TradingCaseManifest) -> TradingStrategy | N
                 config,
                 "allow_short",
                 "min_whale_long_profit_bps",
-                "min_oi_value_usd",
                 "live_min_surprise",
                 "live_max_price_in",
             )
@@ -120,7 +115,6 @@ def strategy_from_manifest(manifest: TradingCaseManifest) -> TradingStrategy | N
                     NewsOiAlignmentConfig(
                         allow_short=_bool(config, "allow_short"),
                         min_whale_long_profit_bps=_int(config, "min_whale_long_profit_bps"),
-                        min_oi_value_usd=_int(config, "min_oi_value_usd"),
                         live_min_surprise=_int(config, "live_min_surprise"),
                         live_max_price_in=_int(config, "live_max_price_in"),
                     )

@@ -16,12 +16,24 @@ from ..candidate.blacklist import Blacklist
 from ..candidate.eligibility import (
     EligibilityPolicy,
     Funnel,
+    Rejected,
     _uses_current_news_generation,
     blacklist_rule,
     news_candidate,
     oi_candidate,
 )
 from ..candidate.fusion import _Plan, plan_triggers
+from ..candidate.gate import (
+    CANDIDATE_GATE_VERSION,
+    CandidateGateResult,
+    GateConfig,
+    admit_route,
+    admit_trigger,
+    case_created,
+    defer,
+    reject,
+    source_rejected,
+)
 from ..candidate.routing import resolve_instrument, signal_exchange_id
 from ..contracts import (
     TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
@@ -36,7 +48,6 @@ from ..contracts import (
     NewsMarketTrigger,
     NewsTradeCandidate,
     OiMarketTrigger,
-    OiRegime,
     OiTradeCandidate,
     OrderState,
     PreparedOrder,
@@ -46,6 +57,7 @@ from ..contracts import (
     TradingMode,
     TriggerKind,
     canonical_sha256,
+    oi_source_key,
     underlying_key,
 )
 from ..contracts import (
@@ -108,6 +120,9 @@ _LIVE_PREFLIGHT_MAX_AGE_MS = TRADING_LIVE_PREFLIGHT_MAX_AGE_MS
 # What still stops a News-only case even though it has no quadrant: no price to enter at, and the
 # measured chasing bucket above the pre-move ceiling.
 _NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_band_chasing"})
+# How long an admission decision is kept. The lane persists about 90 OI facts a day, so this is a few
+# thousand rows — small enough that the question "why was there no case last Tuesday" stays answerable.
+_GATE_RETENTION_MS = 90 * 86_400_000
 
 
 class CandidateRunner:
@@ -139,10 +154,13 @@ class CandidateRunner:
         self._strategies = strategies(
             allow_short=config.trade.allow_short,
             min_whale_long_profit_bps=config.trade.min_whale_long_profit_bps,
-            min_oi_value_usd=config.trade.min_oi_value_usd,
             live_min_surprise=config.trade.live_min_surprise,
             live_max_price_in=config.trade.live_max_price_in,
         )
+        # One object holding every number this lane executes on the way in, and its digest is half the
+        # durable decision's key: editing a threshold starts a new record rather than rewriting what the
+        # previous threshold decided.
+        self._gate_config = GateConfig.from_policy(config.eligibility, venue_priority=config.venue_priority)
         self._clock = clock
         self._telemetry = telemetry
         self._liquidation_shadow = LiquidationShadowRunner(
@@ -202,11 +220,18 @@ class CandidateRunner:
             await self._merge_funnel(funnel, now)
             return {"skipped": "live_startup_not_ready", "funnel": funnel.as_dict()}
 
-        plans = self._plan(state, funnel=funnel, now=now)
+        # Every OI source this turn looked at gets exactly one entry here, and the whole map is written
+        # once at the end of the turn. `CASE_CREATED` is the exception: it is committed inside the case
+        # insert's own transaction, because a case with no admission row — or an admission row naming a
+        # case that failed to insert — is precisely the ambiguity the ledger exists to remove.
+        gate: dict[str, CandidateGateResult] = {}
+        plans = self._plan(state, funnel=funnel, now=now, gate=gate)
         created = 0
         for plan in plans[:_MAX_CASES_PER_TURN]:
-            if await self._freeze(plan, funnel=funnel, now=now):
+            if await self._freeze(plan, funnel=funnel, now=now, gate=gate):
                 created += 1
+        for plan in plans[_MAX_CASES_PER_TURN:]:
+            self._defer_for_capacity(plan, funnel=funnel, gate=gate)
 
         decided = 0
         for _ in range(_MAX_CASES_PER_TURN):
@@ -215,14 +240,85 @@ class CandidateRunner:
                 break
             decided += 1
 
+        await self._write_gate(gate, now)
+        await self._maintain_gate(now)
         await self._merge_funnel(funnel, now)
         return {
             "created": created,
             "decided": decided,
+            "gate": len(gate),
             "shadow_completed": shadow_completed,
             "shadow_evaluated": shadow_evaluated,
             "funnel": funnel.as_dict(),
         }
+
+    # ------------------------------------------------------------------ gate ledger
+    def _record(self, result: CandidateGateResult, *, funnel: Funnel, gate: dict[str, CandidateGateResult]) -> None:
+        """One answer per source per turn, counted under the same name the ledger files it under."""
+
+        gate[result.source_key] = result
+        funnel.count(result.funnel_key)
+
+    def _defer_for_capacity(
+        self,
+        plan: _Plan,
+        *,
+        funnel: Funnel,
+        gate: dict[str, CandidateGateResult],
+    ) -> None:
+        """A source that passed every rule about itself, refused because the lane had no room."""
+
+        if plan.trigger_kind != "oi" or plan.oi is None:
+            return
+        self._record(defer(plan.oi, stage="eligibility", reason="lane_capacity_exhausted"), funnel=funnel, gate=gate)
+
+    async def _write_gate(self, gate: dict[str, CandidateGateResult], now: int) -> None:
+        """Flush the turn's admission answers. One transaction; a failure here never blocks capital."""
+
+        if not gate:
+            return
+        results = list(gate.values())
+        digest = self._gate_config.digest
+
+        def _write(repos: Any) -> None:
+            for result in results:
+                repos.trading.record_gate_decision(
+                    source_key=result.source_key,
+                    gate_version=CANDIDATE_GATE_VERSION,
+                    gate_config_digest=digest,
+                    trigger_kind=result.trigger_kind,
+                    underlying_key=result.underlying_key,
+                    source_observed_at_ms=result.source_observed_at_ms,
+                    status=result.status,
+                    stage=result.stage,
+                    reason=result.reason,
+                    retryable=result.retryable,
+                    evidence=result.evidence,
+                    case_id=result.case_id,
+                    now_ms=now,
+                )
+
+        try:
+            await self._db.tx("trading_gate_write", _write, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+        except Exception:
+            # The ledger is evidence, not authority. Losing a turn's worth of it is a reporting gap the
+            # next scan closes; refusing to trade because a reporting write failed would be worse.
+            log.exception("trading candidate gate write failed")
+
+    async def _maintain_gate(self, now: int) -> None:
+        """Close decisions the clock has answered, and drop the ones past retention."""
+
+        stale_before = now - self._config.eligibility.max_age_ms
+        purge_before = now - _GATE_RETENTION_MS
+
+        def _maintain(repos: Any) -> None:
+            repos.trading.expire_stale_gate_decisions(stale_before_ms=stale_before, now_ms=now)
+            repos.trading.purge_gate_decisions(observed_before_ms=purge_before)
+
+        try:
+            await self._db.tx("trading_gate_maintenance", _maintain, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
+        except Exception:
+            log.exception("trading candidate gate maintenance failed")
 
     async def _ensure_live_startup(self, *, funnel: Funnel) -> bool:
         if self._live_startup_complete:
@@ -333,13 +429,24 @@ class CandidateRunner:
         return state
 
     # ------------------------------------------------------------------ plan
-    def _plan(self, state: dict[str, Any], *, funnel: Funnel, now: int) -> list[_Plan]:
-        """Every eligible row this turn read, reduced to at most one plan per underlying.
+    def _plan(
+        self,
+        state: dict[str, Any],
+        *,
+        funnel: Funnel,
+        now: int,
+        gate: dict[str, CandidateGateResult],
+    ) -> list[_Plan]:
+        """Every row this turn read, admitted once, and reduced to at most one plan per underlying.
 
-        Eligibility answers "may this row be used at all"; it no longer answers "is it new enough to
-        start something", because those are two windows with two budgets. `plan_triggers` owns the
-        second one and owns the point-in-time attachment, so this method is a read boundary and two
-        count caps — nothing about time lives here.
+        The OI lane runs the Candidate Gate here and nowhere else (#264). Three questions used to be
+        asked at three different depths — "is the row usable" in `oi_candidate`, "is it fresh" inside
+        `plan_triggers`, "is it routable" in a loop between them — and none of the three left a durable
+        trace, so `oi_rows = 0` could mean any of them or none. Now each OI source leaves exactly one
+        named answer in `gate` before this method returns.
+
+        `plan_triggers` keeps what it is good at and nothing else: point-in-time attachment and the
+        coalescing that reduces several triggers for one issuer to one plan.
         """
 
         elig = self._config.eligibility
@@ -347,11 +454,46 @@ class CandidateRunner:
         funnel.count("oi_rows", len(state["oi_rows"]))
         funnel.count("news_rows", len(state["news_rows"]))
 
-        oi_all: list[OiTradeCandidate] = []
+        # Routable OI facts, whatever their age: the context set a News trigger may attach from. An
+        # unroutable frame is deliberately not in it (#211) — leaving it in would let it win coalescing
+        # from an older frame that *is* routable and then be refused, and would let a News trigger be
+        # killed by an OI frame it merely attached.
+        oi_context: list[OiTradeCandidate] = []
+        # The subset the gate admitted as a reason to open a case *now*.
+        oi_triggers: list[OiTradeCandidate] = []
         for row in state["oi_rows"]:
-            oi_result = oi_candidate(row, now_ms=now, blacklist=blacklist, policy=elig, funnel=funnel)
-            if isinstance(oi_result, OiTradeCandidate):
-                oi_all.append(oi_result)
+            oi_result = oi_candidate(row, funnel=funnel)
+            if isinstance(oi_result, Rejected):
+                self._record(
+                    source_rejected(
+                        oi_result,
+                        source_key=oi_source_key(row.get("event_id"), row.get("metric_version")),
+                        observed_at_ms=int(row.get("observed_at_ms") or row.get("verdict_created_at_ms") or 0),
+                    ),
+                    funnel=funnel,
+                    gate=gate,
+                )
+                continue
+            routing = admit_route(oi_result, config=self._gate_config)
+            if routing is None:
+                oi_context.append(oi_result)
+            verdict = (
+                admit_trigger(
+                    oi_result,
+                    now_ms=now,
+                    config=self._gate_config,
+                    blacklist=blacklist,
+                    active_underlyings=state["active"],
+                    underlyings_in_flight=state["cases_in_flight"],
+                    cased_source_keys=state["cased_source_keys"],
+                )
+                or routing
+            )
+            if verdict is not None:
+                self._record(verdict, funnel=funnel, gate=gate)
+                continue
+            oi_triggers.append(oi_result)
+
         news_all: list[NewsTradeCandidate] = []
         for row in state["news_rows"]:
             news_result = news_candidate(row, now_ms=now, blacklist=blacklist, policy=elig, funnel=funnel)
@@ -359,43 +501,67 @@ class CandidateRunner:
                 news_all.append(news_result)
 
         orders_today = int(state["orders_today"])
-        if orders_today >= self._config.order.max_orders_per_day:
+        capped = orders_today >= self._config.order.max_orders_per_day
+        if capped:
             funnel.count("scan_skipped:daily_order_cap")
-            return []
-        if len(state["active"]) >= self._config.order.max_open_underlyings:
+        elif len(state["active"]) >= self._config.order.max_open_underlyings:
             funnel.count("scan_skipped:max_open_underlyings")
+            capped = True
+        if capped:
+            # The lane is full, not the source unusable. Every admitted frame still gets its row, or a
+            # busy day would leave a hole in the one ledger that is supposed to explain the whole lane.
+            for signal in oi_triggers:
+                self._record(
+                    defer(signal, stage="eligibility", reason="lane_capacity_exhausted"),
+                    funnel=funnel,
+                    gate=gate,
+                )
             return []
 
-        # Routability is decided here, before fusion, and not at the freeze (#211). An OI frame whose
-        # venue tag names nothing this lane may execute is neither a reason to act nor usable context:
-        # leaving it in would let it win coalescing from an older frame that *is* routable and then be
-        # refused, and would let a News trigger be killed by an OI frame it merely attached. Measured
-        # on live data, every pushed frame in the last week carried a tag, so this is a guard rather
-        # than a filter with volume behind it.
-        routable_oi: list[OiTradeCandidate] = []
-        for signal in oi_all:
-            exchange = signal_exchange_id(signal.venue)
-            if exchange is None:
-                funnel.count("oi_reject:venue_unresolved")
-            elif exchange not in self._config.venue_priority:
-                funnel.count("oi_reject:venue_not_enabled")
-            else:
-                routable_oi.append(signal)
-
-        return plan_triggers(
-            oi=routable_oi,
+        plans = plan_triggers(
+            oi=oi_context,
             news=news_all,
             now_ms=now,
             policy=elig,
+            oi_trigger_keys={signal.source_key for signal in oi_triggers},
             active_underlyings=state["active"],
             underlyings_in_flight=state["cases_in_flight"],
             cased_source_keys=state["cased_source_keys"],
             funnel=funnel,
         )
+        # A trigger that ended up in no plan lost this turn's coalescing to a newer frame for the same
+        # issuer. It is not retired: nothing durable stops it, and it wins the next scan as soon as the
+        # frame that beat it has produced its case.
+        planned = {key for plan in plans for key in (plan.source_key, *plan.supplemental)}
+        for signal in oi_triggers:
+            if signal.source_key not in planned:
+                self._record(
+                    defer(signal, stage="eligibility", reason="superseded_by_newer_trigger"),
+                    funnel=funnel,
+                    gate=gate,
+                )
+        return plans
 
     # ------------------------------------------------------------------ freeze
-    async def _freeze(self, plan: _Plan, *, funnel: Funnel, now: int) -> bool:
-        """Resolve the instrument, compute the regime, then insert one immutable case."""
+    async def _freeze(
+        self,
+        plan: _Plan,
+        *,
+        funnel: Funnel,
+        now: int,
+        gate: dict[str, CandidateGateResult],
+    ) -> bool:
+        """Resolve the instrument, compute the regime, then insert one immutable case.
+
+        Everything refused here is refused because a *manifest could not be frozen* — no listing, no
+        candle, no mark at the cutoff. A valid but unfavourable regime is no longer among them (#264):
+        the case is created and the strategy names the refusal, so the manifest records what was
+        rejected instead of the frame disappearing before anything durable saw it.
+        """
+
+        def _gate(result: CandidateGateResult) -> None:
+            if plan.trigger_kind == "oi":
+                self._record(result, funnel=funnel, gate=gate)
 
         seen = await self._db.read(
             "trading_case_seen",
@@ -409,9 +575,13 @@ class CandidateRunner:
         already, last_close, instrument_rows = seen
         if already:
             funnel.count("freeze_reject:source_key_seen")
+            if plan.oi is not None:
+                _gate(reject(plan.oi, stage="eligibility", reason="already_consumed"))
             return False
         if last_close is not None and now - int(last_close) < self._config.eligibility.symbol_cooldown_ms:
             funnel.count("freeze_reject:symbol_cooldown")
+            if plan.oi is not None:
+                _gate(defer(plan.oi, stage="eligibility", reason="cooldown"))
             return False
 
         # Source-aligned routing (#211). An OI frame is a claim about *one venue's* open interest, so
@@ -439,11 +609,17 @@ class CandidateRunner:
             funnel.count(
                 "freeze_reject:no_perp_at_signal_venue" if plan.oi is not None else "freeze_reject:no_native_perp"
             )
+            if plan.oi is not None:
+                # Retryable: the universe snapshot refreshes, and an issuer can be listed at the venue
+                # whose open interest moved. The expiry sweep closes the row when the frame goes stale.
+                _gate(defer(plan.oi, stage="routing", reason="no_native_perp"))
             return False
 
         bars = await self._fetch_bars(instrument, anchor_at_ms=plan.observed_at_ms)
         if not bars:
             funnel.count("freeze_reject:no_price_fail_closed")
+            if plan.oi is not None:
+                _gate(defer(plan.oi, stage="market_context", reason="market_data_unavailable"))
             return False
         move = pre_move_bps(bars, anchor_at_ms=plan.observed_at_ms, policy=self._config.regime)
         regime = assess(
@@ -452,12 +628,16 @@ class CandidateRunner:
             policy=self._config.regime,
         )
         funnel.count(f"regime:{regime.regime.value}")
-        if plan.oi is not None and regime.regime is OiRegime.UNCLEAR:
+        if regime.reason == "no_price_fail_closed":
+            # Missing market data is the gate's, in both lanes: with no price there is no mark to size
+            # from and no pre-move to freeze, so there is no manifest to write.
             funnel.count(f"freeze_reject:regime_{regime.reason}")
+            if plan.oi is not None:
+                _gate(defer(plan.oi, stage="market_context", reason="market_data_unavailable"))
             return False
         if plan.oi is None and regime.reason in _NEWS_ONLY_BLOCKING_REASONS:
-            # News-only has no OI quadrant, but still needs a cutoff price and obeys the measured
-            # chasing ceiling.
+            # News-only has no OI quadrant and no capital strategy that reads the band, so its chasing
+            # ceiling stays here. An OI-bearing case carries the band into the manifest instead.
             funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
 
@@ -467,6 +647,10 @@ class CandidateRunner:
         )
         if anchor_bar is None:
             funnel.count("freeze_reject:no_mark_at_cutoff")
+            if plan.oi is not None:
+                # Terminal: the gap is a property of this frame's own cutoff, so no later scan of the
+                # same frame can find a candle that was never published.
+                _gate(reject(plan.oi, stage="market_context", reason="market_data_invalid"))
             return False
         mark = anchor_bar.close
         strategy_id = capital_strategy_id(
@@ -476,6 +660,8 @@ class CandidateRunner:
         )
         if strategy_id is None:
             funnel.count("freeze_reject:no_capital_strategy")
+            if plan.oi is not None:
+                _gate(reject(plan.oi, stage="freeze", reason="source_contract_invalid"))
             return False
         strategy = self._strategies[strategy_id]
         market_context = FrozenMarketContext(
@@ -519,11 +705,12 @@ class CandidateRunner:
         )
 
         digest = manifest.digest()
+        case_id = uuid.uuid4().hex
 
         def _insert(repos: Any) -> bool:
-            return bool(
+            inserted = bool(
                 repos.trading.insert_case(
-                    case_id=uuid.uuid4().hex,
+                    case_id=case_id,
                     underlying_key=manifest.underlying_key,
                     trigger_kind=plan.trigger_kind,
                     strategy_id=strategy.strategy_id,
@@ -541,9 +728,37 @@ class CandidateRunner:
                     now_ms=now,
                 )
             )
+            # Same transaction, deliberately. A case with no admission row, or an admission row naming
+            # a case that was never written, is exactly the ambiguity the ledger exists to remove.
+            if inserted and plan.trigger_kind == "oi" and plan.oi is not None:
+                linked = case_created(plan.oi, case_id=case_id)
+                repos.trading.record_gate_decision(
+                    source_key=linked.source_key,
+                    gate_version=CANDIDATE_GATE_VERSION,
+                    gate_config_digest=self._gate_config.digest,
+                    trigger_kind=linked.trigger_kind,
+                    underlying_key=linked.underlying_key,
+                    source_observed_at_ms=linked.source_observed_at_ms,
+                    status=linked.status,
+                    stage=linked.stage,
+                    reason=linked.reason,
+                    retryable=linked.retryable,
+                    evidence=linked.evidence,
+                    case_id=case_id,
+                    now_ms=now,
+                )
+            return inserted
 
         created = await self._db.tx("trading_case_insert", _insert, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
         funnel.count("case_created" if created else "freeze_reject:trigger_identity_race")
+        if plan.oi is not None:
+            if created:
+                # Already committed beside the case row; leaving it out of the turn's flush is what
+                # keeps the flush from re-deciding a row that is now terminal.
+                gate.pop(plan.oi.source_key, None)
+                funnel.count("oi_gate:freeze:case_created")
+            else:
+                _gate(reject(plan.oi, stage="freeze", reason="already_consumed"))
         return bool(created)
 
     async def _fetch_bars(self, instrument: InstrumentRef, *, anchor_at_ms: int) -> list[Bar]:

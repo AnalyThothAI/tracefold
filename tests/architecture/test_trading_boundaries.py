@@ -175,6 +175,47 @@ def test_news_never_imports_trading() -> None:
     assert offenders == []
 
 
+@pytest.mark.architecture
+def test_the_liquidity_floor_is_executed_in_exactly_one_place() -> None:
+    """#264: `min_oi_value_usd` was a SELECT predicate, an eligibility rule and a strategy gate at once.
+
+    Three owners of one number is how #254's canary came to prove nothing: moving the floor from 20M to
+    5M changed the projection's predicate, and the strategy kept refusing the frames it now admitted.
+    The Candidate Gate is the only place the comparison may live; every other mention must be
+    configuration being *passed* to it, never a second `<` against a frame.
+    """
+
+    comparisons: list[str] = []
+    for path in _trading_sources():
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Compare):
+                continue
+            rendered = ast.unparse(node)
+            if "min_oi_value_usd" in rendered:
+                comparisons.append(f"{path.relative_to(SRC)}: {rendered}")
+    assert comparisons == ["trading/candidate/gate.py: candidate.oi_value_usd < config.min_oi_value_usd"], comparisons
+
+
+@pytest.mark.architecture
+def test_a_valid_but_unfavourable_regime_reaches_a_strategy_instead_of_vanishing() -> None:
+    """#264: the freeze refuses missing market data; it no longer refuses a price it dislikes.
+
+    A frame the band rejected used to disappear before anything durable saw it — no case, no manifest,
+    and a funnel key that was gone by the next UTC midnight. Now the case is frozen and the strategy
+    names the refusal, so what was rejected is replayable from the case row.
+    """
+
+    source = (TRADING / "pipeline" / "candidate.py").read_text(encoding="utf-8")
+    freeze = source.split("async def _freeze", 1)[1].split("async def _fetch_bars", 1)[0]
+    assert "OiRegime.UNCLEAR" not in freeze
+    for banned in ("move_below_band", "move_above_band_chasing"):
+        # The News-only branch still names its own ceiling through the shared constant; what may not
+        # come back is an OI-bearing case being refused here for a band the strategy is meant to judge.
+        assert f'regime.reason == "{banned}"' not in freeze
+    assert 'regime.reason == "no_price_fail_closed"' in freeze
+
+
 def _is_docstring(node: ast.stmt) -> bool:
     return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
 

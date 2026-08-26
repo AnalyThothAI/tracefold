@@ -350,8 +350,12 @@ def test_the_measured_quality_floors_reject_the_losing_buckets() -> None:
     strategy = OiMomentumStrategy()
     weak_whale = strategy.evaluate(_oi_context(OiRegime.BUILDUP_UP, whale=8_600))
     assert weak_whale.rule == "whale_long_profit_below_floor"
+    # The absolute OI floor is *not* here any more (#264). It is a universe/routability rule with one
+    # owner in the Candidate Gate; a strategy re-checking it made the same number both an admission
+    # rule and an Alpha rule, so moving the canary floor from 20M to 5M moved neither.
     thin = strategy.evaluate(_oi_context(OiRegime.BUILDUP_UP, value=3_000_000))
-    assert thin.rule == "oi_value_below_floor"
+    assert thin.rule == "oi_momentum_regime"
+    assert "min_oi_value_usd" not in strategy.config_snapshot
 
 
 # ---------------------------------------------------------------------------- sizing

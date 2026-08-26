@@ -121,15 +121,18 @@ def is_fresh_trigger(at_ms: object, *, now_ms: int, policy: EligibilityPolicy = 
 
 
 # ---------------------------------------------------------------------------- OI
-def oi_candidate(
-    row: OiCandidateRow,
-    *,
-    now_ms: int,
-    blacklist: Blacklist,
-    policy: EligibilityPolicy = DEFAULT_ELIGIBILITY,
-    funnel: Funnel | None = None,
-) -> OiTradeCandidate | Rejected:
-    """One projected telemetry verdict, or a named rejection. Eligible as *context*; age is not read here."""
+def oi_candidate(row: OiCandidateRow, *, funnel: Funnel | None = None) -> OiTradeCandidate | Rejected:
+    """One projected telemetry fact, or a named source-contract failure. No clock, no policy (#264).
+
+    This is the **source** stage and nothing else: is the row a usable, live, current-generation OI
+    fact at all? Rank, the liquidity floor, the deny list, freshness, cooldown and idempotency are the
+    Candidate Gate's, and they used to be here as well as in News's SELECT — which is how the same
+    threshold came to be executed in three places and a rejection came to be indistinguishable from a
+    row that never existed.
+
+    Everything it cannot prove is still a named rejection, never a default. `rank_in_window` is read
+    here because the candidate carries it, not because a ceiling is applied to it.
+    """
 
     def _no(rule: str, symbol: str = "") -> Rejected:
         if funnel is not None:
@@ -139,9 +142,9 @@ def oi_candidate(
     symbol = canonical_base_symbol(row.get("symbol"))
     if not symbol:
         return _no("symbol_not_canonicalisable")
-    # No `not_pushed` rule (#264). The reader's push/drop is carried onto the candidate as audit and is
-    # not an admission: its own rule is `whale_oi_ratio > 80%`, and gating capital on it meant a reader
-    # policy edit opened or closed the trading lane without anyone deciding that it should.
+    # The reader's push/drop is carried onto the candidate as audit and is not an admission (#264): its
+    # rule is `whale_oi_ratio > 80%`, and gating capital on it meant a reader policy edit opened or
+    # closed the trading lane without anyone deciding that it should.
     if str(row.get("ingest_mode") or "") != "live":
         return _no("not_live_ingest", symbol)
 
@@ -154,52 +157,52 @@ def oi_candidate(
         return _no("verdict_time_missing", symbol)
 
     rank = _int(row.get("rank_in_window"))
-    if rank is None or rank > policy.max_rank_in_window:
-        return _no("rank_exhausted", symbol)
-
-    oi_value = _int(row.get("oi_value_usd"), 0) or 0
-    if oi_value < policy.min_oi_value_usd:
-        return _no("oi_value_below_floor", symbol)
+    if rank is None:
+        return _no("rank_missing", symbol)
 
     direction = str(row.get("direction") or "").strip().lower()
     if direction not in ("rise", "fall"):
         return _no("oi_direction_unknown", symbol)
 
-    blocked = blacklist.blocked(symbol, now_ms=now_ms)
-    if blocked is not None:
-        return _no(f"blacklisted:{blocked.reason}", symbol)
-
     # The frame's `source` is provider text. It is carried on the candidate as-is because the research
     # keys on it, but the funnel is one bounded JSONB document in one row — an arbitrary provider
     # string there would make its key set unbounded, so the counter uses a closed vocabulary.
     venue = str(row.get("venue") or "").strip().lower()
+    try:
+        candidate = OiTradeCandidate(
+            event_id=str(row.get("event_id") or ""),
+            observed_at_ms=observed,
+            verdict_created_at_ms=verdict_at,
+            base_symbol=symbol,
+            venue=venue,
+            oi_direction=direction,
+            oi_change_bps=_int(row.get("oi_change_bps"), 0) or 0,
+            oi_value_usd=_int(row.get("oi_value_usd"), 0) or 0,
+            whale_long_profit_bps=_int(row.get("whale_long_profit_bps"), 0) or 0,
+            whale_oi_ratio_bps=_int(row.get("whale_oi_ratio_bps"), 0) or 0,
+            rank_in_window=rank,
+            final_decision=str(row.get("final_decision") or ""),
+            source_rule=str(row.get("source_rule") or ""),
+            metric_version=str(row.get("metric_version") or ""),
+            learning_epoch=str(row.get("learning_epoch") or ""),
+            program_version=str(row.get("program_version") or ""),
+            program_sha256=str(row.get("program_sha256") or ""),
+            policy_version=str(row.get("policy_version") or ""),
+            editorial_origin=str(row.get("editorial_origin") or ""),
+            editorial_sha256=str(row.get("editorial_sha256") or ""),
+            scored_judgment_sha256=str(row.get("scored_judgment_sha256") or ""),
+            runtime_manifest_sha=str(row.get("runtime_manifest_sha") or ""),
+        )
+    except ValidationError:
+        # The Program, policy, epoch and editorial origin are `Literal`s on the candidate, so a row from
+        # a retired generation raises here rather than being frozen into a manifest that claims to be
+        # current. It used to raise out of the scan turn entirely; now it is one named source failure.
+        return _no("generation_invalid", symbol)
+
     if funnel is not None:
         funnel.count("oi_eligible")
         funnel.count(f"oi_eligible_venue:{venue if venue in _KNOWN_VENUES else 'other'}")
-    return OiTradeCandidate(
-        event_id=str(row.get("event_id") or ""),
-        observed_at_ms=observed,
-        verdict_created_at_ms=verdict_at,
-        base_symbol=symbol,
-        venue=venue,
-        oi_direction=direction,
-        oi_change_bps=_int(row.get("oi_change_bps"), 0) or 0,
-        oi_value_usd=oi_value,
-        whale_long_profit_bps=_int(row.get("whale_long_profit_bps"), 0) or 0,
-        whale_oi_ratio_bps=_int(row.get("whale_oi_ratio_bps"), 0) or 0,
-        rank_in_window=rank,
-        final_decision=str(row.get("final_decision") or ""),
-        source_rule=str(row.get("source_rule") or ""),
-        metric_version=str(row.get("metric_version") or ""),
-        learning_epoch=str(row.get("learning_epoch") or ""),
-        program_version=str(row.get("program_version") or ""),
-        program_sha256=str(row.get("program_sha256") or ""),
-        policy_version=str(row.get("policy_version") or ""),
-        editorial_origin=str(row.get("editorial_origin") or ""),
-        editorial_sha256=str(row.get("editorial_sha256") or ""),
-        scored_judgment_sha256=str(row.get("scored_judgment_sha256") or ""),
-        runtime_manifest_sha=str(row.get("runtime_manifest_sha") or ""),
-    )
+    return candidate
 
 
 # ---------------------------------------------------------------------------- News
