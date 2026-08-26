@@ -18,12 +18,14 @@ export function NewsOiGates({
   byRule,
   floors,
   gate,
+  gateUnread,
   policy,
   strategies,
 }: {
   byRule: Record<string, number>;
   floors: NewsOiTradeFloors;
   gate: TradingGateConfig | undefined;
+  gateUnread: boolean;
   policy: NewsOiPolicy | null;
   strategies: readonly TradingStrategyConfig[];
 }) {
@@ -66,9 +68,13 @@ export function NewsOiGates({
          * Naming where the Alpha floors live is the whole job here anyway — the numbers themselves are
          * per-strategy and belong beside the case that a strategy decided, on 杠杆异动.
          */
-        hint={`${floors.mode.toUpperCase()} · ${floors.enabled ? "已启用" : "资本通道关闭"}${
-          strategies.length ? ` · Alpha 地板在 ${strategies.length} 条策略各自` : ""
-        }`}
+        hint={
+          gateUnread
+            ? `${floors.mode.toUpperCase()} · 准入规则未读到`
+            : `${floors.mode.toUpperCase()} · ${floors.enabled ? "已启用" : "资本通道关闭"}${
+                strategies.length ? ` · Alpha 地板在 ${strategies.length} 条策略各自` : ""
+              }`
+        }
         title="准入闸 · TRADING"
       >
         <PolicyTile label="持仓规模" value={gate ? `≥${oiValueZh(gate.min_oi_value_usd)}` : "—"} />

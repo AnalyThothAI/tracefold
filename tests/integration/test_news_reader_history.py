@@ -160,6 +160,57 @@ def test_reader_history_recalls_a_sent_cross_source_alias_after_four_hours(conn)
     conn.commit()
 
 
+def test_a_telemetry_card_never_becomes_a_targeted_asset_candidate(conn) -> None:
+    """#267 gave the deterministic lanes Event assets. The targeted band must not notice.
+
+    The 4 h to 48 h band asks "what *story* about this asset has the reader already been told", and a
+    telemetry frame is a measurement rather than a story. Before #267 these Events had no
+    `news_event_assets` row and could never be candidates; letting them in would have changed the model
+    lane's `told` selection — and through it `decide()`'s novelty measurement — as a side effect of a
+    price-plane fix, with nothing measured behind the change. The 4 h `recent` window is untouched.
+    """
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        prior = _admit(
+            repos,
+            hit_id=175401,
+            text="TRUMP OI Rise 4.55 percent, OI Value 32.17M",
+            symbol="TRUMP",
+            ts="2026-08-24T06:00:00+08:00",
+        )
+        current = _admit(
+            repos,
+            hit_id=175402,
+            text="TRUMP token unlocks a large tranche to early backers",
+            symbol="TRUMP",
+            ts="2026-08-24T12:00:00+08:00",
+        )
+        current_opened = conn.execute("SELECT opened_at_ms FROM news_events WHERE event_id=%s", (current,)).fetchone()
+        assert current_opened is not None
+        _persist_sent_triage_card(
+            repos,
+            event_id=prior,
+            at_ms=int(current_opened["opened_at_ms"]) - 6 * 3_600_000,
+            symbol="TRUMP",
+        )
+        conn.execute(
+            "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
+            (prior,),
+        )
+
+    history = repos.news.reader_history(event_id=current, now_ms=int(current_opened["opened_at_ms"]))
+    assert history.targeted_told_rows == ()
+
+    # And it is the admission that excludes it, not a missing asset row: the same delivered card on the
+    # ordinary lane is exactly the candidate this band exists to find.
+    with repos.transaction():
+        conn.execute("UPDATE news_events SET admission = 'candidate' WHERE event_id = %s", (prior,))
+    recalled = repos.news.reader_history(event_id=current, now_ms=int(current_opened["opened_at_ms"]))
+    assert [(row.event_id, row.reason) for row in recalled.targeted_told_rows] == [(prior, "canonical_asset_overlap")]
+    conn.commit()
+
+
 def test_evaluator_does_not_recall_a_verdict_only_asset_that_production_cannot_join(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():

@@ -366,11 +366,13 @@ export function evidenceRows(
        * 冲突 on the row a case had passed, and 支持 on rows that never faced that rule.
        */
       note: whale
-        ? `${floorNote(measuredWhale, whale.floor, (amount) => oiPercent(amount))} · ${whale.owner}${
-            whale.key === "ratio" && profit != null ? ` · 盈利 ${oiPercent(profit)}` : ""
-          }${whale.key === "profit" && ratio != null ? ` · 占比 ${oiPercent(ratio)}` : ""}`
+        ? `${floorNote(measuredWhale, whale.floor, (amount) => oiPercent(amount), whale.inclusive)} · ${
+            whale.owner
+          }${whale.key === "ratio" && profit != null ? ` · 盈利 ${oiPercent(profit)}` : ""}${
+            whale.key === "profit" && ratio != null ? ` · 占比 ${oiPercent(ratio)}` : ""
+          }`
         : `${profit == null ? "未获得" : oiPercent(profit)} · 本策略不设鲸鱼地板`,
-      status: whale ? floorStatus(measuredWhale, whale.floor) : "na",
+      status: whale ? floorStatus(measuredWhale, whale.floor, whale.inclusive) : "na",
     },
     {
       key: "price",
@@ -403,13 +405,28 @@ function frameChange(bps: number | null): string {
   return `${bps < 0 ? "−" : "+"}${oiPercent(Math.abs(bps))}`;
 }
 
+type WhaleThreshold = {
+  /** `true` when the strategy passes on equality; `false` when its floor is strictly-above. */
+  inclusive: boolean;
+  floor: number;
+  key: "ratio" | "profit";
+  owner: string;
+};
+
 /**
- * Which whale number this strategy actually binds on, and at what level (#269).
+ * Which whale number this strategy actually binds on, at what level, and on which side of equality.
  *
  * Read from the strategy's own published config rather than from a lane-wide setting, and by key: a
  * strategy that declares `min_whale_oi_ratio_bps` is judging concentration, one that declares only
  * `min_whale_long_profit_bps` is judging profit, and one that sets neither above zero has no whale
  * floor to compare against — which is an answer, not a pass.
+ *
+ * The operator travels with the threshold because the two lanes genuinely differ, and the boundary is
+ * not decoration: `oi_smart_money_momentum_v1` refuses on `ratio <= floor` — its own docstring calls
+ * that non-negotiable, `5001` qualifying where `5000` does not — while the profit floors refuse on
+ * `profit < floor`. Comparing both with `>=` printed 支持 on a frame at exactly 5000 bps beside a case
+ * whose named rule is `smart_money_ratio_below_or_equal_floor`, which is the wrong-comparison class
+ * this row exists to remove.
  *
  * `undefined` when the deciding strategy is not in the published set at all: a case decided by a
  * strategy this deployment has since retired must not be measured against whatever is configured now.
@@ -417,14 +434,18 @@ function frameChange(bps: number | null): string {
 function whaleThreshold(
   strategyId: string,
   thresholds: LeverageThresholds,
-): { floor: number; key: "ratio" | "profit"; owner: string } | undefined {
+): WhaleThreshold | undefined {
   const strategy = thresholds.strategies.find((row) => row.strategy_id === strategyId);
   if (!strategy) return undefined;
   const ratio = Number(strategy.config?.min_whale_oi_ratio_bps ?? 0);
   const profit = Number(strategy.config?.min_whale_long_profit_bps ?? 0);
   const owner = `策略 ${strategy.strategy_id}`;
-  if (Number.isFinite(ratio) && ratio > 0) return { floor: ratio, key: "ratio", owner };
-  if (Number.isFinite(profit) && profit > 0) return { floor: profit, key: "profit", owner };
+  if (Number.isFinite(ratio) && ratio > 0) {
+    return { floor: ratio, inclusive: false, key: "ratio", owner };
+  }
+  if (Number.isFinite(profit) && profit > 0) {
+    return { floor: profit, inclusive: true, key: "profit", owner };
+  }
   return undefined;
 }
 
@@ -440,18 +461,26 @@ function floorNote(
   measured: number | null,
   floor: number,
   format: (amount: number) => string,
+  inclusive = true,
 ): string {
   if (measured == null) return "未获得";
   if (floor <= 0) return `${format(measured)} · 未配置地板`;
-  return `${format(measured)} ${measured >= floor ? "≥" : "<"} 现行地板 ${format(floor)}`;
+  const passes = inclusive ? measured >= floor : measured > floor;
+  const relation = passes ? (inclusive ? "≥" : ">") : inclusive ? "<" : "≤";
+  return `${format(measured)} ${relation} 现行地板 ${format(floor)}`;
 }
 
-function floorStatus(measured: number | null, floor: number): LeverageEvidenceStatus {
+function floorStatus(
+  measured: number | null,
+  floor: number,
+  inclusive = true,
+): LeverageEvidenceStatus {
   if (measured == null) return "missing";
   // A zero floor is not a floor; it arrives when the console is newer than the API, and calling every
   // measurement "支持" against a threshold nobody configured would invent a pass.
   if (floor <= 0) return "na";
-  return measured >= floor ? "support" : "conflict";
+  const passes = inclusive ? measured >= floor : measured > floor;
+  return passes ? "support" : "conflict";
 }
 
 /** The three planes, each frozen at its own moment and never mixed with the others. */
@@ -683,15 +712,24 @@ export function leverageFramelessCount(cases: readonly LeverageCase[]): number {
 export type LeverageFunnelStep = { key: string; label: string; note: string; value: number };
 
 /**
- * What the capital lane did with 24 hours of frames, whether or not anything came of it (#269).
+ * What the OI lane did with 24 hours of frames, whether or not anything came of it (#269).
  *
  * The page's four figures are its four tabs, and on a normal day all four are zero — production runs
  * about 110 frames and one case a day, and the honest reading of that is "the rules are narrow", not
- * "the console is broken". Every number here comes from `trading_candidate_gate_decisions`, which
+ * "the console is broken". The first two steps come from `trading_candidate_gate_decisions`, which
  * survives the UTC day roll and is the only source that can describe a lane with no cases at all.
  *
+ * **Every step is the OI lane's, and that is what makes it a funnel.** The admission ledger only holds
+ * OI sources — `candidate_admission_report` scopes to `trigger_kind = 'oi'`, and the News lane writes
+ * no gate row at all — while the case batch beside it carries every trigger kind. Counting all of them
+ * in the tail put 遥测帧 110 · 过闸 1 · 案例 60 on screen: a funnel whose third step is sixty times its
+ * second, under a rule that draws each step narrower than the last. The News-triggered cases are
+ * listed below and counted by the tabs; they are not part of this measurement.
+ *
  * `帧` is the sum over statuses rather than a separate count: it is one row per source by construction,
- * so summing the distribution cannot disagree with the reasons listed beside it.
+ * so summing the distribution cannot disagree with the reasons listed beside it. And `过闸` is
+ * `CASE_CREATED`, which *is* the case count for this lane — one admitted source, one case — so there is
+ * no separate 案例 step to disagree with it.
  */
 export function leverageFunnel(
   counts: TradingCounts | undefined,
@@ -700,14 +738,14 @@ export function leverageFunnel(
   const status = counts?.candidate_counts_24h ?? {};
   const seen = Object.values(status).reduce((total, value) => total + value, 0);
   const admitted = status.CASE_CREATED ?? 0;
-  const directional = cases.filter(
+  const oiCases = cases.filter((item) => item.triggerKind === "oi");
+  const directional = oiCases.filter(
     (item) => item.decision === "long" || item.decision === "short",
   ).length;
-  const ordered = cases.filter((item) => item.capital != null).length;
+  const ordered = oiCases.filter((item) => item.capital != null).length;
   return [
-    { key: "seen", label: "遥测帧", note: "准入闸看到的来源", value: seen },
-    { key: "admitted", label: "过闸", note: "开出案例的来源", value: admitted },
-    { key: "cases", label: "案例", note: "账本批次内的案例", value: cases.length },
+    { key: "seen", label: "遥测帧", note: "准入闸看到的 OI 来源", value: seen },
+    { key: "admitted", label: "过闸成案", note: "开出案例的来源", value: admitted },
     { key: "directional", label: "有方向", note: "策略给出多/空", value: directional },
     { key: "ordered", label: "订单", note: "已生成资本意图", value: ordered },
   ];

@@ -126,10 +126,11 @@ export function NewsOiFrameTable({
               event={event}
               floors={floors}
               gateAnswered={Boolean(gate)}
+              gateComplete={gate?.complete ?? false}
               gateDecision={gateByEvent.get(event.event_id)}
               key={event.event_id}
               ledgerEntry={ledger.get(event.event_id)}
-              ledgerComplete={(trading?.complete ?? false) && (gate?.complete ?? false)}
+              ledgerComplete={trading?.complete ?? false}
               tradingError={tradingError}
               tradingLoaded={Boolean(trading)}
             />
@@ -153,6 +154,7 @@ function FrameRow({
   event,
   floors,
   gateAnswered,
+  gateComplete,
   gateDecision,
   ledgerComplete,
   ledgerEntry,
@@ -162,6 +164,7 @@ function FrameRow({
   event: NewsFeedEvent;
   floors: NewsOiTradeFloors;
   gateAnswered: boolean;
+  gateComplete: boolean;
   gateDecision: TradingGateDecision | undefined;
   ledgerComplete: boolean;
   ledgerEntry: TradingOiLedgerEntry | undefined;
@@ -180,6 +183,7 @@ function FrameRow({
     eventId: event.event_id,
     gate: gateDecision,
     gateAnswered,
+    gateComplete,
     loadFailed: tradingError,
     loaded: tradingLoaded,
   };

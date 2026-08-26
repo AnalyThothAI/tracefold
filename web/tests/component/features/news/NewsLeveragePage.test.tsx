@@ -317,9 +317,9 @@ describe("NewsLeveragePage", () => {
     renderLeverage();
 
     expect(await screen.findByText("24 小时内没有成案")).toBeInTheDocument();
-    const funnel = screen.getByRole("region", { name: "资本通道 24 小时漏斗" });
+    const funnel = screen.getByRole("region", { name: "OI 车道 24 小时漏斗" });
     expect(within(funnel).getByText("遥测帧").previousSibling).toHaveTextContent("91");
-    expect(within(funnel).getByText("过闸").previousSibling).toHaveTextContent("1");
+    expect(within(funnel).getByText("过闸成案").previousSibling).toHaveTextContent("1");
     // And which rule is binding, by name — the number an operator would otherwise replay SQL for.
     expect(funnel).toHaveTextContent("窗口内名次超限");
   });
@@ -335,7 +335,7 @@ describe("NewsLeveragePage", () => {
     // funnel. Asserting straight away caught the funnel mid-retry and passed against its loading zeroes.
     await screen.findByRole("alert");
 
-    const funnel = screen.getByRole("region", { name: "资本通道 24 小时漏斗" });
+    const funnel = screen.getByRole("region", { name: "OI 车道 24 小时漏斗" });
     expect(funnel).toHaveTextContent("资本通道状态读取失败");
     // Not zero frames. "The lane saw nothing" and "we could not ask" are different days.
     expect(within(funnel).queryByText("0")).toBeNull();

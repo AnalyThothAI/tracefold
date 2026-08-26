@@ -41,11 +41,30 @@ describe("OI Trading ledger presentation", () => {
     expect(rejected("future_policy_reason")).toBe("拒 · future_policy_reason");
   });
 
-  it("does not call an absent record a non-case when the batch was truncated", () => {
-    const copy = tradingOiCellCopy({ ...lookup(), complete: false });
+  it("keeps the two batches' completeness apart", () => {
+    /*
+     * 未评估 is a claim about the frame and only the admission batch can support it; the `case` line is
+     * the order batch's. Reading one for the other blamed a truncated order page for a gap in a ledger
+     * that had answered in full.
+     */
+    const gateTruncated = { ...lookup(), gateComplete: false };
+    expect(tradingOiCellCopy(gateTruncated)).toEqual({
+      primary: "未确认",
+      title: "准入台账批次已截断",
+    });
+    expect(tradingOiTraceEntries(gateTruncated)).toContainEqual([
+      "gate",
+      "准入台账批次已截断，本帧可能在未列出的部分",
+    ]);
+    expect(tradingOiTraceEntries(gateTruncated)).toContainEqual(["case", "未成案"]);
 
-    expect(copy.primary).toBe("未确认");
-    expect(copy.title).toBe("交易账本批次已截断");
+    // A truncated order batch says so on the case line and leaves the admission answer alone.
+    const ordersTruncated = { ...lookup(), complete: false };
+    expect(tradingOiCellCopy(ordersTruncated).primary).toBe("未评估");
+    expect(tradingOiTraceEntries(ordersTruncated)).toContainEqual([
+      "case",
+      "未确认（交易账本批次已截断）",
+    ]);
   });
 
   it("separates a frame the gate refused from one it has never evaluated", () => {
@@ -129,6 +148,7 @@ function lookup(entry?: TradingOiLookup["entry"]): TradingOiLookup {
     eventId: "evt-oi-wif",
     gate: undefined,
     gateAnswered: true,
+    gateComplete: true,
     loadFailed: false,
     loaded: true,
   };

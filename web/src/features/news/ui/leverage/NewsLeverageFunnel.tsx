@@ -12,9 +12,13 @@ import "./newsLeverageFunnel.css";
  * had stopped working. The funnel is the same 24 hours said as a sentence — how many sources the gate
  * saw, how far they got, and which named rule stopped the most of them.
  *
- * Every number is from `trading_candidate_gate_decisions`, which is keyed on when the *frame* was
- * observed and survives the UTC day roll — unlike `funnel_today`, which is overwritten at midnight and
- * could not answer a question about yesterday at all (#264).
+ * The first two steps are from `trading_candidate_gate_decisions`, which is keyed on when the *frame*
+ * was observed and survives the UTC day roll — unlike `funnel_today`, which is overwritten at midnight
+ * and could not answer a question about yesterday at all (#264).
+ *
+ * All four steps describe the OI lane and only it. The admission ledger holds no other trigger kind,
+ * and the News-triggered cases in the list below are counted by the tabs rather than here — mixing them
+ * in put a third step sixty times the size of its second under a rule that draws each one narrower.
  *
  * It renders no chart. Five counts that fall by an order of magnitude between the first and the last
  * are unreadable as bars, and a log axis on a page about money is a graph that has to be explained.
@@ -29,7 +33,7 @@ export function NewsLeverageFunnel({
   unavailable: boolean;
 }) {
   return (
-    <section aria-label="资本通道 24 小时漏斗" className="news-leverage-funnel">
+    <section aria-label="OI 车道 24 小时漏斗" className="news-leverage-funnel">
       <ol className="news-leverage-funnel-steps">
         {steps.map((step) => (
           <li className="news-leverage-funnel-step" key={step.key}>

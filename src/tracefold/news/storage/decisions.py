@@ -116,6 +116,16 @@ class DecisionStorage:
                  e.family = current.family
                  AND e.comparison_fingerprint = current.comparison_fingerprint
                )
+               -- The targeted band asks "what *story* about this asset has the reader already been
+               -- told", and a deterministic telemetry frame is a measurement rather than a story.
+               -- Excluded explicitly rather than by accident (#267): these Events carried no
+               -- `news_event_assets` row until the deterministic judge's own primary was recorded
+               -- there, so before that they could never be candidates. Letting them in would have
+               -- changed the model lane's `told` selection — up to `TARGETED_ASSET_MAX` slots of it —
+               -- as a side effect of a fix to the price plane, with no measurement behind the change.
+               -- The 4 h `recent` window is untouched and still shows every delivered card, telemetry
+               -- included, which is where a just-pushed OI card belongs.
+               AND e.admission NOT IN ('telemetry_deterministic', 'liquidation_deterministic')
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                AND EXISTS (
                  SELECT 1 FROM news_event_assets candidate_asset

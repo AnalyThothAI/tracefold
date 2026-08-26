@@ -128,19 +128,23 @@ export function NewsOiPage({ token }: { token: string }) {
       {status ? (
         <PageState.Stale
           failedRefresh={
-            (tradingQuery.isError && tradingQuery.data) || (gateQuery.isError && gateQuery.data)
+            (tradingQuery.isError && tradingQuery.data) ||
+            (gateQuery.isError && gateQuery.data) ||
+            (tradingStatusQuery.isError && tradingStatusQuery.data)
               ? "交易账本刷新失败，继续显示上次读取。"
               : undefined
           }
           onRetry={() => {
             void tradingQuery.refetch();
             void gateQuery.refetch();
+            void tradingStatusQuery.refetch();
           }}
           updating={
             statusQuery.isFetching ||
             feedQuery.isFetching ||
             tradingQuery.isFetching ||
-            gateQuery.isFetching
+            gateQuery.isFetching ||
+            tradingStatusQuery.isFetching
           }
         >
           <div className="news-oi-body">
@@ -172,6 +176,12 @@ export function NewsOiPage({ token }: { token: string }) {
                 byRule={byRule ?? {}}
                 floors={oi?.trade_floors ?? EMPTY_FLOORS}
                 gate={tradingStatusQuery.data?.gate}
+                /*
+                 * Whether the admission rules were read at all. Four `—` tiles beside 已启用 read as
+                 * "no admission rule is configured", which is the failure mode this page must never
+                 * present: an unread threshold and an absent one are different facts.
+                 */
+                gateUnread={!tradingStatusQuery.data}
                 policy={oi?.policy ?? null}
                 strategies={tradingStatusQuery.data?.strategies ?? []}
               />

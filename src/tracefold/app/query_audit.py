@@ -154,12 +154,21 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             # over the source key is what keeps the batch to one row per frame, matching the
             # distributions the same page prints above it — a frame two configurations have looked at
             # must not appear twice in a table whose total is a frame count.
+            #
+            # The subquery and the outer sort are both here on purpose: the dedup has to order by
+            # `source_key` and the table has to arrive in frame order, so the shipped read materialises
+            # the whole 24 h dedup set and re-sorts it. Flattening that into one `DISTINCT ON` with the
+            # limit inside would certify a plan that can stop early — a plan the route never runs.
             name="trading_gate_decisions_since",
             sql="""
-                SELECT DISTINCT ON (source_key) source_key, status, stage, reason
-                  FROM trading_candidate_gate_decisions
-                 WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-                 ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
+                SELECT source_key, status, stage, reason, source_observed_at_ms
+                  FROM (
+                    SELECT DISTINCT ON (source_key) *
+                      FROM trading_candidate_gate_decisions
+                     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+                     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
+                  ) latest
+                 ORDER BY source_observed_at_ms DESC, source_key
                  LIMIT 401
             """,
             params=("oi", since_ms),

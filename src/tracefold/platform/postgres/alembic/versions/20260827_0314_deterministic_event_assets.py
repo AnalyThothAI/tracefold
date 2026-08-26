@@ -19,6 +19,13 @@ Event-assets by anchor age, so it picks these up on its own turn and writes eith
 or a named `unavailable` — `instrument_unresolved` for the stock perpetuals this universe does not
 list, which is the honest answer rather than a hole.
 
+That does hand the planner a one-off backlog, and its size is worth stating rather than discovering:
+at this revision production holds 453 deterministic Events, 346 of them carrying a primary, and every
+one is inside the 30-day reaction window. The due scan takes `REACTION_DUE_BATCH = 100` per turn and
+walks oldest-first, so it drains in a handful of turns — during which `oldest_due_age_ms` reports the
+oldest backfilled anchor and the Price-Review backlog SLO reads late. That is a true statement about
+work that genuinely is outstanding, and it ends when the queue does.
+
 Revision ID: 20260827_0314
 Revises: 20260827_0313
 """

@@ -28,6 +28,8 @@ export type TradingOiLookup = {
    * this frame" and "we could not ask", and only the first of those is a statement about the frame.
    */
   gateAnswered: boolean;
+  /** Whether the admission batch covered the window, as opposed to the order batch's `complete`. */
+  gateComplete: boolean;
   loadFailed: boolean;
   loaded: boolean;
 };
@@ -134,9 +136,12 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
       // The gate opened a case and this batch does not hold it — a page boundary, not a refusal.
       return { primary: "已开案", title: gate.case_id ?? "案例不在本批账本内" };
     }
-    return lookup.complete
+    // 未评估 is a claim about this frame and only the *admission* batch can support it. Reading the
+    // order batch's completeness here would have blamed a truncated order page for a gap in a ledger
+    // that had answered in full, and vice versa.
+    return lookup.gateComplete
       ? { primary: "未评估", title: "资本通道尚未在任何 gate 版本下评估过这一帧" }
-      : { primary: "未确认", title: "交易账本批次已截断" };
+      : { primary: "未确认", title: "准入台账批次已截断" };
   }
   if (lookup.entry.kind === "order") {
     const value = lookup.entry.value;
@@ -167,13 +172,10 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
     if (!gate) {
       return [
         ["event_id", lookup.eventId],
-        ["case", lookup.complete ? "未成案" : "未确认（账本批次已截断）"],
-        [
-          "gate",
-          lookup.gateAnswered
-            ? "本帧在任何 gate 版本下都没有落库的准入判定"
-            : "准入台账这一轮没有读到，无法回答为什么没有案例",
-        ],
+        // Two batches, two completeness answers, and neither may speak for the other: the case line is
+        // the order batch's, the gate line is the admission ledger's.
+        ["case", lookup.complete ? "未成案" : "未确认（交易账本批次已截断）"],
+        ["gate", gateAbsenceNote(lookup)],
         ["join", "只按已发布 event_id；不按 symbol/time 猜"],
       ];
     }
@@ -221,6 +223,13 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
 
 function regimeLabel(value: string | null | undefined): string | undefined {
   return value ? (REGIME_ZH[value] ?? value) : undefined;
+}
+
+/** Why there is no admission row to show — three different absences, never collapsed into one. */
+function gateAbsenceNote(lookup: TradingOiLookup): string {
+  if (!lookup.gateAnswered) return "准入台账这一轮没有读到，无法回答为什么没有案例";
+  if (!lookup.gateComplete) return "准入台账批次已截断，本帧可能在未列出的部分";
+  return "本帧在任何 gate 版本下都没有落库的准入判定";
 }
 
 /**

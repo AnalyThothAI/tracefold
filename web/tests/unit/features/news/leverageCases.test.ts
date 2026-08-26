@@ -265,6 +265,45 @@ describe("evidenceRows", () => {
     expect(alignment.find((row) => row.key === "whale")?.status).toBe("conflict");
   });
 
+  it("reads a strictly-above floor strictly, at the exact boundary", () => {
+    /*
+     * `oi_smart_money_momentum_v1` refuses on `whale_oi_ratio_bps <= min_whale_oi_ratio_bps` and its
+     * module calls that non-negotiable — 5001 qualifies, 5000 does not. Comparing with `>=` printed
+     * 支持 · "50.00% ≥ 现行地板 50.00%" beside a case whose named rule is
+     * `smart_money_ratio_below_or_equal_floor`: the wrong-comparison class this row exists to remove.
+     */
+    const atFloor = {
+      ...newsOiFrameFixture().oi!,
+      whale_oi_ratio_bps: 5_000,
+    };
+    const row = evidenceRows(atFloor, "oi_smart_money_momentum_v1", "oi", THRESHOLDS).find(
+      (item) => item.key === "whale",
+    );
+
+    expect(row?.status).toBe("conflict");
+    expect(row?.note).toContain("≤ 现行地板");
+
+    // One basis point above is the strategy's own answer, and the note says which way it read.
+    const above = evidenceRows(
+      { ...atFloor, whale_oi_ratio_bps: 5_001 },
+      "oi_smart_money_momentum_v1",
+      "oi",
+      THRESHOLDS,
+    ).find((item) => item.key === "whale");
+    expect(above?.status).toBe("support");
+    expect(above?.note).toContain("> 现行地板");
+
+    // The profit floors are inclusive, and stay that way: `oi_momentum_v1` refuses on `profit < floor`.
+    const profitAtFloor = evidenceRows(
+      { ...newsOiFrameFixture().oi!, whale_long_profit_bps: 9_500 },
+      "oi_momentum_v1",
+      "oi",
+      THRESHOLDS,
+    ).find((item) => item.key === "whale");
+    expect(profitAtFloor?.status).toBe("support");
+    expect(profitAtFloor?.note).toContain("≥ 现行地板");
+  });
+
   it("compares scale against the admission gate rather than the settings document", () => {
     // #264 gave the liquidity floor one owner. The page was still reading the operator's 20M while
     // admission ran at 5M, so a frame the gate admitted showed 冲突 on 规模.
@@ -291,11 +330,39 @@ describe("leverageFunnel", () => {
 
     expect(steps.map((step) => [step.label, step.value])).toEqual([
       ["遥测帧", 91],
-      ["过闸", 1],
-      ["案例", 0],
+      ["过闸成案", 1],
       ["有方向", 0],
       ["订单", 0],
     ]);
+  });
+
+  it("counts only the lane the admission ledger describes", () => {
+    /*
+     * `candidate_admission_report` scopes to `trigger_kind = 'oi'` and the News lane writes no gate row
+     * at all, while the case batch beside it carries every trigger kind. Counting all of them in the
+     * tail rendered 遥测帧 110 · 过闸 1 · 案例 60 — a third step sixty times its second, under a rule
+     * that draws each step narrower than the last.
+     */
+    const newsCase = tradingCaseFixture({
+      case_id: "case-news",
+      event_id: null,
+      policy_reason: "oi_context_missing",
+      strategy_id: "news_oi_alignment_v1",
+      trigger_kind: "news",
+    });
+    const cases = leverageCases(
+      [],
+      tradingLedgerEntries(
+        tradingOrdersFixture({ cases_without_orders: [newsCase], orders: [tradingOrderFixture()] }),
+      ),
+      THRESHOLDS,
+      NOW_MS,
+    );
+
+    // The WIF order fixture is news-triggered too, so every tail step is zero and the funnel narrows.
+    const values = leverageFunnel(STATUS.counts, cases).map((step) => step.value);
+    expect(values).toEqual([91, 1, 0, 0]);
+    expect(values.every((value, index) => index === 0 || value <= values[index - 1])).toBe(true);
   });
 
   it("names the rules that are actually binding, and never counts admission as a refusal", () => {
