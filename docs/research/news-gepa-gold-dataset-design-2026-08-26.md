@@ -19,7 +19,7 @@
 1. **现在已有的是高价值的“候选标注池”，还不是 Gold Dataset。** 已推送、被拦截、模型 drop、Gate suppress、restatement leak 都是需要覆盖的真实生产样本；但模型 draft、Event 行数或 24 小时数量本身都不能充当 Gold。Gold 的最小单位应是经过人工确认的独立事实簇，而不是媒体条数。
 2. **Codex/LLM 可以当“助教”，不能在当前信任合同下冒充最终人工。** 它适合起草 Review v4、建议事实簇边、找 rubric 自相矛盾、排出高风险队列；最终 `accepted news_review_v4` 仍需人读证据、修正并明确接受。模型独立产出的数据只能叫 `silver/proposal`。
 3. **不要把所有标为重复的 Event 删除。** 必须先区分三种重复：队列/任务身份重复应为零；同一事实的媒体复述应折叠为一个统计簇；但至少保留代表性的 `restatement` 负例，否则 GEPA 无法学习或评估“不要重复推送”。`progression` 是同一 storyline 的新变化，通常应是新的事实簇，不能和纯复述一起删除。
-4. **24 小时适合作为每日采集批次或 smoke test，不足以代表生产分布。** 正式 development 应跨多个已经关闭的自然日；train 与 GEPA selection 必须按事实簇、按时间隔离，未来 validation 再使用优化结束之后的新时间窗。
+4. **24 小时适合作为每日采集批次或 smoke test；是否足够由覆盖度决定，不由日历决定。** train 与 GEPA selection 必须按事实簇、按时间隔离，未来 validation 使用优化结束之后的新时间窗。跨多个已关闭自然日仍是合理的运营建议（分布更宽、更容易凑够独立簇），但 #259 已把「≥3 个自然日」从 development profile 的准入合同中删除：它数的是 UTC 午夜次数而不是证据量，且与 active-bundle 过滤叠加后会让每次新 Stable 都被日历拖住。时间外泛化只由 Candidate 注册之后的 Future Holdout 负责。
 5. **采用成熟流程，但暂不引入第二套真相。** ReviewDesk/PostgreSQL 继续作为唯一 accepted truth 和 Freeze 输入。Label Studio/Argilla 只有在多人并行、盲审分配和一致性报表成为真实瓶颈时，才作为可替换的标注 UI/工作流投影；它们的 `ground truth` 标记不能直接进入 GEPA。
 6. **当前合同已经覆盖了最难的治理部分，但缺少多人标注运营层。** 已有：版本化 rubric、证据引用、显式 owner、exact expected、append-only acceptance、事实簇 split、readiness、预算和未来 release 阶段。缺少：独立双标记录、裁决记录、标注指南版本/校准集、pre-acceptance 事实簇工作台、按字段一致性统计，以及防止同一事实簇在 GEPA 中按媒体成员数过度加权的明确上限。
 
@@ -34,9 +34,9 @@
 | 窗口参数 | replayable | received | reviewed | accepted | 说明 |
 | --- | ---: | ---: | ---: | ---: | --- |
 | 24h | 555 | 232 | 0 | 0 | 当前 active cohort |
-| 72h | 555 | 232 | 0 | 0 | 与 24h 相同，不能视为 3 个自然日 |
+| 72h | 555 | 232 | 0 | 0 | 与 24h 相同；可用数据都在最近 24 小时内 |
 
-24h 与 72h 数量相同并不是“过去三天分布稳定”，而是当前 cohort 的可用数据都落在最近 24 小时内。正式 profile 需要真实跨越至少 3 个 settled natural days，扩大 `--hours` 参数不会制造缺少的日历覆盖。
+24h 与 72h 数量相同并不是“过去三天分布稳定”，而是当前 cohort 的可用数据都落在最近 24 小时内；扩大 `--hours` 不会制造缺少的样本。这仍然是一条真实的观察，但（#259 之后）它不再意味着「必须等日历」：正式 profile 要的是独立事实簇、Target/Control 与 strata 覆盖，一个落在单个 UTC 日期内、簇数足够的窗口同样合格。
 
 当前 queue strata 包含 21 个 delivered、35 个 model-drop，以及多类 macro/regional/throttled controls；这些是抽样层，不等同于最终 Gold label。尤其不能把 `delivered` 当 `should_push`，也不能把“被拦截”自动当 `should_hold`。
 
@@ -321,7 +321,7 @@ Datasheet 是 Freeze 的解释层，不是另一套可修改标签；其中的�
 | Cluster-weighted GEPA | split 不跨簇，但 train/val 仍包含簇内全部 case | **缺口/需测量** |
 | 最终 untouched temporal test | release profile 有 future validation/shadow/canary | 已覆盖，但必须实际积累新数据 |
 
-**仓库事实。** 正式 development profile 当前要求至少 30 个 boundary clusters、100 个 retention clusters、50 个 negative clusters、3 个自然日、3 个 strata 且必须有 safety。boundary 与 retention 在计数实现中互斥，因此仅满足前两项就至少需要 130 个独立 cluster。[release profile](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/learning/profile.py#L22-L40)、[dataset counts](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/learning/dataset.py#L594-L640)
+**仓库事实（#259 之后）。** 正式 development profile 要求至少 30 个 boundary clusters、100 个 retention clusters、50 个 negative clusters、3 个 strata 且必须有 safety；不再有自然日门槛。boundary 与 retention 在计数实现中互斥，因此仅满足前两项就至少需要 130 个独立 cluster。`natural_day_n` 与 `window_duration_hours` 仍在 dataset counts、readiness `coverage` 与 `run_summary.json` 中作为集中度诊断，但不进入 pass/fail。[release profile](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/learning/profile.py#L22-L40)、[dataset counts](https://github.com/AnalyThothAI/tracefold/blob/78682409281ace85af1a5264e60069d6dd719318/src/tracefold/news/learning/dataset.py#L594-L640)
 
 ## 7. Label Studio / Argilla：成熟方案还是第二套真相
 
@@ -379,9 +379,9 @@ GEPA/DSPy 官方没有给“新闻 Agent 至少 N 条”的通用阈值。下面
 | --- | ---: | --- | --- |
 | Rubric 校准 | 30–50，全量双标 | 可来自若干 closed batch | 标注指南是否可复现；不能跑 release claim |
 | S0 smoke | 8–12；#225 实际 6 簇跑通 | 关闭窄窗 | 工作流物理可运行；不能声明 uplift |
-| **正式 contract floor** | **至少 130**，并满足 boundary≥30、retention≥100、negative≥50、safety、strata≥3 | ≥3 自然日 | 只表示 development profile 计数合格 |
-| Production v1 建议 | 150–250；其中自然 verified Prompt targets 目标≥30、controls≥100 | ≥7 个 settled 自然日 | 可做有意义的 bounded GEPA/offline candidate discovery |
-| 稳健 production 建议 | 400–600，按 cluster-time 和 strata 达到停止规则 | 14–28 日，覆盖不同时段/周末 | 可开始估计稳定收益；仍需 future validation |
+| **正式 contract floor** | **至少 130**，并满足 boundary≥30、retention≥100、negative≥50、safety、strata≥3 | 无日历门槛（#259） | 只表示 development profile 计数合格 |
+| Production v1 建议 | 150–250；其中自然 verified Prompt targets 目标≥30、controls≥100 | 建议观察多个 settled 自然日；非代码合同 | 可做有意义的 bounded GEPA/offline candidate discovery |
+| 稳健 production 建议 | 400–600，按 cluster-time 和 strata 达到停止规则 | 建议 14–28 日，覆盖不同时段/周末；非代码合同 | 可开始估计稳定收益；仍需 future validation |
 | Future validation | 当前合同：≥24 h、≥200 eligible Events、计划 50/至少 30 primary clusters、最多 100 人工 judgments | 必须在优化之后 | 检验未见时间窗；之后仍需 shadow/canary |
 
 **建议/推论。** 400–600 是规划范围，不是魔法数字。真正的停止规则应是：

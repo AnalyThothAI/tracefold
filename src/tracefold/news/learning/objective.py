@@ -1005,7 +1005,10 @@ def _expected_delivery(should_push: str) -> bool | None:
     return None
 
 
-READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v1"] = "tracefold.news.gepa_readiness_report.v1"
+# v2 (#259): the report carries the frozen dataset's own `coverage` counts beside the plan, so one
+# document answers both "may this corpus be optimized" and "how much separable evidence is in it".
+# `run_summary` reads that block; a v1 report cannot answer it and must not be read as if it could.
+READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v2"] = "tracefold.news.gepa_readiness_report.v2"
 # The Program answers two Predictors per metric call, in a fixed order. Not an estimate — it is the graph.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
 
@@ -1052,12 +1055,18 @@ def build_readiness_report(
     *,
     episodes: Sequence[DevelopmentEpisode],
     identity: Mapping[str, Any],
+    coverage: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Explain a compile before anyone pays for one. No model call, no write, no second projection.
 
     Readiness is an explanation, not a bypass: the trusted compiler rebuilds this exact plan and refuses
     on the same conditions. What it buys is that `insufficient` costs nothing instead of costing a
     container, two endpoints and an operator's evening.
+
+    `coverage` is the frozen dataset's own sealed counts, handed in by the caller that loaded them and
+    republished verbatim. This module decides what GEPA may optimize and never reads a dataset; carrying
+    the block is what lets one report answer both "may this corpus be optimized" and "how much separable
+    evidence is in it, and how concentrated is it in time" (#259 §5.2).
     """
 
     optimizer = plan.optimizer_episodes
@@ -1066,6 +1075,10 @@ def build_readiness_report(
         "identity": dict(identity),
         "outcome": "ready" if plan.optimizer_ready else "insufficient",
         "blocking_reasons": list(plan.blocking_reasons),
+        # Diagnostics, in the release profile's own vocabulary, and separate from `corpus` below because
+        # these are the *dataset's* sealed counts rather than anything re-derived from the episodes.
+        # `natural_day_n` and `window_duration_hours` describe sample concentration and gate nothing.
+        "coverage": dict(coverage),
         "corpus": {
             "case_n": plan.case_n,
             "cluster_n": plan.cluster_n,

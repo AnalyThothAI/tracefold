@@ -698,7 +698,7 @@ def _insert_validation_dataset(conn, *, development, candidate: CandidateManifes
     payload = {
         "dataset_version": "news_learning_dataset_v1",
         "role": "validation",
-        "profile_id": "news_learning_release_v1",
+        "profile_id": "news_learning_release_v2",
         "learning_epoch": LEARNING_EPOCH,
         "learning_epoch_started_at_ms": development.learning_epoch_started_at_ms,
         "window": {"from_ms": NOW - 6 * 3_600_000, "to_ms": NOW},
@@ -2729,6 +2729,69 @@ def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
     assert report.run_state == "incomplete"
     assert report.evidence["provider_cost_observation_complete"] is False
     assert "provider_cost_observation_incomplete" in report.evidence["blockers"]
+
+
+def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(conn) -> None:
+    """#259: the development gate reads coverage; the calendar is a diagnostic beside it.
+
+    This corpus lives inside a single UTC date — as almost every freeze does, since a frozen dataset only
+    admits cases from the *active* Stable bundle and a bundle deployed this morning has no yesterday. The
+    old profile turned that into `development_natural_day_n_insufficient` and made every Stable iteration
+    wait for midnights it had no way to produce. What refuses this corpus now is what was always wrong
+    with it: three accepted reviews cannot carry 30 boundary and 100 retention clusters.
+
+    Both halves are asserted on purpose. Dropping the calendar row without keeping the cluster rows would
+    not be this Issue, it would be deleting the gate.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    # The two diagnostics survive the cut: an operator still has to be able to see that this corpus is six
+    # hours of one day, they just cannot be refused for it.
+    assert development.counts["natural_day_n"] == 1
+    assert development.counts["window_duration_hours"] == 6.0
+
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=_static_judges(stable, candidate.candidate_arm),
+        candidate_catalog=(candidate,),
+    )
+
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    blockers = set(report.evidence["blockers"])
+    assert not any("natural_day" in blocker for blocker in blockers)
+    assert not any(blocker.endswith(("_age_days_insufficient", "_stable_age_insufficient")) for blocker in blockers)
+    assert {
+        "development_boundary_cluster_n_insufficient",
+        "development_retention_cluster_n_insufficient",
+        "development_negative_cluster_n_insufficient",
+    } <= blockers
+    assert report.gate_outcome == "unknown"
 
 
 def test_blind_candidate_critical_error_is_a_release_failure(conn) -> None:

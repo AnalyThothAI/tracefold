@@ -6,6 +6,16 @@ plane checks a candidate against it (#202 §8).
 
 `TRUSTED_ROOT_SHA` is computed, never pinned to a literal. It is the reader contract, the rubric, the
 accepted-review profile and the evaluator version together — change any one and every report says so.
+
+Every threshold here answers "does this corpus carry enough independent evidence to decide something".
+#259 removed the one that did not: `natural_days_min`, a count of distinct UTC calendar dates in the
+development window. It measured neither sample size nor time span — 23:59 and 00:01 are two days two
+minutes apart, and a continuous 23 h window covering many regimes is one — and combined with the
+active-bundle filter it made a freshly deployed Stable unusable until the calendar caught up. Out-of-time
+generalization is proven once, by the Future Holdout in `validation` below, whose window must begin after
+a candidate was registered. `natural_day_n` and `window_duration_hours` survive as dataset diagnostics
+that tell an operator how concentrated the samples are; neither is a pass/fail input, and no stable-age,
+window-age or calendar-day gate may replace them.
 """
 
 from __future__ import annotations
@@ -22,14 +32,17 @@ EVALUATOR_VERSION = "news_candidate_evaluator_v1"
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
     "learning_epoch": LEARNING_EPOCH,
+    # Coverage, not calendar: independent connected fact clusters by role, the strata both split halves
+    # have to carry, and at least one safety case. #259 deleted `natural_days_min` from this set.
     "development": {
         "boundary_clusters_min": 30,
         "retention_clusters_min": 100,
         "negative_clusters_min": 50,
-        "natural_days_min": 3,
         "strata_min": 3,
         "safety_required": True,
     },
+    # The only temporal contract in the profile, and it is a *future* one: the holdout window opens after
+    # the candidate was registered, runs at least a day, and has to carry real reviewed clusters.
     "validation": {
         "duration_hours_min": 24,
         "eligible_events_min": 200,

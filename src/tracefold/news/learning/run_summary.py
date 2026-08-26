@@ -422,6 +422,11 @@ def build_run_summary(
             "selection_root": _at(readiness, "split.development_selection.case_root_sha256"),
             "train_cluster_n": _at(readiness, "split.train.cluster_n"),
             "selection_cluster_n": _at(readiness, "split.development_selection.cluster_n"),
+            # The frozen corpus's own coverage, forwarded from readiness (#259 §5.2). The release profile
+            # decides `offline` on the cluster-role and stratum counts here; `natural_day_n` and
+            # `window_duration_hours` are in the block so an operator can see how concentrated the samples
+            # are, and are read by no gate — a corpus that lands inside one UTC date is not thereby worse.
+            "coverage": _coverage(readiness),
         },
         # Three baselines with three different jobs, named so they cannot be quoted as one another (#253 §3.2).
         "baseline": {
@@ -465,6 +470,19 @@ def build_run_summary(
     reject_nonfinite_json(summary, path="gepa_run_summary")
     reject_secret_material(summary, path="gepa_run_summary")
     return summary
+
+
+# Exactly the block `news learning readiness` publishes, forwarded rather than restated field by field:
+# the dataset store owns which counts exist, and a second list here would go stale the first time it grew.
+def _coverage(readiness: Mapping[str, Any]) -> dict[str, Any]:
+    """Readiness's `coverage` block, or an empty one when the report predates it.
+
+    Empty rather than invented: a v1 readiness report never carried these counts, and publishing zeros for
+    them would read as a measured corpus of nothing.
+    """
+
+    coverage = _at(readiness, "coverage")
+    return dict(coverage) if isinstance(coverage, Mapping) else {}
 
 
 def _usage_cost(optimization: Mapping[str, Any]) -> dict[str, Any]:

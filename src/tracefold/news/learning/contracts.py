@@ -21,7 +21,10 @@ from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_
 from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_learned_instruction
 from ..triage_rules import DecidePolicy
 
-LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
+# v2 (#259): the development gate dropped `natural_days_min`. The profile is inside `TRUSTED_ROOT_SHA`,
+# so a corpus frozen under v1 already fails closed — but the root is a digest and this is the name a
+# report prints, and one readable name must not stand for two different sets of gates.
+LEARNING_PROFILE_ID: Literal["news_learning_release_v2"] = "news_learning_release_v2"
 LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"

@@ -37,9 +37,25 @@ _TASK_ROUTE = {
 }
 
 
+# One UTC date, 21 hours, and coverage the release profile is satisfied by. Before #259 the same corpus
+# was refused for the calendar alone; the two diagnostics stay in the block, and no gate reads them.
+_COVERAGE = {
+    "case_n": 84,
+    "independent_cluster_n": 71,
+    "boundary_cluster_n": 31,
+    "retention_cluster_n": 104,
+    "negative_cluster_n": 52,
+    "safety_cluster_n": 7,
+    "stratum_n": 4,
+    "eligible_event_n": 612,
+    "natural_day_n": 1,
+    "window_duration_hours": 21.0,
+}
+
+
 def _readiness(**updates: Any) -> dict[str, Any]:
     report = {
-        "schema": "tracefold.news.gepa_readiness_report.v1",
+        "schema": "tracefold.news.gepa_readiness_report.v2",
         "outcome": "ready",
         "blocking_reasons": [],
         "identity": {
@@ -48,6 +64,7 @@ def _readiness(**updates: Any) -> dict[str, Any]:
             "episode_count": 84,
             "program_sha256": _PROGRAM,
         },
+        "coverage": dict(_COVERAGE),
         "corpus": {"case_n": 84, "cluster_n": 71},
         "objective": {
             "target_case_n": 19,
@@ -410,6 +427,7 @@ def test_the_summary_carries_counts_and_addresses_and_no_business_content() -> N
         "selection_root": _SELECTION_ROOT,
         "train_cluster_n": 46,
         "selection_cluster_n": 19,
+        "coverage": dict(_COVERAGE),
     }
     for forbidden in ("headline", "why_zh", "instruction", "api_key", "case_id", "event_id"):
         assert forbidden not in document
@@ -808,6 +826,7 @@ def test_a_real_baseline_and_a_real_optimization_over_one_corpus_reconcile_field
 def _real_readiness(plan: Any, *, dataset_sha: str, episode_root: str, corpus: Any) -> dict[str, Any]:
     """The readiness report the CLI would have written for this plan, built by its own builder."""
 
+    from tracefold.news.learning.dataset import dataset_coverage
     from tracefold.news.learning.objective import build_readiness_report
     from tracefold.news.program.artifact import load_stable_program_artifact
 
@@ -820,6 +839,7 @@ def _real_readiness(plan: Any, *, dataset_sha: str, episode_root: str, corpus: A
             "episode_count": len(corpus),
             "program_sha256": load_stable_program_artifact().program_sha256,
         },
+        coverage=dataset_coverage(_COVERAGE),
     )
 
 

@@ -1166,7 +1166,10 @@ produce one. `numeric_drift` is `seed - standalone`, published rather than
 reconciled: two physical runs of one graph may differ, and a difference is not
 by itself evidence that a dataset identity is wrong.
 
-`same_population` is a verdict over named `population_checks` — dataset SHA,
+`dataset` carries the corpus counts and roots plus a `coverage` block forwarded
+from readiness, so the numbers and the population behind them read together;
+`{}` there means the readiness report predates v2 rather than that the corpus
+was empty. `same_population` is a verdict over named `population_checks` — dataset SHA,
 episode projection root, episode count, representative case root and counts,
 both split roots, the metric receipt, the parent Program, the task model, and
 the task endpoint. Every corpus check is three-way against readiness, so a run
@@ -1210,7 +1213,22 @@ the sealed corpus, builds the one `GepaObjectivePlan`, and reports
 derived owner distribution, exact-gold coverage by dimension, the train and
 development-selection halves of the honest split with their case and cluster
 roots, the required strata, retrieval verifiability, and a per-metric-call task
-and judge envelope computed from the corpus. Objective Plan v2 elects exactly
+and judge envelope computed from the corpus. The report is
+`tracefold.news.gepa_readiness_report.v2`: v2 adds a `coverage` block carrying
+the frozen dataset's own sealed counts — `case_n`, `independent_cluster_n`,
+`boundary_cluster_n`, `retention_cluster_n`, `negative_cluster_n`,
+`safety_cluster_n`, `stratum_n`, `eligible_event_n`, `natural_day_n`,
+`window_duration_hours` — republished verbatim rather than re-tallied, and
+present with `null` values on the one path that cannot project a corpus at all.
+The last two are diagnostics of sample concentration and are read by no gate
+(#259); `release evaluate --stage offline|holdout` decides development evidence
+on the cluster-role, stratum and safety counts alone, and no stable-age,
+window-age or calendar-day threshold may be added beside them. Out-of-time
+generalization remains the Future Holdout's alone: `validation` still requires a
+window strictly after candidate registration, ≥ 24 h, ≥ 200 eligible Events and
+≥ 30 primary clusters. Removing the day gate moves `TRUSTED_ROOT_SHA` and the
+profile is `news_learning_release_v2`, so a v1 dataset or candidate is audit
+history and a new experiment re-freezes. Objective Plan v2 elects exactly
 one optimizer representative per connected fact cluster before the split:
 target before control, then target-dimension count, safety status,
 newer Event and stable case id. Other members remain frozen diagnostics with a
