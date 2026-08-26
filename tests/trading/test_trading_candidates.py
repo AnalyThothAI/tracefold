@@ -33,6 +33,7 @@ def _oi_row(**kwargs: Any) -> dict[str, Any]:
     row = {
         "event_id": "e1",
         "final_decision": "push",
+        "source_rule": "opening_move_with_whale_concentration",
         "ingest_mode": "live",
         "program_version": "news_oi_signal_v1",
         "metric_version": "oi_signal_v1",
@@ -130,12 +131,30 @@ def test_rank_and_thin_open_interest_are_all_named_rejections() -> None:
         (_oi_row(oi_value_usd=3_000_000), "oi_value_below_floor"),
         (_oi_row(direction="sideways"), "oi_direction_unknown"),
         (_oi_row(ingest_mode="recovery"), "not_live_ingest"),
-        (_oi_row(final_decision="drop"), "not_pushed"),
         (_oi_row(verdict_created_at_ms=None), "verdict_time_missing"),
     ):
         result = oi_candidate(row, now_ms=NOW, blacklist=OPEN_DENY)
         assert isinstance(result, Rejected)
         assert result.rule == rule
+
+
+def test_a_dropped_reader_verdict_is_still_a_visible_oi_fact() -> None:
+    """#264: the reader's push/drop is audit on the candidate, never the capital lane's entry.
+
+    The reader pushes on `whale_oi_ratio > 80%`. Five of the seven frames meeting the target strategy's
+    conditions in the seven days this ledger has existed were `drop` — TUT 15.48%/54.24% among them —
+    and every one of them was invisible to Trading before this rule was removed.
+    """
+
+    result = oi_candidate(
+        _oi_row(final_decision="drop", source_rule="whale_ratio_below_threshold", whale_oi_ratio_bps=5_424),
+        now_ms=NOW,
+        blacklist=OPEN_DENY,
+    )
+    assert isinstance(result, OiTradeCandidate)
+    assert result.final_decision == "drop"
+    assert result.source_rule == "whale_ratio_below_threshold"
+    assert result.whale_oi_ratio_bps == 5_424
 
 
 def test_age_is_not_an_eligibility_rule_it_is_a_trigger_rule() -> None:

@@ -139,8 +139,9 @@ def oi_candidate(
     symbol = canonical_base_symbol(row.get("symbol"))
     if not symbol:
         return _no("symbol_not_canonicalisable")
-    if str(row.get("final_decision") or "") not in _LIVE_DECISIONS:
-        return _no("not_pushed", symbol)
+    # No `not_pushed` rule (#264). The reader's push/drop is carried onto the candidate as audit and is
+    # not an admission: its own rule is `whale_oi_ratio > 80%`, and gating capital on it meant a reader
+    # policy edit opened or closed the trading lane without anyone deciding that it should.
     if str(row.get("ingest_mode") or "") != "live":
         return _no("not_live_ingest", symbol)
 
@@ -187,6 +188,8 @@ def oi_candidate(
         whale_long_profit_bps=_int(row.get("whale_long_profit_bps"), 0) or 0,
         whale_oi_ratio_bps=_int(row.get("whale_oi_ratio_bps"), 0) or 0,
         rank_in_window=rank,
+        final_decision=str(row.get("final_decision") or ""),
+        source_rule=str(row.get("source_rule") or ""),
         metric_version=str(row.get("metric_version") or ""),
         learning_epoch=str(row.get("learning_epoch") or ""),
         program_version=str(row.get("program_version") or ""),

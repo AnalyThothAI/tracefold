@@ -175,6 +175,50 @@ def test_news_never_imports_trading() -> None:
     assert offenders == []
 
 
+def _is_docstring(node: ast.stmt) -> bool:
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+
+
+@pytest.mark.architecture
+def test_the_oi_projection_executes_no_trading_capital_policy() -> None:
+    """#264: News's SELECT answers "does this fact exist", never "may it reach capital".
+
+    Three predicates used to live in `trade_candidate_oi_rows` and each of them made a rejection
+    indistinguishable from an absence — the funnel's `oi_rows = 0` could mean no data, a reader drop, a
+    rank ceiling or an OI floor, and an operator had to replay SQL offline to find out which. The
+    reader's `push`/`drop` was the worst of the three: its rule is `whale_oi_ratio > 80%`, and five of
+    the seven frames meeting the target strategy's conditions in the seven days this ledger has existed
+    were dropped by it and never reached Trading at all.
+
+    The generation, ingest-mode and parser predicates stay. Those are what makes the *fact* trustworthy,
+    which is the projection's own job.
+    """
+
+    module = ast.parse((NEWS / "storage" / "trade_projection.py").read_text(encoding="utf-8"))
+    read = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "trade_candidate_oi_rows"
+    )
+    # Executable statements only. The docstring names each removed predicate so the next reader learns
+    # why it went, and scanning the prose would make that explanation trip its own guard.
+    body = "\n".join(ast.unparse(node) for node in read.body if not _is_docstring(node))
+    signature = [argument.arg for argument in read.args.args + read.args.kwonlyargs]
+    for banned, why in (
+        ("final_decision IN", "the reader's push/drop is audit, not the capital lane's entry"),
+        ("rank_in_window <=", "the Trading rank ceiling belongs to the Candidate Gate"),
+        ("oi_value_usd >=", "the Trading OI floor belongs to the Candidate Gate"),
+        ("max_rank_in_window", "no Trading threshold may cross into News's SELECT"),
+        ("min_oi_value_usd", "no Trading threshold may cross into News's SELECT"),
+    ):
+        assert banned not in body, f"{banned!r} is back in the OI projection: {why}"
+    assert "max_rank_in_window" not in signature and "min_oi_value_usd" not in signature
+    # Still a point-in-time read of one executable generation, or it would be publishing rows no case
+    # could legally be frozen from.
+    for required in ("news_learning_epochs", "e.ingest_mode = 'live'", "v.degraded = false"):
+        assert required in body
+
+
 def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 

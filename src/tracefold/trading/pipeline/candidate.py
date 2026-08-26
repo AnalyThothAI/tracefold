@@ -308,8 +308,6 @@ class CandidateRunner:
                 self._config.oi_metric_version,
                 now - window,
                 now,
-                elig.max_rank_in_window,
-                elig.min_oi_value_usd,
             )
             return {
                 "control": runtime.get("control", "RUNNING"),

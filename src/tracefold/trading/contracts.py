@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v4"
+TRADING_MANIFEST_VERSION = "trading_manifest_v5"
 TRADING_POLICY_VERSION = "trading_strategy_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
@@ -53,11 +53,15 @@ NewsLearningEpoch = Literal["program_v7"]
 
 
 class OiCandidateRow(TypedDict):
-    """One deterministic OI telemetry frame offered to the candidate scanner."""
+    """One parsed deterministic OI telemetry fact offered to the candidate scanner."""
 
     event_id: str
     verdict_created_at_ms: int
+    # The reader's own judgment of this frame, and the named rule behind it. Audit, not admission: since
+    # #264 the Candidate Gate decides whether the fact may trigger, and a reader policy change must not
+    # silently open or close the capital lane.
     final_decision: str
+    source_rule: str | None
     learning_epoch: str
     program_version: str
     program_sha256: str
@@ -312,6 +316,12 @@ class OiTradeCandidate(_Frozen):
     whale_oi_ratio_bps: int
     rank_in_window: int
 
+    # The reader's verdict on the same frame, frozen into the manifest so a capital decision can be read
+    # beside the judgment that accompanied it. Deliberately `str` rather than a `Literal`: it is no longer
+    # an admission rule, and pinning the reader's decision vocabulary here would turn a News policy change
+    # into a Trading validation failure — the exact coupling #264 removes.
+    final_decision: str
+    source_rule: str
     metric_version: str
     learning_epoch: NewsLearningEpoch
     program_version: Literal["news_oi_signal_v1"]

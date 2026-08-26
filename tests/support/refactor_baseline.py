@@ -146,8 +146,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "program_v7",
     ),
     "news_to_trading.schema_sha256.manifest": (
-        "issue_213_versioned_strategy_kernel",
-        "0d2c337053b745c1be0a096947c7a434f522cdb642fe202a51befee2c2fae333",
+        "issue_264_oi_fact_projection",
+        "b281c262250c276260880b34969069ea93631d1c85b0809156ef90b63e5d4473",
     ),
     "news_to_trading.policy_version": ("issue_213_versioned_strategy_kernel", "trading_strategy_policy_v1"),
     "news_to_trading.schema_sha256.news": (
@@ -155,8 +155,44 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "9cb007bf545af72e2ed847fc524101f57b1db06ea5a74554d53f18c4707e2a51",
     ),
     "news_to_trading.schema_sha256.oi": (
-        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
-        "e6a52b7b32ef01757d94d3a2813ea105e4e36ff78b5a115294bb8d2d2284ffe4",
+        "issue_264_oi_fact_projection",
+        "2e206bff4c1f32697ce88d2769a4d27ea0465f297c529858cc4b0f161f182cd2",
+    ),
+    # #264: the OI read publishes the reader's own verdict and its named rule as *audit*, and stops
+    # executing Trading's `max_rank_in_window` / `min_oi_value_usd` in News's SQL. Two keys join the
+    # projected row; no key leaves it, and no threshold crosses the seam any more.
+    "news_to_trading.point_in_time_reads.oi.fields": (
+        "issue_264_oi_fact_projection",
+        [
+            "direction",
+            "editorial_origin",
+            "editorial_sha256",
+            "event_id",
+            "final_decision",
+            "ingest_mode",
+            "learning_epoch",
+            "metric_version",
+            "observed_at_ms",
+            "oi_change_bps",
+            "oi_value_usd",
+            "policy_version",
+            "program_sha256",
+            "program_version",
+            "rank_in_window",
+            "runtime_manifest_sha",
+            "scored_judgment_sha256",
+            "source_rule",
+            "symbol",
+            "venue",
+            "verdict_created_at_ms",
+            "whale_long_profit_bps",
+            "whale_oi_ratio_bps",
+        ],
+    ),
+    "representative_trading_flow.flow.oi_projection.final_decision": ("issue_264_oi_fact_projection", "push"),
+    "representative_trading_flow.flow.oi_projection.source_rule": (
+        "issue_264_oi_fact_projection",
+        "opening_move_with_whale_concentration",
     ),
     # #193 hard-cuts the two-file Artifact v2 (QualityKernel, route spec, execution contract, RulePacks,
     # DemoBank, embedded compile receipt) down to one document holding a factory id and the two advisory
@@ -225,8 +261,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "news_semantic_program_v5",
     ),
     "representative_trading_flow.flow.manifest_sha256": (
-        "issue_213_versioned_strategy_kernel",
-        "6059dbbfb3d4030a2985bb0e18530733996599169d4f1b1d32584560a3ce00c1",
+        "issue_213_versioned_strategy_kernel_then_issue_264_oi_fact_projection",
+        "84def8a743f5477e451dab173e8fe04946573f3557e0240004841250f7f4140d",
     ),
     "representative_trading_flow.flow.manifest.case_kind": ("issue_213_versioned_strategy_kernel", _MISSING),
     "representative_trading_flow.flow.manifest.mark_price": ("issue_213_versioned_strategy_kernel", _MISSING),
@@ -267,7 +303,7 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         },
     ),
     "representative_trading_flow.flow.manifest.contexts": (
-        "issue_213_versioned_strategy_kernel",
+        "issue_213_versioned_strategy_kernel_then_issue_264_oi_fact_projection",
         {
             "mode": "paper",
             "oi": {
@@ -282,6 +318,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
                 "whale_long_profit_bps": 9_900,
                 "whale_oi_ratio_bps": 21_097,
                 "rank_in_window": 1,
+                "final_decision": "push",
+                "source_rule": "opening_move_with_whale_concentration",
                 "metric_version": "oi_signal_v1",
                 "learning_epoch": "program_v7",
                 "program_version": "news_oi_signal_v1",
@@ -463,10 +501,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # OI projection now names when its deterministic verdict became durable — it always had the column
     # and always dropped it — so the manifest layout moves and says so. A case frozen under v2 has no
     # such stamp and must not be replayed as if it did.
-    "news_to_trading.manifest_version": ("issue_213_versioned_strategy_kernel", "trading_manifest_v4"),
+    # #264 makes the OI projection publish the reader's own verdict as audit rather than as admission,
+    # so `final_decision` and `source_rule` join the frozen manifest and the layout moves with them.
+    "news_to_trading.manifest_version": ("issue_264_oi_fact_projection", "trading_manifest_v5"),
     "representative_trading_flow.flow.manifest.manifest_version": (
-        "issue_213_versioned_strategy_kernel",
-        "trading_manifest_v4",
+        "issue_264_oi_fact_projection",
+        "trading_manifest_v5",
     ),
     "representative_trading_flow.flow.oi_projection.verdict_created_at_ms": (
         "issue_211_point_in_time_trigger_identity",
@@ -488,8 +528,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         5,
     ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_213_versioned_strategy_kernel",
-        "19dac8a8f2e58928c6a4fdb37aac358e5f3dae469ff95c8d1492ff0cb6d88d66",
+        "issue_213_versioned_strategy_kernel_then_issue_264_oi_fact_projection",
+        "09b9f08d1548ffb4c66ec63cbaff120464a3bfe54e747f41883f070364412740",
     ),
 }
 
@@ -863,6 +903,7 @@ def _oi_row() -> dict[str, Any]:
         "scored_judgment_sha256": "c" * 64,
         "runtime_manifest_sha": "d" * 64,
         "final_decision": "push",
+        "source_rule": "opening_move_with_whale_concentration",
         "ingest_mode": "live",
     }
 

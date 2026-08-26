@@ -36,6 +36,8 @@ def _oi(symbol: str = "DOGE", at: int = NOW, whale: int = 9_900, value: int = 73
         whale_long_profit_bps=whale,
         whale_oi_ratio_bps=21_097,
         rank_in_window=1,
+        final_decision="push",
+        source_rule="opening_move_with_whale_concentration",
         metric_version="oi_signal_v1",
         learning_epoch="program_v7",
         program_version="news_oi_signal_v1",

@@ -47,10 +47,11 @@ class TradingDatabasePort(Protocol):
 
 BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
 BarFetcherFactory = Callable[[str], BarFetcher | None]
-# `(repos, metric_version, after_ms, until_ms, max_rank, min_oi_value_usd) -> three trigger lanes`.
-# The repository session stays opaque: this context never learns which repositories it carries.
+# `(repos, metric_version, after_ms, until_ms) -> three trigger lanes`. The repository session stays
+# opaque: this context never learns which repositories it carries. No Trading threshold is passed (#264);
+# the projection answers "which facts exist", the Candidate Gate answers "which of them may trigger".
 CandidateProjectionReader = Callable[
-    [Any, str, int, int, int, int],
+    [Any, str, int, int],
     tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow], Sequence[LiquidationCandidateRow]],
 ]
 InstrumentProjectionReader = Callable[[Any, str, Sequence[str]], Sequence[InstrumentCandidateRow]]
