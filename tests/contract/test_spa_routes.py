@@ -23,10 +23,13 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path) -> None:
         ]
         news = client.get("/news")
         detail = client.get("/news/story/story_123")
+        trading = client.get("/trading")
         missing_api = client.get("/api/not-a-route")
 
     assert all(response.status_code == 404 for response in retired)
     assert news.status_code == detail.status_code == 200
     assert "text/html" in news.headers["content-type"]
     assert "text/html" in detail.headers["content-type"]
+    assert trading.status_code == 200
+    assert "text/html" in trading.headers["content-type"]
     assert missing_api.status_code == 404
