@@ -87,7 +87,22 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.oi_signals",
         "tracefold.news.review.desk",
     ),
-    "app.trading_cli": ("tracefold.trading.contracts",),
+    "app.trading_cli": (
+        "tracefold.trading.contracts",
+        # #265 PR-C's read-only replay. It exists precisely so the report and the scanner are the same
+        # code: it drives the production source stage, the Candidate Gate and the strategy rather than
+        # re-implementing a funnel that would drift the first time a rule moved. That means importing
+        # the pure modules by name, which is what these five entries are — every one of them a pure
+        # function over frozen values, with no storage, provider or execution path behind it.
+        "tracefold.trading.candidate.blacklist",
+        "tracefold.trading.candidate.eligibility",
+        "tracefold.trading.candidate.gate",
+        "tracefold.trading.research.oi_replay",
+        "tracefold.trading.strategy.oi_smart_money_momentum",
+        # The OI lane's measurement version, so the replay reads the same rows the scanner does. A
+        # literal here would silently stop matching the day `oi_signals` bumps it.
+        "tracefold.news.oi_signals",
+    ),
     "app.workers": (
         # The code-owned Program contract: the version every verdict row is stamped with, and the route
         # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,

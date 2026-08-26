@@ -1180,6 +1180,64 @@ def test_the_three_source_contract_columns_travel_together_or_not_at_all(conn) -
     conn.rollback()
 
 
+def test_the_replay_reads_the_whole_window_through_the_rules_the_scanner_applies(conn) -> None:
+    """#265 PR-C, against the real SELECT and the real pure functions.
+
+    The value of the report is that it cannot describe a funnel the lane does not have: it drives
+    `oi_candidate`, the Candidate Gate and the strategy in the runner's own order. What it must never do
+    is answer the two questions it has no candle for.
+    """
+
+    from tracefold.trading.candidate.gate import GateConfig
+    from tracefold.trading.research.oi_replay import PENDING_MARKET_CONTEXT, replay_oi_facts
+    from tracefold.trading.strategy.oi_smart_money_momentum import OiSmartMoneyMomentumStrategy
+
+    # The seed writes TUT's real 15.48%; these three are the cohorts around it.
+    _seed_oi_event(conn, event_id="tut", symbol="TUT", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="weak", symbol="ADA", observed_at_ms=NOW - 3 * MINUTE, venue="binance")
+    conn.execute("UPDATE news_oi_signals SET oi_change_bps = 320 WHERE event_id = 'weak'")
+    _seed_oi_event(conn, event_id="thin", symbol="STORJ", observed_at_ms=NOW - 4 * MINUTE, venue="binance")
+    conn.execute("UPDATE news_oi_signals SET oi_value_usd = 3190000 WHERE event_id = 'thin'")
+    _seed_oi_event(conn, event_id="unproven", symbol="SOL", observed_at_ms=NOW - 5 * MINUTE, venue="binance")
+    conn.execute(
+        "UPDATE news_oi_signals SET source_strategy_id = NULL, source_contract_version = NULL, "
+        "measurement_window_ms = NULL WHERE event_id = 'unproven'"
+    )
+    conn.commit()
+
+    facts = [
+        to_oi_candidate_row(row)
+        for row in _repos(conn).news.trade_candidate_oi_rows(
+            metric_version="oi_signal_v1",
+            after_created_at_ms=NOW - 10 * MINUTE,
+            until_created_at_ms=NOW,
+            limit=1_000,
+        )
+    ]
+    report = replay_oi_facts(
+        facts,
+        gate=GateConfig.from_policy(
+            EligibilityPolicy(min_oi_value_usd=5_000_000), venue_priority=("binance", "hyperliquid")
+        ),
+        strategy=OiSmartMoneyMomentumStrategy(),
+        blacklist=Blacklist.from_rows(_repos(conn).trading.blacklist_rows()),
+        listed_symbols={},
+        now_ms=NOW,
+    )
+
+    assert report.facts == 4
+    assert report.by_reason["strategy:smart_money_oi_change_below_floor"] == 1
+    assert report.by_reason["eligibility:oi_value_below_floor"] == 1
+    assert report.by_reason["strategy:source_window_mismatch"] == 1
+    assert [row.symbol for row in report.surviving] == ["TUT"]
+    assert report.by_stage[PENDING_MARKET_CONTEXT] == 1
+    # The template cohort is a different question and includes the frame the liquidity floor refused —
+    # but not the one whose five-minute window could not be proven, because the template names it.
+    assert sorted(row.symbol for row in report.target_cohort) == ["STORJ", "TUT"]
+    # And no price rule is reported as binding, because none was evaluated.
+    assert not any("price_direction" in key or "chasing" in key for key in report.by_reason)
+
+
 def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
     epoch_start = int(
         conn.execute("SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v7'").fetchone()[

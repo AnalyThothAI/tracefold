@@ -777,6 +777,34 @@ Changing a threshold does not rewrite history: `gate_config_digest` is half the
 key, so an edit starts a new row and the old one stays as the record of what the
 old rule decided.
 
+### Which OI rule is actually binding (#265)
+
+`uv run tracefold trading replay-oi --days 7` replays every parsed OI fact in a
+window through the same pure functions the scanner runs — the source stage, the
+Candidate Gate and `oi_smart_money_momentum_v1` — and reports where each one
+stopped. It is read-only, runs as `serve`, writes nothing, and proposes no
+threshold: survivor counts per rule say which condition is binding, and reading
+a better number off the same window that produced them is how a lane ends up
+tuned to its own history.
+
+Two things it will not answer, both by design. The pre-move band and any
+outcome need market data the report does not fetch, so a fact that survives the
+deterministic rules is reported as `pending_market_context` with its
+measurements attached rather than as an entry. And freshness is excluded — every
+row in a seven-day window is stale against now, so replaying it would stop
+everything at `trigger_stale` and say nothing about the rules under test.
+
+`target_cohort` is a separate list from the funnel and answers a different
+question: how often the three-dimensional shape occurs at all, ignoring
+liquidity, rank and routing. A frame in the cohort but not in `surviving` is the
+useful case — the shape occurred and something else refused it — and merging the
+two would make "the shape never happens" and "it happens and we cannot trade it"
+look identical when they call for opposite responses.
+
+The report carries `gate_config_digest` and `strategy_config_digest`, which are
+the digests the durable rows are filed under, so a report and the ledger it
+describes cannot silently be about different thresholds.
+
 ### Price Review plane (#88)
 
 `/api/news/status.price` is the first place to look:

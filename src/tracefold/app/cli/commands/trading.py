@@ -16,13 +16,43 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
+from tracefold.app.workers.wiring.news_to_trading import to_oi_candidate_row
+from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.secret_file import secret_file_configured
+from tracefold.trading.candidate.blacklist import Blacklist
+from tracefold.trading.candidate.eligibility import EligibilityPolicy
+from tracefold.trading.candidate.gate import CANDIDATE_GATE_VERSION, GateConfig
 from tracefold.trading.contracts import canonical_base_symbol
+from tracefold.trading.research.oi_replay import replay_oi_facts
+from tracefold.trading.strategy.oi_smart_money_momentum import OiSmartMoneyMomentumStrategy
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000
-_READ_COMMANDS = frozenset({"status", "cases", "show"})
+_READ_COMMANDS = frozenset({"status", "cases", "show", "replay-oi"})
+# One replay read, not the scanner's. The projection's own 256-row ceiling is sized for a 65-minute
+# scan window; a seven-day replay is about four hundred rows at the measured rate, and a caller that
+# comes back with exactly this many was truncated and says so in `truncated`.
+_REPLAY_ROW_LIMIT = 20_000
+
+
+def trading_settings_gate(settings: Any) -> GateConfig:
+    """The Candidate Gate's configuration as the running lane would build it.
+
+    Assembled from the same settings the Workers wiring reads, so a replay cannot describe a floor the
+    scanner is not applying — the digest in the report is the digest the ledger's rows are filed under.
+    """
+
+    candidates = settings.trading.candidates
+    return GateConfig.from_policy(
+        EligibilityPolicy(
+            max_age_ms=candidates.max_age_seconds * 1000,
+            max_rank_in_window=candidates.max_rank_in_window,
+            min_oi_value_usd=candidates.min_oi_value_usd,
+            symbol_cooldown_ms=candidates.symbol_cooldown_seconds * 1000,
+        ),
+        venue_priority=settings.trading.venues.enabled,
+    )
 
 
 def _now_ms() -> int:
@@ -99,6 +129,59 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     # part of this report a lane with zero cases and zero orders can still answer from.
                     **trading.candidate_admission_report(now_ms=now),
                     **counts,
+                },
+            }
+
+        if command == "replay-oi":
+            days = int(getattr(args, "days", 7) or 7)
+            since_ms = now - days * 86_400_000
+            candidates = trading_settings_gate(settings)
+            strategy = OiSmartMoneyMomentumStrategy()
+            facts = [
+                to_oi_candidate_row(row)
+                for row in repos.news.trade_candidate_oi_rows(
+                    metric_version=NEWS_OI_METRIC_VERSION,
+                    after_created_at_ms=since_ms,
+                    until_created_at_ms=now,
+                    limit=_REPLAY_ROW_LIMIT,
+                )
+            ]
+            try:
+                blacklist = Blacklist.from_rows(trading.blacklist_rows())
+            except Exception:  # pragma: no cover - a read-only report must not fail on the deny list
+                blacklist = Blacklist.unavailable()
+            report = replay_oi_facts(
+                facts,
+                gate=candidates,
+                strategy=strategy,
+                blacklist=blacklist,
+                listed_symbols={},
+                now_ms=now,
+            )
+            # Instrument coverage for the population that got that far, one read per issuer. The set is
+            # bounded by the survivors, not by the window: at the measured rate that is a handful.
+            for symbol in sorted(
+                {row.symbol for row in report.surviving} | {row.symbol for row in report.target_cohort}
+            ):
+                listed = repos.news.trade_candidate_instrument(base_symbol=symbol, venues=("binance.perp", "hl.perp"))
+                report.instrument_coverage[symbol] = len(listed)
+            return 0, {
+                "ok": True,
+                "data": {
+                    "window_days": days,
+                    "since_ms": since_ms,
+                    "until_ms": now,
+                    "truncated": len(facts) >= _REPLAY_ROW_LIMIT,
+                    "gate_version": CANDIDATE_GATE_VERSION,
+                    "gate_config": candidates.snapshot,
+                    "gate_config_digest": candidates.digest,
+                    "strategy_id": strategy.strategy_id,
+                    "strategy_config": strategy.config_snapshot,
+                    "strategy_config_digest": strategy.config_digest,
+                    # Stated, not implied: this report describes what the rules did, and proposes no
+                    # replacement for any of them (#265 §8).
+                    "thresholds_are_not_tuned_from_this_report": True,
+                    **report.as_dict(),
                 },
             }
 

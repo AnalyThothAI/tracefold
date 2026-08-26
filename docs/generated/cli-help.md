@@ -782,12 +782,14 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,show,blacklist,approve,reject,resolve,control} ...
+                         {status,cases,replay-oi,show,blacklist,approve,reject,resolve,control} ...
 
 positional arguments:
-  {status,cases,show,blacklist,approve,reject,resolve,control}
+  {status,cases,replay-oi,show,blacklist,approve,reject,resolve,control}
     status              mode, control, daily counters, and the 24 h funnel
     cases               list Trading cases newest first
+    replay-oi           read-only: every parsed OI fact in a window, and the
+                        rule each one stopped on (#265)
     show                one case with its order and remote observations
     blacklist           the canonical deny-list; one row blocks every provider
                         spelling of that underlying
@@ -823,6 +825,18 @@ options:
   -h, --help            show this help message and exit
   --state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,ORDER_PREPARED,BLOCKED}
   --limit LIMIT
+
+```
+
+## `trading replay-oi`
+
+```
+usage: tracefold trading replay-oi [-h] [--days DAYS]
+
+options:
+  -h, --help   show this help message and exit
+  --days DAYS  how far back to replay; the OI ledger holds 30 days of parsed
+               frames
 
 ```
 

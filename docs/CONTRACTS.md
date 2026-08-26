@@ -740,6 +740,11 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
+- `tracefold trading replay-oi --days N` is a read-only report, not an endpoint:
+  every parsed OI fact in the window driven through the production source stage,
+  Candidate Gate and strategy, counted by stage and by rule, with the target
+  template's cohort listed separately. It proposes no threshold and evaluates
+  neither the price band nor any outcome, because it fetches no market data.
 - `GET /api/trading/status` returns the capital lane's `budget` (fixed
   notional, fixed stop bps, max hold, `nominal_daily_stop_loss_usd`, the daily
   order ceiling and today's count), `readiness` (`enabled`, `mode`, `control`,
