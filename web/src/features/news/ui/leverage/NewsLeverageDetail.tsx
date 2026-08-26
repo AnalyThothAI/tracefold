@@ -5,7 +5,12 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { NewsQuote } from "../../api/newsQueries";
-import { leveragePlanes, leverageTimeline, type LeverageCase } from "../../model/leverageCases";
+import {
+  leveragePlanes,
+  leverageTimeline,
+  triggerLabel,
+  type LeverageCase,
+} from "../../model/leverageCases";
 import { NewsTechnical } from "../chrome/NewsChrome";
 import { NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
@@ -69,7 +74,7 @@ export function NewsLeverageDetail({
           <KeyValueRow k="策略" v={item.strategyLabel} />
           <KeyValueRow k="规则" v={item.rule} />
           <KeyValueRow k="案例" v={item.caseId} />
-          <KeyValueRow k="触发" v={`OI 帧 · ${item.age}`} />
+          <KeyValueRow k="触发" v={`${triggerLabel(item.triggerKind)} · ${item.age}`} />
           <KeyValueRow k="数据缺口" v={gaps || "—"} />
         </KeyValue>
       </div>
@@ -171,7 +176,10 @@ export function NewsLeverageDetail({
           {/* The frame page is bounded and the ledger is not; a case older than the page has no wire line
               here, and saying which page it is on beats printing nothing. */}
           <code>
-            {item.event?.leader_title ?? "原帧不在本页帧里（帧按页取）——在 OI 遥测审计上完整"}
+            {item.event?.leader_title ??
+              (item.triggerKind === "oi"
+                ? "原帧不在本页帧里（帧按页取）——在 OI 遥测审计上完整"
+                : `${triggerLabel(item.triggerKind)}触发的案例：这条通道没有遥测帧，原始证据在事件流上`)}
           </code>
           <div className="news-leverage-raw-links">
             <Link to={newsOiPath()}>在 OI 遥测审计中查看 ›</Link>

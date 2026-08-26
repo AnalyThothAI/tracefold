@@ -9,6 +9,7 @@ export {
 } from "./api/tradingQueries";
 export {
   policyRuleZh,
+  tradingLedgerEntries,
   tradingOiCellCopy,
   tradingOiLedgerByEventId,
   tradingOiTraceEntries,

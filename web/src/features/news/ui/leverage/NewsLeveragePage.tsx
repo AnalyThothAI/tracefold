@@ -1,4 +1,4 @@
-import { tradingOiLedgerByEventId, useTradingOrdersWithToken } from "@features/trading";
+import { tradingLedgerEntries, useTradingOrdersWithToken } from "@features/trading";
 import { newsOiPath, newsSymbolPath, tradingPath } from "@shared/routing/paths";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { Metric, MetricRow } from "@shared/ui/Metric";
@@ -76,7 +76,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
   const floors = statusQuery.data?.oi?.trade_floors ?? EMPTY_FLOORS;
   const cases = leverageCases(
     feedQuery.data?.events ?? [],
-    tradingOiLedgerByEventId(tradingQuery.data),
+    tradingLedgerEntries(tradingQuery.data),
     floors,
     Date.now(),
   );
@@ -87,9 +87,15 @@ export function NewsLeveragePage({ token }: { token: string }) {
    * different one silently — which is what falling straight through to `visible[0]` would do — makes a
    * shared link point at the wrong money. The fallback is only for a link whose case has aged out of the
    * window entirely.
+   *
+   * Matched against the published `event_id` too. The identity moved from `event_id` to `case_id` (#262),
+   * so a link shared before that carries the old one; resolving both means such a link opens its own case
+   * instead of quietly opening someone else's.
    */
   const selected =
-    (selectedId ? cases.find((item) => item.id === selectedId) : undefined) ?? visible[0];
+    (selectedId
+      ? cases.find((item) => item.id === selectedId || item.eventId === selectedId)
+      : undefined) ?? visible[0];
 
   const quotesQuery = useNewsQuotesWithToken(token, selected ? [selected.base] : []);
   const quote = quotesQuery.data?.quotes?.[0];
@@ -207,7 +213,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
         {frameless > 0 || tradingQuery.data?.complete === false ? (
           <b>
             {frameless > 0
-              ? `其中 ${frameless} 条案例的原帧不在本页帧里（帧按页取），这些行没有原始线与 OI 测量。`
+              ? `其中 ${frameless} 条案例没有配套的遥测帧——或是非 OI 触发，或是原帧不在本页（帧按页取）；这些行没有原始线与 OI 测量。`
               : ""}
             {tradingQuery.data?.complete === false
               ? "账本批次已截断，可能还有本页未列出的案例。"

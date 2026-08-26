@@ -346,11 +346,19 @@ the route components into the eager shell chunk.
   It is a list of case cards beside one case in full, from three reads it shares
   with pages already making them — `/api/news/feed?admission=telemetry_deterministic`,
   one `/api/trading/orders` batch, and `/api/news/status` for the capital floors
-  — plus `/api/news/quotes` for the selected case. The join is only on the
-  `event_id` the ledger itself published; a frame that authored no case is not
-  listed at all, because that whole population is the audit's and repeating it
-  here would bury the few rows carrying a decision. Selected case and tab are
-  URL-owned (`?case=`, `?lev=live|directional|no_trade|done`).
+  — plus `/api/news/quotes` for the selected case.
+
+  The lane is enumerated from the ledger and keyed by `case_id`, never by
+  `event_id`. The server publishes an `event_id` only where `primary_source_key`
+  round-trips as `oi:{event_id}:{metric_version}` — the deterministic OI trigger
+  — so a news- or liquidation-triggered case carries `null` by design, its source
+  key being a content hash no Event id rebuilds. Keying the list by `event_id`
+  dropped every one of them, and the page told the operator 「24 小时内没有成案」
+  while nine sat in the ledger. The frame is attached by `event_id` when the
+  loaded frame page holds it and is decoration either way: it carries the wire
+  line and the OI measurements, not the case's identity. A frame that authored no
+  case is still not listed, because that whole population is the audit's.
+  Selected case and tab are URL-owned (`?case=` — a `case_id` —, `?lev=live|directional|no_trade|done`).
 
   The phase of a case is read from the ledger's own states, never from elapsed
   time. The evidence matrix has exactly four states — 支持 / 冲突 / 缺失 /
