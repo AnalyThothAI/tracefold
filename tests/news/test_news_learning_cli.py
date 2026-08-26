@@ -375,6 +375,7 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
     assert data["blocking_reasons"] == ["dataset_agent_cohort_mismatch"]
     # The sections a consumer reads, present and empty rather than absent.
     for section in (
+        "coverage",
         "corpus",
         "owner_distribution",
         "objective",
@@ -388,6 +389,63 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
         assert section in data, section
     assert data["objective"]["target_case_n"] == 0
     assert data["identity"]["model_targets"]["compiler_reflection_configured"] is True
+    # `null`, not `0`: a corpus that could not be projected has unknown coverage, and reporting zeros
+    # would read as a measured corpus of nothing.
+    assert set(data["coverage"].values()) == {None}
+
+
+def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypatch: Any) -> None:
+    """#259 §5.2: the day count and the window length reach an operator, and gate nothing.
+
+    Readiness is the report that costs no provider call, so it is where an operator finds out how
+    concentrated a corpus is before deciding whether to spend on it. The block is the dataset's own sealed
+    counts forwarded verbatim — the eligible-Event and cluster-role numbers were measured against
+    production at freeze time and cannot be recovered from a projection of the cases that survived.
+    """
+
+    counts = {
+        "case_n": 168,
+        "independent_cluster_n": 141,
+        "boundary_cluster_n": 34,
+        "retention_cluster_n": 107,
+        "negative_cluster_n": 55,
+        "safety_cluster_n": 9,
+        "stratum_n": 4,
+        "eligible_event_n": 733,
+        "natural_day_n": 1,
+        "window_duration_hours": 21.0,
+        # Sealed beside the rest and deliberately outside the coverage block: a list and a nested identity
+        # object are not counts an operator scans.
+        "strata": ["delivered", "model_drop"],
+        "eligibility": {"unit": "agent_bundle_sha"},
+    }
+
+    class _Store:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def development_compile_export(self, _sha: str) -> Any:
+            return SimpleNamespace(episodes=(), dataset_payload={"counts": counts})
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    _readiness_settings(monkeypatch)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Store)
+
+    code, payload = _handle_learning(_readiness_args())
+    coverage = payload["data"]["coverage"]
+
+    assert code == 0
+    assert coverage["natural_day_n"] == 1
+    assert coverage["window_duration_hours"] == 21.0
+    assert coverage["independent_cluster_n"] == 141
+    assert coverage["eligible_event_n"] == 733
+    assert "strata" not in coverage and "eligibility" not in coverage
+    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v2"
 
 
 def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any) -> None:
