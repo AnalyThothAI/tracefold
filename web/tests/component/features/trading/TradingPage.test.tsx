@@ -234,6 +234,67 @@ describe("TradingPage", () => {
     await waitFor(() => expect(screen.getByText(/鲸鱼盈利 ≥ 95%/)).toBeInTheDocument());
   });
 
+  it("names why the frames that never reached a case were refused", async () => {
+    // #264: the funnel started at 成案, so an entire population — 87 rejected frames in the fixture's
+    // 24 h — had no representation at all. A lane at zero orders could not tell "the upstream is quiet"
+    // from "every frame was below the liquidity floor".
+    renderTrading();
+
+    const panel = (await screen.findByText("未成案的来源帧")).closest("section") as HTMLElement;
+    expect(within(panel).getByText("eligibility:oi_value_below_floor")).toBeInTheDocument();
+    expect(within(panel).getByText("持仓额低于流动性地板")).toBeInTheDocument();
+    // Descending by count, so the binding constraint is the first row rather than an alphabetical one.
+    const keys = within(panel)
+      .getAllByText(/^[a-z_]+:[a-z_]+$/)
+      .map((node) => node.textContent);
+    expect(keys[0]).toBe("eligibility:rank_above_limit");
+    // A frame that *did* open a case is not a refusal and does not belong in this list.
+    expect(within(panel).queryByText("freeze:case_created")).not.toBeInTheDocument();
+  });
+
+  it("starts the funnel before the case, and names the clock each row is counted on", async () => {
+    renderTrading();
+
+    const funnel = (await screen.findByText(/案例去向/)).closest("section") as HTMLElement;
+    // Matched on the label alone; the clock is a nested `<em>` and rides on `textContent` below.
+    const rows = within(funnel).getAllByText(/^(上游帧|过准入|成案|政策放行|提交订单|已了结|在场)$/);
+    expect(rows.map((node) => node.textContent)).toEqual([
+      "上游帧24h",
+      "过准入24h",
+      "成案日",
+      "政策放行日",
+      "提交订单日",
+      "已了结日",
+      "在场当前",
+    ]);
+    // 87 + 2 + 1 + 1 = 91 frames the admission ledger holds for the window.
+    expect(within(funnel).getByText("91")).toBeInTheDocument();
+    // Two clocks, labelled rather than merged: a rolling 24 h and a UTC calendar day.
+    expect(within(funnel).getAllByText("24h")).toHaveLength(2);
+  });
+
+  it("says so plainly when the admission ledger has never held a frame", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            counts: {
+              ...tradingStatusFixture().counts,
+              candidate_counts_24h: {},
+              candidate_counts_7d: {},
+              candidate_reasons_24h: {},
+            },
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+
+    const panel = (await screen.findByText("未成案的来源帧")).closest("section") as HTMLElement;
+    expect(within(panel).getByText(/尚未运行过/)).toBeInTheDocument();
+  });
+
   it("shows real liquidation shadow cohorts without presenting them as orders", async () => {
     renderTrading();
 

@@ -37,6 +37,25 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       // on `day_key`, unlike every rolling count beside it.
       funnel_day_key: "2026-08-25",
       funnel_today: { case_created: 9 },
+      // #264: the durable admission ledger, keyed on when the *frame* was observed rather than on when
+      // the gate looked, so a restart that re-reads a backlog cannot move yesterday's frames into today.
+      candidate_counts_24h: { CASE_CREATED: 1, DEFERRED: 2, EXPIRED: 1, REJECTED: 87 },
+      candidate_counts_7d: { CASE_CREATED: 4, EXPIRED: 9, REJECTED: 392 },
+      candidate_reasons_24h: {
+        "eligibility:oi_value_below_floor": 22,
+        "eligibility:rank_above_limit": 65,
+        "routing:no_native_perp": 2,
+        "market_context:market_data_unavailable": 1,
+        "eligibility:trigger_stale": 1,
+        "freeze:case_created": 1,
+      },
+      candidate_reasons_7d: { "eligibility:rank_above_limit": 300 },
+      latest_source_at_ms: TRADING_NOW_MS - 60_000,
+      latest_gate_eligible_at_ms: TRADING_NOW_MS - 3_600_000,
+      latest_case_created_at_ms: TRADING_NOW_MS - 3_600_000,
+      latest_order_prepared_at_ms: TRADING_NOW_MS - 3_500_000,
+      latest_position_opened_at_ms: TRADING_NOW_MS - 3_400_000,
+      latest_position_closed_at_ms: null,
       orders_by_state: { CLOSED: 2, OPEN: 1 },
       liquidation_promotion_ready: false,
       liquidation_promotion_reason: "source_contract_incomplete",

@@ -112,6 +112,59 @@ class _FakeTradingRepository:
             "closed_orders_today": 2,
             "active_orders": 1,
             "funnel_day_key": "2026-08-25",
+            "latest_case_created_at_ms": NOW - 400_000,
+            "latest_order_prepared_at_ms": NOW - 399_000,
+            "latest_position_opened_at_ms": NOW - 398_000,
+            "latest_position_closed_at_ms": None,
+        }
+
+    def candidate_admission_report(self, *, now_ms: int, trigger_kind: str = "oi") -> dict[str, Any]:
+        self.calls.append(("candidate_admission_report", {"now_ms": now_ms, "trigger_kind": trigger_kind}))
+        return {
+            "candidate_counts_24h": {"REJECTED": 71, "CASE_CREATED": 1, "DEFERRED": 2},
+            "candidate_counts_7d": {"REJECTED": 398, "CASE_CREATED": 4, "EXPIRED": 3},
+            "candidate_reasons_24h": {
+                "eligibility:oi_value_below_floor": 20,
+                "eligibility:rank_above_limit": 51,
+                "routing:no_native_perp": 2,
+                "freeze:case_created": 1,
+            },
+            "candidate_reasons_7d": {"eligibility:rank_above_limit": 300},
+            "latest_source_at_ms": NOW - 60_000,
+            "latest_gate_eligible_at_ms": NOW - 400_000,
+        }
+
+    def console_case_for_source_key(self, *, primary_source_key: str) -> dict[str, Any] | None:
+        self.calls.append(("console_case_for_source_key", {"primary_source_key": primary_source_key}))
+        return None
+
+    def gate_decision_for_source_key(self, *, source_key: str) -> dict[str, Any] | None:
+        self.calls.append(("gate_decision_for_source_key", {"source_key": source_key}))
+        if source_key != "oi:evt-oi-storj:oi_signal_v1":
+            return None
+        return {
+            "source_key": source_key,
+            "gate_version": "trading_candidate_gate_v1",
+            "gate_config_digest": "f" * 64,
+            "trigger_kind": "oi",
+            "underlying_key": "crypto:STORJ",
+            "source_observed_at_ms": NOW - 120_000,
+            "status": "REJECTED",
+            "stage": "eligibility",
+            "reason": "oi_value_below_floor",
+            "retryable": False,
+            "evidence": {
+                "venue": "binance",
+                "oi_value_usd": 3_190_000,
+                "floor": 5_000_000,
+                "whale_oi_ratio_bps": 6_593,
+                "source_decision": "drop",
+                "source_rule": "whale_ratio_below_threshold",
+            },
+            "case_id": None,
+            "first_evaluated_at_ms": NOW - 119_000,
+            "last_evaluated_at_ms": NOW - 60_000,
+            "attempt_count": 30,
         }
 
     def console_orders(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -197,6 +250,61 @@ def test_status_reports_the_mandate_and_never_claims_live_readiness(client) -> N
     assert data["counts"]["policy_allowed_today"] == 3
     assert data["counts"]["active_orders"] == 1
     assert "funnel_24h" not in data["counts"]
+    # #264: the half that outlives the UTC day roll and answers a lane sitting at zero orders. The
+    # reason keys are `stage:reason` from a closed vocabulary — never a symbol, never a source key.
+    assert data["counts"]["candidate_counts_24h"] == {"REJECTED": 71, "CASE_CREATED": 1, "DEFERRED": 2}
+    assert data["counts"]["candidate_reasons_24h"]["eligibility:oi_value_below_floor"] == 20
+    assert data["counts"]["candidate_counts_7d"]["EXPIRED"] == 3
+    # Two milestones on either side of admission: a recent source with no recent case is a gate
+    # problem, a recent case with no order is a strategy or a risk problem.
+    assert data["counts"]["latest_source_at_ms"] == NOW - 60_000
+    assert data["counts"]["latest_gate_eligible_at_ms"] == NOW - 400_000
+    assert data["counts"]["latest_position_closed_at_ms"] is None
+
+
+def test_an_event_with_no_case_says_why_rather_than_only_that_there_is_none() -> None:
+    """#264: `case: null` used to be the whole answer, and it is the same shape for four situations."""
+
+    settings = Settings(ws_token=TOKEN)
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(settings, _FakeTradingRepository())
+    api = TestClient(app)
+    response = api.get("/api/trading/events/evt-oi-storj", params={"token": TOKEN, "lane": "oi"})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["joinable"] is True
+    # `exclude_unset` keeps an absent case absent rather than shipping a null the page must branch on.
+    assert "case" not in data
+    assert (data["gate_status"], data["gate_stage"], data["gate_reason"]) == (
+        "REJECTED",
+        "eligibility",
+        "oi_value_below_floor",
+    )
+    assert data["gate_retryable"] is False
+    # The number it failed on and the number it failed against, so a threshold argument is settled here.
+    assert data["gate_evidence"]["oi_value_usd"] == 3_190_000
+    assert data["gate_evidence"]["floor"] == 5_000_000
+    # The reader's own verdict rides along and stays a separate fact from the capital lane's refusal.
+    assert data["gate_evidence"]["source_decision"] == "drop"
+    # Re-reading the same source 30 times is one row, and the ledger says so rather than logging 30.
+    assert data["gate_attempt_count"] == 30
+    assert data["gate_config_digest"] == "f" * 64
+
+
+def test_an_event_the_gate_has_never_evaluated_reports_an_absence_not_a_refusal() -> None:
+    settings = Settings(ws_token=TOKEN)
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(settings, _FakeTradingRepository())
+    api = TestClient(app)
+    response = api.get("/api/trading/events/evt-unseen", params={"token": TOKEN, "lane": "oi"})
+
+    data = response.json()["data"]
+    assert data["joinable"] is True
+    # An explicit null, not an omission: "the lane has not evaluated this source under any gate
+    # version" is an answer, and a missing key would read as the console forgetting to ask.
+    assert data["gate_status"] is None
+    assert "gate_reason" not in data
 
 
 def test_orders_carry_the_ledgers_own_state_and_no_frozen_payload(client) -> None:

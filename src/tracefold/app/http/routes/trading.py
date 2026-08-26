@@ -70,6 +70,7 @@ def get_trading_status(request: Request) -> Response:
             now_ms=now_ms,
             day_key=state.get("day_key"),
         )
+        admission = repos.trading.candidate_admission_report(now_ms=now_ms)
     order = settings.trading.order
     return _etagged(
         {
@@ -102,6 +103,10 @@ def get_trading_status(request: Request) -> Response:
             # lie. `funnel_day_key` rides beside it so a stale document is visible rather than inferred.
             "counts": {
                 **counts,
+                # #264. The rest of this document is keyed on a case or an order existing, and
+                # `funnel_today` is overwritten at UTC midnight — so a lane at zero orders could report
+                # nothing at all about why. This half reads the admission ledger and outlives both.
+                **admission,
                 "funnel_today": _int_map(state.get("funnel")),
             },
             "window_hours": _WINDOW_MS // 3_600_000,
@@ -204,13 +209,22 @@ def get_trading_event_case(request: Request, event_id: str) -> Response:
     runtime = _authenticated_runtime(request)
     if lane != "oi":
         return _etagged({"event_id": event_id, "joinable": False}, request, envelope=_EventCaseEnvelope)
+    source_key = f"oi:{event_id}:{_OI_METRIC_VERSION}"
     with runtime.repositories() as repos:
-        row = repos.trading.console_case_for_source_key(primary_source_key=f"oi:{event_id}:{_OI_METRIC_VERSION}")
+        row = repos.trading.console_case_for_source_key(primary_source_key=source_key)
+        gate = repos.trading.gate_decision_for_source_key(source_key=source_key)
     if row is None:
-        return _etagged({"event_id": event_id, "joinable": True}, request, envelope=_EventCaseEnvelope)
+        # "No case" used to be the whole answer, which is the same shape for "the lane never saw it",
+        # "it was below the liquidity floor" and "there is no perp at the venue whose OI moved" (#264).
+        return _etagged(
+            {"event_id": event_id, "joinable": True, **_gate(gate)},
+            request,
+            envelope=_EventCaseEnvelope,
+        )
     return _etagged(
         {
             "case": _case(row),
+            **_gate(gate),
             "entry_reference": _decimal(row.get("entry_reference")),
             "event_id": event_id,
             "exit_price": _decimal(row.get("exit_price")),
@@ -229,6 +243,30 @@ def get_trading_event_case(request: Request, event_id: str) -> Response:
         request,
         envelope=_EventCaseEnvelope,
     )
+
+
+def _gate(row: dict[str, Any] | None) -> dict[str, Any]:
+    """The admission decision, or an explicit absence.
+
+    An absent row is its own answer and is reported as one: the lane has not evaluated this source
+    under any gate version, which after a deploy of a new `gate_version` is the honest state rather
+    than a refusal the console would otherwise have to invent.
+    """
+
+    if row is None:
+        return {"gate_status": None}
+    return {
+        "gate_status": str(row["status"]),
+        "gate_stage": str(row["stage"]),
+        "gate_reason": str(row["reason"]),
+        "gate_retryable": bool(row["retryable"]),
+        "gate_version": str(row["gate_version"]),
+        "gate_config_digest": str(row["gate_config_digest"]).strip(),
+        "gate_evidence": row.get("evidence") or {},
+        "gate_first_evaluated_at_ms": int(row["first_evaluated_at_ms"]),
+        "gate_last_evaluated_at_ms": int(row["last_evaluated_at_ms"]),
+        "gate_attempt_count": int(row["attempt_count"]),
+    }
 
 
 def _underlying_key(value: str) -> str | None:

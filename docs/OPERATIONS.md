@@ -723,6 +723,60 @@ remaining eligible count, last-turn deletes, oldest retained age and error.
 Feed shows Events from the first frame after deployment; there is no backfill
 of pre-V3 history.
 
+### Why an OI frame produced no case (#264)
+
+`trading_candidate_gate_decisions` holds one row per
+`(source_key, gate_version, gate_config_digest)` and answers this without a
+replay. It is the ledger that replaced reading
+`trading_runtime_state.funnel`, which is one JSONB document reset on the UTC day
+key — the reason a question about yesterday's frame used to have no evidence at
+all.
+
+Start from `uv run tracefold trading status`:
+
+- `candidate_counts_24h` / `candidate_counts_7d` — how many source frames the
+  lane saw and what happened to them, by `DEFERRED | REJECTED | CASE_CREATED |
+  EXPIRED`. Counted on the frame's own observation time, so a runner restart that
+  re-reads a backlog cannot move yesterday's frames into today.
+- `candidate_reasons_24h` — the same population by `stage:reason`. The stages run
+  `source -> eligibility -> routing -> market_context -> freeze`, and the reason
+  vocabulary is closed; anything outside it is a bug, not a new rule.
+- `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of
+  admission. A recent source with no recent `CASE_CREATED` is an admission
+  question; a recent case with no `latest_order_prepared_at_ms` is a strategy or
+  a risk question.
+
+For one frame, `GET /api/trading/events/{event_id}?lane=oi` returns the decision
+with its `gate_evidence` — the measurement it failed on and the threshold it
+failed against — or read the row directly:
+
+```sql
+SELECT status, stage, reason, retryable, attempt_count, evidence, case_id
+  FROM trading_candidate_gate_decisions
+ WHERE source_key = 'oi:<event_id>:oi_signal_v1'
+ ORDER BY last_evaluated_at_ms DESC;
+```
+
+`attempt_count` is how many times the scanner re-read that source, not how many
+times the answer changed: a terminal row keeps its status, stage, reason and
+evidence, and only the two evaluation counters move. `DEFERRED` is the only
+non-terminal state and means a later scan could genuinely answer differently
+(`market_data_unavailable`, `no_native_perp`, `cooldown`); the runner's own sweep
+turns one `EXPIRED` with `trigger_stale` once the frame is past the trigger
+budget, so an open row that never resolved reads as the clock's answer rather
+than as pending work. Retention is 90 days, purged in bounded batches by the
+same turn.
+
+Two adjacent situations are *not* refusals and read as such:
+`gate_status: null` on the HTTP surface means no row under any `gate_version` —
+after a gate version bump that is the honest state — and a source whose case was
+already created reports `CASE_CREATED` with the `case_id`, which is the link to
+`trading_cases`.
+
+Changing a threshold does not rewrite history: `gate_config_digest` is half the
+key, so an edit starts a new row and the old one stays as the record of what the
+old rule decided.
+
 ### Price Review plane (#88)
 
 `/api/news/status.price` is the first place to look:

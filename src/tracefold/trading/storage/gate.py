@@ -207,5 +207,23 @@ class CandidateGateStorage:
             ),
         }
 
+    def candidate_admission_report(self, *, now_ms: int, trigger_kind: str = "oi") -> dict[str, Any]:
+        """The whole durable half of the lane's status, assembled once.
+
+        The counts a lane reports are otherwise keyed on a case or an order existing, which is exactly
+        what a lane with neither has none of — and `trading_runtime_state.funnel` resets on the UTC day
+        key, so a question about yesterday had no evidence at all. This is the part that survives both.
+        """
+
+        window_24h = self.gate_decision_counts(since_ms=int(now_ms) - 86_400_000, trigger_kind=trigger_kind)
+        window_7d = self.gate_decision_counts(since_ms=int(now_ms) - 7 * 86_400_000, trigger_kind=trigger_kind)
+        return {
+            "candidate_counts_24h": window_24h["status"],
+            "candidate_counts_7d": window_7d["status"],
+            "candidate_reasons_24h": window_24h["reasons"],
+            "candidate_reasons_7d": window_7d["reasons"],
+            **self.latest_gate_milestones(trigger_kind=trigger_kind),
+        }
+
 
 __all__ = ["CandidateGateStorage"]

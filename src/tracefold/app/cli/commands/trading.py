@@ -94,6 +94,10 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     # the same rows the funnel counts. `n` per stage says how much evidence each
                     # number rests on.
                     "stage_latency_ms": trading.stage_latency_ms(since_ms=now - _STATUS_WINDOW_MS),
+                    # #264: the durable admission ledger. `funnel_24h` above is the day's in-memory
+                    # document and is overwritten at UTC midnight; this survives it, and is the only
+                    # part of this report a lane with zero cases and zero orders can still answer from.
+                    **trading.candidate_admission_report(now_ms=now),
                     **counts,
                 },
             }

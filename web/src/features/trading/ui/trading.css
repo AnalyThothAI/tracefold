@@ -270,8 +270,48 @@
   }
 
   .trading-funnel-row small {
+    display: flex;
+    gap: 5px;
+    align-items: baseline;
     color: var(--text-secondary);
     font-size: var(--font-size-mono-meta);
+  }
+
+  /* The clock each row is counted on. Two intervals drawn as one bar chart is two intervals
+     impersonating one, so every row names its own rather than the card naming an average. */
+  .trading-funnel-row small em {
+    color: var(--text-subtle);
+    font-style: normal;
+    font-size: var(--font-size-eyebrow, var(--font-size-mono-meta));
+  }
+
+  /* ------------------------------------------------------------------ admission */
+  .trading-admission {
+    display: grid;
+    gap: 8px;
+    padding: 12px 14px 0;
+  }
+
+  .trading-admission-row {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) 32px;
+    gap: 10px;
+    align-items: baseline;
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-admission-row code {
+    color: var(--text-subtle);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .trading-admission-row b {
+    color: var(--text-primary);
+    font: 620 var(--font-size-mono-meta)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .trading-evidence {

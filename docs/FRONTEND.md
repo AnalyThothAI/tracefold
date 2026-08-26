@@ -454,11 +454,24 @@ the route components into the eager shell chunk.
   `/trading` is 交易 · 模拟仓 (#207 PR-W4, #104, #185, #213): a production
   ledger against a fake exchange. Its triggers and market bars are real; its
   entries and exits are simulated. It reads `/api/trading/status` for the
-  mandate, readiness, capital-strategy funnel, and liquidation shadow cohorts,
+  mandate, readiness, capital-strategy funnel, source-admission ledger, and
+  liquidation shadow cohorts,
   and `/api/trading/orders` for the exposure, the closes and the cases that
   stopped before authoring an intent — both halves, because a
   `POLICY_REJECTED` case is where the capital floors actually bite and has no
   order to join through.
+
+  The funnel starts before the case. Its first two rows — `上游帧` and `过准入` —
+  come from `counts.candidate_counts_24h`, the durable admission ledger, and the
+  rows below them are the ledger's own UTC budget day; each row names its own
+  clock rather than the card averaging two intervals into one label. Beside it
+  the `未成案的来源帧` card lists `counts.candidate_reasons_24h` descending, each
+  entry rendering the `stage:reason` key verbatim beside its Chinese, the way
+  `policy_reason` already does. Source admission and strategy refusal stay two
+  panels: a frame refused before a manifest could be frozen and a case a
+  strategy declined are different stages, and one list holding both taught a
+  reader that 成案 and 有交易 were the same thing (#264). An empty ledger says
+  which kind of empty it is — no frames in 24 h, or none ever recorded.
 
   Trigger identity and strategy identity remain separate facts. The compact
   workbench chips are a direct presentation mapping of the frozen
@@ -501,6 +514,13 @@ the route components into the eager shell chunk.
   than as a failed request without displacing the approved frame.
   An operator deployment may explicitly enable paper mode; the page has no
   switch and only reflects that durable runtime state.
+
+  The Event detail's 未成案 chip carries the admission ledger's stage and reason
+  when there is one. The bare chip was the same shape for "below the liquidity
+  floor", "no native perp at the venue whose OI moved" and "the lane never
+  evaluated this frame"; the last of those is not a refusal and keeps the bare
+  chip, because a frame with no ledger row under any `gate_version` has not been
+  declined by anything.
 
   The Event detail carries a 成案 badge from the same feature. It renders nothing
   at all for a model-lane Event: only the deterministic OI lane's source key

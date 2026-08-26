@@ -4486,6 +4486,34 @@
             "title": "Active Orders",
             "type": "integer"
           },
+          "candidate_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Candidate Counts 24H",
+            "type": "object"
+          },
+          "candidate_counts_7d": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Candidate Counts 7D",
+            "type": "object"
+          },
+          "candidate_reasons_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Candidate Reasons 24H",
+            "type": "object"
+          },
+          "candidate_reasons_7d": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Candidate Reasons 7D",
+            "type": "object"
+          },
           "cases_by_state": {
             "additionalProperties": {
               "type": "integer"
@@ -4547,6 +4575,72 @@
             },
             "title": "Funnel Today",
             "type": "object"
+          },
+          "latest_case_created_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Case Created At Ms"
+          },
+          "latest_gate_eligible_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Gate Eligible At Ms"
+          },
+          "latest_order_prepared_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Order Prepared At Ms"
+          },
+          "latest_position_closed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Position Closed At Ms"
+          },
+          "latest_position_opened_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Position Opened At Ms"
+          },
+          "latest_source_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Source At Ms"
           },
           "liquidation_promotion_ready": {
             "default": false,
@@ -4645,6 +4739,128 @@
               }
             ],
             "title": "Exit Reason"
+          },
+          "gate_attempt_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Attempt Count"
+          },
+          "gate_config_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Config Digest"
+          },
+          "gate_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingGateEvidenceData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gate_first_evaluated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate First Evaluated At Ms"
+          },
+          "gate_last_evaluated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Last Evaluated At Ms"
+          },
+          "gate_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Reason"
+          },
+          "gate_retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Retryable"
+          },
+          "gate_stage": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source",
+                  "eligibility",
+                  "routing",
+                  "market_context",
+                  "freeze"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Stage"
+          },
+          "gate_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DEFERRED",
+                  "REJECTED",
+                  "CASE_CREATED",
+                  "EXPIRED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Status"
+          },
+          "gate_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Version"
           },
           "joinable": {
             "title": "Joinable",
@@ -4946,6 +5162,145 @@
           "lookback_ms"
         ],
         "title": "TradingFloorsData",
+        "type": "object"
+      },
+      "TradingGateEvidenceData": {
+        "additionalProperties": false,
+        "description": "What one admission decision was taken on. Every key is code-owned and named here on purpose.\n\nPassing the stored document straight through would put the next evidence key in a browser without\nanyone deciding that it should, which is the same rule the order and case projections follow. The\nfour measurements are always present past the source stage; the rest are the threshold or the\nprovider detail that the specific rule failed on.",
+        "properties": {
+          "age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Ms"
+          },
+          "blacklist_reason": {
+            "default": "",
+            "title": "Blacklist Reason",
+            "type": "string"
+          },
+          "enabled": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled",
+            "type": "array"
+          },
+          "floor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit"
+          },
+          "max_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Age Ms"
+          },
+          "oi_change_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oi Change Bps"
+          },
+          "oi_value_usd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oi Value Usd"
+          },
+          "rank_in_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank In Window"
+          },
+          "rule": {
+            "default": "",
+            "title": "Rule",
+            "type": "string"
+          },
+          "source_decision": {
+            "default": "",
+            "title": "Source Decision",
+            "type": "string"
+          },
+          "source_rule": {
+            "default": "",
+            "title": "Source Rule",
+            "type": "string"
+          },
+          "venue": {
+            "default": "",
+            "title": "Venue",
+            "type": "string"
+          },
+          "whale_long_profit_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whale Long Profit Bps"
+          },
+          "whale_oi_ratio_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whale Oi Ratio Bps"
+          }
+        },
+        "title": "TradingGateEvidenceData",
         "type": "object"
       },
       "TradingHorizonData": {

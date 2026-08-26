@@ -2057,6 +2057,22 @@ export interface components {
              * @default 0
              */
             active_orders: number;
+            /** Candidate Counts 24H */
+            candidate_counts_24h?: {
+                [key: string]: number;
+            };
+            /** Candidate Counts 7D */
+            candidate_counts_7d?: {
+                [key: string]: number;
+            };
+            /** Candidate Reasons 24H */
+            candidate_reasons_24h?: {
+                [key: string]: number;
+            };
+            /** Candidate Reasons 7D */
+            candidate_reasons_7d?: {
+                [key: string]: number;
+            };
             /** Cases By State */
             cases_by_state?: {
                 [key: string]: number;
@@ -2099,6 +2115,18 @@ export interface components {
             funnel_today?: {
                 [key: string]: number;
             };
+            /** Latest Case Created At Ms */
+            latest_case_created_at_ms?: number | null;
+            /** Latest Gate Eligible At Ms */
+            latest_gate_eligible_at_ms?: number | null;
+            /** Latest Order Prepared At Ms */
+            latest_order_prepared_at_ms?: number | null;
+            /** Latest Position Closed At Ms */
+            latest_position_closed_at_ms?: number | null;
+            /** Latest Position Opened At Ms */
+            latest_position_opened_at_ms?: number | null;
+            /** Latest Source At Ms */
+            latest_source_at_ms?: number | null;
             /**
              * Liquidation Promotion Ready
              * @default false
@@ -2152,6 +2180,25 @@ export interface components {
             exit_price?: string | null;
             /** Exit Reason */
             exit_reason?: string | null;
+            /** Gate Attempt Count */
+            gate_attempt_count?: number | null;
+            /** Gate Config Digest */
+            gate_config_digest?: string | null;
+            gate_evidence?: components["schemas"]["TradingGateEvidenceData"] | null;
+            /** Gate First Evaluated At Ms */
+            gate_first_evaluated_at_ms?: number | null;
+            /** Gate Last Evaluated At Ms */
+            gate_last_evaluated_at_ms?: number | null;
+            /** Gate Reason */
+            gate_reason?: string | null;
+            /** Gate Retryable */
+            gate_retryable?: boolean | null;
+            /** Gate Stage */
+            gate_stage?: ("source" | "eligibility" | "routing" | "market_context" | "freeze") | null;
+            /** Gate Status */
+            gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
+            /** Gate Version */
+            gate_version?: string | null;
             /** Joinable */
             joinable: boolean;
             /** Notional Usd */
@@ -2248,6 +2295,62 @@ export interface components {
             min_price_move_bps: number;
             /** Min Whale Long Profit Bps */
             min_whale_long_profit_bps: number;
+        };
+        /**
+         * TradingGateEvidenceData
+         * @description What one admission decision was taken on. Every key is code-owned and named here on purpose.
+         *
+         *     Passing the stored document straight through would put the next evidence key in a browser without
+         *     anyone deciding that it should, which is the same rule the order and case projections follow. The
+         *     four measurements are always present past the source stage; the rest are the threshold or the
+         *     provider detail that the specific rule failed on.
+         */
+        TradingGateEvidenceData: {
+            /** Age Ms */
+            age_ms?: number | null;
+            /**
+             * Blacklist Reason
+             * @default
+             */
+            blacklist_reason: string;
+            /** Enabled */
+            enabled?: string[];
+            /** Floor */
+            floor?: number | null;
+            /** Limit */
+            limit?: number | null;
+            /** Max Age Ms */
+            max_age_ms?: number | null;
+            /** Oi Change Bps */
+            oi_change_bps?: number | null;
+            /** Oi Value Usd */
+            oi_value_usd?: number | null;
+            /** Rank In Window */
+            rank_in_window?: number | null;
+            /**
+             * Rule
+             * @default
+             */
+            rule: string;
+            /**
+             * Source Decision
+             * @default
+             */
+            source_decision: string;
+            /**
+             * Source Rule
+             * @default
+             */
+            source_rule: string;
+            /**
+             * Venue
+             * @default
+             */
+            venue: string;
+            /** Whale Long Profit Bps */
+            whale_long_profit_bps?: number | null;
+            /** Whale Oi Ratio Bps */
+            whale_oi_ratio_bps?: number | null;
         };
         /** TradingHorizonData */
         TradingHorizonData: {

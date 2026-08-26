@@ -4,19 +4,34 @@ import { Card } from "@shared/ui/Card";
 import { Link } from "react-router-dom";
 
 import type { TradingCase, TradingCounts, TradingFloors } from "../api/tradingQueries";
-import { CASE_STATE_ZH, REGIME_ZH, STRATEGY_ZH, TRIGGER_KIND_ZH } from "../model/tradingLabels";
+import {
+  CASE_STATE_ZH,
+  gateReasonLabel,
+  REGIME_ZH,
+  STRATEGY_ZH,
+  TRIGGER_KIND_ZH,
+} from "../model/tradingLabels";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
+/** How many source frames the admission ledger holds for a window, whatever their answer. */
+function sourcesSeen(counts: Record<string, number> | undefined): number {
+  return Object.values(counts ?? {}).reduce((sum, value) => sum + value, 0);
+}
+
 /**
- * Where today's cases went, and — for the ones that stopped — the rule they stopped on.
+ * Where today's frames went, and — for the ones that stopped — the rule they stopped on.
  *
- * The primary funnel is the ledger's UTC budget day. Named rejections and the rolling 24 h research
- * evidence remain available in the collapsed technical disclosure below the approved workbench.
+ * The funnel used to start at 成案, which made the whole population that never reached one invisible: a
+ * lane at zero orders had nothing on screen distinguishing "the upstream is quiet" from "every frame was
+ * below the liquidity floor" (#264). The first two rows are the durable admission ledger and are the only
+ * ones that survive the UTC day roll; the three below them are the ledger's own budget-day counts. The
+ * two clocks are labelled rather than merged, because a 24 h rolling count and a calendar day drawn as one
+ * bar chart is two intervals impersonating one.
  *
- * The floors are shown beside them because a rejection reason means nothing without the number it failed.
- * They are the *capital* lane's thresholds and never the News gates — two sets, always side by side, neither
- * impersonating the other (#207 §4).
+ * The floors are shown beside the rejections because a reason means nothing without the number it failed.
+ * They are the *capital* lane's thresholds and never the News gates — two sets, always side by side,
+ * neither impersonating the other (#207 §4).
  */
 export function TradingFunnel({
   counts,
@@ -29,12 +44,16 @@ export function TradingFunnel({
 }) {
   const byState = counts.cases_today_by_state ?? {};
   const total = Object.values(byState).reduce((sum, value) => sum + value, 0);
-  const bars: Array<[string, number]> = [
-    ["成案", total],
-    ["政策放行", counts.policy_allowed_today ?? 0],
-    ["提交订单", ordersToday],
-    ["已了结", counts.closed_orders_today ?? 0],
-    ["在场", counts.active_orders ?? 0],
+  const admitted = counts.candidate_counts_24h?.CASE_CREATED ?? 0;
+  const seen = sourcesSeen(counts.candidate_counts_24h);
+  const bars: Array<[string, number, string]> = [
+    ["上游帧", seen, "24h"],
+    ["过准入", admitted, "24h"],
+    ["成案", total, "日"],
+    ["政策放行", counts.policy_allowed_today ?? 0, "日"],
+    ["提交订单", ordersToday, "日"],
+    ["已了结", counts.closed_orders_today ?? 0, "日"],
+    ["在场", counts.active_orders ?? 0, "当前"],
   ];
   const max = Math.max(1, ...bars.map(([, value]) => value));
   const title =
@@ -43,9 +62,12 @@ export function TradingFunnel({
   return (
     <Card flush hint="混合窗口 · 各指标按自身账本时钟" title={title}>
       <div className="trading-funnel">
-        {bars.map(([label, value]) => (
+        {bars.map(([label, value, clock]) => (
           <div className="trading-funnel-row" key={label}>
-            <small>{label}</small>
+            <small>
+              {label}
+              <em>{clock}</em>
+            </small>
             <span className="trading-funnel-track">
               <span style={{ width: `${Math.round((value / max) * 100)}%` }} />
             </span>
@@ -55,6 +77,51 @@ export function TradingFunnel({
         <p className="trading-funnel-note">
           oi_only 与 news_only 永不 live；只有对齐的 news_oi 才有资格走 live_reviewed。
         </p>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Why the frames that never reached a case were refused (#264).
+ *
+ * This is the answer that used to exist only in `trading_runtime_state.funnel` and was overwritten at
+ * every UTC midnight. It is a *source admission* report and deliberately not merged with the case table
+ * below it: a frame refused before a manifest could be frozen and a case a strategy declined are two
+ * different stages, and one list holding both taught a reader that 成案 and 有交易 were the same thing.
+ *
+ * The reason key is rendered verbatim beside its Chinese for the same reason `policy_reason` is.
+ */
+export function TradingAdmission({ counts }: { counts: TradingCounts }) {
+  const reasons = Object.entries(counts.candidate_reasons_24h ?? {})
+    .filter(([key]) => key !== "freeze:case_created")
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+  const seen = sourcesSeen(counts.candidate_counts_24h);
+  const week = sourcesSeen(counts.candidate_counts_7d);
+
+  return (
+    <Card
+      flush
+      hint="24 小时 · 按帧观测时刻，跨 UTC 日仍可查"
+      title="未成案的来源帧"
+    >
+      <div className="trading-admission">
+        {seen === 0 ? (
+          <TradingEmptyNote>
+            {week === 0
+              ? "准入账本里还没有任何来源帧——上游没有推送，或资本通道尚未运行过。"
+              : `过去 24 小时没有来源帧；7 天内有 ${week} 帧。`}
+          </TradingEmptyNote>
+        ) : (
+          reasons.map(([key, value]) => (
+            <div className="trading-admission-row" key={key}>
+              <span>{gateReasonLabel(key)}</span>
+              <code>{key}</code>
+              <b>{value}</b>
+            </div>
+          ))
+        )}
+        <TradingSourceLine path="GET /api/trading/status → counts.candidate_reasons_24h（trading_candidate_gate_decisions）" />
       </div>
     </Card>
   );
