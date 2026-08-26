@@ -28,8 +28,8 @@ describe("route-aware shell figures", () => {
   it("uses the telemetry and capital ledgers on the OI monitor", () => {
     const today = Date.parse("2026-08-25T12:00:00Z");
     expect(topbarFigures("/news/oi", news, trading, today)).toEqual([
-      { label: "OI FRAMES 24H", tone: "accent", value: 142 },
-      { label: "CASES TODAY", value: 9 },
+      { label: "PUSHED 24H", tone: "accent", value: 3 },
+      { label: "今日成案 · 放行", text: "9 · 3" },
     ]);
 
     expect(
@@ -41,16 +41,16 @@ describe("route-aware shell figures", () => {
         }),
         today,
       )[1],
-    ).toEqual({ label: "CASES TODAY", value: 0 });
+    ).toEqual({ label: "今日成案 · 放行", text: "0 · 3" });
   });
 
   it("dates an OI case count when the capital ledger stopped before today", () => {
     expect(topbarFigures("/news/oi", news, trading, Date.parse("2026-08-26T00:01:00Z"))[1]).toEqual(
       {
-        label: "CASES · 08-25",
+        label: "成案 · 放行 · 08-25",
+        text: "9 · 3",
         title: "UTC 2026-08-25",
         tone: "caution",
-        value: 9,
       },
     );
   });

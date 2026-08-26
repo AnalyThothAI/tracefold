@@ -3204,6 +3204,11 @@
         "additionalProperties": false,
         "description": "The capital lane's own floors, shown beside the News gates and never mixed with them (#207).\n\nTwo different questions read the same frame: News asks whether a reader should be told, Trading asks\nwhether the lane may open exposure. Their thresholds are separate config and reaching either number is no\nevidence about the other, so the monitor renders both and labels which is which.\n\n`enabled` is here because `tracefold.trading` ships disabled: a floor from a lane that is not running is a\npublished research band, not a gate anything is currently passing. Read from platform configuration \u2014\n`tracefold.news` never imports `tracefold.trading` and this endpoint does not either.",
         "properties": {
+          "allow_short": {
+            "default": false,
+            "title": "Allow Short",
+            "type": "boolean"
+          },
           "enabled": {
             "default": false,
             "title": "Enabled",
@@ -3904,6 +3909,17 @@
           "metric_version": {
             "title": "Metric Version",
             "type": "string"
+          },
+          "p0": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P0"
           },
           "priced_n": {
             "default": 0,
@@ -6657,6 +6673,17 @@
             ],
             "title": "Decided At Ms"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
           "mode": {
             "title": "Mode",
             "type": "string"
@@ -7256,6 +7283,17 @@
             "title": "Entry Reference",
             "type": "string"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
           "exchange_id": {
             "title": "Exchange Id",
             "type": "string"
@@ -7493,6 +7531,10 @@
             "title": "Cases Without Orders",
             "type": "array"
           },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
@@ -7510,6 +7552,7 @@
           }
         },
         "required": [
+          "complete",
           "window_hours",
           "measured_at_ms"
         ],

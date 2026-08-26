@@ -462,6 +462,7 @@ class QuoteStorage:
                    count(*) FILTER (WHERE r.return_1h_bps IS NOT NULL) AS priced_1h,
                    count(*) FILTER (WHERE r.return_4h_bps IS NOT NULL) AS priced_4h,
                    min(r.unavailable_reason) AS unavailable_reason,
+                   array_remove(array_agg(r.p0), NULL) AS p0s,
                    array_remove(array_agg(r.return_1h_bps), NULL) AS bps_1h,
                    array_remove(array_agg(r.return_4h_bps), NULL) AS bps_4h
               FROM prim p

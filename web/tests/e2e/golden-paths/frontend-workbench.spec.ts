@@ -9,6 +9,16 @@ test.setTimeout(60_000);
  * the task-tab counts and the sidebar count all arrive with the status query, and the rows with the feed
  * query. Waiting on the frame alone shot the page mid-fill and made the baselines flaky.
  */
+const oiArchetype = {
+  // #207: the deterministic OI lane. Its table is the widest thing in the console and scrolls inside
+  // itself; the baseline is what keeps that from becoming a page-level horizontal scroll.
+  name: "oi",
+  path: "/news/oi",
+  ready: (page: Page) => page.locator(".news-oi-row").first(),
+  settled: (page: Page) => page.locator(".news-oi-policy").first(),
+  topbarFigure: "成案 · 放行 · 08-25",
+} as const;
+
 const archetypes = [
   {
     name: "news",
@@ -21,15 +31,6 @@ const archetypes = [
     path: "/news/events/evt-global-policy",
     ready: (page: Page) => page.locator(".news-detail-hero"),
     settled: (page: Page) => page.locator(".news-timeline-step").first(),
-  },
-  {
-    // #207: the deterministic OI lane. Its table is the widest thing in the console and scrolls inside
-    // itself; the baseline is what keeps that from becoming a page-level horizontal scroll.
-    name: "oi",
-    path: "/news/oi",
-    ready: (page: Page) => page.locator(".news-oi-row").first(),
-    settled: (page: Page) => page.locator(".news-oi-window-row").first(),
-    topbarFigure: "CASES · 08-25",
   },
   {
     // #207 PR-W4: the capital lane. Its ledger is empty on this deployment and probably will be for a
@@ -68,13 +69,25 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("freezes representative news and case archetypes", async ({ page }) => {
-  for (const route of archetypes) {
+  await freezeArchetypes(page, archetypes);
+});
+
+test("freezes the OI monitor at every project viewport", async ({ page }) => {
+  await freezeArchetypes(page, [oiArchetype]);
+});
+
+async function freezeArchetypes(
+  page: Page,
+  routes: readonly (typeof oiArchetype | (typeof archetypes)[number])[],
+) {
+  for (const route of routes) {
     await page.goto(route.path);
     await expect(route.ready(page)).toBeVisible();
     await expect(route.settled(page)).toBeVisible();
     if ("topbarFigure" in route && (page.viewportSize()?.width ?? 0) > 767) {
       await expect(page.locator(".topbar-figures").getByText(route.topbarFigure)).toBeVisible();
     }
+    if (route.name === "oi") await expectOiOverflowContract(page);
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {
@@ -93,7 +106,7 @@ test("freezes representative news and case archetypes", async ({ page }) => {
   }
 
   await expectNoUnhandledApiRequests(page);
-});
+}
 
 /**
  * The toolbar's `visibleCount / total` grows as the anchored feed fills, and at tablet width the toolbar
@@ -110,6 +123,27 @@ async function waitForSettledFeedCount(page: Page) {
       return shown === (await page.locator(".news-event-row").count());
     })
     .toBe(true);
+}
+
+/** The 1240px frame grid scrolls inside its panel; neither document nor route column may widen. */
+async function expectOiOverflowContract(page: Page) {
+  const widths = await page.evaluate(() => {
+    const route = document.querySelector<HTMLElement>(".center-column");
+    const table = document.querySelector<HTMLElement>(".news-oi-table");
+    return {
+      documentClient: document.documentElement.clientWidth,
+      documentScroll: document.documentElement.scrollWidth,
+      routeClient: route?.clientWidth ?? 0,
+      routeScroll: route?.scrollWidth ?? 0,
+      tableClient: table?.clientWidth ?? 0,
+      tableScroll: table?.scrollWidth ?? 0,
+    };
+  });
+  expect(widths.documentScroll).toBe(widths.documentClient);
+  expect(widths.routeScroll).toBe(widths.routeClient);
+  if ((page.viewportSize()?.width ?? 0) <= 1366) {
+    expect(widths.tableScroll).toBeGreaterThan(widths.tableClient);
+  }
 }
 
 async function waitForStableWorkbench(page: Page) {

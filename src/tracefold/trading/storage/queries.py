@@ -211,7 +211,7 @@ class QueryStorage:
                    o.exit_attempt_total, o.filled_quantity, o.average_price, o.exit_price,
                    o.exit_reason, o.realized_bps, o.position_opened_at_ms, o.position_closed_at_ms,
                    o.must_close_at_ms, o.created_at_ms, o.updated_at_ms,
-                   c.trigger_kind, c.strategy_id, c.strategy_version,
+                   c.primary_source_key, c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.regime, c.policy_decision, c.policy_reason, c.state AS case_state,
                    c.observed_at_ms AS case_observed_at_ms
               FROM trading_orders o
@@ -239,7 +239,8 @@ class QueryStorage:
 
         row = self.conn.execute(
             """
-            SELECT c.case_id, c.underlying_key, c.trigger_kind, c.strategy_id, c.strategy_version,
+            SELECT c.case_id, c.underlying_key, c.primary_source_key,
+                   c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.mode, c.state, c.regime,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms,
                    o.order_id, o.state AS order_state, o.state_reason AS order_state_reason,
@@ -271,7 +272,8 @@ class QueryStorage:
         params.append(int(limit))
         rows = self.conn.execute(
             f"""
-            SELECT c.case_id, c.underlying_key, c.trigger_kind, c.strategy_id, c.strategy_version,
+            SELECT c.case_id, c.underlying_key, c.primary_source_key,
+                   c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.mode, c.state, c.regime,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms
               FROM trading_cases c

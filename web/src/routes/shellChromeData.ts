@@ -95,18 +95,20 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       outletContext: routeContext,
       topbar: {
-        eventFeed: location.pathname === "/news",
+        referenceFrame: location.pathname === "/news" || location.pathname === "/news/oi",
         health: healthLamp(
           newsStatusQuery.data,
           newsStatusQuery.isError,
-          location.pathname === "/news",
+          location.pathname === "/news" || location.pathname === "/news/oi",
         ),
         // The visual contract makes the topbar a route context strip. Every value is an already-served
         // material fact from the two status reads this shell shares with the pages; switching routes never
         // starts a new request or asks the browser to invent a KPI.
         figures: topbarFigures(location.pathname, newsStatusQuery.data, tradingStatusQuery.data),
         onRefresh:
-          location.pathname === "/news" ? undefined : () => void queryClient.invalidateQueries(),
+          location.pathname === "/news" || location.pathname === "/news/oi"
+            ? undefined
+            : () => void queryClient.invalidateQueries(),
         search: {
           onSubmitQuery: submitTopbarSearch,
           query: currentSearchQuery,
@@ -151,11 +153,11 @@ export function topbarFigures(
   if (pathname === "/news/oi") {
     return [
       {
-        label: "OI FRAMES 24H",
+        label: "PUSHED 24H",
         tone: "accent",
-        value: newsStatus?.pipeline.telemetry_received_24h,
+        value: newsStatus?.pipeline.telemetry_push_24h,
       },
-      oiCaseFigure(tradingStatus, nowMs),
+      oiDailyFigure(tradingStatus, nowMs),
     ];
   }
 
@@ -182,21 +184,21 @@ export function topbarFigures(
   ];
 }
 
-function oiCaseFigure(
+function oiDailyFigure(
   tradingStatus: TradingStatus | undefined,
   nowMs: number,
 ): CockpitTopbarFigure {
-  if (!tradingStatus) return { label: "CASES TODAY", value: undefined };
+  if (!tradingStatus) return { label: "今日成案 · 放行", text: undefined };
 
   const dayKey = tradingStatus.counts.funnel_day_key;
   const today = new Date(nowMs).toISOString().slice(0, 10);
   const stale = dayKey !== today;
   return {
     label: stale
-      ? `CASES · ${/^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey.slice(5) : "STALE"}`
-      : "CASES TODAY",
+      ? `成案 · 放行 · ${/^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey.slice(5) : "STALE"}`
+      : "今日成案 · 放行",
     // Sparse counter maps omit zeroes; once the status document exists, absence is the ledger's zero.
-    value: tradingStatus.counts.funnel_today?.case_created ?? 0,
+    text: `${tradingStatus.counts.funnel_today?.case_created ?? 0} · ${tradingStatus.budget.orders_today}`,
     ...(stale
       ? {
           title: dayKey ? `UTC ${dayKey}` : "UTC 日期未知",
@@ -214,7 +216,7 @@ function loadedDuration(value: number | null | undefined): string | undefined {
 /**
  * The server's `health` as the topbar lamp's structural prop.
  *
- * Healthy status normally returns `null`; the approved Event feed passes `showHealthy` so its compact
+ * Healthy status normally returns `null`; approved scan frames pass `showHealthy` so their compact
  * `流水线` affordance remains present. Nothing is computed here — the level, stage levels and sentences are
  * server values, and the only local decisions are which item is the worst and what to call each stage.
  *

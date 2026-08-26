@@ -137,6 +137,7 @@ export function tradingOrderFixture(overrides: Partial<TradingOrder> = {}): Trad
     average_price: "0.8412",
     base_symbol: "WIF",
     case_id: "case-wif",
+    event_id: "evt-oi-wif",
     strategy_id: "news_oi_alignment_v1",
     strategy_version: "news_oi_alignment_v1",
     trigger_kind: "news",
@@ -177,6 +178,7 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
   return {
     base_symbol: "HYPE",
     case_id: "case-hype",
+    event_id: "evt-oi-hype",
     strategy_id: "oi_momentum_v1",
     strategy_version: "oi_momentum_v1",
     trigger_kind: "oi",
@@ -196,6 +198,7 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
 export function tradingOrdersFixture(overrides: Partial<TradingOrders> = {}): TradingOrders {
   return {
     cases_without_orders: [tradingCaseFixture()],
+    complete: true,
     measured_at_ms: TRADING_NOW_MS,
     orders: [tradingOrderFixture()],
     window_hours: 24,

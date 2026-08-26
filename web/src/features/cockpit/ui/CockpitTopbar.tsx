@@ -9,8 +9,8 @@ import "./CockpitTopbar.css";
 
 const NEWS_SEARCH_ARIA_LABEL = "news search";
 const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
-/** Approved Event-feed copy. Server-side `q` remains the authority over which Event fields match. */
-const EVENT_FEED_SEARCH_PLACEHOLDER = "事件 / base_symbol / 场所";
+/** Approved scan-surface copy. Server-side `q` remains the authority over which Event fields match. */
+const REFERENCE_FRAME_SEARCH_PLACEHOLDER = "事件 / base_symbol / 场所";
 
 /**
  * One route-context fact from a status read. `value` is undefined until the poll answers.
@@ -54,10 +54,10 @@ export type CockpitHealth = {
 };
 
 export type CockpitTopbarProps = {
-  /** Route-scoped chrome required by the approved Event-feed visual. */
-  eventFeed?: boolean;
+  /** Route-scoped chrome shared by the approved Event and OI scan surfaces. */
+  referenceFrame?: boolean;
   figures?: CockpitTopbarFigure[];
-  /** `null` while healthy except on the Event feed, whose approved chrome keeps the affordance visible. */
+  /** `null` while healthy except on approved scan frames, which keep the affordance visible. */
   health?: CockpitHealth | null;
   onRefresh?: () => void;
   search: {
@@ -75,7 +75,7 @@ export type CockpitTopbarProps = {
 };
 
 export function CockpitTopbar({
-  eventFeed = false,
+  referenceFrame = false,
   figures,
   health,
   navigationTrigger,
@@ -88,11 +88,11 @@ export function CockpitTopbar({
   const anomaly = healthAnomaly(status);
   useEffect(() => setSearchDraft(search.query ?? ""), [search.query]);
   return (
-    <header className="topbar" data-event-feed={eventFeed || undefined}>
+    <header className="topbar" data-reference-frame={referenceFrame || undefined}>
       <div className="brand">
         {navigationTrigger}
         <span className="topbar-page-title">{title}</span>
-        <HealthLamp health={health} showChevron={eventFeed} />
+        <HealthLamp health={health} showChevron={referenceFrame} />
       </div>
 
       {/* Enter submits. The box is the whole search interaction — there is no hotkey that focuses it. */}
@@ -111,10 +111,12 @@ export function CockpitTopbar({
           aria-label={NEWS_SEARCH_ARIA_LABEL}
           id="news-search-input"
           onChange={(event) => setSearchDraft(event.target.value)}
-          placeholder={eventFeed ? EVENT_FEED_SEARCH_PLACEHOLDER : NEWS_SEARCH_PLACEHOLDER}
+          placeholder={
+            referenceFrame ? REFERENCE_FRAME_SEARCH_PLACEHOLDER : NEWS_SEARCH_PLACEHOLDER
+          }
           value={searchDraft}
         />
-        {eventFeed ? (
+        {referenceFrame ? (
           <span aria-hidden className="cockpit-searchbar-keycap">
             /
           </span>
@@ -155,9 +157,9 @@ export function CockpitTopbar({
 }
 
 /**
- * Pipeline health and the Event feed's permanent pipeline affordance.
+ * Pipeline health and the approved scan frames' permanent pipeline affordance.
  *
- * The Event feed keeps the approved `流水线` button visible even while healthy. Other routes still receive
+ * Event and OI scans keep the approved `流水线` button visible even while healthy. Other routes receive
  * `null` on the healthy path. One click opens the same four server-owned stage lines and status destination.
  *
  * Radix owns `Esc`, the dismiss layer and `aria-expanded`. The console binds no document-level key handler

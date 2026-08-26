@@ -220,20 +220,20 @@
     font: var(--type-eyebrow);
   }
 
-  /* Issue #235 scopes the approved Event-feed chrome to `/news`; other routes retain the shared shell. */
-  .topbar[data-event-feed] {
+  /* The approved scan chrome is shared by the Event and deterministic OI surfaces. */
+  .topbar[data-reference-frame] {
     padding: 0 14px;
   }
 
-  .topbar[data-event-feed] .brand {
+  .topbar[data-reference-frame] .brand {
     gap: 10px;
   }
 
-  .topbar[data-event-feed] .topbar-page-title {
+  .topbar[data-reference-frame] .topbar-page-title {
     font-size: var(--font-size-body);
   }
 
-  .topbar[data-event-feed] .topbar-health-lamp {
+  .topbar[data-reference-frame] .topbar-health-lamp {
     min-height: 28px;
     padding: 0 10px;
     border-color: var(--border-subtle);
@@ -242,15 +242,15 @@
     font-size: var(--font-size-meta);
   }
 
-  .topbar[data-event-feed] .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
+  .topbar[data-reference-frame] .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
     background: var(--signal-done);
   }
 
-  .topbar[data-event-feed] .topbar-health-lamp[data-level="off"] .topbar-health-dot {
+  .topbar[data-reference-frame] .topbar-health-lamp[data-level="off"] .topbar-health-dot {
     background: var(--signal-neutral);
   }
 
-  .topbar[data-event-feed] .searchbar {
+  .topbar[data-reference-frame] .searchbar {
     max-width: 360px;
   }
 
@@ -335,7 +335,7 @@
       padding: 0 10px;
     }
 
-    .topbar[data-event-feed] {
+    .topbar[data-reference-frame] {
       padding: 0 10px;
     }
 
@@ -354,7 +354,7 @@
       padding: 0 7px;
     }
 
-    .topbar[data-event-feed] .topbar-health-lamp {
+    .topbar[data-reference-frame] .topbar-health-lamp {
       padding: 0 7px;
     }
   }

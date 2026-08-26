@@ -1,4 +1,4 @@
-import { Card } from "@shared/ui/Card";
+import { useTradingOrdersWithToken } from "@features/trading";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useState } from "react";
@@ -11,14 +11,12 @@ import {
   useNewsStatusWithToken,
   type NewsOiTab,
 } from "../../api/newsQueries";
-import { absoluteTime, formatCount, percent } from "../../model/newsLabels";
-import { oiTabCount, oiWindowLabel, parseOiTab } from "../../model/oiSignals";
-import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
-import { NewsSourceLine } from "../chrome/NewsSourceLine";
+import { formatCount } from "../../model/newsLabels";
+import { oiTabCount, parseOiTab } from "../../model/oiSignals";
+import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
 
 import { NewsOiFrameTable } from "./NewsOiFrameTable";
 import { NewsOiGates } from "./NewsOiGates";
-import { NewsOiWindow } from "./NewsOiWindow";
 
 import "./newsOi.css";
 
@@ -26,9 +24,8 @@ import "./newsOi.css";
  * 持仓异动监控 — #137's deterministic open-interest lane, which is roughly a fifth of the day's volume and
  * until now had no surface of its own (#207).
  *
- * Two server reads and nothing else: `/api/news/status` for the lane's own section (thresholds, the 24 h
- * counts by gate, the live window) and `/api/news/feed` filtered to `admission=telemetry_deterministic` for
- * the frames. Every number on the page is one of their fields, and each panel says which.
+ * Three bounded reads: `/api/news/status` for thresholds and 24 h counts, `/api/news/feed` filtered to the
+ * deterministic lane for frames, and one `/api/trading/orders` batch for exact Event-to-ledger joins.
  *
  * What this page deliberately does not do: it draws no open-interest curve (the provider emits a frame only
  * when its own trigger fires, so there are no samples between them and a line through them would be
@@ -41,6 +38,7 @@ export function NewsOiPage({ token }: { token: string }) {
   const tab = parseOiTab(searchParams.get("oi"));
   const statusQuery = useNewsStatusWithToken(token);
   const feedQuery = useNewsOiFeedWithToken(token, tab);
+  const tradingQuery = useTradingOrdersWithToken(token);
   /*
    * Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
    * which is what the reader means by switching tabs.
@@ -81,15 +79,12 @@ export function NewsOiPage({ token }: { token: string }) {
   const counts = Object.fromEntries(
     NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
   ) as Record<NewsOiTab, number | null>;
-  const windowLabel = oiWindowLabel(oi?.policy?.window_ms);
-
   return (
     <NewsPageShell archetype="scan" className="news-oi-shell" label="持仓异动监控">
-      <NewsPageHeader subtitle="持仓异动遥测帧：规则判的，不过模型。" title="持仓异动监控">
-        {status ? (
-          <NewsPageStamp>更新于 {absoluteTime(status.measured_at_ms).slice(11)}</NewsPageStamp>
-        ) : null}
-      </NewsPageHeader>
+      <NewsPageHeader
+        subtitle="推送答「值不值得看」；交易列答「资本通道拿它做了什么」"
+        title="持仓异动监控"
+      />
 
       {statusQuery.isLoading && !status ? (
         <PageState.Loading label="正在读取持仓异动遥测" layout="panel" rows={4} />
@@ -99,49 +94,38 @@ export function NewsOiPage({ token }: { token: string }) {
       ) : null}
 
       {status ? (
-        <PageState.Stale updating={statusQuery.isFetching || feedQuery.isFetching}>
+        <PageState.Stale
+          failedRefresh={
+            tradingQuery.isError && tradingQuery.data
+              ? "交易账本刷新失败，继续显示上次读取。"
+              : undefined
+          }
+          onRetry={() => void tradingQuery.refetch()}
+          updating={statusQuery.isFetching || feedQuery.isFetching || tradingQuery.isFetching}
+        >
           <div className="news-oi-body">
-            <Card
-              hint={
-                parsed != null && received
-                  ? `解析成功率 ${percent(parsed, received)} · 合格 ${percent(pushed ?? 0, received)}`
-                  : undefined
-              }
-              title="LAST 24H · TELEMETRY"
-              titleStyle="eyebrow"
-            >
-              <MetricRow columns={5} label="过去 24 小时的遥测帧">
-                <Metric
-                  caption="telemetry_received_24h"
-                  eyebrow="RECEIVED"
-                  value={count(received)}
-                />
-                <Metric caption="telemetry_parsed_24h" eyebrow="PARSED" value={count(parsed)} />
-                {/*
-                 * The one qualifying rule's own 24 h count. The caption names the field rather than the
-                 * rule key — `opening_move_with_whale_concentration` does not fit a tile at this width, and
-                 * a clipped key is worse than the field that holds it, which the source line spells out.
-                 */}
-                <Metric
-                  caption="oi.by_rule_24h"
-                  eyebrow="ELIGIBLE"
-                  value={count(byRule?.opening_move_with_whale_concentration)}
-                />
-                <Metric
-                  caption="telemetry_push_24h"
-                  eyebrow="PUSHED"
-                  tone="accent"
-                  value={count(pushed)}
-                />
-                <Metric
-                  caption="供应商模板变了才会涨"
-                  eyebrow="FAILED"
-                  tone={failed ? "caution" : "plain"}
-                  value={count(failed)}
-                />
-              </MetricRow>
-              <NewsSourceLine path="GET /api/news/status → pipeline.telemetry_*_24h · oi.by_rule_24h" />
-            </Card>
+            <MetricRow className="news-oi-metrics" columns={5} label="过去 24 小时的遥测帧">
+              <Metric caption="遥测帧 · 24h" eyebrow="RECEIVED" value={count(received)} />
+              <Metric
+                caption={
+                  received ? `解析成功 ${successPercent(parsed ?? 0, received)}` : "解析成功"
+                }
+                eyebrow="PARSED"
+                value={count(parsed)}
+              />
+              <Metric
+                caption="过全部闸门"
+                eyebrow="ELIGIBLE"
+                value={count(byRule?.opening_move_with_whale_concentration ?? 0)}
+              />
+              <Metric caption="已推送" eyebrow="PUSHED" tone="accent" value={count(pushed)} />
+              <Metric
+                caption="模板变了才会涨"
+                eyebrow="FAILED"
+                tone={failed ? "caution" : "plain"}
+                value={count(failed)}
+              />
+            </MetricRow>
 
             <div className="news-oi-columns">
               <NewsOiGates
@@ -149,7 +133,6 @@ export function NewsOiPage({ token }: { token: string }) {
                 floors={oi?.trade_floors ?? EMPTY_FLOORS}
                 policy={oi?.policy ?? null}
               />
-              <NewsOiWindow rows={oi?.window_occupancy ?? []} windowLabel={windowLabel} />
             </div>
 
             {/*
@@ -172,6 +155,8 @@ export function NewsOiPage({ token }: { token: string }) {
               onTabChange={(next) => setSearchParams(nextOiParams(next), { replace: true })}
               rows={rows}
               tab={tab}
+              trading={tradingQuery.data}
+              tradingError={tradingQuery.isError && !tradingQuery.data}
             />
           </div>
         </PageState.Stale>
@@ -185,6 +170,7 @@ export function NewsOiPage({ token }: { token: string }) {
  * defaults the schema itself declares, and every threshold they feed is shown beside its own source line.
  */
 const EMPTY_FLOORS = {
+  allow_short: false,
   enabled: false,
   max_price_move_bps: 0,
   min_oi_value_usd: 0,
@@ -196,6 +182,10 @@ const EMPTY_FLOORS = {
 
 function count(value: number | undefined): string {
   return value == null ? "—" : formatCount(value);
+}
+
+function successPercent(value: number, total: number): string {
+  return total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "—";
 }
 
 function nextOiParams(tab: NewsOiTab): URLSearchParams {

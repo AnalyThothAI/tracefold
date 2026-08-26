@@ -1463,6 +1463,11 @@ export interface components {
          */
         NewsOiTradeFloorsData: {
             /**
+             * Allow Short
+             * @default false
+             */
+            allow_short: boolean;
+            /**
              * Enabled
              * @default false
              */
@@ -1857,6 +1862,8 @@ export interface components {
             asset_n: number;
             /** Metric Version */
             metric_version: string;
+            /** P0 */
+            p0?: string | null;
             /**
              * Priced N
              * @default 0
@@ -2807,6 +2814,8 @@ export interface components {
             created_at_ms: number;
             /** Decided At Ms */
             decided_at_ms?: number | null;
+            /** Event Id */
+            event_id?: string | null;
             /** Mode */
             mode: string;
             /** Observed At Ms */
@@ -3054,6 +3063,8 @@ export interface components {
             created_at_ms: number;
             /** Entry Reference */
             entry_reference: string;
+            /** Event Id */
+            event_id?: string | null;
             /** Exchange Id */
             exchange_id: string;
             /**
@@ -3124,6 +3135,8 @@ export interface components {
         TradingOrdersData: {
             /** Cases Without Orders */
             cases_without_orders?: components["schemas"]["TradingCaseData"][];
+            /** Complete */
+            complete: boolean;
             /** Measured At Ms */
             measured_at_ms: number;
             /** Orders */

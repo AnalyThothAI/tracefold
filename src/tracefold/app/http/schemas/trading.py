@@ -144,6 +144,7 @@ class TradingOrderData(ExactApiSchema):
 
     order_id: str
     case_id: str
+    event_id: str | None = None
     underlying_key: str
     base_symbol: str
     exchange_id: str
@@ -183,6 +184,7 @@ class TradingCaseData(ExactApiSchema):
     """A case that stopped before authoring an intent, and the rule it stopped on."""
 
     case_id: str
+    event_id: str | None = None
     underlying_key: str
     base_symbol: str
     trigger_kind: str
@@ -201,6 +203,7 @@ class TradingCaseData(ExactApiSchema):
 class TradingOrdersData(ExactApiSchema):
     orders: list[TradingOrderData] = Field(default_factory=list)
     cases_without_orders: list[TradingCaseData] = Field(default_factory=list)
+    complete: bool
     window_hours: int
     measured_at_ms: int
 

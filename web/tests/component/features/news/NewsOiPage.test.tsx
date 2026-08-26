@@ -7,6 +7,7 @@ import {
   newsReactionFixture,
   newsStatusFixture,
 } from "@tests/fixtures/newsFixture";
+import { tradingOrdersFixture } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -25,6 +26,9 @@ describe("NewsOiPage", () => {
       ),
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({ ok: true, data: newsFeedFixture({ events: [newsOiFrameFixture()] }) }),
+      ),
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({ ok: true, data: tradingOrdersFixture() }),
       ),
     );
   });
@@ -72,9 +76,39 @@ describe("NewsOiPage", () => {
      * still awaiting a verdict that the table renders with no `oi` block.
      */
     expect(within(tabs).getByRole("tab", { name: /全部/ })).toHaveTextContent("141");
-    expect(screen.getByText("telemetry_received_24h").closest(".ui-metric")).toHaveTextContent(
-      "142",
+    expect(screen.getByText("遥测帧 · 24h").closest(".ui-metric")).toHaveTextContent("142");
+    expect(screen.getByText("解析成功 97.9%")).toBeInTheDocument();
+  });
+
+  it("shows whether Trading is running and reads direction from its policy", async () => {
+    renderOi();
+    expect(await screen.findByText("PAPER · 资本通道关闭")).toBeInTheDocument();
+
+    cleanup();
+    const baseStatus = newsStatusFixture();
+    const baseOi = baseStatus.oi!;
+    const baseFloors = baseOi.trade_floors!;
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsStatusFixture({
+            oi: {
+              ...baseOi,
+              trade_floors: {
+                ...baseFloors,
+                allow_short: true,
+                enabled: true,
+                mode: "live_reviewed",
+              },
+            },
+          }),
+        }),
+      ),
     );
+    renderOi();
+    expect(await screen.findByText("LIVE_REVIEWED · 已启用 · 四条另判")).toBeInTheDocument();
+    expect(screen.getByText("方向").parentElement).toHaveTextContent("多 / 空");
   });
 
   it("marks a frame no threshold let through as having spent no window slot", async () => {
@@ -118,6 +152,7 @@ describe("NewsOiPage", () => {
             oi: {
               ...newsStatusFixture().oi,
               trade_floors: {
+                allow_short: false,
                 enabled: false,
                 max_price_move_bps: 0,
                 min_oi_value_usd: 0,
@@ -277,6 +312,10 @@ describe("NewsOiPage", () => {
     // 1H/4H is the fixed post-Event measurement, signed and in percent.
     expect(row).toHaveTextContent("+2.03%");
     expect(row).toHaveTextContent("+1.45%");
+    // The price is the fixed Event mark, never a current quote.
+    expect(row).toHaveTextContent("0.8412");
+    // The one batched trading read joins this row by its published Event identity.
+    expect(row).toHaveTextContent("多 · OPEN");
   });
 
   it("marks the research bucket a frame falls in against the capital lane's own floor", async () => {
@@ -368,60 +407,41 @@ describe("NewsOiPage", () => {
     expect(screen.getByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
   });
 
-  it("shows the two threshold sets side by side and never merges them", async () => {
+  it("shows the two compact policy sets side by side and never merges them", async () => {
     renderOi();
     await screen.findByRole("heading", { name: "持仓异动监控" });
 
-    const gates = await screen.findByRole("heading", { name: "新闻闸门与它们拦下的量" });
-    const gatesCard = gates.closest("section") as HTMLElement;
-    expect(within(gatesCard).getByText("> 80.00%")).toBeInTheDocument();
-    expect(within(gatesCard).getByText("前 2 次")).toBeInTheDocument();
-    // The gate names are the server's keys, and each carries the count that gate withheld.
-    expect(gatesCard).toHaveTextContent("whale_ratio_below_threshold");
+    const gates = await screen.findByRole("heading", { name: "推送闸门 · NEWS.OI" });
+    const gatesCard = gates.closest("article") as HTMLElement;
+    expect(within(gatesCard).getByText("> 80%")).toBeInTheDocument();
+    expect(within(gatesCard).getByText("≤ 2 / 4h")).toBeInTheDocument();
     expect(gatesCard).toHaveTextContent("106");
     expect(gatesCard).toHaveTextContent("30");
+    expect(gatesCard).toHaveTextContent("拦下 0");
 
-    const floors = screen.getByRole("heading", { name: "交易地板（另一套阈值）" });
-    const floorsCard = floors.closest("section") as HTMLElement;
-    expect(within(floorsCard).getByText("≥ 95.00%")).toBeInTheDocument();
-    expect(within(floorsCard).getByText("≥ 2000 万")).toBeInTheDocument();
-    // trading ships disabled, so the page says these are a published band rather than a live gate.
-    expect(floorsCard).toHaveTextContent("trading 当前关闭");
-    // The pre-frame move needs a price the News plane does not store, and the page says so instead of
-    // approximating it.
-    expect(floorsCard).toHaveTextContent("未测量");
+    const floors = screen.getByRole("heading", { name: "交易地板 · TRADING" });
+    const floorsCard = floors.closest("article") as HTMLElement;
+    expect(within(floorsCard).getByText("≥95%")).toBeInTheDocument();
+    expect(within(floorsCard).getByText("≥2000 万")).toBeInTheDocument();
+    expect(floorsCard).toHaveTextContent("1%–6% / 1h");
+    expect(floorsCard).toHaveTextContent("只多");
   });
 
-  it("reports the live window's occupancy and flags the symbols already full", async () => {
+  it("expands to Event, token, OI and exact Trading traces", async () => {
     renderOi();
-    const window = (await screen.findByRole("heading", { name: "窗口占用" })).closest(
-      "section",
-    ) as HTMLElement;
+    fireEvent.click(await screen.findByRole("button", { name: /WIF/ }));
 
-    expect(within(window).getByText("WIF")).toBeInTheDocument();
-    expect(within(window).getByText("2 / 2")).toBeInTheDocument();
-    expect(within(window).getByText("已满，后续帧会被拦")).toBeInTheDocument();
-    expect(within(window).getByText("1 / 2")).toBeInTheDocument();
-  });
-
-  it("names the endpoint and field behind every panel", async () => {
-    // #207 principle 2: a figure whose provenance cannot be written as `GET /api/… → field` is a figure the
-    // browser derived, and these lines are what make that impossible to hide.
-    renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
-
-    await waitFor(() =>
-      expect(
-        screen.getByText("GET /api/news/status → pipeline.telemetry_*_24h · oi.by_rule_24h"),
-      ).toBeInTheDocument(),
+    expect(screen.getByRole("link", { name: /打开事件详情/ })).toHaveAttribute(
+      "href",
+      "/news/events/evt-oi-wif",
     );
-    expect(
-      screen.getByText("GET /api/news/status → oi.policy · oi.by_rule_24h"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("GET /api/news/status → oi.window_occupancy")).toBeInTheDocument();
-    expect(
-      screen.getByText("GET /api/news/feed?admission=telemetry_deterministic&hours=24"),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /代币页 WIF/ })).toHaveAttribute(
+      "href",
+      "/news/symbols/WIF",
+    );
+    expect(screen.getByText("判定痕迹 · OI_JUDGMENT_TRACE")).toBeInTheDocument();
+    expect(screen.getByText("交易判定 · ?LANE=OI")).toBeInTheDocument();
+    expect(screen.getByText("order-wif")).toBeInTheDocument();
   });
 
   it("says so plainly when the window holds no eligible frame", async () => {
@@ -440,10 +460,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    expect(
-      await screen.findByText("窗口内还没有合格帧，下一帧的名次是第 1 次。"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("这个窗口里没有符合当前判定的遥测帧。")).toBeInTheDocument();
+    expect(await screen.findByText("这个窗口里没有符合当前判定的遥测帧。")).toBeInTheDocument();
   });
 });
 
