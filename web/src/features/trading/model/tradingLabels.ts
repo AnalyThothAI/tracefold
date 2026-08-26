@@ -62,13 +62,16 @@ export const STRATEGY_ZH: Record<string, string> = {
   liquidation_continuation_shadow_v1: "清算延续（影子）",
   liquidation_exhaustion_shadow_v1: "清算衰竭（影子）",
   news_oi_alignment_v1: "新闻 × OI 对齐",
-  oi_momentum_v1: "OI 动量",
+  // Retained because historical Cases still carry it; no new Case is routed to it since #265.
+  oi_momentum_v1: "OI 动量（历史）",
+  oi_smart_money_momentum_v1: "OI × 聪明钱动量",
 };
 
 /** Compact approved case labels, each a direct presentation of the immutable strategy identity. */
 export const STRATEGY_CASE_LABEL: Record<string, string> = {
   news_oi_alignment_v1: "news_oi",
   oi_momentum_v1: "oi_only",
+  oi_smart_money_momentum_v1: "oi_smart_money",
 };
 
 export function strategyCaseLabel(strategyId: string): string {

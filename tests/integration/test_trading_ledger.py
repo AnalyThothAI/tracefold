@@ -177,13 +177,13 @@ def _case(
         case_id=case_id,
         underlying_key=underlying,
         trigger_kind="oi",
-        strategy_id="oi_momentum_v1",
-        strategy_version="oi_momentum_v1",
+        strategy_id="oi_smart_money_momentum_v1",
+        strategy_version="oi_smart_money_momentum_v1",
         strategy_config_digest="0" * 64,
         mode="paper",
         primary_source_key=source_key,
         supplemental_source_keys=(),
-        manifest={"trigger_kind": "oi", "strategy_id": "oi_momentum_v1"},
+        manifest={"trigger_kind": "oi", "strategy_id": "oi_smart_money_momentum_v1"},
         manifest_sha256="sha",
         regime="buildup_up",
         observed_at_ms=NOW,
@@ -455,6 +455,9 @@ def _seed_oi_event(
     venue: str = "hyperliquid",
     decision: str = "push",
     source_rule: str = "opening_move_with_whale_concentration",
+    source_strategy_id: str | None = "1019",
+    source_contract_version: str | None = "opennews_oi_source_v1",
+    measurement_window_ms: int | None = 300_000,
 ) -> None:
     conn.execute(
         "INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms, "
@@ -517,9 +520,19 @@ def _seed_oi_event(
     )
     conn.execute(
         "INSERT INTO news_oi_signals (event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd, "
-        "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms) "
-        "VALUES (%s, 'oi_signal_v1', %s, 'rise', 320, 73010000, 9900, 21097, %s, 1, %s)",
-        (event_id, symbol, observed_at_ms, observed_at_ms),
+        "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms, "
+        "source_strategy_id, source_contract_version, measurement_window_ms) "
+        "VALUES (%s, 'oi_signal_v1', %s, 'rise', 1548, 73010000, 9900, 21097, %s, 1, %s, "
+        "%s, %s, %s)",
+        (
+            event_id,
+            symbol,
+            observed_at_ms,
+            observed_at_ms,
+            source_strategy_id,
+            source_contract_version,
+            measurement_window_ms,
+        ),
     )
     # The listing is seeded at the venue the frame itself names. Source-aligned routing (#211) means a
     # Hyperliquid frame may only produce a Hyperliquid manifest, so seeding Binance for a Hyperliquid
@@ -811,8 +824,13 @@ def _prepare_live_reviewed(
 ) -> tuple[TradingConfig, Any]:
     # The live canary enables exactly one venue, so a frame tagged at the other one is refused
     # rather than rerouted (#211). These fixtures are about the capital protocol, not routing.
-    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
-    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    #
+    # The News verdict is the *newer* row and therefore the trigger (#265). An OI trigger is now
+    # answered by `oi_smart_money_momentum_v1`, which is paper-only by identity; `news_oi_alignment_v1`
+    # remains the one live-capable strategy and is reached by a News trigger carrying OI context. That
+    # is the shape a live case has, and these fixtures are about what happens after one exists.
+    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
     _promote_to_model_projection(conn, event_id="live-c2-news", symbol="DOGE")
     live_config = config or _live_config()
     report = asyncio.run(
@@ -1110,6 +1128,58 @@ def test_a_reader_dropped_frame_is_now_a_visible_trading_fact(conn) -> None:
     assert candidate.final_decision == "drop"
 
 
+def test_the_projection_publishes_a_proven_measurement_window_and_never_invents_one(conn) -> None:
+    """#265: the strategy acts on "5 minute OI rise >= 10%" and must be able to prove the first half.
+
+    The title carries no interval and the provider payload has no interval field, so the contract is
+    either established from the exact strategy identity or it is `NULL`. `NULL` is not a gap to be
+    filled in later — it is the answer, and a consumer that defaults it to five minutes would put an
+    unverified interval into an immutable Case.
+    """
+
+    _seed_oi_event(conn, event_id="proven", symbol="TAC", observed_at_ms=NOW - MINUTE)
+    _seed_oi_event(
+        conn,
+        event_id="unproven",
+        symbol="SOL",
+        observed_at_ms=NOW - 2 * MINUTE,
+        source_strategy_id=None,
+        source_contract_version=None,
+        measurement_window_ms=None,
+    )
+    rows = {
+        row["event_id"]: row
+        for row in _repos(conn).news.trade_candidate_oi_rows(
+            metric_version="oi_signal_v1",
+            after_created_at_ms=NOW - 3 * MINUTE,
+            until_created_at_ms=NOW,
+        )
+    }
+    assert rows["proven"]["measurement_window_ms"] == 300_000
+    assert rows["proven"]["source_strategy_id"] == "1019"
+    assert rows["proven"]["source_contract_version"] == "opennews_oi_source_v1"
+    assert rows["unproven"]["measurement_window_ms"] is None
+
+    # And across the App seam and the source stage, still `None` rather than a default.
+    proven = oi_candidate(to_oi_candidate_row(rows["proven"]))
+    unproven = oi_candidate(to_oi_candidate_row(rows["unproven"]))
+    assert isinstance(proven, OiTradeCandidate) and isinstance(unproven, OiTradeCandidate)
+    assert proven.measurement_window_ms == 300_000
+    assert unproven.measurement_window_ms is None
+    assert unproven.source_strategy_id is None
+
+
+def test_the_three_source_contract_columns_travel_together_or_not_at_all(conn) -> None:
+    """A window with no identity behind it is a number nobody can audit; the schema refuses it."""
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            "UPDATE news_oi_signals SET source_strategy_id = NULL WHERE event_id = 'e1'",
+        )
+    conn.rollback()
+
+
 def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
     epoch_start = int(
         conn.execute("SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v7'").fetchone()[
@@ -1233,6 +1303,11 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
         # The reader's own verdict and the rule behind it, published as audit (#264). Neither decides
         # whether Trading can see the fact any more.
         "source_rule",
+        # What the provider proves about *how* the frame was measured (#265). Nullable together, and
+        # `NULL` is the contract: the interval was not proven and a consumer must refuse it.
+        "source_strategy_id",
+        "source_contract_version",
+        "measurement_window_ms",
         "symbol",
         "venue",
         "verdict_created_at_ms",
@@ -1329,8 +1404,10 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     # pre-move. Their explicit nulls are part of every frozen market context and therefore its digest.
     # #264 moves it once more, in two ways: the frozen OI context gains the reader's own verdict and
     # rule as audit, and the strategy config loses the liquidity floor it used to re-check after the
-    # Candidate Gate had already applied it. `trading_manifest_v5` says both out loud.
-    assert manifest.digest() == "be80deb524ba002088c774a7d18460b13fd7f1a57404b61919a392ead464b6f5"
+    # Candidate Gate had already applied it. #265 adds the provider's measurement contract, so a Case
+    # is a claim about a *specific* interval rather than about "OI rose"; `trading_manifest_v6` is
+    # where a case frozen before either of those stops being replayable as if it had them.
+    assert manifest.digest() == "e3927f6efc6be83a4583d9d2aee9455c57e50928bb738609e29a8ee3bf8f8fb0"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
@@ -1348,9 +1425,11 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert case["manifest"]["contexts"]["oi"]["learning_epoch"] == "program_v7"
     assert case["manifest"]["contexts"]["oi"]["policy_version"] == "news_triage_policy_v10"
     assert case["trigger_kind"] == "oi"
-    assert case["strategy_id"] == "oi_momentum_v1"
+    # #265: an OI trigger is decided by the smart-money strategy, whatever News attached. The seeded
+    # frame carries TUT's real 15.48% OI change, which is what makes it a qualifying frame at all.
+    assert case["strategy_id"] == "oi_smart_money_momentum_v1"
     assert case["state"] == "ORDER_PREPARED"
-    assert case["policy_reason"] == "oi_momentum_regime"
+    assert case["policy_reason"] == "smart_money_momentum_long"
     order = trading.order_for_case(case_id=case["case_id"])
     assert order is not None
     assert order["state"] == "ACKNOWLEDGED"
@@ -1708,8 +1787,10 @@ def test_an_acknowledged_paper_order_is_reconstructed_after_restart(conn) -> Non
 
 
 def test_live_prepare_uses_fresh_provider_truth_and_the_existing_observation_ledger(conn) -> None:
-    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
-    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    # News is the newer row and therefore the trigger: `news_oi_alignment_v1` is the one live-capable
+    # strategy, and an OI trigger is answered by the paper-only smart-money strategy (#265).
+    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
     _promote_to_model_projection(conn, event_id="live-c1-news", symbol="DOGE")
     adapter = _ReadOnlyLiveAdapter()
     report = asyncio.run(
@@ -3197,8 +3278,8 @@ def test_a_legacy_news_generation_case_is_blocked_before_model_or_order(
         case_id=f"legacy-{case_kind}-{starting_state}",
         underlying_key="crypto:DOGE",
         trigger_kind="oi" if case_kind == "oi_only" else "news",
-        strategy_id="oi_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
-        strategy_version="oi_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
+        strategy_id="oi_smart_money_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
+        strategy_version=("oi_smart_money_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1"),
         strategy_config_digest="0" * 64,
         mode="paper",
         primary_source_key=f"legacy:{case_kind}:{starting_state}",
@@ -4544,7 +4625,10 @@ def test_the_scan_reaches_back_far_enough_for_a_forty_five_minute_old_verdict_to
     assert report["created"] == 1
     case = _repos(conn).trading.cases()[0]
     assert case["trigger_kind"] == "oi"
-    assert case["strategy_id"] == "news_oi_alignment_v1"
+    # #265: an OI trigger is answered by the smart-money strategy whether or not a verdict attached.
+    # What this test is about is unchanged and is the line below it — the 45-minute-old verdict is in
+    # the manifest, which is the window that used to be unreachable.
+    assert case["strategy_id"] == "oi_smart_money_momentum_v1"
     # The trigger is the frame that just fired; the verdict is the context it attached.
     assert int(case["observed_at_ms"]) == NOW - MINUTE
     assert case["manifest"]["contexts"]["news"]["verdict_created_at_ms"] == NOW - 45 * MINUTE

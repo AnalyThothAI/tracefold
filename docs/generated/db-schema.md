@@ -382,6 +382,9 @@
 | `observed_at_ms` | `BIGINT` | False | `None` |
 | `rank_in_window` | `INTEGER` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `source_strategy_id` | `TEXT` | True | `None` |
+| `source_contract_version` | `TEXT` | True | `None` |
+| `measurement_window_ms` | `BIGINT` | True | `None` |
 
 ## `news_opennews_incidents`
 

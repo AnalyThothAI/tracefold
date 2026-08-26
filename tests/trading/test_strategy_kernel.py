@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from decimal import Decimal
 from pathlib import Path
 
@@ -249,6 +250,7 @@ def test_exhaustion_uses_matching_displacement_not_the_one_hour_pre_move() -> No
 def test_liquidation_trigger_can_never_select_a_capital_strategy() -> None:
     assert capital_strategy_id(trigger_kind="liquidation", has_oi=False, has_news=False) is None
     assert set(strategies()) == {
+        "oi_smart_money_momentum_v1",
         "oi_momentum_v1",
         "news_oi_alignment_v1",
         "liquidation_continuation_shadow_v1",
@@ -256,8 +258,41 @@ def test_liquidation_trigger_can_never_select_a_capital_strategy() -> None:
     }
 
 
+def _without_docstrings(tree: ast.AST) -> ast.AST:
+    """Drop every docstring from the tree, so unparsing it yields code and nothing else."""
+
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list) or not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            del body[0]
+            if not body:
+                body.append(ast.Pass())
+    return ast.fix_missing_locations(tree)
+
+
 def test_pure_strategy_modules_do_not_import_storage_providers_or_execution() -> None:
+    """Executable statements only, docstrings and comments excluded.
+
+    The claim is about what a strategy can *reach*, and it was checked by grepping raw file text — so a
+    module that merely used the word "execution" in a sentence about its own entry safety failed a
+    dependency guard. Unparsing the AST keeps every real path in scope, including a module name hidden
+    in a string literal for a dynamic import, and stops the guard from having an opinion about prose.
+    """
+
     strategy_dir = Path(__file__).parents[2] / "src" / "tracefold" / "trading" / "strategy"
-    source = "\n".join(path.read_text(encoding="utf-8") for path in strategy_dir.glob("*.py"))
+    paths = sorted(strategy_dir.glob("*.py"))
+    assert paths, "the strategy package moved and this guard is now checking nothing"
+    source = "\n".join(
+        ast.unparse(_without_docstrings(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))))
+        for path in paths
+    )
     for forbidden in ("storage", "integrations", "execution", "postgres", "requests", "httpx"):
         assert forbidden not in source

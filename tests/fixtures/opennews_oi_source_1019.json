@@ -1,0 +1,34 @@
+{
+  "_note": "One real OpenNews strategy-1019 frame as this deployment stored it, captured 2026-08-27 from the live news_items row and unmodified except for this note. It is the evidence behind the code-owned 1019 -> 5-minute mapping in tracefold.news.oi_signals._SOURCE_WINDOWS: the title carries no interval and the provider payload has no interval field, so the exact strategy identity below is the only thing a window can be keyed on. Nothing here is secret — the frame is a public market telemetry push and the metadata holds no account, token or credential.",
+  "title": "TAC OI Rise 3.58%, OI Value 8.83M, Whale Long Profit 84.91%, Whale/OI Ratio 32.46%",
+  "reporting_origin": "binance",
+  "observed_at_ms": 1787759701290,
+  "provider_metadata": {
+    "coins": [
+      {
+        "symbol": "TAC",
+        "market_type": "cex"
+      }
+    ],
+    "source": "binance",
+    "strategies": [
+      {
+        "id": "1019",
+        "name": "OI Event Monitor",
+        "engine_type": "market",
+        "source_type": "market"
+      }
+    ]
+  },
+  "expected": {
+    "source_strategy_id": "1019",
+    "source_contract_version": "opennews_oi_source_v1",
+    "measurement_window_ms": 300000,
+    "symbol": "TAC",
+    "direction": "rise",
+    "oi_change_bps": 358,
+    "oi_value_usd": 8830000,
+    "whale_long_profit_bps": 8491,
+    "whale_oi_ratio_bps": 3246
+  }
+}

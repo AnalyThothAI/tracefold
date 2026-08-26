@@ -144,7 +144,11 @@ Workers still start and deliveries settle `terminal/delivery_unavailable`.
 default; a disabled Trading context constructs no program, no adapter and no
 runner. `trading.mode` names `paper | live_reviewed | live_bounded` and is
 startup-owned — a prompt or a tool argument cannot change it, and paper never
-reads the OpenTrade token. `trading.candidates.*` bounds what may become a case
+reads the OpenTrade token. The strategy set and its numbers are code-owned, not
+configuration: `oi_smart_money_momentum_v1` freezes its measurement window,
+OI-change, smart-money-ratio, profit and price-band thresholds into every Case
+it decides, so changing one starts a new config digest rather than re-deciding
+an existing Case. `trading.candidates.*` bounds what may become a case
 (`max_age_seconds`, `news_lookback_seconds`, `oi_lookback_seconds`,
 `symbol_cooldown_seconds`, `max_rank_in_window`, `min_oi_value_usd`,
 `max_dspy_cases_per_day`) — `max_age_seconds` gates the **trigger** and the two

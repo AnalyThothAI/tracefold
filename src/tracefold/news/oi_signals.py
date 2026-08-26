@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -32,6 +33,25 @@ from .models import TriageAsset, TriageVerdict
 
 METRIC_VERSION: Final = "oi_signal_v1"
 PARSER_VERSION: Final = "oi_signal_parser_v1"
+# What this module claims to know about the provider's own measurement, as opposed to the four numbers
+# it parses. Bumped when the identity table below changes or when a field's meaning does.
+SOURCE_CONTRACT_VERSION: Final = "opennews_oi_source_v1"
+# The window a qualifying frame is measured over, by the provider strategy's *exact* identity as it
+# reaches `news_items.provider_metadata.strategies[0]`.
+#
+# The title carries no interval — `TRUMP OI Rise 4.55%, OI Value 32.17M, …` says nothing about 5m — and
+# there is no interval field anywhere in the provider payload, so the only two honest options are to
+# read it from provider metadata (there is none) or to map an exact strategy identity to it in code
+# with a real fixture behind the mapping (#265 §3.2). This is the second. Three things it must not
+# become: a default when the identity is unknown, a value inferred from arrival-time deltas, or a
+# constant inside a strategy with no provenance stored beside the frame.
+#
+# Keyed on all four members rather than on `id` alone. A Strategy id is an account-scoped handle; if the
+# operator ever repoints 1019 at a different monitor, the name/source/engine tuple stops matching and
+# the window becomes unproven, which is the correct answer rather than a silently wrong 5 minutes.
+_SOURCE_WINDOWS: Final[dict[tuple[str, str, str, str], int]] = {
+    ("1019", "OI Event Monitor", "market", "market"): 300_000,
+}
 RANK_SEMANTICS: Final = "eligible_rank_v1"
 # The judge's identity on the verdict row, where a model-judged Event carries its ProgramArtifact sha.
 # Content-addressed the same way: change the rule and the identity changes with it.
@@ -57,6 +77,54 @@ def _base_symbol(symbol: str) -> str:
     """Provider tags carry an `XYZ-` prefix for the same instrument; strip it as the Gate does."""
 
     return str(symbol or "").strip().upper().removeprefix("XYZ-")
+
+
+@dataclass(frozen=True, slots=True)
+class OiSourceContract:
+    """What the provider proves about *how* one frame was measured, beside what it measured.
+
+    `whale_long_profit_bps` deserves its own sentence, because the name invites a stronger reading than
+    the provider publishes. It is NewsLiquid's own `Whale Long Profit N%` percentage and nothing more:
+    it is **not** "every smart-money account is in profit", **not** a total unrealised PnL in dollars,
+    and **not** an account count. The provider publishes no `account_count`,
+    `profitable_account_count`, `unrealized_pnl_usd` or `position_snapshot_at_ms`, so a consumer that
+    renders any of those is inventing them. A future contract that does publish them gets a new
+    version; this field's meaning may not change underneath a frozen Case.
+    """
+
+    strategy_id: str
+    contract_version: str
+    measurement_window_ms: int
+
+
+def oi_source_contract(provider_metadata: Any) -> OiSourceContract | None:
+    """The proven measurement contract for one frame, or `None` when it cannot be proven.
+
+    `None` is a first-class answer and the caller records it as `source_window_unproven`. Returning a
+    guess would put an unverified interval into an immutable Case and make every replay of it a claim
+    about a window nobody checked.
+    """
+
+    strategies = provider_metadata.get("strategies") if isinstance(provider_metadata, Mapping) else None
+    if not isinstance(strategies, list | tuple) or not strategies:
+        return None
+    entry = strategies[0]
+    if not isinstance(entry, Mapping):
+        return None
+    identity = (
+        str(entry.get("id") or ""),
+        str(entry.get("name") or ""),
+        str(entry.get("source_type") or ""),
+        str(entry.get("engine_type") or ""),
+    )
+    window_ms = _SOURCE_WINDOWS.get(identity)
+    if window_ms is None:
+        return None
+    return OiSourceContract(
+        strategy_id=identity[0],
+        contract_version=SOURCE_CONTRACT_VERSION,
+        measurement_window_ms=window_ms,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +281,7 @@ def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
                 "metric": METRIC_VERSION,
                 "parser": PARSER_VERSION,
                 "rank_semantics": RANK_SEMANTICS,
+                "source_contract": SOURCE_CONTRACT_VERSION,
                 "policy": policy.as_dict(),
             },
             sort_keys=True,
@@ -345,12 +414,27 @@ def evaluate_oi(
     return OiJudgment(verdict=verdict, signal=signal, rank_in_window=rank, rule=rule)
 
 
-def oi_judgment_trace(judgment: OiJudgment, *, policy: OiPolicy) -> dict[str, Any]:
-    """Audit projection for one successfully parsed deterministic judgment."""
+def oi_judgment_trace(
+    judgment: OiJudgment,
+    *,
+    policy: OiPolicy,
+    source: OiSourceContract | None = None,
+) -> dict[str, Any]:
+    """Audit projection for one successfully parsed deterministic judgment.
+
+    `source_window_unproven` is the stable reason for a frame whose measurement contract this judge
+    could not establish. It is not a parse failure — the four numbers are perfectly good — and it does
+    not change the reader's verdict; it says that no consumer may treat the frame as a claim about a
+    particular interval.
+    """
 
     signal = judgment.signal
     return {
         "parsed": True,
+        "source_strategy_id": None if source is None else source.strategy_id,
+        "source_contract_version": None if source is None else source.contract_version,
+        "measurement_window_ms": None if source is None else source.measurement_window_ms,
+        "source_contract_rule": "proven" if source is not None else "source_window_unproven",
         "symbol": signal.symbol,
         "direction": signal.direction,
         "oi_change_bps": signal.oi_change_bps,
@@ -371,13 +455,16 @@ __all__ = [
     "PROGRAM_VERSION",
     "RANK_SEMANTICS",
     "READER_CONTRACT_VERSION",
+    "SOURCE_CONTRACT_VERSION",
     "WINDOW_MS",
     "OiJudgment",
     "OiPolicy",
     "OiSignal",
+    "OiSourceContract",
     "evaluate_oi",
     "oi_judgment_trace",
     "oi_parse_failure",
+    "oi_source_contract",
     "parse_oi_signal",
     "program_sha256",
 ]

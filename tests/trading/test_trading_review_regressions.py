@@ -118,7 +118,12 @@ def test_a_counterpart_outside_its_lookback_is_not_attached() -> None:
 
 
 def test_trigger_shape_does_not_choose_the_strategy_side() -> None:
-    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=False) == "oi_momentum_v1"
+    # #265: an OI trigger is answered by the smart-money strategy whether or not News attached. Routing
+    # on a News counterpart would make the same frame reach two different strategies depending on
+    # whether an unrelated Event happened to land nearby, and would put the reader's push/drop back in
+    # the capital path by the back door.
+    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=False) == "oi_smart_money_momentum_v1"
+    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=True) == "oi_smart_money_momentum_v1"
     assert capital_strategy_id(trigger_kind="news", has_oi=True, has_news=True) == "news_oi_alignment_v1"
     assert capital_strategy_id(trigger_kind="liquidation", has_oi=False, has_news=False) is None
 

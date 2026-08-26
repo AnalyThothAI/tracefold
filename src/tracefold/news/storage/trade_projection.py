@@ -36,7 +36,12 @@ from ..opennews import source_artifact_identity
 # are gone from the signature. Measured over the seven days this table has existed, the reader's own
 # `whale_oi_ratio > 80%` push rule admitted 2 of the 7 frames that meet the target strategy's
 # conditions; the other 5 — TUT 15.48%/54.24% among them — were `drop` and never reached Trading at all.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v6"
+#
+# v7 (#265): the OI read publishes what the provider proves about *how* the frame was measured —
+# `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
+# measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
+# be proven for this frame and a consumer must refuse it rather than assume five minutes.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v7"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -70,6 +75,13 @@ class OiTradeProjectionRow(TypedDict):
     scored_judgment_sha256: str
     runtime_manifest_sha: str
     metric_version: str
+    # What the provider proves about the measurement, not about the market (#265). Nullable together:
+    # a `NULL` window means unproven, and it is the answer a consumer must act on rather than default.
+    # `whale_long_profit_bps` is the provider's own `Whale Long Profit N%` and nothing more — not an
+    # account count, not a total unrealised PnL, and not "every smart-money account is in profit".
+    source_strategy_id: str | None
+    source_contract_version: str | None
+    measurement_window_ms: int | None
     symbol: str
     direction: str
     oi_change_bps: int
@@ -209,6 +221,9 @@ class TradeProjectionStorage:
                    v.scored_judgment_sha256,
                    v.runtime_manifest_sha,
                    s.metric_version,
+                   s.source_strategy_id,
+                   s.source_contract_version,
+                   s.measurement_window_ms,
                    s.symbol,
                    s.direction,
                    s.oi_change_bps,
@@ -413,6 +428,9 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         scored_judgment_sha256=row["scored_judgment_sha256"],
         runtime_manifest_sha=row["runtime_manifest_sha"],
         metric_version=row["metric_version"],
+        source_strategy_id=row["source_strategy_id"],
+        source_contract_version=row["source_contract_version"],
+        measurement_window_ms=row["measurement_window_ms"],
         symbol=row["symbol"],
         direction=row["direction"],
         oi_change_bps=row["oi_change_bps"],

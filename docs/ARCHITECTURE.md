@@ -1808,7 +1808,13 @@ stays disabled.
 **Deterministic gates run before the model call.** The selected pure strategy
 evaluates the frozen context before any provider call. Quadrant, long-only,
 whale, OI, permission, and missing-context refusals therefore do not spend the
-daily model budget. For an eligible News-bearing case the runner freezes the
+daily model budget. Since #265 an OI trigger is answered by
+`oi_smart_money_momentum_v1` — three conditions on the frame's own numbers over
+a *proven* five-minute window, a confirmed price direction and the measured
+600 bps chasing ceiling — whatever News happened to attach, so the OI lane
+spends no model budget at all. `news_oi_alignment_v1` is reached only by a News
+trigger and remains the one live-capable strategy; `oi_momentum_v1` is kept as
+a decoder so Cases frozen under it stay replayable and is routed no new Case. For an eligible News-bearing case the runner freezes the
 single model result into a new context and evaluates the same strategy again;
 the strategy, never the model adapter, returns the final named decision.
 

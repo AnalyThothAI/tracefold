@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v5"
+TRADING_MANIFEST_VERSION = "trading_manifest_v6"
 TRADING_POLICY_VERSION = "trading_strategy_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
@@ -73,6 +73,10 @@ class OiCandidateRow(TypedDict):
     # silently open or close the capital lane.
     final_decision: str
     source_rule: str | None
+    # What the provider proves about the measurement (#265). Nullable together; `None` means unproven.
+    source_strategy_id: str | None
+    source_contract_version: str | None
+    measurement_window_ms: int | None
     learning_epoch: str
     program_version: str
     program_sha256: str
@@ -169,6 +173,11 @@ ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 TriggerKind = Literal["oi", "liquidation", "news"]
 StrategyPermission = Literal["shadow", "paper", "live_reviewed"]
 StrategyId = Literal[
+    "oi_smart_money_momentum_v1",
+    # Retained as a decoder so historical Cases stay replayable; `capital_strategy_id` no longer routes
+    # a new Case to it (#265 §5.1). Its rules — a 95% whale-profit floor inside the shared 1-6% band —
+    # are not the ones the smart-money template describes, and reusing the id would make every Case
+    # frozen under it replay under rules it was never decided by.
     "oi_momentum_v1",
     "news_oi_alignment_v1",
     "liquidation_continuation_shadow_v1",
@@ -334,6 +343,12 @@ class OiTradeCandidate(_Frozen):
     final_decision: str
     source_rule: str
     metric_version: str
+    # The provider's own measurement contract, frozen into the manifest so a Case is a claim about a
+    # *specific* interval rather than about "OI rose". `None` means the interval could not be proven —
+    # the frame is still a usable fact, and a strategy that reads the interval must refuse it by name.
+    source_strategy_id: str | None = None
+    source_contract_version: str | None = None
+    measurement_window_ms: int | None = None
     learning_epoch: NewsLearningEpoch
     program_version: Literal["news_oi_signal_v1"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

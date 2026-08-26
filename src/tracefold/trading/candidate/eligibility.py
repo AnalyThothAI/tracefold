@@ -184,6 +184,13 @@ def oi_candidate(row: OiCandidateRow, *, funnel: Funnel | None = None) -> OiTrad
             final_decision=str(row.get("final_decision") or ""),
             source_rule=str(row.get("source_rule") or ""),
             metric_version=str(row.get("metric_version") or ""),
+            # Carried, never defaulted. A frame whose measurement window the provider contract could
+            # not prove reaches the strategy as `None`, and the strategy refuses it by name (#265).
+            source_strategy_id=(str(row["source_strategy_id"]) if row.get("source_strategy_id") else None),
+            source_contract_version=(
+                str(row["source_contract_version"]) if row.get("source_contract_version") else None
+            ),
+            measurement_window_ms=_int(row.get("measurement_window_ms")),
             learning_epoch=str(row.get("learning_epoch") or ""),
             program_version=str(row.get("program_version") or ""),
             program_sha256=str(row.get("program_sha256") or ""),
