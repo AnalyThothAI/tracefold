@@ -60,6 +60,13 @@ def now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
 
 
+def cutoff_history_start_ms(*, anchor_at_ms: int, lookback_ms: int) -> int:
+    """Open time of the candle that closed immediately before the lookback target."""
+
+    target = int(anchor_at_ms) - int(lookback_ms)
+    return (target // BAR_INTERVAL_MS - 1) * BAR_INTERVAL_MS
+
+
 async def sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(seconds)))
@@ -93,6 +100,7 @@ __all__ = [
     "InstrumentProjectionReader",
     "TradingConfig",
     "TradingDatabasePort",
+    "cutoff_history_start_ms",
     "now_ms",
     "sleep_or_stop",
 ]

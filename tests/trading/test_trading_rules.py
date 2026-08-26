@@ -42,6 +42,7 @@ from tracefold.trading.execution.order import (
     stop_price_for,
 )
 from tracefold.trading.execution.paper import evaluate_paper_exit
+from tracefold.trading.pipeline.runtime import BAR_INTERVAL_MS, cutoff_history_start_ms
 from tracefold.trading.strategy.news_oi_alignment import NewsOiAlignmentStrategy
 from tracefold.trading.strategy.oi_momentum import OiMomentumConfig, OiMomentumStrategy
 
@@ -201,6 +202,14 @@ def test_an_unreadable_deny_list_blocks_everything() -> None:
 
 
 # ---------------------------------------------------------------------------- regime
+@pytest.mark.parametrize("offset_ms", [0, 40_000])
+def test_cutoff_history_starts_at_the_open_of_the_last_closed_bar(offset_ms: int) -> None:
+    aligned_target = 1_900_000_000_000 // BAR_INTERVAL_MS * BAR_INTERVAL_MS
+    target = aligned_target + offset_ms
+    start = cutoff_history_start_ms(anchor_at_ms=target + 3_600_000, lookback_ms=3_600_000)
+    assert start == target // BAR_INTERVAL_MS * BAR_INTERVAL_MS - BAR_INTERVAL_MS
+
+
 def test_open_interest_direction_alone_is_never_a_side() -> None:
     # The reader card maps OI rise -> bullish to fit the delivery vocabulary. Trading must not inherit
     # it: with no price the answer is `unclear`, not `long`.
