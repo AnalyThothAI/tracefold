@@ -236,7 +236,7 @@ exit releases the lock.
 ## HTTP
 
 The service exposes `/healthz`, `/readyz`, `/metrics`, static frontend assets
-(the console routes `/`, `/app`, `/app/*`, `/news`, `/news/*`), and `/api/*`.
+(the console routes `/`, `/app`, `/app/*`, `/news`, `/news/*`, `/trading`), and `/api/*`.
 There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
