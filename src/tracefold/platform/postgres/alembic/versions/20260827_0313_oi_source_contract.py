@@ -32,7 +32,19 @@ depends_on = None
 # The exact identity that reaches `news_items.provider_metadata.strategies[0]` for OpenNews strategy
 # 1019. All four members, not the id alone: a Strategy id is an account-scoped handle, and if it is ever
 # repointed at a different monitor the tuple stops matching and the window goes back to unproven.
-_IDENTITY_1019 = '[{"id":"1019","name":"OI Event Monitor","source_type":"market","engine_type":"market"}]'
+#
+# Written as four `->> ` comparisons against element **0**, which is what `oi_source_contract` reads.
+# A `@>` containment test would have matched 1019 at any index and would have accepted an element
+# carrying extra keys, so a frame the running parser writes as `NULL` could arrive backfilled as
+# proven — the ledger then holding a window the current code refuses to establish. `->>` also renders a
+# JSON number `1019` as the text `1019`, exactly as the parser's `str(entry.get("id"))` does.
+_ENTRY = "i.provider_metadata -> 'strategies' -> 0"
+_IDENTITY_1019 = (
+    f"{_ENTRY} ->> 'id' = '1019' "
+    f"AND {_ENTRY} ->> 'name' = 'OI Event Monitor' "
+    f"AND {_ENTRY} ->> 'source_type' = 'market' "
+    f"AND {_ENTRY} ->> 'engine_type' = 'market'"
+)
 
 
 def upgrade() -> None:
@@ -60,7 +72,7 @@ def upgrade() -> None:
           FROM news_events e
           JOIN news_items i ON i.item_id = e.leader_item_id
          WHERE e.event_id = s.event_id
-           AND i.provider_metadata -> 'strategies' @> '{_IDENTITY_1019}'::jsonb
+           AND {_IDENTITY_1019}
         """
     )
 

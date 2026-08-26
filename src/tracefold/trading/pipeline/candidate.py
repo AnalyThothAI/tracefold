@@ -27,6 +27,7 @@ from ..candidate.gate import (
     CANDIDATE_GATE_VERSION,
     CandidateGateResult,
     GateConfig,
+    admit_context,
     admit_route,
     admit_trigger,
     case_created,
@@ -454,10 +455,13 @@ class CandidateRunner:
         funnel.count("oi_rows", len(state["oi_rows"]))
         funnel.count("news_rows", len(state["news_rows"]))
 
-        # Routable OI facts, whatever their age: the context set a News trigger may attach from. An
-        # unroutable frame is deliberately not in it (#211) — leaving it in would let it win coalescing
-        # from an older frame that *is* routable and then be refused, and would let a News trigger be
-        # killed by an OI frame it merely attached.
+        # The context set a News trigger may attach from: routable, and passing the two rules that read
+        # only the frame's own frozen numbers. An unroutable frame is deliberately not in it (#211) —
+        # leaving it in would let it win coalescing from an older frame that *is* routable and then be
+        # refused, and would let a News trigger be killed by an OI frame it merely attached. Rank and
+        # the liquidity floor are here for a different reason: they say whether the fact may ground a
+        # capital decision at all, so a set gated only for *triggering* would let a News verdict freeze
+        # a case on the exact thin frame the floor exists to exclude.
         oi_context: list[OiTradeCandidate] = []
         # The subset the gate admitted as a reason to open a case *now*.
         oi_triggers: list[OiTradeCandidate] = []
@@ -475,7 +479,7 @@ class CandidateRunner:
                 )
                 continue
             routing = admit_route(oi_result, config=self._gate_config)
-            if routing is None:
+            if routing is None and admit_context(oi_result, config=self._gate_config) is None:
                 oi_context.append(oi_result)
             verdict = (
                 admit_trigger(

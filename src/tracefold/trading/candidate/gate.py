@@ -230,38 +230,19 @@ def source_rejected(
     )
 
 
-def admit_trigger(
-    candidate: OiTradeCandidate,
-    *,
-    now_ms: int,
-    config: GateConfig,
-    blacklist: Blacklist,
-    active_underlyings: Container[str] = (),
-    underlyings_in_flight: Container[str] = (),
-    cased_source_keys: Container[str] = (),
-) -> CandidateGateResult | None:
-    """Whether this fact may start a case *now*, or the one named reason it may not.
+def admit_context(candidate: OiTradeCandidate, *, config: GateConfig) -> CandidateGateResult | None:
+    """The rules that read only the frame's own frozen numbers, and therefore bind it everywhere.
 
-    `None` means "carry on to routing". Returning early is not the same as discarding the fact: a
-    candidate refused here is still legal point-in-time context for another lane's trigger, which is
-    why the caller keeps it in the context set regardless of what this answers.
+    Rank and the absolute liquidity floor are properties of the frame, not of the moment: they can
+    never change, and they say whether this fact may ground a capital decision *at all* — as a trigger
+    or as the OI context another lane's trigger attaches. Splitting them out is what keeps that true in
+    one place. Leaving them inside trigger admission let a News verdict freeze a case grounded on a
+    $1M, rank-50 frame that the floor exists to exclude, because the context set was never gated.
 
-    The order is deliberate. Idempotency first, because a source that already produced a case has a
-    terminal answer and every rule below it would be describing work that is already done. Then the two
-    frozen properties of the frame itself — rank and liquidity — because they can never change, so a
-    `DEFERRED` on them would promise a retry that can only ever reach the same conclusion. The
-    reversible conditions come last.
+    Terminal on purpose: a `DEFERRED` here would promise a retry that can only ever reach the same
+    conclusion, since the number it failed on is frozen in the frame.
     """
 
-    key = underlying_key(candidate.base_symbol)
-    if candidate.source_key in cased_source_keys:
-        return _result(
-            candidate=candidate,
-            status="REJECTED",
-            stage="eligibility",
-            reason="already_consumed",
-            retryable=False,
-        )
     if candidate.rank_in_window > config.max_rank_in_window:
         return _result(
             candidate=candidate,
@@ -280,17 +261,57 @@ def admit_trigger(
             retryable=False,
             evidence={"floor": config.min_oi_value_usd},
         )
-    blocked = blacklist.blocked(candidate.base_symbol, now_ms=now_ms)
-    if blocked is not None:
-        # Terminal, not deferred. An entry can expire or be lifted, but the frame goes stale long
-        # before either happens, and promising a retry that the clock guarantees will never be taken
-        # is the kind of open row the expiry sweep exists to stop accumulating.
+    return None
+
+
+def admit_trigger(
+    candidate: OiTradeCandidate,
+    *,
+    now_ms: int,
+    config: GateConfig,
+    blacklist: Blacklist,
+    active_underlyings: Container[str] = (),
+    underlyings_in_flight: Container[str] = (),
+    cased_source_keys: Container[str] = (),
+) -> CandidateGateResult | None:
+    """Whether this fact may start a case *now*, or the one named reason it may not.
+
+    `None` means "carry on to routing". A candidate refused by one of the *situational* rules below is
+    still legal point-in-time context for another lane's trigger; one refused by `admit_context` is
+    not, and the caller keeps the two apart.
+
+    The order is deliberate. Idempotency first, because a source that already produced a case has a
+    terminal answer and every rule below it would be describing work that is already done. Then the
+    frame's own frozen properties. The reversible conditions come last.
+    """
+
+    key = underlying_key(candidate.base_symbol)
+    if candidate.source_key in cased_source_keys:
         return _result(
             candidate=candidate,
             status="REJECTED",
             stage="eligibility",
-            reason="blacklisted",
+            reason="already_consumed",
             retryable=False,
+        )
+    frame = admit_context(candidate, config=config)
+    if frame is not None:
+        return frame
+    blocked = blacklist.blocked(candidate.base_symbol, now_ms=now_ms)
+    if blocked is not None:
+        # A failed deny-list read blocks every symbol — the list is the last thing that may fail open —
+        # but it is infrastructure state, not a property of the frame, so it is `DEFERRED`. Filing it as
+        # a terminal `REJECTED` froze the row: one database hiccup would permanently record every source
+        # in the scan window as denied, and the `CASE_CREATED` that followed on the next healthy scan
+        # could not move a terminal row. A real deny-list entry stays terminal, because an operator
+        # excluded the issuer and the frame goes stale long before that is lifted.
+        unavailable = str(blocked.reason) == "blacklist_unavailable"
+        return _result(
+            candidate=candidate,
+            status="DEFERRED" if unavailable else "REJECTED",
+            stage="eligibility",
+            reason="blacklisted",
+            retryable=unavailable,
             evidence={"blacklist_reason": str(blocked.reason)},
         )
     if now_ms - candidate.observed_at_ms > config.max_age_ms:
@@ -393,6 +414,7 @@ __all__ = [
     "GateConfig",
     "GateStage",
     "GateStatus",
+    "admit_context",
     "admit_route",
     "admit_trigger",
     "case_created",

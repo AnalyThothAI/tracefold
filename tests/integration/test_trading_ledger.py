@@ -1024,10 +1024,15 @@ def test_an_open_decision_the_clock_has_answered_is_expired_not_left_pending(con
     conn.commit()
     assert swept == 1
     by_key = {row["source_key"]: row for row in _gate_rows(conn)}
-    assert (by_key["oi:e1:oi_signal_v1"]["status"], by_key["oi:e1:oi_signal_v1"]["reason"]) == (
+    # The status is what the sweep says. The stage and reason stay exactly as the gate wrote them:
+    # overwriting the reason produced `stage:reason` pairs no rule can emit — `routing:trigger_stale`,
+    # `market_context:trigger_stale` — which the read model aggregates on and no label covers. Keeping
+    # them says more, too: this row was waiting on a candle, and the clock closed it.
+    assert (by_key["oi:e1:oi_signal_v1"]["status"], by_key["oi:e1:oi_signal_v1"]["stage"]) == (
         "EXPIRED",
-        "trigger_stale",
+        "eligibility",
     )
+    assert by_key["oi:e1:oi_signal_v1"]["reason"] == "market_data_unavailable"
     assert by_key["oi:e1:oi_signal_v1"]["retryable"] is False
     # A frame still inside the budget keeps its open answer, and a terminal row is not re-terminalised.
     assert by_key["oi:e2:oi_signal_v1"]["status"] == "DEFERRED"
@@ -1204,6 +1209,31 @@ def test_an_oi_fact_a_news_trigger_took_as_context_still_gets_its_own_admission_
     assert decision is not None
     assert (decision["status"], decision["reason"]) == ("DEFERRED", "superseded_by_newer_trigger")
     assert decision["retryable"] is True
+
+
+def test_a_news_trigger_cannot_ground_a_case_on_a_frame_the_liquidity_floor_excludes(conn) -> None:
+    """#264 gave the floor one owner; it still has to bind the frames a News trigger attaches.
+
+    The 10-50M OI bucket is the worst the research measured (+4h -0.77%), which is what the 20M floor —
+    and the 5M canary under it — exist to keep out. Gating only the trigger path would let a News
+    verdict freeze a `news_oi_alignment_v1` case grounded on exactly that frame.
+    """
+
+    _seed_oi_event(conn, event_id="thin-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    conn.execute("UPDATE news_oi_signals SET oi_value_usd = 1000000 WHERE event_id = 'thin-oi'")
+    _seed_oi_event(conn, event_id="news-win", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-win", symbol="DOGE")
+    conn.commit()
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    assert report["created"] == 1
+    case = _repos(conn).trading.cases()[0]
+    assert case["trigger_kind"] == "news"
+    # The case exists and is grounded on nothing: the thin frame never entered the context set.
+    assert case["manifest"]["contexts"]["oi"] is None
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:thin-oi:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"]) == ("REJECTED", "oi_value_below_floor")
 
 
 def test_the_replay_reads_the_whole_window_through_the_rules_the_scanner_applies(conn) -> None:

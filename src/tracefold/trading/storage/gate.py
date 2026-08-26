@@ -95,13 +95,18 @@ class CandidateGateStorage:
         grow without bound while claiming work is still pending. Deliberately not scoped to one
         `gate_config_digest`: a threshold edit starts new rows, and the rows written under the previous
         digest still need closing.
+
+        `stage` and `reason` are left exactly as the gate wrote them. Overwriting the reason with
+        `trigger_stale` produced `stage:reason` pairs no rule can emit — `routing:trigger_stale`,
+        `market_context:trigger_stale` — which the read model aggregates on and no label covers. The
+        status is what the sweep has to say, and keeping the reason says more: this row was waiting on
+        a listing, or on a candle, and the clock closed it.
         """
 
         cursor = self.conn.execute(
             """
             UPDATE trading_candidate_gate_decisions
                SET status = 'EXPIRED',
-                   reason = 'trigger_stale',
                    retryable = false,
                    last_evaluated_at_ms = %s
              WHERE status = 'DEFERRED'

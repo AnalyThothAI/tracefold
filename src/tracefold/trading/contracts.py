@@ -174,10 +174,17 @@ TriggerKind = Literal["oi", "liquidation", "news"]
 StrategyPermission = Literal["shadow", "paper", "live_reviewed"]
 StrategyId = Literal[
     "oi_smart_money_momentum_v1",
-    # Retained as a decoder so historical Cases stay replayable; `capital_strategy_id` no longer routes
-    # a new Case to it (#265 §5.1). Its rules — a 95% whale-profit floor inside the shared 1-6% band —
-    # are not the ones the smart-money template describes, and reusing the id would make every Case
-    # frozen under it replay under rules it was never decided by.
+    # Retained as an identity `strategy_from_manifest` still rebuilds; `capital_strategy_id` no longer
+    # routes a new Case to it (#265 §5.1). Its rules — a 95% whale-profit floor inside the shared 1-6%
+    # band — are not the ones the smart-money template describes, and reusing the id would make every
+    # Case frozen under it replay under rules it was never decided by.
+    #
+    # A Case frozen before `trading_manifest_v6` is *not* replayable, and that is what the version bump
+    # means rather than an oversight: `min_oi_value_usd` left both OI strategy configs when the floor
+    # got its single owner, so an older `strategy_config` no longer satisfies `_exact_keys` and its
+    # digest no longer matches. `_uses_current_news_generation` refuses those manifests first, so the
+    # runner never mis-decodes one. Production holds no `oi_momentum_v1` case at all, and every
+    # `news_oi_alignment_v1` case predating the cut is already terminal.
     "oi_momentum_v1",
     "news_oi_alignment_v1",
     "liquidation_continuation_shadow_v1",

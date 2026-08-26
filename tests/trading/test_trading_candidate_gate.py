@@ -19,6 +19,7 @@ from tracefold.trading.candidate.gate import (
     GATE_REASONS,
     CandidateGateResult,
     GateConfig,
+    admit_context,
     admit_route,
     admit_trigger,
     case_created,
@@ -69,8 +70,8 @@ def _fact(**kwargs: Any) -> OiTradeCandidate:
     return candidate
 
 
-def _verdict(candidate: OiTradeCandidate, **kwargs: Any) -> CandidateGateResult:
-    result = admit_trigger(candidate, now_ms=NOW, config=CONFIG, blacklist=OPEN_DENY, **kwargs)
+def _verdict(candidate: OiTradeCandidate, *, blacklist: Blacklist = OPEN_DENY, **kwargs: Any) -> CandidateGateResult:
+    result = admit_trigger(candidate, now_ms=NOW, config=CONFIG, blacklist=blacklist, **kwargs)
     assert result is not None
     return result
 
@@ -167,6 +168,46 @@ def test_a_retired_generation_is_a_named_source_failure_not_an_exception() -> No
     assert source_rejected(rejection, source_key="oi:e1:oi_signal_v1", observed_at_ms=NOW).reason == (
         "source_generation_mismatch"
     )
+
+
+def test_a_failed_deny_list_read_defers_rather_than_freezing_the_row_forever() -> None:
+    """The deny list fails closed, and that must not become a permanent verdict.
+
+    `Blacklist.unavailable()` blocks every symbol — the list is the last thing that may fail open — but
+    that is infrastructure state, not a property of the frame. Filed as a terminal `REJECTED` it froze
+    the row: one database hiccup recorded a whole scan window as denied, and because the ledger only
+    advances a row out of `DEFERRED`, the `CASE_CREATED` that followed on the next healthy scan could
+    not move it. The ledger would then permanently report a refusal for a source that has a case.
+    """
+
+    unavailable = _verdict(_fact(), blacklist=Blacklist.unavailable())
+    assert (unavailable.status, unavailable.reason, unavailable.retryable) == ("DEFERRED", "blacklisted", True)
+    assert unavailable.evidence["blacklist_reason"] == "blacklist_unavailable"
+
+    # A real operator entry is still terminal: the issuer was excluded, and the frame goes stale long
+    # before that is lifted.
+    denied = _verdict(_fact(symbol="BTC"))
+    assert (denied.status, denied.retryable) == ("REJECTED", False)
+    assert denied.evidence["blacklist_reason"] == "benchmark_large_cap"
+
+
+def test_the_frames_own_frozen_numbers_bind_it_as_context_too() -> None:
+    """#264 gave the liquidity floor one owner; `admit_context` is what keeps that true everywhere.
+
+    Rank and the absolute floor say whether a fact may ground a capital decision *at all* — as a
+    trigger, or as the OI context a News trigger attaches. Checking them only on the trigger path let a
+    News verdict freeze a case on a $1M, rank-50 frame, which is the population the floor was measured
+    to exclude (the 10-50M bucket is the worst at +4h).
+    """
+
+    assert admit_context(_fact(), config=CONFIG) is None
+    thin = admit_context(_fact(oi_value_usd=1_000_000), config=CONFIG)
+    assert thin is not None and thin.reason == "oi_value_below_floor"
+    deep = admit_context(_fact(rank_in_window=50), config=CONFIG)
+    assert deep is not None and deep.reason == "rank_above_limit"
+
+    # The situational rules are *not* here: an underlying already in flight is still legal context.
+    assert admit_context(_fact(symbol="BTC"), config=CONFIG) is None
 
 
 def test_the_reason_vocabulary_is_closed() -> None:
