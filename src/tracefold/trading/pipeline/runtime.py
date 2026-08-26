@@ -15,6 +15,7 @@ from ..contracts import (
     TRADING_RECONCILE_BACKOFF_MS,
     Bar,
     InstrumentCandidateRow,
+    LiquidationCandidateRow,
     LiveExchangeId,
     NewsCandidateRow,
     OiCandidateRow,
@@ -46,11 +47,11 @@ class TradingDatabasePort(Protocol):
 
 BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
 BarFetcherFactory = Callable[[str], BarFetcher | None]
-# `(repos, metric_version, after_ms, until_ms, max_rank, min_oi_value_usd) -> (oi rows, news rows)`.
+# `(repos, metric_version, after_ms, until_ms, max_rank, min_oi_value_usd) -> three trigger lanes`.
 # The repository session stays opaque: this context never learns which repositories it carries.
 CandidateProjectionReader = Callable[
     [Any, str, int, int, int, int],
-    tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow]],
+    tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow], Sequence[LiquidationCandidateRow]],
 ]
 InstrumentProjectionReader = Callable[[Any, str, Sequence[str]], Sequence[InstrumentCandidateRow]]
 

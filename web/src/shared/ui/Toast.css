@@ -9,10 +9,10 @@
     align-items: center;
     max-width: calc(100vw - 32px);
     padding: 9px 15px;
-    border-radius: 7px;
-    color: #ffffff;
+    border-radius: var(--radius-md);
+    color: var(--primary-foreground);
     background: var(--text-primary);
-    font-size: 12.5px;
+    font-size: var(--font-size-meta);
     font-weight: 560;
     transform: translateX(-50%);
   }
@@ -21,8 +21,8 @@
     width: 13px;
     height: 13px;
     flex: 0 0 auto;
-    /* The one green in the console that is not 利空: a tick, on a dark ground, nowhere near a market word. */
-    color: #4ade80;
+    /* A success tick is UI feedback, not a market direction, so it stays colour-neutral. */
+    color: var(--primary-foreground);
     stroke-width: 2.4;
   }
 

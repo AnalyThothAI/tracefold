@@ -2,7 +2,7 @@ import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { Drawer } from "@shared/ui/Drawer";
 import { IconButton } from "@shared/ui/IconButton";
 import { PanelLeft } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 
 import { AppBottomNav } from "./AppBottomNav";
@@ -25,6 +25,7 @@ export type CockpitShellProps = {
   navBadges?: AppNavigationBadges;
   navCounts?: AppNavigationCounts;
   outletContext?: unknown;
+  routeContent?: ReactNode;
   topbar: CockpitTopbarProps;
 };
 
@@ -36,7 +37,13 @@ export type CockpitShellProps = {
  *   ≤767   no sidebar in either form: a drawer charges a tap before the reader can even see where they could
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
  */
-export function CockpitShell({ navBadges, navCounts, outletContext, topbar }: CockpitShellProps) {
+export function CockpitShell({
+  navBadges,
+  navCounts,
+  outletContext,
+  routeContent,
+  topbar,
+}: CockpitShellProps) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
   // One control, two meanings: at desktop it folds the in-frame sidebar away for readers who want the whole
@@ -76,9 +83,7 @@ export function CockpitShell({ navBadges, navCounts, outletContext, topbar }: Co
         />
         {/* The route column is the page's `main`. The shadcn `SidebarInset` used to supply the landmark; a
             console without one makes a screen reader walk the sidebar and topbar on every route. */}
-        <main className="center-column">
-          <Outlet context={outletContext} />
-        </main>
+        <main className="center-column">{routeContent ?? <Outlet context={outletContext} />}</main>
         {phone ? <AppBottomNav /> : null}
       </div>
       {desktop || phone ? null : (

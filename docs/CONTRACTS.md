@@ -506,11 +506,20 @@ instruction or demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
-`news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic telemetry),
+`news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, factory
 `tracefold.news.program.factory_v6`, and epoch `program_v7`.
 The exact Program identity is its content SHA, not the display version alone.
+
+Strategy 2000 is a separate deterministic contract composed after Gate v5; it
+does not silently widen that policy or editorial policy v10. Its release
+identities are `news_liquidation_admission_v1`,
+`news_liquidation_fact_v1`, `news_liquidation_policy_v1`,
+`liquidation_parser_v1`, and `opennews_liquidation_source_v1`. The source
+contract records provider-record and unresolved contract identity, position
+side, quantity/notional/price semantics, completeness and throttle assumptions.
+Its current `complete=false` is a material fact.
 
 `ProgramStrategyArtifactV1` is the only executable semantic configuration, and
 it is one canonical JSON document — `schema_version`, `factory_id`, the
@@ -574,7 +583,8 @@ operator thresholds. `direct_surface` requires direct/second-order tradability
 and non-empty channels/markets. `material_change` requires `state_change`, or
 `material_detail` plus direct tradability or an unscheduled/material surprise;
 `realtime_eligible` requires both and magnitude >= 2. After the grounded-
-restatement guard, the action order is deterministic listing/telemetry,
+restatement guard, the generic v10 action order is deterministic
+listing/telemetry,
 grounded watchlist, eligible `reader_value=escalate`, eligible
 `reader_value=realtime`, background/none, then
 `trade_relevance_inconsistent`; the retained stale-source and same-fact checks
@@ -584,6 +594,9 @@ are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
 verdict or accepted review is evidence and outlives the raw tier.
+Strategy 2000 never enters that order: after generic Gate v5 it is composed as
+`liquidation_deterministic`, then its own v1 policy emits the parser's
+direction-neutral push/drop. Parse failure is a deterministic drop.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
@@ -1192,7 +1205,7 @@ observation manifest can be replayed instead.
 rollout. A candidate may advance only when the prior
 stage has a sealed PASS; a tool or optimizer may propose but cannot accept,
 deploy or promote. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes
-recovery/listing/telemetry lanes, and validates selector, eligibility profile,
+recovery/listing/OI-telemetry/liquidation lanes, and validates selector, eligibility profile,
 rolling profile and runtime-manifest identity at startup, resume and assignment;
 drift trips the activation. `news replay <hits.json> [--gate-policy config|open|strict]` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
@@ -1206,6 +1219,20 @@ places, amends or cancels an order. `trading status` reports mode, control
 state, the day's counters and funnel, `stage_latency_ms` (p50/p95 and an
 evidence count `n` for each pipeline stage from `source_observed` to
 `position_opened`, keyed by stage and by nothing else),
+capital cases grouped by `trigger_kind` and `strategy_id`, and liquidation
+shadow evaluations grouped by strategy and rule. Each shadow cohort reports
+`evaluated`, `completed`, holdout and coverage counts, source latency, nullable
+duplicate rate, 5s/30s/1m/5m/15m/1h outcomes, deterministic bootstrap
+intervals, MFE/MAE, stop/TP/max-holding results, fees/slippage/funding
+availability and missing-data counts. Cohorts stay separate by strategy, venue,
+and liquidity bucket. The current public bar source is 5-minute close-only, so
+5s/30s/1m and funding are explicitly missing rather than synthesized. The
+first close at or after the trigger is the forward-return origin; coverage
+requires all supported horizons plus a measured terminal exit. Event-study v3
+owns fixed research stop/TP/holding/fee/slippage constants, independent of
+operator Order edits.
+`liquidation_promotion_ready` is false with a named evidence reason; it is not a
+configuration switch.
 `nominal_daily_stop_loss_usd`, the configured `live_symbol`,
 `execution_backend`, `execution_configured`, `live_mode_supported`,
 `live_ready`, and `live_readiness`; `live_reviewed` reports
@@ -1223,14 +1250,42 @@ deterministic safety close), and `trading approve|reject <order-id> --digest`
 settles one order bound to its exact frozen payload digest, idempotent by state
 so a second approval of an already-approved order changes nothing.
 
-Trading's News projection contract is `program_v7` / policy v10 only.
-`trading_manifest_v3` freezes the learning epoch, lane-specific Program
+Trading consumes `news_trade_projection_v5`: separate editorial News,
+deterministic OI, and typed liquidation rows. The liquidation row preserves
+both `liquidated_position_side` and `forced_order_side`; callers must not infer
+one by treating the other as a forecast. It also carries every source-contract
+semantic named above and freezes `ingest_mode` in the normalized ledger, so
+Item retention cannot erase live/recovery provenance. Recovery rows are audit
+context and are not eligible triggers.
+
+Trading's editorial News projection contract is `program_v7` / policy v10
+only. `trading_manifest_v4` freezes the learning epoch, lane-specific Program
 version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
-and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211).
+and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211),
+the single primary trigger, point-in-time contexts, and strategy ID, version,
+the exact typed configuration values and their digest (#213). The serialized
+manifest has one market fact at `contexts.market`; there is no serialized or
+accessor alias named `market_context`. A pending Case reconstructs its strategy from that frozen
+snapshot, so editing runtime thresholds affects only later Cases.
 Cases frozen under any earlier manifest version remain readable audit rows but
 cannot advance: an undecided case is terminalized as
 `BLOCKED/no_trade/news_generation_retired`; an already prepared order is not
 rewritten and remains owned by the reconciliation state machine.
+
+The HTTP shape uses `trigger_kind`, never the retired `case_kind`. Every case
+and order row carries `strategy_id` and `strategy_version`. `/api/trading/status`
+adds `counts.cases_by_strategy`, `counts.shadow_by_strategy`,
+`counts.shadow_by_rule`, `counts.shadow_cohorts`,
+`counts.event_study_cohorts`,
+`counts.liquidation_promotion_ready`, and
+`counts.liquidation_promotion_reason`. The two liquidation shadow strategies
+write only `trading_strategy_evaluations`; they cannot produce a case or order.
+Event-study cohorts expose `duplicate_rate_bps=null` and the named missing fact
+`source:duplicate_rate_unavailable` until the upstream source publishes a
+durable duplicate/replay denominator; surviving ledger rows are not treated as
+evidence of a zero duplicate rate.
+The typed liquidation ledger is not cascade-owned by `news_items`; raw Item
+retention cannot delete the normalized replay fact.
 
 The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded

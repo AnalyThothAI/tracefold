@@ -23,7 +23,9 @@ def _order(**overrides: Any) -> dict[str, Any]:
     row = {
         "average_price": None,
         "case_id": "case-wif",
-        "case_kind": "news_oi",
+        "strategy_id": "news_oi_alignment_v1",
+        "strategy_version": "news_oi_alignment_v1",
+        "trigger_kind": "news",
         "case_observed_at_ms": NOW - 200_000,
         "case_state": "ORDER_PREPARED",
         "created_at_ms": NOW - 180_000,
@@ -77,7 +79,19 @@ class _FakeTradingRepository:
         self.calls.append(("status_counts", {"since_ms": since_ms}))
         return {
             "cases_by_state": {"ORDER_PREPARED": 3, "POLICY_REJECTED": 4},
-            "cases_by_kind": {"news_oi": 5, "oi_only": 4},
+            "cases_by_trigger": {"news": 5, "oi": 4},
+            "cases_by_strategy": {"news_oi_alignment_v1": 5, "oi_momentum_v1": 4},
+            "shadow_by_strategy": {"liquidation_continuation_shadow_v1": 2},
+            "shadow_by_rule": {"source_contract_incomplete": 2},
+            "shadow_cohorts": {
+                "liquidation_continuation_shadow_v1": {
+                    "evaluated": 2,
+                    "completed": 1,
+                    "mean_return_bps": 12,
+                }
+            },
+            "liquidation_promotion_ready": False,
+            "liquidation_promotion_reason": "source_contract_incomplete",
             "orders_by_state": {"OPEN": 1, "CLOSED": 2},
             "closed_orders": 2,
             "closed_realized_bps": 12,
@@ -92,7 +106,9 @@ class _FakeTradingRepository:
         return [
             {
                 "case_id": "case-hype",
-                "case_kind": "oi_only",
+                "strategy_id": "oi_momentum_v1",
+                "strategy_version": "oi_momentum_v1",
+                "trigger_kind": "oi",
                 "created_at_ms": NOW - 400_000,
                 "decided_at_ms": NOW - 399_000,
                 "manifest": {"frozen": "inputs"},

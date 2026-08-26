@@ -3,7 +3,7 @@ import { Card } from "@shared/ui/Card";
 import { Link } from "react-router-dom";
 
 import type { TradingCase, TradingCounts, TradingFloors } from "../api/tradingQueries";
-import { CASE_KIND_ZH, CASE_STATE_ZH, REGIME_ZH } from "../model/tradingLabels";
+import { CASE_STATE_ZH, REGIME_ZH, STRATEGY_ZH, TRIGGER_KIND_ZH } from "../model/tradingLabels";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
@@ -52,10 +52,87 @@ export function TradingFunnel({
           </div>
         ))}
         <p className="trading-funnel-note">
-          <code>oi_only</code> 与 <code>news_only</code> 永不
-          live——它们只在模拟仓里攒证据；只有对齐的 <code>news_oi</code> 才有资格走{" "}
-          <code>live_reviewed</code>。
+          触发事实与策略身份分开冻结：OI 动量和新闻 × OI 对齐可进入
+          paper；清算延续与衰竭只写影子评估，绝不下单。
         </p>
+      </div>
+
+      <div className="trading-floors">
+        <small>清算影子队列</small>
+        <span>
+          {Object.entries(counts.shadow_by_strategy ?? {}).length === 0
+            ? "过去 24 小时暂无评估"
+            : Object.entries(counts.shadow_by_strategy ?? {})
+                .map(([strategy, value]) => {
+                  const cohort = counts.shadow_cohorts?.[strategy];
+                  const result =
+                    cohort?.mean_return_bps == null
+                      ? ""
+                      : ` · 1h 均值 ${(cohort.mean_return_bps / 100).toFixed(2)}%`;
+                  return `${STRATEGY_ZH[strategy] ?? strategy} ${value}（完成 ${cohort?.completed ?? 0}）${result}`;
+                })
+                .join(" · ")}
+          {counts.shadow_by_rule?.source_contract_incomplete
+            ? ` · 来源契约不完整 ${counts.shadow_by_rule.source_contract_incomplete}`
+            : ""}
+          {!counts.liquidation_promotion_ready
+            ? ` · 不可晋级：${counts.liquidation_promotion_reason || "证据不足"}`
+            : ""}
+        </span>
+      </div>
+
+      <div className="trading-floors">
+        <small>清算事件研究</small>
+        <span>
+          {(counts.event_study_cohorts ?? []).length === 0
+            ? "注册后的真实 holdout 尚未形成完成样本"
+            : (counts.event_study_cohorts ?? [])
+                .map((cohort) => {
+                  const horizons = ["5m", "15m", "1h"]
+                    .map((label) => {
+                      const measured = cohort.horizons?.[label];
+                      const interval = measured?.bootstrap;
+                      return interval == null
+                        ? `${label} 未到期/缺失`
+                        : `${label} ${(interval.mean_bps / 100).toFixed(2)}% [${(
+                            interval.lower_95_bps / 100
+                          ).toFixed(2)}%, ${(interval.upper_95_bps / 100).toFixed(2)}%]`;
+                    })
+                    .join(" · ");
+                  const missing = Object.entries(cohort.missing_data ?? {})
+                    .filter(([, value]) => value > 0)
+                    .map(([reason, value]) => `${reason} ${value}`)
+                    .join("、");
+                  const exits = Object.entries(cohort.exit_by_reason ?? {})
+                    .filter(([, value]) => value > 0)
+                    .map(([reason, value]) => `${reason} ${value}`)
+                    .join("、");
+                  const net = cohort.net_ex_funding_bootstrap;
+                  const promotion = (cohort.promotion_reasons ?? []).join("、");
+                  return `${STRATEGY_ZH[cohort.strategy_id] ?? cohort.strategy_id} · ${cohort.venue}/${
+                    cohort.liquidity_bucket
+                  } · holdout ${cohort.holdout}/${cohort.evaluated} · 覆盖 ${(
+                    cohort.coverage_bps / 100
+                  ).toFixed(0)}% · 延迟均值 ${
+                    cohort.mean_source_latency_ms == null
+                      ? "—"
+                      : `${cohort.mean_source_latency_ms}ms`
+                  } · ${horizons} · MFE/MAE ${
+                    cohort.mfe_mean_bps == null ? "—" : (cohort.mfe_mean_bps / 100).toFixed(2)
+                  }%/${cohort.mae_mean_bps == null ? "—" : (cohort.mae_mean_bps / 100).toFixed(2)}%${
+                    exits ? ` · 出场：${exits}` : ""
+                  } · 净值(不含资金费) ${
+                    net == null
+                      ? "—"
+                      : `${(net.mean_bps / 100).toFixed(2)}% [${(net.lower_95_bps / 100).toFixed(
+                          2,
+                        )}%, ${(net.upper_95_bps / 100).toFixed(2)}%]`
+                  }${
+                    missing ? ` · 缺失：${missing}` : ""
+                  }${promotion ? ` · 晋级阻断：${promotion}` : ""}`;
+                })
+                .join(" ｜ ")}
+        </span>
       </div>
 
       <div className="trading-floors">
@@ -82,7 +159,10 @@ export function TradingFunnel({
               <span className="trading-symbol">
                 <Link to={newsSymbolPath(row.base_symbol)}>{row.base_symbol}</Link>
               </span>
-              <span className="trading-kind">{CASE_KIND_ZH[row.case_kind] ?? row.case_kind}</span>
+              <span className="trading-kind">
+                {STRATEGY_ZH[row.strategy_id] ?? row.strategy_id}
+                <small>{TRIGGER_KIND_ZH[row.trigger_kind] ?? row.trigger_kind}</small>
+              </span>
               <span className="trading-state" data-state={row.state}>
                 {CASE_STATE_ZH[row.state] ?? row.state}
               </span>

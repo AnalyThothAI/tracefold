@@ -20,6 +20,7 @@ Admission = Literal[
     "candidate",
     "listing_deterministic",
     "telemetry_deterministic",
+    "liquidation_deterministic",
     "suppressed_pr_template",
     "suppressed_low_signal",
     "recovery",
@@ -32,7 +33,7 @@ Admission = Literal[
 # Admitted means "goes to Triage". `telemetry_deterministic` earns its place there the same way
 # `listing_deterministic` does: the frame is judged, just not by a model (#137).
 ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset(
-    {"candidate", "listing_deterministic", "telemetry_deterministic"}
+    {"candidate", "listing_deterministic", "telemetry_deterministic", "liquidation_deterministic"}
 )
 # How long the Janitor keeps trying to rescue an Event that was created but never reached the Triage queue
 # (commit-then-crash, or a publish failure). Measured event -> delivery latency is p50 4.2 s / p95 16.8 s, so this

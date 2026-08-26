@@ -16,8 +16,11 @@ import pytest
 from dspy.utils.dummies import DummyLM
 
 from tracefold.trading.contracts import (
+    FrozenMarketContext,
+    FrozenStrategyContext,
     InstrumentRef,
     NewsTradeCandidate,
+    OiMarketTrigger,
     OiRegime,
     OiTradeCandidate,
     RegimeAssessment,
@@ -29,6 +32,7 @@ from tracefold.trading.decision.program import (
     build_inputs,
     program_sha256,
 )
+from tracefold.trading.strategy.root import strategies
 
 NOW = 1_787_000_000_000
 
@@ -75,46 +79,72 @@ _NEWS = NewsTradeCandidate(
 )
 
 
-def _manifest(kind: str = "news_oi", *, news: NewsTradeCandidate | None = None) -> TradingCaseManifest:
+def _manifest(*, news: NewsTradeCandidate | None = None) -> TradingCaseManifest:
+    oi = OiTradeCandidate(
+        event_id="e1",
+        observed_at_ms=NOW,
+        verdict_created_at_ms=NOW,
+        base_symbol="DOGE",
+        venue="hyperliquid",
+        oi_direction="rise",
+        oi_change_bps=320,
+        oi_value_usd=73_010_000,
+        whale_long_profit_bps=9_900,
+        whale_oi_ratio_bps=21_097,
+        rank_in_window=1,
+        metric_version="oi_signal_v1",
+        learning_epoch="program_v7",
+        program_version="news_oi_signal_v1",
+        program_sha256="a" * 64,
+        policy_version="news_triage_policy_v10",
+        editorial_origin="telemetry_deterministic",
+        editorial_sha256="b" * 64,
+        scored_judgment_sha256="c" * 64,
+        runtime_manifest_sha="d" * 64,
+    )
+    regime = RegimeAssessment(
+        regime=OiRegime.BUILDUP_UP,
+        reason="quadrant",
+        pre_move_bps=210,
+        oi_direction="rise",
+    )
+    market = FrozenMarketContext(
+        mark_price=Decimal("0.4123"),
+        observed_at_ms=NOW,
+        pre_move_bps=210,
+        pre_move_lookback_ms=3_600_000,
+    )
+    instrument = InstrumentRef(
+        exchange_id="binance",
+        venue="binance.perp",
+        provider_symbol="DOGEUSDT",
+        base_symbol="DOGE",
+        instrument_class="crypto",
+        observed_at_ms=NOW,
+    )
+    strategy = strategies()["news_oi_alignment_v1" if news is not None else "oi_momentum_v1"]
     return TradingCaseManifest(
-        case_kind=kind,  # type: ignore[arg-type]
+        primary_trigger=OiMarketTrigger(
+            source_key=oi.source_key,
+            observed_at_ms=NOW,
+            persisted_at_ms=NOW,
+            venue=oi.venue,
+        ),
+        contexts=FrozenStrategyContext(
+            mode="paper",
+            oi=oi,
+            news=news,
+            regime=regime,
+            market=market,
+        ),
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config=strategy.config_snapshot,
+        strategy_config_digest=strategy.config_digest,
         underlying_key="crypto:DOGE",
         base_symbol="DOGE",
         cutoff_ms=NOW,
-        oi=OiTradeCandidate(
-            event_id="e1",
-            observed_at_ms=NOW,
-            verdict_created_at_ms=NOW,
-            base_symbol="DOGE",
-            venue="hyperliquid",
-            oi_direction="rise",
-            oi_change_bps=320,
-            oi_value_usd=73_010_000,
-            whale_long_profit_bps=9_900,
-            whale_oi_ratio_bps=21_097,
-            rank_in_window=1,
-            metric_version="oi_signal_v1",
-            learning_epoch="program_v7",
-            program_version="news_oi_signal_v1",
-            program_sha256="a" * 64,
-            policy_version="news_triage_policy_v10",
-            editorial_origin="telemetry_deterministic",
-            editorial_sha256="b" * 64,
-            scored_judgment_sha256="c" * 64,
-            runtime_manifest_sha="d" * 64,
-        ),
-        news=news,
-        regime=RegimeAssessment(regime=OiRegime.BUILDUP_UP, reason="quadrant", pre_move_bps=210, oi_direction="rise"),
-        instrument=InstrumentRef(
-            exchange_id="binance",
-            venue="binance.perp",
-            provider_symbol="DOGEUSDT",
-            base_symbol="DOGE",
-            instrument_class="crypto",
-            observed_at_ms=NOW,
-        ),
-        mark_price=Decimal("0.4123"),
-        pre_move_bps=210,
+        instrument=instrument,
     )
 
 

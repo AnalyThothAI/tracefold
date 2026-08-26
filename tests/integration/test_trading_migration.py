@@ -26,6 +26,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_900_000_000_000
 BEFORE_SNAPSHOT = "20260825_0307"
+BEFORE_STRATEGY_KERNEL = "20260825_0309"
 
 
 def _upgrade(revision: str) -> None:
@@ -54,15 +55,33 @@ def _seed_pre_snapshot_order(
     position_opened_at_ms: int | None,
     must_close_at_ms: int | None,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO trading_cases (
-          case_id, underlying_key, case_kind, mode, primary_source_key, supplemental_source_keys,
-          manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (%s, %s, 'oi_only', 'paper', %s, '[]'::jsonb, '{}'::jsonb, 'sha', 'ORDER_PREPARED', %s, %s, %s)
-        """,
-        (f"case-{order_id}", f"crypto:{order_id.upper()}", f"key-{order_id}", NOW, NOW, NOW),
-    )
+    strategy_schema = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'trading_cases' AND column_name = 'trigger_kind'"
+    ).fetchone()
+    if strategy_schema is not None:
+        conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
+              strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
+              manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (%s, %s, 'oi', 'oi_momentum_v1', 'oi_momentum_v1', %s, 'paper', %s,
+                      '[]'::jsonb, '{}'::jsonb, 'sha', 'ORDER_PREPARED', %s, %s, %s)
+            """,
+            (f"case-{order_id}", f"crypto:{order_id.upper()}", "0" * 64, f"key-{order_id}", NOW, NOW, NOW),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, case_kind, mode, primary_source_key, supplemental_source_keys,
+              manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (%s, %s, 'oi_only', 'paper', %s, '[]'::jsonb, '{}'::jsonb, 'sha',
+                      'ORDER_PREPARED', %s, %s, %s)
+            """,
+            (f"case-{order_id}", f"crypto:{order_id.upper()}", f"key-{order_id}", NOW, NOW, NOW),
+        )
     conn.execute(
         """
         INSERT INTO trading_orders (
@@ -229,6 +248,86 @@ def test_0308_refuses_an_unusable_snapshot_at_the_database_boundary() -> None:
             with pytest.raises(CheckViolation):
                 conn.execute(f"UPDATE trading_orders SET {column} = %s WHERE order_id = 'guard'", (value,))
             conn.rollback()
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0310_hard_cuts_case_kind_and_adds_immutable_strategy_ledgers() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_STRATEGY_KERNEL)
+        conn = connect_postgres_test(read_only=False)
+        _seed_pre_index_case(conn, case_id="legacy-oi", underlying="crypto:DOGE", observed_at_ms=NOW, state="PENDING")
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("head")
+
+        conn = connect_postgres_test(read_only=False)
+        columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'trading_cases'"
+            ).fetchall()
+        }
+        assert "case_kind" not in columns
+        assert {"trigger_kind", "strategy_id", "strategy_version", "strategy_config_digest"} <= columns
+
+        row = conn.execute(
+            "SELECT trigger_kind, strategy_id, strategy_version, strategy_config_digest "
+            "FROM trading_cases WHERE case_id = 'legacy-oi'"
+        ).fetchone()
+        assert row is not None
+        assert dict(row) == {
+            "trigger_kind": "oi",
+            "strategy_id": "oi_momentum_v1",
+            "strategy_version": "oi_momentum_v1",
+            "strategy_config_digest": "0" * 64,
+        }
+
+        tables = {
+            str(row["table_name"])
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name IN "
+                "('news_market_liquidations', 'trading_strategy_registrations', "
+                "'trading_strategy_evaluations')"
+            ).fetchall()
+        }
+        assert tables == {
+            "news_market_liquidations",
+            "trading_strategy_registrations",
+            "trading_strategy_evaluations",
+        }
+        evaluation_columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'trading_strategy_evaluations'"
+            ).fetchall()
+        }
+        assert {
+            "outcome_attempt_count",
+            "outcome_next_attempt_at_ms",
+            "outcome_last_error",
+        } <= evaluation_columns
+        liquidation_columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_market_liquidations'"
+            ).fetchall()
+        }
+        assert "ingest_mode" in liquidation_columns
+        liquidation_fks = conn.execute(
+            "SELECT constraint_name FROM information_schema.table_constraints "
+            "WHERE table_schema = 'public' AND table_name = 'news_market_liquidations' "
+            "AND constraint_type = 'FOREIGN KEY'"
+        ).fetchall()
+        assert liquidation_fks == []
     finally:
         if conn is not None:
             conn.close()

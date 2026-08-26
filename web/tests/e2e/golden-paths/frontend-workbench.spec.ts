@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { expectNoUnhandledApiRequests } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
+test.setTimeout(60_000);
+
 /*
  * `ready` has to be something that only exists once the data is in, not the static heading: the funnel card,
  * the task-tab counts and the sidebar count all arrive with the status query, and the rows with the feed
@@ -27,6 +29,7 @@ const archetypes = [
     path: "/news/oi",
     ready: (page: Page) => page.locator(".news-oi-row").first(),
     settled: (page: Page) => page.locator(".news-oi-window-row").first(),
+    topbarFigure: "CASES · 08-25",
   },
   {
     // #207 PR-W4: the capital lane. Its ledger is empty on this deployment and probably will be for a
@@ -44,6 +47,18 @@ const archetypes = [
     ready: (page: Page) => page.locator(".news-symbol-row").first(),
     settled: (page: Page) => page.locator(".news-symbol-contract").first(),
   },
+  {
+    name: "review",
+    path: "/news/review",
+    ready: (page: Page) => page.locator(".news-review-task-list"),
+    settled: (page: Page) => page.getByText("外部漏召回"),
+  },
+  {
+    name: "status",
+    path: "/news/status",
+    ready: (page: Page) => page.locator(".news-health-card").first(),
+    settled: (page: Page) => page.getByLabel("过去 24 小时漏斗"),
+  },
 ] as const;
 
 test.beforeEach(async ({ page }) => {
@@ -57,6 +72,9 @@ test("freezes representative news and case archetypes", async ({ page }) => {
     await page.goto(route.path);
     await expect(route.ready(page)).toBeVisible();
     await expect(route.settled(page)).toBeVisible();
+    if ("topbarFigure" in route && (page.viewportSize()?.width ?? 0) > 767) {
+      await expect(page.locator(".topbar-figures").getByText(route.topbarFigure)).toBeVisible();
+    }
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {
@@ -70,7 +88,7 @@ test("freezes representative news and case archetypes", async ({ page }) => {
        * chip that gains a venue prefix, a row that loses its badge) is orders of magnitude larger and still
        * fails. Raise it only with a crop showing the difference is genuinely invisible.
        */
-      maxDiffPixelRatio: 0.002,
+      maxDiffPixelRatio: 0.0005,
     });
   }
 

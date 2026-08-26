@@ -28,21 +28,14 @@
     background: var(--surface-canvas);
     font-family: var(--font-sans);
     /* rem-relative so WeChat's reader font setting scales the console's inherited text coherently. */
-    font-size: 0.8125rem;
+    font-size: var(--font-size-body);
     line-height: 1.5;
     letter-spacing: 0;
     -webkit-font-smoothing: antialiased;
   }
 
-  @media (max-width: 767px) {
-    body {
-      /* Han glyphs need more absolute size than Latin to stay legible on a phone. */
-      font-size: 0.875rem;
-    }
-  }
-
   ::selection {
-    background: rgba(42, 91, 215, 0.16);
+    background: var(--accent-selection);
   }
 
   button,
@@ -65,7 +58,7 @@
   }
 
   a:hover {
-    color: #1e46ad;
+    color: var(--accent-strong);
   }
 
   .lucide {
@@ -101,7 +94,7 @@
 
   ::-webkit-scrollbar-thumb {
     border: 3.5px solid transparent;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--border-strong);
     background-clip: content-box;
   }
@@ -157,7 +150,7 @@
 
   @keyframes tf-flash {
     0% {
-      background: rgba(42, 91, 215, 0.14);
+      background: var(--accent-selection);
     }
 
     100% {

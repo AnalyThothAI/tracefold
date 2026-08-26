@@ -143,7 +143,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_console_orders",
             sql="""
-                SELECT o.order_id, o.state, c.case_kind
+                SELECT o.order_id, o.state, c.trigger_kind, c.strategy_id
                   FROM trading_orders o
                   JOIN trading_cases c ON c.case_id = o.case_id
                  WHERE o.created_at_ms >= %s

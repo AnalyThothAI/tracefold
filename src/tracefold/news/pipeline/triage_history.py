@@ -15,7 +15,8 @@ def _read_history(news: Any, *, event_id: str, card: Mapping[str, Any], now_ms: 
         news.reader_history(
             event_id=event_id,
             now_ms=now_ms,
-            include_targeted=str(card.get("admission") or "") != "telemetry_deterministic",
+            include_targeted=str(card.get("admission") or "")
+            not in {"telemetry_deterministic", "liquidation_deterministic"},
         ),
     )
 

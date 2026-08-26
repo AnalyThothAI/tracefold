@@ -10,18 +10,15 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-import pytest
-
 from tracefold.trading.candidate.eligibility import EligibilityPolicy, blacklist_rule
 from tracefold.trading.candidate.fusion import plan_triggers
 from tracefold.trading.contracts import (
     Bar,
     NewsTradeCandidate,
-    OiRegime,
     OiTradeCandidate,
 )
-from tracefold.trading.decision.policy import TradePolicy, decide, pre_model_reject
 from tracefold.trading.execution.paper import evaluate_paper_exit
+from tracefold.trading.strategy.root import capital_strategy_id
 
 NOW = 1_787_000_000_000
 
@@ -95,7 +92,8 @@ def test_a_news_verdict_reached_by_a_later_oi_frame_fuses_into_news_oi() -> None
 
     plan = _one_plan(_oi(at=NOW), _news(at=NOW - 60_000), policy=EligibilityPolicy())
     assert plan is not None
-    assert plan.kind == "news_oi"
+    assert plan.trigger_kind == "oi"
+    assert plan.news is not None
     assert plan.observed_at_ms == NOW  # the OI frame fired later, so it is the trigger
 
 
@@ -104,94 +102,23 @@ def test_an_oi_frame_reached_by_a_later_news_verdict_also_fuses() -> None:
 
     plan = _one_plan(_oi(at=NOW - 60_000), _news(at=NOW), policy=EligibilityPolicy())
     assert plan is not None
-    assert plan.kind == "news_oi"
+    assert plan.trigger_kind == "news"
     assert plan.observed_at_ms == NOW  # the verdict fired later, so it is the trigger
     assert plan.oi is not None
 
 
 def test_a_counterpart_outside_its_lookback_is_not_attached() -> None:
     policy = EligibilityPolicy(news_lookback_ms=60_000, oi_lookback_ms=60_000)
-    assert _one_plan(_oi(at=NOW), _news(at=NOW - 3_600_000), policy=policy).kind == "oi_only"
-    assert _one_plan(_oi(at=NOW - 3_600_000), _news(at=NOW), policy=policy).kind == "news_only"
+    oi_trigger = _one_plan(_oi(at=NOW), _news(at=NOW - 3_600_000), policy=policy)
+    news_trigger = _one_plan(_oi(at=NOW - 3_600_000), _news(at=NOW), policy=policy)
+    assert oi_trigger.trigger_kind == "oi" and oi_trigger.news is None
+    assert news_trigger.trigger_kind == "news" and news_trigger.oi is None
 
 
-def test_a_news_only_case_takes_its_side_from_the_model_not_a_quadrant() -> None:
-    """There is no OI frame, so there is no quadrant. Deriving the side from one made the kind dead."""
-
-    from tracefold.trading.contracts import TradeDecision
-
-    outcome = decide(
-        case_kind="news_only",
-        mode="paper",
-        regime=OiRegime.UNCLEAR,
-        decision=TradeDecision(
-            decision="long",
-            directness="direct",
-            surprise=3,
-            price_in=0,
-            alignment="aligned",
-            horizon="hours",
-            reason_code="none",
-            thesis_zh="x",
-            invalidation_zh="y",
-        ),
-        whale_long_profit_bps=None,
-        oi_value_usd=None,
-    )
-    assert (outcome.decision, outcome.rule) == ("long", "news_only_paper_model_side")
-
-
-def test_a_news_only_case_still_never_reaches_live() -> None:
-    assert (
-        pre_model_reject(
-            case_kind="news_only",
-            mode="live_bounded",
-            regime=OiRegime.UNCLEAR,
-            whale_long_profit_bps=None,
-            oi_value_usd=None,
-        ).rule
-        == "news_only_never_live"
-    )  # type: ignore[union-attr]
-
-
-# ---------------------------------------------------------------------------- 17: gates before the model
-@pytest.mark.parametrize(
-    ("regime", "policy", "expected"),
-    [
-        (OiRegime.DELEVERAGING_UP, TradePolicy(), "regime_no_entry:deleveraging_up"),
-        (OiRegime.BUILDUP_DOWN, TradePolicy(), "short_disabled_long_only"),
-        (OiRegime.BUILDUP_UP, TradePolicy(min_whale_long_profit_bps=9_900), "whale_long_profit_below_floor"),
-        (OiRegime.BUILDUP_UP, TradePolicy(min_oi_value_usd=10**12), "oi_value_below_floor"),
-    ],
-)
-def test_every_gate_that_needs_no_model_answer_refuses_before_a_call_is_spent(
-    regime: OiRegime, policy: TradePolicy, expected: str
-) -> None:
-    """Three of the four quadrants used to burn the 12/day budget and then be refused by arithmetic."""
-
-    early = pre_model_reject(
-        case_kind="news_oi",
-        mode="paper",
-        regime=regime,
-        whale_long_profit_bps=9_800,
-        oi_value_usd=30_000_000,
-        policy=policy,
-    )
-    assert early is not None
-    assert early.rule == expected
-
-
-def test_a_tradeable_quadrant_is_not_pre_rejected() -> None:
-    assert (
-        pre_model_reject(
-            case_kind="news_oi",
-            mode="paper",
-            regime=OiRegime.BUILDUP_UP,
-            whale_long_profit_bps=9_900,
-            oi_value_usd=30_000_000,
-        )
-        is None
-    )
+def test_trigger_shape_does_not_choose_the_strategy_side() -> None:
+    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=False) == "oi_momentum_v1"
+    assert capital_strategy_id(trigger_kind="news", has_oi=True, has_news=True) == "news_oi_alignment_v1"
+    assert capital_strategy_id(trigger_kind="liquidation", has_oi=False, has_news=False) is None
 
 
 # ---------------------------------------------------------------------------- 6: the unclosed candle

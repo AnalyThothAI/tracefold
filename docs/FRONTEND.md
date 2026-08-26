@@ -88,6 +88,13 @@ the route components into the eager shell chunk.
   other feed filters and rewrites `q`; an empty submit clears `q`). The `/`
   hotkey focuses it. There is no global token/handle/CA search, no resolver, and
   no second search entry inside the News feed.
+- **Topbar context figures.** The right side identifies the active workbench with facts already present in
+  the shared News and Trading status queries. News reading surfaces show `PUSHED 24H / E2E P95`, the OI
+  monitor shows `OI FRAMES 24H / CASES TODAY` while the capital ledger day key is current (otherwise the
+  case figure names its UTC date and turns caution), pipeline status shows `EVENTS 24H / QUEUE P95`, and Trading
+  shows `MODE / LIVE READY / ORDERS TODAY`. No route starts an extra request for chrome and the browser does
+  not derive a rate, score, or readiness state. These figures leave the phone topbar; Trading repeats its
+  three safety facts in the page header at that width.
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
@@ -397,12 +404,29 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is 交易 · 模拟仓 (#207 PR-W4, #104, #185): a real ledger against a
-  fake exchange. It reads `/api/trading/status` for the mandate, readiness and
-  the 24 h funnel and `/api/trading/orders` for the exposure, the closes and the
-  cases that stopped before authoring an intent — both halves, because a
+  `/trading` is 交易 · 模拟仓 (#207 PR-W4, #104, #185, #213): a production
+  ledger against a fake exchange. Its triggers and market bars are real; its
+  entries and exits are simulated. It reads `/api/trading/status` for the
+  mandate, readiness, capital-strategy funnel, and liquidation shadow cohorts,
+  and `/api/trading/orders` for the exposure, the closes and the cases that
+  stopped before authoring an intent — both halves, because a
   `POLICY_REJECTED` case is where the capital floors actually bite and has no
   order to join through.
+
+  Trigger identity and strategy identity are separate labels. Capital rows show
+  the frozen `strategy_id` (`oi_momentum_v1` or
+  `news_oi_alignment_v1`) and their `trigger_kind`; the UI never reconstructs
+  the retired `oi_only | news_only | news_oi` case-kind vocabulary. The funnel
+  also shows the real 24 h counts for
+  `liquidation_continuation_shadow_v1` and
+  `liquidation_exhaustion_shadow_v1`, registration-valid holdout and completed
+  counts, coverage/source latency, 5m/15m/1h measured return and bootstrap
+  interval, MFE/MAE, exit/cost facts and named 5s/30s/1m/funding gaps, plus the
+  ledger's promotion reasons. The detailed rows remain separated by strategy,
+  source venue and liquidity bucket. A shadow evaluation
+  is not rendered as a case, position, or order, and
+  `source_contract_incomplete` is shown as a refusal, not as a warning the
+  browser can override.
 
   Every state string on the page is the ledger's own. `ACKNOWLEDGED` is the venue
   answering, not a fill; `OPEN` is the only state that has proven both a real
@@ -419,9 +443,10 @@ the route components into the eager shell chunk.
   drew a button. The unrealised column says 纸面 wherever the mode is paper,
   because paper fills at the frozen `entry_reference` with no spread, precision,
   partial fill or liquidation; the page draws no equity curve from those numbers.
-  When `trading.enabled` is false — the shipped default, and this deployment's
-  state — a banner says so, so the empty tables read as "never ran" rather than
-  as a failed request.
+  When `trading.enabled` is false — still the shipped default — a banner says
+  so, so the empty tables read as "never ran" rather than as a failed request.
+  An operator deployment may explicitly enable paper mode; the page has no
+  switch and only reflects that durable runtime state.
 
   The Event detail carries a 成案 badge from the same feature. It renders nothing
   at all for a model-lane Event: only the deterministic OI lane's source key
@@ -446,7 +471,7 @@ the route components into the eager shell chunk.
   surfaces with a truthful retry/recovery action. A query disabled while the
   bootstrap token is missing must never leave an infinite skeleton.
 - **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `PageState`, and `RouteBackLink` own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
-- **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
+- **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, side-effect class names reused across feature roots, literal or locally derived colours outside `styles/tokens.css`, raw type sizes and radii outside the global scale, and unresolved custom properties. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, `.topbar-sidebar-trigger` and `.cockpit-app-sidebar`, split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, `AppBottomNav.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Tablet route navigation is the shared `Drawer` primitive opened from the topbar trigger; below `768px` there is no drawer at all and `AppBottomNav` carries every destination (#87).
 - **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, and the main route scroll container.

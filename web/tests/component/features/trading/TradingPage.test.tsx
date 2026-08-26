@@ -202,6 +202,34 @@ describe("TradingPage", () => {
     await waitFor(() => expect(screen.getByText(/鲸鱼盈利 ≥ 95%/)).toBeInTheDocument());
   });
 
+  it("shows real liquidation shadow cohorts without presenting them as orders", async () => {
+    renderTrading();
+
+    const continuation = await screen.findByText(/清算延续（影子） 2（完成 1） · 1h 均值 0.25%/);
+    const cohort = continuation.closest(".trading-floors") as HTMLElement;
+    expect(cohort).toHaveTextContent("清算衰竭（影子） 2（完成 1） · 1h 均值 0.25%");
+    expect(cohort).toHaveTextContent("来源契约不完整 4");
+    expect(cohort).toHaveTextContent("不可晋级：source_contract_incomplete");
+
+    const study = screen.getByText("清算事件研究").closest(".trading-floors") as HTMLElement;
+    expect(study).toHaveTextContent("清算延续（影子） · binance/unknown");
+    expect(study).toHaveTextContent("holdout 2/2 · 覆盖 50%");
+    expect(study).toHaveTextContent("延迟均值 1200ms");
+    expect(study).toHaveTextContent("5m 0.25% [0.25%, 0.25%]");
+    expect(study).toHaveTextContent("MFE/MAE 0.80%/-0.20%");
+    expect(study).toHaveTextContent("出场：max_holding 1");
+    expect(study).toHaveTextContent("净值(不含资金费) 0.12% [0.08%, 0.16%]");
+    expect(study).toHaveTextContent("horizon:5s:source_bar_resolution_unsupported 1");
+    expect(study).toHaveTextContent(
+      "晋级阻断：source_contract_incomplete、intraminute_coverage_missing",
+    );
+
+    // Shadow evaluations are evidence rows only. They must not become exposure or closed-order rows.
+    for (const row of document.querySelectorAll(".trading-exposure-row, .trading-closed-row")) {
+      expect(row).not.toHaveTextContent(/清算延续|清算衰竭/);
+    }
+  });
+
   it("shows an unmeasured close as — rather than a zero that would drag an average", async () => {
     server.use(
       http.get(/.*\/api\/trading\/orders$/, () =>

@@ -62,6 +62,7 @@ NEWS_TABLES = (
     "news_quote_snapshots",
     "news_event_reactions",
     "news_oi_signals",
+    "news_market_liquidations",
     "news_event_evidence_snapshots",
     "news_learning_epochs",
     "news_learning_artifacts",
@@ -80,6 +81,8 @@ TRADING_TABLES = (
     "trading_symbol_blacklist",
     "trading_runtime_state",
     "trading_cases",
+    "trading_strategy_registrations",
+    "trading_strategy_evaluations",
     "trading_orders",
     "trading_order_observations",
 )

@@ -19,14 +19,14 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, TypedDict, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v3"
-TRADING_POLICY_VERSION = "trading_policy_v1"
+TRADING_MANIFEST_VERSION = "trading_manifest_v4"
+TRADING_POLICY_VERSION = "trading_strategy_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
@@ -108,6 +108,35 @@ class NewsCandidateRow(TypedDict):
     source_published_at_ms: int | None
 
 
+class LiquidationCandidateRow(TypedDict):
+    """One admission-time deterministic liquidation fact offered through the App mapping seam."""
+
+    source_key: str
+    item_id: str
+    fact_id: str
+    symbol: str
+    venue: str
+    liquidated_position_side: str
+    forced_order_side: str
+    notional_usd: Decimal
+    quantity: Decimal | None
+    price: Decimal
+    event_at_ms: int
+    received_at_ms: int
+    parser_version: str
+    provider_record_identity: str
+    symbol_contract_identity: str
+    position_side_semantics: str
+    quantity_semantics: str
+    notional_semantics: str
+    price_semantics: str
+    completeness_assumption: str
+    throttle_assumption: str
+    source_contract_version: str
+    source_contract_complete: bool
+    ingest_mode: str
+
+
 class InstrumentCandidateRow(TypedDict):
     """One catalogue row offered to the venue resolver."""
 
@@ -122,7 +151,14 @@ class InstrumentCandidateRow(TypedDict):
 
 TradingMode = Literal["paper", "live_reviewed", "live_bounded"]
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
-CaseKind = Literal["oi_only", "news_only", "news_oi"]
+TriggerKind = Literal["oi", "liquidation", "news"]
+StrategyPermission = Literal["shadow", "paper", "live_reviewed"]
+StrategyId = Literal[
+    "oi_momentum_v1",
+    "news_oi_alignment_v1",
+    "liquidation_continuation_shadow_v1",
+    "liquidation_exhaustion_shadow_v1",
+]
 ExchangeId = Literal["binance", "hyperliquid", "paper"]
 LiveExchangeId = Literal["binance", "hyperliquid"]
 OrderSide = Literal["buy", "sell"]
@@ -339,6 +375,44 @@ class NewsTradeCandidate(_Frozen):
         return canonical_sha256({"artifact": artifact, "fingerprint": self.comparison_fingerprint})
 
 
+class LiquidationSourceContract(_Frozen):
+    """What the upstream feed proves about one normalized liquidation record."""
+
+    provider_record_identity: str
+    symbol_contract_identity: str
+    position_side_semantics: str
+    quantity_semantics: str
+    notional_semantics: str
+    price_semantics: str
+    completeness_assumption: str
+    throttle_assumption: str
+    source_contract_version: str
+    complete: bool
+
+
+class LiquidationTradeCandidate(_Frozen):
+    """One normalized forced-flow fact. Its side fields describe the fill, never a forecast."""
+
+    source_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    item_id: str
+    fact_id: str
+    base_symbol: str
+    venue: Literal["binance", "hyperliquid"]
+    liquidated_position_side: Literal["long", "short"]
+    forced_order_side: Literal["buy", "sell"]
+    notional_usd: Decimal = Field(gt=0)
+    quantity: Decimal | None = Field(default=None, gt=0)
+    price: Decimal = Field(gt=0)
+    event_at_ms: int = Field(gt=0)
+    received_at_ms: int = Field(gt=0)
+    parser_version: str
+    source_contract: LiquidationSourceContract
+
+    @property
+    def source_latency_ms(self) -> int:
+        return max(0, self.received_at_ms - self.event_at_ms)
+
+
 class MarketContext(_Frozen):
     """Point-in-time market truth, read fresh and never cached across a decision."""
 
@@ -401,21 +475,137 @@ class PolicyOutcome(_Frozen):
     policy_version: str = TRADING_POLICY_VERSION
 
 
+class OiMarketTrigger(_Frozen):
+    kind: Literal["oi"] = "oi"
+    source_key: str
+    observed_at_ms: int
+    persisted_at_ms: int
+    venue: str
+
+
+class NewsMarketTrigger(_Frozen):
+    kind: Literal["news"] = "news"
+    source_key: str
+    observed_at_ms: int
+    persisted_at_ms: int
+    venue: None = None
+
+
+class LiquidationMarketTrigger(_Frozen):
+    kind: Literal["liquidation"] = "liquidation"
+    source_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    observed_at_ms: int
+    persisted_at_ms: int
+    venue: Literal["binance", "hyperliquid"]
+
+
+MarketTrigger = Annotated[
+    OiMarketTrigger | NewsMarketTrigger | LiquidationMarketTrigger,
+    Field(discriminator="kind"),
+]
+
+
+class LiquidationAggregate(_Frozen):
+    window_ms: int = Field(gt=0)
+    count: int = Field(ge=1)
+    notional_usd: Decimal = Field(gt=0)
+    long_notional_usd: Decimal = Field(ge=0)
+    short_notional_usd: Decimal = Field(ge=0)
+    long_count: int = Field(ge=0)
+    short_count: int = Field(ge=0)
+    dominant_liquidated_side: Literal["long", "short"] | None
+    dominant_share_bps: int = Field(ge=0, le=10_000)
+    dominant_count: int = Field(ge=0)
+    dominant_notional_usd: Decimal = Field(ge=0)
+    dominant_acceleration_bps: int | None = None
+    source_refs: tuple[str, ...] = ()
+
+
+class FrozenMarketContext(_Frozen):
+    mark_price: Decimal = Field(gt=0)
+    observed_at_ms: int
+    pre_move_bps: int | None
+    pre_move_lookback_ms: int = Field(gt=0)
+    price_momentum_bps: int | None = None
+    price_momentum_window_ms: int | None = Field(default=None, gt=0)
+    displacement_bps: int | None = None
+    displacement_window_ms: int | None = Field(default=None, gt=0)
+    spread_bps: int | None = None
+    depth_notional_usd: Decimal | None = None
+    funding_bps: int | None = None
+
+
+class FrozenStrategyContext(_Frozen):
+    """Only point-in-time facts visible at the primary trigger's cutoff."""
+
+    mode: TradingMode
+    oi: OiTradeCandidate | None = None
+    news: NewsTradeCandidate | None = None
+    liquidation: LiquidationTradeCandidate | None = None
+    liquidation_aggregate: LiquidationAggregate | None = None
+    regime: RegimeAssessment
+    market: FrozenMarketContext
+    news_decision: TradeDecision | None = None
+    intensity_decelerating: bool | None = None
+    oi_collapsing: bool | None = None
+    price_stopped_extreme: bool | None = None
+    liquidity_recovered: bool | None = None
+
+
+class StrategyOutcome(_Frozen):
+    decision: PolicyDecision
+    rule: str
+    setup: str
+    invalidation: str
+    expected_horizon: Literal["minutes", "hours", "none"]
+    permission: StrategyPermission
+    policy_version: str = TRADING_POLICY_VERSION
+
+
 class TradingCaseManifest(_Frozen):
     """The frozen, content-addressed input to one decision. Nothing later than `cutoff_ms` may enter."""
 
     manifest_version: str = TRADING_MANIFEST_VERSION
-    case_kind: CaseKind
+    primary_trigger: MarketTrigger
+    contexts: FrozenStrategyContext
+    strategy_id: StrategyId
+    strategy_version: str
+    strategy_config: dict[str, bool | int | str]
+    strategy_config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     underlying_key: str
     base_symbol: str
     cutoff_ms: int
-
-    oi: OiTradeCandidate | None = None
-    news: NewsTradeCandidate | None = None
-    regime: RegimeAssessment
     instrument: InstrumentRef
-    mark_price: Decimal
-    pre_move_bps: int | None
+
+    @model_validator(mode="after")
+    def _config_digest_matches_snapshot(self) -> TradingCaseManifest:
+        if canonical_sha256(self.strategy_config) != self.strategy_config_digest:
+            raise ValueError("trading_strategy_config_digest_mismatch")
+        return self
+
+    @property
+    def trigger_kind(self) -> TriggerKind:
+        return self.primary_trigger.kind
+
+    @property
+    def oi(self) -> OiTradeCandidate | None:
+        return self.contexts.oi
+
+    @property
+    def news(self) -> NewsTradeCandidate | None:
+        return self.contexts.news
+
+    @property
+    def regime(self) -> RegimeAssessment:
+        return self.contexts.regime
+
+    @property
+    def mark_price(self) -> Decimal:
+        return self.contexts.market.mark_price
+
+    @property
+    def pre_move_bps(self) -> int | None:
+        return self.contexts.market.pre_move_bps
 
     def digest(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
@@ -666,7 +856,6 @@ __all__ = [
     "TRADING_PROGRAM_VERSION",
     "TRADING_RECONCILE_BACKOFF_MS",
     "Bar",
-    "CaseKind",
     "CaseState",
     "ControlState",
     "ExchangeId",
@@ -674,16 +863,25 @@ __all__ = [
     "ExecutionObservation",
     "ExecutionObservationState",
     "ExecutionReceipt",
+    "FrozenMarketContext",
+    "FrozenStrategyContext",
     "InstrumentCandidateRow",
     "InstrumentRef",
+    "LiquidationAggregate",
+    "LiquidationCandidateRow",
+    "LiquidationMarketTrigger",
+    "LiquidationTradeCandidate",
     "LiveExchangeId",
     "LiveExecutionAdapter",
     "LivePreflight",
     "MarketContext",
+    "MarketTrigger",
     "NativeProtection",
     "NewsCandidateRow",
+    "NewsMarketTrigger",
     "NewsTradeCandidate",
     "OiCandidateRow",
+    "OiMarketTrigger",
     "OiRegime",
     "OiTradeCandidate",
     "OrderSide",
@@ -695,9 +893,13 @@ __all__ = [
     "RemoteExposure",
     "RiskRejection",
     "StartupReconciliation",
+    "StrategyId",
+    "StrategyOutcome",
+    "StrategyPermission",
     "TradeDecision",
     "TradingCaseManifest",
     "TradingMode",
+    "TriggerKind",
     "canonical_base_symbol",
     "canonical_sha256",
     "underlying_key",

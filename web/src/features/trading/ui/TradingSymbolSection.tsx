@@ -1,7 +1,7 @@
 import { Card } from "@shared/ui/Card";
 
 import { useTradingOrdersWithToken } from "../api/tradingQueries";
-import { CASE_KIND_ZH, CASE_STATE_ZH, ORDER_STATE_NOTE, REGIME_ZH } from "../model/tradingLabels";
+import { CASE_STATE_ZH, ORDER_STATE_NOTE, REGIME_ZH, STRATEGY_ZH } from "../model/tradingLabels";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
@@ -24,7 +24,7 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
   const rows = [
     ...orders.map((order) => ({
       id: order.order_id,
-      kind: order.case_kind,
+      kind: order.strategy_id,
       note: order.state_reason ?? ORDER_STATE_NOTE[order.state] ?? "",
       order: `${order.side === "buy" ? "买入" : "卖出"} ${order.notional_usd} @ ${order.average_price ?? order.entry_reference} · 止损 ${order.stop_price}`,
       realized: order.realized_bps,
@@ -35,7 +35,7 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
     })),
     ...cases.map((row) => ({
       id: row.case_id,
-      kind: row.case_kind,
+      kind: row.strategy_id,
       note: row.policy_reason ?? row.policy_decision ?? "",
       order: "未成案 · 未下单",
       realized: null,
@@ -67,7 +67,7 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
           </div>
           {rows.map((row) => (
             <article className="trading-case-row" key={row.id}>
-              <span className="trading-kind">{CASE_KIND_ZH[row.kind] ?? row.kind}</span>
+              <span className="trading-kind">{STRATEGY_ZH[row.kind] ?? row.kind}</span>
               <span className="trading-state" data-state={row.state}>
                 {row.stateZh}
               </span>

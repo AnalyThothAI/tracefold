@@ -297,7 +297,7 @@ def _eligible_news(**kwargs: Any) -> NewsTradeCandidate:
 
 
 def _kinds(plans: Any) -> list[str]:
-    return [plan.kind for plan in plans]
+    return [plan.trigger_kind for plan in plans]
 
 
 def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_honoured() -> None:
@@ -315,7 +315,8 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
         now_ms=NOW,
         policy=policy,
     )
-    assert _kinds(inside_news) == ["news_oi"]
+    assert _kinds(inside_news) == ["oi"]
+    assert inside_news[0].news is not None
 
     outside_news = plan_triggers(
         oi=[_eligible_oi()],
@@ -323,7 +324,8 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
         now_ms=NOW,
         policy=policy,
     )
-    assert _kinds(outside_news) == ["oi_only"]
+    assert _kinds(outside_news) == ["oi"]
+    assert outside_news[0].news is None
 
     inside_oi = plan_triggers(
         oi=[_eligible_oi(observed_at_ms=NOW - 20 * MINUTE)],
@@ -331,7 +333,8 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
         now_ms=NOW,
         policy=policy,
     )
-    assert _kinds(inside_oi) == ["news_oi"]
+    assert _kinds(inside_oi) == ["news"]
+    assert inside_oi[0].oi is not None
 
     outside_oi = plan_triggers(
         oi=[_eligible_oi(observed_at_ms=NOW - 31 * MINUTE)],
@@ -339,7 +342,8 @@ def test_the_configured_news_and_oi_lookbacks_are_the_windows_that_are_actually_
         now_ms=NOW,
         policy=policy,
     )
-    assert _kinds(outside_oi) == ["news_only"]
+    assert _kinds(outside_oi) == ["news"]
+    assert outside_oi[0].oi is None
 
 
 def test_context_older_than_the_trigger_budget_attaches_but_never_triggers_on_its_own() -> None:
@@ -353,7 +357,7 @@ def test_context_older_than_the_trigger_budget_attaches_but_never_triggers_on_it
     assert funnel.as_dict()["news_context_only"] == 1
 
     with_trigger = plan_triggers(oi=[_eligible_oi()], news=[aged_news], now_ms=NOW, policy=policy)
-    assert _kinds(with_trigger) == ["news_oi"]
+    assert _kinds(with_trigger) == ["oi"]
     assert with_trigger[0].news is aged_news
 
 
@@ -446,7 +450,7 @@ def test_an_underlying_with_an_undecided_case_gets_no_second_thesis() -> None:
     assert funnel.as_dict()["plan_reject:case_in_flight"] == 1
 
     # A settled case is not a block. Nothing is in flight, so the same trigger plans normally.
-    assert _kinds(plan_triggers(oi=[_eligible_oi()], news=[], now_ms=NOW, policy=policy)) == ["oi_only"]
+    assert _kinds(plan_triggers(oi=[_eligible_oi()], news=[], now_ms=NOW, policy=policy)) == ["oi"]
 
 
 def test_the_scan_horizon_covers_the_whole_configured_context_window() -> None:
@@ -521,7 +525,8 @@ def test_a_counterpart_folded_into_the_manifest_is_not_also_counted_as_supersede
         policy=EligibilityPolicy(),
         funnel=funnel,
     )
-    assert _kinds(plans) == ["news_oi"]
+    assert _kinds(plans) == ["oi"]
+    assert plans[0].news is not None
     assert "plan_reject:superseded_by_newer_trigger" not in funnel.as_dict()
 
     # A second frame for the same underlying genuinely is dropped, and that one is counted.

@@ -26,13 +26,16 @@ from ..candidate.routing import resolve_instrument, signal_exchange_id
 from ..contracts import (
     TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
     Bar,
-    CaseKind,
     CaseState,
     ExecutionAdapter,
+    FrozenMarketContext,
+    FrozenStrategyContext,
     InstrumentRef,
     LiveExecutionAdapter,
     MarketContext,
+    NewsMarketTrigger,
     NewsTradeCandidate,
+    OiMarketTrigger,
     OiRegime,
     OiTradeCandidate,
     OrderState,
@@ -41,24 +44,27 @@ from ..contracts import (
     TradeDecision,
     TradingCaseManifest,
     TradingMode,
+    TriggerKind,
     canonical_sha256,
     underlying_key,
 )
 from ..contracts import (
     utc_day_key as _day_key,
 )
-from ..decision.policy import decide, pre_model_reject, side_to_order_side
+from ..decision.policy import side_to_order_side
 from ..decision.program import TradingDecisionProgram
 from ..decision.regime import assess, pre_move_bps, select_bar
 from ..execution.order import build_payload, size_order
 from ..execution.submission import commit_order
 from ..storage.root import TradingRepository
+from ..strategy.root import capital_strategy_id, strategies, strategy_from_manifest
 from ..telemetry import (
     TradingExternalDataTelemetryPort,
     TradingWorkSemantics,
     external_data_source,
     observe_provider_call,
 )
+from .liquidation_shadow import LiquidationShadowRunner
 from .runtime import (
     BAR_INTERVAL_MS as _BAR_INTERVAL_MS,
 )
@@ -129,8 +135,24 @@ class CandidateRunner:
         self._candidate_projection = candidate_projection
         self._instrument_projection = instrument_projection
         self._program = program
+        self._strategies = strategies(
+            allow_short=config.trade.allow_short,
+            min_whale_long_profit_bps=config.trade.min_whale_long_profit_bps,
+            min_oi_value_usd=config.trade.min_oi_value_usd,
+            live_min_surprise=config.trade.live_min_surprise,
+            live_max_price_in=config.trade.live_max_price_in,
+        )
         self._clock = clock
         self._telemetry = telemetry
+        self._liquidation_shadow = LiquidationShadowRunner(
+            db=db,
+            config=config,
+            bars=bars,
+            instrument_projection=instrument_projection,
+            strategies=self._strategies,
+            telemetry=telemetry,
+            clock=clock,
+        )
         self._run_id = uuid.uuid4().hex
         self._live_startup_complete = False
 
@@ -163,12 +185,18 @@ class CandidateRunner:
         state = await self._read_state(now)
         if state is None:
             return {"skipped": "state_unavailable"}
+        shadow_evaluated, shadow_completed = await self._liquidation_shadow.turn(state, funnel=funnel, now=now)
         control = str(state["control"])
         if control in ("PAUSED", "CLOSE_ONLY"):
             # Reconciliation and safety closes keep running; only new exposure stops.
             funnel.count(f"scan_skipped_control:{control.lower()}")
             await self._merge_funnel(funnel, now)
-            return {"control": control, "funnel": funnel.as_dict()}
+            return {
+                "control": control,
+                "shadow_completed": shadow_completed,
+                "shadow_evaluated": shadow_evaluated,
+                "funnel": funnel.as_dict(),
+            }
         if self._config.mode != "paper" and not await self._ensure_live_startup(funnel=funnel):
             await self._merge_funnel(funnel, now)
             return {"skipped": "live_startup_not_ready", "funnel": funnel.as_dict()}
@@ -187,7 +215,13 @@ class CandidateRunner:
             decided += 1
 
         await self._merge_funnel(funnel, now)
-        return {"created": created, "decided": decided, "funnel": funnel.as_dict()}
+        return {
+            "created": created,
+            "decided": decided,
+            "shadow_completed": shadow_completed,
+            "shadow_evaluated": shadow_evaluated,
+            "funnel": funnel.as_dict(),
+        }
 
     async def _ensure_live_startup(self, *, funnel: Funnel) -> bool:
         if self._live_startup_complete:
@@ -267,7 +301,8 @@ class CandidateRunner:
             active = set(trading.active_underlyings())
             in_flight = set(trading.underlyings_in_flight())
             cased = set(trading.source_keys_since(observed_at_ms=now - window))
-            oi_rows, news_rows = self._candidate_projection(
+            evaluated_liquidations = set(trading.strategy_evaluation_identities_since(cutoff_ms=now - window))
+            oi_rows, news_rows, liquidation_rows = self._candidate_projection(
                 repos,
                 self._config.oi_metric_version,
                 now - window,
@@ -283,8 +318,10 @@ class CandidateRunner:
                 "active": active,
                 "cases_in_flight": in_flight,
                 "cased_source_keys": cased,
+                "evaluated_liquidation_identities": evaluated_liquidations,
                 "oi_rows": oi_rows,
                 "news_rows": news_rows,
+                "liquidation_rows": liquidation_rows,
             }
 
         try:
@@ -346,19 +383,9 @@ class CandidateRunner:
             else:
                 routable_oi.append(signal)
 
-        news_context = news_all
-        if int(state["dspy_calls_today"]) >= self._config.max_dspy_cases_per_day:
-            # No News-bearing case can be decided today. A case is terminal and its source key is
-            # unique, so freezing one anyway would spend a frame's only chance to become a case on an
-            # answer nobody can buy — and an OI frame that would have traded on arithmetic alone goes
-            # with it. Widening the News lookback (#211) is what made that trade-off common enough to
-            # matter: an hour of headlines now reclassifies far more frames as `news_oi`.
-            funnel.count("scan_skipped:dspy_budget_exhausted", len(news_all))
-            news_context = []
-
         return plan_triggers(
             oi=routable_oi,
-            news=news_context,
+            news=news_all,
             now_ms=now,
             policy=elig,
             active_underlyings=state["active"],
@@ -426,10 +453,10 @@ class CandidateRunner:
             policy=self._config.regime,
         )
         funnel.count(f"regime:{regime.regime.value}")
-        if plan.kind != "news_only" and regime.regime is OiRegime.UNCLEAR:
+        if plan.oi is not None and regime.regime is OiRegime.UNCLEAR:
             funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
-        if plan.kind == "news_only" and regime.reason in _NEWS_ONLY_BLOCKING_REASONS:
+        if plan.oi is None and regime.reason in _NEWS_ONLY_BLOCKING_REASONS:
             # News-only has no OI quadrant, but still needs a cutoff price and obeys the measured
             # chasing ceiling.
             funnel.count(f"freeze_reject:regime_{regime.reason}")
@@ -443,31 +470,54 @@ class CandidateRunner:
             funnel.count("freeze_reject:no_mark_at_cutoff")
             return False
         mark = anchor_bar.close
-        manifest = TradingCaseManifest(
-            case_kind=plan.kind,
-            underlying_key=underlying_key(plan.base_symbol),
-            base_symbol=plan.base_symbol,
-            cutoff_ms=plan.observed_at_ms,
+        strategy_id = capital_strategy_id(
+            trigger_kind=plan.trigger_kind,
+            has_oi=plan.oi is not None,
+            has_news=plan.news is not None,
+        )
+        if strategy_id is None:
+            funnel.count("freeze_reject:no_capital_strategy")
+            return False
+        strategy = self._strategies[strategy_id]
+        market_context = FrozenMarketContext(
+            mark_price=mark,
+            observed_at_ms=plan.observed_at_ms,
+            pre_move_bps=move,
+            pre_move_lookback_ms=self._config.regime.lookback_ms,
+        )
+        trigger = (
+            OiMarketTrigger(
+                source_key=plan.source_key,
+                observed_at_ms=plan.source_observed_at_ms,
+                persisted_at_ms=plan.trigger_persisted_at_ms,
+                venue=str(plan.oi.venue),
+            )
+            if plan.trigger_kind == "oi" and plan.oi is not None
+            else NewsMarketTrigger(
+                source_key=plan.source_key,
+                observed_at_ms=plan.source_observed_at_ms,
+                persisted_at_ms=plan.trigger_persisted_at_ms,
+            )
+        )
+        contexts = FrozenStrategyContext(
+            mode=self._config.mode,
             oi=plan.oi,
             news=plan.news,
             regime=regime,
+            market=market_context,
+        )
+        manifest = TradingCaseManifest(
+            primary_trigger=trigger,
+            contexts=contexts,
+            strategy_id=strategy.strategy_id,
+            strategy_version=strategy.strategy_version,
+            strategy_config=strategy.config_snapshot,
+            strategy_config_digest=strategy.config_digest,
+            underlying_key=underlying_key(plan.base_symbol),
+            base_symbol=plan.base_symbol,
+            cutoff_ms=plan.observed_at_ms,
             instrument=instrument,
-            mark_price=mark,
-            pre_move_bps=move,
         )
-        blocked = pre_model_reject(
-            case_kind=plan.kind,
-            mode=self._config.mode,
-            regime=regime.regime,
-            whale_long_profit_bps=plan.oi.whale_long_profit_bps if plan.oi is not None else None,
-            oi_value_usd=plan.oi.oi_value_usd if plan.oi is not None else None,
-            policy=self._config.trade,
-        )
-        if blocked is not None:
-            # Cheapest possible refusal: no case row, no claim, no model budget. `decide()` re-applies
-            # every one of these, so this is an ordering optimisation and never the correctness gate.
-            funnel.count(f"freeze_reject:policy_{blocked.rule}")
-            return False
 
         digest = manifest.digest()
 
@@ -476,7 +526,10 @@ class CandidateRunner:
                 repos.trading.insert_case(
                     case_id=uuid.uuid4().hex,
                     underlying_key=manifest.underlying_key,
-                    case_kind=plan.kind,
+                    trigger_kind=plan.trigger_kind,
+                    strategy_id=strategy.strategy_id,
+                    strategy_version=strategy.strategy_version,
+                    strategy_config_digest=strategy.config_digest,
                     mode=self._config.mode,
                     primary_source_key=plan.source_key,
                     supplemental_source_keys=plan.supplemental,
@@ -547,7 +600,12 @@ class CandidateRunner:
             funnel.count("advance_reject:manifest_invalid")
             await self._settle(case_id, CaseState.BLOCKED, "no_trade", "manifest_invalid")
             return "manifest_invalid"
-        kind: CaseKind = str(claimed["case_kind"])  # type: ignore[assignment]
+        trigger_kind: TriggerKind = str(claimed["trigger_kind"])  # type: ignore[assignment]
+        strategy = strategy_from_manifest(manifest)
+        if strategy is None or trigger_kind != manifest.trigger_kind:
+            funnel.count("advance_reject:strategy_identity_retired")
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "strategy_identity_retired")
+            return "strategy_identity_retired"
 
         # A case carries a mark frozen at its cutoff. `max_age_ms` gates *creation*; nothing gated how
         # long a created case could sit unclaimed, so a paused lane resumed hours later would size and
@@ -584,21 +642,8 @@ class CandidateRunner:
         program_sha256: str | None = None
         program_output: dict[str, Any] | None = None
 
-        frozen_regime = OiRegime(str(claimed["regime"] or OiRegime.UNCLEAR.value))
-        early = pre_model_reject(
-            case_kind=kind,
-            mode=case_mode,
-            regime=frozen_regime,
-            whale_long_profit_bps=manifest.oi.whale_long_profit_bps if manifest.oi is not None else None,
-            oi_value_usd=manifest.oi.oi_value_usd if manifest.oi is not None else None,
-            policy=self._config.trade,
-        )
-        if early is not None:
-            funnel.count(f"policy:{early.rule}")
-            await self._settle(case_id, CaseState.POLICY_REJECTED, "no_trade", early.rule)
-            return early.rule
-
-        if kind in ("news_only", "news_oi"):
+        outcome = strategy.evaluate(manifest.contexts)
+        if manifest.strategy_id == "news_oi_alignment_v1" and outcome.rule == "model_absent":
             budget = await self._db.read(
                 "trading_dspy_budget",
                 lambda repos: repos.trading.dspy_calls_today(day_key=_day_key(now)),
@@ -624,22 +669,19 @@ class CandidateRunner:
                 call=self._program.decide(manifest),
             )
             decision = result.decision
-            program_output = {"decision": decision.model_dump(mode="json"), "trace": result.trace}
+            outcome = strategy.evaluate(manifest.contexts.model_copy(update={"news_decision": decision}))
+            program_output = {
+                "decision": decision.model_dump(mode="json"),
+                "strategy_outcome": outcome.model_dump(mode="json"),
+                "trace": result.trace,
+            }
             if result.identity is not None:
                 program_version = result.identity.version
                 program_sha256 = result.identity.sha256
             funnel.count(f"model_decision:{decision.decision}")
-
-        outcome = decide(
-            case_kind=kind,
-            mode=case_mode,
-            regime=frozen_regime,
-            decision=decision,
-            whale_long_profit_bps=manifest.oi.whale_long_profit_bps if manifest.oi is not None else None,
-            oi_value_usd=manifest.oi.oi_value_usd if manifest.oi is not None else None,
-            policy=self._config.trade,
-        )
-        funnel.count(f"policy:{outcome.rule}")
+        elif program_output is None:
+            program_output = {"strategy_outcome": outcome.model_dump(mode="json")}
+        funnel.count(f"strategy:{manifest.strategy_id}:{outcome.rule}")
 
         if outcome.decision == "no_trade":
             await self._settle(
@@ -652,6 +694,19 @@ class CandidateRunner:
                 program_output=program_output,
             )
             return outcome.rule
+
+        if outcome.permission == "shadow" or (case_mode == "live_reviewed" and outcome.permission != "live_reviewed"):
+            funnel.count("advance_reject:strategy_permission")
+            await self._settle(
+                case_id,
+                CaseState.POLICY_REJECTED,
+                "no_trade",
+                "strategy_permission",
+                program_version=program_version,
+                program_sha256=program_sha256,
+                program_output=program_output,
+            )
+            return "strategy_permission"
 
         # A fresh sample, not the claim instant: `trading_orders.created_at_ms` is the reported
         # `order_prepared` stage and the model call sits between the two (#211).

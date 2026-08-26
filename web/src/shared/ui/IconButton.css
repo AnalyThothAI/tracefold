@@ -18,7 +18,7 @@
   .ui-icon-button[data-size="sm"] {
     width: 28px;
     height: 28px;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
   }
 
   .ui-icon-button:hover:not(:disabled),

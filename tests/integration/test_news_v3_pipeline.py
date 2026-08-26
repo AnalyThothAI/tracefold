@@ -56,6 +56,7 @@ NEWS_TABLES = {
     "news_quote_snapshots",
     "news_event_reactions",
     "news_oi_signals",
+    "news_market_liquidations",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }
@@ -705,6 +706,96 @@ def test_strategy_1019_format_drift_reaches_triage_instead_of_near_duplicate_mer
         event_ids.append(admitted.event_id)
 
     assert len(set(event_ids)) == 2
+
+
+def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recovery(conn) -> None:
+    repos = repositories_for_connection(conn)
+
+    def admit(hit_id: int, *, ingest_mode: str, side: str, venue: str) -> None:
+        params = _hit(
+            hit_id=hit_id,
+            text=f"SPCX Large {side} Liquidation 202.71K at $137.01",
+            engine="market",
+            score=90,
+            coins=[],
+            source=venue,
+            ts="2026-08-24T12:00:00+08:00",
+        )
+        params["strategy"] = {
+            "id": 2000,
+            "name": "Large Liquidations",
+            "engine_type": "market",
+            "source_type": "news",
+        }
+        event = parse_opennews_message({"method": "strategy.triggered", "params": params})
+        assert event is not None
+        stamp = int(event.entry.published_at_ms or 0) + 1_000
+        with repos.transaction():
+            result = admit_item(
+                repos,
+                event=event,
+                ingest_mode=ingest_mode,
+                observed_at_ms=stamp,
+                trace_id=f"liquidation-{hit_id}",
+                watchlist_symbols=frozenset(),
+                now_ms=stamp,
+            )
+        assert result.admission == "liquidation_deterministic"
+
+    admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
+    admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
+    admit(2_000_002, ingest_mode="recovery", side="Long", venue="hyperliquid")
+
+    rows = conn.execute(
+        "SELECT source_key, ingest_mode, venue, liquidated_position_side, forced_order_side, notional_usd, quantity, "
+        "provider_record_identity, symbol_contract_identity, position_side_semantics, "
+        "quantity_semantics, notional_semantics, price_semantics, completeness_assumption, "
+        "throttle_assumption, source_contract_version, source_contract_complete "
+        "FROM news_market_liquidations WHERE symbol = 'SPCX' ORDER BY venue"
+    ).fetchall()
+    assert [
+        (row["venue"], row["liquidated_position_side"], row["forced_order_side"], row["notional_usd"], row["quantity"])
+        for row in rows
+    ] == [
+        ("binance", "short", "buy", 202_710, None),
+        ("hyperliquid", "long", "sell", 202_710, None),
+    ]
+    assert all(row["provider_record_identity"] for row in rows)
+    assert all(str(row["symbol_contract_identity"]).startswith("unresolved:") for row in rows)
+    assert all(row["position_side_semantics"] for row in rows)
+    assert all(row["quantity_semantics"] == "not_provided" for row in rows)
+    assert all(row["notional_semantics"] == "provider_reported_usd_notional" for row in rows)
+    assert all(row["price_semantics"] == "provider_reported_unspecified_price" for row in rows)
+    assert all(row["completeness_assumption"] and row["throttle_assumption"] for row in rows)
+    assert all(row["source_contract_version"] == "opennews_liquidation_source_v1" for row in rows)
+    assert all(row["source_contract_complete"] is False for row in rows)
+    assert {row["venue"]: row["ingest_mode"] for row in rows} == {
+        "binance": "live",
+        "hyperliquid": "recovery",
+    }
+
+    # Raw Item retention may remove the provider envelope, but the normalized
+    # immutable replay fact is a separate durable research source.
+    retained = conn.execute(
+        "SELECT source_key, item_id FROM news_market_liquidations WHERE venue = 'binance'"
+    ).fetchone()
+    assert retained is not None
+    conn.execute("DELETE FROM news_items WHERE item_id = %s", (retained["item_id"],))
+    conn.commit()
+    assert (
+        conn.execute(
+            "SELECT source_key FROM news_market_liquidations WHERE source_key = %s", (retained["source_key"],)
+        ).fetchone()
+        is not None
+    )
+    projected = repos.news.trade_candidate_liquidation_rows(
+        after_received_at_ms=0,
+        until_received_at_ms=10**15,
+    )
+    recovery_source_key = next(row["source_key"] for row in rows if row["ingest_mode"] == "recovery")
+    assert retained["source_key"] in {row["source_key"] for row in projected}
+    assert recovery_source_key not in {row["source_key"] for row in projected}
+    assert all(row["ingest_mode"] == "live" for row in projected)
 
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:
