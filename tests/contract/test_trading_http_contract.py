@@ -44,6 +44,7 @@ def _order(**overrides: Any) -> dict[str, Any]:
         "payload": {"provider": "request body"},
         "policy_decision": "trade",
         "policy_reason": None,
+        "primary_source_key": "oi:evt-oi-wif:oi_signal_v1",
         "position_closed_at_ms": None,
         "position_opened_at_ms": NOW - 120_000,
         "provider_attempt_count": 1,
@@ -116,6 +117,7 @@ class _FakeTradingRepository:
                 "observed_at_ms": NOW - 401_000,
                 "policy_decision": "no_trade",
                 "policy_reason": "whale_profit_below_floor",
+                "primary_source_key": "oi:evt-oi-hype:oi_signal_v1",
                 "regime": "buildup_up",
                 "state": "POLICY_REJECTED",
                 "underlying_key": "crypto:HYPE",
@@ -180,17 +182,46 @@ def test_orders_carry_the_ledgers_own_state_and_no_frozen_payload(client) -> Non
 
     assert response.status_code == 200
     data = response.json()["data"]
+    assert data["complete"] is True
     order = data["orders"][0]
     # `OPEN` is the only state that has proven both a position and a native stop covering it (#185 P0-3);
     # it is returned verbatim, not translated into 已成交.
     assert order["state"] == "OPEN"
     assert order["base_symbol"] == "WIF" and order["underlying_key"] == "crypto:WIF"
+    assert order["event_id"] == "evt-oi-wif"
     for leaked in ("payload", "manifest", "account_ref", "remote_order_id"):
         assert leaked not in order, leaked
     # The rejected population has no order to join through, and it is where the floors actually bite.
     rejected = data["cases_without_orders"][0]
     assert rejected["policy_reason"] == "whale_profit_below_floor"
+    assert rejected["event_id"] == "evt-oi-hype"
     assert "manifest" not in rejected
+
+
+def test_orders_never_invent_an_event_join_for_other_source_keys(client) -> None:
+    api, trading = client
+    trading.console_orders = lambda **_: [_order(primary_source_key="model:opaque-hash")]
+    trading.console_cases_without_orders = lambda **_: [
+        {
+            **_FakeTradingRepository().console_cases_without_orders()[0],
+            "primary_source_key": "oi:evt-wrong-version:oi_signal_v0",
+        }
+    ]
+
+    data = api.get("/api/trading/orders", params={"token": TOKEN}).json()["data"]
+
+    assert data["orders"][0]["event_id"] is None
+    assert data["cases_without_orders"][0]["event_id"] is None
+
+
+def test_orders_publish_when_the_batch_is_truncated(client) -> None:
+    api, trading = client
+    trading.console_orders = lambda **_: [_order(order_id=f"order-{index}") for index in range(101)]
+    trading.console_cases_without_orders = lambda **_: []
+
+    data = api.get("/api/trading/orders", params={"token": TOKEN}).json()["data"]
+    assert len(data["orders"]) == 100
+    assert data["complete"] is False
 
 
 def test_orders_accepts_either_spelling_of_one_underlying(client) -> None:

@@ -24,7 +24,7 @@ describe("CockpitTopbar", () => {
     };
     const { rerender } = render(
       <MemoryRouter>
-        <CockpitTopbar eventFeed title="新闻事件流" search={search} status={healthyStatus} />
+        <CockpitTopbar referenceFrame title="新闻事件流" search={search} status={healthyStatus} />
       </MemoryRouter>,
     );
     const input = screen.getByRole("textbox", { name: "news search" });
@@ -37,7 +37,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
-          eventFeed
+          referenceFrame
           title="新闻事件流"
           search={{ ...search, query: "ethereum" }}
           status={healthyStatus}
@@ -49,7 +49,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
-          eventFeed
+          referenceFrame
           title="新闻事件流"
           search={{ ...search, query: "" }}
           status={healthyStatus}

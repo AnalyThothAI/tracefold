@@ -479,6 +479,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
         window_ms: 14_400_000,
       },
       trade_floors: {
+        allow_short: false,
         enabled: false,
         max_price_move_bps: 600,
         min_oi_value_usd: 20_000_000,
@@ -539,7 +540,12 @@ export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): News
       whale_oi_ratio_bps: 14_390,
       window_ms: 14_400_000,
     },
-    reaction: newsReactionFixture({ return_1h_bps: 203, return_4h_bps: 145, state: "complete" }),
+    reaction: newsReactionFixture({
+      p0: "0.8412",
+      return_1h_bps: 203,
+      return_4h_bps: 145,
+      state: "complete",
+    }),
     title_zh: null,
     triage: newsTriageFixture({
       /*

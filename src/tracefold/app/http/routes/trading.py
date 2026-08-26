@@ -140,7 +140,7 @@ def get_trading_orders(
             since_ms=since_ms,
             underlying_key=underlying_key,
             states=states,
-            limit=_ORDER_LIMIT,
+            limit=_ORDER_LIMIT + 1,
         )
         # An explicit order-state filter is a question about orders; listing cases that authored none beside
         # it would answer a question the caller did not ask. Keyed on whether `state` was *supplied*, not on
@@ -150,13 +150,15 @@ def get_trading_orders(
             []
             if state
             else repos.trading.console_cases_without_orders(
-                since_ms=since_ms, underlying_key=underlying_key, limit=_ORDER_LIMIT
+                since_ms=since_ms, underlying_key=underlying_key, limit=_ORDER_LIMIT + 1
             )
         )
+    complete = len(orders) <= _ORDER_LIMIT and len(cases) <= _ORDER_LIMIT
     return _etagged(
         {
-            "orders": [_order(row) for row in orders],
-            "cases_without_orders": [_case(row) for row in cases],
+            "orders": [_order(row) for row in orders[:_ORDER_LIMIT]],
+            "cases_without_orders": [_case(row) for row in cases[:_ORDER_LIMIT]],
+            "complete": complete,
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
@@ -237,6 +239,22 @@ def _decimal(value: object) -> str | None:
     return None if value is None else str(value)
 
 
+def _oi_event_id(primary_source_key: object) -> str | None:
+    """Recover the Event identity only from the deterministic OI source contract.
+
+    Model-lane source keys are hashes and stay unjoinable. A partial prefix/suffix match is not enough:
+    round-tripping the exact key prevents a future source-key variant from being exposed as an Event link.
+    """
+
+    raw = str(primary_source_key or "")
+    prefix = "oi:"
+    suffix = f":{_OI_METRIC_VERSION}"
+    if not raw.startswith(prefix) or not raw.endswith(suffix):
+        return None
+    event_id = raw[len(prefix) : -len(suffix)]
+    return event_id if event_id and raw == f"oi:{event_id}:{_OI_METRIC_VERSION}" else None
+
+
 def _int_map(value: object) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}
@@ -254,6 +272,7 @@ def _order(row: dict[str, Any]) -> dict[str, Any]:
         "average_price": _decimal(row.get("average_price")),
         "base_symbol": _base_symbol(row.get("underlying_key")),
         "case_id": str(row["case_id"]),
+        "event_id": _oi_event_id(row.get("primary_source_key")),
         "strategy_id": str(row["strategy_id"]),
         "strategy_version": str(row["strategy_version"]),
         "trigger_kind": str(row["trigger_kind"]),
@@ -293,6 +312,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "base_symbol": _base_symbol(row.get("underlying_key")),
         "case_id": str(row["case_id"]),
+        "event_id": _oi_event_id(row.get("primary_source_key")),
         "strategy_id": str(row["strategy_id"]),
         "strategy_version": str(row["strategy_version"]),
         "trigger_kind": str(row["trigger_kind"]),

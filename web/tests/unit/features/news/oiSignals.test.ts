@@ -102,6 +102,7 @@ describe("oiSignals", () => {
 
   describe("oiBuckets", () => {
     const floors: NewsOiTradeFloors = {
+      allow_short: false,
       enabled: false,
       max_price_move_bps: 600,
       min_oi_value_usd: 20_000_000,

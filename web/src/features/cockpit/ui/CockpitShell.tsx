@@ -32,7 +32,7 @@ export type CockpitShellProps = {
 /**
  * The console frame. Three widths, three navigations, one model:
  *
- *   ≥1280  the sidebar is part of the page; the Event feed keeps it fixed to match its approved frame.
+ *   ≥1280  the sidebar is part of the page; approved scan surfaces keep it fixed.
  *   768–   the same sidebar inside a left drawer the topbar trigger opens.
  *   ≤767   no sidebar in either form: a drawer charges a tap before the reader can even see where they could
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
@@ -46,7 +46,7 @@ export function CockpitShell({
 }: CockpitShellProps) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
-  const fixedDesktopSidebar = Boolean(topbar.eventFeed);
+  const fixedDesktopSidebar = Boolean(topbar.referenceFrame);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // A rotated tablet must not keep the previous orientation's drawer open after navigation moves on-screen.

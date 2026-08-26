@@ -529,6 +529,7 @@ def test_event_level_aggregate_contributes_one_sample_per_event(conn) -> None:
 
     assert aggregates["multi"]["asset_n"] == 2
     assert aggregates["multi"]["priced_n"] == 2
+    assert aggregates["multi"]["p0"] is None  # prices in different units cannot be aggregated
     assert aggregates["multi"]["return_1h_bps"] == 100  # discrete median, not a sum
     assert aggregates["multi"]["state"] == "complete"
 
@@ -557,6 +558,7 @@ def test_an_event_with_no_priceable_primary_has_no_aggregate_but_stays_visible(c
 
     aggregate = repos.price.event_reaction_aggregates(["e1"], now_ms=NOW)["e1"]
     assert aggregate["state"] == "unavailable"
+    assert aggregate["p0"] is None
     assert aggregate["return_1h_bps"] is None
     assert aggregate["unavailable_reason"] == "no_candle_within_gap"
     review = repos.price.review(hours=168, now_ms=NOW)

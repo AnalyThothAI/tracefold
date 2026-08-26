@@ -209,6 +209,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     assert set(components["NewsOiTradeFloorsData"]["properties"]) == {
         "enabled",
         "mode",
+        "allow_short",
         "min_whale_long_profit_bps",
         "min_oi_value_usd",
         "min_price_move_bps",

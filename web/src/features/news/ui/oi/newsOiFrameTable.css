@@ -1,13 +1,33 @@
 @layer app.features {
-  /*
-   * The 持仓异动 frame table (#207), owned by `NewsOiFrameTable.tsx`. Split out of `newsOi.css` so neither
-   * file grows into a route-wide bucket; nothing else imports this one.
-   */
-  /* ------------------------------------------------------------------ frame table */
+  .news-oi-frame-panel {
+    min-width: 0;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+  }
+
+  .news-oi-frame-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    height: 41px;
+    padding: 5px 10px;
+  }
+
+  .news-oi-frame-toolbar > small {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .news-oi-tabs {
     display: inline-flex;
     gap: 2px;
-    margin: 10px 14px;
+    min-width: 0;
     padding: 3px;
     border-radius: var(--radius-lg);
     background: var(--surface-slot);
@@ -15,10 +35,10 @@
 
   .news-oi-tab {
     display: inline-flex;
-    gap: 7px;
+    gap: 6px;
     align-items: center;
-    min-height: 26px;
-    padding: 0 12px;
+    min-height: 25px;
+    padding: 0 11px;
     border: 0;
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
@@ -46,10 +66,6 @@
     color: var(--accent-primary);
   }
 
-  /*
-   * The table is wider than a tablet column and scrolls inside itself. The page body must never gain a
-   * horizontal scrollbar: a scan surface that slides sideways loses the reader's column position.
-   */
   .news-oi-table {
     overflow-x: auto;
     border-top: 1px solid var(--border-subtle);
@@ -58,38 +74,38 @@
   .news-oi-head,
   .news-oi-row-main {
     display: grid;
-    grid-template-columns:
-      56px 128px 82px 84px 84px 84px 68px minmax(96px, 1fr) minmax(170px, 1.1fr)
-      112px;
-    gap: 10px;
+    grid-template-columns: 54px 105px 72px 74px 74px 80px 80px 60px 104px 155px 66px 66px 150px;
+    gap: 6px;
     align-items: center;
-    min-width: 1040px;
+    min-width: 1240px;
     padding: 0 14px;
   }
 
   .news-oi-head {
-    padding-top: 8px;
-    padding-bottom: 8px;
+    height: 26px;
     border-bottom: 1px solid var(--border-subtle);
     background: var(--surface-raised);
     color: var(--text-subtle);
-    font: 700 var(--font-size-eyebrow)/1.35 var(--font-mono);
-    letter-spacing: 0.06em;
+    font: 700 var(--font-size-eyebrow)/1 var(--font-mono);
+    letter-spacing: 0.055em;
   }
 
-  /*
-   * The same floor its head, its row button and its expansion carry. Without it a plain block child of the
-   * `overflow-x: auto` container takes the *visible* width, so scrolling the table right leaves every row's
-   * hairline stopping mid-row.
-   */
+  .news-oi-reaction-head {
+    grid-column: 11 / 13;
+  }
+
+  .news-oi-trading-head {
+    grid-column: 13;
+  }
+
   .news-oi-row {
-    min-width: 1040px;
+    min-width: 1240px;
     border-bottom: 1px solid var(--border-faint);
   }
 
   .news-oi-row-main {
     width: 100%;
-    min-height: 44px;
+    height: 35px;
     border: 0;
     background: transparent;
     font: inherit;
@@ -107,44 +123,34 @@
     text-align: right;
   }
 
+  .news-oi-time,
+  .news-oi-row-main > .news-oi-num,
+  .news-oi-trading-cell {
+    color: var(--text-secondary);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
+  }
+
   .news-oi-time {
     color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
   }
 
   .news-oi-symbol {
     display: flex;
-    gap: 7px;
+    gap: 5px;
     align-items: center;
     min-width: 0;
   }
 
   .news-oi-symbol b {
     font: 620 var(--font-size-meta)/1 var(--font-mono);
-    letter-spacing: 0.02em;
   }
 
-  /*
-   * The OI move keeps the ink colour on purpose. It is a change in open interest, not in price, and giving
-   * it the direction red/green would state a market call the frame never made (#104).
-   */
+  .news-oi-price,
   .news-oi-change {
-    color: var(--text-primary);
-    font: 620 var(--font-size-meta)/1 var(--font-mono);
+    color: var(--text-primary) !important;
+    font-weight: 620 !important;
   }
 
-  .news-oi-row-main > .news-oi-num {
-    color: var(--text-secondary);
-    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
-  }
-
-  .news-oi-row-main > .news-oi-change {
-    color: var(--text-primary);
-    font-weight: 620;
-  }
-
-  /* The measurement the gate actually read, marked where that gate is the reason the frame was held. */
   .news-oi-ratio[data-gate],
   .news-oi-num[data-gate] {
     color: var(--signal-caution);
@@ -157,13 +163,13 @@
 
   .news-oi-buckets {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
+    overflow: hidden;
   }
 
   .news-oi-bucket {
-    padding: 1px 6px;
+    padding: 1px 5px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-xs);
     color: var(--text-secondary);
@@ -172,10 +178,6 @@
     white-space: nowrap;
   }
 
-  /*
-   * Research buckets are annotations on a measurement, so they take the pipeline's own indigo/amber/grey —
-   * never red or green. "Positive bucket" is a statement about a historical mean, not a call on this frame.
-   */
   .news-oi-bucket[data-tone="positive"],
   .news-oi-bucket[data-tone="best"] {
     border-color: var(--signal-done-border);
@@ -189,60 +191,28 @@
     background: var(--signal-caution-soft);
   }
 
-  /* The explicit page action, and what it has and has not reached. */
-  .news-oi-more {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    align-items: center;
-    padding: 11px 14px;
-    border-top: 1px solid var(--border-faint);
-  }
-
-  .news-oi-more small {
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-  }
-
   .news-oi-verdict {
     display: flex;
-    gap: 8px;
+    gap: 5px;
     align-items: center;
     min-width: 0;
   }
 
-  /*
-   * The outcome word never truncates; the rule key beside it does. Targeted structurally rather than by the
-   * shared `.news-outcome` class, which a feature stylesheet must not redefine — and the word is the reader's
-   * conclusion while the key is the audit trail, so if one of them has to be cut it is the key.
-   */
   .news-oi-verdict > :first-child {
     flex: 0 0 auto;
   }
 
-  .news-oi-verdict > code {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-
   .news-oi-verdict code {
+    min-width: 0;
     overflow: hidden;
     color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1.4 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .news-oi-reaction {
-    display: flex;
-    gap: 7px;
-    justify-content: flex-end;
-    align-items: baseline;
-  }
-
   .news-oi-reaction b {
     font: 600 var(--font-size-mono-meta)/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
   }
 
   .news-oi-reaction b[data-dir="up"] {
@@ -259,18 +229,54 @@
     font-style: normal;
   }
 
-  .news-oi-reaction-slash {
-    color: var(--border-strong);
+  .news-oi-trading-cell {
+    display: grid;
+    gap: 1px;
+    align-content: center;
+    overflow: hidden;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-oi-trading-cell small,
+  .news-oi-trading-cell b {
+    overflow: hidden;
+    font: inherit;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-oi-trading-cell small {
+    color: var(--text-subtle);
+    font-size: var(--font-size-eyebrow);
+  }
+
+  .news-oi-trading-cell b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .news-oi-more {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .news-oi-more small {
+    color: var(--text-subtle);
     font-size: var(--font-size-mono-meta);
   }
 
-  /* ------------------------------------------------------------------ expanded frame */
   .news-oi-detail {
     display: grid;
-    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-    gap: 12px;
-    min-width: 1040px;
-    padding: 0 14px 13px;
+    grid-template-columns: minmax(0, 0.9fr) repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    min-width: 1240px;
+    padding: 0 14px 12px;
     background: var(--surface-raised);
   }
 
@@ -280,7 +286,7 @@
     align-content: start;
     gap: 6px;
     min-width: 0;
-    padding: 11px 13px;
+    padding: 10px 12px;
     border-radius: var(--radius-md);
     background: var(--surface-panel);
     box-shadow: var(--ring-panel);
@@ -294,20 +300,26 @@
   }
 
   .news-oi-raw {
-    padding: 8px 10px;
+    padding: 7px 9px;
     border-radius: var(--radius-sm);
     color: var(--text-primary);
     background: var(--surface-raised);
-    font: 500 var(--font-size-mono-meta)/1.6 var(--font-mono);
+    font: 500 var(--font-size-mono-meta)/1.55 var(--font-mono);
     word-break: break-word;
   }
 
-  .news-oi-headline {
+  .news-oi-headline,
+  .news-oi-trace-missing {
     margin: 0;
     color: var(--text-primary);
     font-size: var(--font-size-meta);
-    font-weight: 600;
-    line-height: 1.5;
+    line-height: 1.45;
+  }
+
+  .news-oi-detail-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
   }
 
   .news-oi-open {
@@ -326,55 +338,44 @@
 
   .news-oi-trace {
     display: grid;
-    gap: 0;
     margin: 0;
   }
 
   .news-oi-trace > div {
     display: grid;
-    grid-template-columns: 172px minmax(0, 1fr);
-    gap: 10px;
-    padding: 4px 0;
+    grid-template-columns: 145px minmax(0, 1fr);
+    gap: 8px;
+    padding: 3px 0;
     border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-oi-trace dt,
+  .news-oi-trace dd {
+    margin: 0;
+    font: 500 var(--font-size-mono-meta)/1.45 var(--font-mono);
   }
 
   .news-oi-trace dt {
     color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
   }
 
   .news-oi-trace dd {
-    margin: 0;
     color: var(--text-primary);
-    font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    font-weight: 600;
     word-break: break-all;
   }
 
-  .news-oi-trace-missing,
-  .news-oi-trace-note {
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.55;
-  }
-
-  .news-oi-trace-missing code,
-  .news-oi-trace-note code {
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
-  }
-
-  /*
-   * Phone: the expansion drops to one column so the trace does not force a second horizontal scroller
-   * inside the first, and the tab row scrolls inside its own width rather than widening the card.
-   */
   @media (max-width: 767px) {
-    .news-oi-detail {
-      grid-template-columns: minmax(0, 1fr);
+    .news-oi-frame-toolbar {
+      overflow-x: auto;
     }
 
-    .news-oi-tabs {
-      max-width: calc(100% - 28px);
-      overflow-x: auto;
+    .news-oi-frame-toolbar > small {
+      display: none;
+    }
+
+    .news-oi-detail {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 }

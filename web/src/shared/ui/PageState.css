@@ -43,6 +43,20 @@
     min-width: 0;
   }
 
+  .page-state-stale-error {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    color: var(--signal-alert);
+    background: var(--signal-alert-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-alert-border);
+    font-size: var(--font-size-mono-meta);
+  }
+
   /*
    * The skeleton keeps the row grid it is standing in for — 54 / 1fr / 150 at desktop — so the list does not
    * change shape when the answer lands. It shimmers darker than the card: on a light ground a lighter

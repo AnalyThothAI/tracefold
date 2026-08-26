@@ -69,10 +69,14 @@ export function Error({ error, onRetry }: { error: unknown; onRetry?: () => void
 export function Stale({
   children,
   className,
+  failedRefresh,
+  onRetry,
   updating,
 }: {
   children: ReactNode;
   className?: string;
+  failedRefresh?: ReactNode;
+  onRetry?: () => void;
   updating: boolean;
 }) {
   return (
@@ -80,6 +84,16 @@ export function Stale({
       aria-busy={updating}
       className={cn("page-state-stale", className, updating && "page-state-stale-updating")}
     >
+      {failedRefresh ? (
+        <div className="page-state-stale-error" role="alert">
+          <span>{failedRefresh}</span>
+          {onRetry ? (
+            <ActionButton onClick={onRetry} size="sm">
+              重试
+            </ActionButton>
+          ) : null}
+        </div>
+      ) : null}
       {children}
       {updating ? <span className="sr-only">正在更新</span> : null}
     </div>

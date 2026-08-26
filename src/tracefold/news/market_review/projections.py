@@ -134,6 +134,7 @@ def _aggregate_public(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     matured = int(now_ms) >= anchor + 3_600_000
     bps_1h = [int(value) for value in (row.get("bps_1h") or [])]
     bps_4h = [int(value) for value in (row.get("bps_4h") or [])]
+    p0s = [str(value) for value in (row.get("p0s") or [])]
     reason = row.get("unavailable_reason")
     if bps_1h and bps_4h and len(bps_4h) >= len(bps_1h):
         state = "complete"
@@ -155,6 +156,7 @@ def _aggregate_public(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     return {
         "state": state,
         "state_zh": reaction_state_zh(state),
+        "p0": p0s[0] if primary_n == 1 and len(p0s) == 1 else None,
         "return_1h_bps": median_bps(bps_1h),
         "return_4h_bps": median_bps(bps_4h),
         "asset_n": primary_n,

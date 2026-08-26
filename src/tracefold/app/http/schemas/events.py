@@ -22,6 +22,9 @@ class NewsReactionSummaryData(ExactApiSchema):
 
     state: Literal["pending", "partial", "complete", "unavailable"]
     state_zh: str = ""
+    # Only populated when the Event has exactly one priceable primary. It is the Event-anchored mark, never
+    # a current quote; a multi-asset Event has no meaningful shared price and therefore returns null.
+    p0: str | None = None
     return_1h_bps: int | None = None
     return_4h_bps: int | None = None
     asset_n: int = 0

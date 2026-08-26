@@ -899,6 +899,7 @@ def test_status_reports_the_oi_lane_with_both_threshold_sets(client) -> None:
     assert data["oi"]["trade_floors"] == {
         "enabled": False,
         "mode": "paper",
+        "allow_short": False,
         "min_whale_long_profit_bps": 9_500,
         "min_oi_value_usd": 20_000_000,
         "min_price_move_bps": 100,
