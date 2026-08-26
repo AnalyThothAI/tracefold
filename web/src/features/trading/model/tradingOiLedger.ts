@@ -56,7 +56,7 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
   return {
     primary:
       value.state === "POLICY_REJECTED"
-        ? `拒 · ${policyReasonLabel(value.policy_reason)}`
+        ? `拒 · ${policyRuleZh(value.policy_reason)}`
         : (CASE_STATE_ZH[value.state] ?? value.state),
     secondary: regimeLabel(value.regime),
     title: value.policy_reason ?? value.state,
@@ -105,13 +105,23 @@ function regimeLabel(value: string | null | undefined): string | undefined {
   return value ? (REGIME_ZH[value] ?? value) : undefined;
 }
 
-function policyReasonLabel(value: string | null | undefined): string {
+/**
+ * The named rule a case stopped on, in Chinese.
+ *
+ * Public because two surfaces read it now (#256): the OI audit's 交易判定 cell and 杠杆异动's own sentence.
+ * A second copy of this map is how one rule ends up with two meanings on two pages.
+ */
+export function policyRuleZh(value: string | null | undefined): string {
   if (!value) return "交易地板";
   if (value.startsWith("regime_no_entry:deleveraging")) return "减仓无可跟";
   if (value.startsWith("regime_no_entry:")) return "市场状态不允许";
   return (
     {
       move_above_band_chasing: "追高（走势带外）",
+      // `candidate.py` writes these two directly; before #256 they only leaked into a compact table cell,
+      // and 杠杆异动 splices the same string into a Chinese sentence.
+      order_blocked: "已成判断，但下单被拦（日内上限 / 同标的已有仓 / 黑名单 / 规模拒绝）",
+      strategy_permission: "策略权限不允许",
       move_below_band: "帧前走势未达带",
       no_price_fail_closed: "帧前价格缺失",
       oi_context_missing: "OI 上下文缺失",

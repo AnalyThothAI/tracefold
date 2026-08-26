@@ -19,6 +19,7 @@ describe("AppBottomNav", () => {
     );
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "事件流",
+      "杠杆异动",
       // The phone bar shows the label alone: the sidebar's PAPER chip is 8px of monospace and a 48px thumb
       // target has no room for it. The page states the mode in a labelled figure either way.
       "交易",

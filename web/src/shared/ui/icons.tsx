@@ -60,6 +60,24 @@ export const EventStreamIcon = forwardRef<SVGSVGElement, LucideProps>((props, re
 EventStreamIcon.displayName = "EventStreamIcon";
 
 /**
+ * 杠杆异动. A dial with a mark at its centre: the market's leverage *structure*, read at one instant.
+ *
+ * Deliberately not an arrow. The page is about open-interest buildup and what the capital lane decided
+ * about it, and an arrow would state a price direction that a single case may or may not have (#104).
+ */
+export const LeverageGaugeIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
+  <TracefoldIcon ref={ref} {...props}>
+    <circle cx="12" cy="12" r="7" />
+    <path d="M12 2.5V6" />
+    <path d="M12 18v3.5" />
+    <path d="M2.5 12H6" />
+    <path d="M18 12h3.5" />
+    <circle cx="12" cy="12" r="1.2" />
+  </TracefoldIcon>
+));
+LeverageGaugeIcon.displayName = "LeverageGaugeIcon";
+
+/**
  * OI 遥测审计. A trace with one spike in it: the provider emits a frame when its own trigger fires, and this
  * page is where a reader checks that the trace itself parsed, passed the gates and occupied a push slot.
  *

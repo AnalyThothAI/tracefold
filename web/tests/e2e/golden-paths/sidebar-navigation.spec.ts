@@ -38,10 +38,11 @@ test.describe("desktop sidebar navigation", () => {
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "杠杆异动" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "OI 遥测审计" })).toBeVisible();
-    // #256: three working surfaces in two groups, and no ReviewDesk destination at all.
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
+    // #256: four working surfaces in two groups, and no ReviewDesk destination at all.
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
     // The mode rides beside the label without renaming the destination (#207 PR-W4).
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText("PAPER");

@@ -98,7 +98,7 @@ describe("frontend documentation contract", () => {
     // Every destination is a working surface; one navigation model drives every presentation. 流水线状态
     // is a page without a slot (#207) — the topbar lamp is the way in. 学习复盘 is not a page at all any
     // more (#256): the ReviewDesk is a CLI lane and the console is read-only.
-    expect(navigationTargets).toEqual(["/news", "/trading", "/news/oi"]);
+    expect(navigationTargets).toEqual(["/news", "/news/leverage", "/trading", "/news/oi"]);
     expect(navigationTargets).not.toContain("/news/status");
     expect(navigationTargets).not.toContain("/news/review");
     expect(navigationTargets).not.toContain("/");

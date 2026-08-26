@@ -43,7 +43,9 @@ export function NewsPageHeader({
   title,
 }: {
   children?: ReactNode;
-  subtitle?: string;
+  /* A node rather than a string: two surfaces name their sibling in the caption, and a cross-link is the
+     shortest honest way to say "that question is answered over there" (#256). */
+  subtitle?: ReactNode;
   title: string;
 }) {
   return (

@@ -48,6 +48,14 @@ const archetypes = [
     settled: (page: Page) => page.locator(".news-symbol-contract").first(),
   },
   {
+    // #256: a list of cases beside one case in full. The baseline is what keeps the two measures from
+    // drifting apart, and what would catch the pane silently disappearing at a viewport.
+    name: "leverage",
+    path: "/news/leverage",
+    ready: (page: Page) => page.getByRole("region", { name: "案例列表" }),
+    settled: (page: Page) => page.getByRole("region", { name: /^案例 / }),
+  },
+  {
     name: "status",
     path: "/news/status",
     ready: (page: Page) => page.locator(".news-health-card").first(),

@@ -21,7 +21,7 @@ describe("AppSidebar", () => {
     ]);
   });
 
-  it("renders the three supported primary destinations", () => {
+  it("renders the four supported primary destinations", () => {
     renderSidebar({
       badges: { tradingMode: "PAPER" },
       counts: { events: 1463, oiFrames: 188 },
@@ -34,18 +34,22 @@ describe("AppSidebar", () => {
     // ReviewDesk is a CLI lane now, and the telemetry audit moved under 数据健康.
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/news",
+      "/news/leverage",
       "/trading",
       "/news/oi",
     ]);
     // Both News lanes carry their own 24 h intake, compacted to fit beside the label.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
+    // 杠杆异动 carries no count at all: the honest figure — how many cases are live — is in none of the
+    // reads the frame already makes, and a fourth poll to decorate a link is the wrong trade.
+    expect(links[1].textContent?.trim()).toBe("杠杆异动");
     // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before opening
     // it, and a count of orders would not answer that.
-    expect(links[1].textContent).toContain("交易");
-    expect(links[1].textContent).toContain("PAPER");
-    expect(links[2].textContent).toContain("OI 遥测审计");
-    expect(links[2].textContent).toContain("188");
+    expect(links[2].textContent).toContain("交易");
+    expect(links[2].textContent).toContain("PAPER");
+    expect(links[3].textContent).toContain("OI 遥测审计");
+    expect(links[3].textContent).toContain("188");
   });
 
   it("no longer offers the retired ReviewDesk destination", () => {

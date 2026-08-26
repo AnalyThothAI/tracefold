@@ -15,6 +15,14 @@ export function newsOiPath(): string {
 }
 
 /**
+ * 杠杆异动 (#256). The capital lane's reading of the deterministic OI frames — a different question from
+ * `/news/oi`, which audits whether the frames themselves parsed and cleared the push gates.
+ */
+export function newsLeveragePath(): string {
+  return "/news/leverage";
+}
+
+/**
  * The token page (#207 PR-W1). Every `base_symbol` on the console routes here, including one the universe
  * has never listed — the endpoint answers `known: false` rather than 404, so a struck-through chip is a
  * link like any other.

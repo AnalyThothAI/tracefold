@@ -1,0 +1,180 @@
+@layer app.features {
+  /* ------------------------------------------------------------------ card */
+
+  .news-leverage-card {
+    display: grid;
+    gap: 7px;
+    padding: 11px 12px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .news-leverage-card:hover {
+    background: var(--surface-hover);
+  }
+
+  .news-leverage-card[data-selected] {
+    background: var(--surface-panel);
+    box-shadow:
+      inset 0 0 0 1.5px var(--accent-primary),
+      var(--shadow-pill);
+  }
+
+  .news-leverage-card-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .news-leverage-card-head b {
+    color: var(--text-primary);
+    font-size: var(--font-size-item-title);
+    font-weight: 640;
+  }
+
+  .news-leverage-card-head small {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font: var(--type-mono-meta);
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-leverage-decision {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
+    background: var(--signal-neutral-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-neutral-border);
+    font: var(--type-mono-meta);
+    font-weight: 640;
+    white-space: nowrap;
+  }
+
+  .news-leverage-decision[data-decision="long"],
+  .news-leverage-detail-verdict b[data-decision="long"] {
+    color: var(--dir-bullish);
+    background: var(--dir-bullish-soft);
+    box-shadow: inset 0 0 0 1px var(--dir-bullish-border);
+  }
+
+  .news-leverage-decision[data-decision="short"],
+  .news-leverage-detail-verdict b[data-decision="short"] {
+    color: var(--dir-bearish);
+    background: var(--dir-bearish-soft);
+    box-shadow: inset 0 0 0 1px var(--dir-bearish-border);
+  }
+
+  .news-leverage-decision[data-decision="pending"],
+  .news-leverage-detail-verdict b[data-decision="pending"] {
+    color: var(--signal-caution);
+    background: var(--signal-caution-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
+  }
+
+  .news-leverage-card-tags {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .news-leverage-regime {
+    color: var(--text-secondary);
+    font-size: var(--font-size-meta);
+    font-weight: 560;
+  }
+
+  .news-leverage-card-tags code {
+    color: var(--text-subtle);
+    font: var(--type-mono-meta);
+  }
+
+  .news-leverage-phase {
+    display: inline-flex;
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+    font: var(--type-mono-meta);
+  }
+
+  .news-leverage-phase[data-phase="active"] {
+    color: var(--signal-done);
+    background: var(--signal-done-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-done-border);
+  }
+
+  .news-leverage-phase[data-phase="forming"] {
+    color: var(--signal-caution);
+    background: var(--signal-caution-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
+  }
+
+  .news-leverage-card-why {
+    color: var(--text-secondary);
+    font-size: var(--font-size-meta);
+    line-height: 1.5;
+  }
+
+  .news-leverage-card-numbers {
+    display: grid;
+    gap: 5px;
+  }
+
+  .news-leverage-card-numbers code {
+    color: var(--text-primary);
+    font: var(--type-mono-meta);
+  }
+
+  .news-leverage-marks {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .news-leverage-marks small {
+    color: var(--text-faint);
+    font: var(--type-mono-meta);
+    font-weight: 500;
+  }
+
+  .news-leverage-marks small[data-status="support"] {
+    color: var(--signal-done);
+  }
+
+  .news-leverage-marks small[data-status="conflict"] {
+    color: var(--signal-alert);
+  }
+
+  .news-leverage-card-foot {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-subtle);
+    font: var(--type-mono-meta);
+    font-weight: 500;
+  }
+
+  .news-leverage-card-foot small[data-capital="OPEN"] {
+    color: var(--signal-done);
+  }
+
+  .news-leverage-card-foot small[data-capital="AMBIGUOUS"],
+  .news-leverage-card-foot small[data-capital="UNPROTECTED"] {
+    color: var(--signal-alert);
+  }
+}
