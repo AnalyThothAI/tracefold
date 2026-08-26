@@ -338,6 +338,11 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             api_key=endpoint.api_key,
             api_base=endpoint.api_base,
             model_kwargs=endpoint.model_kwargs,
+            # Absent by default, because an operator watching a bounded `--max-model-cases` run is the
+            # ceiling. `news learning run` (#253) passes one: the composite run is unattended, and it is
+            # also what makes this report's metric receipt byte-identical to the optimization's, so the two
+            # Stable numbers can be declared to have been scored by one ruler rather than assumed to be.
+            max_model_calls=int(getattr(args, "max_metric_judge_model_calls", 0) or 0) or None,
         )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),

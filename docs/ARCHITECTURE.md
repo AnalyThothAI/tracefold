@@ -1274,6 +1274,19 @@ carry the current identity, while leaving their artifact bytes intact.
 calls, and `optimize` rebuilds it and refuses on the same conditions before any
 endpoint is touched.
 
+`news learning run` (#253) is the recommended way to reach a terminal report:
+one command that runs readiness, the standalone `compile_live` baseline and the
+one optimization over the same frozen corpus, and then publishes
+`run_summary.json`. That summary is a projection, not an authority — it reads
+what the three reports already published — and it exists to keep three different
+baselines apart. The **standalone** number is an independent physical run; the
+**GEPA seed** number is the seed Program's score inside the run that proposed
+against it, and is the real *before*; the **future test** number is Stable on
+accepted examples that did not exist when the candidate was made, and only the
+release plane's holdout stage can produce one. The summary publishes the first
+two with their difference and refuses to imply a comparison when dataset,
+representative set, split, metric, Program or model binding disagree.
+
 Metric v4 (`tracefold.news.production_action_trade_relevance_v4`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
 selection and CandidateEvaluator. Its candidate scalar is 45% final production

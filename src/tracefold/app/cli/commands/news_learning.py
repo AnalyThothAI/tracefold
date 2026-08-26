@@ -83,6 +83,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return _handle_learning_readiness(args, settings, stable)
         if action == "baseline":
             return _handle_learning_baseline(args, settings, stable)
+        if action == "run":
+            # #253 §7 Phase C. The one recommended path, composed from the three commands around it: it
+            # holds no additional authority, and every artifact it writes is one of theirs.
+            from .news_learning_run import _handle_learning_run
+
+            return _handle_learning_run(args, settings, stable)
         if action == "draft-reviews":
             return _handle_learning_draft_reviews(args, settings, stable)
         if action in {"snapshot", "compare", "optimize"}:
