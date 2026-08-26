@@ -1253,8 +1253,7 @@ corpus at all. The last two are diagnostics and are read by no gate (#259):
 concentrated the corpus is and the two may disagree freely — a 72 h freeze whose
 reviews all landed in one afternoon reads `1` and `72.0`.
 `release evaluate --stage offline|holdout` decides
-development evidence on the cluster-role, stratum and safety counts alone, and
-no stable-age, window-age or calendar-day threshold may be added beside them.
+development evidence on the cluster-role, stratum and safety counts alone.
 Out-of-time generalization remains the Future Holdout's alone — `validation`
 still requires a window strictly after candidate registration, ≥ 24 h, ≥ 200
 eligible Events and ≥ 30 primary clusters. Removing the day gate moves

@@ -480,8 +480,8 @@ the readiness `coverage` block and `run_summary.json` as diagnostics of case
 concentration — read together, since a 72 h freeze whose reviews all landed in
 one afternoon reads `1` and `72.0`; a corpus that concentrated is worth
 *looking* at, and observing several settled days before trusting a result is
-reasonable operator advice — but neither is a code admission contract, and no stable-age, window-age or calendar-day gate may
-replace them. Out-of-time generalization stays entirely with the Future Holdout:
+reasonable operator advice — but neither is a code admission contract.
+Out-of-time generalization stays entirely with the Future Holdout:
 a ValidationDataset frozen strictly after candidate registration, ≥ 24 h, with
 its own eligible-Event and reviewed-cluster floors. The profile change is a hard
 cut — it moves `TRUSTED_ROOT_SHA`, and the profile is named
