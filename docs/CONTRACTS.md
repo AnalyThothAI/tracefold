@@ -1167,8 +1167,11 @@ reconciled: two physical runs of one graph may differ, and a difference is not
 by itself evidence that a dataset identity is wrong.
 
 `dataset` carries the corpus counts and roots plus a `coverage` block forwarded
-from readiness, so the numbers and the population behind them read together; an
-empty one means the readiness report predates v2, not that the corpus was empty.
+from readiness, so the numbers and the population behind them read together. The
+block always has the same ten keys: a `gepa_readiness_report.v1` in an archived
+run directory carried none of these counts, so every value is `null` — never `0`,
+which would read as a measured corpus of nothing, and never an empty object,
+which a consumer would fall off the end of.
 
 `same_population` is a verdict over named `population_checks` — dataset SHA,
 episode projection root, episode count, representative case root and counts,
