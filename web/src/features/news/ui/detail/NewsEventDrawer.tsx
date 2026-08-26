@@ -1,4 +1,5 @@
 import { newsEventPath, newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Drawer } from "@shared/ui/Drawer";
 import { IconButton } from "@shared/ui/IconButton";
 import * as PageState from "@shared/ui/PageState";
@@ -39,6 +40,7 @@ export function NewsEventDrawer({
   token: string;
 }) {
   const query = useNewsEventWithToken(token, eventId);
+  const referrer = useRouteReferrer();
   const detail = eventId ? query.data : undefined;
   const event = detail?.event;
   const triage = detail?.triage;
@@ -108,7 +110,7 @@ export function NewsEventDrawer({
               <ChevronRight aria-hidden />
             </Link>
             {primarySymbol ? (
-              <Link to={newsSymbolPath(primarySymbol)}>
+              <Link state={referrer} to={newsSymbolPath(primarySymbol)}>
                 代币页 {primarySymbol}
                 <ChevronRight aria-hidden />
               </Link>

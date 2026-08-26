@@ -7,12 +7,17 @@ import "./PageState.css";
 type PageStateLayout = "route" | "panel" | "inline";
 
 /**
- * The four states a surface can be in besides "showing data". Every route uses these rather than inventing
- * its own, so a reader recognises a loading feed and a loading status page as the same thing.
+ * The states a surface can be in besides "showing data". Every route uses these rather than inventing its
+ * own, so a reader recognises a loading feed and a loading status page as the same thing.
  *
  * Loading keeps the shape of what is coming — rows, not a spinner — because the page it replaces is a list
  * and a shimmering list says how much is on its way. Stale keeps the previous answer on screen and marks it
  * busy: a poll-driven console that blanks on every refetch is unreadable.
+ *
+ * The v7 artifact draws a bone for the page title too (#256). This console does not: the title is static
+ * copy it already knows, and shimmering a word that is not waiting on anything is theatre. What shimmers is
+ * exactly what the server has yet to answer — the metric band, the rows, and the 2px sweep at the top of
+ * the frame that says a request is in flight at all.
  */
 export function Loading({
   label,
@@ -100,6 +105,46 @@ export function Stale({
   );
 }
 
+/**
+ * The metric band before its figures land: five tiles on the same 5-column grid and hairline dividers the
+ * real `MetricRow` uses, so the page does not change height when the read answers.
+ */
+export function TileSkeleton({
+  className,
+  label,
+  tiles = 5,
+}: {
+  className?: string;
+  label: string;
+  tiles?: number;
+}) {
+  return (
+    <div
+      aria-busy="true"
+      aria-label={label}
+      className={cn("page-state-tile-skeleton", className)}
+      role="status"
+    >
+      {Array.from({ length: tiles }, (_, index) => (
+        <div aria-hidden className="page-state-tile" key={index}>
+          <span className="page-state-bone page-state-tile-eyebrow" />
+          <span className="page-state-bone page-state-tile-value" />
+          <span className="page-state-bone page-state-tile-caption" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The frame's own "a request is in flight" line (#256): 2px at the very top, an indigo sweep, and nothing
+ * else. It is `aria-hidden` because every surface underneath already announces its own busy state — a
+ * second live region saying "loading" would make a screen reader read the whole cold start twice.
+ */
+export function RouteProgress() {
+  return <div aria-hidden className="page-state-route-progress" />;
+}
+
 export function TableSkeleton({
   className,
   compact = false,
@@ -122,11 +167,23 @@ export function TableSkeleton({
       )}
       role="status"
     >
+      {/* The header band the real list has, so the first row does not jump up when the answer lands. */}
+      {compact ? null : <div aria-hidden className="page-state-table-head" />}
       {Array.from({ length: rows }, (_, index) => (
-        <div aria-hidden className="page-state-table-row" key={index}>
-          <span className="page-state-table-block page-state-table-block-leading" />
-          <span className="page-state-table-block page-state-table-block-body" />
-          <span className="page-state-table-block page-state-table-block-trailing" />
+        <div
+          aria-hidden
+          className="page-state-table-row"
+          key={index}
+          /* Rows fade with depth, exactly as the artifact draws them: the list reads as receding into what
+             has not arrived yet rather than as eight equal grey bars. */
+          style={{ opacity: Math.max(0.28, 1 - index * 0.09) }}
+        >
+          <span className="page-state-bone page-state-table-block-leading" />
+          <span className="page-state-table-lines">
+            <span className="page-state-bone page-state-table-block-body" />
+            <span className="page-state-bone page-state-table-block-sub" />
+          </span>
+          <span className="page-state-bone page-state-table-block-trailing" />
         </div>
       ))}
     </div>

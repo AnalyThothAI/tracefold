@@ -6,7 +6,7 @@
  * chrome would make every route's code eager. This entrypoint carries hooks, pure helpers and types only.
  */
 export { useNewsStatusWithToken } from "./api/newsQueries";
-export type { NewsHealthLevel, NewsReview, NewsStatus } from "./api/newsQueries";
+export type { NewsHealthLevel, NewsStatus } from "./api/newsQueries";
 /*
  * The topbar health lamp is a frame control, but the words in it are News': which stages exist, what each is
  * called, what `warn` reads as in Chinese, and the server instrument snapshot. The shell maps those facts onto the frame's

@@ -10,11 +10,9 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from tracefold.app.http.app import create_app
-from tracefold.app.http.routes import review as review_routes
 from tracefold.app.http.schemas import events as event_schemas
 from tracefold.app.http.schemas import feed as feed_schemas
 from tracefold.app.http.schemas import news_common as news_common_schemas
-from tracefold.app.http.schemas import review as review_schemas
 from tracefold.app.http.schemas import status as status_schemas
 from tracefold.platform.config.models import Settings
 
@@ -159,8 +157,14 @@ class _FakeCursor:
     def fetchone() -> None:
         return None
 
+    @staticmethod
+    def fetchall() -> list[Any]:
+        return []
+
 
 class _FakeConnection:
+    """`repos.conn` is a live read on this surface: `/api/news/status` reads the Workers runtime row."""
+
     @staticmethod
     def execute(*_args: Any, **_kwargs: Any) -> _FakeCursor:
         return _FakeCursor()
@@ -287,25 +291,6 @@ class _FakePriceRepository:
             for symbol in symbols
         ]
 
-    def review(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("review", kwargs))
-        return {
-            "meta": {
-                "hours": int(kwargs.get("hours") or 168),
-                "window_start_ms": 0,
-                "window_end_ms": 1,
-                "discovery_window_start_ms": 0,
-                "metric_version": "reaction_v1",
-                "measured_at_ms": 1,
-            },
-            "coverage": [],
-            "directions": [],
-            "magnitudes": [],
-            "event_types": [],
-            "potential_misses": [],
-            "summary": {"hit_1h_pct": None, "hit_1h_n": 0, "coverage_1h_pct": None},
-        }
-
     def price_status(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("price_status", kwargs))
         return {
@@ -337,47 +322,17 @@ class _FakeRuntime:
     def repositories(self):
         yield _FakeRepositories(self._news)
 
-    @contextmanager
-    def review_transaction(self):
-        yield _FakeConnection()
-
-
-class _FakeReviewDesk:
-    def __init__(self, _conn: Any) -> None:
-        pass
-
-    def open(self, query: Any, *, principal: Any) -> dict[str, Any]:
-        del principal
-        if query.view == "market":
-            return {
-                "view": "market",
-                "title_zh": "事后市场观察",
-                "disclaimer_zh": "价格变化不是因果或真值。",
-                "reaction": _FakePriceRepository().review(hours=query.hours),
-            }
-        return {
-            "view": query.view,
-            "mode": query.mode,
-            "status": "insufficient_evidence",
-            "reader_contract_version": "reader_contract_v2",
-            "rubric_version": "news_review_v2",
-            "tasks": [],
-            "next_cursor": None,
-            "counts": {},
-        }
-
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _FakeNewsRepository]:
+def client() -> tuple[TestClient, _FakeNewsRepository]:
     settings = Settings(ws_token=TOKEN)
     app = create_app(settings=settings)
     news = _FakeNewsRepository()
-    monkeypatch.setattr(review_routes, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, news)
     return TestClient(app), news
 
 
-def test_news_exposes_read_routes_and_only_the_two_review_mutations() -> None:
+def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
     app = create_app(settings=Settings(ws_token=TOKEN))
     routes = {
         (method, route.path)
@@ -395,10 +350,6 @@ def test_news_exposes_read_routes_and_only_the_two_review_mutations() -> None:
         ("GET", "/api/news/quotes"),
         # #207 PR-W1: what one base_symbol *is*, for the token page every asset chip now links to.
         ("GET", "/api/news/symbols/{base}"),
-        ("GET", "/api/news/review"),
-        ("GET", "/api/news/review/tasks/{task_id}/evidence"),
-        ("POST", "/api/news/review/tasks/{task_id}/responses"),
-        ("POST", "/api/news/review/external-misses"),
     }
 
 
@@ -503,7 +454,6 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         event_schemas,
         feed_schemas,
         news_common_schemas,
-        review_schemas,
         status_schemas,
     ):
         for name in dir(schema_module):
@@ -711,7 +661,6 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
         }
     )
     app = create_app(settings=settings)
-    monkeypatch.setattr(review_routes, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, _FakeNewsRepository())
 
     # This is a route contract over the injected fake runtime. Entering TestClient's lifespan would
@@ -814,22 +763,6 @@ def test_quotes_rejects_an_oversized_or_malformed_symbol_batch(client) -> None:
     unknown = api.get("/api/news/quotes", params={"symbols": "BTC", "unknown": "1", "token": TOKEN})
     assert unknown.status_code == 400
     assert unknown.json()["error"] == "unsupported_query_param"
-
-
-def test_review_defaults_to_learning_queue_and_market_is_explicit(client) -> None:
-    api, _ = client
-    response = api.get("/api/news/review", params={"hours": 168, "token": TOKEN})
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["view"] == "queue"
-    assert data["status"] == "insufficient_evidence"
-    market = api.get("/api/news/review", params={"view": "market", "hours": 168, "token": TOKEN}).json()["data"]
-    assert market["view"] == "market"
-    assert market["reaction"]["meta"]["metric_version"] == "reaction_v1"
-
-    assert api.get("/api/news/review", params={"hours": 721, "token": TOKEN}).status_code == 422
-    assert api.get("/api/news/review", params={"hours": 0, "token": TOKEN}).status_code == 422
 
 
 def test_the_feed_attaches_reactions_in_one_bounded_batch(client) -> None:

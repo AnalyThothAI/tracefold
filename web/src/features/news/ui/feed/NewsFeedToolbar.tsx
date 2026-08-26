@@ -110,11 +110,15 @@ function OutcomeTabs({
             aria-selected={active === value}
             className="news-segmented-option"
             data-active={active === value || undefined}
+            data-outcome={value ?? "all"}
             key={value ?? "all"}
             onClick={() => onChange(value)}
             role="tab"
             type="button"
           >
+            {/* The outcome's own tone as a 5px dot, so a tab is recognisable before the label is read. It
+                carries no meaning the label does not: `aria-hidden`, and the count stays in the name. */}
+            <span aria-hidden className="news-segmented-dot" />
             {outcomeTabLabel(value)}
             {count == null ? null : (
               <span className="news-segmented-count">{compactTabCount(count)}</span>

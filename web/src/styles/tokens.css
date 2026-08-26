@@ -63,19 +63,27 @@
   --accent-soft: rgba(42, 91, 215, 0.09);
   --accent-selection: rgba(42, 91, 215, 0.16);
   --accent-border: rgba(42, 91, 215, 0.3);
+  /* A tint, not a fill: the feed's hour band and anything else that separates without becoming a surface. */
+  --accent-band: rgba(42, 91, 215, 0.045);
+  /* The same accent at zero alpha, for gradients that must fade out rather than fade to white. */
+  --accent-clear: rgba(42, 91, 215, 0);
 
   /*
    * Axis 1 — market direction. Red is 利多 and green is 利空, matching how mainland market software is read.
    * Both are set as *text*: a filled block of either would out-shout the headline it belongs to.
+   *
+   * The v7 artifact re-cut both hues (#256): the red is a shade softer so a column of 利多 rows stops
+   * vibrating, and the green moved off `#0a7d4a` — which the artifact spends on 流水线正常 — so the two
+   * greens a reader meets are never the same green. Both still clear 4.5:1 on white (5.81 / 5.10).
    */
-  --dir-bullish: #d32029;
-  --dir-bullish-soft: rgba(211, 32, 41, 0.09);
-  --dir-bullish-border: rgba(211, 32, 41, 0.32);
-  --dir-bullish-muted: rgba(211, 32, 41, 0.45);
-  --dir-bearish: #0a7d4a;
-  --dir-bearish-soft: rgba(10, 125, 74, 0.09);
-  --dir-bearish-border: rgba(10, 125, 74, 0.3);
-  --dir-bearish-muted: rgba(10, 125, 74, 0.45);
+  --dir-bullish: #bf2b36;
+  --dir-bullish-soft: rgba(191, 43, 54, 0.08);
+  --dir-bullish-border: rgba(191, 43, 54, 0.32);
+  --dir-bullish-muted: rgba(191, 43, 54, 0.45);
+  --dir-bearish: #1a7f37;
+  --dir-bearish-soft: rgba(26, 127, 55, 0.08);
+  --dir-bearish-border: rgba(26, 127, 55, 0.3);
+  --dir-bearish-muted: rgba(26, 127, 55, 0.45);
 
   /*
    * Axis 2 — pipeline outcome. Deliberately no red and no green: "已推送" is a completed step, not a market

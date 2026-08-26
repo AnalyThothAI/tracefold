@@ -228,8 +228,13 @@ writes), and `tracefold_migrate`. Serve has SELECT plus INSERT only on
 `news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
 those append-only facts and no write grant on Event, verdict, delivery,
 learning-artifact or control tables. Every ordinary Serve transaction remains
-read-only. Only the two bearer-authenticated ReviewDesk POST routes explicitly
-open one transaction as read-write through the existing Serve pool. Learning
+read-only. Since #256 the public HTTP surface has **no write route at all** —
+the two ReviewDesk POSTs were the only ones and went with the console page they
+served, and the browser's HTTP client no longer exposes a write verb. The one
+remaining writer of those two tables is `tracefold news review submit`, which
+opens its own connection under the same `tracefold_serve` role and one explicit
+read-write transaction; auditing the write surface therefore means auditing that
+CLI, not the API. Learning
 freeze/evaluate and canary control run under Workers, while assignment and
 runtime/deployment receipts are append-only.
 

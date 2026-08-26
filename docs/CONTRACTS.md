@@ -263,7 +263,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/review`, `/api/news/review/tasks/{task_id}/evidence`, `/api/news/review/tasks/{task_id}/responses`, `/api/news/review/external-misses` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, one symbol's identity, and ReviewDesk reads/writes |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
 | Trading | `/api/trading/status`, `/api/trading/orders`, `/api/trading/events/{event_id}` | the capital lane's mandate and readiness, its orders and the cases that authored none, and whether one News Event became a case. Reads only — there is no HTTP write anywhere on this surface |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
@@ -276,9 +276,12 @@ feature flag.
 
 ### News
 
-News is an operator-bound, Strategy-qualified Event surface. The public
-surface is exactly six GET route templates and two ReviewDesk POST route
-templates:
+News is an operator-bound, Strategy-qualified Event surface. The public surface
+is exactly five GET route templates and no write route at all. The four
+ReviewDesk routes — two reads and the only two HTTP writes this project ever
+had — were removed with the console page they served (#256); `news review
+queue|evidence|submit|external-miss` is now the whole ReviewDesk surface, and
+it reaches `news_reviews` through its own Serve-role connection.
 
 `priority` is not a reader contract: feed/detail/OpenAPI expose no field,
 filter, sort or badge for it. The hard-renamed `queue_priority` exists only in
@@ -771,43 +774,6 @@ reader/writer.
   be asked", which is a different fact from `case: null`, "it was asked and the
   answer is no". Joining by symbol and time instead would record a link the
   ledger does not have.
-- `GET /api/news/review` is the ReviewDesk read surface. Query fields are
-  `view=queue|coverage|proposals|market`, `mode=event|pairwise`, exact
-  `cohort`, `stratum`, `event`, `status`, `hours`, `limit`, and opaque
-  `cursor`. Event queue pages are newest-first by the durable
-  `(opened_at_ms, event_id)` tuple after deterministic sampling and filtering;
-  the opaque cursor pins the first page's upper time bound, so later pages read
-  the same closed window even when wall time advances. Sparse strata are scanned
-  until a full page plus look-ahead is found or the source is truly exhausted.
-  Queue tasks are deterministic and carry `task_id` plus an ETag-like
-  `task_version`; coverage separates received, replayable, reviewed, accepted,
-  external-miss and holdout-ready counts. `view=market` is explicitly
-  non-causal, defaults to the latest homogeneous
-  Program/policy/runtime-model cohort in
-  the requested window, uses mature denominators, hides the unreliable v1
-  event taxonomy, leaves the retired direction/magnitude/event-type price
-  rankings empty, and clusters similar withheld Events from at most the latest
-  seven days into one fact row. Market view rejects `hours > 168`; the separate
-  evidence-coverage view retains the 720-hour option.
-- `GET /api/news/review/tasks/{task_id}/evidence` requires `If-Match` and
-  returns only the evidence scoped to that task: immutable source/fact
-  snapshot, exact Program/policy/runtime-model cohort, input/told ledger,
-  policy trace, real sent
-  receipt, and verifier flags. Market reactions are hidden until a judgment is
-  accepted so they cannot anchor `should_push` review.
-- `POST /api/news/review/tasks/{task_id}/responses` requires `If-Match`, a
-  UUID `Idempotency-Key`, and a bounded rubric or blind-pairwise body. It
-  appends the judgment and its acceptance receipt atomically, never overwrites
-  history, and returns the next deterministic task. Blind pairwise critical
-  errors are side-qualified (`A:` or `B:`) and limited to the code-owned
-  factual/entity/direction/key-fact/duplicate/injection safety enum; the sealed
-  arm mapping converts a candidate-only critical error into release evidence.
-  `POST
-  /api/news/review/external-misses` applies the same receipt contract to an
-  immutable fact the pipeline never turned into an Event. These are the only
-  News HTTP writes. They use the existing Serve connection in an explicit
-  read-write transaction; PostgreSQL permits that role to INSERT only the two
-  append-only review fact tables and still denies all News/control rewrites.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`
@@ -852,15 +818,18 @@ append without rewrite access (current at migration `20260824_0302`). Since
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
-News GET; the two ReviewDesk POST paths are explicitly catalogued as write
-routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
-`/api/bootstrap` are declared no-SQL routes.
+News GET. The catalogued write-route set is empty since #256 — the audit still
+asks for it, so a write route added by accident fails the contract rather than
+slipping in unnoticed. `/healthz`, `/metrics`, and `/api/bootstrap` are declared
+no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints
 per-queue message/consumer counts.
-`news review queue|evidence|submit|external-miss` is the CLI form of the same
-ReviewDesk contract as HTTP; submissions require the task version and an
-idempotency key.
+`news review queue|evidence|submit|external-miss` is the whole ReviewDesk
+contract since #256; submissions require the task version and an idempotency
+key, and open one explicit read-write transaction under `tracefold_serve`,
+which PostgreSQL permits to INSERT only the two append-only review fact tables
+and still denies every News/control rewrite.
 
 `news learning baseline (--dataset SHA | --from-ms N --to-ms N [--all-cohorts])
 [--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]

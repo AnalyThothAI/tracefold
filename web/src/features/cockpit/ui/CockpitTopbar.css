@@ -13,7 +13,7 @@
     gap: 10px;
     height: var(--shell-topbar-height);
     min-height: var(--shell-topbar-height);
-    padding: 0 12px;
+    padding: 0 14px;
     border-bottom: 1px solid var(--border-subtle);
     background: var(--surface-glass);
     backdrop-filter: blur(14px);
@@ -22,13 +22,13 @@
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     min-width: 0;
   }
 
   .topbar-page-title {
     color: var(--text-primary);
-    font-size: var(--font-size-meta);
+    font-size: var(--font-size-body);
     font-weight: 620;
     white-space: nowrap;
   }
@@ -38,23 +38,37 @@
   }
 
   /*
-   * The health lamp (#207). Nothing renders while the pipeline is `ok`, so every rule below describes a state
-   * the reader is meant to act on. Amber and brick are the pipeline's own caution/alert tokens — never the
-   * direction red and green, which state a market opinion this lamp does not have.
+   * The health lamp (#207, #256). It is on every route, so its resting state has to be quiet: a plain
+   * control on the panel surface while the pipeline is `ok`, and only then amber or brick — the pipeline's
+   * own caution/alert tokens, never the direction red and green, which state a market opinion this lamp
+   * does not have.
    */
   .topbar-health-lamp {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    min-height: 26px;
-    padding: 0 9px;
-    border: 1px solid var(--signal-caution-border);
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    background: var(--signal-caution-soft);
+    background: var(--surface-panel);
     font: inherit;
-    font-size: var(--font-size-mono-meta);
+    font-size: var(--font-size-meta);
     cursor: pointer;
+  }
+
+  .topbar-health-lamp[data-level="warn"] {
+    border-color: var(--signal-caution-border);
+    background: var(--signal-caution-soft);
+  }
+
+  .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
+    background: var(--signal-done);
+  }
+
+  .topbar-health-lamp[data-level="off"] .topbar-health-dot {
+    background: var(--signal-neutral);
   }
 
   .topbar-health-lamp[data-level="bad"] {
@@ -176,7 +190,7 @@
     gap: 8px;
     min-width: 0;
     width: 100%;
-    max-width: 420px;
+    max-width: 360px;
     height: 30px;
     padding: 0 10px;
     border: 1px solid var(--border-subtle);
@@ -222,40 +236,6 @@
     border-radius: var(--radius-xs);
     color: var(--text-muted);
     font: var(--type-eyebrow);
-  }
-
-  /* The approved scan chrome is shared by the Event, deterministic OI, and Trading surfaces. */
-  .topbar[data-reference-frame] {
-    padding: 0 14px;
-  }
-
-  .topbar[data-reference-frame] .brand {
-    gap: 10px;
-  }
-
-  .topbar[data-reference-frame] .topbar-page-title {
-    font-size: var(--font-size-body);
-  }
-
-  .topbar[data-reference-frame] .topbar-health-lamp {
-    min-height: 28px;
-    padding: 0 10px;
-    border-color: var(--border-subtle);
-    color: var(--text-secondary);
-    background: var(--surface-panel);
-    font-size: var(--font-size-meta);
-  }
-
-  .topbar[data-reference-frame] .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
-    background: var(--signal-done);
-  }
-
-  .topbar[data-reference-frame] .topbar-health-lamp[data-level="off"] .topbar-health-dot {
-    background: var(--signal-neutral);
-  }
-
-  .topbar[data-reference-frame] .searchbar {
-    max-width: 360px;
   }
 
   .topbar-right {
@@ -339,10 +319,6 @@
       padding: 0 10px;
     }
 
-    .topbar[data-reference-frame] {
-      padding: 0 10px;
-    }
-
     .topbar-page-title,
     .topbar-anomaly span,
     .topbar-health-summary {
@@ -355,10 +331,6 @@
 
     /* Dot only. The sentence is still the button's accessible name, and the popover is one tap away. */
     .topbar-health-lamp {
-      padding: 0 7px;
-    }
-
-    .topbar[data-reference-frame] .topbar-health-lamp {
       padding: 0 7px;
     }
   }

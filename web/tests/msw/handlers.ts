@@ -24,17 +24,6 @@ export function apiHandlers(apiMock: ApiMock) {
         return HttpResponse.json(body, { status });
       }
     }),
-    http.post(/.*\/api\/.*/, async ({ request }) => {
-      const url = new URL(request.url);
-      try {
-        return HttpResponse.json(
-          (await apiMock.postApi(url.pathname, requestOptionsFromRequest(request))) as JsonBody,
-        );
-      } catch (error) {
-        const { body, status } = errorBody(error);
-        return HttpResponse.json(body, { status });
-      }
-    }),
   ];
 }
 

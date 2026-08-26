@@ -49,7 +49,7 @@ export function NewsSymbolWindow({
             这个标的在当前窗口里没有合格帧——不是被拦，是没有。
           </span>
         )}
-        <Link to={oiPath}>持仓异动监控 →</Link>
+        <Link to={oiPath}>OI 遥测审计 →</Link>
       </p>
       <NewsSourceLine path="GET /api/news/status → oi.window_occupancy · oi.policy" />
     </Card>

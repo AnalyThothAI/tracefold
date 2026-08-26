@@ -43,8 +43,7 @@ describe("news route", () => {
 
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
-    ["/news/review", "学习复盘", "/api/news/review"],
-    ["/news/oi", "持仓异动监控", "/api/news/status"],
+    ["/news/oi", "OI 遥测审计", "/api/news/status"],
     [
       "/news/events/evt-global-policy",
       "央行政策转向，风险资产承压",
@@ -89,6 +88,49 @@ describe("news route", () => {
     expect(
       within(await screen.findByRole("dialog")).queryByText("标的表", { exact: true }),
     ).not.toBeInTheDocument();
+  });
+
+  it("draws the frame's in-flight line only while the frame's own reads are pending", async () => {
+    let releaseStatus: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    setupAppRouteTest((mock) => {
+      mockAppRoutes(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) => {
+        if (path === "/api/news/status") await held;
+        return base(path, options);
+      };
+    });
+    const { container } = renderAppRoute("/news");
+
+    await waitFor(() =>
+      expect(container.querySelector(".page-state-route-progress")).not.toBeNull(),
+    );
+
+    releaseStatus!();
+    // A poll is not a cold start: the line must not come back every few seconds once the frame has its
+    // answers, or it stops meaning "still loading".
+    await waitFor(() => expect(container.querySelector(".page-state-route-progress")).toBeNull());
+  });
+
+  it("keeps the pipeline door on a secondary route while the pipeline is healthy", async () => {
+    /*
+     * 流水线状态 holds no navigation slot (#207). Hiding the lamp on the healthy path would leave the page
+     * unreachable exactly when a reader wants to confirm nothing is wrong, so #256 keeps the affordance on
+     * every route and lets its level carry the news instead.
+     */
+    setupAppRouteTest(mockAppRoutes);
+    renderAppRoute("/news/events/evt-global-policy");
+
+    const lamp = await screen.findByRole("button", { name: /流水线健康/ });
+    expect(lamp).toHaveAttribute("data-level", "ok");
+    expect(lamp).toHaveTextContent("流水线");
+    fireEvent.click(lamp);
+    expect(
+      within(await screen.findByRole("dialog")).getByRole("link", { name: /打开流水线状态/ }),
+    ).toHaveAttribute("href", "/news/status");
   });
 
   it("says the health read itself failed rather than going dark", async () => {
@@ -144,11 +186,8 @@ describe("news route", () => {
     renderAppRoute("/news");
     await screen.findByRole("heading", { name: "新闻事件流" });
 
-    fireEvent.click(screen.getByRole("link", { name: "持仓异动" }));
-    expect(await screen.findByRole("heading", { name: "持仓异动监控" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("link", { name: "学习复盘" }));
-    expect(await screen.findByRole("heading", { name: "学习复盘" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "OI 遥测审计" }));
+    expect(await screen.findByRole("heading", { name: "OI 遥测审计" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
@@ -193,5 +232,31 @@ describe("news route", () => {
     cleanup();
     renderAppRoute("/news/symbols/BTC");
     expect(await screen.findByRole("region", { name: "代币 BTC" })).toBeInTheDocument();
+  });
+
+  it("sends the reader back to the page they actually left, with its filters", async () => {
+    /*
+     * Four surfaces link to a token page (#256). A back control that always said 事件流 named a page the
+     * reader had never been on three times out of four, and from the feed it dropped the filters they
+     * arrived with — the referrer travels as route state precisely so neither can happen.
+     *
+     * The feed is the entrance exercised here because it is the one whose *query* also has to survive; the
+     * label each other entrance contributes is `routeReferrer`'s own mapping, unit-tested beside it.
+     */
+    renderAppRoute("/news?outcome=held&hours=168");
+    await screen.findByRole("heading", { name: "新闻事件流" });
+
+    fireEvent.click((await screen.findAllByRole("link", { name: "BTC" }))[0]);
+    await screen.findByRole("region", { name: "代币 BTC" });
+    expect(screen.getByRole("link", { name: "返回事件流" })).toHaveAttribute(
+      "href",
+      "/news?outcome=held&hours=168",
+    );
+
+    cleanup();
+    // A cold URL carries no referrer and must not invent one.
+    renderAppRoute("/news/symbols/BTC");
+    await screen.findByRole("region", { name: "代币 BTC" });
+    expect(screen.getByRole("link", { name: "返回事件流" })).toHaveAttribute("href", "/news");
   });
 });

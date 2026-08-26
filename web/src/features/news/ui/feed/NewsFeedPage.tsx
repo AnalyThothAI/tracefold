@@ -18,7 +18,8 @@ import {
   parseFeedFilters,
   type FeedFilterChanges,
 } from "../../model/feedFilters";
-import { absoluteTime, hoursLabel } from "../../model/newsLabels";
+import { newsFeedGroups } from "../../model/feedGroups";
+import { absoluteTime, formatCount, hoursLabel } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsEventDrawer } from "../detail/NewsEventDrawer";
@@ -111,7 +112,11 @@ export function NewsFeedPage({ token }: { token: string }) {
         ) : null}
       </NewsPageHeader>
 
-      <NewsFunnelCard status={statusQuery.data} />
+      {statusQuery.data ? (
+        <NewsFunnelCard status={statusQuery.data} />
+      ) : statusQuery.isLoading ? (
+        <PageState.TileSkeleton label="正在读取 24 小时漏斗" />
+      ) : null}
 
       <NewsFeedToolbar
         counts={firstPage?.counts ?? undefined}
@@ -175,22 +180,34 @@ export function NewsFeedPage({ token }: { token: string }) {
                 <span>EVENT</span>
                 <span>OUTCOME</span>
               </div>
-              {events.map((event) => (
-                <NewsEventRow
-                  event={event}
-                  fresh={eventFeed.freshIds.has(event.event_id)}
-                  key={event.event_id}
-                  onOpen={
-                    wideEnoughForDrawer
-                      ? (eventId, trigger) => {
-                          drawerTriggerRef.current = trigger;
-                          setDrawerId(eventId);
-                        }
-                      : undefined
-                  }
-                  quotes={quotes}
-                  searchState={feedSearch}
-                />
+              {/*
+               * The heading is `aria-hidden`: every row already announces its own full timestamp, and a
+               * screen reader that stopped to read `03:00 — 04:00` before each run would say the hour twice.
+               */}
+              {newsFeedGroups(events).map((group) => (
+                <div className="news-event-group" key={group.key}>
+                  <div aria-hidden className="news-event-group-heading">
+                    <span>{group.label}</span>
+                    <span>{formatCount(group.events.length)} 条</span>
+                  </div>
+                  {group.events.map((event) => (
+                    <NewsEventRow
+                      event={event}
+                      fresh={eventFeed.freshIds.has(event.event_id)}
+                      key={event.event_id}
+                      onOpen={
+                        wideEnoughForDrawer
+                          ? (eventId, trigger) => {
+                              drawerTriggerRef.current = trigger;
+                              setDrawerId(eventId);
+                            }
+                          : undefined
+                      }
+                      quotes={quotes}
+                      searchState={feedSearch}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
             {historyQuery.hasNextPage || (!historyRequested && historyCursor) ? (

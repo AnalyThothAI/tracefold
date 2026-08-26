@@ -1,4 +1,5 @@
 import { newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
 import { Link } from "react-router-dom";
 
@@ -69,6 +70,7 @@ export function TradingEvidence({
   counts: TradingCounts;
   floors: TradingFloors;
 }) {
+  const referrer = useRouteReferrer();
   return (
     <details className="trading-evidence">
       <summary>技术证据 · 影子研究、交易地板与未成单案例</summary>
@@ -173,7 +175,9 @@ export function TradingEvidence({
             {cases.map((row) => (
               <article className="trading-case-row" key={row.case_id}>
                 <span className="trading-symbol">
-                  <Link to={newsSymbolPath(row.base_symbol)}>{row.base_symbol}</Link>
+                  <Link state={referrer} to={newsSymbolPath(row.base_symbol)}>
+                    {row.base_symbol}
+                  </Link>
                 </span>
                 <span className="trading-kind">
                   {STRATEGY_ZH[row.strategy_id] ?? row.strategy_id}

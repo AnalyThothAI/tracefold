@@ -21,9 +21,31 @@ describe("PageState shared UI", () => {
       "page-state-table-skeleton",
       "page-state-table-skeleton-compact",
     );
-    // The skeleton keeps the shape of the rows it stands in for: three blocks per row, five rows in all.
-    expect(container.querySelectorAll(".page-state-table-block")).toHaveLength(15);
+    // The skeleton keeps the shape of the rows it stands in for: a clock, two text lines and a conclusion
+    // per row (#256), five rows in all.
+    expect(container.querySelectorAll(".page-state-bone")).toHaveLength(20);
     expect(container.querySelectorAll(".page-state-table-row")).toHaveLength(5);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it("shapes the metric band and the in-flight line without announcing them twice", async () => {
+    const { container } = render(
+      <section>
+        <PageState.RouteProgress />
+        <PageState.TileSkeleton label="loading metric band" />
+      </section>,
+    );
+
+    // The band stands in for a five-column `MetricRow`, so the page does not change height when the
+    // figures land.
+    const tiles = screen.getByRole("status", { name: "loading metric band" });
+    expect(tiles.querySelectorAll(".page-state-tile")).toHaveLength(5);
+    expect(tiles.querySelectorAll(".page-state-bone")).toHaveLength(15);
+    // The line is decoration on the frame: every surface underneath already announces its own busy state,
+    // and a second live region would make a screen reader read the whole cold start twice.
+    const progress = container.querySelector(".page-state-route-progress")!;
+    expect(progress).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelectorAll("[role='status']")).toHaveLength(1);
     expect(await axe(container)).toHaveNoViolations();
   });
 

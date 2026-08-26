@@ -5,11 +5,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import ExceptionHandler
 
@@ -33,7 +32,6 @@ from .router import create_api_router
 from .schemas.common import ReadinessData
 
 FRONTEND_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"
-REVIEW_MUTATION_BODY_MAX_BYTES = 32_768
 
 
 class FrontendStaticFiles(StaticFiles):
@@ -73,38 +71,6 @@ def create_app(
 
     app = FastAPI(title="Tracefold", lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1_024, compresslevel=5)
-
-    @app.middleware("http")
-    async def review_mutation_envelope_guard(request: Request, call_next: RequestResponseEndpoint) -> Response:
-        """Bound the two ReviewDesk writes before FastAPI reads JSON.
-
-        Review bodies are tiny operator judgments, so requiring a truthful
-        Content-Length is simpler and safer than accepting an unbounded
-        chunked stream and trying to interrupt Pydantic after allocation.
-        """
-
-        path = request.url.path
-        is_review_write = request.method == "POST" and (
-            path == "/api/news/review/external-misses"
-            or (path.startswith("/api/news/review/tasks/") and path.endswith("/responses"))
-        )
-        if is_review_write:
-            media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if media_type != "application/json":
-                return api_bad_request_response(
-                    request,
-                    ApiBadRequest("news_review_content_type_invalid", field="Content-Type"),
-                )
-            raw_length = request.headers.get("content-length")
-            if raw_length is None:
-                return api_bad_request_response(request, ApiBadRequest("news_review_content_length_required"))
-            try:
-                body_size = int(raw_length)
-            except ValueError:
-                return api_bad_request_response(request, ApiBadRequest("news_review_content_length_invalid"))
-            if body_size < 0 or body_size > REVIEW_MUTATION_BODY_MAX_BYTES:
-                return api_bad_request_response(request, ApiBadRequest("news_review_body_too_large"))
-        return await call_next(request)
 
     # Starlette types the registry as `(Request, Exception) -> Response` for every key, so a handler that
     # narrows to the exception class it was registered under can only be attached through a cast. The

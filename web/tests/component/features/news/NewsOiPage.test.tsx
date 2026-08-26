@@ -14,7 +14,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 /**
- * 持仓异动监控 (#207/#137). The lane is judged by rule rather than by the model, and the whole point of this
+ * OI 遥测审计 (#207/#137/#256). The lane is judged by rule rather than by the model, and the whole point of this
  * page is that the reader can see *which* rule — so the tests here are mostly about the page not inventing
  * anything the server did not say.
  */
@@ -49,7 +49,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await screen.findByRole("heading", { name: "OI 遥测审计" });
 
     await waitFor(() => expect(observed.admission).toBe("telemetry_deterministic"));
     expect(observed.hours).toBe("24");
@@ -62,7 +62,7 @@ describe("NewsOiPage", () => {
     // The tab filters the whole window server-side while the table shows one page of it. A count derived
     // from the rows below would make an empty page read as an empty window.
     renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await screen.findByRole("heading", { name: "OI 遥测审计" });
 
     const tabs = await screen.findByRole("tablist", { name: "按判定筛选" });
     expect(within(tabs).getByRole("tab", { name: /已推送/ })).toHaveTextContent("3");
@@ -262,7 +262,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await screen.findByRole("heading", { name: "OI 遥测审计" });
     await waitFor(() =>
       expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("HOLO"),
     );
@@ -294,7 +294,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await screen.findByRole("heading", { name: "OI 遥测审计" });
     await waitFor(() => expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("—"));
   });
 
@@ -390,7 +390,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await screen.findByRole("heading", { name: "OI 遥测审计" });
     // By structure, not by rendered text: with no `oi` block the row has no symbol and no measurement to
     // name it by, and its clock is local time — which is a different hour in CI than on this machine.
     await waitFor(() => expect(document.querySelector(".news-oi-row-main")).toBeInTheDocument());
@@ -409,7 +409,7 @@ describe("NewsOiPage", () => {
 
   it("shows the two compact policy sets side by side and never merges them", async () => {
     renderOi();
-    await screen.findByRole("heading", { name: "持仓异动监控" });
+    await screen.findByRole("heading", { name: "OI 遥测审计" });
 
     const gates = await screen.findByRole("heading", { name: "推送闸门 · NEWS.OI" });
     const gatesCard = gates.closest("article") as HTMLElement;

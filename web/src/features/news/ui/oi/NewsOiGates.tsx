@@ -27,8 +27,13 @@ export function NewsOiGates({
           value={policy ? `> ${compactPercent(policy.whale_oi_ratio_above_bps)}` : "—"}
         />
         <PolicyTile
-          label="窗口名次"
-          note={`拦下 ${gateCount(byRule.beyond_window_rank)}`}
+          /*
+           * 推送窗口名次, not 窗口名次 (#256). A full window withholds the *push* and says nothing about the
+           * move continuing — the note has to carry that, because a reader who read it the other way would
+           * treat a withheld frame as an exhausted one.
+           */
+          label="推送窗口名次"
+          note={`拦下 ${gateCount(byRule.beyond_window_rank)} · 满格只拦推送≠衰竭`}
           value={policy ? `≤ ${policy.max_rank_in_window} / ${windowLabel}` : "—"}
         />
         <PolicyTile

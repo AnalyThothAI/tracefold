@@ -82,13 +82,13 @@ describe("Tracefold design-system hard cut", () => {
     expect(sharedUiCss).not.toMatch(/\.research-|\.token-case|\.case-file/);
   });
 
-  it("exposes the four working surfaces with no nested tree", () => {
+  it("exposes the three working surfaces with no nested tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
     // Every destination is a working surface (#207). 流水线状态 left the tree because a healthy pipeline
     // makes it a click that answers "everything is fine"; it is reached from the topbar lamp instead. Event
     // detail is not a destination either — it highlights the feed it came from, and neither is the token
-    // page, which is reached from any `base_symbol` on the console.
-    expect(items.map((item) => item.to)).toEqual(["/news", "/news/oi", "/trading", "/news/review"]);
+    // page, which is reached from any `base_symbol` on the console. 学习复盘 left outright in #256.
+    expect(items.map((item) => item.to)).toEqual(["/news", "/trading", "/news/oi"]);
     expect(items.find((item) => item.to === "/news")?.isActive("/news/events/ev-1")).toBe(true);
     expect(items.find((item) => item.to === "/news")?.isActive("/news/oi")).toBe(false);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
@@ -111,8 +111,11 @@ describe("Tracefold design-system hard cut", () => {
     expect(topbar).not.toContain("WsStatusBeacon");
     expect(topbar).not.toMatch(/socketStatus|lastSocketMessageAt|providers|main-route-button/);
     expect(topbar).toContain('"news search"');
-    expect(topbar).toContain("搜索新闻事件 / 标题 / 资产");
+    // #256: one placeholder, on every route. The second, route-scoped copy is gone with the frame flag that
+    // switched between them.
     expect(topbar).toContain("事件 / base_symbol / 场所");
+    expect(topbar).not.toContain("搜索新闻事件 / 标题 / 资产");
+    expect(topbar).not.toContain("referenceFrame");
   });
 
   it("assigns every supported route family to a page archetype", () => {

@@ -6,9 +6,9 @@ import { forwardRef, type ReactNode } from "react";
  *
  * Generic actions — Search, RefreshCw, PanelLeft, Chevron, Check, X, ExternalLink, SlidersHorizontal —
  * stay on lucide and are never redrawn here: they are already at this spec, and a second hand-drawn copy
- * only introduces drift. What lucide cannot supply is the vocabulary this console is read in. A newspaper,
- * a bullseye and a heartbeat say "news", "target" and "activity"; the destinations are 事件流, 持仓异动 and
- * 学习复盘, and none of those three glyphs draws the word it stands for.
+ * only introduces drift. What lucide cannot supply is the vocabulary this console is read in. A newspaper
+ * and a heartbeat say "news" and "activity"; the destinations are 事件流 and OI 遥测审计, and neither glyph
+ * draws the word it stands for.
  *
  * Every icon here is on the same 24 grid with a 2px round-capped stroke and takes its colour from
  * `currentColor` alone, so at the 14px the sidebar and `IconButton` render them at, stroke density matches
@@ -59,31 +59,19 @@ export const EventStreamIcon = forwardRef<SVGSVGElement, LucideProps>((props, re
 ));
 EventStreamIcon.displayName = "EventStreamIcon";
 
-/** 学习复盘. A card a person has ticked: this page eats human annotation evidence. */
-export const ReviewCheckIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
-  <TracefoldIcon ref={ref} {...props}>
-    <rect height="15" rx="2" width="17" x="3.5" y="4.5" />
-    <path d="M8 12.2l2.8 2.8L16 9.5" />
-  </TracefoldIcon>
-));
-ReviewCheckIcon.displayName = "ReviewCheckIcon";
-
 /**
- * 持仓异动. Two stacked layers of open interest with one arrow leaving them: buildup plus a move.
+ * OI 遥测审计. A trace with one spike in it: the provider emits a frame when its own trigger fires, and this
+ * page is where a reader checks that the trace itself parsed, passed the gates and occupied a push slot.
  *
- * The arrow points up and **never flips with direction**. Open interest rising is not price rising (#104),
- * so a downward variant of this glyph would state a price call the frame does not make. Direction is carried
- * by the words 利多 / 利空 and the figures beside them, never by this shape.
+ * A flat line would say "monitoring"; the spike is the frame. The glyph never leans up or down as a price
+ * would — open interest rising is not price rising (#104).
  */
-export const OpenInterestIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
+export const TelemetryPulseIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
   <TracefoldIcon ref={ref} {...props}>
-    <path d="M3.5 17 12 21l8.5-4" />
-    <path d="M3.5 12 12 16l8.5-4" />
-    <path d="M12 10.5v-7" />
-    <path d="M8.5 7 12 3.5 15.5 7" />
+    <path d="M3 12h4l2.5-6 4 12L16 12h5" />
   </TracefoldIcon>
 ));
-OpenInterestIcon.displayName = "OpenInterestIcon";
+TelemetryPulseIcon.displayName = "TelemetryPulseIcon";
 
 /**
  * 交易. Two arrows, one down and one up, side by side (#207 PR-W4).

@@ -80,8 +80,9 @@ const routeCases: RouteCase[] = [
       await expect(page.locator(".news-detail-hero .news-outcome")).toContainText("已推送");
       await expect(page.getByRole("heading", { name: "这条新闻经历了什么" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "同类报道" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "学习复盘" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "在学习复盘中打开" })).toBeVisible();
+      // #256: the judgment is still reported; the door into the retired ReviewDesk is not.
+      await expect(page.getByRole("heading", { name: "人工复盘" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "在学习复盘中打开" })).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "市场标记" })).toHaveCount(0);
     },
     nestedOverflowSelectors: [

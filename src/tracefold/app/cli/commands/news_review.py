@@ -56,11 +56,10 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         payload = _read_json_or_yaml(str(args.file))
         kind = str(payload.get("kind") or "")
         key = str(args.idempotency_key or uuid.uuid4())
-        # `postgres_connection` accepts serve|workers|migrate; `review` was never one of them, so this path
-        # has raised `AttributeError: 'PostgresConfig' object has no attribute 'review_dsn'` since #112 and
-        # every existing review reached the table through the HTTP API instead. `tracefold_serve` is the role
-        # that actually holds INSERT on `news_reviews`, and it defaults to read-only — the HTTP ReviewDesk
-        # route opts one transaction into those two grants the same way (`serve_runtime.review_transaction`).
+        # `tracefold_serve` is the role that holds INSERT on `news_reviews`, and it defaults to read-only,
+        # so this path opts one transaction into those two table-level grants. Since #256 it is the *only*
+        # writer: the HTTP ReviewDesk routes are gone and the console has no write path at all, which makes
+        # this CLI the whole append surface for reviewed judgments.
         with postgres_connection(settings, role="serve") as conn, transaction(conn):
             conn.execute("SET TRANSACTION READ WRITE")
             desk = ReviewDesk(conn)

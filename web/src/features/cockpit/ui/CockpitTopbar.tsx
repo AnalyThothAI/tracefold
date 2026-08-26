@@ -1,6 +1,5 @@
 import type { OpenApiStatusData } from "@lib/types";
-import { IconButton } from "@shared/ui/IconButton";
-import { ChevronDown, RefreshCw, Search, TriangleAlert } from "lucide-react";
+import { ChevronDown, Search, TriangleAlert } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -8,9 +7,8 @@ import { Link } from "react-router-dom";
 import "./CockpitTopbar.css";
 
 const NEWS_SEARCH_ARIA_LABEL = "news search";
-const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
-/** Approved scan-surface copy. Server-side `q` remains the authority over which Event fields match. */
-const REFERENCE_FRAME_SEARCH_PLACEHOLDER = "事件 / base_symbol / 场所";
+/** Approved copy, now on every route (#256). Server-side `q` stays the authority over which fields match. */
+const NEWS_SEARCH_PLACEHOLDER = "事件 / base_symbol / 场所";
 
 /**
  * One route-context fact from a status read. `value` is undefined until the poll answers.
@@ -55,12 +53,9 @@ export type CockpitHealth = {
 };
 
 export type CockpitTopbarProps = {
-  /** Route-scoped chrome shared by the approved Event and OI scan surfaces. */
-  referenceFrame?: boolean;
   figures?: CockpitTopbarFigure[];
-  /** `null` while healthy except on approved scan frames, which keep the affordance visible. */
+  /** `null` only when the read itself has nothing to report; the affordance is otherwise always present. */
   health?: CockpitHealth | null;
-  onRefresh?: () => void;
   search: {
     onSubmitQuery: (query: string) => void;
     query?: string;
@@ -76,11 +71,9 @@ export type CockpitTopbarProps = {
 };
 
 export function CockpitTopbar({
-  referenceFrame = false,
   figures,
   health,
   navigationTrigger,
-  onRefresh,
   search,
   status,
   title,
@@ -89,11 +82,11 @@ export function CockpitTopbar({
   const anomaly = healthAnomaly(status);
   useEffect(() => setSearchDraft(search.query ?? ""), [search.query]);
   return (
-    <header className="topbar" data-reference-frame={referenceFrame || undefined}>
+    <header className="topbar">
       <div className="brand">
         {navigationTrigger}
         <span className="topbar-page-title">{title}</span>
-        <HealthLamp health={health} showChevron={referenceFrame} />
+        <HealthLamp health={health} />
       </div>
 
       {/* Enter submits. The box is the whole search interaction — there is no hotkey that focuses it. */}
@@ -112,16 +105,13 @@ export function CockpitTopbar({
           aria-label={NEWS_SEARCH_ARIA_LABEL}
           id="news-search-input"
           onChange={(event) => setSearchDraft(event.target.value)}
-          placeholder={
-            referenceFrame ? REFERENCE_FRAME_SEARCH_PLACEHOLDER : NEWS_SEARCH_PLACEHOLDER
-          }
+          placeholder={NEWS_SEARCH_PLACEHOLDER}
           value={searchDraft}
         />
-        {referenceFrame ? (
-          <span aria-hidden className="cockpit-searchbar-keycap">
-            /
-          </span>
-        ) : null}
+        {/* An inert keycap: the box is the whole search interaction and `/` binds nothing. */}
+        <span aria-hidden className="cockpit-searchbar-keycap">
+          /
+        </span>
       </form>
 
       <div className="topbar-right">
@@ -147,33 +137,23 @@ export function CockpitTopbar({
             <span>{anomaly}</span>
           </span>
         ) : null}
-        {onRefresh ? (
-          <IconButton aria-label="刷新" onClick={onRefresh} title="刷新">
-            <RefreshCw aria-hidden />
-          </IconButton>
-        ) : null}
       </div>
     </header>
   );
 }
 
 /**
- * Pipeline health and the approved scan frames' permanent pipeline affordance.
+ * Pipeline health, and the only door to 流水线状态 (#256).
  *
- * Event and OI scans keep the approved `流水线` button visible even while healthy. Other routes receive
- * `null` on the healthy path. One click opens the server-owned stage lines, instrument snapshot and status
- * destination.
+ * The artifact lights the lamp when the pipeline is not ok. It stays visible when it *is* ok because the
+ * status page holds no navigation slot: hiding the affordance on the healthy path would make the page
+ * unreachable exactly when a reader wants to confirm that nothing is wrong. One click opens the
+ * server-owned stage lines, the instrument snapshot and the destination.
  *
  * Radix owns `Esc`, the dismiss layer and `aria-expanded`. The console binds no document-level key handler
  * of its own and this must not become the exception.
  */
-function HealthLamp({
-  health,
-  showChevron,
-}: {
-  health?: CockpitHealth | null;
-  showChevron: boolean;
-}) {
+function HealthLamp({ health }: { health?: CockpitHealth | null }) {
   if (!health) return null;
   return (
     <Popover.Root>
@@ -189,7 +169,7 @@ function HealthLamp({
           <span className="topbar-health-summary">
             {health.buttonText || health.summary || health.headline}
           </span>
-          {showChevron ? <ChevronDown aria-hidden className="topbar-health-chevron" /> : null}
+          <ChevronDown aria-hidden className="topbar-health-chevron" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>

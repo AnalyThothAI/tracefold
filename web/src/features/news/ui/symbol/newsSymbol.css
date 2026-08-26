@@ -1,4 +1,12 @@
 @layer app.features {
+  /* The way back, on the same line the Event detail's toolbar occupies, so the two secondary pages match. */
+  .news-symbol-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 2px;
+  }
+
   /*
    * 代币页 (#207 PR-W1). Identity, the live rank window, then everything that happened to the name.
    *

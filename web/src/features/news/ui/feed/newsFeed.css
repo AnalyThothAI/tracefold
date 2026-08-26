@@ -35,6 +35,38 @@
     margin-top: -12px;
   }
 
+  /*
+   * The hour heading (#256). A tinted hairline band whose ink is quiet enough that a scan down the OUTCOME
+   * column is uninterrupted. The first band carries no top rule — the list header is already one.
+   */
+  .news-event-group + .news-event-group .news-event-group-heading {
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .news-event-group-heading {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border-faint);
+    color: var(--text-strong);
+    background: var(--accent-band);
+    /*
+     * The eyebrow step, not an eighth one. The artifact sets this band at 9.5px — half a step above the
+     * `TIME / EVENT / OUTCOME` header it sits under — and the scale has seven steps and no eighth, so the
+     * band takes the header's size and separates itself by weight and ink instead.
+     */
+    font: var(--type-eyebrow);
+    letter-spacing: 0.08em;
+  }
+
+  .news-event-group-heading span:last-child {
+    color: var(--text-faint);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+
   .news-event-list-header span:last-child {
     text-align: right;
   }
@@ -78,6 +110,10 @@
       border-radius: var(--radius-none);
       background: transparent;
       box-shadow: none;
+    }
+
+    .news-event-group-heading {
+      padding: 6px 12px;
     }
 
     .news-event-list-header {

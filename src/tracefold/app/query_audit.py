@@ -31,19 +31,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # manifest that omitted it would let `db query-audit --analyze` report full coverage of a public route
     # while never planning one of its queries.
     "/api/news/symbols/{base}": ("news_symbol_contracts", "news_symbol_tradeable", "news_symbol_aliases"),
-    "/api/news/review": (
-        "news_review_task_queue",
-        "news_review_task_evidence",
-        "news_review_active_agent",
-        "news_review_coverage_source",
-        "news_review_pairwise_queue",
-        "news_review_proposal_candidates",
-        "news_review_proposal_releases",
-        "news_review_proposal_reports",
-        "news_review_proposal_activations",
-        "news_review_market",
-    ),
-    "/api/news/review/tasks/{task_id}/evidence": ("news_review_task_evidence_version",),
     "/api/news/events/{event_id}": (
         "news_event_detail",
         "news_event_members",
@@ -73,12 +60,9 @@ PUBLIC_NO_SQL_ROUTES = frozenset(
     }
 )
 
-PUBLIC_WRITE_ROUTES = frozenset(
-    {
-        "/api/news/review/tasks/{task_id}/responses",
-        "/api/news/review/external-misses",
-    }
-)
+# The console is read-only and the ReviewDesk moved to the CLI (#256), so the public HTTP surface has no
+# write route at all. The audit still asks for the set rather than assuming it stays empty.
+PUBLIC_WRITE_ROUTES: frozenset[str] = frozenset()
 
 
 def query_audit_catalog(

@@ -58,9 +58,104 @@
   }
 
   /*
+   * One bone, everywhere. The sweep runs light across a `--border-faint` body rather than dark across it:
+   * on a white panel the pale band reads as a highlight travelling over a placeholder, which is what it is,
+   * and the artifact cuts it at exactly these stops. Radius follows height — 5px once a bone is tall enough
+   * to read as a block, 3px while it is still a line of text.
+   */
+  .page-state-bone {
+    display: block;
+    min-width: 0;
+    height: 11px;
+    border-radius: var(--radius-xs);
+    background: linear-gradient(
+        100deg,
+        var(--border-faint) 36%,
+        var(--surface-raised) 50%,
+        var(--border-faint) 64%
+      )
+      0 0 / 200% 100%;
+    animation: tf-shimmer 1.4s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .page-state-bone,
+    .page-state-route-progress {
+      animation: none;
+    }
+  }
+
+  /*
+   * The frame's in-flight line. Fixed to the top of the viewport and 2px tall, so it never displaces the
+   * topbar it sits over and never appears in the layout the page is about to occupy.
+   */
+  .page-state-route-progress {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 60;
+    height: 2px;
+    background: linear-gradient(
+        90deg,
+        var(--accent-clear) 0%,
+        var(--accent-primary) 46%,
+        var(--accent-clear) 100%
+      )
+      0 0 / 200% 100%;
+    animation: tf-shimmer 1.1s linear infinite;
+  }
+
+  /* The metric band, on the same five columns and hairline dividers `MetricRow` uses. */
+  .page-state-tile-skeleton {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+  }
+
+  .page-state-tile {
+    display: grid;
+    gap: 7px;
+    padding: 14px;
+    border-left: 1px solid var(--border-faint);
+  }
+
+  .page-state-tile:first-child {
+    border-left: 0;
+  }
+
+  .page-state-tile-eyebrow {
+    width: 64px;
+    height: 9px;
+  }
+
+  .page-state-tile-value {
+    width: 72px;
+    height: 20px;
+    border-radius: var(--radius-sm);
+  }
+
+  .page-state-tile-caption {
+    width: 96px;
+    height: 10px;
+  }
+
+  @media (max-width: 1023px) {
+    .page-state-tile-skeleton {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .page-state-tile:nth-child(odd) {
+      border-left: 0;
+    }
+  }
+
+  /*
    * The skeleton keeps the row grid it is standing in for — 54 / 1fr / 150 at desktop — so the list does not
-   * change shape when the answer lands. It shimmers darker than the card: on a light ground a lighter
-   * shimmer reads as a hole.
+   * change shape when the answer lands.
    */
   .page-state-table-skeleton {
     display: grid;
@@ -78,14 +173,26 @@
     box-shadow: none;
   }
 
+  .page-state-table-head {
+    height: 33px;
+    border-bottom: 1px solid var(--border-faint);
+    background: var(--surface-raised);
+  }
+
   .page-state-table-row {
     display: grid;
     grid-template-columns: 54px minmax(0, 1fr) 150px;
     align-items: center;
     gap: 14px;
     min-height: 56px;
-    padding: 10px 14px;
+    padding: 13px 14px;
     border-bottom: 1px solid var(--border-faint);
+  }
+
+  .page-state-table-lines {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
   }
 
   .page-state-table-row:last-child {
@@ -99,30 +206,33 @@
     padding: 8px 10px;
   }
 
-  .page-state-table-block {
-    display: block;
-    min-width: 0;
-    border-radius: var(--radius-xs);
-    background: linear-gradient(
-      90deg,
-      var(--border-faint) 8%,
-      var(--border-subtle) 18%,
-      var(--border-faint) 33%
-    );
-    background-size: 320px 100%;
-    animation: tf-shimmer 1.4s linear infinite;
+  /* A 92px conclusion bone does not fit a 42px column; inside a drawer the trailing bone is the column. */
+  .page-state-table-skeleton-compact .page-state-table-block-trailing {
+    width: 100%;
+  }
+
+  .page-state-table-skeleton-compact .page-state-table-block-leading {
+    width: 100%;
   }
 
   .page-state-table-block-leading {
-    height: 11px;
+    width: 38px;
   }
 
   .page-state-table-block-body {
-    height: 30px;
+    width: 72%;
+    height: 13px;
+  }
+
+  .page-state-table-block-sub {
+    width: 44%;
+    height: 10px;
   }
 
   .page-state-table-block-trailing {
-    height: 11px;
+    width: 92px;
+    height: 12px;
+    justify-self: end;
   }
 
   @media (max-width: 767px) {

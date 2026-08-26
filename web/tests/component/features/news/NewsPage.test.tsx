@@ -170,6 +170,78 @@ describe("NewsPage", () => {
     expect(row).toHaveTextContent("判为噪声");
   });
 
+  it("marks hour runs without reordering the server's page", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                event_id: "evt-late",
+                leader_title: "late",
+                opened_at_ms: new Date(2026, 7, 21, 3, 50).getTime(),
+              }),
+              newsFeedEventFixture({
+                event_id: "evt-early",
+                leader_title: "early",
+                opened_at_ms: new Date(2026, 7, 21, 3, 4).getTime(),
+              }),
+              newsFeedEventFixture({
+                event_id: "evt-before",
+                leader_title: "before",
+                opened_at_ms: new Date(2026, 7, 21, 2, 30).getTime(),
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    const { container } = renderNews(<NewsPage token="test-token" view="feed" />);
+    await screen.findByText("03:00 — 04:00");
+
+    const headings = [...container.querySelectorAll(".news-event-group-heading")].map(
+      (heading) => heading.textContent,
+    );
+    expect(headings).toEqual(["03:00 — 04:002 条", "02:00 — 03:001 条"]);
+    // The rows come back in the order the server sent them; grouping does not re-sort the page.
+    expect(
+      [...container.querySelectorAll(".news-event-row")].map((row) =>
+        row.getAttribute("data-event-id"),
+      ),
+    ).toEqual(["evt-late", "evt-early", "evt-before"]);
+    // Every row already announces its full timestamp; a screen reader that stopped for each strip would
+    // read the hour twice.
+    for (const heading of container.querySelectorAll(".news-event-group-heading")) {
+      expect(heading).toHaveAttribute("aria-hidden", "true");
+    }
+  });
+
+  it("shapes the cold load like the page that is coming, then puts it away", async () => {
+    let releaseStatus: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    server.use(
+      http.get(/.*\/api\/news\/status$/, async () => {
+        await held;
+        return HttpResponse.json({ ok: true, data: newsStatusFixture() });
+      }),
+    );
+
+    const { container } = renderNews(<NewsPage token="test-token" view="feed" />);
+
+    // Five tiles for the five funnel stages: the band does not change height when the figures land.
+    const tiles = await screen.findByRole("status", { name: "正在读取 24 小时漏斗" });
+    expect(tiles.querySelectorAll(".page-state-tile")).toHaveLength(5);
+    expect(container.querySelector(".news-funnel-card")).toBeNull();
+
+    releaseStatus!();
+    await waitFor(() => expect(container.querySelector(".news-funnel-card")).not.toBeNull());
+    expect(screen.queryByRole("status", { name: "正在读取 24 小时漏斗" })).toBeNull();
+  });
+
   it("drops the badge on a held Event and leaves its Chinese reason alone", async () => {
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
@@ -616,11 +688,9 @@ describe("NewsPage", () => {
       screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
     ).toBeInTheDocument();
     expect(screen.getByText("利率指引与市场预期背离，风险资产定价需要重估")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "学习复盘" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "在学习复盘中打开" })).toHaveAttribute(
-      "href",
-      "/news/review?view=queue&mode=event&event=evt-global-policy",
-    );
+    // #256: the judgments are still served and still shown; the door into the retired ReviewDesk is not.
+    expect(screen.getByRole("heading", { name: "人工复盘" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "在学习复盘中打开" })).toBeNull();
     const hero = region.querySelector<HTMLElement>(".news-detail-hero")!;
     expect(
       within(hero).getByText("Central banks respond to a new global policy shock"),
