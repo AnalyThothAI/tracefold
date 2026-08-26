@@ -470,6 +470,27 @@ describe("NewsOiPage", () => {
     expect(screen.getByText("order-wif")).toBeInTheDocument();
   });
 
+  it("names which capital read failed, and offers a retry, even on a cold failure", async () => {
+    /*
+     * Each of the three capital reads fails on its own. A cold admission-rules failure leaves the
+     * Candidate Gate panel with nothing to print, and four `—` tiles beside 已启用 read as "no
+     * admission rule is configured" rather than "we could not ask" — so it has to be named above the
+     * fold and retryable, not only reported inside the panel.
+     */
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({ ok: false, error: "status unavailable" }, { status: 503 }),
+      ),
+    );
+    renderOi();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("准入规则读取失败");
+    expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
+    // And the panel says the same thing where the missing numbers are.
+    expect(screen.getByText("PAPER · 准入规则未读到")).toBeInTheDocument();
+  });
+
   it("names why a frame has no case, instead of one 未成案 for four different facts", async () => {
     /*
      * #269. The admission ledger has held a named reason per source since #264, and this column could

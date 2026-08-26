@@ -99,6 +99,20 @@ export function NewsOiPage({ token }: { token: string }) {
   const counts = Object.fromEntries(
     NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
   ) as Record<NewsOiTab, number | null>;
+  /*
+   * Three capital reads sit under this page and each fails on its own, so each is named on its own.
+   *
+   * A *cold* failure counts, not just a stale refresh: with no admission rules read, the Candidate
+   * Gate panel has nothing to print, and four `—` tiles beside 已启用 read as "no admission rule is
+   * configured" rather than "we could not ask". The panel says so itself, and this line is what makes
+   * it visible above the fold and gives the reader a retry — `PageState.Stale` only offers one when
+   * there is a message to attach it to.
+   */
+  const capitalReadFailures = [
+    tradingQuery.isError ? "交易账本" : "",
+    gateQuery.isError ? "准入台账" : "",
+    tradingStatusQuery.isError ? "准入规则" : "",
+  ].filter(Boolean);
   return (
     <NewsPageShell archetype="scan" className="news-oi-shell" label="OI 遥测审计">
       <NewsPageHeader
@@ -128,10 +142,8 @@ export function NewsOiPage({ token }: { token: string }) {
       {status ? (
         <PageState.Stale
           failedRefresh={
-            (tradingQuery.isError && tradingQuery.data) ||
-            (gateQuery.isError && gateQuery.data) ||
-            (tradingStatusQuery.isError && tradingStatusQuery.data)
-              ? "交易账本刷新失败，继续显示上次读取。"
+            capitalReadFailures.length
+              ? `${capitalReadFailures.join(" / ")}读取失败，其余内容仍是上次读取。`
               : undefined
           }
           onRetry={() => {
