@@ -79,6 +79,8 @@ def _event(
     magnitude: int = 2,
     event_type: str = "listing",
     ingest_mode: str = "live",
+    admission: str = "candidate",
+    ground_assets: bool = True,
 ) -> None:
     conn.execute(
         """
@@ -96,7 +98,7 @@ def _event(
           focus_fact_id,
           opened_at_ms, last_member_at_ms, expires_at_ms, admission, storyline_key, ingest_mode,
           created_at_ms, updated_at_ms
-        ) VALUES (%s, %s, 'general', %s, 'c', 'leader headline', %s, %s, %s, %s, 'candidate', %s, %s, %s, %s)
+        ) VALUES (%s, %s, 'general', %s, 'c', 'leader headline', %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             event_id,
@@ -106,13 +108,14 @@ def _event(
             opened_at_ms,
             opened_at_ms,
             opened_at_ms + HOUR,
+            admission,
             f"asset:{symbols[0]}" if symbols else "theme:none",
             ingest_mode,
             opened_at_ms,
             opened_at_ms,
         ),
     )
-    for symbol in symbols:
+    for symbol in symbols if ground_assets else ():
         conn.execute(
             "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES (%s, %s, NULL, %s)",
             (symbol, event_id, opened_at_ms),
@@ -358,6 +361,53 @@ def test_the_due_scan_covers_held_events_and_stops_at_terminal_rows(conn) -> Non
 
     # A partial row that already named its reason has finished trying; re-asking every minute is a spin.
     assert {row["event_id"] for row in repos.price.due_reactions(now_ms=NOW, limit=100)} == {"dropped"}
+
+
+def test_a_telemetry_frame_reaches_the_price_plane_only_once_its_asset_is_recorded(conn) -> None:
+    """#267, at the seam where it actually failed: the write and the read must agree.
+
+    A telemetry Event arrives with `grounded_assets = []` because the admission Gate cannot ground
+    `TRUMP OI Rise 4.55%, OI Value 32.17M, …`. Until the deterministic judge's own primary is written
+    back, `due_reactions` — which walks Event-assets, not verdicts — has nothing to plan, which is why
+    production had 0 reactions against 112 frames and a frame table with three permanently empty
+    columns.
+    """
+
+    _universe(conn, _instrument("binance.perp", "TRUMPUSDT", "TRUMP"))
+    _event(
+        conn,
+        "oi-frame",
+        symbols=("TRUMP",),
+        opened_at_ms=NOW - 2 * HOUR,
+        admission="telemetry_deterministic",
+        ground_assets=False,
+    )
+    repos = repositories_for_connection(conn)
+    assert repos.price.due_reactions(now_ms=NOW, limit=100) == []
+
+    with repos.transaction():
+        repos.news.record_event_assets(event_id="oi-frame", assets=[("trump", "perp")])
+
+    due = repos.price.due_reactions(now_ms=NOW, limit=100)
+    assert [(row["event_id"], row["symbol"]) for row in due] == [("oi-frame", "TRUMP")]
+    # The anchor is the Event's own, so the 1 H and 4 H horizons are measured from the frame, and the
+    # judge's primary is what the review's event-level sample is taken over.
+    assert due[0]["anchor_at_ms"] == NOW - 2 * HOUR
+    assert due[0]["is_primary"] is True
+    # Idempotent: Triage settles a redelivered Event again and the row is identical either way.
+    with repos.transaction():
+        repos.news.record_event_assets(event_id="oi-frame", assets=[("TRUMP", "perp")])
+    assert len(repos.price.due_reactions(now_ms=NOW, limit=100)) == 1
+
+
+def test_recording_an_asset_for_an_event_that_does_not_exist_writes_nothing(conn) -> None:
+    """The anchor comes from the Event row, so no Event means no row rather than a guessed timestamp."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.record_event_assets(event_id="never-admitted", assets=[("TRUMP", "perp")])
+        repos.news.record_event_assets(event_id="never-admitted", assets=[("", None)])
+    assert conn.execute("SELECT count(*) AS n FROM news_event_assets").fetchone()["n"] == 0
 
 
 def test_reaction_writes_are_idempotent_and_never_lose_a_persisted_price_point(conn) -> None:

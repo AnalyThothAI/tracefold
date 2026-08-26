@@ -63,6 +63,21 @@ class CandidateGateStorage:
         A terminal row keeps its status, stage, reason, evidence and case link; only
         `last_evaluated_at_ms` and `attempt_count` move. That is what makes "the scanner re-read this
         source 40 times" and "the answer changed" distinguishable in the ledger.
+
+        The clock is the one answer that closes a row *without* replacing what it was waiting on
+        (#268). `expire_stale_gate_decisions` already knew that and left `stage`/`reason` alone, but
+        the sweep never got to say it: the scanner re-reads its whole overlap window every couple of
+        seconds, so a frame deferred on `routing:no_native_perp` was re-evaluated by `admit_trigger`
+        the moment it passed `max_age_ms` and arrived here as `eligibility:trigger_stale`, which the
+        old clause wrote over the top. Every reason a source can *wait* on — an unlisted instrument,
+        an unavailable candle, a deny-list entry — therefore collapsed into `trigger_stale` within
+        five minutes, and `candidate_reasons_*` aggregated the clock instead of the bottleneck.
+
+        So `status` and `retryable` always advance out of `DEFERRED` — the row is closed either way —
+        while `stage`, `reason`, `evidence` and `case_id` advance only when the incoming answer is
+        something other than the clock closing an already-open row. A source seen for the first time
+        when it is already too old still records `eligibility:trigger_stale`: it never had another
+        reason, and that INSERT does not reach this clause at all.
         """
 
         self.conn.execute(
@@ -77,15 +92,19 @@ class CandidateGateStorage:
                    attempt_count = trading_candidate_gate_decisions.attempt_count + 1,
                    status = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
                                  THEN EXCLUDED.status ELSE trading_candidate_gate_decisions.status END,
-                   stage = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
-                                THEN EXCLUDED.stage ELSE trading_candidate_gate_decisions.stage END,
-                   reason = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
-                                 THEN EXCLUDED.reason ELSE trading_candidate_gate_decisions.reason END,
                    retryable = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
                                     THEN EXCLUDED.retryable ELSE trading_candidate_gate_decisions.retryable END,
+                   stage = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
+                                 AND NOT (EXCLUDED.status = 'EXPIRED' AND EXCLUDED.reason = 'trigger_stale')
+                                THEN EXCLUDED.stage ELSE trading_candidate_gate_decisions.stage END,
+                   reason = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
+                                  AND NOT (EXCLUDED.status = 'EXPIRED' AND EXCLUDED.reason = 'trigger_stale')
+                                 THEN EXCLUDED.reason ELSE trading_candidate_gate_decisions.reason END,
                    evidence = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
+                                    AND NOT (EXCLUDED.status = 'EXPIRED' AND EXCLUDED.reason = 'trigger_stale')
                                    THEN EXCLUDED.evidence ELSE trading_candidate_gate_decisions.evidence END,
                    case_id = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
+                                   AND NOT (EXCLUDED.status = 'EXPIRED' AND EXCLUDED.reason = 'trigger_stale')
                                   THEN EXCLUDED.case_id ELSE trading_candidate_gate_decisions.case_id END
             """,
             (

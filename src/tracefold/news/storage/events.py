@@ -269,6 +269,41 @@ class EventStorage:
                 (symbol.upper().replace("XYZ-", ""), event_id, int(opened_at_ms)),
             )
 
+    def record_event_assets(self, *, event_id: str, assets: Sequence[tuple[str, str | None]]) -> None:
+        """Attach symbols a *deterministic* judge resolved to an Event the Gate could not ground (#267).
+
+        `news_event_assets` answers "which assets does this Event concern", and four planes read it:
+        the Reaction planner's due scan, the feed's `?symbol=` filter behind the token page, the
+        instrument-grounding funnel, and reader history's canonical-asset overlap. The telemetry lanes
+        were absent from all four for the same reason — an OI frame's wire text is
+        `NVDA OI Rise 4.55%, OI Value 32.17M, …`, which the admission Gate cannot ground, so
+        `grounded_assets` is `[]` and no row was ever written. The canonical symbol exists a moment
+        later, when the deterministic parser resolves it, and until now nothing carried it back here.
+
+        The anchor is read from the Event row rather than passed in, so the column cannot disagree
+        with the Event whose reaction horizons are measured from it.
+
+        `ON CONFLICT DO NOTHING` keeps this idempotent under redelivery, which matters because Triage
+        can settle the same Event twice; the row is identical either way.
+        """
+
+        rows = [
+            (str(symbol or "").strip().upper().removeprefix("XYZ-"), market_type) for symbol, market_type in assets
+        ]
+        rows = [row for row in rows if row[0]]
+        if not rows:
+            return
+        self.conn.execute(
+            """
+            INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)
+            SELECT q.symbol, e.event_id, q.market_type, e.opened_at_ms
+              FROM news_events e, unnest(%s::text[], %s::text[]) AS q(symbol, market_type)
+             WHERE e.event_id = %s
+            ON CONFLICT DO NOTHING
+            """,
+            ([row[0] for row in rows], [row[1] for row in rows], event_id),
+        )
+
     def add_member(
         self,
         *,
