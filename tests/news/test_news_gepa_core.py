@@ -255,7 +255,10 @@ def _episode_payloads() -> tuple[dict[str, Any], ...]:
     return tuple(
         {
             "case_id": f"case-{cluster}-{name}",
-            "cluster_id": f"cluster-{cluster}",
+            # A target and a control are different facts. Giving both the same cluster used to hide that the
+            # optimizer counted Event members rather than connected facts; Objective Plan v2 deliberately
+            # elects only one representative from a real connected cluster.
+            "cluster_id": f"cluster-{cluster}-{name}",
             "stratum": "review_failure" if name == "target" else "delivered",
             "context": context,
             "policy_metric": {
@@ -282,11 +285,11 @@ def _episode_payloads() -> tuple[dict[str, Any], ...]:
             "accepted_review": review,
             "production_judgment": _judgment(**verdict).model_dump(mode="json"),
         }
-        # Two clusters so the split is possible, and both halves carry every required stratum: a
+        # Three target/control pairs so the 70/30 split is possible, and both halves carry every required stratum: a
         # safety/positive case and a safety/negative one. Since #199 each half also has to carry at
         # least one verified Prompt target *and* at least one stable-correct control — GEPA is handed
         # `target + control` only, so a corpus of failures alone no longer splits at all.
-        for cluster in (1, 2)
+        for cluster in (1, 2, 3)
         for name, final, review, verdict in (
             (
                 "target",
@@ -409,7 +412,7 @@ def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     assert result.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
     assert result.patch.reader_card_instruction == ""
     assert result.metric_calls == 2
-    assert result.failure_cluster_ids == ("cluster-1", "cluster-2")
+    assert result.failure_cluster_ids == ("cluster-1-target", "cluster-2-target", "cluster-3-target")
     assert result.target_dimensions == ("direction",)
     receipts = result.model_dump(mode="json")
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
@@ -877,8 +880,15 @@ def _balanced(cluster: str, index: int) -> list[Any]:
     ]
 
 
-def test_split_is_disjoint_time_ordered_and_never_divides_a_fact_cluster() -> None:
-    episodes = [*_balanced("c1", 0), *_balanced("c2", 1), *_balanced("c3", 2), *_balanced("c4", 3)]
+def test_split_is_disjoint_time_ordered_and_uses_one_fact_cluster_representative() -> None:
+    episodes = [
+        _split_episode("c1", "c1-push", "must_push", 0),
+        _split_episode("c2", "c2-hold", "must_hold", 1),
+        _split_episode("c3", "c3-push", "must_push", 2),
+        _split_episode("c4", "c4-hold", "must_hold", 3),
+        _split_episode("c5", "c5-push", "must_push", 4),
+        _split_episode("c6", "c6-hold", "must_hold", 5),
+    ]
     train, val, receipt = _honest_split(episodes)
 
     train_clusters = {episode.cluster_id for episode in train}
@@ -886,12 +896,14 @@ def test_split_is_disjoint_time_ordered_and_never_divides_a_fact_cluster() -> No
     assert train_clusters.isdisjoint(val_clusters)
     assert {episode.case_id for episode in train}.isdisjoint({episode.case_id for episode in val})
     # Earliest clusters train, latest select. No shuffle, no seed.
-    assert train_clusters == {"c1", "c2", "c3"} and val_clusters == {"c4"}
-    assert receipt["train"]["cluster_n"] == 3 and receipt["development_selection"]["cluster_n"] == 1
+    assert train_clusters == {"c1", "c2", "c3", "c4"} and val_clusters == {"c5", "c6"}
+    assert receipt["train"]["cluster_n"] == 4 and receipt["development_selection"]["cluster_n"] == 2
     assert receipt["disjointness"]["shared_case_ids"] == 0
     assert len(receipt["train"]["cluster_root_sha256"]) == 64
     # Deterministic: the same episodes in any input order produce the same split.
     assert _honest_split(list(reversed(episodes)))[2] == receipt
+    with pytest.raises(ValueError, match="split_requires_one_representative_per_cluster"):
+        _honest_split(_balanced("duplicate", 0))
 
 
 def test_split_fails_closed_when_a_half_cannot_detect_the_regressions_it_exists_for() -> None:
@@ -901,7 +913,7 @@ def test_split_fails_closed_when_a_half_cannot_detect_the_regressions_it_exists_
         _honest_split(episodes)
 
     with pytest.raises(ValueError, match="split_requires_two_clusters"):
-        _honest_split(_balanced("only", 0))
+        _honest_split([_split_episode("only", "only-push", "must_push", 0)])
 
 
 def test_retrieval_is_reported_separately_so_a_scalar_score_cannot_hide_a_recall_failure() -> None:

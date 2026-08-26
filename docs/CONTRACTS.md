@@ -1165,7 +1165,13 @@ the sealed corpus, builds the one `GepaObjectivePlan`, and reports
 derived owner distribution, exact-gold coverage by dimension, the train and
 development-selection halves of the honest split with their case and cluster
 roots, the required strata, retrieval verifiability, and a per-metric-call task
-and judge envelope computed from the corpus. It makes no task, reflection or
+and judge envelope computed from the corpus. Objective Plan v2 elects exactly
+one optimizer representative per connected fact cluster before the split:
+target before control, then target-dimension count, safety status,
+newer Event and stable case id. Other members remain frozen diagnostics with a
+`cluster_representative_shadowed:*` reason. Split receipt v2 proves the resulting
+one-case-per-cluster invariant; if election removes a target, control or required stratum from either half,
+readiness remains fail-closed. It makes no task, reflection or
 judge call and writes nothing. `outcome` is `ready` or `insufficient`; the exit
 code stays `0` for an `insufficient` report, because refusing to optimize a
 corpus that cannot support it is a result rather than a failure. `insufficient`
@@ -1179,6 +1185,12 @@ explanation in advance, not a bypass — `run_gepa` rebuilds the same plan and
 refuses on the same conditions, and `CandidateEvaluator` rebuilds it again from
 the frozen dataset and requires the candidate's declared failure clusters,
 target dimensions and split roots to equal it exactly.
+
+Optimizer candidates publish `optimization_objective_summary.v2`, including
+the Objective Plan schema plus the representative case ids, count and root. Registration
+re-derives and compares that population. A
+candidate that declares split roots with an older or missing plan identity is
+registration-ineligible; its append-only artifact remains historical evidence.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
@@ -1202,7 +1214,9 @@ here on identical terms, because the generator is audit, not permission. The
 command re-applies the patch to the running stable to derive the candidate's
 Program identity, re-projects the corpus and re-derives the #199 Objective Plan
 rather than trusting the candidate's own `objective_summary`, and refuses a
-candidate whose declared projection root or split disagrees. It stores the
+candidate whose declared projection root, Objective Plan schema, representative
+optimizer population identity, or split disagrees. These checks run before any
+candidate artifact is written. It stores the
 candidate under kind `prompt_candidate` keyed by its own `candidate_sha256`, and
 the `ProposalReceipt` carries that root plus
 `development_episode_projection_root_sha256` — the registrar's own projection,

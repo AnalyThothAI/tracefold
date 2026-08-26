@@ -12,6 +12,7 @@ the Objective Plan from `development_compile_export`, so the reverse edge would 
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..artifact_identity import canonical_sha
@@ -24,10 +25,42 @@ from ..learning.contracts import (
 )
 from ..learning.dataset import AdmittedCandidate, DevelopmentDatasetStore
 from ..learning.ledger import LearningLedger
-from ..learning.objective import DevelopmentEpisode, build_gepa_objective_plan
+from ..learning.objective import (
+    DevelopmentEpisode,
+    GepaObjectivePlan,
+    build_gepa_objective_plan,
+    optimizer_population_identity,
+)
 from ..learning.projection import _arm_exact_diff
 from ..program.artifact import apply_program_patch, load_stable_program_artifact
 from ..storage.root import NewsRepository
+
+
+def validate_declared_objective_summary(
+    objective_summary: Mapping[str, Any],
+    *,
+    episode_projection_root_sha256: str,
+    plan: GepaObjectivePlan,
+) -> None:
+    """Hold a declared optimizer population to the release plane's re-derived plan."""
+
+    declared_root = str(objective_summary.get("episode_projection_root_sha256") or "")
+    if declared_root and declared_root != episode_projection_root_sha256:
+        raise ValueError("news_learning_candidate_corpus_mismatch")
+    declared_split = objective_summary.get("split")
+    if not declared_split:
+        return
+    if str(objective_summary.get("plan_schema") or "") != plan.schema_version:
+        raise ValueError("news_learning_proposal_objective_schema_unverified")
+    expected_population = {
+        "optimizer_case_ids": list(plan.optimizer_case_ids),
+        **optimizer_population_identity(plan),
+    }
+    declared_population = {key: objective_summary.get(key) for key in expected_population}
+    if declared_population != expected_population:
+        raise ValueError("news_learning_proposal_optimizer_population_unverified")
+    if declared_split != plan.split:
+        raise ValueError("news_learning_proposal_split_roots_unverified")
 
 
 class CandidateRegistry:
@@ -113,11 +146,14 @@ class CandidateRegistry:
         # be judged against evidence nobody generated it from.
         if receipt.development_episode_projection_root_sha256 != _sha(episodes):
             raise ValueError("news_learning_candidate_corpus_mismatch")
-        # A GEPA candidate names the projection it optimized on; an external proposal names none, and is
-        # bound to whatever registration re-projected. Disagreement is the one case that must fail.
-        declared_root = str(prompt.objective_summary.get("episode_projection_root_sha256") or "")
-        if declared_root and declared_root != receipt.development_episode_projection_root_sha256:
-            raise ValueError("news_learning_candidate_corpus_mismatch")
+        # A GEPA candidate names the projection and representative split it optimized on; an external
+        # proposal names neither and is bound to what registration re-projected. The shared release
+        # validator keeps this later gate identical to the pre-write registration gate.
+        validate_declared_objective_summary(
+            prompt.objective_summary,
+            episode_projection_root_sha256=receipt.development_episode_projection_root_sha256,
+            plan=plan,
+        )
         # The Objective Plan, rebuilt from the same frozen corpus. A candidate that declares clusters the
         # plan does not call targets was optimized against something else.
         if set(receipt.failure_cluster_ids) != set(plan.target_failure_cluster_ids):
@@ -125,12 +161,6 @@ class CandidateRegistry:
             raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
         if tuple(candidate.target_dimensions) != plan.target_dimensions:
             raise ValueError("news_learning_proposal_target_dimensions_unverified")
-        # The split roots, not the split's shape: `readiness`, the optimization and this re-projection must
-        # all name the same train and development-selection halves, or the winner was picked on a different
-        # corpus than the one this gate is about to judge it against.
-        declared_split = prompt.objective_summary.get("split")
-        if declared_split and declared_split != plan.split:
-            raise ValueError("news_learning_proposal_split_roots_unverified")
         if candidate.development_dataset_sha != candidate.proposal_receipt.development_dataset_sha:
             raise ValueError("news_learning_proposal_dataset_mismatch")
         if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):

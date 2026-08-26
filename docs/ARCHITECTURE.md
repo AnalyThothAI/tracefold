@@ -1210,6 +1210,9 @@ not produce the candidate. `release register` re-applies the patch to the
 running stable Program to *derive* the arm's identity, re-projects the frozen
 corpus, records its own `development_episode_projection_root_sha256`, and
 re-derives the #199 Objective Plan rather than trusting the candidate's summary.
+A declared optimizer split is registrable only when its Objective Plan schema,
+representative case IDs/count/root, and split all equal that re-derived plan;
+registration checks this before writing candidate artifacts.
 A patch a person wrote and a patch GEPA wrote are admissible on exactly the same
 evidence.
 
@@ -1257,8 +1260,16 @@ Gate, storyline, policy, delivery, taxonomy, provider failures, derived-only
 owners, failed dimensions with no stated correct value, accepted external misses
 with no stable output — and stays visible in readiness and baseline reports
 without ever entering a reflective minibatch. `run_gepa` splits `target +
-control` and nothing else; before #199 it scoped targets owner-blind and split
-the whole corpus, so a retrieval miss became an instruction to repair.
+control` and nothing else, after Objective Plan v2 elects one deterministic
+representative per connected fact cluster. Targets beat controls, then the
+election prefers more target dimensions, safety status, the
+newer Event and stable case id. Shadowed media members remain frozen audit facts
+but add no optimizer weight; required split coverage still fails closed. Before
+#199 it scoped targets owner-blind and split the whole corpus, so a retrieval
+miss became an instruction to repair.
+The candidate's `optimization_objective_summary.v2` binds the plan schema and
+representative ids/count/root; registration re-derives that population and refuses claims that do not
+carry the current identity, while leaving their artifact bytes intact.
 `news learning readiness --development SHA` publishes the plan with zero model
 calls, and `optimize` rebuilds it and refuses on the same conditions before any
 endpoint is touched.

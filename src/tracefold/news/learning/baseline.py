@@ -63,6 +63,7 @@ from .metric import (
 from .objective import (
     DevelopmentEpisode,
     GepaObjectivePlan,
+    optimizer_population_identity,
     retrieval_receipt,
     verify_policy_projection,
 )
@@ -455,6 +456,7 @@ def _objective_receipt(plan: GepaObjectivePlan) -> dict[str, Any]:
         "target_predictors": list(plan.target_predictors),
         "control_case_n": len(plan.control_case_ids),
         "control_cluster_n": len(plan.control_cluster_ids),
+        **optimizer_population_identity(plan),
         # Counted and named, never scored: an excluded diagnostic that entered the denominator would be
         # the owner-blind corpus back under a different heading.
         "excluded_case_n": len(plan.excluded_case_ids),

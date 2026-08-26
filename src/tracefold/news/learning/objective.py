@@ -273,29 +273,27 @@ def _honest_split(
 ) -> tuple[list[DevelopmentEpisode], list[DevelopmentEpisode], dict[str, Any]]:
     """Split accepted development into disjoint train / development-selection halves by fact cluster and time.
 
-    A cluster is never split: the same fact appearing on both sides would let GEPA pick a winner using an
-    example it just optimized against. Clusters are ordered by their latest Event time and then by the stable
-    cluster id — no shuffle, no seed — so the earlier 70% trains and the later 30% selects, which is also the
-    only ordering that resembles how the Program meets news.
+    A cluster appears exactly once: the same fact appearing twice would both overweight it and let GEPA pick
+    a winner using an example it just optimized against. Representatives are ordered by Event time and then
+    by the stable cluster id — no shuffle, no seed — so the earlier 70% trains and the later 30% selects,
+    which is also the only ordering that resembles how the Program meets news.
     """
 
-    latest: dict[str, int] = {}
-    members: dict[str, list[DevelopmentEpisode]] = {}
+    representatives: dict[str, DevelopmentEpisode] = {}
     for episode in episodes:
         cluster = episode.cluster_id
-        # The Event's own time, not its position in the export: the receipt has to be reproducible from the
-        # sealed data, not from the order it happened to arrive in.
-        latest[cluster] = max(latest.get(cluster, 0), episode.context.now_ms)
-        members.setdefault(cluster, []).append(episode)
-    ordered = sorted(members, key=lambda cluster: (latest[cluster], cluster))
-    for cluster_members in members.values():
-        cluster_members.sort(key=lambda episode: (episode.context.now_ms, episode.case_id))
+        if cluster in representatives:
+            raise ValueError("news_program_compile_split_requires_one_representative_per_cluster")
+        representatives[cluster] = episode
+    # The Event's own time, not its position in the export: the receipt has to be reproducible from the
+    # sealed data, not from the order it happened to arrive in.
+    ordered = sorted(representatives, key=lambda cluster: (representatives[cluster].context.now_ms, cluster))
     cut = max(1, min(len(ordered) - 1, round(len(ordered) * _TRAIN_SHARE))) if len(ordered) > 1 else 0
     if cut <= 0:
         raise ValueError("news_program_compile_split_requires_two_clusters")
     train_roots, val_roots = ordered[:cut], ordered[cut:]
-    train = [episode for cluster in train_roots for episode in members[cluster]]
-    val = [episode for cluster in val_roots for episode in members[cluster]]
+    train = [representatives[cluster] for cluster in train_roots]
+    val = [representatives[cluster] for cluster in val_roots]
 
     coverage: dict[str, dict[str, int]] = {}
     for name, half in (("train", train), ("development_selection", val)):
@@ -313,8 +311,20 @@ def _honest_split(
     if train_ids & val_ids or set(train_roots) & set(val_roots):
         raise ValueError("news_program_compile_split_not_disjoint")
     receipt = {
-        "schema": "tracefold.news.compile_split_receipt.v1",
-        "policy": {"share": _TRAIN_SHARE, "unit": "connected_fact_cluster", "order": ["latest_case", "cluster_id"]},
+        "schema": "tracefold.news.compile_split_receipt.v2",
+        "policy": {
+            "share": _TRAIN_SHARE,
+            "unit": "connected_fact_cluster_representative",
+            "representative_n_per_cluster": 1,
+            "representative_order": [
+                "target_before_control",
+                "target_dimension_n_desc",
+                "safety_strength_desc",
+                "event_time_desc",
+                "case_id",
+            ],
+            "split_order": ["event_time", "cluster_id"],
+        },
         "train": {
             "cluster_n": len(train_roots),
             "case_n": len(train),
@@ -332,7 +342,7 @@ def _honest_split(
         "disjointness": {
             "shared_case_ids": 0,
             "shared_clusters": 0,
-            "proof": "cluster is the split unit; a cluster's cases are never divided",
+            "proof": "one elected representative per connected fact cluster; clusters are never divided",
         },
     }
     return train, val, receipt
@@ -373,7 +383,7 @@ def _retrieval_receipt(episodes: Sequence[DevelopmentEpisode]) -> dict[str, Any]
 # The Objective Plan: what GEPA is allowed to see, and why
 # ---------------------------------------------------------------------------
 
-OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v1"] = "tracefold.news.gepa_objective_plan.v1"
+OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v2"] = "tracefold.news.gepa_objective_plan.v2"
 # The one owner value that grants GEPA permission, and it has to have been written by a human into the
 # submission itself. `review._OWNER_BY_DIMENSION` derives an owner for every failed dimension so the
 # ReviewDesk queue can route work; deriving is a hint, not a grant. 53% of the failure cases in the only
@@ -430,7 +440,7 @@ class GepaObjectivePlan(_ExactModel):
     and by the split's case roots below. Everything a receipt needs to state is a bounded id or a count.
     """
 
-    schema_version: Literal["tracefold.news.gepa_objective_plan.v1"] = OBJECTIVE_PLAN_SCHEMA
+    schema_version: Literal["tracefold.news.gepa_objective_plan.v2"] = OBJECTIVE_PLAN_SCHEMA
     case_n: int = Field(default=0, ge=0)
     cluster_n: int = Field(default=0, ge=0)
     cases: tuple[ObjectiveCase, ...] = ()
@@ -466,6 +476,16 @@ class GepaObjectivePlan(_ExactModel):
     @property
     def optimizer_ready(self) -> bool:
         return not self.blocking_reasons
+
+
+def optimizer_population_identity(plan: GepaObjectivePlan) -> dict[str, Any]:
+    """The bounded representative-set identity shared by every Objective Plan consumer."""
+
+    return {
+        "optimizer_case_n": len(plan.optimizer_case_ids),
+        "optimizer_cluster_n": len({episode.cluster_id for episode in plan.optimizer_episodes}),
+        "optimizer_case_root_sha256": canonical_sha(sorted(plan.optimizer_case_ids)),
+    }
 
 
 def _objective_guard(policy_metric: Mapping[str, Any]) -> str:
@@ -770,6 +790,49 @@ def _split_blockers(split_error: str) -> tuple[str, ...]:
     return ("optimizer_split_unavailable",) if split_error else ()
 
 
+def _representative_order(case: ObjectiveCase, episode: DevelopmentEpisode) -> tuple[Any, ...]:
+    """Stable preference for the one optimizer example a connected fact cluster may contribute."""
+
+    strata = _episode_strata(episode)
+    target = case.disposition == "target"
+    return (
+        0 if target else 1,
+        -len(case.dimensions) if target else 0,
+        -int("safety" in strata),
+        -episode.context.now_ms,
+        case.case_id,
+    )
+
+
+def _elect_cluster_representatives(
+    classified: Sequence[tuple[ObjectiveCase, dict[str, Any]]],
+    episodes: Sequence[DevelopmentEpisode],
+) -> list[tuple[ObjectiveCase, dict[str, Any]]]:
+    """Keep one target/control per connected fact cluster; retain every other case as audit evidence."""
+
+    eligible: dict[str, list[int]] = {}
+    for index, ((case, _facts), _episode) in enumerate(zip(classified, episodes, strict=True)):
+        if case.disposition in {"target", "control"}:
+            eligible.setdefault(case.cluster_id, []).append(index)
+
+    elected = {
+        min(indexes, key=lambda index: _representative_order(classified[index][0], episodes[index]))
+        for indexes in eligible.values()
+    }
+    result = list(classified)
+    for indexes in eligible.values():
+        for index in indexes:
+            if index in elected:
+                continue
+            case, facts = result[index]
+            reason = f"cluster_representative_shadowed:{case.disposition}"
+            result[index] = (
+                case.model_copy(update={"disposition": "excluded", "reason": reason}),
+                {**facts, "disposition": "excluded", "reason": reason},
+            )
+    return result
+
+
 def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObjectivePlan:
     """Decide, once, which episodes GEPA may train and select on — and why every other one is out.
 
@@ -779,16 +842,19 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
     repair, and a case nobody had blamed on anything still reached the reflective minibatch as a low score.
     """
 
-    classified = [_classify(episode) for episode in episodes]
+    classified = _elect_cluster_representatives([_classify(episode) for episode in episodes], episodes)
     cases = tuple(case for case, _facts in classified)
 
     targets = tuple(case for case in cases if case.disposition == "target")
     controls = tuple(case for case in cases if case.disposition == "control")
     excluded = tuple(case for case in cases if case.disposition == "excluded")
     optimizer_ids = {case.case_id for case in (*targets, *controls)}
-    # Input order, not disposition order: `_honest_split` orders by Event time itself, and re-grouping here
-    # would make the split receipt depend on how this function happened to iterate.
-    optimizer_episodes = tuple(episode for episode in episodes if episode.case_id in optimizer_ids)
+    optimizer_episodes = tuple(
+        sorted(
+            (episode for episode in episodes if episode.case_id in optimizer_ids),
+            key=lambda episode: (episode.context.now_ms, episode.cluster_id, episode.case_id),
+        )
+    )
 
     observed_clusters: set[str] = set()
     observed_dimensions: set[str] = set()
@@ -843,10 +909,15 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
     blocking.extend(_split_blockers(split_error))
     if split is not None:
         target_case_ids = {case.case_id for case in targets}
+        control_case_ids = {case.case_id for case in controls}
         if not any(episode.case_id in target_case_ids for episode in train):
             blocking.append("train_target_missing")
         if not any(episode.case_id in target_case_ids for episode in selection):
             blocking.append("development_selection_target_missing")
+        if not any(episode.case_id in control_case_ids for episode in train):
+            blocking.append("train_control_missing")
+        if not any(episode.case_id in control_case_ids for episode in selection):
+            blocking.append("development_selection_control_missing")
     if non_replayable_target:
         blocking.append("non_replayable_target")
     if not target_clusters and novelty_unverifiable:
@@ -1004,12 +1075,13 @@ def build_readiness_report(
         },
         "owner_distribution": dict(plan.owner_distribution),
         "objective": {
+            "schema": plan.schema_version,
             "target_case_n": len(plan.target_case_ids),
             "target_cluster_n": len(plan.target_failure_cluster_ids),
             "control_case_n": len(plan.control_case_ids),
             "control_cluster_n": len(plan.control_cluster_ids),
             "excluded_case_n": len(plan.excluded_case_ids),
-            "optimizer_case_n": len(plan.optimizer_case_ids),
+            **optimizer_population_identity(plan),
             "target_predictors": list(plan.target_predictors),
             "target_dimensions": list(plan.target_dimensions),
             "target_failure_cluster_ids": list(plan.target_failure_cluster_ids),
@@ -1051,6 +1123,7 @@ __all__ = [
     "ObjectiveCase",
     "build_gepa_objective_plan",
     "build_readiness_report",
+    "optimizer_population_identity",
     "policy_candidate_failure_clusters",
     "production_decision",
     "retrieval_receipt",
