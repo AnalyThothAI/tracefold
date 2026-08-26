@@ -1,4 +1,5 @@
 import { newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Link } from "react-router-dom";
 
 import type { NewsAssetRef, NewsQuote } from "../../api/newsQueries";
@@ -35,6 +36,7 @@ export function NewsAssetChips({
   max?: number;
   quotes?: Record<string, NewsQuote>;
 }) {
+  const referrer = useRouteReferrer();
   if (!assets.length) return null;
   const shown = max == null ? assets : assets.slice(0, max);
   const overflow = assets.length - shown.length;
@@ -45,6 +47,7 @@ export function NewsAssetChips({
           {asset.venue ? <span className="news-asset-venue">{asset.venue}:</span> : null}
           <Link
             className="news-asset-symbol"
+            state={referrer}
             title={asset.listed ? `打开代币页 ${asset.base_symbol}` : "该符号未落在标的表上"}
             to={newsSymbolPath(asset.base_symbol)}
           >

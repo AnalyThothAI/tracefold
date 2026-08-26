@@ -48,12 +48,6 @@ const archetypes = [
     settled: (page: Page) => page.locator(".news-symbol-contract").first(),
   },
   {
-    name: "review",
-    path: "/news/review",
-    ready: (page: Page) => page.locator(".news-review-task-list"),
-    settled: (page: Page) => page.getByText("外部漏召回"),
-  },
-  {
     name: "status",
     path: "/news/status",
     ready: (page: Page) => page.locator(".news-health-card").first(),

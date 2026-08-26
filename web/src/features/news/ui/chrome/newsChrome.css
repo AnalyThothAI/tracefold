@@ -2,7 +2,7 @@
   /*
    * Chrome every News route wears: the measure the route sits in, its heading block, the folded technical
    * disclosure and the one-line "nothing here" note. Surface-specific layout lives beside its own route
-   * (`ui/feed`, `ui/detail`, `ui/status`, `ui/review`).
+   * (`ui/feed`, `ui/detail`, `ui/status`, `ui/oi`, `ui/symbol`).
    */
   .news-panel {
     display: grid;

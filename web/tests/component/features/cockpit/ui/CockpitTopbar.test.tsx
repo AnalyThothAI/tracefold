@@ -24,7 +24,7 @@ describe("CockpitTopbar", () => {
     };
     const { rerender } = render(
       <MemoryRouter>
-        <CockpitTopbar referenceFrame title="新闻事件流" search={search} status={healthyStatus} />
+        <CockpitTopbar title="新闻事件流" search={search} status={healthyStatus} />
       </MemoryRouter>,
     );
     const input = screen.getByRole("textbox", { name: "news search" });
@@ -37,7 +37,6 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
-          referenceFrame
           title="新闻事件流"
           search={{ ...search, query: "ethereum" }}
           status={healthyStatus}
@@ -49,7 +48,6 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
-          referenceFrame
           title="新闻事件流"
           search={{ ...search, query: "" }}
           status={healthyStatus}
@@ -59,24 +57,25 @@ describe("CockpitTopbar", () => {
     expect(input).toHaveValue("");
   });
 
-  it("keeps the shared search copy and refresh action outside the Event feed", () => {
+  // #256: one topbar on every route. The scan copy and the inert `/` keycap are no longer route-scoped, and
+  // there is no refresh control anywhere — every surface polls, and a button that re-asks is theatre.
+  it("renders the same search copy and keycap on a secondary route", () => {
     render(
       <MemoryRouter>
         <CockpitTopbar
-          onRefresh={vi.fn()}
           search={{ onSubmitQuery: vi.fn() }}
           status={healthyStatus}
-          title="学习复盘"
+          title="事件详情"
         />
       </MemoryRouter>,
     );
 
     expect(screen.getByRole("textbox", { name: "news search" })).toHaveAttribute(
       "placeholder",
-      "搜索新闻事件 / 标题 / 资产",
+      "事件 / base_symbol / 场所",
     );
-    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
-    expect(document.querySelector(".cockpit-searchbar-keycap")).toBeNull();
+    expect(screen.queryByRole("button", { name: "刷新" })).toBeNull();
+    expect(document.querySelector(".cockpit-searchbar-keycap")).not.toBeNull();
   });
 
   it("submits the trimmed News query from the single search entry", () => {

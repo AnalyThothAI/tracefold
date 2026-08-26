@@ -1,8 +1,10 @@
 import { TradingSymbolSection } from "@features/trading";
 import { newsOiPath } from "@shared/routing/paths";
+import { routeReferrerFromState } from "@shared/routing/routeReferrer";
 import * as PageState from "@shared/ui/PageState";
+import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 
 import {
   NEWS_FEED_DEFAULT_HOURS,
@@ -43,6 +45,7 @@ import "./newsSymbol.css";
  */
 export function NewsSymbolPage({ base, token }: { base: string; token: string }) {
   const normalized = base.trim().toUpperCase().replace(/^XYZ-/, "");
+  const referrer = routeReferrerFromState(useLocation().state);
   const [searchParams, setSearchParams] = useSearchParams();
   const lane = parseSymbolLane(searchParams.get("lane"));
 
@@ -94,6 +97,19 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
 
   return (
     <NewsPageShell archetype="scan" className="news-symbol-shell" label={`代币 ${normalized}`}>
+      {/*
+       * The way back (#256). The artifact draws it in the frame; it lives on the page here because what
+       * makes it correct — which page the reader left, and the filters they left it with — is route state,
+       * and the frame does not hold it. Four surfaces link here, so a link that always said 事件流 named a
+       * page the reader had never been on three times out of four.
+       */}
+      <header className="news-symbol-toolbar">
+        <RouteBackLink
+          ariaLabel={`返回${referrer.label}`}
+          label={referrer.label}
+          to={referrer.to}
+        />
+      </header>
       <NewsPageHeader subtitle="这个名字最近发生了什么，以及它到底是什么。" title={normalized}>
         {firstPage?.counts ? (
           <NewsPageStamp>

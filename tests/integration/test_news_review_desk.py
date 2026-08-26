@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from contextlib import contextmanager
 
 import pytest
-from fastapi.testclient import TestClient
 from psycopg.errors import InsufficientPrivilege, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.learning.evaluate import LEARNING_EPOCH
 from tracefold.news.models import TriageVerdict
@@ -27,7 +24,6 @@ from tracefold.news.review.desk import (
     ReviewDesk,
     TaskRef,
 )
-from tracefold.platform.config.models import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
@@ -1613,93 +1609,3 @@ def test_serve_role_has_only_append_review_write_privileges(conn) -> None:
     finally:
         conn.execute("RESET ROLE")
         conn.commit()
-
-
-def test_http_review_adapter_enforces_match_auth_and_idempotency(conn) -> None:
-    event_id = _open_event(conn)
-
-    class Runtime:
-        settings = Settings(ws_token="review-token")
-
-        @contextmanager
-        def repositories(self):
-            yield repositories_for_connection(conn)
-
-        @contextmanager
-        def review_transaction(self):
-            with repositories_for_connection(conn).transaction():
-                yield conn
-
-    app = create_app(settings=Runtime.settings)
-    app.state.service = Runtime()
-    api = TestClient(app)
-    queue_response = api.get(
-        "/api/news/review",
-        params={"event": event_id},
-        headers={"Authorization": "Bearer review-token"},
-    )
-    assert queue_response.status_code == 200
-    task = queue_response.json()["data"]["tasks"][0]
-    version = f'"{task["task_version"]}"'
-    evidence = api.get(
-        f"/api/news/review/tasks/{task['task_id']}/evidence",
-        headers={"Authorization": "Bearer review-token", "If-Match": version},
-    )
-    assert evidence.status_code == 200
-    body = _rubric().model_dump(mode="json")
-    request_key = str(uuid.uuid4())
-    # Mutations never accept the URL query-token compatibility path.
-    query_token = api.post(
-        f"/api/news/review/tasks/{task['task_id']}/responses?token=review-token",
-        headers={"If-Match": version, "Idempotency-Key": request_key},
-        json=body,
-    )
-    assert query_token.status_code == 400  # mutation query strings are rejected before authentication
-    headers = {
-        "Authorization": "Bearer review-token",
-        "If-Match": version,
-        "Idempotency-Key": request_key,
-    }
-    wrong_media = api.post(
-        f"/api/news/review/tasks/{task['task_id']}/responses",
-        headers={**headers, "Content-Type": "text/plain"},
-        content=json.dumps(body),
-    )
-    assert wrong_media.status_code == 400
-    assert wrong_media.json()["error"] == "news_review_content_type_invalid"
-    no_length = api.post(
-        f"/api/news/review/tasks/{task['task_id']}/responses",
-        headers={**headers, "Content-Type": "application/json"},
-        content=(part for part in [json.dumps(body)]),
-    )
-    assert no_length.status_code == 400
-    assert no_length.json()["error"] == "news_review_content_length_required"
-    oversized = api.post(
-        f"/api/news/review/tasks/{task['task_id']}/responses",
-        headers={**headers, "Content-Type": "application/json", "Content-Length": "32769"},
-        content=json.dumps(body),
-    )
-    assert oversized.status_code == 400
-    assert oversized.json()["error"] == "news_review_body_too_large"
-    first = api.post(f"/api/news/review/tasks/{task['task_id']}/responses", headers=headers, json=body)
-    again = api.post(f"/api/news/review/tasks/{task['task_id']}/responses", headers=headers, json=body)
-    assert first.status_code == 200 and first.json()["data"]["idempotent"] is False
-    assert again.status_code == 200 and again.json()["data"]["idempotent"] is True
-    assert first.json()["data"]["receipt"]["review_id"] == again.json()["data"]["receipt"]["review_id"]
-    reopened = api.get(
-        "/api/news/review",
-        params={"event": event_id, "status": "all"},
-        headers={"Authorization": "Bearer review-token"},
-    )
-    assert reopened.status_code == 200
-    accepted_review = reopened.json()["data"]["tasks"][0]["accepted_review"]
-    assert accepted_review["subject_kind"] == "event"
-    assert accepted_review["event_id"] == event_id
-    assert accepted_review["external_snapshot_id"] is None
-    conflict = api.post(
-        f"/api/news/review/tasks/{task['task_id']}/responses",
-        headers=headers,
-        json=_rubric(why="fail").model_dump(mode="json"),
-    )
-    assert conflict.status_code == 409
-    assert conflict.json()["error"] == "news_review_idempotency_conflict"

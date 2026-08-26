@@ -7,6 +7,7 @@ import {
   type TradingOrders,
 } from "@features/trading";
 import { newsEventPath, newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
 import { ChevronRight } from "lucide-react";
@@ -254,6 +255,7 @@ function FrameDetail({
   event: NewsFeedEvent;
   tradingLookup: TradingOiLookup;
 }) {
+  const referrer = useRouteReferrer();
   const symbol = event.oi?.symbol ?? "";
   return (
     <div className="news-oi-detail">
@@ -267,7 +269,7 @@ function FrameDetail({
             打开事件详情 <ChevronRight aria-hidden />
           </Link>
           {symbol ? (
-            <Link className="news-oi-open" to={newsSymbolPath(symbol)}>
+            <Link className="news-oi-open" state={referrer} to={newsSymbolPath(symbol)}>
               代币页 {symbol} <ChevronRight aria-hidden />
             </Link>
           ) : null}

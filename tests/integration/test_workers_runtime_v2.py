@@ -199,11 +199,11 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
     with TestClient(create_app(settings=settings)) as client:
         response = client.get("/api/status", headers={"Authorization": "Bearer secret"})
         runtime = client.app.state.service
-        with runtime.review_transaction() as review_conn:
-            transaction_mode = review_conn.execute("SHOW transaction_read_only").fetchone()
 
     assert response.status_code == 200
-    assert transaction_mode["transaction_read_only"] == "off"
+    # #256: the serve runtime opens no read-write transaction any more. The ReviewDesk write path it existed
+    # for is gone, and `tracefold news review submit` opens its own connection under the same role.
+    assert not hasattr(runtime, "review_transaction")
     data = response.json()["data"]
     assert set(data) == {"measured_at_ms", "runtime"}
     assert data["runtime"]["workers_runtime"]["runtime_id"] == RUNTIME_ID

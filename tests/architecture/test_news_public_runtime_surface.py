@@ -192,7 +192,9 @@ def test_semantic_judge_contract_has_public_locality() -> None:
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:
-    routes = [SRC / "app" / "http" / "routes" / name for name in ("feed.py", "events.py", "review.py", "status.py")]
+    # #256 removed `review.py` with the console page it served, and with it the only two writes the public
+    # surface had. Every module named here is now a read, which is what the assertions below already said.
+    routes = [SRC / "app" / "http" / "routes" / name for name in ("feed.py", "events.py", "status.py")]
     modules = set().union(*(_imported_modules(path) for path in routes))
     assert not any(_under(module, ("tracefold.news.pipeline", "tracefold.news.bus")) for module in modules)
     assert not any(_under(module, ("tracefold.integrations.rabbitmq",)) for module in modules)

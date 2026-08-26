@@ -1,4 +1,5 @@
 import { newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
 import { Link } from "react-router-dom";
 
@@ -18,6 +19,7 @@ import { TradingEmptyNote } from "./TradingChrome";
  * nobody computed a return for it, so it renders `—` rather than a zero that would drag an average.
  */
 export function TradingClosed({ count, rows }: { count: number; rows: readonly TradingOrder[] }) {
+  const referrer = useRouteReferrer();
   return (
     <Card flush hint="平仓证据来自账本状态，不是本地蜡烛" title={`今日已了结 · ${count}`}>
       {rows.length === 0 ? (
@@ -35,7 +37,9 @@ export function TradingClosed({ count, rows }: { count: number; rows: readonly T
           {rows.map((order) => (
             <article className="trading-closed-row" key={order.order_id}>
               <span className="trading-symbol">
-                <Link to={newsSymbolPath(order.base_symbol)}>{order.base_symbol}</Link>
+                <Link state={referrer} to={newsSymbolPath(order.base_symbol)}>
+                  {order.base_symbol}
+                </Link>
               </span>
               <span className="trading-kind" title={`strategy_id: ${order.strategy_id}`}>
                 {strategyCaseLabel(order.strategy_id)}

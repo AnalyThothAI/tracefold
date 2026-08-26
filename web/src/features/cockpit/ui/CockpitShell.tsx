@@ -1,6 +1,7 @@
 import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { Drawer } from "@shared/ui/Drawer";
 import { IconButton } from "@shared/ui/IconButton";
+import * as PageState from "@shared/ui/PageState";
 import { PanelLeft } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
@@ -22,6 +23,8 @@ const DESKTOP_QUERY = "(min-width: 1280px)";
 const PHONE_QUERY = "(max-width: 767px)";
 
 export type CockpitShellProps = {
+  /** Whether a frame-owned read is still in flight. Drives the 2px in-flight line and nothing else. */
+  busy?: boolean;
   navBadges?: AppNavigationBadges;
   navCounts?: AppNavigationCounts;
   outletContext?: unknown;
@@ -32,12 +35,14 @@ export type CockpitShellProps = {
 /**
  * The console frame. Three widths, three navigations, one model:
  *
- *   ≥1280  the sidebar is part of the page; approved scan surfaces keep it fixed.
+ *   ≥1280  the sidebar is part of the page and stays there — the artifact draws no way to collapse it, and
+ *          a console with four destinations has nothing to gain from hiding them (#256).
  *   768–   the same sidebar inside a left drawer the topbar trigger opens.
  *   ≤767   no sidebar in either form: a drawer charges a tap before the reader can even see where they could
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
  */
 export function CockpitShell({
+  busy = false,
   navBadges,
   navCounts,
   outletContext,
@@ -46,8 +51,6 @@ export function CockpitShell({
 }: CockpitShellProps) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
-  const fixedDesktopSidebar = Boolean(topbar.referenceFrame);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // A rotated tablet must not keep the previous orientation's drawer open after navigation moves on-screen.
   useEffect(() => {
@@ -56,23 +59,21 @@ export function CockpitShell({
 
   return (
     <div className="cockpit-shell">
-      {desktop && (fixedDesktopSidebar || sidebarOpen) ? (
-        <AppSidebar badges={navBadges} counts={navCounts} />
-      ) : null}
+      {busy ? <PageState.RouteProgress /> : null}
+      {desktop ? <AppSidebar badges={navBadges} counts={navCounts} /> : null}
       <div className="cockpit-main">
         <CockpitTopbar
           {...topbar}
           navigationTrigger={
-            phone || (desktop && fixedDesktopSidebar) ? null : (
+            phone || desktop ? null : (
               <IconButton
-                aria-controls={desktop ? undefined : "cockpit-nav-drawer"}
-                aria-expanded={desktop ? undefined : drawerOpen}
+                /* `aria-expanded` and nothing else: the drawer is a Radix portal that exists only while it
+                   is open, so an `aria-controls` naming it would be a dangling reference whenever the
+                   answer to "what does this control" actually matters. */
+                aria-expanded={drawerOpen}
                 aria-label="切换侧栏"
-                aria-pressed={desktop ? sidebarOpen : undefined}
                 className="topbar-sidebar-trigger"
-                onClick={() =>
-                  desktop ? setSidebarOpen((open) => !open) : setDrawerOpen((open) => !open)
-                }
+                onClick={() => setDrawerOpen((open) => !open)}
                 size="sm"
                 title="切换侧栏"
               >

@@ -358,9 +358,10 @@ general control writes whose commit outcome could be ambiguous.
 Serve owns one pool of seven with ordinary/control admission `6/1`,
 50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
 parallel gather off, and 8 MiB work memory. Connections and ordinary requests
-default to read-only; the two authenticated ReviewDesk POST routes explicitly
-open a read-write transaction whose role grants permit INSERT only on the two
-append-only review fact tables. Workers owns the exact pool/lane topology
+default to read-only, and since #256 the HTTP surface has no write route at
+all: `tracefold news review submit` opens its own `tracefold_serve` connection
+and one explicit read-write transaction, whose role grants permit INSERT only
+on the two append-only review fact tables. Workers owns the exact pool/lane topology
 above. Finite provider/filesystem operations share the three-slot
 external capability; the OpenNews WSS socket remains a long-lived async root
 child outside it. Only the owning source seam may map an outer
@@ -737,7 +738,9 @@ of pre-V3 history.
 - `reaction_partial_7d` / `reaction_complete_7d` / `reaction_unavailable_7d` —
   the Reaction backlog. A rising `partial` count with a flat `complete` count
   means the 4H leg is not landing; a rising `unavailable` count is a data
-  question, not a health one, and `/api/news/review` names the reason.
+  question, not a health one, and `tracefold news review queue --view market`
+  names the reason. (The HTTP route that used to answer this was removed with
+  the ReviewDesk console in #256; the CLI reads the same projection.)
 
 Read-only SQL for the same questions:
 

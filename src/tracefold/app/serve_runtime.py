@@ -37,18 +37,6 @@ class ServeRuntime:
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)
         return {"measured_at_ms": measured_at_ms, "runtime": runtime}
 
-    @contextmanager
-    def review_transaction(self) -> Iterator[Any]:
-        try:
-            with self.db.api_session("ordinary") as repos, repos.transaction():
-                # tracefold_serve defaults to read-only.  Only this authenticated
-                # ReviewDesk path opts one transaction into its two table-level
-                # INSERT grants; every other table remains privilege-protected.
-                repos.conn.execute("SET TRANSACTION READ WRITE")
-                yield repos.conn
-        except ServeDatabaseBusy as exc:
-            raise ApiUnavailable("review_write_busy") from exc
-
     def readiness_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
         measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)

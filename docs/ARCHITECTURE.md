@@ -567,7 +567,7 @@ due Event-assets (live Events, pushed and held alike) -> pinned or resolved inst
   -> merged historical 5m candle ranges (<=32 requests/turn, concurrency 4)
   -> p0 = last closed candle at or before opened_at_ms; p1/p4 the same at +1H/+4H
   -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v1)
-  -> Feed/Detail attachment + GET /api/news/review
+  -> Feed/Detail attachment + `news review queue --view market`
 ```
 
 Work is `O(source groups)`, never `O(Events x assets)`: a hundred Events naming

@@ -16,15 +16,13 @@ import {
 import { useTradingStatusWithToken, type TradingStatus } from "@features/trading/shell";
 import { newsPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
-import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
 
 /** What the frame calls each surface. The page keeps its own `h1`; this is the "where am I" line. */
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
-  [/^\/news\/review$/, "学习复盘"],
   [/^\/news\/status$/, "流水线状态"],
-  [/^\/news\/oi$/, "持仓异动监控"],
+  [/^\/news\/oi$/, "OI 遥测审计"],
   [/^\/news$/, "事件流"],
   [/^\/trading$/, "交易 · 模拟仓"],
 ];
@@ -45,7 +43,6 @@ export type ShellChromeData = {
 export function useShellChromeData(session: AppSession): ShellChromeData {
   const location = useLocation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const statusQuery = useCockpitStatusQuery({ token: session.token });
   // The same query key the feed header and the status route use, so React Query serves all three from one
   // poll. The sidebar shows the 24 h intake behind the Event feed.
@@ -65,10 +62,6 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     retryBootstrap: session.retryBootstrap,
     token,
   };
-  const referenceFrame =
-    location.pathname === "/news" ||
-    location.pathname === "/news/oi" ||
-    location.pathname === "/trading";
   const currentSearchQuery = isNewsRoute(location.pathname)
     ? (new URLSearchParams(location.search).get("q") ?? "")
     : "";
@@ -86,6 +79,14 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   };
   return {
     cockpitShellProps: {
+      /*
+       * The three reads the frame itself owns. A route's own query is not folded in: it polls every few
+       * seconds, and a line that reappeared on every poll would stop meaning "still loading".
+       */
+      busy:
+        statusQuery.isPending || newsStatusQuery.isPending || tradingStatusQuery.isPending
+          ? Boolean(token)
+          : false,
       navCounts: {
         events: newsStatusQuery.data?.funnel_24h?.received,
         // #207: the deterministic OI lane's own 24 h intake, the same figure the monitor's telemetry band
@@ -99,13 +100,11 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       outletContext: routeContext,
       topbar: {
-        referenceFrame,
-        health: healthLamp(newsStatusQuery.data, newsStatusQuery.isError, referenceFrame),
+        health: healthLamp(newsStatusQuery.data, newsStatusQuery.isError),
         // The visual contract makes the topbar a route context strip. Every value is an already-served
         // material fact from the two status reads this shell shares with the pages; switching routes never
         // starts a new request or asks the browser to invent a KPI.
         figures: topbarFigures(location.pathname, newsStatusQuery.data, tradingStatusQuery.data),
-        onRefresh: referenceFrame ? undefined : () => void queryClient.invalidateQueries(),
         search: {
           onSubmitQuery: submitTopbarSearch,
           query: currentSearchQuery,
@@ -213,8 +212,9 @@ function loadedDuration(value: number | null | undefined): string | undefined {
 /**
  * The server's `health` as the topbar lamp's structural prop.
  *
- * Healthy status normally returns `null`; approved scan frames pass `showHealthy` so their compact
- * `流水线` affordance remains present. Nothing is computed here — the level, stage levels and sentences are
+ * The lamp is on every route and stays present while healthy (#256): 流水线状态 holds no navigation slot,
+ * so hiding the affordance on the healthy path would make the page unreachable exactly when a reader wants
+ * to confirm nothing is wrong. Nothing is computed here — the level, stage levels and sentences are
  * server values, and the only local decisions are which item is the worst and what to call each stage.
  *
  * A failed read is its own state and must not read as health, and it takes precedence over any status
@@ -223,14 +223,10 @@ function loadedDuration(value: number | null | undefined): string | undefined {
  * `ok` health — silently, on every route, because this lamp is the console's only health signal and the
  * topbar's other indicator watches a different endpoint (`/api/status`).
  */
-function healthLamp(
-  status: NewsStatus | undefined,
-  failed: boolean,
-  showHealthy = false,
-): CockpitHealth | null {
+function healthLamp(status: NewsStatus | undefined, failed: boolean): CockpitHealth | null {
   if (failed) {
     return {
-      buttonText: showHealthy ? "流水线" : undefined,
+      buttonText: "流水线",
       headline: "流水线状态暂不可用",
       items: [],
       level: "bad",
@@ -239,8 +235,7 @@ function healthLamp(
     };
   }
   const health = status?.health;
-  if (!health || (!showHealthy && health.overall !== "warn" && health.overall !== "bad"))
-    return null;
+  if (!health) return null;
   const items: CockpitHealth["items"] = HEALTH_ITEM_KEYS.map((key) => ({
     key,
     label: healthItemTitle(key),
@@ -262,7 +257,7 @@ function healthLamp(
   }
   const worstStage = HEALTH_ITEM_KEYS.find((key) => health[key].level === health.overall);
   return {
-    buttonText: showHealthy ? "流水线" : undefined,
+    buttonText: "流水线",
     headline: health.overall === "ok" ? "流水线状态" : `流水线${healthLevelLabel(health.overall)}`,
     items,
     level: health.overall,

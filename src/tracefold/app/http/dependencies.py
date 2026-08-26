@@ -12,21 +12,26 @@ def _runtime(request: Request) -> Any:
     return request.app.state.service
 
 
-def _authenticated_runtime(request: Request, *, allow_query_token: bool = True) -> Any:
+def _authenticated_runtime(request: Request) -> Any:
     runtime = _runtime(request)
-    request_token = _request_token(request, allow_query_token=allow_query_token)
+    request_token = _request_token(request)
     if not runtime.settings.ws_token or request_token != runtime.settings.ws_token:
         raise ApiUnauthorized()
     return runtime
 
 
-def _request_token(request: Request, *, allow_query_token: bool = True) -> str | None:
+def _request_token(request: Request) -> str | None:
+    """Bearer first, then the `?token=` the served console uses on a hard reload.
+
+    The header-only variant went with the ReviewDesk writes it guarded (#256). Every route on this surface
+    is a read, and a dead switch nothing exercises is worse than no switch: it reads as protection that is
+    still in force. A future write route must state its own token policy rather than inherit this one.
+    """
+
     authorization = request.headers.get("authorization", "")
     scheme, _, value = authorization.partition(" ")
     if scheme.lower() == "bearer" and value.strip():
         return value.strip()
-    if not allow_query_token:
-        return None
     token = request.query_params.get("token")
     return token.strip() if token else None
 

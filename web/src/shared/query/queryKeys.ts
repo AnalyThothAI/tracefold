@@ -42,7 +42,6 @@ export const queryKeys = {
   newsSymbol: (base: string) => ["news-symbol", base] as const,
   // #88: the quote key is the sorted symbol batch, so the feed and an open Event share one poll.
   newsQuotes: (symbols: readonly string[]) => ["news-quotes", symbols.join(",")] as const,
-  newsReview: (identity: string) => ["news-review", identity] as const,
   // #207 PR-W4: the capital lane's own keys. Separate from News' so a 15 s trading poll cannot evict the
   // feed page a reader is scrolled into.
   tradingStatus: () => ["trading-status"] as const,

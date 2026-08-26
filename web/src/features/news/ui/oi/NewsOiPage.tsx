@@ -21,8 +21,11 @@ import { NewsOiGates } from "./NewsOiGates";
 import "./newsOi.css";
 
 /**
- * 持仓异动监控 — #137's deterministic open-interest lane, which is roughly a fifth of the day's volume and
- * until now had no surface of its own (#207).
+ * OI 遥测审计 — #137's deterministic open-interest lane, audited frame by frame (#207, #256).
+ *
+ * The v7 artifact moved this page out of the workbench and into 数据健康, and the rename is the point: the
+ * question here is whether the telemetry itself parsed, cleared the push gates and occupied a window slot.
+ * "Is there a trade in this" is a different question with different thresholds, and it is not asked here.
  *
  * Three bounded reads: `/api/news/status` for thresholds and 24 h counts, `/api/news/feed` filtered to the
  * deterministic lane for frames, and one `/api/trading/orders` batch for exact Event-to-ledger joins.
@@ -80,14 +83,21 @@ export function NewsOiPage({ token }: { token: string }) {
     NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
   ) as Record<NewsOiTab, number | null>;
   return (
-    <NewsPageShell archetype="scan" className="news-oi-shell" label="持仓异动监控">
+    <NewsPageShell archetype="scan" className="news-oi-shell" label="OI 遥测审计">
       <NewsPageHeader
-        subtitle="推送答「值不值得看」；交易列答「资本通道拿它做了什么」"
-        title="持仓异动监控"
+        subtitle="遥测帧、解析、闸门与推送窗口占用——推送答「读者看什么」，交易地板另判"
+        title="OI 遥测审计"
       />
 
+      {/*
+       * The cold load in the shape of the page that is coming (#256): the telemetry band, then the frame
+       * table. Both regions keep their real geometry, so nothing moves when the two reads answer.
+       */}
       {statusQuery.isLoading && !status ? (
-        <PageState.Loading label="正在读取持仓异动遥测" layout="panel" rows={4} />
+        <div className="news-oi-body">
+          <PageState.TileSkeleton className="news-oi-metrics" label="正在读取 OI 遥测" />
+          <PageState.Loading label="正在读取遥测帧" layout="panel" rows={8} />
+        </div>
       ) : null}
       {statusQuery.isError && !status ? (
         <PageState.Error error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />

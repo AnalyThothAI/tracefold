@@ -1,4 +1,5 @@
 import { newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
 import * as PageState from "@shared/ui/PageState";
 import { Check } from "lucide-react";
@@ -42,6 +43,7 @@ export function TradingExposure({
   onRetry: () => void;
   rows: readonly TradingOrder[];
 }) {
+  const referrer = useRouteReferrer();
   const nowMs = Date.now();
   const rowModes = new Set(rows.map((row) => row.mode));
   const displayedMode = rows.length === 0 ? mode : rowModes.size === 1 ? [...rowModes][0] : "mixed";
@@ -78,7 +80,9 @@ export function TradingExposure({
               key={order.order_id}
             >
               <span className="trading-symbol">
-                <Link to={newsSymbolPath(order.base_symbol)}>{order.base_symbol}</Link>
+                <Link state={referrer} to={newsSymbolPath(order.base_symbol)}>
+                  {order.base_symbol}
+                </Link>
                 <small data-side={order.side}>{order.side === "buy" ? "多" : "空"}</small>
               </span>
               <span className="trading-kind" title={`strategy_id: ${order.strategy_id}`}>

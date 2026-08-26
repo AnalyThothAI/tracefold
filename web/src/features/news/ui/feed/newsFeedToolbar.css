@@ -48,6 +48,34 @@
     font-weight: 640;
   }
 
+  /*
+   * One dot per outcome, on the pipeline axis only: indigo acted, amber is still in flight, grey stopped.
+   * Never red or green — those two hues state a market opinion, and a tab is not one.
+   */
+  .news-segmented-dot {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-pill);
+    background: var(--signal-neutral);
+  }
+
+  .news-segmented-option[data-outcome="pushed"] .news-segmented-dot {
+    background: var(--signal-done);
+  }
+
+  .news-segmented-option[data-outcome="held"] .news-segmented-dot {
+    background: var(--border-strong);
+  }
+
+  .news-segmented-option[data-outcome="pending"] .news-segmented-dot {
+    background: var(--signal-caution);
+  }
+
+  .news-segmented-option[data-outcome="all"] .news-segmented-dot {
+    background: var(--text-secondary);
+  }
+
   .news-segmented-count {
     color: var(--text-subtle);
     font: 500 var(--font-size-mono-meta)/1 var(--font-mono);

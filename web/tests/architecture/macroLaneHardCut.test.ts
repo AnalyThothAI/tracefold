@@ -93,10 +93,10 @@ describe("macro lane hard cut (#68)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("leaves exactly the four working surfaces in the primary navigation tree", () => {
+  it("leaves exactly the three working surfaces in the primary navigation tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
 
-    expect(items.map((item) => item.to)).toEqual(["/news", "/news/oi", "/trading", "/news/review"]);
+    expect(items.map((item) => item.to)).toEqual(["/news", "/trading", "/news/oi"]);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
   });
 });

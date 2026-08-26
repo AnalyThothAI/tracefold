@@ -36,9 +36,11 @@ class ServeDatabaseBusy(RuntimeError):
 class ServeDatabase:
     """The public serving database boundary.
 
-    Connections default to read-only.  The two authenticated ReviewDesk
-    mutations explicitly open a read-write transaction; PostgreSQL grants the
-    role INSERT only on the append-only review fact tables.
+    Connections default to read-only and nothing on this pool ever opens a
+    read-write transaction: the two ReviewDesk mutations that used to were
+    removed with the console page they served (#256).  `tracefold news review
+    submit` is the one remaining writer of the append-only review fact tables
+    and opens its own connection under the same role.
     """
 
     api_pool: Any

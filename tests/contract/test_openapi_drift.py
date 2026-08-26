@@ -110,10 +110,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         # #207 PR-W1: identity only. The token page's Events, price and rank window each keep their own
         # endpoint, so nothing here is a second answer to a question one of them already answers.
         "/api/news/symbols/{base}": ("get", "ApiEnvelope_NewsSymbolData_"),
-        "/api/news/review": ("get", "ApiEnvelope_NewsReviewData_"),
-        "/api/news/review/tasks/{task_id}/evidence": ("get", "ApiEnvelope_NewsReviewEvidenceData_"),
-        "/api/news/review/tasks/{task_id}/responses": ("post", "ApiEnvelope_NewsReviewSubmitData_"),
-        "/api/news/review/external-misses": ("post", "ApiEnvelope_NewsReviewSubmitData_"),
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)

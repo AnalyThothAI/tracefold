@@ -90,23 +90,11 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
-    assert catalog.query_routes["/api/news/review"] == (
-        "news_review_task_queue",
-        "news_review_task_evidence",
-        "news_review_active_agent",
-        "news_review_coverage_source",
-        "news_review_pairwise_queue",
-        "news_review_proposal_candidates",
-        "news_review_proposal_releases",
-        "news_review_proposal_reports",
-        "news_review_proposal_activations",
-        "news_review_market",
-    )
-    assert catalog.query_routes["/api/news/review/tasks/{task_id}/evidence"] == ("news_review_task_evidence_version",)
-    assert catalog.write_routes == {
-        "/api/news/review/tasks/{task_id}/responses",
-        "/api/news/review/external-misses",
-    }
+    assert "/api/news/review" not in catalog.query_routes
+    # #256: the ReviewDesk console and its HTTP surface are gone, so the public surface has no write route
+    # at all. The audit asserts the empty set rather than dropping the assertion — an accidental write route
+    # must fail here, not slip in unnoticed.
+    assert catalog.write_routes == set()
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
         "news_status_ingest",

@@ -1,5 +1,6 @@
 import { TradingCaseBadge } from "@features/trading";
-import { newsPath, newsReviewPath, newsSymbolPath } from "@shared/routing/paths";
+import { newsPath, newsSymbolPath } from "@shared/routing/paths";
+import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
 import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
@@ -209,14 +210,20 @@ const SHOULD_PUSH_LABELS: Record<string, string> = {
   uncertain: "证据不足",
 };
 
+/**
+ * Whether a human has judged this Event, and what they concluded.
+ *
+ * The ReviewDesk console is gone (#256) and the judgments are not: `tracefold news review submit` still
+ * appends them and `/api/news/events/{event_id}` still serves the accepted one. What went with the page is
+ * the link into it — this card reports the judgment, it is no longer a door to making one.
+ */
 function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
   const accepted = detail.review.accepted;
-  const reviewUrl = `${newsReviewPath()}?view=queue&mode=event&event=${encodeURIComponent(detail.event.event_id)}`;
   return (
     <Card
-      aria-label="学习复盘"
+      aria-label="人工复盘"
       hint={`${detail.review.judgment_n} 条不可变判断${detail.review.uncertain ? " · 尚有分歧" : ""}`}
-      title="学习复盘"
+      title="人工复盘"
     >
       {accepted ? (
         <div className="news-detail-review-summary">
@@ -230,9 +237,6 @@ function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
       ) : (
         <NewsEmptyNote>还没有经过接受的人工复盘；这里不会用 1H 涨跌代替判断。</NewsEmptyNote>
       )}
-      <Link className="news-detail-review-link" to={reviewUrl}>
-        在学习复盘中打开
-      </Link>
     </Card>
   );
 }
@@ -377,6 +381,7 @@ function ModelIntent({ triage }: { triage: NewsTriageSummary }) {
  * alternated between SKHY, SKHX and SKHYNIX.
  */
 function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) {
+  const referrer = useRouteReferrer();
   if (!groups.length) return null;
   return (
     <Card
@@ -396,7 +401,11 @@ function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) 
             </span>
             <ArrowRight aria-hidden />
             {/* The collapsed identity is the one the token page is keyed on (#207 principle 9). */}
-            <Link className="news-normalization-base" to={newsSymbolPath(group.base_symbol)}>
+            <Link
+              className="news-normalization-base"
+              state={referrer}
+              to={newsSymbolPath(group.base_symbol)}
+            >
               <code>{group.base_symbol}</code>
             </Link>
           </li>

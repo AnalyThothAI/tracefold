@@ -13,7 +13,6 @@ import type {
   NewsEventReaction,
   NewsQuote,
   NewsReaction,
-  NewsReview,
   NewsSymbol,
 } from "@features/news/api/newsQueries";
 
@@ -637,48 +636,6 @@ export function newsEventReactionFixture(
     updated_at_ms: NEWS_NOW_MS,
     venue: "binance.perp",
     venue_symbol: "BTCUSDT",
-    ...overrides,
-  };
-}
-
-/** One actionable ReviewDesk task; market observations live behind a separate view. */
-export function newsReviewFixture(overrides: Partial<NewsReview> = {}): NewsReview {
-  return {
-    counts: { delivered: 1 },
-    mode: "event",
-    next_cursor: null,
-    reader_contract_version: "reader_contract_v2",
-    rubric_version: "news_review_v2",
-    status: "ready",
-    tasks: [
-      {
-        accepted_review: null,
-        agent_headline: "DRAM 合约价继续上涨",
-        agent_why: "价格上涨改善厂商议价能力。",
-        cohort: "v9/v6/test-model",
-        evidence_ready: true,
-        evidence_version: 1,
-        event_id: "evt-dram",
-        final_decision: "drop",
-        final_decision_zh: "不推",
-        headline: "South Korea DRAM export unit price continued to rise",
-        mode: "event",
-        opened_at_ms: NEWS_NOW_MS - 3_600_000,
-        reader_receipt: { truth: "not_received", truth_zh: "未送达", state: null },
-        review_status: "pending",
-        selection: {
-          reason: "semantic_or_policy_hold",
-          reason_zh: "语义或政策未通过",
-          sampling_probability: 0.1,
-          selection_version: "news_review_sampler_v1",
-          stratum: "model_drop",
-          stratum_zh: "模型判定不推",
-        },
-        task_id: "evt.evt-dram.1.0123456789abcdef",
-        task_version: "a".repeat(64),
-      },
-    ],
-    view: "queue",
     ...overrides,
   };
 }
