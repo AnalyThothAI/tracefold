@@ -1,8 +1,4 @@
 @layer app.features {
-  /*
-   * Sticky under the topbar, on the canvas colour with a blur: the rows scroll under it and stay legible as
-   * texture. It is the only sticky thing inside a route.
-   */
   .news-feed-toolbar {
     position: sticky;
     top: 0;
@@ -18,7 +14,6 @@
     backdrop-filter: blur(10px);
   }
 
-  /* ------------------------------------------------------------------ task tabs */
   .news-segmented {
     display: inline-flex;
     gap: 2px;
@@ -50,7 +45,7 @@
     color: var(--text-primary);
     background: var(--surface-panel);
     box-shadow: var(--shadow-pill);
-    font-weight: 620;
+    font-weight: 640;
   }
 
   .news-segmented-count {
@@ -59,132 +54,157 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .news-segmented-option[data-active] .news-segmented-count {
-    color: var(--text-secondary);
-  }
-
-  /* ------------------------------------------------------------------ window and advanced filters */
   .news-filter-bar {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px 12px;
+    gap: 8px;
     align-items: center;
     min-width: 0;
   }
 
   .news-filter-total {
+    margin-right: 2px;
     color: var(--text-subtle);
     font-size: var(--font-size-mono-meta);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
-  .news-select select,
-  .news-filter-disclosure summary,
-  .news-filter-disclosure select,
-  .news-filter-disclosure input {
+  .news-menu {
+    position: relative;
+  }
+
+  .news-menu > button,
+  .news-filter-trigger {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
     min-height: 28px;
-    padding: 0 9px;
+    padding: 0 10px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     background: var(--surface-panel);
-    font-size: var(--font-size-meta);
-  }
-
-  .news-select select:focus-visible,
-  .news-filter-disclosure select:focus-visible,
-  .news-filter-disclosure input:focus-visible {
-    border-color: var(--accent-border);
-    outline: 0;
-    box-shadow: var(--focus-halo);
-  }
-
-  .news-filter-disclosure {
-    position: relative;
-  }
-
-  .news-filter-disclosure summary {
-    display: inline-flex;
-    gap: 6px;
-    align-items: center;
     cursor: pointer;
+    font-size: var(--font-size-meta);
+    font-weight: 500;
     list-style: none;
+    white-space: nowrap;
   }
 
-  .news-filter-disclosure summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .news-filter-disclosure summary svg {
+  .news-menu > button svg,
+  .news-filter-trigger svg {
     width: 12px;
     height: 12px;
   }
 
-  .news-filter-disclosure summary[data-active] {
+  .news-menu > button[aria-expanded="true"],
+  .news-filter-trigger[aria-expanded="true"],
+  .news-filter-trigger[data-active] {
     border-color: var(--accent-border);
     color: var(--accent-primary);
-    background: var(--accent-soft);
   }
 
-  /* A popover, not a row that pushes the list down: opening a filter must not move what you were reading. */
-  .news-filter-disclosure > div {
+  .news-filter-trigger > span {
+    display: grid;
+    min-width: 16px;
+    height: 16px;
+    place-items: center;
+    border-radius: var(--radius-pill);
+    color: var(--primary-foreground);
+    background: var(--accent-primary);
+    font: 600 var(--font-size-mono-meta)/1 var(--font-mono);
+  }
+
+  .news-menu-popover {
     position: absolute;
     top: calc(100% + 6px);
     right: 0;
     z-index: 25;
     display: grid;
-    gap: 8px;
-    width: 232px;
-    padding: 12px;
-    border-radius: var(--radius-lg);
+    gap: 3px;
+    min-width: 132px;
+    padding: 6px;
+    border-radius: var(--radius-md);
     background: var(--surface-panel);
     box-shadow: var(--shadow-elevated);
   }
 
-  .news-filter-disclosure label {
-    display: grid;
-    gap: 3px;
+  .news-menu-popover > button {
+    min-height: 30px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
+    background: transparent;
+    font-size: var(--font-size-meta);
+    text-align: left;
   }
 
-  .news-filter-disclosure label > span {
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
+  .news-menu-popover > button:hover,
+  .news-menu-popover > button[aria-checked="true"] {
+    color: var(--text-primary);
+    background: var(--surface-slot);
+    font-weight: 640;
   }
 
-  /* ------------------------------------------------------------------ active filter chips */
-  .news-active-filters {
+  .news-filter-panel {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 6px 14px;
+    align-items: center;
+    min-height: 42px;
+    margin-top: -15px;
+    margin-bottom: -3px;
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
   }
 
-  .news-active-filters button {
+  .news-filter-panel small {
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+  }
+
+  .news-filter-panel > div {
+    display: flex;
+    gap: 4px;
+  }
+
+  .news-filter-panel button {
     display: inline-flex;
     gap: 5px;
     align-items: center;
     min-height: 24px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: var(--radius-xs);
+    padding: 0 9px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-pill);
+    color: var(--text-secondary);
+    background: var(--surface-panel);
+    font-size: var(--font-size-meta);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .news-filter-panel button[aria-pressed="true"] {
+    border-color: var(--accent-border);
     color: var(--accent-primary);
     background: var(--accent-soft);
-    font-size: var(--font-size-mono-meta);
+    font-weight: 600;
   }
 
-  .news-active-filters svg {
-    width: 11px;
-    height: 11px;
+  .news-filter-panel button[data-direction="bullish"][aria-pressed="true"] {
+    color: var(--dir-bullish);
   }
 
-  /*
-   * Phone: the tabs become one scrollable row of real targets and the selects sit beside them.
-   */
+  .news-filter-panel button[data-direction="bearish"][aria-pressed="true"] {
+    color: var(--dir-bearish);
+  }
+
   @media (max-width: 767px) {
     .news-feed-toolbar {
       margin: 0 -12px;
       padding: 8px 12px;
-      background: var(--surface-canvas-glass);
     }
 
     .news-segmented {
@@ -203,22 +223,25 @@
     .news-segmented-option {
       flex: 0 0 auto;
       min-height: 36px;
-      border-radius: var(--radius-sm);
       background: var(--surface-panel);
       box-shadow: inset 0 0 0 1px var(--border-subtle);
-      font-size: var(--font-size-meta);
-    }
-
-    .news-segmented-option[data-active] {
-      box-shadow: inset 0 0 0 1px var(--border-strong);
     }
 
     .news-filter-total {
       display: none;
     }
 
-    .news-select select,
-    .news-filter-disclosure summary {
+    .news-menu > button,
+    .news-filter-trigger {
+      min-height: 36px;
+    }
+
+    .news-filter-panel {
+      margin-top: -12px;
+      margin-bottom: 0;
+    }
+
+    .news-filter-panel button {
       min-height: 36px;
     }
   }

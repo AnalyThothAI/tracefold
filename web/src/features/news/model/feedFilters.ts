@@ -1,10 +1,14 @@
 import {
   NEWS_FEED_DECISIONS,
   NEWS_FEED_DEFAULT_HOURS,
+  NEWS_FEED_CHANNELS,
+  NEWS_FEED_DIRECTIONS,
   NEWS_FEED_HOURS,
   NEWS_FEED_OUTCOMES,
   type NewsFeedDecision,
   type NewsFeedFilters,
+  type NewsFeedChannel,
+  type NewsFeedDirection,
   type NewsFeedOutcome,
 } from "../api/newsQueries";
 
@@ -55,6 +59,8 @@ export function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters
     family: searchParams.get("family") || null,
     hours: parseHours(searchParams.get("hours")),
     outcome: parseOutcome(searchParams.get("outcome")),
+    directions: parseList(searchParams.get("direction"), NEWS_FEED_DIRECTIONS),
+    channels: parseList(searchParams.get("channel"), NEWS_FEED_CHANNELS),
     q: searchParams.get("q")?.trim() ?? "",
     symbol: normalizeSymbol(searchParams.get("symbol")),
   };
@@ -66,19 +72,31 @@ export function nextFeedParams(
   changes: FeedFilterChanges,
 ): URLSearchParams {
   const params = new URLSearchParams();
-  for (const name of ["q", "family", "admission", "decision", "symbol", "outcome"] as const) {
+  for (const name of ["q", "family", "admission", "decision", "symbol"] as const) {
     const value = changes[name] === undefined ? filters[name] : changes[name];
     if (value) params.set(name, String(value));
     else params.delete(name);
   }
+  const outcome = changes.outcome === undefined ? filters.outcome : changes.outcome;
+  params.set("outcome", outcome ?? "all");
   const hours = changes.hours === undefined ? filters.hours : changes.hours;
-  params.set("hours", hours == null ? "all" : String(hours));
+  params.set("hours", String(hours ?? NEWS_FEED_DEFAULT_HOURS));
+  const directions = changes.directions === undefined ? filters.directions : changes.directions;
+  const channels = changes.channels === undefined ? filters.channels : changes.channels;
+  if (directions.length) params.set("direction", directions.join(","));
+  if (channels.length) params.set("channel", channels.join(","));
   return params;
 }
 
 export function hasAdvancedFilters(filters: NewsFeedFilters): boolean {
   return Boolean(
-    filters.q || filters.family || filters.admission || filters.decision || filters.symbol,
+    filters.q ||
+    filters.family ||
+    filters.admission ||
+    filters.decision ||
+    filters.symbol ||
+    filters.directions.length ||
+    filters.channels.length,
   );
 }
 
@@ -87,15 +105,34 @@ export function parseDecision(value: string | null): NewsFeedDecision | null {
 }
 
 export function parseOutcome(value: string | null): NewsFeedOutcome | null {
-  return NEWS_FEED_OUTCOMES.find((candidate) => candidate === value) ?? null;
+  if (value === "all") return null;
+  if (value == null || value === "") return "pushed";
+  return NEWS_FEED_OUTCOMES.find((candidate) => candidate === value) ?? "pushed";
 }
 
-/** `hours` absent → default window; `all` → whole retention; anything else must be a known window. */
+/** `hours` absent → default window; anything else must be one of the three visible choices. */
 export function parseHours(value: string | null): number | null {
   if (value == null || value === "") return NEWS_FEED_DEFAULT_HOURS;
-  if (value === "all") return null;
   const parsed = Number.parseInt(value, 10);
   return NEWS_FEED_HOURS.includes(parsed) ? parsed : NEWS_FEED_DEFAULT_HOURS;
+}
+
+function parseList<T extends string>(value: string | null, allowed: readonly T[]): T[] {
+  if (!value) return [];
+  const selected = new Set(value.split(","));
+  if ([...selected].some((item) => !allowed.includes(item as T))) return [];
+  return allowed.filter((item) => selected.has(item));
+}
+
+export function toggleFilterValue<T extends NewsFeedDirection | NewsFeedChannel>(
+  selected: readonly T[],
+  value: T,
+  order: readonly T[],
+): T[] {
+  const next = new Set(selected);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return order.filter((item) => next.has(item));
 }
 
 export function normalizeSymbol(value: string | null | undefined): string | null {

@@ -32,7 +32,7 @@ export type CockpitShellProps = {
 /**
  * The console frame. Three widths, three navigations, one model:
  *
- *   ≥1280  the sidebar is part of the page — the route tree is three destinations and the frame has room.
+ *   ≥1280  the sidebar is fixed in the page, matching the approved desktop frame.
  *   768–   the same sidebar inside a left drawer the topbar trigger opens.
  *   ≤767   no sidebar in either form: a drawer charges a tap before the reader can even see where they could
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
@@ -46,33 +46,26 @@ export function CockpitShell({
 }: CockpitShellProps) {
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
-  // One control, two meanings: at desktop it folds the in-frame sidebar away for readers who want the whole
-  // column; at tablet width it opens the same navigation as a drawer.
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // A rotated tablet must not keep the previous orientation's frame, and an open drawer must not survive the
-  // width at which the sidebar is already on screen.
+  // A rotated tablet must not keep the previous orientation's drawer open after navigation moves on-screen.
   useEffect(() => {
     if (desktop || phone) setDrawerOpen(false);
   }, [desktop, phone]);
 
   return (
     <div className="cockpit-shell">
-      {desktop && sidebarOpen ? <AppSidebar badges={navBadges} counts={navCounts} /> : null}
+      {desktop ? <AppSidebar badges={navBadges} counts={navCounts} /> : null}
       <div className="cockpit-main">
         <CockpitTopbar
           {...topbar}
           navigationTrigger={
-            phone ? null : (
+            desktop || phone ? null : (
               <IconButton
-                aria-controls={desktop ? undefined : "cockpit-nav-drawer"}
-                aria-expanded={desktop ? undefined : drawerOpen}
+                aria-controls="cockpit-nav-drawer"
+                aria-expanded={drawerOpen}
                 aria-label="切换侧栏"
-                aria-pressed={desktop ? sidebarOpen : undefined}
                 className="topbar-sidebar-trigger"
-                onClick={() =>
-                  desktop ? setSidebarOpen((open) => !open) : setDrawerOpen((open) => !open)
-                }
+                onClick={() => setDrawerOpen((open) => !open)}
                 size="sm"
                 title="切换侧栏"
               >

@@ -100,6 +100,7 @@ class NewsPipelineStatusData(ExactApiSchema):
     grounded_24h: int = 0
     ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)
     candidate_share_24h: float | None = None
+    admitted_24h: int = 0
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
 
@@ -164,6 +165,7 @@ class NewsDeliveryStatusData(ExactApiSchema):
     sent_1h: int = 0
     terminal_24h: int = 0
     last_error_code: str | None = None
+    e2e_p50_ms: float | None = None
     e2e_p95_ms: float | None = None
     delivery_available: bool
 
@@ -199,6 +201,8 @@ class NewsHealthData(ExactApiSchema):
 
 class NewsFunnelData(ExactApiSchema):
     received: int = 0
+    parsed: int = 0
+    admitted: int = 0
     candidates: int = 0
     triaged: int = 0
     tagged: int = 0

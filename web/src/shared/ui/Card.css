@@ -36,8 +36,8 @@
 
   .ui-card-header small {
     color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.45;
+    font-size: var(--font-size-meta);
+    line-height: 1.5;
   }
 
   .ui-card-body {

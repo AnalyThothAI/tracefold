@@ -54,6 +54,8 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
       family: null,
       hours: NEWS_FEED_DEFAULT_HOURS,
       outcome: null,
+      directions: [],
+      channels: [],
       q: "",
       symbol: normalized,
     }),

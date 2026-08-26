@@ -1,13 +1,4 @@
 @layer app.features {
-  /*
-   * The feed's own layout: the panel the rows live in, the hour headings that keep a long scroll oriented,
-   * and the two bars that appear only when there is something to say — new Events waiting, rows selected.
-   */
-  .news-feed-shell {
-    /* How far down the sticky hour heading has to sit: the toolbar's own height, in one place. */
-    --news-toolbar-height: 46px;
-  }
-
   .news-feed-results {
     position: relative;
     display: grid;
@@ -15,10 +6,6 @@
     justify-items: stretch;
   }
 
-  /*
-   * `clip`, not `hidden`: `hidden` would make this the scrollport for the sticky hour headings inside, and a
-   * box that does not scroll never sticks. `clip` rounds the corners without claiming the scroll.
-   */
   .news-event-list {
     min-width: 0;
     overflow: clip;
@@ -27,38 +14,29 @@
     box-shadow: var(--ring-panel);
   }
 
-  /* ------------------------------------------------------------------ hour headings (proposal ⑤) */
-  .news-hour-group {
-    position: sticky;
-    top: var(--news-toolbar-height);
-    z-index: 2;
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 6px 14px;
-    background: var(--surface-raised-glass);
-    box-shadow: inset 0 -1px 0 var(--border-subtle);
-    backdrop-filter: blur(8px);
+  .news-event-list-header {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr) 150px;
+    gap: 14px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-faint);
+    background: var(--surface-raised);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.1em;
   }
 
-  .news-hour-group-label {
-    color: var(--text-secondary);
-    font: 700 var(--font-size-eyebrow)/1.4 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.08em;
+  .news-feed-toolbar + .news-feed-page-state {
+    margin-top: -12px;
   }
 
-  .news-hour-group-meta {
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    white-space: nowrap;
+  .news-event-list-header span:last-child {
+    text-align: right;
   }
 
-  /* ------------------------------------------------------------------ live inserts (proposal ⑥) */
   .news-new-events {
     position: sticky;
-    top: calc(var(--news-toolbar-height) + 6px);
+    top: 54px;
     z-index: 15;
     display: inline-flex;
     gap: 7px;
@@ -83,49 +61,11 @@
     animation: tf-pulse 1.6s ease-in-out infinite;
   }
 
-  /* ------------------------------------------------------------------ bulk labelling (proposal ④) */
-  .news-selection-bar {
-    position: sticky;
-    bottom: 8px;
-    z-index: 15;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    border-radius: var(--radius-lg);
-    background: var(--surface-panel);
-    box-shadow: var(--shadow-elevated);
-  }
-
-  .news-selection-count {
-    color: var(--text-primary);
-    font-size: var(--font-size-meta);
-    font-weight: 560;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-selection-actions {
-    display: flex;
-    gap: 7px;
-    align-items: center;
-  }
-
   .news-load-more {
     justify-self: center;
   }
 
-  /*
-   * Phone: the list is a stack of cards rather than a table, so the panel that framed the rows disappears and
-   * each row draws its own. Hour headings stay — that is exactly the width where a reader loses track of when
-   * they are.
-   */
   @media (max-width: 767px) {
-    .news-feed-shell {
-      --news-toolbar-height: 52px;
-    }
-
     .news-event-list {
       display: grid;
       gap: 7px;
@@ -135,20 +75,12 @@
       box-shadow: none;
     }
 
-    /*
-     * No full-bleed here: the card list has no padding of its own, so a negative margin would make the
-     * heading wider than the column and give the whole page a horizontal scroll.
-     */
-    .news-hour-group {
-      margin: 4px 0 0;
-      padding: 5px 10px;
-      border-radius: var(--radius-sm);
-      background: var(--surface-canvas-glass);
-      box-shadow: none;
+    .news-event-list-header {
+      display: none;
     }
 
-    .news-selection-bar {
-      display: none;
+    .news-feed-toolbar + .news-feed-page-state {
+      margin-top: -9px;
     }
   }
 }

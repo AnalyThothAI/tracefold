@@ -195,6 +195,10 @@ def status_health(
     overall = _worst(*(item.level for item in items.values()))
     funnel = {
         "received": int(pipeline.get("events_24h") or 0),
+        # Every persisted Event has completed the provider parser; standard-news parse failures never become
+        # Events. Keeping this explicit makes the visual contract truthful even when the two counts match.
+        "parsed": int(pipeline.get("events_24h") or 0),
+        "admitted": int(pipeline.get("admitted_24h") or 0),
         "candidates": int(pipeline.get("candidates_24h") or 0),
         "triaged": int(pipeline.get("triage_24h") or 0),
         # #87: between "sent to the model" and "decided", the reader wants to know how many Events named an

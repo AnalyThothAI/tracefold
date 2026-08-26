@@ -1,6 +1,4 @@
 import { newsEventPath } from "@shared/routing/paths";
-import { FactGrid } from "@shared/ui/FactGrid";
-import { Check, ChevronRight } from "lucide-react";
 import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 
@@ -15,7 +13,6 @@ import {
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
-import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import "./newsEventRow.css";
 
@@ -35,32 +32,21 @@ const ROW_ASSET_CHIPS = 3;
  * drawer beside the list instead of replacing it; a modified click, a middle click and every assistive path
  * still follow the real href.
  *
- * The two controls (expand, select) are desktop-only by design. #87 removed the row's buttons because a
- * hover-only target means nothing under a thumb — these come back on the pointer widths where hover exists
- * and stay out of the phone card entirely.
+ * The approved list has no inline reaction or expansion controls. The headline link is the one way into the
+ * Event, and the filter/search state follows it into the detail surface.
  */
 export function NewsEventRow({
   event,
-  expanded = false,
   fresh = false,
-  onExpand,
   onOpen,
-  onSelect,
   quotes,
   searchState,
-  selectable = false,
-  selected = false,
 }: {
   event: NewsFeedEvent;
-  expanded?: boolean;
   fresh?: boolean;
-  onExpand?: (eventId: string) => void;
   onOpen?: (eventId: string) => void;
-  onSelect?: (eventId: string, shiftKey: boolean) => void;
   quotes?: Record<string, NewsQuote>;
   searchState?: string;
-  selectable?: boolean;
-  selected?: boolean;
 }) {
   const triage = event.triage;
   const headline = triage?.headline_zh?.trim() || event.title_zh?.trim() || event.leader_title;
@@ -87,25 +73,10 @@ export function NewsEventRow({
       /* The 3px rail is the market call, not the pipeline state — the right column already owns that. */
       data-direction={directionTone(triage?.direction)}
       data-event-id={event.event_id}
-      data-expanded={expanded || undefined}
       data-fresh={fresh || undefined}
       data-outcome={event.outcome.kind}
       data-outcome-group={event.outcome.group}
-      data-selectable={selectable || undefined}
-      data-selected={selected || undefined}
     >
-      {selectable ? (
-        <button
-          aria-label={selected ? `取消选择 ${headline}` : `选择 ${headline}`}
-          aria-pressed={selected}
-          className="news-event-select"
-          onClick={(clickEvent) => onSelect?.(event.event_id, clickEvent.shiftKey)}
-          type="button"
-        >
-          <Check aria-hidden />
-        </button>
-      ) : null}
-
       <time
         className="news-event-time"
         dateTime={new Date(event.opened_at_ms).toISOString()}
@@ -147,19 +118,7 @@ export function NewsEventRow({
               <NewsAssetChips assets={assets} max={ROW_ASSET_CHIPS} quotes={quotes} />
             </>
           ) : null}
-          {onExpand ? (
-            <button
-              aria-expanded={expanded}
-              aria-label={expanded ? `收起判定 ${headline}` : `展开判定 ${headline}`}
-              className="news-event-expand"
-              onClick={() => onExpand(event.event_id)}
-              type="button"
-            >
-              <ChevronRight aria-hidden />
-            </button>
-          ) : null}
         </p>
-        {expanded && triage ? <RowVerdict event={event} triage={triage} /> : null}
       </div>
 
       {/* Badge and reason are siblings rather than one column, so the grid can put the conclusion beside the
@@ -169,65 +128,11 @@ export function NewsEventRow({
       </span>
       {/* One line under the badge, never two: a sent row wants the time it went out, everything else wants
           the server's reason. */}
-      {sentAt ? (
-        <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
-      ) : event.outcome.reason_zh ? (
+      {event.outcome.reason_zh ? (
         <span className="news-event-reason">{event.outcome.reason_zh}</span>
+      ) : sentAt ? (
+        <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
       ) : null}
-      {/*
-       * What the market did after this Event, in its own column (#207 PR-W1). Rendered for every row, held
-       * ones included: "the pipeline dropped it and it moved 3%" is the one thing a reader cannot learn from
-       * the conclusion, and hiding it on held rows would make the column a second delivery badge.
-       */}
-      <span className="news-event-move">
-        <NewsReactionValue horizon="1h" reaction={event.reaction} />
-        <NewsReactionValue horizon="4h" reaction={event.reaction} />
-      </span>
     </article>
-  );
-}
-
-/**
- * The judgment, in place (design proposal ②).
- *
- * Reading why an Event was held used to mean leaving the list and losing your position for one sentence. This
- * is that sentence plus the verdict grid — server copy only, no rule keys, admissions or decisions, which
- * stay behind 技术详情 on the Event's own page where an operator goes to audit rather than to scan.
- */
-function RowVerdict({
-  event,
-  triage,
-}: {
-  event: NewsFeedEvent;
-  triage: NonNullable<NewsFeedEvent["triage"]>;
-}) {
-  const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
-  // A thin verdict — a duplicate, a recovery replay — often has no `why_zh`. The outcome's own sentence is
-  // then the only prose there is, and an expansion that opens onto a lone fact cell explains nothing.
-  const why = triage.why_zh?.trim() || event.outcome.reason_zh;
-  return (
-    <div className="news-event-verdict">
-      {why ? <p className="news-event-why">{why}</p> : null}
-      <FactGrid
-        facts={[
-          { label: "影响", value: triage.magnitude_zh },
-          { label: "范围", value: triage.scope_zh },
-          {
-            label: "把握",
-            value: triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`,
-          },
-          { label: "新颖度", value: triage.novelty_zh },
-          {
-            label: "可操作",
-            value: triage.actionable == null ? "" : triage.actionable ? "是" : "否",
-          },
-          { label: "受众", value: triage.audience_zh },
-        ]}
-        label="判定明细"
-      />
-      {assets.length > ROW_ASSET_CHIPS ? (
-        <NewsAssetChips assets={assets} label="全部关联资产" />
-      ) : null}
-    </div>
   );
 }

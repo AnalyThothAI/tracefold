@@ -4,6 +4,8 @@ export type NewsFeedQueryKeyFilters = {
   family: string | null;
   hours: number | null;
   outcome: string | null;
+  directions: readonly string[];
+  channels: readonly string[];
   q: string;
   symbol: string | null;
 };
@@ -17,6 +19,8 @@ export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
     filters.symbol ?? "",
     filters.outcome ?? "",
     filters.hours == null ? "" : String(filters.hours),
+    filters.directions.join(","),
+    filters.channels.join(","),
   ] as const;
 
 export const queryKeys = {

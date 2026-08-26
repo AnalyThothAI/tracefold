@@ -66,6 +66,10 @@ class NewsFeedFiltersData(ExactApiSchema):
     outcome: Literal["pushed", "held", "pending"] | None = None
     hours: int | None = None
     oi: Literal["all", "pushed", "withheld", "parse_failed"] | None = None
+    # Comma-separated canonical values. The feed toolbar treats each axis as a multi-select and the server
+    # remains the authority over the result set; echoing the normalized query keeps the response auditable.
+    direction: str | None = None
+    channel: str | None = None
 
 
 class NewsFeedCountsData(ExactApiSchema):

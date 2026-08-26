@@ -144,13 +144,13 @@
    * ones beside it. Tracking is applied at the call site because `font:` shorthand resets it.
    */
   --font-size-page-title: 19px;
-  --font-size-item-title: 14.5px;
+  --font-size-item-title: 13.5px;
   --font-size-body: 0.8125rem;
-  --font-size-meta: 12px;
+  --font-size-meta: 11.5px;
   --font-size-mono-meta: 11px;
   --font-size-metric: 21px;
   --font-size-eyebrow: 8.5px;
-  --type-page-title: 650 var(--font-size-page-title) / 1.28 var(--font-sans);
+  --type-page-title: 660 var(--font-size-page-title) / 1.5 var(--font-sans);
   --type-item-title: 640 var(--font-size-item-title) / 1.42 var(--font-sans);
   --type-body: 400 var(--font-size-body) / 1.6 var(--font-sans);
   --type-meta: 400 var(--font-size-meta) / 1.45 var(--font-sans);

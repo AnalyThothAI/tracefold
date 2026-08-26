@@ -19,9 +19,11 @@ import { describe, expect, it } from "vitest";
 const baseFilters = {
   admission: null,
   decision: null,
+  directions: [],
   family: null,
   hours: null,
   outcome: null,
+  channels: [],
   q: "",
   symbol: null,
 } as const;
@@ -55,6 +57,8 @@ describe("useNewsFeedWithToken", () => {
           "cursor",
           "outcome",
           "hours",
+          "direction",
+          "channel",
         ]) {
           observed[name] = params.get(name);
         }
@@ -66,9 +70,11 @@ describe("useNewsFeedWithToken", () => {
         useNewsFeedWithToken("token", {
           admission: "candidate",
           decision: "push",
+          directions: ["bullish", "neutral"],
           family: "general",
           hours: 24,
           outcome: "pushed",
+          channels: ["news"],
           q: "bitcoin",
           symbol: "BTC",
         }),
@@ -79,10 +85,12 @@ describe("useNewsFeedWithToken", () => {
       admission: "candidate",
       cursor: null,
       decision: "push",
+      direction: "bullish,neutral",
       family: "general",
       hours: "24",
       limit: "25",
       outcome: "pushed",
+      channel: "news",
       q: "bitcoin",
       symbol: "BTC",
     });

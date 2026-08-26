@@ -118,7 +118,7 @@ describe("frontend documentation contract", () => {
     expect(frontendDoc).toContain("gmgnLaneHardCut.test.ts");
     expect(frontendDoc).toContain("`/news?q=<query>`");
     expect(frontendDoc).toContain("`news search`");
-    expect(frontendDoc).toContain("搜索新闻事件 / 标题 / 资产");
+    expect(frontendDoc).toContain("事件 / base_symbol / 场所");
     expect(frontendDoc).toContain("no market-mark table");
     for (const retired of [
       "Token Case route",

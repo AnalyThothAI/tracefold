@@ -328,6 +328,7 @@ def _status_inputs(**over: object) -> dict[str, object]:
             },
         },
         "pipeline": {
+            "admitted_24h": 150,
             "events_1h": 10,
             "events_24h": 200,
             "candidates_24h": 150,
@@ -372,6 +373,8 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     }
     assert out["funnel_24h"] == {
         "received": 200,
+        "parsed": 200,
+        "admitted": 150,
         "candidates": 150,
         "triaged": 150,
         # #87: how many of the same Events named an asset that exists on a venue. It sits between "sent to

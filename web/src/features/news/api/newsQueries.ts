@@ -58,9 +58,13 @@ export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
 
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
 export type NewsFeedOutcome = NewsOutcomeGroup;
+export type NewsFeedDirection = "bullish" | "bearish" | "neutral";
+export type NewsFeedChannel = "news" | "oi";
 export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held", "pending"];
-/** Time windows the feed offers; `null` means the whole retention window. */
-export const NEWS_FEED_HOURS: readonly number[] = [1, 6, 24, 72];
+export const NEWS_FEED_DIRECTIONS: readonly NewsFeedDirection[] = ["bullish", "bearish", "neutral"];
+export const NEWS_FEED_CHANNELS: readonly NewsFeedChannel[] = ["news", "oi"];
+/** The three windows in the approved Event-feed visual. */
+export const NEWS_FEED_HOURS: readonly number[] = [1, 24, 168];
 export const NEWS_FEED_DEFAULT_HOURS = 24;
 
 export const NEWS_FEED_DECISIONS: readonly NewsFeedDecision[] = [
@@ -94,6 +98,8 @@ export type NewsFeedFilters = {
   family: string | null;
   hours: number | null;
   outcome: NewsFeedOutcome | null;
+  directions: NewsFeedDirection[];
+  channels: NewsFeedChannel[];
   q: string;
   symbol: string | null;
 };
@@ -127,17 +133,21 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
         filters.symbol,
         filters.outcome,
         filters.hours,
+        filters.directions.join(","),
+        filters.channels.join(","),
         cursor ?? "first",
       ])}`,
       params: {
         admission: filters.admission,
         cursor,
         decision: filters.decision,
+        direction: filters.directions.join(",") || null,
         family: filters.family,
         hours: filters.hours ?? undefined,
         limit: NEWS_FEED_PAGE_SIZE,
         outcome: filters.outcome,
         q: filters.q,
+        channel: filters.channels.join(",") || null,
         symbol: filters.symbol,
       },
       token,

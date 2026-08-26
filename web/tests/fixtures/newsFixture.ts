@@ -342,11 +342,13 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       },
     },
     funnel_24h: {
+      admitted: 180,
       candidates: 180,
       decided_push: 40,
       delivered: 41,
       delivered_1h: 2,
       grounded: 168,
+      parsed: 320,
       received: 320,
       received_1h: 12,
       tagged: 172,
@@ -383,6 +385,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     ],
     delivery: {
       delivery_available: true,
+      e2e_p50_ms: 2_100,
       e2e_p95_ms: 3_400,
       last_error_code: null,
       sent_1h: 2,
@@ -413,6 +416,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     },
     measured_at_ms: NEWS_NOW_MS,
     pipeline: {
+      admitted_24h: 180,
       candidate_share_24h: 0.94,
       candidates_24h: 180,
       decided_push_24h: 40,

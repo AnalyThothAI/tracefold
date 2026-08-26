@@ -24,17 +24,12 @@ describe("CockpitTopbar", () => {
     };
     const { rerender } = render(
       <MemoryRouter>
-        <CockpitTopbar
-          title="新闻事件流"
-          search={search}
-          status={healthyStatus}
-          onRefresh={vi.fn()}
-        />
+        <CockpitTopbar title="新闻事件流" search={search} status={healthyStatus} />
       </MemoryRouter>,
     );
     const input = screen.getByRole("textbox", { name: "news search" });
     expect(input).toHaveValue("bitcoin");
-    expect(input).toHaveAttribute("placeholder", "搜索新闻事件 / 标题 / 资产");
+    expect(input).toHaveAttribute("placeholder", "事件 / base_symbol / 场所");
 
     fireEvent.change(input, { target: { value: "local draft" } });
     expect(input).toHaveValue("local draft");
@@ -45,7 +40,6 @@ describe("CockpitTopbar", () => {
           title="新闻事件流"
           search={{ ...search, query: "ethereum" }}
           status={healthyStatus}
-          onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -57,7 +51,6 @@ describe("CockpitTopbar", () => {
           title="新闻事件流"
           search={{ ...search, query: "" }}
           status={healthyStatus}
-          onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -68,12 +61,7 @@ describe("CockpitTopbar", () => {
     const onSubmitQuery = vi.fn();
     render(
       <MemoryRouter>
-        <CockpitTopbar
-          title="新闻事件流"
-          search={{ onSubmitQuery }}
-          status={healthyStatus}
-          onRefresh={vi.fn()}
-        />
+        <CockpitTopbar title="新闻事件流" search={{ onSubmitQuery }} status={healthyStatus} />
       </MemoryRouter>,
     );
 
@@ -93,7 +81,6 @@ describe("CockpitTopbar", () => {
           title="新闻事件流"
           search={{ onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, status: appStatusFixture() }}
-          onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -104,7 +91,7 @@ describe("CockpitTopbar", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByText(/实时连接|WebSocket/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "notifications" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新" })).not.toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
 
@@ -124,7 +111,6 @@ describe("CockpitTopbar", () => {
               },
             }),
           }}
-          onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -141,7 +127,6 @@ describe("CockpitTopbar", () => {
           title="新闻事件流"
           search={{ onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, statusError: true }}
-          onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -153,7 +138,6 @@ describe("CockpitTopbar", () => {
           title="新闻事件流"
           search={{ onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, configReady: false }}
-          onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );

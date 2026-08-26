@@ -174,7 +174,7 @@ test("a 668-character News feed title renders at no more than two lines", async 
   expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight * 2 + 1);
 });
 
-test("a News row is one link and one conclusion, with no competing controls", async ({ page }) => {
+test("a News row stays flat and carries one visible conclusion", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
   await routeNewsFeed(page, ["Readable News card with secondary evidence"]);
@@ -183,32 +183,19 @@ test("a News row is one link and one conclusion, with no competing controls", as
   const rowLink = page.getByRole("link", { name: "Readable News card with secondary evidence" });
   await expect(rowLink).toBeVisible();
 
-  /*
-   * #87 removed copy-title, copy-label and open-original from the row: three hover-only targets that led
-   * somewhere better one tap away and meant nothing under a thumb. The row still has exactly one *stretched*
-   * link — the headline, whose `::after` covers the whole row — and one expand control that carries its own
-   * name. Bulk labelling moved to ReviewDesk, so the old row-selection control is gone.
-   *
-   * #207 PR-W1 adds the asset chips as links. They are inline text inside the meta line, not hover-only
-   * targets, and each one is a destination the reader can name. But they sit *under* the stretched overlay
-   * unless lifted, so the check that matters is not how many links exist — it is that clicking a chip
-   * reaches the token page instead of opening the Event.
-   */
+  // The approved Event stream is a flat scan list: no selection, disclosure, reactions, or competing row
+  // action. The headline opens the Event and asset symbols keep their own named destinations.
   const row = page.locator(".news-event-row").first();
   await expect(row.locator(".news-event-headline a")).toHaveCount(1);
-  await expect(row.getByRole("button")).toHaveCount(1);
+  await expect(row.getByRole("button")).toHaveCount(0);
   await expect(row.locator(".news-event-select")).toHaveCount(0);
-  await expect(row.locator(".news-event-expand")).toHaveCount(1);
+  await expect(row.locator(".news-event-expand")).toHaveCount(0);
+  await expect(row.locator(".news-event-verdict")).toHaveCount(0);
 
   await expect(page.locator(".news-direction")).toContainText("利空");
   await expect(page.locator(".news-event-kind")).toContainText("宏观");
   await expect(page.locator(".news-event-badge")).toContainText("已推送");
-  await expect(page.locator(".news-event-reason")).toContainText("推送于");
-
-  // Space opens the judgment where the reader is standing, instead of costing them the list.
-  await row.locator(".news-event-expand").click();
-  await expect(row.locator(".news-event-verdict")).toBeVisible();
-  await expect(row.locator(".news-event-why")).not.toBeEmpty();
+  await expect(page.locator(".news-event-reason")).toContainText("模型判断值得推送");
 
   /*
    * The chip has to actually win the click. A link under the headline's stretched `::after` renders, reads

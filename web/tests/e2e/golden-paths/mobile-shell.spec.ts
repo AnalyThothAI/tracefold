@@ -60,13 +60,10 @@ async function expectMobileTopbarContract(page: Page) {
   expect(topbarRect.height).toBeCloseTo(52, 0);
   expect(topbarRect.bottom).toBeLessThanOrEqual(centerColumnRect.top + 0.5);
 
-  for (const [name, locator] of [
-    ["search input", page.getByLabel("news search")],
-    ["refresh button", page.getByRole("button", { name: "刷新" })],
-  ] satisfies Array<[string, Locator]>) {
-    await expect(locator, `${name} should render in the mobile topbar`).toBeVisible();
-    expectRectContained(await locatorRect(locator, name), topbarRect, name);
-  }
+  const search = page.getByLabel("news search");
+  await expect(search, "search input should render in the mobile topbar").toBeVisible();
+  expectRectContained(await locatorRect(search, "search input"), topbarRect, "search input");
+  await expect(page.getByRole("button", { name: "刷新" })).toHaveCount(0);
 }
 
 /**

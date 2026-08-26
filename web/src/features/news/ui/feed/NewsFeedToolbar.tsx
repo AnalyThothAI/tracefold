@@ -1,76 +1,89 @@
-import { SlidersHorizontal, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, SlidersHorizontal } from "lucide-react";
+import { useState } from "react";
 
 import {
-  NEWS_FEED_DECISIONS,
+  NEWS_FEED_CHANNELS,
+  NEWS_FEED_DIRECTIONS,
   NEWS_FEED_HOURS,
-  NEWS_FEED_OUTCOMES,
+  type NewsFeedChannel,
   type NewsFeedCounts,
+  type NewsFeedDirection,
   type NewsFeedFilters,
   type NewsFeedOutcome,
 } from "../../api/newsQueries";
-import {
-  ADMISSION_FILTER_LABELS,
-  DECISION_FILTER_LABELS,
-  FAMILY_FILTER_LABELS,
-  KNOWN_ADMISSIONS,
-  KNOWN_FAMILIES,
-  type FeedFilterChanges,
-  normalizeSymbol,
-  parseDecision,
-  parseHours,
-  withSelectedOption,
-} from "../../model/feedFilters";
+import { type FeedFilterChanges, toggleFilterValue } from "../../model/feedFilters";
 import { formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
-import { NewsToneDot } from "../chrome/NewsTone";
 
 import "./newsFeedToolbar.css";
 
-const OUTCOME_TABS: Array<NewsFeedOutcome | null> = [null, ...NEWS_FEED_OUTCOMES];
-const OUTCOME_TAB_TONE = { pushed: "done", held: "neutral", pending: "info" } as const;
+const OUTCOME_TABS: Array<NewsFeedOutcome | null> = ["pushed", "held", "pending", null];
+const DIRECTION_LABELS: Record<NewsFeedDirection, string> = {
+  bullish: "▲ 利多",
+  bearish: "▼ 利空",
+  neutral: "◆ 中性",
+};
+const CHANNEL_LABELS: Record<NewsFeedChannel, string> = { news: "新闻", oi: "OI 帧" };
 
-/**
- * The feed's own controls, sticky under the topbar: which task you are on, how far back, and the advanced
- * filters folded into one disclosure. The shell owns navigation and search; this owns nothing else.
- */
+/** The Event-feed controls in the approved order: task, count, window, then two bounded filter axes. */
 export function NewsFeedToolbar({
   counts,
   filters,
-  hasAdvanced,
   onChange,
   visibleCount,
 }: {
   counts?: NewsFeedCounts;
   filters: NewsFeedFilters;
-  hasAdvanced: boolean;
   onChange: (changes: FeedFilterChanges) => void;
   visibleCount: number;
 }) {
+  const total = tabCount(counts, filters.outcome);
+  const [timeOpen, setTimeOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilters = filters.directions.length + filters.channels.length;
   return (
-    <div className="news-feed-toolbar">
-      <OutcomeTabs
-        active={filters.outcome}
-        counts={counts}
-        onChange={(outcome) => onChange({ outcome })}
-      />
-      <FeedControls
-        counts={counts}
-        filters={filters}
-        hasAdvanced={hasAdvanced}
-        onChange={onChange}
-        visibleCount={visibleCount}
-      />
-    </div>
+    <>
+      <div className="news-feed-toolbar">
+        <OutcomeTabs
+          active={filters.outcome}
+          counts={counts}
+          onChange={(outcome) => onChange({ outcome })}
+        />
+        <div className="news-filter-bar">
+          {total == null ? null : (
+            <span className="news-filter-total">
+              {formatCount(visibleCount)} / {formatCount(total)} 条
+            </span>
+          )}
+          <TimeMenu
+            hours={filters.hours}
+            onChange={(hours) => onChange({ hours })}
+            onOpenChange={(open) => {
+              setTimeOpen(open);
+              if (open) setFiltersOpen(false);
+            }}
+            open={timeOpen}
+          />
+          <button
+            aria-expanded={filtersOpen}
+            className="news-filter-trigger"
+            data-active={activeFilters > 0 || undefined}
+            onClick={() => {
+              setFiltersOpen((open) => !open);
+              setTimeOpen(false);
+            }}
+            type="button"
+          >
+            <SlidersHorizontal aria-hidden />
+            筛选
+            {activeFilters ? <span aria-hidden>{activeFilters}</span> : null}
+          </button>
+        </div>
+      </div>
+      {filtersOpen ? <FilterPanel filters={filters} onChange={onChange} /> : null}
+    </>
   );
 }
 
-/**
- * The four task tabs. Each carries the server's count for that group under the *current* filter and window,
- * so the reader can see a tab is empty without visiting it. Digits 1–4 select them.
- *
- * The selected tab is a white pill in a 5% groove — one elevation in the whole console that is not a real
- * overlay, because a segmented control that separates only by weight is unreadable at 12px.
- */
 function OutcomeTabs({
   active,
   counts,
@@ -86,30 +99,118 @@ function OutcomeTabs({
         const count = tabCount(counts, value);
         return (
           <button
+            aria-label={
+              count == null
+                ? outcomeTabLabel(value)
+                : `${outcomeTabLabel(value)} ${compactTabCount(count)}`
+            }
             aria-selected={active === value}
-            className="news-segmented-option news-toned"
+            className="news-segmented-option"
             data-active={active === value || undefined}
-            data-tone={value ? OUTCOME_TAB_TONE[value] : "neutral"}
             key={value ?? "all"}
             onClick={() => onChange(value)}
             role="tab"
             type="button"
           >
-            <NewsToneDot />
             {outcomeTabLabel(value)}
-            {/*
-             * The count is decoration on the tab, not part of what it selects. Folding a number that changes
-             * every three seconds into the accessible name would make the tab rename itself constantly; the
-             * labelled 24 h funnel above announces the same figures properly.
-             */}
             {count == null ? null : (
-              <span aria-hidden className="news-segmented-count">
-                {formatCount(count)}
-              </span>
+              <span className="news-segmented-count">{compactTabCount(count)}</span>
             )}
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function compactTabCount(value: number): string {
+  if (value < 1_000) return String(value);
+  return `${Math.floor(value / 100) / 10}k`;
+}
+
+function TimeMenu({
+  hours,
+  onChange,
+  onOpenChange,
+  open,
+}: {
+  hours: number | null;
+  onChange: (hours: number) => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+}) {
+  return (
+    <div className="news-menu">
+      <button aria-expanded={open} onClick={() => onOpenChange(!open)} type="button">
+        {hoursLabel(hours)}
+        <ChevronDown aria-hidden />
+      </button>
+      {open ? (
+        <div aria-label="时间范围" className="news-menu-popover" role="menu">
+          {NEWS_FEED_HOURS.map((value) => (
+            <button
+              aria-checked={hours === value}
+              key={value}
+              onClick={() => {
+                onChange(value);
+                onOpenChange(false);
+              }}
+              role="menuitemradio"
+              type="button"
+            >
+              {hoursLabel(value)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FilterPanel({
+  filters,
+  onChange,
+}: {
+  filters: NewsFeedFilters;
+  onChange: (changes: FeedFilterChanges) => void;
+}) {
+  return (
+    <div className="news-filter-panel">
+      <small>方向</small>
+      <div>
+        {NEWS_FEED_DIRECTIONS.map((value) => (
+          <button
+            aria-pressed={filters.directions.includes(value)}
+            data-direction={value}
+            key={value}
+            onClick={() =>
+              onChange({
+                directions: toggleFilterValue(filters.directions, value, NEWS_FEED_DIRECTIONS),
+              })
+            }
+            type="button"
+          >
+            {DIRECTION_LABELS[value]}
+          </button>
+        ))}
+      </div>
+      <small>通道</small>
+      <div>
+        {NEWS_FEED_CHANNELS.map((value) => (
+          <button
+            aria-pressed={filters.channels.includes(value)}
+            key={value}
+            onClick={() =>
+              onChange({
+                channels: toggleFilterValue(filters.channels, value, NEWS_FEED_CHANNELS),
+              })
+            }
+            type="button"
+          >
+            {CHANNEL_LABELS[value]}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -120,168 +221,4 @@ function tabCount(
 ): number | null {
   if (!counts) return null;
   return value == null ? counts.total : counts[value];
-}
-
-function FeedControls({
-  counts,
-  filters,
-  hasAdvanced,
-  onChange,
-  visibleCount,
-}: {
-  counts?: NewsFeedCounts;
-  filters: NewsFeedFilters;
-  hasAdvanced: boolean;
-  onChange: (changes: FeedFilterChanges) => void;
-  visibleCount: number;
-}) {
-  const [symbolDraft, setSymbolDraft] = useState(filters.symbol ?? "");
-  useEffect(() => {
-    setSymbolDraft(filters.symbol ?? "");
-  }, [filters.symbol]);
-  const total = tabCount(counts, filters.outcome);
-  return (
-    <div className="news-filter-bar">
-      {total == null ? null : (
-        <span className="news-filter-total">
-          {formatCount(visibleCount)} / {formatCount(total)} 条
-        </span>
-      )}
-      <label className="news-select">
-        <span className="sr-only">时间范围</span>
-        <select
-          aria-label="时间范围"
-          onChange={(event) => onChange({ hours: parseHours(event.target.value) })}
-          value={filters.hours == null ? "all" : String(filters.hours)}
-        >
-          {NEWS_FEED_HOURS.map((hours) => (
-            <option key={hours} value={String(hours)}>
-              {hoursLabel(hours)}
-            </option>
-          ))}
-          <option value="all">全部时间</option>
-        </select>
-      </label>
-      <details className="news-filter-disclosure">
-        <summary data-active={hasAdvanced || undefined}>
-          <SlidersHorizontal aria-hidden />
-          筛选
-        </summary>
-        <div>
-          <label>
-            <span>来源类别</span>
-            <select
-              aria-label="事件家族"
-              onChange={(event) => onChange({ family: event.target.value || null })}
-              value={filters.family ?? ""}
-            >
-              <option value="">全部</option>
-              {withSelectedOption(KNOWN_FAMILIES, filters.family).map((value) => (
-                <option key={value} value={value}>
-                  {FAMILY_FILTER_LABELS[value] ?? value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>门禁</span>
-            <select
-              aria-label="事件准入"
-              onChange={(event) => onChange({ admission: event.target.value || null })}
-              value={filters.admission ?? ""}
-            >
-              <option value="">全部</option>
-              {withSelectedOption(KNOWN_ADMISSIONS, filters.admission).map((value) => (
-                <option key={value} value={value}>
-                  {ADMISSION_FILTER_LABELS[value] ?? value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>决策</span>
-            <select
-              aria-label="Triage 判定"
-              onChange={(event) => onChange({ decision: parseDecision(event.target.value) })}
-              value={filters.decision ?? ""}
-            >
-              <option value="">全部</option>
-              {NEWS_FEED_DECISIONS.map((value) => (
-                <option key={value} value={value}>
-                  {DECISION_FILTER_LABELS[value]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>资产代码</span>
-            <input
-              aria-label="落地资产"
-              autoCapitalize="characters"
-              maxLength={16}
-              onBlur={() => onChange({ symbol: normalizeSymbol(symbolDraft) })}
-              onChange={(event) => setSymbolDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  onChange({ symbol: normalizeSymbol(symbolDraft) });
-                }
-              }}
-              placeholder="BTC"
-              value={symbolDraft}
-            />
-          </label>
-        </div>
-      </details>
-    </div>
-  );
-}
-
-export function NewsActiveFilterChips({
-  filters,
-  onRemove,
-}: {
-  filters: NewsFeedFilters;
-  onRemove: (changes: FeedFilterChanges) => void;
-}) {
-  const chips = [
-    filters.q ? { label: `搜索：${filters.q}`, remove: () => onRemove({ q: null }) } : null,
-    filters.family
-      ? {
-          label: `来源类别：${FAMILY_FILTER_LABELS[filters.family] ?? filters.family}`,
-          remove: () => onRemove({ family: null }),
-        }
-      : null,
-    filters.admission
-      ? {
-          label: `门禁：${ADMISSION_FILTER_LABELS[filters.admission] ?? filters.admission}`,
-          remove: () => onRemove({ admission: null }),
-        }
-      : null,
-    filters.decision
-      ? {
-          label: `决策：${DECISION_FILTER_LABELS[filters.decision]}`,
-          remove: () => onRemove({ decision: null }),
-        }
-      : null,
-    filters.symbol
-      ? { label: `资产：${filters.symbol}`, remove: () => onRemove({ symbol: null }) }
-      : null,
-  ].filter((chip): chip is { label: string; remove: () => void } => chip !== null);
-  if (!chips.length) return null;
-  return (
-    <div aria-label="已启用筛选" className="news-active-filters" role="group">
-      {chips.map((chip) => (
-        <button
-          aria-label={`移除${chip.label}`}
-          key={chip.label}
-          onClick={chip.remove}
-          type="button"
-        >
-          {chip.label}
-          <X aria-hidden />
-        </button>
-      ))}
-    </div>
-  );
 }

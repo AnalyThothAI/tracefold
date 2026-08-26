@@ -70,7 +70,7 @@ describe("responsive CSS contract", () => {
 
     expect(
       matches,
-      ".topbar-sidebar-trigger must be visible so tablet and collapsed desktop users can open the drawer",
+      ".topbar-sidebar-trigger must be visible so tablet users can open the drawer",
     ).not.toEqual([]);
 
     /*

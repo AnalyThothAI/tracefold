@@ -84,6 +84,8 @@ class FeedStorage:
         outcome: str | None = None,
         hours: int | None = None,
         oi: str | None = None,
+        directions: tuple[str, ...] | None = None,
+        channels: tuple[str, ...] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
@@ -122,11 +124,35 @@ class FeedStorage:
             )
             params.extend([symbol.upper(), symbol.upper()])
         if q:
-            where.append("(e.search_doc @@ plainto_tsquery('simple', %s) OR e.leader_title ILIKE %s)")
-            params.extend([q, f"%{q}%"])
+            pattern = f"%{q}%"
+            where.append(
+                "(e.search_doc @@ plainto_tsquery('simple', %s)"
+                " OR e.leader_title ILIKE %s"
+                " OR i.reporting_origin ILIKE %s"
+                " OR EXISTS ("
+                "   SELECT 1 FROM news_event_assets a"
+                "   LEFT JOIN news_symbol_aliases n ON n.alias = a.symbol"
+                "   LEFT JOIN news_market_instruments m"
+                "     ON m.base_symbol = COALESCE(n.base_symbol, a.symbol)"
+                "  WHERE a.event_id = e.event_id"
+                "    AND (a.symbol ILIKE %s OR COALESCE(n.base_symbol, '') ILIKE %s"
+                "         OR COALESCE(m.venue, '') ILIKE %s"
+                "         OR COALESCE(m.venue_symbol, '') ILIKE %s)"
+                "))"
+            )
+            params.extend([q, pattern, pattern, pattern, pattern, pattern, pattern])
         if decision:
             where.append("t.final_decision = %s")
             params.append(decision)
+        if directions:
+            where.append("t.direction = ANY(%s)")
+            params.append(list(directions))
+        if channels and len(channels) == 1:
+            where.append(
+                "e.admission = 'telemetry_deterministic'"
+                if channels[0] == "oi"
+                else "e.admission <> 'telemetry_deterministic'"
+            )
         if oi in OI_FILTERS:
             # The judge's own rule, from the trace it wrote. `final_decision` cannot answer this: a frame held
             # by a threshold and one whose provider template stopped parsing are both `drop`, and both carry
@@ -167,7 +193,8 @@ class FeedStorage:
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
               LEFT JOIN LATERAL (
-                SELECT v.*, {_OI_RULE_SQL} FROM news_verdicts v
+                SELECT v.*, v.verdict ->> 'direction' AS direction, {_OI_RULE_SQL}
+                  FROM news_verdicts v
                  WHERE v.event_id = e.event_id AND v.stage = 'triage'
                  ORDER BY v.created_at_ms DESC LIMIT 1
               ) t ON true
@@ -197,6 +224,8 @@ class FeedStorage:
                 "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
                 "oi": oi if oi in OI_OUTCOMES else None,
+                "direction": ",".join(directions) if directions else None,
+                "channel": ",".join(channels) if channels else None,
             },
         }
 
@@ -222,7 +251,8 @@ class FeedStorage:
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
               LEFT JOIN LATERAL (
-                SELECT v.final_decision, {_OI_RULE_SQL} FROM news_verdicts v
+                SELECT v.final_decision, v.verdict ->> 'direction' AS direction, {_OI_RULE_SQL}
+                  FROM news_verdicts v
                  WHERE v.event_id = e.event_id AND v.stage = 'triage'
                  ORDER BY v.created_at_ms DESC LIMIT 1
               ) t ON true
@@ -524,13 +554,18 @@ class FeedStorage:
               (SELECT count(*) FROM news_deliveries WHERE state = 'terminal' AND settled_at_ms >= %s) AS terminal_24h,
               (SELECT error_code FROM news_deliveries WHERE state = 'terminal'
                 ORDER BY settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
+              (SELECT percentile_cont(0.5)
+                 WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
+                 FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
+                 JOIN news_items i ON i.item_id = e.leader_item_id
+                WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p50_ms,
               (SELECT percentile_cont(0.95)
                  WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
                  FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
                  JOIN news_items i ON i.item_id = e.leader_item_id
                 WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p95_ms
             """,
-            (day_ago, hour_ago, day_ago, day_ago),
+            (day_ago, hour_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         funnel = self._funnel_24h(day_ago=day_ago)
         retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
@@ -565,6 +600,9 @@ class FeedStorage:
                 "sent_1h": int(delivery["sent_1h"] or 0) if delivery else 0,
                 "terminal_24h": int(delivery["terminal_24h"] or 0) if delivery else 0,
                 "last_error_code": delivery["last_error_code"] if delivery else None,
+                "e2e_p50_ms": float(delivery["e2e_p50_ms"])
+                if delivery and delivery["e2e_p50_ms"] is not None
+                else None,
                 "e2e_p95_ms": float(delivery["e2e_p95_ms"])
                 if delivery and delivery["e2e_p95_ms"] is not None
                 else None,
@@ -691,6 +729,7 @@ class FeedStorage:
             "reviewed_external_miss_24h": int(missed["external"] or 0) if missed else 0,
             "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
+            "admitted_24h": admitted,
         }
 
 

@@ -13,7 +13,7 @@
     gap: 10px;
     height: var(--shell-topbar-height);
     min-height: var(--shell-topbar-height);
-    padding: 0 12px;
+    padding: 0 14px;
     border-bottom: 1px solid var(--border-subtle);
     background: var(--surface-glass);
     backdrop-filter: blur(14px);
@@ -22,13 +22,13 @@
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     min-width: 0;
   }
 
   .topbar-page-title {
     color: var(--text-primary);
-    font-size: var(--font-size-meta);
+    font-size: var(--font-size-body);
     font-weight: 620;
     white-space: nowrap;
   }
@@ -39,27 +39,22 @@
 
   /*
    * The health lamp (#207). Nothing renders while the pipeline is `ok`, so every rule below describes a state
-   * the reader is meant to act on. Amber and brick are the pipeline's own caution/alert tokens — never the
-   * direction red and green, which state a market opinion this lamp does not have.
+   * the reader is meant to act on. The button stays neutral and only the dot carries pipeline state — never
+   * direction red or green, which would state a market opinion this lamp does not have.
    */
   .topbar-health-lamp {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    min-height: 26px;
-    padding: 0 9px;
-    border: 1px solid var(--signal-caution-border);
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    background: var(--signal-caution-soft);
+    background: var(--surface-panel);
     font: inherit;
-    font-size: var(--font-size-mono-meta);
+    font-size: var(--font-size-meta);
     cursor: pointer;
-  }
-
-  .topbar-health-lamp[data-level="bad"] {
-    border-color: var(--signal-alert-border);
-    background: var(--signal-alert-soft);
   }
 
   .topbar-health-dot {
@@ -75,6 +70,14 @@
     background: var(--signal-alert);
   }
 
+  .topbar-health-lamp[data-level="ok"] .topbar-health-dot {
+    background: var(--signal-done);
+  }
+
+  .topbar-health-lamp[data-level="off"] .topbar-health-dot {
+    background: var(--signal-neutral);
+  }
+
   .topbar-health-dot[data-level="ok"] {
     background: var(--signal-done);
   }
@@ -88,6 +91,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .topbar-health-chevron {
+    width: 11px;
+    height: 11px;
+    flex: 0 0 auto;
+    color: var(--text-subtle);
   }
 
   /* Portalled to the body, so this selector stands on its own rather than under `.topbar`. */
@@ -165,7 +175,7 @@
     gap: 8px;
     min-width: 0;
     width: 100%;
-    max-width: 420px;
+    max-width: 360px;
     height: 30px;
     padding: 0 10px;
     border: 1px solid var(--border-subtle);
@@ -203,6 +213,14 @@
 
   .searchbar input::placeholder {
     color: var(--text-subtle);
+  }
+
+  .cockpit-searchbar-keycap {
+    padding: 1px 5px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
+    font: var(--type-eyebrow);
   }
 
   .topbar-right {

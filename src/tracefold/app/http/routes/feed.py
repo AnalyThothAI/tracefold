@@ -30,6 +30,8 @@ _DECISIONS = {"push", "escalate", "drop", "throttled", "degraded"}
 # browser must not split them by filtering a loaded page, which would leave the tab counts describing the
 # whole window while the rows below described one page of it.
 _OI_OUTCOMES = {"all", "pushed", "withheld", "parse_failed"}
+_DIRECTIONS = ("bullish", "bearish", "neutral")
+_CHANNELS = ("news", "oi")
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
@@ -47,6 +49,8 @@ def get_news_feed(
     # Wide enough to hold a full rule key: someone reaching for `whale_ratio_below_threshold` should get
     # the named `news_feed_oi_invalid` rather than a shape error that says nothing about the vocabulary.
     oi: Annotated[str, Query(max_length=40)] = "",
+    direction: Annotated[str, Query(max_length=40)] = "",
+    channel: Annotated[str, Query(max_length=16)] = "",
 ) -> Response:
     _validate_query_params(
         request,
@@ -61,6 +65,8 @@ def get_news_feed(
             "outcome",
             "hours",
             "oi",
+            "direction",
+            "channel",
             "token",
         },
     )
@@ -70,6 +76,10 @@ def get_news_feed(
         raise ApiBadRequest("news_feed_decision_invalid", field="decision")
     if oi and oi not in _OI_OUTCOMES:
         raise ApiBadRequest("news_feed_oi_invalid", field="oi")
+    directions = _parse_csv_filter(
+        direction, allowed=_DIRECTIONS, error="news_feed_direction_invalid", field="direction"
+    )
+    channels = _parse_csv_filter(channel, allowed=_CHANNELS, error="news_feed_channel_invalid", field="channel")
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         try:
@@ -84,6 +94,8 @@ def get_news_feed(
                 outcome=outcome or None,
                 hours=hours or None,
                 oi=oi or None,
+                directions=directions,
+                channels=channels,
             )
         except ValueError as exc:
             # Only `list_feed` decodes the cursor. Anything that fails while resolving instruments is a
@@ -92,6 +104,16 @@ def get_news_feed(
         _attach_asset_refs(data["events"], repos.instruments)
         _attach_reactions(data["events"], repos.price, now_ms=int(time.time() * 1000))
     return _etagged(data, request, envelope=_FeedEnvelope)
+
+
+def _parse_csv_filter(value: str, *, allowed: tuple[str, ...], error: str, field: str) -> tuple[str, ...] | None:
+    if not value:
+        return None
+    requested = value.split(",")
+    if any(not item or item not in allowed for item in requested) or len(set(requested)) != len(requested):
+        raise ApiBadRequest(error, field=field)
+    selected = tuple(item for item in allowed if item in requested)
+    return selected or None
 
 
 def _attach_reactions(events: list[dict[str, Any]], price: Any, *, now_ms: int) -> None:

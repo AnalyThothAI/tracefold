@@ -35,6 +35,14 @@ describe("CockpitTopbar health lamp", () => {
     expect(screen.getByRole("button", { name: /流水线健康/ })).toHaveAttribute("data-level", "bad");
   });
 
+  it("keeps approved visible copy while the accessible diagnosis remains specific", () => {
+    renderTopbar(healthFixture({ buttonText: "流水线", level: "bad" }));
+
+    const lamp = screen.getByRole("button", { name: "流水线健康：24 小时降级率 8%（14/175）" });
+    expect(lamp).toHaveTextContent("流水线");
+    expect(lamp).not.toHaveTextContent("24 小时降级率 8%（14/175）");
+  });
+
   it("opens the four stage lines and a door to the status page, and closes on Esc", async () => {
     renderTopbar(healthFixture({ level: "warn" }));
 
@@ -87,7 +95,6 @@ function renderTopbar(health: CockpitHealth | null) {
     <MemoryRouter>
       <CockpitTopbar
         health={health}
-        onRefresh={vi.fn()}
         search={{ onSubmitQuery: vi.fn(), query: "" }}
         status={{ configReady: true, status: null, statusError: false, statusLoading: false }}
         title="新闻事件流"
