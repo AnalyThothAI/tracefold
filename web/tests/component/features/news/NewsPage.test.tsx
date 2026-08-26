@@ -302,7 +302,7 @@ describe("NewsPage", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+    fireEvent.click(screen.getByRole("button", { name: "筛选 · 3" }));
     expect(screen.getByRole("button", { name: "▲ 利多" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "◆ 中性" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "新闻" })).toHaveAttribute("aria-pressed", "true");
@@ -311,6 +311,14 @@ describe("NewsPage", () => {
     await waitFor(() => expect(observed.direction).toBe("bullish"));
     fireEvent.click(screen.getByRole("button", { name: "OI 帧" }));
     await waitFor(() => expect(observed.channel).toBe("news,oi"));
+    fireEvent.click(screen.getByRole("button", { name: "清除" }));
+    await waitFor(() => {
+      expect(observed.direction).toBeNull();
+      expect(observed.channel).toBeNull();
+    });
+    expect(screen.getByRole("button", { name: "筛选" })).toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent("q=bitcoin");
+    expect(screen.getByTestId("location")).toHaveTextContent("hours=168");
 
     fireEvent.click(screen.getByRole("tab", { name: "已推送 41" }));
     await waitFor(() => expect(observed.outcome).toBe("pushed"));

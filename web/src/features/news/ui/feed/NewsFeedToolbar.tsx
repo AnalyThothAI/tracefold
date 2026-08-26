@@ -76,11 +76,13 @@ export function NewsFeedToolbar({
           >
             <SlidersHorizontal aria-hidden />
             筛选
-            {activeFilters ? <span aria-hidden>{activeFilters}</span> : null}
+            {activeFilters ? ` · ${activeFilters}` : null}
           </button>
         </div>
       </div>
-      {filtersOpen ? <FilterPanel filters={filters} onChange={onChange} /> : null}
+      {filtersOpen ? (
+        <FilterPanel activeFilters={activeFilters} filters={filters} onChange={onChange} />
+      ) : null}
     </>
   );
 }
@@ -177,9 +179,11 @@ function TimeMenu({
 }
 
 function FilterPanel({
+  activeFilters,
   filters,
   onChange,
 }: {
+  activeFilters: number;
   filters: NewsFeedFilters;
   onChange: (changes: FeedFilterChanges) => void;
 }) {
@@ -220,6 +224,15 @@ function FilterPanel({
           </button>
         ))}
       </div>
+      {activeFilters ? (
+        <button
+          className="news-filter-clear"
+          onClick={() => onChange({ channels: [], directions: [] })}
+          type="button"
+        >
+          清除
+        </button>
+      ) : null}
     </div>
   );
 }

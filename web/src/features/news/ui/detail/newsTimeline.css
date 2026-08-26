@@ -89,6 +89,19 @@
     text-wrap: pretty;
   }
 
+  .news-timeline-inline-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 10px;
+    margin: 2px 0 0;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .news-timeline-inline-facts code {
+    overflow-wrap: anywhere;
+  }
+
   .news-timeline-toggle {
     display: inline-flex;
     gap: 5px;

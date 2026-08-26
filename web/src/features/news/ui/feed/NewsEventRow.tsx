@@ -44,7 +44,7 @@ export function NewsEventRow({
 }: {
   event: NewsFeedEvent;
   fresh?: boolean;
-  onOpen?: (eventId: string) => void;
+  onOpen?: (eventId: string, trigger: HTMLAnchorElement) => void;
   quotes?: Record<string, NewsQuote>;
   searchState?: string;
 }) {
@@ -65,7 +65,7 @@ export function NewsEventRow({
       return;
     }
     clickEvent.preventDefault();
-    onOpen(event.event_id);
+    onOpen(event.event_id, clickEvent.currentTarget);
   };
   return (
     <article

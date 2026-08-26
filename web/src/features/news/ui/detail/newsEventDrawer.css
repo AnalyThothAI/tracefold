@@ -1,8 +1,9 @@
 @layer app.features {
   .news-drawer-body {
     display: grid;
-    gap: 11px;
+    gap: 14px;
     align-content: start;
+    min-height: 100%;
   }
 
   .news-drawer-headline {
@@ -15,22 +16,8 @@
     text-wrap: pretty;
   }
 
-  .news-drawer-verdict {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 9px;
-    align-items: center;
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: var(--font-size-meta);
-  }
-
-  /* The model's one sentence, set as the reading matter it is — indigo edge, sunken ground, body size. */
   .news-drawer-why {
     margin: 0;
-    padding: 10px 12px;
-    border-left: 2px solid var(--accent-border);
-    background: var(--surface-raised);
     color: var(--text-primary);
     font: var(--type-body);
     text-wrap: pretty;
@@ -40,30 +27,46 @@
     display: grid;
     gap: 5px;
     margin: 0;
-    padding-top: 10px;
-    border-top: 1px solid var(--border-faint);
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
     color: var(--text-secondary);
     font-size: var(--font-size-meta);
     line-height: 1.5;
   }
 
-  .news-drawer-original-label {
+  .news-drawer-section-title {
+    margin: 5px 0 -3px;
     color: var(--text-subtle);
     font: var(--type-eyebrow);
-    line-height: 1.7;
     letter-spacing: 0.09em;
   }
 
-  .news-drawer-original a {
-    display: inline-flex;
-    gap: 4px;
+  .news-drawer-footer {
+    position: sticky;
+    bottom: -24px;
+    display: flex;
+    gap: 16px;
     align-items: center;
-    font-size: var(--font-size-mono-meta);
+    justify-content: space-between;
+    margin: auto -16px -24px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-faint);
+    background: var(--surface-panel);
   }
 
-  .news-drawer-original svg {
-    width: 11px;
-    height: 11px;
+  .news-drawer-footer a {
+    display: inline-flex;
+    gap: 3px;
+    align-items: center;
+    color: var(--accent-primary);
+    font-size: var(--font-size-meta);
+    font-weight: 560;
+  }
+
+  .news-drawer-footer svg {
+    width: 13px;
+    height: 13px;
   }
 
   /* ------------------------------------------------------------------ drawer header bits */
@@ -73,19 +76,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .news-drawer-open {
-    padding: 0 9px;
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    background: var(--surface-panel);
-    box-shadow: var(--ring-control);
-    font-size: var(--font-size-mono-meta);
-    line-height: 26px;
-    white-space: nowrap;
-  }
-
-  .news-drawer-open:hover {
-    color: var(--accent-primary);
-    background: var(--accent-soft);
+  .news-drawer-time + span {
+    color: var(--text-faint);
   }
 }

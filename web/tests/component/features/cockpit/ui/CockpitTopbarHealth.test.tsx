@@ -43,7 +43,7 @@ describe("CockpitTopbar health lamp", () => {
     expect(lamp).not.toHaveTextContent("24 小时降级率 8%（14/175）");
   });
 
-  it("opens the four stage lines and a door to the status page, and closes on Esc", async () => {
+  it("opens the compact pipeline facts and a door to the status page, and closes on Esc", async () => {
     renderTopbar(healthFixture({ level: "warn" }));
 
     const lamp = screen.getByRole("button", { name: /流水线健康/ });
@@ -52,13 +52,14 @@ describe("CockpitTopbar health lamp", () => {
 
     const popover = await screen.findByRole("dialog");
     expect(lamp).toHaveAttribute("aria-expanded", "true");
-    // Every stage the server reports, each with its own level and its own sentence — the frame maps nothing.
+    expect(within(popover).queryByText("流水线注意")).not.toBeInTheDocument();
     const items = within(popover).getAllByRole("listitem");
     expect(items.map((item) => item.textContent)).toEqual([
-      "Ingest已连接，正在收帧",
-      "Broker队列畅通",
-      "Model24 小时降级率 8%（14/175）",
-      "Delivery24 小时已推送 41 条",
+      "接入正常 · 已连接，正在收帧",
+      "队列正常 · 队列畅通",
+      "模型注意 · 24 小时降级率 8%（14/175）",
+      "推送正常 · 24 小时已推送 41 条",
+      "标的表2,344 份交易合约",
     ]);
     expect(within(popover).getByRole("link", { name: /打开流水线状态/ })).toHaveAttribute(
       "href",
@@ -78,10 +79,11 @@ function healthFixture(overrides: Partial<CockpitHealth> = {}): CockpitHealth {
   return {
     headline: "流水线注意",
     items: [
-      { key: "ingest", label: "Ingest", level: "ok", summary: "已连接，正在收帧" },
-      { key: "broker", label: "Broker", level: "ok", summary: "队列畅通" },
-      { key: "model", label: "Model", level: "warn", summary: "24 小时降级率 8%（14/175）" },
-      { key: "delivery", label: "Delivery", level: "ok", summary: "24 小时已推送 41 条" },
+      { key: "ingest", label: "接入", level: "ok", summary: "正常 · 已连接，正在收帧" },
+      { key: "broker", label: "队列", level: "ok", summary: "正常 · 队列畅通" },
+      { key: "model", label: "模型", level: "warn", summary: "注意 · 24 小时降级率 8%（14/175）" },
+      { key: "delivery", label: "推送", level: "ok", summary: "正常 · 24 小时已推送 41 条" },
+      { key: "instruments", label: "标的表", level: null, summary: "2,344 份交易合约" },
     ],
     level: "warn",
     summary: "24 小时降级率 8%（14/175）",
