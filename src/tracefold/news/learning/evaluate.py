@@ -1809,15 +1809,15 @@ def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:
 
     Every input is a count of independent connected fact clusters or of strata: how much separable
     evidence this corpus carries, per role. #259 removed the one input that was neither — `natural_day_n`,
-    the number of distinct UTC calendar dates the window touched. It could refuse a corpus of a hundred
-    independent clusters for landing inside one date and admit three restatements of one storyline for
-    straddling two midnights, and because a frozen corpus only holds cases from the *active* Stable
+    the number of distinct UTC calendar dates the accepted cases opened on. It could refuse a corpus of a
+    hundred independent clusters for landing inside one date and admit three restatements of one storyline
+    for straddling one midnight, and because a frozen corpus only holds cases from the *active* Stable
     bundle, it also made every new Stable unusable until the calendar caught up. Time-out-of-sample is
     proven once, later, by a Future Holdout frozen after the candidate was registered.
 
     `natural_day_n` and `window_duration_hours` stay in the counts this reads from, and stay out of the
-    answer: they tell an operator how concentrated the samples are. Nothing here may be replaced by a
-    stable-age, window-age or calendar-day threshold.
+    answer: together they say how concentrated the accepted cases are inside the frozen window. Nothing
+    here may be replaced by a stable-age, window-age or calendar-day threshold.
     """
 
     requirements = _PROFILE["development"]

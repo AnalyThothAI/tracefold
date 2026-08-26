@@ -632,10 +632,11 @@ class DevelopmentDatasetStore:
             "retention_cluster_n": len(retention),
             "negative_cluster_n": len(negative),
             "safety_cluster_n": len(safety),
-            # Diagnostics, not gates (#259). `natural_day_n` counts distinct UTC dates the window touched,
-            # which is a calendar fact rather than a sample size: two minutes either side of midnight are
-            # two of them, and a continuous 23 h window is one. Both stay here so an operator can see how
-            # concentrated a corpus is; neither is read by `development_coverage_blockers`.
+            # Diagnostics, not gates (#259). `natural_day_n` is how many distinct UTC dates the accepted
+            # *cases* opened on — not a property of the window, which `window_duration_hours` reports
+            # separately, and the two can disagree freely: a 72 h freeze whose reviews all landed in one
+            # afternoon reads 1 and 72.0. That is exactly what makes the pair worth publishing and worth
+            # refusing to gate on. Neither is read by `development_coverage_blockers`.
             "natural_day_n": len(days),
             "stratum_n": len(strata),
             "strata": sorted(strata),
@@ -788,35 +789,6 @@ class DevelopmentDatasetStore:
         return self._validate_dataset_payload(artifact_sha, self._load_dataset_payload(artifact_sha))
 
 
-# The dataset coverage an operator reads, in one fixed order. Named explicitly rather than forwarded
-# whole so a report has one shape on every path — including the one where the corpus could not be
-# projected at all — and so the two diagnostics below cannot quietly disappear from a summary.
-_COVERAGE_FIELDS: tuple[str, ...] = (
-    "case_n",
-    "independent_cluster_n",
-    "boundary_cluster_n",
-    "retention_cluster_n",
-    "negative_cluster_n",
-    "safety_cluster_n",
-    "stratum_n",
-    "eligible_event_n",
-    # Below this line: how concentrated the samples are, and nothing a gate reads (#259).
-    "natural_day_n",
-    "window_duration_hours",
-)
-
-
-def dataset_coverage(counts: Mapping[str, Any]) -> dict[str, Any]:
-    """Project a frozen dataset's own counts into the fixed coverage block reports publish.
-
-    A projection, not a second tally: it reads `_dataset_counts` output and re-derives nothing. Absent
-    keys come back as `None` rather than `0`, because "this corpus was never projected" and "this corpus
-    has none of these" are different answers and a reader has to be able to tell them apart.
-    """
-
-    return {field: counts.get(field) for field in _COVERAGE_FIELDS}
-
-
 def _sha(value: Any) -> str:
     return canonical_sha(value)
 
@@ -833,5 +805,4 @@ __all__ = [
     "DatasetSpec",
     "DevelopmentCompileExport",
     "DevelopmentDatasetStore",
-    "dataset_coverage",
 ]

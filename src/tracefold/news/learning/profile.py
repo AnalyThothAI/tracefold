@@ -8,14 +8,14 @@ plane checks a candidate against it (#202 §8).
 accepted-review profile and the evaluator version together — change any one and every report says so.
 
 Every threshold here answers "does this corpus carry enough independent evidence to decide something".
-#259 removed the one that did not: `natural_days_min`, a count of distinct UTC calendar dates in the
-development window. It measured neither sample size nor time span — 23:59 and 00:01 are two days two
-minutes apart, and a continuous 23 h window covering many regimes is one — and combined with the
-active-bundle filter it made a freshly deployed Stable unusable until the calendar caught up. Out-of-time
-generalization is proven once, by the Future Holdout in `validation` below, whose window must begin after
-a candidate was registered. `natural_day_n` and `window_duration_hours` survive as dataset diagnostics
-that tell an operator how concentrated the samples are; neither is a pass/fail input, and no stable-age,
-window-age or calendar-day gate may replace them.
+#259 removed the one that did not: `natural_days_min`, a count of how many distinct UTC calendar dates
+the accepted cases opened on. It measured neither sample size nor time span — two cases two minutes
+apart across midnight are two dates, a hundred cases spread over 23 h inside one date are one — and
+combined with the active-bundle filter it made a freshly deployed Stable unusable until the calendar
+caught up. Out-of-time generalization is proven once, by the Future Holdout in `validation` below, whose
+window must begin after a candidate was registered. `natural_day_n` and `window_duration_hours` survive
+as dataset diagnostics that tell an operator how concentrated the accepted cases are in time; neither is
+a pass/fail input, and no stable-age, window-age or calendar-day gate may replace them.
 """
 
 from __future__ import annotations

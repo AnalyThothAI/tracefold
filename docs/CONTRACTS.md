@@ -1148,7 +1148,7 @@ goes straight to `optimize`, whose `REJECTED` for that corpus costs nothing.
 The directory holds `readiness.json`, `baseline-compile-live.json`,
 `optimization/optimization_report.json`, `optimization/prompt_candidate.json` on
 `ADVANCE`, and `run_summary.json`
-(`tracefold.news.gepa_run_summary.v1`). Freezing with `--out
+(`tracefold.news.gepa_run_summary.v2`). Freezing with `--out
 DIR/development.json` makes the same directory loadable by
 `docs/research/news-gepa-frozen-run-evaluation.ipynb`.
 
@@ -1247,8 +1247,12 @@ block carrying the frozen dataset's own sealed counts — `case_n`,
 `negative_cluster_n`, `safety_cluster_n`, `stratum_n`, `eligible_event_n`,
 `natural_day_n`, `window_duration_hours` — republished verbatim rather than
 re-tallied, and present with `null` values on the one path that cannot project a
-corpus at all. The last two are diagnostics of sample concentration and are read
-by no gate (#259): `release evaluate --stage offline|holdout` decides
+corpus at all. The last two are diagnostics and are read by no gate (#259):
+`natural_day_n` is how many distinct UTC dates the accepted cases opened on and
+`window_duration_hours` is the length of the frozen window, so the pair says how
+concentrated the corpus is and the two may disagree freely — a 72 h freeze whose
+reviews all landed in one afternoon reads `1` and `72.0`.
+`release evaluate --stage offline|holdout` decides
 development evidence on the cluster-role, stratum and safety counts alone, and
 no stable-age, window-age or calendar-day threshold may be added beside them.
 Out-of-time generalization remains the Future Holdout's alone — `validation`

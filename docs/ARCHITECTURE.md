@@ -1281,11 +1281,14 @@ calendar (#259). The release profile asks for independent connected fact
 clusters by role — boundary, retention, negative, at least one safety — plus the
 strata both split halves must carry, and the Objective Plan asks for verified
 Prompt targets, Stable-correct controls and a cluster-disjoint, time-ordered
-split. `natural_day_n` and `window_duration_hours` are published beside those
-counts as diagnostics of sample concentration and gate nothing: distinct UTC
-dates measure midnights rather than evidence, and because a frozen corpus admits
-only cases produced by the *active* Stable bundle, a calendar gate delayed every
-Stable iteration by days it had no way to produce. Out-of-time generalization is
+split. `natural_day_n` — how many distinct UTC dates the accepted cases opened
+on — and `window_duration_hours` are published beside those counts as
+diagnostics of case concentration and gate nothing. The two say different things
+and may disagree freely: a 72 h freeze whose reviews all landed in one afternoon
+reads `1` and `72.0`. Counting dates measures midnights rather than evidence,
+and because a frozen corpus admits only cases produced by the *active* Stable
+bundle, a calendar gate delayed every Stable iteration by days it had no way to
+produce. Out-of-time generalization is
 proven once, later, by the Future Holdout — a ValidationDataset frozen strictly
 after candidate registration, at least 24 h long, with its own eligible-Event
 and reviewed-cluster floors. No stable-age, window-age or calendar-day gate may

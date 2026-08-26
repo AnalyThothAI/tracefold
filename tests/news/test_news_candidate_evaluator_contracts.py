@@ -355,8 +355,9 @@ def test_observed_non_degraded_program_requires_a_selected_execution() -> None:
         )
 
 
-# One UTC date, 21 hours, and every count the release profile actually asks for. Before #259 this exact
-# corpus was refused — for the calendar, and for nothing else.
+# Every count the release profile actually asks for, with boundary + retention summing to
+# `independent_cluster_n` the way `_dataset_counts` partitions them — and all of it inside one UTC date.
+# Before #259 this exact corpus was refused for the calendar, and for nothing else.
 _ONE_DAY_SUFFICIENT = {
     "case_n": 168,
     "independent_cluster_n": 141,

@@ -470,16 +470,17 @@ those numbers is readable in the same file.
 connected fact clusters by role, at least one safety case, the required strata
 on both sides of the split, verified Prompt targets and Stable-correct controls.
 A day count never did. `natural_days_min` is gone from the release profile; it
-counted distinct UTC dates, so 23:59 and 00:01 were two of them and a continuous
-23 h window covering several sessions was one, and combined with the
-active-bundle filter it made a Stable deployed this morning unusable until the
-calendar caught up. Phase A runs as soon as `news learning readiness` says
-`ready`, whatever the age of the bundle. `natural_day_n` and
-`window_duration_hours` remain in the dataset counts, the readiness `coverage`
-block and `run_summary.json` as diagnostics of sample concentration — a corpus
-concentrated in one hour is worth *looking* at, and observing several settled
-days before trusting a result is reasonable operator advice — but neither is a
-code admission contract, and no stable-age, window-age or calendar-day gate may
+counted how many distinct UTC dates the accepted cases opened on, so two cases
+two minutes apart across midnight were two and a hundred cases spread over 23 h
+inside one date were one, and combined with the active-bundle filter it made a
+Stable deployed this morning unusable until the calendar caught up. Phase A runs
+as soon as `news learning readiness` says `ready`, whatever the age of the
+bundle. `natural_day_n` and `window_duration_hours` remain in the dataset counts,
+the readiness `coverage` block and `run_summary.json` as diagnostics of case
+concentration — read together, since a 72 h freeze whose reviews all landed in
+one afternoon reads `1` and `72.0`; a corpus that concentrated is worth
+*looking* at, and observing several settled days before trusting a result is
+reasonable operator advice — but neither is a code admission contract, and no stable-age, window-age or calendar-day gate may
 replace them. Out-of-time generalization stays entirely with the Future Holdout:
 a ValidationDataset frozen strictly after candidate registration, ≥ 24 h, with
 its own eligible-Event and reviewed-cluster floors. The profile change is a hard

@@ -124,8 +124,8 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID
-    from tracefold.news.learning.dataset import DevelopmentDatasetStore, dataset_coverage
+    from tracefold.news.learning.contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID, dataset_coverage
+    from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import (
         DevelopmentEpisode,
         GepaObjectivePlan,
@@ -154,9 +154,12 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     }
     episodes: tuple[Any, ...] = ()
     plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))
-    # Present on every path for the same reason `identity.episode_count` is: a corpus that could not be
-    # projected reports its coverage as unknown rather than making a consumer fall off the end of the
-    # object. `natural_day_n` and `window_duration_hours` ride along as diagnostics and gate nothing (#259).
+    # Present on every path for the same reason `identity.episode_count` is: a consumer must read `null`,
+    # not fall off the end of the object. It stays `null` on the `dataset_agent_cohort_mismatch` path even
+    # though the export loaded that payload before refusing, and that is deliberate: those counts —
+    # `eligible_event_n` above all — were measured against a different arm's cohort, and this report's
+    # `identity` names the current stable bundle. Publishing them here would file another arm's corpus
+    # under this arm's name, which is a worse answer than "unknown".
     coverage: dict[str, Any] = dataset_coverage({})
     with postgres_connection(settings, role="serve") as conn:
         datasets = DevelopmentDatasetStore(conn, stable=stable)
