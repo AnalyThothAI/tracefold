@@ -689,6 +689,68 @@ def test_the_optimizer_corpus_is_targets_plus_controls_and_nothing_else() -> Non
     assert plan.blocking_reasons == ()
 
 
+def test_the_optimizer_elects_one_representative_per_connected_fact_cluster() -> None:
+    corpus = list(_mixed_corpus())
+    original = build_gepa_objective_plan(corpus)
+    seed = next(episode for episode in corpus if episode.case_id in original.target_case_ids)
+    inflated = tuple(
+        [*corpus, *(seed.model_copy(update={"case_id": f"duplicate-case-{index}"}) for index in range(1, 10))]
+    )
+
+    plan = build_gepa_objective_plan(inflated)
+    optimizer_clusters = [episode.cluster_id for episode in plan.optimizer_episodes]
+    readiness = build_readiness_report(plan, episodes=inflated, identity={"development_dataset_sha": "0" * 64})
+
+    assert len(plan.optimizer_case_ids) == len(set(optimizer_clusters))
+    assert optimizer_clusters.count(seed.cluster_id) == 1
+    assert len([case for case in plan.cases if case.reason == "cluster_representative_shadowed:target"]) == 9
+    assert build_gepa_objective_plan(tuple(reversed(inflated))).optimizer_case_ids == plan.optimizer_case_ids
+    assert readiness["corpus"]["case_n"] == len(inflated)
+    assert len(readiness["case_dispositions"]) == len(inflated)
+    assert readiness["objective"]["optimizer_case_n"] == readiness["objective"]["optimizer_cluster_n"]
+    assert readiness["call_envelope"]["metric_calls_per_full_selection_evaluation"] == len(
+        plan.development_selection_episodes
+    )
+
+
+def test_a_target_beats_a_control_from_the_same_fact_cluster() -> None:
+    corpus = list(_mixed_corpus())
+    original = build_gepa_objective_plan(corpus)
+    target = next(episode for episode in corpus if episode.case_id in original.target_case_ids)
+    control = next(episode for episode in corpus if episode.case_id in original.control_case_ids)
+    same_cluster = tuple(
+        episode.model_copy(update={"cluster_id": target.cluster_id}) if episode.case_id == control.case_id else episode
+        for episode in corpus
+    )
+
+    plan = build_gepa_objective_plan(same_cluster)
+    dispositions = {case.case_id: case for case in plan.cases}
+
+    assert target.case_id in plan.target_case_ids
+    assert control.case_id not in plan.optimizer_case_ids
+    assert dispositions[control.case_id].disposition == "excluded"
+    assert dispositions[control.case_id].reason == "cluster_representative_shadowed:control"
+    assert plan.schema_version == "tracefold.news.gepa_objective_plan.v2"
+    assert plan.split is not None
+    assert plan.split["schema"] == "tracefold.news.compile_split_receipt.v2"
+
+
+def test_equal_safety_controls_prefer_the_newer_case_before_the_case_id() -> None:
+    older_with_extra_novelty_stratum = _episode(1, should_push="should_push", cluster="one-fact")
+    newer = _episode(
+        2,
+        should_push="uncertain",
+        cluster="one-fact",
+    )
+
+    plan = build_gepa_objective_plan((older_with_extra_novelty_stratum, newer))
+
+    assert plan.control_case_ids == (newer.case_id,)
+    assert next(case for case in plan.cases if case.case_id == older_with_extra_novelty_stratum.case_id).reason == (
+        "cluster_representative_shadowed:control"
+    )
+
+
 def test_the_split_roots_cover_the_optimizer_corpus_only() -> None:
     plan = build_gepa_objective_plan(_mixed_corpus())
     assert plan.split is not None
@@ -720,6 +782,30 @@ def test_both_halves_carry_a_verified_target_or_the_plan_blocks() -> None:
     )
     blocked = build_gepa_objective_plan(front_loaded)
     assert "development_selection_target_missing" in blocked.blocking_reasons or blocked.split is None
+
+
+def test_both_halves_carry_a_control_even_when_target_strata_cover_every_gate() -> None:
+    source = _mixed_corpus()
+    source_plan = build_gepa_objective_plan(source)
+    controls = [episode for episode in source if episode.case_id in source_plan.control_case_ids][:4]
+    targets = [
+        _episode(
+            100 + index,
+            should_push="must_hold" if index in {1, 4} else "must_push",
+            dimensions={"factual_fidelity": "pass", "magnitude": "fail"},
+            expected={"magnitude": 2},
+            evidence_refs=("filing#magnitude",),
+            explicit_owner="triage_prompt",
+            production_magnitude=0,
+        )
+        for index in range(6)
+    ]
+
+    plan = build_gepa_objective_plan((*controls, *targets))
+
+    assert plan.split is not None
+    assert plan.split_error == ""
+    assert plan.blocking_reasons == ("development_selection_control_missing",)
 
 
 def test_a_corpus_of_failures_alone_no_longer_splits() -> None:
@@ -806,13 +892,35 @@ def test_an_unverifiable_policy_projection_blocks_before_the_budget_is_spent() -
 def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
     """The acceptance test #199 calls the most important one: capture what the optimizer really got."""
 
+    from dataclasses import asdict
+
     import dspy
 
+    from tracefold.news.learning.baseline import BaselineCase, run_baseline
     from tracefold.news.learning.optimizer import run_gepa
     from tracefold.news.program.artifact import load_stable_program_artifact
 
-    corpus = _mixed_corpus()
+    base = list(_mixed_corpus())
+    seed = build_gepa_objective_plan(base).optimizer_episodes[0]
+    corpus = tuple([*base, seed.model_copy(update={"case_id": "shadowed-optimizer-member"})])
     plan = build_gepa_objective_plan(corpus)
+    artifact = load_stable_program_artifact()
+
+    def _recorded_case(episode: DevelopmentEpisode) -> BaselineCase:
+        assert episode.production_judgment is not None
+        return BaselineCase(
+            episode=episode,
+            recorded_decision_result=asdict(production_decision(episode.production_judgment, episode.policy_metric)),
+        )
+
+    baseline = run_baseline(
+        tuple(_recorded_case(episode) for episode in plan.optimizer_episodes),
+        mode="recorded",
+        artifact=artifact,
+        objective=plan,
+        dataset_identity={"development_dataset_sha": "0" * 64},
+        retrieval_population=corpus,
+    )
     captured: dict[str, set[str]] = {}
 
     class _CapturingOptimizer:
@@ -859,7 +967,7 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
     )
     with dspy.context(lm=lm):
         result = run_gepa(
-            base_program=load_stable_program_artifact(),
+            base_program=artifact,
             episodes=corpus,
             task_lm=lm,
             reflection_lm=reflection,
@@ -872,6 +980,8 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
 
     seen = captured["train"] | captured["val"]
     assert seen == set(plan.optimizer_case_ids)
+    assert baseline.objective["optimizer_case_root_sha256"] == canonical_sha(sorted(seen))
+    assert baseline.objective["split"] == plan.split
     assert seen.isdisjoint(plan.excluded_case_ids)
     assert result.failure_cluster_ids == plan.target_failure_cluster_ids
     assert result.target_dimensions == plan.target_dimensions
@@ -949,6 +1059,7 @@ def test_readiness_explains_the_same_plan_without_asking_a_model_anything() -> N
     report = build_readiness_report(plan, episodes=corpus, identity={"development_dataset_sha": "0" * 64})
 
     assert report["outcome"] == "ready"
+    assert report["objective"]["schema"] == "tracefold.news.gepa_objective_plan.v2"
     assert report["objective"]["target_cluster_n"] == len(plan.target_failure_cluster_ids)
     assert report["objective"]["exclusion_reasons"] == plan.exclusion_reasons
     assert report["owner_distribution"]["explicit"] == {"retrieval": 4, "triage_prompt": 4}

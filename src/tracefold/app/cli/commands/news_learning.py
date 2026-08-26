@@ -97,6 +97,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 load_stable_program_artifact,
                 write_program_candidate_artifact,
             )
+            from tracefold.news.release.candidate import validate_declared_objective_summary
 
             prompt = PromptCandidateV1.model_validate(_read_json_or_yaml(str(args.candidate)))
             parent = load_stable_program_artifact()
@@ -123,12 +124,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             plan = build_gepa_objective_plan(
                 tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
             )
-            declared_root = str(prompt.objective_summary.get("episode_projection_root_sha256") or "")
-            if declared_root and declared_root != export.episode_projection_root_sha256:
-                raise ValueError("news_learning_register_corpus_mismatch")
-            declared_split = prompt.objective_summary.get("split")
-            if declared_split and declared_split != plan.split:
-                raise ValueError("news_learning_register_split_roots_mismatch")
+            validate_declared_objective_summary(
+                prompt.objective_summary,
+                episode_projection_root_sha256=export.episode_projection_root_sha256,
+                plan=plan,
+            )
             if not plan.target_failure_cluster_ids:
                 raise ValueError("news_program_compile_no_verified_failure_clusters")
             arm_payload = stable.model_dump(mode="json")

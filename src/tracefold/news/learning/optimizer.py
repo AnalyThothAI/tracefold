@@ -66,9 +66,15 @@ from .contracts import (
     PromptPatchV1,
 )
 from .metric import _compile_example, _json_safe, _metric_receipt, bind_metric
-from .objective import DevelopmentEpisode, GepaObjectivePlan, build_gepa_objective_plan, retrieval_receipt
+from .objective import (
+    DevelopmentEpisode,
+    GepaObjectivePlan,
+    build_gepa_objective_plan,
+    optimizer_population_identity,
+    retrieval_receipt,
+)
 
-OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v1"
+OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v2"
 USAGE_SCHEMA = "tracefold.news.optimization_usage.v1"
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -1070,6 +1076,7 @@ def objective_summary(plan: GepaObjectivePlan, *, episode_projection_root_sha256
 
     return {
         "schema": OBJECTIVE_SUMMARY_SCHEMA,
+        "plan_schema": plan.schema_version,
         # Which projection of the corpus this plan was built from. The frozen dataset pins the case set;
         # the reviews behind those cases can still be edited, so registration re-projects and compares
         # this rather than a count (#202 PR-B).
@@ -1081,6 +1088,7 @@ def objective_summary(plan: GepaObjectivePlan, *, episode_projection_root_sha256
         "control_case_ids": list(plan.control_case_ids),
         "control_cluster_ids": list(plan.control_cluster_ids),
         "optimizer_case_ids": list(plan.optimizer_case_ids),
+        **optimizer_population_identity(plan),
         "excluded_case_ids": list(plan.excluded_case_ids),
         "exclusion_reasons": dict(plan.exclusion_reasons),
         "target_predictors": list(plan.target_predictors),

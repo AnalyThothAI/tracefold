@@ -6,6 +6,7 @@ import json
 import uuid
 from collections import Counter
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
@@ -1880,6 +1881,91 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
     assert registered.objective_summary["split"] == report.objective["split"] == plan.split
 
 
+def test_release_register_rejects_a_stale_optimizer_population_before_any_artifact_write(
+    conn,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """F2P: registration must reject stale v2 population identity at the real CLI/PG seam."""
+
+    from tracefold.app import learning_runtime
+    from tracefold.app.cli.commands import news_learning as news_commands
+    from tracefold.app.cli.parser import build_parser
+
+    base = load_stable_program_artifact()
+    stable = _arm(program_sha256=base.program_sha256)
+    with repositories_for_connection(conn).transaction():
+        repositories_for_connection(conn).news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "register-f2p"}),
+            stable_bundle_sha=stable.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:register-f2p",
+            runtime_revision="register-f2p",
+            now_ms=NOW - 23 * 3_600_000,
+        )
+    _accepted_compilable_event(conn, stable=stable)
+    development = asyncio.run(
+        _datasets(conn, stable).freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    honest = _prompt_candidate(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        patch=PromptPatchV1(
+            event_semantics_instruction="A stale population must never be registered.",
+            reader_card_instruction="",
+        ),
+    )
+    stale = _prompt_candidate(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        patch=honest.patch,
+        objective_summary={**honest.objective_summary, "optimizer_case_root_sha256": "0" * 64},
+    )
+    candidate_path = tmp_path / "candidate.json"
+    artifact_root = tmp_path / "program-artifacts"
+    output_path = tmp_path / "registered.json"
+    candidate_path.write_text(json.dumps(stale.model_dump(mode="json")), encoding="utf-8")
+    rows_before = int(conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"])
+    roles: list[str] = []
+
+    @contextmanager
+    def registered_connection(_settings: Any, *, role: str):
+        roles.append(role)
+        yield conn
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: stable)
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", registered_connection)
+    args = build_parser().parse_args(
+        [
+            "news",
+            "release",
+            "register",
+            "--development",
+            development.artifact_sha,
+            "--candidate",
+            str(candidate_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--out",
+            str(output_path),
+        ]
+    )
+
+    code, payload = news_commands._handle_learning(args)
+
+    assert code == 2
+    assert payload["error"] == "news_learning_proposal_optimizer_population_unverified"
+    assert roles == ["serve"]  # The workers writer was never opened.
+    assert int(conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"]) == rows_before
+    assert not artifact_root.exists()
+    assert not output_path.exists()
+
+
 def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(conn) -> None:
     """#199: the release gate rebuilds the Objective Plan and holds the candidate to it, exactly.
 
@@ -1918,6 +2004,27 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             "split": {**dict(honest_summary["split"]), "train": {"cluster_root_sha256": "0" * 64}},
         },
     )
+    legacy_summary = {key: value for key, value in honest_summary.items() if key != "plan_schema"}
+    legacy_summary["schema"] = "tracefold.news.optimization_objective_summary.v1"
+    legacy_objective = _prompt_candidate(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        patch=PromptPatchV1(
+            event_semantics_instruction="A legacy objective identity cannot be re-armed.", reader_card_instruction=""
+        ),
+        objective_summary=legacy_summary,
+    )
+    tampered_population = _prompt_candidate(
+        conn,
+        development_sha=development.artifact_sha,
+        stable=stable,
+        patch=PromptPatchV1(
+            event_semantics_instruction="A representative root this corpus never produced.",
+            reader_card_instruction="",
+        ),
+        objective_summary={**honest_summary, "optimizer_case_root_sha256": "0" * 64},
+    )
 
     cases: list[tuple[str, dict[str, Any]]] = [
         (
@@ -1927,6 +2034,14 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         (
             "news_learning_proposal_target_dimensions_unverified",
             {"target_dimensions": ("direction",)},
+        ),
+        (
+            "news_learning_proposal_objective_schema_unverified",
+            {"prompt": legacy_objective},
+        ),
+        (
+            "news_learning_proposal_optimizer_population_unverified",
+            {"prompt": tampered_population},
         ),
         (
             "news_learning_proposal_split_roots_unverified",

@@ -50,7 +50,10 @@ _ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f1
 # #199 PR-2 moves it once more, and for a reason a pin is supposed to catch: the report is
 # `program_baseline_report.v3` now, with `objective` and `subsets` beside the existing sections. A
 # moving-window run leaves both empty — this fixture is one — so every score below is again untouched.
-_EXPECTED_REPORT_SHA256 = "1bc8d9647becc8f0d93c07f4f4f5884dee02338c7ba313f385bffafc0161844c"
+# #248 changes the Objective Plan's representative policy and therefore the committed objective source
+# identity. This fixture has no frozen objective, so its corpus, case results and score pins remain unchanged;
+# only the report content address moves with that source receipt.
+_EXPECTED_REPORT_SHA256 = "0fcac26882fdd69833400e3b277b34577ba1d2049f9f9d5ce069b918ba5f57d3"
 
 
 @pytest.fixture(scope="module")

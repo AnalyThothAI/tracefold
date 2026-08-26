@@ -207,6 +207,9 @@ def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promot
     assert candidate.target_runtime_manifest_sha256 == _RUNTIME_MANIFEST_SHA
     assert candidate.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
     assert candidate.patch.reader_card_instruction == ""
+    assert candidate.objective_summary["schema"] == "tracefold.news.optimization_objective_summary.v2"
+    assert candidate.objective_summary["plan_schema"] == "tracefold.news.gepa_objective_plan.v2"
+    assert candidate.objective_summary["optimizer_case_n"] == candidate.objective_summary["optimizer_cluster_n"]
     assert result.report.candidate_sha256 == candidate.candidate_sha256
     assert result.report.reasons == ()
     # The complete field list. A candidate that could name a stage, an activation or an artifact root would

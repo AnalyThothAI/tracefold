@@ -571,15 +571,28 @@ excluded from relevance scoring, and watchlist-guard action feedback cannot ask
 a Predictor to repair code-owned policy. The receipt binds weights, complete
 helper source root, policy, schema, corpus and full judge execution identity.
 
-Accepted development is split into disjoint halves by connected fact cluster:
-clusters ordered by their own latest Event time then by stable cluster id, the
-earlier 70% to GEPA's `trainset` and the later 30% to its `valset` — no shuffle,
-no seed, and a cluster is never divided. The predecessor passed the same list
-object to both and said so in its own receipt (`same_object_as_trainset`), which
-proves nothing about generalization. Both halves must independently carry safety
-cases, both action labels and novelty cases; a half that cannot detect the
-regressions it exists for fails the compile closed. The receipt records counts,
-cluster roots, coverage and an explicit disjointness proof.
+Before the honest split, each connected fact cluster elects exactly one optimizer
+representative. A target beats a control; otherwise the representative prefers
+more target dimensions, safety status, the newer Event and the
+stable case id. Non-elected Events remain in the frozen corpus and readiness
+audit as `cluster_representative_shadowed:*`, but contribute no second metric
+weight. Representatives are split into disjoint halves by connected fact
+cluster: ordered by Event time then stable cluster id, the earlier 70% to GEPA's
+`trainset` and the later 30% to its `valset` — no shuffle, no seed. The
+predecessor passed the same list object to both and said so in its own receipt
+(`same_object_as_trainset`), which proves nothing about generalization. Both
+halves must independently carry a target, a control, safety cases, both action labels and novelty
+cases; representative election never relaxes those gates, so lost coverage
+fails the compile closed. Objective Plan v2 and split receipt v2 record counts,
+representative policy, cluster roots, coverage and an explicit disjointness
+proof.
+
+`optimization_objective_summary.v2` also carries the Objective Plan schema and
+the representative case ids/count/root. Registration re-derives and compares
+that population and rejects a candidate that
+declares split roots under an older or missing plan identity; historical
+artifacts remain readable evidence but cannot be re-armed under the new metric
+population.
 
 Retrieval is scored on its own and cannot be hidden by the scalar: for every
 accepted `restatement` whose `duplicate_of` was inside the bounded window, the
