@@ -159,7 +159,7 @@ llm:
     api_key: "<reader fallback secret>"
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
-  # Required only for `news learning optimize`. Reflection uses this endpoint with
+  # Required only for `news learning run` / `optimize`. Reflection uses this endpoint with
   # code-owned 32k/300s/temperature-1; metric_judge derives a distinct sealed
   # role from it with its own schema, budget, tariff and accounted calls.
   news_compiler_reflection:
@@ -224,12 +224,16 @@ A change is one candidate kind — a bounded two-instruction Prompt patch:
 record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
-The optional `learning optimize` workflow reads the frozen development corpus
-once, runs bounded DSPy GEPA with no database write, broker, delivery, canary or
-promotion credential, and emits at most a typed patch carrying the two advisory
+The optional GEPA workflow reads the frozen development corpus once, runs
+bounded DSPy GEPA with no database write, broker, delivery, canary or promotion
+credential, and emits at most a typed patch carrying the two advisory
 instructions. It requires explicit metric/task/reflection/metric-judge call
 limits, a total and a per-call cost limit and a seed; it cannot register,
-accept, deploy or promote. Migration
+accept, deploy or promote. `tracefold news learning run` is the recommended
+entry: it runs readiness, the standalone baseline and the one optimization over
+that corpus and writes `run_summary.json`, which keeps the standalone, GEPA-seed
+and future-test baselines apart instead of leaving three different numbers to be
+quoted as one. Migration
 `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality

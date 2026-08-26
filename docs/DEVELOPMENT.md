@@ -346,21 +346,37 @@ uv run tracefold news learning compare --run .tracefold/runs/news-24h \
 uv run tracefold news learning draft-reviews --model deepseek-v4-pro \
   --events-from .tracefold/runs/news-24h --out /tmp/drafts.json
 
-# The one optimization (#202). No image, no sandbox, no proxy, no tariff: the
-# task LM is the configured production route and the reflection/judge roles are
-# `llm.news_compiler_reflection`. It ends in NO_OP, REJECTED or ADVANCE, and
-# only ADVANCE writes a `prompt_candidate.json`. Exit 0 means ADVANCE.
+# The golden path (#253). Freeze once, then `run` — readiness, the standalone
+# `compile_live` baseline over that exact corpus, the one optimization, and the
+# `run_summary.json` that says whether the two Stable numbers may be compared.
+# It composes the three commands below and owns no second Objective Plan,
+# Metric, split, budget or optimizer. Exit 0 means ADVANCE; 1 means NO_OP or
+# REJECTED, both complete answers; 2 means the population identities disagree.
 uv run tracefold news learning freeze --role development \
-  --from-ms START --to-ms END --out /tmp/development.json
+  --from-ms START --to-ms END --out artifacts/run-1/development.json
+uv run tracefold news learning run --development DATASET_SHA \
+  --out artifacts/run-1 --max-baseline-model-cases 80 \
+  --max-metric-calls 100 --max-task-model-calls 150 \
+  --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
+  --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
+
+# The same three legs one at a time, for a partial re-run or a cheap probe.
+# `readiness` costs nothing and answers a blocked corpus for free.
 uv run tracefold news learning readiness --development DATASET_SHA \
   --out /tmp/readiness.json   # 0 model calls, 0 writes
+uv run tracefold news learning baseline --dataset DATASET_SHA \
+  --mode compile_live --max-model-cases 80 \
+  --semantic-judge deepseek-v4-pro --out /tmp/baseline.json
 uv run tracefold news learning optimize --development DATASET_SHA \
   --out artifacts/optimize-1 \
   --max-metric-calls 100 --max-task-model-calls 150 \
   --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
+
+# Only after `run_summary.json` says terminal=ADVANCE, and only because a human
+# decided to test the candidate on examples it was never optimized against.
 uv run tracefold news release register --development DATASET_SHA \
-  --candidate artifacts/optimize-1/prompt_candidate.json \
+  --candidate artifacts/run-1/optimization/prompt_candidate.json \
   --artifact-root /tmp/programs --out /tmp/candidate.json
 uv run tracefold news release evaluate --development DATASET_SHA \
   --candidate /tmp/candidate.json --stage offline --live-program \
@@ -411,6 +427,42 @@ Review v4 uses exact gold for `trade_impact_breadth`, `trade_tradability`,
 `color_only_progression` and `macro_random_control`. Model drafts remain files;
 only an explicit append-only review submission and acceptance receipt becomes
 truth.
+
+`learning run` (#253) is the one recommended GEPA path in this repository, and
+the four questions it answers are the whole plane: are there accepted examples,
+what did Stable score on them, did GEPA find an instruction worth testing, and
+does that instruction still win on examples it never saw. It is a composition —
+`readiness`, `baseline --dataset --mode compile_live`, `optimize` — into one
+directory, plus `run_summary.json`. Everything it adds is a check the three
+commands could not make about each other: the equivalence judge is
+`llm.news_compiler_reflection` rather than a model name retyped per command, the
+corpus bound is checked against readiness before a provider call is spent, and a
+corpus readiness already refused skips the baseline instead of paying for the
+refusal twice.
+
+Three baselines, three jobs, and #253 §3.2 exists because #225 published two of
+them as if they were one number:
+
+- **standalone baseline** — an independent physical `compile_live` run over the
+  frozen corpus (`subsets.development_selection.case_macro_failure_as_zero`).
+  It is for diagnosis, cost and repeatability.
+- **GEPA seed baseline** — the seed Program's score inside the same GEPA run
+  (`trajectory.val_aggregate_scores[0]`). This, not the standalone number, is
+  the *before* the optimizer improved on.
+- **future test baseline** — Stable on accepted examples that did not exist when
+  the candidate was made (`release evaluate --stage holdout` against a
+  ValidationDataset frozen strictly after registration). Only this one answers
+  generalization.
+
+`run_summary.json` publishes the first two side by side with `numeric_drift`
+and a `same_population` verdict over named checks — dataset SHA, episode
+projection root, representative set root and counts, both split roots, the whole
+metric receipt, the Program, and the task endpoint. Any check that disagrees
+makes `same_population` false and the command exit `2`: the two scalars are
+still written, because they are facts about two runs that happened, but the
+claim that they may be subtracted from each other is withheld. Two physical runs
+of one graph can differ in the last digits; that is reported, and it is not on
+its own evidence that a dataset identity is wrong.
 
 `learning optimize` (#202) is a cold, operator-invoked DSPy GEPA workflow, not a
 Worker and not a release gate. It reads the frozen development corpus once as

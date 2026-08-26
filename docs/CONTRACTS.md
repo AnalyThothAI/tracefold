@@ -894,6 +894,14 @@ refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
 rather than published with an empty `subsets` block that reads as a measured
 zero — `readiness` explains the same blockers for free.
 
+The equivalence judge gets no admission ceiling of its own here, and #253 tried
+the other way first: a judge that reaches its ceiling does not raise, it returns
+`unavailable`, `retains()` reads that as not retained, a failed
+`factual_fidelity` arms the `factual_contradiction` hard gate, and the case
+scores zero. An under-sized ceiling would therefore publish a depressed baseline
+that reads as a measurement. `--max-model-cases` pins the corpus and so pins the
+judge's work, which is the bound that exists.
+
 `--dataset` runs `--mode compile_live` and nothing else
 (`news_program_baseline_dataset_requires_compile_live`), and requires
 `--semantic-judge` on the configured reflection route
@@ -1146,6 +1154,74 @@ zero model calls. The per-call cost ceiling is also the rate an unpriced
 provider call is charged at — neither endpoint this project runs on returns a
 price litellm can resolve — so over-charging stops a run early rather than late.
 
+`news learning run --development SHA --out DIR --max-baseline-model-cases N
+--max-metric-calls N --max-task-model-calls N --max-reflection-model-calls N
+--max-metric-judge-model-calls N --max-cost-microusd N
+--max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]` (#253) is
+the one recommended GEPA path. It composes `readiness`, `baseline --dataset
+--mode compile_live` and `optimize` into one directory and defines no second
+Objective Plan, Metric, split, budget or optimizer; the budget flags are the
+underlying commands' own, because inventing defaults for them would be a second
+budget. They divide the way those commands do: every ceiling except
+`--max-baseline-model-cases` bounds the optimization leg, and the standalone
+baseline is bounded only by its corpus, which `--max-baseline-model-cases` must
+cover exactly. It registers, accepts, promotes and deploys nothing.
+
+It takes no `--semantic-judge`: the equivalence judge is
+`llm.news_compiler_reflection`, the route `optimize` cannot be told to leave, so
+the two legs cannot be handed two different rulers. It refuses a
+`--max-baseline-model-cases` below the optimizer corpus
+(`news_learning_run_baseline_budget_below_corpus:M<N`) using readiness's own
+free count, before any provider call. A corpus readiness reports as
+`insufficient` skips the baseline — which refuses a blocked plan anyway — and
+goes straight to `optimize`, whose `REJECTED` for that corpus costs nothing.
+
+The directory holds `readiness.json`, `baseline-compile-live.json`,
+`optimization/optimization_report.json`, `optimization/prompt_candidate.json` on
+`ADVANCE`, and `run_summary.json`
+(`tracefold.news.gepa_run_summary.v1`). Freezing with `--out
+DIR/development.json` makes the same directory loadable by
+`docs/research/news-gepa-frozen-run-evaluation.ipynb`.
+
+`run_summary.json` is a projection over those artifacts and never a fourth
+authority: it reads published fields, computes no score, re-derives no plan and
+carries no news text, Prompt, case list or endpoint. It names three baselines so
+none can be quoted as another —
+`standalone_selection_score`
+(`subsets.development_selection.case_macro_failure_as_zero`),
+`gepa_seed_selection_score` (`trajectory.val_aggregate_scores[0]`, the seed
+Program's score inside the run that proposed against it) and
+`future_test_baseline`, which is always `null` here because only `release
+evaluate --stage holdout` against a post-registration ValidationDataset can
+produce one. `numeric_drift` is `seed - standalone`, published rather than
+reconciled: two physical runs of one graph may differ, and a difference is not
+by itself evidence that a dataset identity is wrong.
+
+`same_population` is a verdict over named `population_checks` — dataset SHA,
+episode projection root, episode count, representative case root and counts,
+both split roots, the metric receipt, the parent Program, the task model, and
+the task endpoint. Every corpus check is three-way against readiness, so a run
+explained as one corpus and measured as another is a `mismatch` even when the
+two measured legs agree. The metric receipt is compared whole except for
+`semantic_judge.execution.max_model_calls`, a spend bound that cannot change
+what "better" means; both observed ceilings are printed in the row. A judge that
+went `unavailable` is reported separately under `judge_availability`, because it
+makes its leg a lower bound rather than a different population. The endpoint check compares each report against the
+digest of the route this run composed rather than the two reports against each
+other, because the baseline fingerprints it as `configured_endpoint_model_v1`
+and the optimizer as `model_execution_identity.v1`. Any `mismatch` makes
+`same_population` false and exits `2` with
+`news_learning_run_population_identity_mismatch`; the summary is still written,
+because a refused comparison is not a reason to withhold its evidence. A leg
+that never ran is `not_comparable` and `same_population` is `null`, never
+`true`. `next_action` is `future_test` on `ADVANCE`, `keep_stable` on `NO_OP`,
+and on `REJECTED` it is `collect_more_gold` only when the terminal reasons say
+the corpus cannot answer — an exhausted budget keeps Stable and says so in
+`reasons`. A `false` `same_population` forces `keep_stable` whatever the
+terminal: the file must not recommend a future test that rests on a `before`
+number the same file just declined to vouch for. Exit `0` is `ADVANCE`; `1` is `NO_OP` or `REJECTED`, both complete
+experiments.
+
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
 [--include-reviewed] [--events-from DIR]` proposes `news_review_v4` rubrics for
 a human to accept and writes a file, never a review. `--events-from` closes the
@@ -1199,9 +1275,10 @@ every earlier Prompt/Program/review cohort is audit-only and cannot enter a
 dataset or metric-v4 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
-Program and runs the one optimization — `readiness`, `baseline`,
+Program and runs the one optimization — `readiness`, `baseline`, `run`,
 `draft-reviews`, `snapshot`, `compare`, `optimize`, `freeze` — and none of them
-can ship anything. `news release` admits a candidate and moves it: `register`,
+can ship anything. `run` is the recommended composition of the first three;
+the rest stay callable one at a time. `news release` admits a candidate and moves it: `register`,
 `evaluate`, `shadow`, `canary`. The split is what an operator reads off
 `--help`, and it is the same boundary the packages carry: `news.learning`
 never imports `news.release`.

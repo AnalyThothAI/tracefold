@@ -1026,6 +1026,10 @@ def test_no_second_implementation_guesses_failure_clusters() -> None:
         "src/tracefold/news/learning/contracts.py",
         "src/tracefold/news/learning/experiment/compare.py",
         "src/tracefold/news/learning/experiment/run.py",
+        # #253: it names the plan's own refusal codes to tell "this corpus cannot answer" apart from "this
+        # run ran out of budget" when it picks a `next_action`. It reads a terminal report's `reasons` and
+        # never a corpus.
+        "src/tracefold/news/learning/run_summary.py",
         "src/tracefold/news/review/desk.py",
     ]
 

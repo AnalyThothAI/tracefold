@@ -50,6 +50,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
         # this is the one module here that is neither the optimizer nor the release plane.
         "tracefold.news.learning.objective",
+        # #253 §8. The projection `learning run` publishes over the three reports it just composed. It
+        # reads their fields, computes no score and re-derives no plan, so it is the CLI's own summary
+        # rather than a fourth place the corpus is interpreted.
+        "tracefold.news.learning.run_summary",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.learning.replay",

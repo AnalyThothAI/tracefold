@@ -333,6 +333,11 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         endpoint = configured_lm_endpoint(
             settings, model_name=judge_model, api_key=source.api_key, base_url=source.base_url
         )
+        # No admission ceiling, deliberately, and #253 tried the other way first. A judge that hits its
+        # ceiling does not raise: it returns `unavailable`, `retains()` reads that as "not retained", a
+        # failed `factual_fidelity` arms the `factual_contradiction` hard gate and the case scores zero.
+        # An under-sized ceiling therefore publishes a *depressed baseline* that looks like a measurement.
+        # The real bound here is `--max-model-cases`, which pins the corpus and so pins the judge's work.
         judge = build_judge(
             model_name=endpoint.model_name,
             api_key=endpoint.api_key,

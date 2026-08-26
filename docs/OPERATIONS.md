@@ -654,15 +654,21 @@ Diagnose News in this order:
    `image_digest` and `runtime_revision` — an `unversioned` deployment still
    serves News correctly but cannot close a promotion.
 7. A change is a registered candidate, not an edited production artifact.
-   Freeze a post-epoch development dataset, check it with `learning readiness`
-   (zero model calls), then run `learning optimize --development SHA --out DIR`
-   with explicit metric, task, reflection and metric-judge call limits, a total
-   and a per-call provider-cost limit, and a seed. It ends in `NO_OP`,
-   `REJECTED` or `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and
-   all three write a complete `optimization_report.json`. Each of the three
-   roles is one `ModelExecutionIdentity`, and calls/cost/failures are accounted
-   separately before they are summed. Then `release register --candidate
-   prompt_candidate.json` binds it to the active stable and that frozen dataset
+   Freeze a post-epoch development dataset, then run one command:
+   `learning run --development SHA --out DIR` with explicit metric, task,
+   reflection and metric-judge call limits, a baseline corpus bound, a total and
+   a per-call provider-cost limit, and a seed. It runs `readiness` (zero model
+   calls), the standalone `compile_live` baseline over that exact corpus, and
+   the one optimization, into that directory. It ends in `NO_OP`, `REJECTED` or
+   `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
+   a complete `optimization_report.json`. Each of the three roles is one
+   `ModelExecutionIdentity`, and calls/cost/failures are accounted separately
+   before they are summed. Read `run_summary.json` first: it names the
+   standalone and GEPA-seed baselines apart, publishes their difference, and
+   exits `2` rather than implying a comparison when the two runs' dataset,
+   representative set, split, metric, Program or model binding disagree. The
+   three legs stay callable one at a time for a partial re-run. Then `release
+   register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
    — re-applying the patch to derive the Program identity and re-deriving the
    #199 Objective Plan rather than trusting the candidate — and `learning
    evaluate` runs the gate. A patch a person wrote registers on identical terms:

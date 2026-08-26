@@ -269,6 +269,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-wall-clock-seconds", type=_positive_int, default=14_400, help="deadline checked before each call"
     )
     learning_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
+    # #253 §7 Phase C. The one recommended path: readiness, the standalone `compile_live` baseline over the
+    # same frozen corpus, the one optimization, and the summary that says whether the two Stable numbers may
+    # be compared at all. It composes the three commands above and owns no Objective Plan, Metric, split,
+    # budget or optimizer of its own, which is why it carries their budget flags rather than defaults of
+    # its own. It takes no `--semantic-judge`: the judge is the configured compiler reflection route, so
+    # the baseline and GEPA cannot be handed two different rulers.
+    learning_run = learning_subcommands.add_parser(
+        "run",
+        help="the recommended path: readiness -> standalone baseline -> optimize -> run_summary.json",
+    )
+    learning_run.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_run.add_argument("--out", required=True, help="run directory for every artifact this run writes")
+    learning_run.add_argument(
+        "--max-baseline-model-cases",
+        type=_positive_int,
+        required=True,
+        help=(
+            "bound on cases the standalone baseline may send to a provider; it must cover the whole "
+            "optimizer corpus, and readiness checks that before the first call"
+        ),
+    )
+    learning_run.add_argument("--max-metric-calls", type=_positive_int, required=True)
+    learning_run.add_argument("--max-task-model-calls", type=_positive_int, required=True)
+    learning_run.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
+    learning_run.add_argument(
+        "--max-metric-judge-model-calls",
+        type=_positive_int,
+        required=True,
+        help=(
+            "judge call ceiling for the optimization only; the standalone baseline's judge takes no "
+            "ceiling (reaching one scores cases zero rather than raising) and is bounded by "
+            "--max-baseline-model-cases"
+        ),
+    )
+    learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
+    learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
+    learning_run.add_argument("--max-wall-clock-seconds", type=_positive_int, default=14_400)
+    learning_run.add_argument("--seed", type=_nonnegative_int, default=129)
     # #202 §11 PR-E. Two command groups, because there are two lifecycles. `news learning` freezes a
     # corpus, explains what GEPA may optimize, scores the stable Program and runs the one optimization —
     # none of which can ship anything. `news release` admits a candidate, gathers release evidence and

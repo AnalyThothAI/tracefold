@@ -302,10 +302,10 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,freeze} ...
+                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,snapshot,compare,optimize,freeze}
+  {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
@@ -318,6 +318,8 @@ positional arguments:
                         teacher and report the differences
     optimize            run the one bounded GEPA optimization over a frozen
                         development dataset; ADVANCE is not a release
+    run                 the recommended path: readiness -> standalone baseline
+                        -> optimize -> run_summary.json
     freeze              freeze accepted reviews into a dataset
 
 options:
@@ -476,6 +478,44 @@ options:
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
                         deadline checked before each call
+  --seed SEED
+
+```
+
+## `news learning run`
+
+```
+usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
+                                   --max-baseline-model-cases MAX_BASELINE_MODEL_CASES
+                                   --max-metric-calls MAX_METRIC_CALLS
+                                   --max-task-model-calls MAX_TASK_MODEL_CALLS
+                                   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+                                   --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
+                                   --max-cost-microusd MAX_COST_MICROUSD
+                                   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
+                                   [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
+                                   [--seed SEED]
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --out OUT             run directory for every artifact this run writes
+  --max-baseline-model-cases MAX_BASELINE_MODEL_CASES
+                        bound on cases the standalone baseline may send to a
+                        provider; it must cover the whole optimizer corpus,
+                        and readiness checks that before the first call
+  --max-metric-calls MAX_METRIC_CALLS
+  --max-task-model-calls MAX_TASK_MODEL_CALLS
+  --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
+                        judge call ceiling for the optimization only; the
+                        standalone baseline's judge takes no ceiling (reaching
+                        one scores cases zero rather than raising) and is
+                        bounded by --max-baseline-model-cases
+  --max-cost-microusd MAX_COST_MICROUSD
+  --max-call-cost-microusd MAX_CALL_COST_MICROUSD
+  --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
   --seed SEED
 
 ```
