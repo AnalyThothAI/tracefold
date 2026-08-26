@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Final
 
-from ..contracts import ACTIVE_ORDER_STATES
+from ..contracts import ACTIVE_ORDER_STATES, utc_day_key
 from ..research.event_study import summarize_evaluation_rows
 from .sql_values import _dumps
 
@@ -63,7 +64,22 @@ class QueryStorage:
         return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------ status
-    def status_counts(self, *, since_ms: int) -> dict[str, Any]:
+    def status_counts(
+        self,
+        *,
+        since_ms: int,
+        now_ms: int,
+        day_key: str | None,
+    ) -> dict[str, Any]:
+        try:
+            resolved_day_key = str(day_key or "")
+            if len(resolved_day_key) != 10:
+                raise ValueError
+            day_start_ms = int(datetime.fromisoformat(resolved_day_key).replace(tzinfo=UTC).timestamp() * 1000)
+        except ValueError:
+            resolved_day_key = utc_day_key(now_ms)
+            day_start_ms = int(datetime.fromisoformat(resolved_day_key).replace(tzinfo=UTC).timestamp() * 1000)
+        day_end_ms = day_start_ms + 86_400_000
         cases = self.conn.execute(
             "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state",
             (int(since_ms),),
@@ -108,6 +124,26 @@ class QueryStorage:
             "AND position_closed_at_ms IS NOT NULL AND position_closed_at_ms >= %s",
             (int(since_ms),),
         ).fetchone()
+        cases_today = self.conn.execute(
+            "SELECT state, count(*) AS n FROM trading_cases "
+            "WHERE created_at_ms >= %s AND created_at_ms < %s GROUP BY state",
+            (day_start_ms, day_end_ms),
+        ).fetchall()
+        policy_allowed_today = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_cases WHERE created_at_ms >= %s AND created_at_ms < %s "
+            "AND policy_decision IN ('long', 'short')",
+            (day_start_ms, day_end_ms),
+        ).fetchone()
+        closed_today = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_orders "
+            "WHERE state = 'CLOSED' AND position_closed_at_ms IS NOT NULL "
+            "AND position_closed_at_ms >= %s AND position_closed_at_ms < %s",
+            (day_start_ms, day_end_ms),
+        ).fetchone()
+        active = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_orders WHERE state = ANY(%s)",
+            (list(ACTIVE_ORDER_STATES),),
+        ).fetchone()
         return {
             "cases_by_state": {str(row["state"]): int(row["n"]) for row in cases},
             "cases_by_trigger": {str(row["trigger_kind"]): int(row["n"]) for row in triggers},
@@ -121,6 +157,11 @@ class QueryStorage:
             "orders_by_state": {str(row["state"]): int(row["n"]) for row in orders},
             "closed_orders": 0 if realized is None else int(realized["n"]),
             "closed_realized_bps": 0 if realized is None else int(realized["total_bps"]),
+            "cases_today_by_state": {str(row["state"]): int(row["n"]) for row in cases_today},
+            "policy_allowed_today": 0 if policy_allowed_today is None else int(policy_allowed_today["n"]),
+            "closed_orders_today": 0 if closed_today is None else int(closed_today["n"]),
+            "active_orders": 0 if active is None else int(active["n"]),
+            "funnel_day_key": resolved_day_key,
         }
 
     def stage_latency_ms(self, *, since_ms: int) -> dict[str, dict[str, int]]:
@@ -164,6 +205,8 @@ class QueryStorage:
         self,
         *,
         since_ms: int,
+        closed_from_ms: int | None = None,
+        closed_until_ms: int | None = None,
         underlying_key: str | None = None,
         states: tuple[str, ...] = (),
         limit: int = 100,
@@ -188,14 +231,29 @@ class QueryStorage:
         bounded by the lifecycle timestamp that makes it recent: `position_closed_at_ms` for a close, and
         `created_at_ms` only for a row that never opened a position and never will.
 
+        A supplied closed interval replaces that terminal-row window with one half-open UTC budget day;
+        active states remain unbounded. The HTTP workbench uses this projection instead of rebuilding a
+        day from row timestamps in the browser.
+
         That also keeps this list agreeing with `status_counts`, whose realised counts are bounded by
         `position_closed_at_ms`: an order created 30 h ago and closed 2 h ago is in both, or in neither.
         """
 
         # `PREPARED` … `SAFETY_CLOSING`, verbatim from `ux_trading_active_underlying` (`20260823_0300`).
-        recency = "(o.state = ANY(%s) OR coalesce(o.position_closed_at_ms, o.closed_at_ms, o.created_at_ms) >= %s)"
+        if closed_from_ms is not None and closed_until_ms is not None:
+            recency = (
+                "(o.state = ANY(%s) OR (o.state = 'CLOSED' AND o.position_closed_at_ms >= %s "
+                "AND o.position_closed_at_ms < %s))"
+            )
+            params: list[Any] = [
+                list(ACTIVE_ORDER_STATES),
+                int(closed_from_ms),
+                int(closed_until_ms),
+            ]
+        else:
+            recency = "(o.state = ANY(%s) OR coalesce(o.position_closed_at_ms, o.closed_at_ms, o.created_at_ms) >= %s)"
+            params = [list(ACTIVE_ORDER_STATES), int(since_ms)]
         where = [recency]
-        params: list[Any] = [list(ACTIVE_ORDER_STATES), int(since_ms)]
         if underlying_key:
             where.append("o.underlying_key = %s")
             params.append(str(underlying_key))

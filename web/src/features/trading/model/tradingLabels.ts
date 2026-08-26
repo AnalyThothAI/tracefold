@@ -9,14 +9,14 @@ import type { TradingOrder } from "../api/tradingQueries";
  * as 已成交 would be asserting something the ledger does not, which is the failure #185 P0-3 exists to stop.
  */
 export const ORDER_STATE_NOTE: Record<string, string> = {
-  ACKNOWLEDGED: "交易所已应答——不是成交，还没有权威仓位数量，持有时钟未起算",
-  AMBIGUOUS: "提交结果不明，进入只读对账：不盲目重发、不换场所",
+  ACKNOWLEDGED: "交易所已应答；成交未证明——ACK≠成交",
+  AMBIGUOUS: "提交超时未读到回执：只读对账中，永不盲重发",
   APPROVED: "已批准，尚未提交",
-  AWAITING_APPROVAL: "等待审批，绑定确切 payload 摘要，过期即作废",
+  AWAITING_APPROVAL: "payload 摘要已绑定 · 60s 过期作废",
   CLOSED: "已了结",
   MANUAL_REVIEW_REQUIRED: "对账无法自行收敛，等待人确认交易所侧的事实",
   NO_FILL: "未成交",
-  OPEN: "仓位与覆盖数量的原生止损都已证明",
+  OPEN: "仓位与原生止损双证明",
   PARTIAL: "部分成交",
   PREPARED: "载荷已冻结，尚未提交",
   RECONCILING: "正在对账",
@@ -64,6 +64,16 @@ export const STRATEGY_ZH: Record<string, string> = {
   news_oi_alignment_v1: "新闻 × OI 对齐",
   oi_momentum_v1: "OI 动量",
 };
+
+/** Compact approved case labels, each a direct presentation of the immutable strategy identity. */
+export const STRATEGY_CASE_LABEL: Record<string, string> = {
+  news_oi_alignment_v1: "news_oi",
+  oi_momentum_v1: "oi_only",
+};
+
+export function strategyCaseLabel(strategyId: string): string {
+  return STRATEGY_CASE_LABEL[strategyId] ?? STRATEGY_ZH[strategyId] ?? strategyId;
+}
 
 export const REGIME_ZH: Record<string, string> = {
   buildup_down: "增仓 · 价跌",

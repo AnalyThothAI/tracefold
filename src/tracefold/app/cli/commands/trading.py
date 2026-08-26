@@ -71,7 +71,11 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
 
         if command == "status":
             runtime = trading.runtime_state() or {}
-            counts = trading.status_counts(since_ms=now - _STATUS_WINDOW_MS)
+            counts = trading.status_counts(
+                since_ms=now - _STATUS_WINDOW_MS,
+                now_ms=now,
+                day_key=runtime.get("day_key"),
+            )
             order = settings.trading.order
             return 0, {
                 "ok": True,

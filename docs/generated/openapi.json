@@ -6763,8 +6763,13 @@
       },
       "TradingCountsData": {
         "additionalProperties": false,
-        "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.\n\n`funnel_today` is the odd one out and says so in its name. Everything else here is a rolling 24 h count\nover the ledger; the funnel is `trading_runtime_state.funnel`, which `merge_funnel` resets on `day_key`\nand is therefore the current UTC calendar day. `funnel_day_key` is the document's own key, so a reader\ncan see that a Workers process stopped over midnight left yesterday's totals in place instead of having\nto infer it.",
+        "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.\n\nRolling groupings retain their 24 h window. The `*_today` fields, `policy_allowed_today`, and\n`funnel_today` bind to the UTC `funnel_day_key`; an upper bound keeps a stale Workers day from silently\nbecoming a multi-day count. `active_orders` is intentionally unbounded because unresolved exposure does\nnot stop mattering after 24 h.",
         "properties": {
+          "active_orders": {
+            "default": 0,
+            "title": "Active Orders",
+            "type": "integer"
+          },
           "cases_by_state": {
             "additionalProperties": {
               "type": "integer"
@@ -6786,9 +6791,21 @@
             "title": "Cases By Trigger",
             "type": "object"
           },
+          "cases_today_by_state": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Cases Today By State",
+            "type": "object"
+          },
           "closed_orders": {
             "default": 0,
             "title": "Closed Orders",
+            "type": "integer"
+          },
+          "closed_orders_today": {
+            "default": 0,
+            "title": "Closed Orders Today",
             "type": "integer"
           },
           "closed_realized_bps": {
@@ -6831,6 +6848,11 @@
             },
             "title": "Orders By State",
             "type": "object"
+          },
+          "policy_allowed_today": {
+            "default": 0,
+            "title": "Policy Allowed Today",
+            "type": "integer"
           },
           "shadow_by_rule": {
             "additionalProperties": {
@@ -8730,6 +8752,17 @@
         "description": "Orders with the case that authored them, plus the cases that never got that far.\n\nBoth halves are needed to describe the lane honestly. A `POLICY_REJECTED` case is where the capital\nfloors actually bite and it has no order to join through, so listing orders alone would make the whole\nrejected population invisible \u2014 the funnel would count them and nothing would be able to name them.\n\n`underlying` accepts either the base symbol (`WIF`) or the full key (`crypto:WIF`); the response carries\nboth so a caller never has to build the key itself.",
         "operationId": "get_trading_orders_api_trading_orders_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "day",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 10,
+              "title": "Day",
+              "type": "string"
+            }
+          },
           {
             "in": "query",
             "name": "underlying",

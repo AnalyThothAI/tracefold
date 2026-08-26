@@ -3,9 +3,9 @@ import { Card } from "@shared/ui/Card";
 import { Link } from "react-router-dom";
 
 import type { TradingOrder } from "../api/tradingQueries";
-import { heldFor, STRATEGY_ZH } from "../model/tradingLabels";
+import { heldFor, strategyCaseLabel } from "../model/tradingLabels";
 
-import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
+import { TradingEmptyNote } from "./TradingChrome";
 
 /**
  * What closed, and how it closed — from the ledger, not from a local candle.
@@ -17,11 +17,11 @@ import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
  * `realized_bps` is only present when the exit was measured. An operator-resolved close moved a position but
  * nobody computed a return for it, so it renders `—` rather than a zero that would drag an average.
  */
-export function TradingClosed({ rows }: { rows: readonly TradingOrder[] }) {
+export function TradingClosed({ count, rows }: { count: number; rows: readonly TradingOrder[] }) {
   return (
-    <Card flush hint="平仓证据来自账本状态，不是本地蜡烛" title={`今日已了结 · ${rows.length}`}>
+    <Card flush hint="平仓证据来自账本状态，不是本地蜡烛" title={`今日已了结 · ${count}`}>
       {rows.length === 0 ? (
-        <TradingEmptyNote>过去 24 小时没有了结的仓位。</TradingEmptyNote>
+        <TradingEmptyNote>该 UTC 预算日没有了结的仓位。</TradingEmptyNote>
       ) : (
         <div className="trading-table">
           <div aria-hidden className="trading-closed-head">
@@ -37,8 +37,8 @@ export function TradingClosed({ rows }: { rows: readonly TradingOrder[] }) {
               <span className="trading-symbol">
                 <Link to={newsSymbolPath(order.base_symbol)}>{order.base_symbol}</Link>
               </span>
-              <span className="trading-kind">
-                {STRATEGY_ZH[order.strategy_id] ?? order.strategy_id}
+              <span className="trading-kind" title={`strategy_id: ${order.strategy_id}`}>
+                {strategyCaseLabel(order.strategy_id)}
               </span>
               <span className="trading-num">
                 {order.average_price ?? order.entry_reference} → {order.exit_price ?? "—"}
@@ -53,7 +53,7 @@ export function TradingClosed({ rows }: { rows: readonly TradingOrder[] }) {
                 ) : (
                   <b data-tone={order.realized_bps >= 0 ? "up" : "down"}>
                     {order.realized_bps > 0 ? "+" : ""}
-                    {(order.realized_bps / 100).toFixed(2)}%
+                    {order.realized_bps} bps
                   </b>
                 )}
               </span>
@@ -61,10 +61,6 @@ export function TradingClosed({ rows }: { rows: readonly TradingOrder[] }) {
           ))}
         </div>
       )}
-      <TradingSourceLine
-        note="只有被测量的出场进入已实现口径：操作员解决的平仓移动了仓位，但没人为它算过收益"
-        path="GET /api/trading/orders → orders[] where state = CLOSED"
-      />
     </Card>
   );
 }

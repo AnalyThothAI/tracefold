@@ -64,13 +64,13 @@ describe("route-aware shell figures", () => {
 
   it("keeps paper/live safety facts visible on the trading surface", () => {
     expect(topbarFigures("/trading", news, trading)).toEqual([
-      { label: "MODE", text: "PAPER" },
+      { label: "MODE", text: "paper" },
       {
         label: "LIVE READY",
-        text: "NOT_APPLICABLE",
+        text: "not_applicable",
         tone: "caution",
       },
-      { label: "ORDERS TODAY", text: "3 / 4" },
+      { label: "今日订单", text: "3 / 4" },
     ]);
   });
 });

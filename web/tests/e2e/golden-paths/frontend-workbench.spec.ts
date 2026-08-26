@@ -19,6 +19,13 @@ const oiArchetype = {
   topbarFigure: "成案 · 放行 · 08-25",
 } as const;
 
+const tradingArchetype = {
+  name: "trading",
+  path: "/trading",
+  ready: (page: Page) => page.locator(".trading-exposure-row").first(),
+  settled: (page: Page) => page.locator(".trading-funnel-row").first(),
+} as const;
+
 const archetypes = [
   {
     name: "news",
@@ -31,14 +38,6 @@ const archetypes = [
     path: "/news/events/evt-global-policy",
     ready: (page: Page) => page.locator(".news-detail-hero"),
     settled: (page: Page) => page.locator(".news-timeline-step").first(),
-  },
-  {
-    // #207 PR-W4: the capital lane. Its ledger is empty on this deployment and probably will be for a
-    // while, so the baseline is what keeps the empty states from drifting into looking like an outage.
-    name: "trading",
-    path: "/trading",
-    ready: (page: Page) => page.locator(".trading-exposure-row").first(),
-    settled: (page: Page) => page.locator(".trading-funnel-row").first(),
   },
   {
     // #207 PR-W1: the token page composes four endpoints into one column. The baseline is what keeps the
@@ -76,9 +75,14 @@ test("freezes the OI monitor at every project viewport", async ({ page }) => {
   await freezeArchetypes(page, [oiArchetype]);
 });
 
+test("freezes the Trading workbench at every project viewport", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-08-25T12:00:00Z"));
+  await freezeArchetypes(page, [tradingArchetype]);
+});
+
 async function freezeArchetypes(
   page: Page,
-  routes: readonly (typeof oiArchetype | (typeof archetypes)[number])[],
+  routes: readonly (typeof oiArchetype | typeof tradingArchetype | (typeof archetypes)[number])[],
 ) {
   for (const route of routes) {
     await page.goto(route.path);
@@ -88,6 +92,7 @@ async function freezeArchetypes(
       await expect(page.locator(".topbar-figures").getByText(route.topbarFigure)).toBeVisible();
     }
     if (route.name === "oi") await expectOiOverflowContract(page);
+    if (route.name === "trading") await expectTradingOverflowContract(page);
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {
@@ -106,6 +111,26 @@ async function freezeArchetypes(
   }
 
   await expectNoUnhandledApiRequests(page);
+}
+
+async function expectTradingOverflowContract(page: Page) {
+  const widths = await page.evaluate(() => {
+    const route = document.querySelector<HTMLElement>(".center-column");
+    const table = document.querySelector<HTMLElement>(".trading-table");
+    return {
+      documentClient: document.documentElement.clientWidth,
+      documentScroll: document.documentElement.scrollWidth,
+      routeClient: route?.clientWidth ?? 0,
+      routeScroll: route?.scrollWidth ?? 0,
+      tableClient: table?.clientWidth ?? 0,
+      tableScroll: table?.scrollWidth ?? 0,
+    };
+  });
+  expect(widths.documentScroll).toBe(widths.documentClient);
+  expect(widths.routeScroll).toBe(widths.routeClient);
+  if ((page.viewportSize()?.width ?? 0) <= 834) {
+    expect(widths.tableScroll).toBeGreaterThan(widths.tableClient);
+  }
 }
 
 /**

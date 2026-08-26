@@ -46,6 +46,7 @@ export const queryKeys = {
   // #207 PR-W4: the capital lane's own keys. Separate from News' so a 15 s trading poll cannot evict the
   // feed page a reader is scrolled into.
   tradingStatus: () => ["trading-status"] as const,
-  tradingOrders: (underlying: string) => ["trading-orders", underlying] as const,
+  tradingOrders: (underlying: string, budgetDay = "") =>
+    ["trading-orders", underlying, budgetDay] as const,
   tradingEventCase: (eventId: string) => ["trading-event-case", eventId] as const,
 };

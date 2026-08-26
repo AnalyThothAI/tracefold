@@ -65,6 +65,10 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     retryBootstrap: session.retryBootstrap,
     token,
   };
+  const referenceFrame =
+    location.pathname === "/news" ||
+    location.pathname === "/news/oi" ||
+    location.pathname === "/trading";
   const currentSearchQuery = isNewsRoute(location.pathname)
     ? (new URLSearchParams(location.search).get("q") ?? "")
     : "";
@@ -95,20 +99,13 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       outletContext: routeContext,
       topbar: {
-        referenceFrame: location.pathname === "/news" || location.pathname === "/news/oi",
-        health: healthLamp(
-          newsStatusQuery.data,
-          newsStatusQuery.isError,
-          location.pathname === "/news" || location.pathname === "/news/oi",
-        ),
+        referenceFrame,
+        health: healthLamp(newsStatusQuery.data, newsStatusQuery.isError, referenceFrame),
         // The visual contract makes the topbar a route context strip. Every value is an already-served
         // material fact from the two status reads this shell shares with the pages; switching routes never
         // starts a new request or asks the browser to invent a KPI.
         figures: topbarFigures(location.pathname, newsStatusQuery.data, tradingStatusQuery.data),
-        onRefresh:
-          location.pathname === "/news" || location.pathname === "/news/oi"
-            ? undefined
-            : () => void queryClient.invalidateQueries(),
+        onRefresh: referenceFrame ? undefined : () => void queryClient.invalidateQueries(),
         search: {
           onSubmitQuery: submitTopbarSearch,
           query: currentSearchQuery,
@@ -137,14 +134,14 @@ export function topbarFigures(
     const readiness = tradingStatus?.readiness;
     const budget = tradingStatus?.budget;
     return [
-      { label: "MODE", text: readiness?.mode.toUpperCase() },
+      { label: "MODE", text: readiness?.mode },
       {
         label: "LIVE READY",
-        text: readiness?.live_readiness.toUpperCase(),
+        text: readiness?.live_readiness,
         tone: readiness?.live_ready === false ? "caution" : undefined,
       },
       {
-        label: "ORDERS TODAY",
+        label: "今日订单",
         text: budget ? `${budget.orders_today} / ${budget.max_orders_per_day}` : undefined,
       },
     ];
