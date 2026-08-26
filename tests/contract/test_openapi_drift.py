@@ -67,11 +67,19 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/status",
         "/api/trading/orders",
         "/api/trading/events/{event_id}",
+        # #269: the admission ledger for a window of frames at once. The per-Event endpoint above answers
+        # the same question one row at a time, which is a hundred round trips to render one table.
+        "/api/trading/gate",
     }
     # Reads only. `trading` has three operator mutations and every one of them stays on the CLI, where it
     # runs as `workers` — `tracefold_serve` carries `default_transaction_read_only = on` precisely so the
     # internet-facing role cannot reach them.
-    for path in ("/api/trading/status", "/api/trading/orders", "/api/trading/events/{event_id}"):
+    for path in (
+        "/api/trading/status",
+        "/api/trading/orders",
+        "/api/trading/events/{event_id}",
+        "/api/trading/gate",
+    ):
         assert set(schema["paths"][path]) == {"get"}, path
     for retired in (
         "/api/token-radar",

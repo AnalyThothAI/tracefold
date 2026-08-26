@@ -1114,6 +1114,80 @@ def test_an_open_decision_the_clock_has_answered_is_expired_not_left_pending(con
     assert by_key["oi:e3:oi_signal_v1"]["reason"] == "rank_above_limit"
 
 
+def test_the_scanner_closing_a_stale_row_keeps_what_that_row_was_waiting_on(conn) -> None:
+    """#268. The sweep is not the only path that closes an open row, and it never got to run.
+
+    The scanner re-reads its whole overlap window every couple of seconds, so a frame deferred on
+    `routing:no_native_perp` is re-evaluated the instant it passes `max_age_ms` and arrives here as
+    `eligibility:trigger_stale` — before the once-a-turn sweep sees it. Production recorded NVDA's
+    $63.7M frame, a Binance *stock* perpetual this crypto-only lane can never route, as though the
+    lane simply had not been looking.
+    """
+
+    _gate(
+        conn,
+        status="DEFERRED",
+        stage="routing",
+        reason="no_native_perp",
+        retryable=True,
+        observed_at_ms=NOW - 600_000,
+        evidence={"oi_value_usd": 63_700_000, "venue": "binance"},
+    )
+    _gate(
+        conn,
+        status="EXPIRED",
+        stage="eligibility",
+        reason="trigger_stale",
+        retryable=False,
+        observed_at_ms=NOW - 600_000,
+        evidence={"age_ms": 600_000, "max_age_ms": 300_000},
+        now_ms=NOW + 2_000,
+    )
+
+    row = _gate_rows(conn)[0]
+    # Closed, exactly as the sweep would have closed it — and still naming the instrument it was
+    # waiting for, which is the operator's actual answer.
+    assert (row["status"], row["stage"], row["reason"]) == ("EXPIRED", "routing", "no_native_perp")
+    assert row["retryable"] is False
+    assert row["evidence"]["oi_value_usd"] == 63_700_000
+    assert (row["attempt_count"], row["last_evaluated_at_ms"]) == (2, NOW + 2_000)
+    assert _repos(conn).trading.gate_decision_counts(since_ms=NOW - 86_400_000)["reasons"] == {
+        "routing:no_native_perp": 1
+    }
+
+
+def test_a_source_first_seen_past_its_budget_still_records_the_clock_as_its_reason(conn) -> None:
+    """The other half. A row with no earlier answer has only the clock's, and keeps it."""
+
+    _gate(
+        conn,
+        status="EXPIRED",
+        stage="eligibility",
+        reason="trigger_stale",
+        retryable=False,
+        observed_at_ms=NOW - 600_000,
+        evidence={"age_ms": 600_000, "max_age_ms": 300_000},
+    )
+    row = _gate_rows(conn)[0]
+    assert (row["status"], row["stage"], row["reason"]) == ("EXPIRED", "eligibility", "trigger_stale")
+    assert row["evidence"]["age_ms"] == 600_000
+
+
+def test_an_open_row_the_scanner_can_still_answer_is_not_frozen_by_the_clock_rule(conn) -> None:
+    """Preserving a reason must not also preserve the refusal: a deferred row still advances."""
+
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="PENDING")
+    _gate(conn, status="DEFERRED", stage="eligibility", reason="blacklisted", retryable=True)
+    _gate(conn, status="CASE_CREATED", stage="freeze", reason="case_created", retryable=False, case_id="case-1")
+    row = _gate_rows(conn)[0]
+    assert (row["status"], row["stage"], row["reason"], row["case_id"]) == (
+        "CASE_CREATED",
+        "freeze",
+        "case_created",
+        "case-1",
+    )
+
+
 def test_yesterdays_reason_is_still_answerable_after_the_utc_day_rolls(conn) -> None:
     """The whole point. `trading_runtime_state.funnel` resets on `day_key`; this does not."""
 

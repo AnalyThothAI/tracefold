@@ -84,6 +84,38 @@ def _evaluate_canary_rolling_slo(repos: Any, *, activation_id: str, now_ms: int)
     return dict(repos.news.evaluate_canary_rolling_slo(activation_id=activation_id, now_ms=now_ms))
 
 
+def _record_deterministic_assets(repos: Any, s: _TriageSettle) -> None:
+    """Give the telemetry lanes the Event assets their Gate could not ground (#267).
+
+    A deterministic judge resolves its symbol from the provider's own fixed template — the leading
+    token of `NVDA OI Rise 4.55%, OI Value 32.17M, …`, or the typed liquidation fact — and writes it
+    into the verdict as a primary. The admission Gate, reading the same wire text minutes earlier,
+    grounds nothing at all, so these Events carried `grounded_assets = []` and no `news_event_assets`
+    row: 112 of 112 in a production day. Everything keyed on that table was consequently blind to the
+    whole lane — the Reaction planner (so `p0`, 1 H and 4 H were empty on every OI frame ever judged,
+    and the Price Review's sample described only the model lane), the feed's `?symbol=` filter behind
+    the token page, and the instrument-grounding funnel.
+
+    Written *after* `insert_verdict`, in the same transaction, and for every decision rather than only
+    the pushed ones: a Reaction the reader never received is exactly what the potential-miss review
+    reads (#88 §6), and `due_reactions` already scopes itself to live Events on its own.
+
+    Restricted to the deterministic origin on purpose. For a model-lane Event this table is the Gate's
+    grounding evidence, provenance-checked against the Item; verdict primaries there are a model's
+    reading, and promoting them here would let a hallucinated ticker seed a price measurement and
+    enter reader history as a canonical asset.
+    """
+
+    if s.judgment.editorial.editorial_origin != "telemetry_deterministic":
+        return
+    assets = [(asset.symbol, asset.market_type) for asset in s.verdict.assets if asset.role == "primary"]
+    if not assets:
+        # A frame that did not match the template names no symbol, and the parse failure is the whole
+        # verdict. There is nothing to measure a price against.
+        return
+    repos.news.record_event_assets(event_id=s.event_id, assets=assets)
+
+
 class TriageConsumer:
     work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
 
@@ -1023,6 +1055,7 @@ class TriageConsumer:
         )
         repos.news.set_storyline_key(event_id=s.event_id, storyline_key=s.final_key, now_ms=s.stamp)
         repos.news.set_context_line(event_id=s.event_id, context_line=context_line, followup_of=None, now_ms=s.stamp)
+        _record_deterministic_assets(repos, s)
         return _TriageOutcome(stale=False, final=final, decision=decision)
 
     async def _trip_canary(self, activation_id: str, reason: str, stamp: int) -> None:

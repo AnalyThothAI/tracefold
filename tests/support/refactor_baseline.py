@@ -123,8 +123,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # Several migrations have moved the head since that cut, through the Trading exit/kernel work and
     # #221's status metrics (0311). A dict has one key, so the latest intentional migration owns it.
     "migration_head": (
-        "issue_265_oi_source_contract",
-        "20260827_0313",
+        "issue_267_deterministic_event_assets",
+        "20260827_0314",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged

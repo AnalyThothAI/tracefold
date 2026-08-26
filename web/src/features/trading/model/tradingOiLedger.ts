@@ -1,6 +1,12 @@
-import type { TradingCase, TradingOrder, TradingOrders } from "../api/tradingQueries";
+import type {
+  TradingCase,
+  TradingGate,
+  TradingGateDecision,
+  TradingOrder,
+  TradingOrders,
+} from "../api/tradingQueries";
 
-import { CASE_STATE_ZH, REGIME_ZH } from "./tradingLabels";
+import { CASE_STATE_ZH, GATE_STATUS_ZH, REGIME_ZH, gateReasonLabel } from "./tradingLabels";
 
 export type TradingOiLedgerEntry =
   | { kind: "order"; value: TradingOrder }
@@ -10,6 +16,20 @@ export type TradingOiLookup = {
   complete: boolean;
   entry: TradingOiLedgerEntry | undefined;
   eventId: string;
+  /**
+   * The admission answer for this frame (#269). Its own read, and its own absence: a frame with a
+   * ledger row and no case has a *named reason*, which is a different fact from a frame the lane has
+   * never evaluated, and both are different from a frame whose case exists.
+   */
+  gate: TradingGateDecision | undefined;
+  /**
+   * Whether the admission ledger answered at all — a separate read from the order batch, and a
+   * separately failable one. Without it an absent `gate` is ambiguous between "the lane has no row for
+   * this frame" and "we could not ask", and only the first of those is a statement about the frame.
+   */
+  gateAnswered: boolean;
+  /** Whether the admission batch covered the window, as opposed to the order batch's `complete`. */
+  gateComplete: boolean;
   loadFailed: boolean;
   loaded: boolean;
 };
@@ -64,14 +84,64 @@ export function tradingOiLedgerByEventId(
   return result;
 }
 
-/** Capital-lane vocabulary for the compact OI table cell; News supplies no policy interpretation. */
+/**
+ * The admission answers in the window, keyed by the Event id the server recovered from each source key.
+ *
+ * A decision whose source key is not the deterministic OI contract publishes `event_id: null` and is not
+ * in this index — it is one of the lane's answers and the distributions count it, but no frame on this
+ * page is the frame it is about.
+ */
+export function tradingGateByEventId(
+  gate: TradingGate | undefined,
+): Map<string, TradingGateDecision> {
+  const result = new Map<string, TradingGateDecision>();
+  for (const decision of gate?.decisions ?? []) {
+    if (decision.event_id) result.set(decision.event_id, decision);
+  }
+  return result;
+}
+
+/**
+ * Capital-lane vocabulary for the compact OI table cell; News supplies no policy interpretation.
+ *
+ * Four answers, and the reason the whole column existed is that three of them used to be one (#269):
+ *
+ *   拒/过期/待重试 · <named gate reason>   admission refused the frame, and says on which rule
+ *   未评估                                 the lane holds no row for it under any gate version
+ *   拒 · <policy rule> | <case state>      a case exists and the strategy decided it
+ *   多/空 · <order state>                  an order exists
+ *
+ * The gate is consulted only when there is no case: a frame that produced one has an admission row too
+ * (`freeze:case_created`), and showing 已开案 where the case's own state belongs would hide the decision.
+ */
 export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
   if (lookup.loadFailed) return { primary: "账本不可用" };
   if (!lookup.loaded) return { primary: "读取中" };
   if (!lookup.entry) {
-    return lookup.complete
-      ? { primary: "未成案" }
-      : { primary: "未确认", title: "交易账本批次已截断" };
+    const gate = lookup.gate;
+    if (!lookup.gateAnswered) {
+      // The admission ledger is its own read and can fail on its own. 未评估 would be this console
+      // asserting something about the frame on the strength of a request that never came back.
+      return { primary: "未确认", title: "准入台账未读到" };
+    }
+    if (gate?.gate_status && gate.gate_status !== "CASE_CREATED") {
+      const key = `${gate.gate_stage}:${gate.gate_reason}`;
+      return {
+        primary: `${GATE_STATUS_ZH[gate.gate_status] ?? gate.gate_status} · ${gateReasonLabel(key)}`,
+        secondary: gate.gate_stage ?? undefined,
+        title: `${key} · ${gate.gate_version ?? ""}`.trim(),
+      };
+    }
+    if (gate?.gate_status === "CASE_CREATED") {
+      // The gate opened a case and this batch does not hold it — a page boundary, not a refusal.
+      return { primary: "已开案", title: gate.case_id ?? "案例不在本批账本内" };
+    }
+    // 未评估 is a claim about this frame and only the *admission* batch can support it. Reading the
+    // order batch's completeness here would have blamed a truncated order page for a gap in a ledger
+    // that had answered in full, and vice versa.
+    return lookup.gateComplete
+      ? { primary: "未评估", title: "资本通道尚未在任何 gate 版本下评估过这一帧" }
+      : { primary: "未确认", title: "准入台账批次已截断" };
   }
   if (lookup.entry.kind === "order") {
     const value = lookup.entry.value;
@@ -98,9 +168,29 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
   if (lookup.loadFailed) return [["ledger", "读取失败"]];
   if (!lookup.loaded) return [["ledger", "读取中"]];
   if (!lookup.entry) {
+    const gate = lookup.gate;
+    if (!gate) {
+      return [
+        ["event_id", lookup.eventId],
+        // Two batches, two completeness answers, and neither may speak for the other: the case line is
+        // the order batch's, the gate line is the admission ledger's.
+        ["case", lookup.complete ? "未成案" : "未确认（交易账本批次已截断）"],
+        ["gate", gateAbsenceNote(lookup)],
+        ["join", "只按已发布 event_id；不按 symbol/time 猜"],
+      ];
+    }
+    // The durable row, verbatim. `attempt_count` is how many times the scanner *saw* this source, not
+    // how many times it retried: a terminal row is re-read every turn inside the overlap window.
     return [
       ["event_id", lookup.eventId],
-      ["case", lookup.complete ? "未成案" : "未确认（账本批次已截断）"],
+      ["gate_status", gate.gate_status ?? "—"],
+      ["gate_stage", gate.gate_stage ?? "—"],
+      ["gate_reason", gate.gate_reason ?? "—"],
+      ["gate_retryable", String(gate.gate_retryable ?? false)],
+      ["gate_version", gate.gate_version ?? "—"],
+      ["gate_config_digest", (gate.gate_config_digest ?? "").slice(0, 12) || "—"],
+      ["attempt_count", String(gate.gate_attempt_count ?? 0)],
+      ...gateEvidenceEntries(gate),
       ["join", "只按已发布 event_id；不按 symbol/time 猜"],
     ];
   }
@@ -133,6 +223,31 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
 
 function regimeLabel(value: string | null | undefined): string | undefined {
   return value ? (REGIME_ZH[value] ?? value) : undefined;
+}
+
+/** Why there is no admission row to show — three different absences, never collapsed into one. */
+function gateAbsenceNote(lookup: TradingOiLookup): string {
+  if (!lookup.gateAnswered) return "准入台账这一轮没有读到，无法回答为什么没有案例";
+  if (!lookup.gateComplete) return "准入台账批次已截断，本帧可能在未列出的部分";
+  return "本帧在任何 gate 版本下都没有落库的准入判定";
+}
+
+/**
+ * The threshold the rule compared against, when the rule published one.
+ *
+ * Only the two comparison keys, not the whole evidence document: the four measurements beside them are
+ * already the frame's own columns in this table, and repeating them under the trace would be the same
+ * numbers twice. What the row does not otherwise say is what the gate measured them *against*.
+ */
+function gateEvidenceEntries(gate: TradingGateDecision): Array<[string, string]> {
+  const evidence = gate.gate_evidence;
+  const entries: Array<[string, string]> = [];
+  if (evidence?.floor != null) entries.push(["evidence.floor", String(evidence.floor)]);
+  if (evidence?.limit != null) entries.push(["evidence.limit", String(evidence.limit)]);
+  if (evidence?.max_age_ms != null)
+    entries.push(["evidence.max_age_ms", String(evidence.max_age_ms)]);
+  if (evidence?.enabled?.length) entries.push(["evidence.enabled", evidence.enabled.join(", ")]);
+  return entries;
 }
 
 /**

@@ -422,6 +422,10 @@ def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_ed
     ]
     assert all(m.priority == 5 and m.trace_id == "trace-1" for m in bus.published)
     assert news.names()[-1] == "mark_verdict_published"
+    # #267 is scoped to the deterministic lanes. Here the Event's assets are the Gate's grounding
+    # evidence, provenance-checked against the Item; promoting a non-deterministic verdict's own
+    # primaries would let an unchecked reading seed a price measurement and a canonical asset.
+    assert "record_event_assets" not in news.names()
 
 
 @pytest.mark.parametrize(
@@ -2237,6 +2241,48 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
+
+
+def test_a_judged_telemetry_frame_records_the_asset_its_gate_could_not_ground() -> None:
+    """#267. The parser resolves the symbol the admission Gate could not read out of the wire text.
+
+    Without this the Event has no `news_event_assets` row at all, and everything keyed on that table
+    is blind to the entire lane: the Reaction planner never plants a row, so 价格/1H/4H are empty on
+    every frame; `?symbol=` finds nothing, so the token page a frame links to lists neither it nor any
+    other; and the instrument funnel counts the frame as naming nothing.
+    """
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_oi_card(),
+        insert_verdict=True,
+        count_recent_eligible_oi_signals=0,
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+
+    asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
+
+    recorded = news.kwargs_of("record_event_assets")
+    assert recorded["event_id"] == "ev-oi"
+    # The judge's own primary, with the contract it named — not the Gate's empty `grounded_assets`.
+    assert recorded["assets"] == [("TRUMP", "perp")]
+
+
+def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:
+    """A parse failure names no symbol, and inventing one would seed a price measurement on nothing."""
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_oi_card(leader_title="Zeta posted something that is not the OI template"),
+        insert_verdict=True,
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+
+    asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
+
+    assert news.kwargs_of("insert_verdict")["error_code"] == "oi_parse_failed"
+    assert "record_event_assets" not in news.names()
+    assert "insert_oi_signal" not in news.names()
 
 
 def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> None:

@@ -11,7 +11,11 @@ import {
   newsSymbolFixture,
   newsTriageFixture,
 } from "@tests/fixtures/newsFixture";
-import { tradingOrdersFixture, tradingStatusFixture } from "@tests/fixtures/tradingFixture";
+import {
+  tradingGateFixture,
+  tradingOrdersFixture,
+  tradingStatusFixture,
+} from "@tests/fixtures/tradingFixture";
 
 const NOW = 1_777_746_300_000;
 const unhandledApiRequests = new WeakMap<Page, string[]>();
@@ -76,6 +80,8 @@ export async function installMockApi(
     // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
     if (path === "/api/trading/status") return fulfill(route, tradingStatusFixture());
     if (path === "/api/trading/orders") return fulfill(route, tradingOrdersFixture());
+    // #269: the admission ledger the OI audit's capital column reads for a whole page of frames at once.
+    if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());
     if (path.startsWith("/api/trading/events/")) {
       return fulfill(route, { event_id: path.split("/").pop() ?? "", joinable: false });
     }

@@ -173,10 +173,45 @@ class TradingGateEvidenceData(ExactApiSchema):
     rule: str = ""
 
 
+class TradingGateConfigData(ExactApiSchema):
+    """The Candidate Gate as the scanner holds it (#269).
+
+    `floors` is the operator's settings document. This is the rule set that actually admits an OI fact,
+    and its `config_digest` is the second half of the key every row in the admission ledger is filed
+    under — so a console can say which configuration decided the frame it is showing, rather than
+    comparing it against whichever number happens to be in settings now.
+    """
+
+    version: str
+    config_digest: str
+    max_age_ms: int
+    max_rank_in_window: int
+    min_oi_value_usd: int
+    symbol_cooldown_ms: int
+    venue_priority: list[str] = Field(default_factory=list)
+
+
+class TradingStrategyConfigData(ExactApiSchema):
+    """One versioned strategy and the numbers it executes.
+
+    `config` is rendered as text per key on purpose: each strategy owns its own keys, mixing booleans,
+    basis points and millisecond windows, and this surface reports them rather than interpreting them.
+    """
+
+    strategy_id: str
+    strategy_version: str
+    config_digest: str
+    permission: str
+    trigger_kinds: list[str] = Field(default_factory=list)
+    config: dict[str, str] = Field(default_factory=dict)
+
+
 class TradingStatusData(ExactApiSchema):
     budget: TradingBudgetData
     readiness: TradingReadinessData
     floors: TradingFloorsData
+    gate: TradingGateConfigData
+    strategies: list[TradingStrategyConfigData] = Field(default_factory=list)
     counts: TradingCountsData
     window_hours: int
     measured_at_ms: int
@@ -251,6 +286,40 @@ class TradingOrdersData(ExactApiSchema):
     measured_at_ms: int
 
 
+class TradingGateDecisionData(ExactApiSchema):
+    """One durable admission answer, for a page showing a whole window of frames at once (#269).
+
+    `event_id` is null for a source whose key is not the deterministic OI contract. The row is still
+    listed: the distributions in `/trading/status` count it, and omitting it here would make a page's
+    own total disagree with the number printed above it.
+    """
+
+    source_key: str
+    event_id: str | None = None
+    underlying_key: str | None = None
+    base_symbol: str = ""
+    trigger_kind: str
+    source_observed_at_ms: int
+    gate_status: Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"] | None = None
+    gate_stage: Literal["source", "eligibility", "routing", "market_context", "freeze"] | None = None
+    gate_reason: str | None = None
+    gate_retryable: bool | None = None
+    gate_version: str | None = None
+    gate_config_digest: str | None = None
+    gate_evidence: TradingGateEvidenceData | None = None
+    gate_first_evaluated_at_ms: int | None = None
+    gate_last_evaluated_at_ms: int | None = None
+    gate_attempt_count: int | None = None
+    case_id: str | None = None
+
+
+class TradingGateData(ExactApiSchema):
+    decisions: list[TradingGateDecisionData] = Field(default_factory=list)
+    complete: bool
+    window_hours: int
+    measured_at_ms: int
+
+
 class TradingEventCaseData(ExactApiSchema):
     """Whether one News Event became a case, for the Event detail's 成案 badge (#207 PR-W4).
 
@@ -298,10 +367,14 @@ __all__ = [
     "TradingCountsData",
     "TradingEventCaseData",
     "TradingFloorsData",
+    "TradingGateConfigData",
+    "TradingGateData",
+    "TradingGateDecisionData",
     "TradingGateEvidenceData",
     "TradingOrderData",
     "TradingOrdersData",
     "TradingReadinessData",
     "TradingShadowCohortData",
     "TradingStatusData",
+    "TradingStrategyConfigData",
 ]

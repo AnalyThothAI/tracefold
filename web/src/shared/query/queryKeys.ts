@@ -48,4 +48,6 @@ export const queryKeys = {
   tradingOrders: (underlying: string, budgetDay = "") =>
     ["trading-orders", underlying, budgetDay] as const,
   tradingEventCase: (eventId: string) => ["trading-event-case", eventId] as const,
+  // #269: the admission ledger's own window, shared by the frame table and the leverage list.
+  tradingGate: () => ["trading-gate"] as const,
 };

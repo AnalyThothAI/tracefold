@@ -1,4 +1,8 @@
-import { useTradingOrdersWithToken } from "@features/trading";
+import {
+  useTradingGateWithToken,
+  useTradingOrdersWithToken,
+  useTradingStatusWithToken,
+} from "@features/trading";
 import { newsLeveragePath } from "@shared/routing/paths";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
@@ -44,6 +48,18 @@ export function NewsOiPage({ token }: { token: string }) {
   const feedQuery = useNewsOiFeedWithToken(token, tab);
   const tradingQuery = useTradingOrdersWithToken(token);
   /*
+   * The admission ledger for the same window (#269). Its own read rather than a field on the orders
+   * batch: it is a different population — every source the lane saw, not the ones that became a case —
+   * and it is the only thing that can tell a reader *why* a frame has no case.
+   */
+  const gateQuery = useTradingGateWithToken(token);
+  /*
+   * And the rules that ledger's rows are filed under. `oi.trade_floors` is News republishing the
+   * operator's `trading` settings document; since #264 admission has one owner with its own digest, and
+   * the panel was printing 持仓规模 ≥2000 万 while the gate admitted at 500 万.
+   */
+  const tradingStatusQuery = useTradingStatusWithToken(token);
+  /*
    * Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
    * which is what the reader means by switching tabs.
    *
@@ -83,6 +99,20 @@ export function NewsOiPage({ token }: { token: string }) {
   const counts = Object.fromEntries(
     NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
   ) as Record<NewsOiTab, number | null>;
+  /*
+   * Three capital reads sit under this page and each fails on its own, so each is named on its own.
+   *
+   * A *cold* failure counts, not just a stale refresh: with no admission rules read, the Candidate
+   * Gate panel has nothing to print, and four `—` tiles beside 已启用 read as "no admission rule is
+   * configured" rather than "we could not ask". The panel says so itself, and this line is what makes
+   * it visible above the fold and gives the reader a retry — `PageState.Stale` only offers one when
+   * there is a message to attach it to.
+   */
+  const capitalReadFailures = [
+    tradingQuery.isError ? "交易账本" : "",
+    gateQuery.isError ? "准入台账" : "",
+    tradingStatusQuery.isError ? "准入规则" : "",
+  ].filter(Boolean);
   return (
     <NewsPageShell archetype="scan" className="news-oi-shell" label="OI 遥测审计">
       <NewsPageHeader
@@ -112,12 +142,22 @@ export function NewsOiPage({ token }: { token: string }) {
       {status ? (
         <PageState.Stale
           failedRefresh={
-            tradingQuery.isError && tradingQuery.data
-              ? "交易账本刷新失败，继续显示上次读取。"
+            capitalReadFailures.length
+              ? `${capitalReadFailures.join(" / ")}读取失败，其余内容仍是上次读取。`
               : undefined
           }
-          onRetry={() => void tradingQuery.refetch()}
-          updating={statusQuery.isFetching || feedQuery.isFetching || tradingQuery.isFetching}
+          onRetry={() => {
+            void tradingQuery.refetch();
+            void gateQuery.refetch();
+            void tradingStatusQuery.refetch();
+          }}
+          updating={
+            statusQuery.isFetching ||
+            feedQuery.isFetching ||
+            tradingQuery.isFetching ||
+            gateQuery.isFetching ||
+            tradingStatusQuery.isFetching
+          }
         >
           <div className="news-oi-body">
             <MetricRow className="news-oi-metrics" columns={5} label="过去 24 小时的遥测帧">
@@ -147,7 +187,15 @@ export function NewsOiPage({ token }: { token: string }) {
               <NewsOiGates
                 byRule={byRule ?? {}}
                 floors={oi?.trade_floors ?? EMPTY_FLOORS}
+                gate={tradingStatusQuery.data?.gate}
+                /*
+                 * Whether the admission rules were read at all. Four `—` tiles beside 已启用 read as
+                 * "no admission rule is configured", which is the failure mode this page must never
+                 * present: an unread threshold and an absent one are different facts.
+                 */
+                gateUnread={!tradingStatusQuery.data}
                 policy={oi?.policy ?? null}
+                strategies={tradingStatusQuery.data?.strategies ?? []}
               />
             </div>
 
@@ -159,6 +207,7 @@ export function NewsOiPage({ token }: { token: string }) {
               counts={counts}
               error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
               floors={oi?.trade_floors ?? EMPTY_FLOORS}
+              gate={gateQuery.data}
               hasMore={hasMore}
               loadingMore={
                 historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
@@ -172,6 +221,11 @@ export function NewsOiPage({ token }: { token: string }) {
               rows={rows}
               tab={tab}
               trading={tradingQuery.data}
+              /*
+               * Only the order batch failing makes the whole column unanswerable. A failed admission
+               * read costs the *reason* a frame has no case, which the cell reports on its own — a row
+               * that does have an order or a case can still be answered exactly.
+               */
               tradingError={tradingQuery.isError && !tradingQuery.data}
             />
           </div>

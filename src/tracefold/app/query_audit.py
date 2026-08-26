@@ -50,6 +50,9 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/trading/status": ("trading_status_counts",),
     "/api/trading/orders": ("trading_console_orders", "trading_console_cases"),
     "/api/trading/events/{event_id}": ("trading_case_for_source_key",),
+    # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
+    # by 24 h and a hard row limit, like the two beside it.
+    "/api/trading/gate": ("trading_gate_decisions_since",),
 }
 
 PUBLIC_NO_SQL_ROUTES = frozenset(
@@ -145,6 +148,30 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  WHERE c.primary_source_key = %s
             """,
             params=("oi:not-a-real-event:oi_signal_v1",),
+        ),
+        ReadQuerySpec(
+            # #269. One admission answer per source in the window, newest frame first. `DISTINCT ON`
+            # over the source key is what keeps the batch to one row per frame, matching the
+            # distributions the same page prints above it — a frame two configurations have looked at
+            # must not appear twice in a table whose total is a frame count.
+            #
+            # The subquery and the outer sort are both here on purpose: the dedup has to order by
+            # `source_key` and the table has to arrive in frame order, so the shipped read materialises
+            # the whole 24 h dedup set and re-sorts it. Flattening that into one `DISTINCT ON` with the
+            # limit inside would certify a plan that can stop early — a plan the route never runs.
+            name="trading_gate_decisions_since",
+            sql="""
+                SELECT source_key, status, stage, reason, source_observed_at_ms
+                  FROM (
+                    SELECT DISTINCT ON (source_key) *
+                      FROM trading_candidate_gate_decisions
+                     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+                     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
+                  ) latest
+                 ORDER BY source_observed_at_ms DESC, source_key
+                 LIMIT 401
+            """,
+            params=("oi", since_ms),
         ),
         ReadQuerySpec(
             name="trading_console_cases",

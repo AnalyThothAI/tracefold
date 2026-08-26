@@ -1,7 +1,10 @@
 import {
+  tradingGateByEventId,
   tradingOiCellCopy,
   tradingOiLedgerByEventId,
   tradingOiTraceEntries,
+  type TradingGate,
+  type TradingGateDecision,
   type TradingOiLedgerEntry,
   type TradingOiLookup,
   type TradingOrders,
@@ -44,6 +47,7 @@ export function NewsOiFrameTable({
   counts,
   error,
   floors,
+  gate,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -57,6 +61,7 @@ export function NewsOiFrameTable({
   counts: Record<NewsOiTab, number | null>;
   error: unknown;
   floors: NewsOiTradeFloors;
+  gate: TradingGate | undefined;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -68,6 +73,7 @@ export function NewsOiFrameTable({
   tradingError: boolean;
 }) {
   const ledger = tradingOiLedgerByEventId(trading);
+  const gateByEvent = tradingGateByEventId(gate);
   return (
     <section className="news-oi-frame-panel" aria-label="遥测帧">
       <div className="news-oi-frame-toolbar">
@@ -119,6 +125,9 @@ export function NewsOiFrameTable({
             <FrameRow
               event={event}
               floors={floors}
+              gateAnswered={Boolean(gate)}
+              gateComplete={gate?.complete ?? false}
+              gateDecision={gateByEvent.get(event.event_id)}
               key={event.event_id}
               ledgerEntry={ledger.get(event.event_id)}
               ledgerComplete={trading?.complete ?? false}
@@ -144,6 +153,9 @@ export function NewsOiFrameTable({
 function FrameRow({
   event,
   floors,
+  gateAnswered,
+  gateComplete,
+  gateDecision,
   ledgerComplete,
   ledgerEntry,
   tradingError,
@@ -151,6 +163,9 @@ function FrameRow({
 }: {
   event: NewsFeedEvent;
   floors: NewsOiTradeFloors;
+  gateAnswered: boolean;
+  gateComplete: boolean;
+  gateDecision: TradingGateDecision | undefined;
   ledgerComplete: boolean;
   ledgerEntry: TradingOiLedgerEntry | undefined;
   tradingError: boolean;
@@ -166,6 +181,9 @@ function FrameRow({
     complete: ledgerComplete,
     entry: ledgerEntry,
     eventId: event.event_id,
+    gate: gateDecision,
+    gateAnswered,
+    gateComplete,
     loadFailed: tradingError,
     loaded: tradingLoaded,
   };

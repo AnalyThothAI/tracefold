@@ -14,6 +14,10 @@ export type TradingOrders = TradingSchemas["TradingOrdersData"];
 export type TradingOrder = TradingSchemas["TradingOrderData"];
 export type TradingCase = TradingSchemas["TradingCaseData"];
 export type TradingEventCase = TradingSchemas["TradingEventCaseData"];
+export type TradingGate = TradingSchemas["TradingGateData"];
+export type TradingGateDecision = TradingSchemas["TradingGateDecisionData"];
+export type TradingGateConfig = TradingSchemas["TradingGateConfigData"];
+export type TradingStrategyConfig = TradingSchemas["TradingStrategyConfigData"];
 
 /**
  * The capital lane moves at the speed of a frame, not of a price feed. 15 s is the same rhythm the status
@@ -55,6 +59,28 @@ export const useTradingOrdersWithToken = (
                   ...(underlying ? { underlying } : {}),
                 }
               : undefined,
+          token,
+        })
+      ).data,
+    refetchInterval: TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });
+
+/**
+ * Every admission answer in the window, in one read (#269).
+ *
+ * The per-Event endpoint below answers the same question for one Event, which is what the Event detail
+ * asks. A frame table asks it for a page of frames at once, and a hundred round trips to render one screen
+ * is why the column said 未成案 with no reason for every row while the ledger held one for each.
+ */
+export const useTradingGateWithToken = (token: string) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.tradingGate(),
+    queryFn: async () =>
+      (
+        await getApi<TradingGate>("/api/trading/gate", {
+          etagKey: "trading-gate",
           token,
         })
       ).data,

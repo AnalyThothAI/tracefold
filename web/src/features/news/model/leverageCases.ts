@@ -2,13 +2,17 @@ import {
   CASE_STATE_ZH,
   REGIME_ZH,
   STRATEGY_ZH,
+  gateReasonLabel,
   isActiveOrder,
   policyRuleZh,
   strategyCaseLabel,
+  type TradingCounts,
+  type TradingGateConfig,
   type TradingOiLedgerEntry,
+  type TradingStrategyConfig,
 } from "@features/trading";
 
-import type { NewsFeedEvent, NewsFeedOi, NewsOiTradeFloors } from "../api/newsQueries";
+import type { NewsFeedEvent, NewsFeedOi } from "../api/newsQueries";
 
 import { clockTime, relativeTime } from "./newsLabels";
 import { oiPercent, oiValueZh } from "./oiSignals";
@@ -40,6 +44,20 @@ export type LeverageEvidenceRow = {
 };
 
 export type LeveragePlaneItem = { key: string; label: string; note?: string; value: string };
+
+/**
+ * The rules the lane holds right now, each from its own owner (#269).
+ *
+ * Two owners, deliberately not one number set. Admission belongs to the Candidate Gate and nothing else
+ * applies it (#264); every Alpha threshold belongs to a versioned strategy, and which strategy is a
+ * property of the case, not of the lane. Passing `trade_floors` — the operator's settings document —
+ * into a comparison is how a smart-money case ended up measured against the 95% whale-profit floor of a
+ * strategy that did not decide it.
+ */
+export type LeverageThresholds = {
+  gate: TradingGateConfig | undefined;
+  strategies: readonly TradingStrategyConfig[];
+};
 
 /** How a lane names its own trigger. The card and the detail read this same map. */
 export const TRIGGER_LABEL: Record<string, string> = {
@@ -169,19 +187,19 @@ const DECISION_BY_POLICY: Record<string, LeverageDecision> = {
 export function leverageCases(
   frames: readonly NewsFeedEvent[],
   ledger: Map<string, TradingOiLedgerEntry>,
-  floors: NewsOiTradeFloors,
+  thresholds: LeverageThresholds,
   nowMs: number,
 ): LeverageCase[] {
   const byEventId = new Map(frames.map((frame) => [frame.event_id, frame]));
   return [...ledger.values()]
-    .map((entry) => buildCase(byEventId.get(entry.value.event_id ?? ""), entry, floors, nowMs))
+    .map((entry) => buildCase(byEventId.get(entry.value.event_id ?? ""), entry, thresholds, nowMs))
     .sort(leverageOrder);
 }
 
 function buildCase(
   event: NewsFeedEvent | undefined,
   entry: TradingOiLedgerEntry,
-  floors: NewsOiTradeFloors,
+  thresholds: LeverageThresholds,
   nowMs: number,
 ): LeverageCase {
   const facts = caseFacts(entry);
@@ -198,7 +216,7 @@ function buildCase(
     entry,
     event,
     eventId: entry.value.event_id ?? null,
-    evidence: evidenceRows(event?.oi, facts.strategyId, facts.triggerKind, floors),
+    evidence: evidenceRows(event?.oi, facts.strategyId, facts.triggerKind, thresholds),
     id: facts.caseId,
     numbers: frameNumbers(event?.oi, facts.triggerKind),
     observedAtMs: facts.observedAtMs,
@@ -301,13 +319,16 @@ export function evidenceRows(
   oi: NewsFeedOi | null | undefined,
   strategyId: string,
   triggerKind: string,
-  floors: NewsOiTradeFloors,
+  thresholds: LeverageThresholds,
 ): LeverageEvidenceRow[] {
   const parsed = Boolean(oi?.parsed);
   const change = oi?.oi_change_bps ?? null;
   const value = oi?.oi_value_usd ?? null;
   const profit = oi?.whale_long_profit_bps ?? null;
   const ratio = oi?.whale_oi_ratio_bps ?? null;
+  const admissionFloor = thresholds.gate?.min_oi_value_usd ?? 0;
+  const whale = whaleThreshold(strategyId, thresholds);
+  const measuredWhale = whale?.key === "ratio" ? ratio : profit;
   return [
     {
       key: "oi",
@@ -329,16 +350,29 @@ export function evidenceRows(
     {
       key: "value",
       label: "规模",
-      note: floorNote(value, floors.min_oi_value_usd, (amount) => oiValueZh(amount)),
-      status: floorStatus(value, floors.min_oi_value_usd),
+      // The admission floor, whose one owner is the Candidate Gate (#264). Reading it out of the
+      // operator's settings document instead let the page compare a frame against a number the gate
+      // was not applying — 20M on screen while admission ran at 5M.
+      note: `${floorNote(value, admissionFloor, (amount) => oiValueZh(amount))} · 准入闸`,
+      status: floorStatus(value, admissionFloor),
     },
     {
       key: "whale",
-      label: "鲸鱼",
-      note: `${floorNote(profit, floors.min_whale_long_profit_bps, (amount) => oiPercent(amount))}${
-        ratio == null ? "" : ` · 占比 ${oiPercent(ratio)}`
-      }`,
-      status: floorStatus(profit, floors.min_whale_long_profit_bps),
+      label: whale?.key === "ratio" ? "鲸鱼占比" : "鲸鱼盈利",
+      /*
+       * The threshold of the strategy that decided *this* case, never a lane-wide one. The smart-money
+       * template binds on `whale / OI > 50%` and sets no profit floor at all; measuring its cases
+       * against `min_whale_long_profit_bps` — the 95% floor belonging to the strategy beside it — put
+       * 冲突 on the row a case had passed, and 支持 on rows that never faced that rule.
+       */
+      note: whale
+        ? `${floorNote(measuredWhale, whale.floor, (amount) => oiPercent(amount), whale.inclusive)} · ${
+            whale.owner
+          }${whale.key === "ratio" && profit != null ? ` · 盈利 ${oiPercent(profit)}` : ""}${
+            whale.key === "profit" && ratio != null ? ` · 占比 ${oiPercent(ratio)}` : ""
+          }`
+        : `${profit == null ? "未获得" : oiPercent(profit)} · 本策略不设鲸鱼地板`,
+      status: whale ? floorStatus(measuredWhale, whale.floor, whale.inclusive) : "na",
     },
     {
       key: "price",
@@ -371,6 +405,50 @@ function frameChange(bps: number | null): string {
   return `${bps < 0 ? "−" : "+"}${oiPercent(Math.abs(bps))}`;
 }
 
+type WhaleThreshold = {
+  /** `true` when the strategy passes on equality; `false` when its floor is strictly-above. */
+  inclusive: boolean;
+  floor: number;
+  key: "ratio" | "profit";
+  owner: string;
+};
+
+/**
+ * Which whale number this strategy actually binds on, at what level, and on which side of equality.
+ *
+ * Read from the strategy's own published config rather than from a lane-wide setting, and by key: a
+ * strategy that declares `min_whale_oi_ratio_bps` is judging concentration, one that declares only
+ * `min_whale_long_profit_bps` is judging profit, and one that sets neither above zero has no whale
+ * floor to compare against — which is an answer, not a pass.
+ *
+ * The operator travels with the threshold because the two lanes genuinely differ, and the boundary is
+ * not decoration: `oi_smart_money_momentum_v1` refuses on `ratio <= floor` — its own docstring calls
+ * that non-negotiable, `5001` qualifying where `5000` does not — while the profit floors refuse on
+ * `profit < floor`. Comparing both with `>=` printed 支持 on a frame at exactly 5000 bps beside a case
+ * whose named rule is `smart_money_ratio_below_or_equal_floor`, which is the wrong-comparison class
+ * this row exists to remove.
+ *
+ * `undefined` when the deciding strategy is not in the published set at all: a case decided by a
+ * strategy this deployment has since retired must not be measured against whatever is configured now.
+ */
+function whaleThreshold(
+  strategyId: string,
+  thresholds: LeverageThresholds,
+): WhaleThreshold | undefined {
+  const strategy = thresholds.strategies.find((row) => row.strategy_id === strategyId);
+  if (!strategy) return undefined;
+  const ratio = Number(strategy.config?.min_whale_oi_ratio_bps ?? 0);
+  const profit = Number(strategy.config?.min_whale_long_profit_bps ?? 0);
+  const owner = `策略 ${strategy.strategy_id}`;
+  if (Number.isFinite(ratio) && ratio > 0) {
+    return { floor: ratio, inclusive: false, key: "ratio", owner };
+  }
+  if (Number.isFinite(profit) && profit > 0) {
+    return { floor: profit, inclusive: true, key: "profit", owner };
+  }
+  return undefined;
+}
+
 /**
  * The measurement against the floor **as configured today**.
  *
@@ -383,18 +461,26 @@ function floorNote(
   measured: number | null,
   floor: number,
   format: (amount: number) => string,
+  inclusive = true,
 ): string {
   if (measured == null) return "未获得";
   if (floor <= 0) return `${format(measured)} · 未配置地板`;
-  return `${format(measured)} ${measured >= floor ? "≥" : "<"} 现行地板 ${format(floor)}`;
+  const passes = inclusive ? measured >= floor : measured > floor;
+  const relation = passes ? (inclusive ? "≥" : ">") : inclusive ? "<" : "≤";
+  return `${format(measured)} ${relation} 现行地板 ${format(floor)}`;
 }
 
-function floorStatus(measured: number | null, floor: number): LeverageEvidenceStatus {
+function floorStatus(
+  measured: number | null,
+  floor: number,
+  inclusive = true,
+): LeverageEvidenceStatus {
   if (measured == null) return "missing";
   // A zero floor is not a floor; it arrives when the console is newer than the API, and calling every
   // measurement "支持" against a threshold nobody configured would invent a pass.
   if (floor <= 0) return "na";
-  return measured >= floor ? "support" : "conflict";
+  const passes = inclusive ? measured >= floor : measured > floor;
+  return passes ? "support" : "conflict";
 }
 
 /** The three planes, each frozen at its own moment and never mixed with the others. */
@@ -620,4 +706,132 @@ function rank(item: LeverageCase): number {
  */
 export function leverageFramelessCount(cases: readonly LeverageCase[]): number {
   return cases.filter((item) => item.event === undefined).length;
+}
+
+/** One stage of the lane's own 24 h funnel, read off the durable admission ledger. */
+export type LeverageFunnelStep = { key: string; label: string; note: string; value: number };
+
+/**
+ * What the OI lane did with 24 hours of frames, whether or not anything came of it (#269).
+ *
+ * The page's four figures are its four tabs, and on a normal day all four are zero — production runs
+ * about 110 frames and one case a day, and the honest reading of that is "the rules are narrow", not
+ * "the console is broken". The first two steps come from `trading_candidate_gate_decisions`, which
+ * survives the UTC day roll and is the only source that can describe a lane with no cases at all.
+ *
+ * **Every step is the OI lane's, and that is what makes it a funnel.** The admission ledger only holds
+ * OI sources — `candidate_admission_report` scopes to `trigger_kind = 'oi'`, and the News lane writes
+ * no gate row at all — while the case batch beside it carries every trigger kind. Counting all of them
+ * in the tail put 遥测帧 110 · 过闸 1 · 案例 60 on screen: a funnel whose third step is sixty times its
+ * second, under a rule that draws each step narrower than the last. The News-triggered cases are
+ * listed below and counted by the tabs; they are not part of this measurement.
+ *
+ * `帧` is the sum over statuses rather than a separate count: it is one row per source by construction,
+ * so summing the distribution cannot disagree with the reasons listed beside it. And `过闸` is
+ * `CASE_CREATED`, which *is* the case count for this lane — one admitted source, one case — so there is
+ * no separate 案例 step to disagree with it.
+ */
+export function leverageFunnel(
+  counts: TradingCounts | undefined,
+  cases: readonly LeverageCase[],
+): LeverageFunnelStep[] {
+  const status = counts?.candidate_counts_24h ?? {};
+  const seen = Object.values(status).reduce((total, value) => total + value, 0);
+  const admitted = status.CASE_CREATED ?? 0;
+  const oiCases = cases.filter((item) => item.triggerKind === "oi");
+  const directional = oiCases.filter(
+    (item) => item.decision === "long" || item.decision === "short",
+  ).length;
+  const ordered = oiCases.filter((item) => item.capital != null).length;
+  return [
+    { key: "seen", label: "遥测帧", note: "准入闸看到的 OI 来源", value: seen },
+    { key: "admitted", label: "过闸成案", note: "开出案例的来源", value: admitted },
+    { key: "directional", label: "有方向", note: "策略给出多/空", value: directional },
+    { key: "ordered", label: "订单", note: "已生成资本意图", value: ordered },
+  ];
+}
+
+/**
+ * The named rules that refused the most frames, in Chinese, biggest first.
+ *
+ * Bounded to a handful: the vocabulary is closed and short, but a page that listed all of it would be
+ * reciting the taxonomy rather than saying what is binding today.
+ */
+export function leverageTopReasons(
+  counts: TradingCounts | undefined,
+  limit = 3,
+): Array<{ key: string; label: string; value: number }> {
+  return Object.entries(counts?.candidate_reasons_24h ?? {})
+    .filter(([key]) => key !== "freeze:case_created")
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([key, value]) => ({ key, label: gateReasonLabel(key), value }));
+}
+
+export type LeverageListRow =
+  | { kind: "case"; item: LeverageCase }
+  | { kind: "group"; key: string; items: LeverageCase[]; label: string; rule: string };
+
+/**
+ * How many identical refusals it takes before a list is reciting rather than reporting.
+ *
+ * Three. Two rows saying the same thing is a coincidence a reader can read past; the production list was
+ * 59 of them, and the one case that had anything to say was somewhere in the middle.
+ */
+const GROUP_MIN = 3;
+
+/**
+ * Collapse repeated identical no-trade outcomes into one counted row (#269).
+ *
+ * `news_oi_alignment_v1` needs a News trigger and a fresh OI frame for the same issuer to meet inside one
+ * scan window, which is structurally near-zero — so `oi_context_missing` is not an event, it is the
+ * lane's resting state, and production listed 59 near-identical cards of it in a day.
+ *
+ * Only ever collapses cases that agree on strategy *and* named rule, and never an OI-triggered one: the
+ * OI lane is the population this page exists for, and one of its cases is worth a row even when it says
+ * the same thing as yesterday's. Order is preserved from `leverageOrder`, and a group takes the position
+ * of its first member, so collapsing cannot move a case with capital at risk down the page.
+ */
+export function leverageListRows(cases: readonly LeverageCase[]): LeverageListRow[] {
+  const counted = new Map<string, number>();
+  for (const item of cases) {
+    if (item.triggerKind === "oi" || item.phase !== "no_trade") continue;
+    const key = groupKey(item);
+    counted.set(key, (counted.get(key) ?? 0) + 1);
+  }
+  const rows: LeverageListRow[] = [];
+  const groups = new Map<
+    string,
+    { kind: "group"; key: string; items: LeverageCase[]; label: string; rule: string }
+  >();
+  for (const item of cases) {
+    const key = groupKey(item);
+    if (
+      item.triggerKind === "oi" ||
+      item.phase !== "no_trade" ||
+      (counted.get(key) ?? 0) < GROUP_MIN
+    ) {
+      rows.push({ kind: "case", item });
+      continue;
+    }
+    const existing = groups.get(key);
+    if (existing) {
+      existing.items.push(item);
+      continue;
+    }
+    const group = {
+      kind: "group" as const,
+      key,
+      items: [item],
+      label: `${triggerLabel(item.triggerKind)} · ${item.strategyLabel}`,
+      rule: item.rule,
+    };
+    groups.set(key, group);
+    rows.push(group);
+  }
+  return rows;
+}
+
+function groupKey(item: LeverageCase): string {
+  return `${item.triggerKind}:${item.strategyId}:${item.rule}`;
 }

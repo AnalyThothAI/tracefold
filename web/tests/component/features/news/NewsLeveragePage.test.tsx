@@ -10,6 +10,7 @@ import {
   tradingCaseFixture,
   tradingOrderFixture,
   tradingOrdersFixture,
+  tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -47,6 +48,11 @@ describe("NewsLeveragePage", () => {
           ok: true,
           data: tradingOrdersFixture({ orders: [tradingOrderFixture()] }),
         }),
+      ),
+      // #269: the capital lane's own status carries the durable 24 h funnel and the rules the evidence
+      // matrix compares against — the Candidate Gate's and each strategy's, not the settings document.
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({ ok: true, data: tradingStatusFixture() }),
       ),
       http.get(/.*\/api\/news\/quotes$/, () =>
         HttpResponse.json({ ok: true, data: { measured_at_ms: 0, quotes: [] } }),
@@ -164,9 +170,11 @@ describe("NewsLeveragePage", () => {
   });
 
   it("reads a cold status failure as a failure, not as an unconfigured floor", async () => {
-    // `EMPTY_FLOORS` would otherwise print 未配置地板 / 不适用 for thresholds the operator has configured.
+    // Without it the page would compare every case against no thresholds at all and print 未配置地板 /
+    // 不适用 for rules the lane is very much applying. #269 moved this read to the capital lane's own
+    // status, which is where the Candidate Gate and the strategy configs live.
     server.use(
-      http.get(/.*\/api\/news\/status$/, () =>
+      http.get(/.*\/api\/trading\/status$/, () =>
         HttpResponse.json({ ok: false, error: "status unavailable" }, { status: 503 }),
       ),
     );
@@ -208,9 +216,20 @@ describe("NewsLeveragePage", () => {
     renderLeverage("/news/leverage?lev=no_trade");
 
     const list = await screen.findByRole("region", { name: "案例列表" });
-    expect(within(list).getAllByRole("button")).toHaveLength(3);
+    /*
+     * Three cases agreeing on strategy and rule arrive as one counted row (#269). Production served 59 of
+     * these in a day — `news_oi_alignment_v1` needs a News trigger and a fresh OI frame for one issuer to
+     * meet inside a scan window, so this outcome is the lane's resting state rather than an event — and
+     * listing them one card each buried the day's only OI case in the middle of them.
+     */
+    const group = within(list).getByRole("button", { expanded: false });
+    expect(group).toHaveTextContent("3");
+    expect(group).toHaveTextContent("OI 上下文缺失");
+    expect(group).toHaveTextContent("AAVE · AVAX · ZEC");
     expect(screen.queryByText("24 小时内没有成案")).toBeNull();
-    // A news case never had a telemetry frame: not a page boundary, not a parse failure.
+
+    // Collapsed, never dropped: every case is one click away and still individually selectable.
+    fireEvent.click(group);
     expect(within(list).getAllByText("非 OI 触发 · 无遥测帧")).toHaveLength(3);
   });
 
@@ -280,7 +299,13 @@ describe("NewsLeveragePage", () => {
     expect(await screen.findByRole("region", { name: "案例 WIF" })).toBeInTheDocument();
   });
 
-  it("says the lane produced nothing rather than drawing an empty frame", async () => {
+  it("describes the 24 hours it produced nothing in, rather than drawing an empty frame", async () => {
+    /*
+     * #269. Production runs about 110 frames and one case a day, so this is the *ordinary* state of the
+     * page, not an edge case — and four zeroes over a blank list is a true statement that reads as an
+     * outage. The durable admission ledger is the only source that can describe such a day at all:
+     * `funnel_today` is overwritten at UTC midnight and the case-keyed counts are all zero by definition.
+     */
     server.use(
       http.get(/.*\/api\/trading\/orders$/, () =>
         HttpResponse.json({
@@ -292,9 +317,28 @@ describe("NewsLeveragePage", () => {
     renderLeverage();
 
     expect(await screen.findByText("24 小时内没有成案")).toBeInTheDocument();
-    expect(
-      screen.getByText("过去 24 小时的账本批次里没有一条案例。帧与闸门在 OI 遥测审计。"),
-    ).toBeInTheDocument();
+    const funnel = screen.getByRole("region", { name: "OI 车道 24 小时漏斗" });
+    expect(within(funnel).getByText("遥测帧").previousSibling).toHaveTextContent("91");
+    expect(within(funnel).getByText("过闸成案").previousSibling).toHaveTextContent("1");
+    // And which rule is binding, by name — the number an operator would otherwise replay SQL for.
+    expect(funnel).toHaveTextContent("窗口内名次超限");
+  });
+
+  it("says the funnel is unreadable rather than reporting zero frames, when status fails", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({ ok: false, error: "status unavailable" }, { status: 503 }),
+      ),
+    );
+    renderLeverage();
+    // The read is retried before it is a failure; wait for the page's own verdict on it, then read the
+    // funnel. Asserting straight away caught the funnel mid-retry and passed against its loading zeroes.
+    await screen.findByRole("alert");
+
+    const funnel = screen.getByRole("region", { name: "OI 车道 24 小时漏斗" });
+    expect(funnel).toHaveTextContent("资本通道状态读取失败");
+    // Not zero frames. "The lane saw nothing" and "we could not ask" are different days.
+    expect(within(funnel).queryByText("0")).toBeNull();
   });
 
   it("binds no document-level keys", async () => {
