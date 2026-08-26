@@ -68,11 +68,11 @@ test.describe("desktop sidebar navigation", () => {
     await expectSidebarRouteChange(page, "事件流", "/news");
     /*
      * At this width an Event opens in the drawer beside the list (design proposal ⑦): the list stays where
-     * it was and clicking another row swaps the drawer. 打开整页 is the way to the canonical, shareable page,
+     * it was and clicking another row swaps the drawer. 打开事件详情 is the canonical, shareable page,
      * and the navigation still marks the feed — and only the feed — as current on it.
      */
     await page.locator("[data-event-id] h2 a").first().click();
-    await page.getByRole("dialog").getByRole("link", { name: "打开整页" }).click();
+    await page.getByRole("dialog").getByRole("link", { name: "打开事件详情" }).click();
     await expect(page).toHaveURL(/\/news\/events\//);
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toHaveAttribute(
       "aria-current",

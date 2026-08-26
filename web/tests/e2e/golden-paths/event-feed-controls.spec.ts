@@ -53,6 +53,31 @@ test("Event feed controls preserve the approved disclosure and URL contract", as
     "aria-pressed",
     "true",
   );
+  await expect(page.getByRole("button", { name: "筛选 · 2" })).toBeVisible();
+  await expectNoDocumentHorizontalOverflow(page);
+
+  await page.reload();
+  await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBe("bullish");
+  await expect.poll(() => new URL(page.url()).searchParams.get("channel")).toBe("oi");
+  await page.getByRole("button", { name: "筛选 · 2" }).click();
+  await page.getByRole("button", { name: "清除" }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBeNull();
+  await expect.poll(() => new URL(page.url()).searchParams.get("channel")).toBeNull();
+  await page.getByRole("button", { name: "筛选" }).click();
+
+  const pipelineTrigger = page.getByRole("button", { name: /流水线健康/ });
+  await pipelineTrigger.click();
+  const pipeline = page.getByRole("dialog");
+  await expect(pipeline.getByRole("listitem")).toHaveCount(5);
+  for (const label of ["接入", "队列", "模型", "推送", "标的表"]) {
+    await expect(pipeline.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(pipeline.getByRole("link", { name: "打开流水线状态 →" })).toHaveAttribute(
+    "href",
+    "/news/status",
+  );
+  await expectNoDocumentHorizontalOverflow(page);
+  await page.keyboard.press("Escape");
 
   await timeTrigger.click();
   await expect(filterPanel).toHaveCount(0);
@@ -60,8 +85,6 @@ test("Event feed controls preserve the approved disclosure and URL contract", as
   await expect(timeMenu).toBeVisible();
   await timeMenu.getByRole("menuitemradio", { name: "最近 1 小时" }).click();
 
-  await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBe("bullish");
-  await expect.poll(() => new URL(page.url()).searchParams.get("channel")).toBe("oi");
   await expect.poll(() => new URL(page.url()).searchParams.get("hours")).toBe("1");
   await expectNoDocumentHorizontalOverflow(page);
 });

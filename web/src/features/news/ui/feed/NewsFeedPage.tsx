@@ -90,6 +90,7 @@ export function NewsFeedPage({ token }: { token: string }) {
   const feedSearch = nextFeedParams(filters, {}).toString();
   const wideEnoughForDrawer = useMediaQuery(DRAWER_QUERY);
   const [drawerId, setDrawerId] = useState<string | null>(null);
+  const drawerTriggerRef = useRef<HTMLAnchorElement | null>(null);
 
   const updateFeedParams = (changes: FeedFilterChanges) => {
     setSearchParams(nextFeedParams(filters, changes), { replace: true });
@@ -179,7 +180,14 @@ export function NewsFeedPage({ token }: { token: string }) {
                   event={event}
                   fresh={eventFeed.freshIds.has(event.event_id)}
                   key={event.event_id}
-                  onOpen={wideEnoughForDrawer ? setDrawerId : undefined}
+                  onOpen={
+                    wideEnoughForDrawer
+                      ? (eventId, trigger) => {
+                          drawerTriggerRef.current = trigger;
+                          setDrawerId(eventId);
+                        }
+                      : undefined
+                  }
                   quotes={quotes}
                   searchState={feedSearch}
                 />
@@ -205,6 +213,7 @@ export function NewsFeedPage({ token }: { token: string }) {
         eventId={wideEnoughForDrawer ? drawerId : null}
         feedSearch={feedSearch}
         onClose={() => setDrawerId(null)}
+        restoreFocusTo={drawerTriggerRef.current}
         token={token}
       />
     </NewsPageShell>

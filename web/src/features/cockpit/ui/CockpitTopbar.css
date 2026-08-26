@@ -139,6 +139,10 @@
     transform: translateY(1px);
   }
 
+  .topbar-health-items li:not([data-level]) .topbar-health-dot {
+    background: var(--signal-neutral);
+  }
+
   .topbar-health-items b {
     color: var(--text-primary);
     font-size: var(--font-size-mono-meta);

@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { newsStatusFixture } from "@tests/fixtures/newsFixture";
+import { newsEventDetailFixture, newsStatusFixture } from "@tests/fixtures/newsFixture";
 import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -75,6 +75,7 @@ describe("news route", () => {
               model: { detail_zh: "p95 9.2 秒", level: "bad", summary_zh: "24 小时降级率 20%" },
               overall: "bad",
             },
+            instruments: { ...newsStatusFixture().instruments!, last_snapshot_ms: null },
           }),
         };
       };
@@ -84,6 +85,10 @@ describe("news route", () => {
     // The mapping the shell owns: server level -> lamp level, worst item's `summary_zh` -> lamp text.
     const lamp = await screen.findByRole("button", { name: "流水线健康：24 小时降级率 20%" });
     expect(lamp).toHaveAttribute("data-level", "bad");
+    fireEvent.click(lamp);
+    expect(
+      within(await screen.findByRole("dialog")).queryByText("标的表", { exact: true }),
+    ).not.toBeInTheDocument();
   });
 
   it("says the health read itself failed rather than going dark", async () => {
@@ -107,6 +112,35 @@ describe("news route", () => {
   });
 
   it("navigates between the three working surfaces with stable public URLs", async () => {
+    setupAppRouteTest((mock) => {
+      mockAppRoutes(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) => {
+        if (path !== "/api/news/events/evt-global-policy") return base(path, options);
+        const detail = newsEventDetailFixture();
+        return {
+          ok: true,
+          data: {
+            ...detail,
+            event: {
+              ...detail.event,
+              assets: [
+                { base_symbol: "BTC", listed: true, symbol: "BTC", venue: "binance.perp" },
+                { base_symbol: "SKHY", listed: true, symbol: "SKHX", venue: "nasdaq" },
+              ],
+              grounded_assets: ["BTC", "SKHX"],
+            },
+            triage: {
+              ...detail.triage!,
+              assets: [
+                { role: "mentioned", symbol: "BTC" },
+                { role: "primary", symbol: "SKHX" },
+              ],
+            },
+          },
+        };
+      };
+    });
     renderAppRoute("/news");
     await screen.findByRole("heading", { name: "新闻事件流" });
 
@@ -122,7 +156,7 @@ describe("news route", () => {
     /*
      * At desktop width an Event opens *beside* the list, not instead of it (design proposal ⑦): the row link
      * is a real href — every modified click, middle click and assistive path still follows it — but a plain
-     * click keeps the queue on screen and puts the Event in the drawer. 打开整页 is the way to the canonical,
+     * click keeps the queue on screen and puts the Event in the drawer. 打开事件详情 is the canonical,
      * shareable page from there.
      */
     fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
@@ -134,8 +168,12 @@ describe("news route", () => {
       ),
     );
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("link", { name: "代币页 SKHY" })).toHaveAttribute(
+      "href",
+      "/news/symbols/SKHY",
+    );
 
-    fireEvent.click(within(drawer).getByRole("link", { name: "打开整页" }));
+    fireEvent.click(within(drawer).getByRole("link", { name: "打开事件详情" }));
     expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
   });
 

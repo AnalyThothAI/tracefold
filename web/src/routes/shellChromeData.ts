@@ -7,7 +7,7 @@ import {
 } from "@features/cockpit";
 import {
   HEALTH_ITEM_KEYS,
-  healthItemEyebrow,
+  healthItemTitle,
   healthLevelLabel,
   optionalDuration,
   useNewsStatusWithToken,
@@ -241,19 +241,32 @@ function healthLamp(
   const health = status?.health;
   if (!health || (!showHealthy && health.overall !== "warn" && health.overall !== "bad"))
     return null;
-  const items = HEALTH_ITEM_KEYS.map((key) => ({
+  const items: CockpitHealth["items"] = HEALTH_ITEM_KEYS.map((key) => ({
     key,
-    label: healthItemEyebrow(key),
+    label: healthItemTitle(key),
     level: health[key].level,
-    summary: health[key].summary_zh,
+    summary: `${healthLevelLabel(health[key].level)} · ${health[key].summary_zh}`,
   }));
-  const worst = items.find((item) => item.level === health.overall);
+  const instruments = status?.instruments;
+  if (instruments?.last_snapshot_ms != null) {
+    const dangling = instruments.dangling_aliases;
+    items.push({
+      key: "instruments",
+      label: "标的表",
+      level: null,
+      summary:
+        dangling > 0
+          ? `${new Intl.NumberFormat("zh-CN").format(dangling)} 个别名未落标的表`
+          : `${new Intl.NumberFormat("zh-CN").format(instruments.trading)} 份交易合约`,
+    });
+  }
+  const worstStage = HEALTH_ITEM_KEYS.find((key) => health[key].level === health.overall);
   return {
     buttonText: showHealthy ? "流水线" : undefined,
     headline: health.overall === "ok" ? "流水线状态" : `流水线${healthLevelLabel(health.overall)}`,
     items,
     level: health.overall,
-    summary: health.overall === "ok" ? "流水线" : (worst?.summary ?? ""),
+    summary: health.overall === "ok" ? "流水线" : worstStage ? health[worstStage].summary_zh : "",
     to: newsStatusPath(),
   };
 }

@@ -37,16 +37,18 @@ export function NewsTimeline({ steps }: { steps: NewsTimelineStep[] }) {
   );
 }
 
-/** The same walk without the field toggles: the drawer is for reading, the page is for auditing. */
+/** The four judgment steps with their first raw facts inline; delivery remains an outcome in the header. */
 export function NewsEventDrawerTimeline({ steps }: { steps: NewsTimelineStep[] }) {
-  if (!steps.length) return null;
+  const judgmentSteps = steps.filter((step) => step.stage !== "delivery");
+  if (!judgmentSteps.length) return null;
   return (
     <ol className="news-timeline" data-compact>
-      {steps.map((step, index) => (
+      {judgmentSteps.map((step, index) => (
         <TimelineStep
-          delta={index === 0 ? null : step.at_ms - steps[index - 1].at_ms}
+          delta={index === 0 ? null : step.at_ms - judgmentSteps[index - 1].at_ms}
+          inlineFields
           key={`${step.stage}-${index}`}
-          last={index === steps.length - 1}
+          last={index === judgmentSteps.length - 1}
           step={step}
           withFields={false}
         />
@@ -57,11 +59,13 @@ export function NewsEventDrawerTimeline({ steps }: { steps: NewsTimelineStep[] }
 
 function TimelineStep({
   delta,
+  inlineFields = false,
   last,
   step,
   withFields = true,
 }: {
   delta: number | null;
+  inlineFields?: boolean;
   last: boolean;
   step: NewsTimelineStep;
   withFields?: boolean;
@@ -88,6 +92,15 @@ function TimelineStep({
           )}
         </div>
         <p className="news-timeline-summary">{step.summary_zh}</p>
+        {inlineFields && facts.length ? (
+          <p className="news-timeline-inline-facts">
+            {facts.slice(0, 2).map(([key, value]) => (
+              <code key={key}>
+                {key}={formatFact(value)}
+              </code>
+            ))}
+          </p>
+        ) : null}
         {withFields && facts.length ? (
           <button
             aria-expanded={open}

@@ -164,7 +164,10 @@ the route components into the eager shell chunk.
   the browser never resolves tokens or symbols itself. The backend searches Event text/title, reporting origin,
   raw/canonical symbols, venue and venue symbol,
   and filters before cursor pagination. Direction and channel are multi-select buttons in one compact
-  disclosure; the time window is a Radix three-item radio menu, not a native select. Radix owns
+  disclosure; its trigger reads `筛选 · N` while active and the disclosure exposes one `清除` action that
+  removes only direction and channel, preserving search, outcome and time. Selected 利多 / 利空 controls use
+  their direction tokens rather than the pipeline accent. The time window is a Radix three-item radio menu,
+  not a native select. Radix owns
   Arrow/Home/End/Escape focus semantics and returns focus to the trigger on dismissal.
   Pagination is an explicit `加载更多事件` action, loaded pages deduplicate by
   `event_id`, and there is no automatic infinite scroll. A refreshed first
@@ -256,12 +259,13 @@ the route components into the eager shell chunk.
   From 1024px up, a plain click on a row opens the Event in a *non-modal*
   drawer beside the list instead of replacing it: the queue stays on screen and
   clicking the next row swaps what the drawer shows instead of closing it.
-  Opening moves focus into the panel; `Esc` and 关闭 are the ways out. The row's `href` is still real, so a modified click, a middle click
-  and every assistive path go to the page; `打开整页` inside the drawer is the
-  way there by hand. The drawer carries the three things a reviewer needs —
-  the judgment, what the assets are worth, and how the Event got here — and the
-  audit trail (`技术详情`, `同类报道`, every raw verdict record) stays on the
-  full page, which remains the canonical, shareable surface. Below 1024px there
+  Opening moves focus into the panel; `Esc` and the icon-labelled 关闭 control return focus to the last row
+  used to open or swap it. The row's
+  `href` is still real, so a modified click, a middle click and every assistive path go to the page. The
+  compact drawer follows source → wire title → priced assets → `why_zh` → `判定链路`; the first two raw facts
+  for each of the four judgment steps remain visible without a disclosure. Its sticky footer owns
+  `打开事件详情` and the primary token-page link. Current quote tables, `技术详情`, `同类报道`, every raw verdict
+  record and delivery detail stay on the full page, which remains the canonical, shareable surface. Below 1024px there
   is no drawer and a row opens the page.
 
   `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders,
@@ -484,8 +488,9 @@ the route components into the eager shell chunk.
   and Trading — keep a compact `流水线` button (`topbar-health-lamp`) so the status destination stays explicit. The neutral button surface never
   changes size or copy; its 7px dot carries `ok` / `warn` / `bad`, while other routes show the worst item's own
   `summary_zh` only when attention is needed. It is a `<button>` whose accessible name is
-  `流水线健康：{summary_zh}`; opening it shows the four stage lines
-  (`ingest / broker / model / delivery`, each `level` + `summary_zh`) and a link
+  `流水线健康：{summary_zh}`; opening it shows the four server stage lines
+  (`接入 / 队列 / 模型 / 推送`, each `level` + `summary_zh`), the server instrument snapshot as a neutral
+  `标的表` fact without a browser-invented level or sentence, and a link
   to `/news/status`. The popover is Radix's, so `Esc`, the dismiss layer and
   `aria-expanded` are the platform's and no `keydown` listener is added. Below
   `1279px` the sentence collapses to the dot; below `768px` the lamp is the one
@@ -609,9 +614,9 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    scrolls the page, and the topbar carries no 命令面板 button or `⌘K` hint; its visible `/` keycap remains inert.
    `Tab` still reaches every control in order, and `Esc` still closes
    the drawer because Radix owns that.
-9. From a row at `≥1024px`, confirm a plain click opens the drawer with the
+9. From a row at `≥1024px`, confirm a plain click opens the compact drawer with the
    list still visible and the URL unchanged, clicking the next row swaps the
-   drawer's Event without closing it, and `打开整页` reaches
+   drawer's Event without closing it, the footer's primary-token link reaches the token page, and `打开事件详情` reaches
    `/news/events/:eventId`. There, confirm `上一条`/`下一条` and `i / n` walk the
    same filtered list; then paste the URL into a fresh tab and confirm the
    pager is absent rather than broken.

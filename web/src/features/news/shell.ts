@@ -8,13 +8,13 @@
 export { useNewsStatusWithToken } from "./api/newsQueries";
 export type { NewsHealthLevel, NewsReview, NewsStatus } from "./api/newsQueries";
 /*
- * The topbar health lamp is a frame control, but the words in it are News': which four stages exist, what
- * each is called, and what `warn` reads as in Chinese. The shell maps the server's `health` onto the frame's
+ * The topbar health lamp is a frame control, but the words in it are News': which stages exist, what each is
+ * called, what `warn` reads as in Chinese, and the server instrument snapshot. The shell maps those facts onto the frame's
  * structural prop with these, so neither the frame nor the route invents a second vocabulary (#207).
  */
 export {
   HEALTH_ITEM_KEYS,
-  healthItemEyebrow,
+  healthItemTitle,
   healthLevelLabel,
   optionalDuration,
 } from "./model/newsLabels";

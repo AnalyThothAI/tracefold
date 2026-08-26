@@ -1,6 +1,6 @@
 import type { OpenApiStatusData } from "@lib/types";
 import { IconButton } from "@shared/ui/IconButton";
-import { ChevronDown, ChevronRight, RefreshCw, Search, TriangleAlert } from "lucide-react";
+import { ChevronDown, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -37,7 +37,8 @@ export type CockpitTopbarFigure = {
 export type CockpitHealthRow = {
   key: string;
   label: string;
-  level: "ok" | "warn" | "bad" | "off";
+  /** `null` is a neutral server fact, not a browser-computed health judgment. */
+  level: "ok" | "warn" | "bad" | "off" | null;
   summary: string;
 };
 
@@ -160,7 +161,8 @@ export function CockpitTopbar({
  * Pipeline health and the approved scan frames' permanent pipeline affordance.
  *
  * Event and OI scans keep the approved `流水线` button visible even while healthy. Other routes receive
- * `null` on the healthy path. One click opens the same four server-owned stage lines and status destination.
+ * `null` on the healthy path. One click opens the server-owned stage lines, instrument snapshot and status
+ * destination.
  *
  * Radix owns `Esc`, the dismiss layer and `aria-expanded`. The console binds no document-level key handler
  * of its own and this must not become the exception.
@@ -197,13 +199,18 @@ function HealthLamp({
           collisionPadding={12}
           sideOffset={6}
         >
-          <b className="topbar-health-popover-title">{health.headline}</b>
           {/* A failed read has a headline and a door but no stage lines: there is no health to break down. */}
-          {health.items.length === 0 ? null : (
+          {health.items.length === 0 ? (
+            <b className="topbar-health-popover-title">{health.headline}</b>
+          ) : (
             <ul className="topbar-health-items">
               {health.items.map((item) => (
-                <li data-level={item.level} key={item.key}>
-                  <span aria-hidden className="topbar-health-dot" data-level={item.level} />
+                <li data-level={item.level ?? undefined} key={item.key}>
+                  <span
+                    aria-hidden
+                    className="topbar-health-dot"
+                    data-level={item.level ?? undefined}
+                  />
                   <b>{item.label}</b>
                   <span>{item.summary}</span>
                 </li>
@@ -211,8 +218,7 @@ function HealthLamp({
             </ul>
           )}
           <Link className="topbar-health-link" to={health.to}>
-            打开流水线状态
-            <ChevronRight aria-hidden />
+            打开流水线状态 →
           </Link>
         </Popover.Content>
       </Popover.Portal>

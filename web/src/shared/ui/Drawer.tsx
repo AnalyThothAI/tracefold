@@ -23,6 +23,7 @@ export function Drawer({
   modal = true,
   onOpenChange,
   open,
+  restoreFocusTo,
   side = "right",
   title,
   width,
@@ -35,6 +36,8 @@ export function Drawer({
   modal?: boolean;
   onOpenChange: (open: boolean) => void;
   open: boolean;
+  /** Explicit opener for controlled drawers that do not render a Radix trigger. */
+  restoreFocusTo?: HTMLElement | null;
   side?: "left" | "right";
   title: string;
   width?: number;
@@ -59,6 +62,14 @@ export function Drawer({
            */
           onFocusOutside={modal ? undefined : (event) => event.preventDefault()}
           onInteractOutside={modal ? undefined : (event) => event.preventDefault()}
+          onCloseAutoFocus={
+            restoreFocusTo
+              ? (event) => {
+                  event.preventDefault();
+                  restoreFocusTo.focus();
+                }
+              : undefined
+          }
           style={width ? { width: `min(${width}px, 100%)` } : undefined}
         >
           <header className="ui-drawer-head">

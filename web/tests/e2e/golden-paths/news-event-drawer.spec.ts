@@ -29,20 +29,28 @@ test("opens beside the list, swaps to the next row, and closes on Esc", async ({
 
   await page.locator('[data-event-id="evt-global-policy"] h2 a').click();
   const panel = page.getByRole("dialog");
-  await expect(panel.getByRole("link", { name: "打开整页" })).toHaveAttribute(
+  await expect(panel.getByRole("link", { name: "打开事件详情" })).toHaveAttribute(
     "href",
     openFullPage("evt-global-policy"),
   );
+  await expect(panel.getByRole("heading", { name: "判定链路" })).toBeVisible();
+  await expect(panel.getByRole("link", { name: "代币页 BTC" })).toHaveAttribute(
+    "href",
+    "/news/symbols/BTC",
+  );
+  await expect(panel.locator(".news-timeline-inline-facts").first()).toBeVisible();
+  await expect(panel.getByText("判定明细", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("当前报价", { exact: true })).toHaveCount(0);
   // Non-modal: the queue is still on screen and the URL still belongs to the feed.
   await expect(rows).toHaveCount(rowCount);
   await expect(page).toHaveURL(/\/news(\?|$)/);
   // Radix portals the panel to the end of `body`, so opening has to move focus into it or a keyboard reader
-  // would tab through every remaining row to reach 打开整页. Which control takes it is Radix's business.
+  // would tab through every remaining row to reach 打开事件详情. Which control takes it is Radix's business.
   await expect(panel.locator(":focus")).toHaveCount(1);
 
   // A click outside the panel is how the reader moves through the queue, so it must swap, never dismiss.
   await page.locator('[data-event-id="evt-global-policy-3"] h2 a').click();
-  await expect(panel.getByRole("link", { name: "打开整页" })).toHaveAttribute(
+  await expect(panel.getByRole("link", { name: "打开事件详情" })).toHaveAttribute(
     "href",
     openFullPage("evt-global-policy-3"),
   );
@@ -51,15 +59,21 @@ test("opens beside the list, swaps to the next row, and closes on Esc", async ({
   // does not dismiss on an outside interaction.
   await page.locator(".news-funnel-card").click({ position: { x: 4, y: 4 } });
   await expect(panel).toHaveCount(1);
-  await expect(panel.getByRole("link", { name: "打开整页" })).toHaveAttribute(
+  await expect(panel.getByRole("link", { name: "打开事件详情" })).toHaveAttribute(
     "href",
     openFullPage("evt-global-policy-3"),
   );
 
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
+  await expect(page.locator('[data-event-id="evt-global-policy-3"] h2 a')).toBeFocused();
   await expect(rows).toHaveCount(rowCount);
   await expect(page).toHaveURL(/\/news(\?|$)/);
+
+  await page.locator('[data-event-id="evt-global-policy-3"] h2 a').click();
+  await panel.getByRole("button", { name: "关闭" }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator('[data-event-id="evt-global-policy-3"] h2 a')).toBeFocused();
   await expectNoUnhandledApiRequests(page);
 });
 
@@ -69,7 +83,7 @@ test("keeps its Event when a newer one lands at the top of the feed", async ({ p
   await expect(page.locator(".news-event-row").first()).toBeVisible();
 
   await page.locator('[data-event-id="evt-global-policy-2"] h2 a').click();
-  const openLink = page.getByRole("dialog").getByRole("link", { name: "打开整页" });
+  const openLink = page.getByRole("dialog").getByRole("link", { name: "打开事件详情" });
   await expect(openLink).toHaveAttribute("href", openFullPage("evt-global-policy-2"));
 
   // A live feed prepends and every row index shifts by one. The drawer holds an Event, not a position.

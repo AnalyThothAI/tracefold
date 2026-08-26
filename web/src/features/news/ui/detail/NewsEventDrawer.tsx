@@ -1,18 +1,15 @@
-import { newsEventPath } from "@shared/routing/paths";
-import { ActionButton } from "@shared/ui/ActionButton";
+import { newsEventPath, newsSymbolPath } from "@shared/routing/paths";
 import { Drawer } from "@shared/ui/Drawer";
-import { FactGrid } from "@shared/ui/FactGrid";
+import { IconButton } from "@shared/ui/IconButton";
 import * as PageState from "@shared/ui/PageState";
-import { ExternalLink } from "lucide-react";
+import { ChevronRight, X } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useNewsEventWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
-import { clockTime, displayAssetRefs, validExternalUrl } from "../../model/newsLabels";
+import { clockTime, displayAssetRefs, displayAssets } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
-import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 
-import { NewsQuoteTable } from "./NewsQuoteTable";
 import { NewsEventDrawerTimeline } from "./NewsTimeline";
 
 import "./newsEventDrawer.css";
@@ -22,21 +19,23 @@ import "./newsEventDrawer.css";
  *
  * Reviewing a queue used to mean a full-page navigation per Event and a scroll back to where you were. The
  * drawer is deliberately non-modal: the list stays live behind it, and clicking the next row swaps what the
- * drawer shows instead of closing it. The Event's own page is still the canonical, shareable surface —
- * 打开整页 and any modified click go straight there.
+ * drawer shows instead of closing it. The Event's own page is still the canonical, shareable surface — the
+ * footer link and any modified click go straight there.
  *
- * It carries the three things a reviewer actually needs: what was judged, what the assets are worth, and how
- * it got here. The audit trail (`技术详情`, 同类报道, every raw verdict record) stays on the full page.
+ * It carries the compact Artifact reading order: source, assets, judgment, then the four-step judgment chain.
+ * Quotes, technical detail, related reporting and every raw verdict record stay on the full page.
  */
 export function NewsEventDrawer({
   eventId,
   feedSearch,
   onClose,
+  restoreFocusTo,
   token,
 }: {
   eventId: string | null;
   feedSearch: string;
   onClose: () => void;
+  restoreFocusTo?: HTMLElement | null;
   token: string;
 }) {
   const query = useNewsEventWithToken(token, eventId);
@@ -51,28 +50,32 @@ export function NewsEventDrawer({
   const quotes = (quotesQuery.data?.quotes ?? []).filter((quote) =>
     assets.some((asset) => asset.symbol === quote.requested_symbol),
   );
+  const quotesBySymbol = Object.fromEntries(quotes.map((quote) => [quote.requested_symbol, quote]));
+  const primaryTag = displayAssets(
+    (triage?.assets ?? []).filter((asset) => asset.role === "primary").map((asset) => asset.symbol),
+  )[0];
+  const primarySymbol = primaryTag
+    ? (assets.find((asset) => displayAssets([asset.symbol, asset.base_symbol]).includes(primaryTag))
+        ?.base_symbol ?? primaryTag)
+    : undefined;
   const headline =
     triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event?.leader_title || "事件";
-  const url = validExternalUrl(event?.leader_url);
   return (
     <Drawer
       actions={
         eventId ? (
-          <>
-            <Link className="news-drawer-open" state={{ feedSearch }} to={newsEventPath(eventId)}>
-              打开整页
-            </Link>
-            <ActionButton onClick={onClose} size="sm" variant="quiet">
-              关闭
-            </ActionButton>
-          </>
+          <IconButton aria-label="关闭" onClick={onClose} size="sm">
+            <X aria-hidden />
+          </IconButton>
         ) : null
       }
       eyebrow={
         detail ? (
           <>
-            <NewsOutcomeBadge outcome={detail.outcome} variant="chip" />
             <span className="news-drawer-time">{clockTime(detail.event.opened_at_ms)}</span>
+            <span aria-hidden>·</span>
+            <span>{detail.event.reporting_origin || "未知来源"}</span>
+            <NewsOutcomeBadge outcome={detail.outcome} />
           </>
         ) : null
       }
@@ -81,7 +84,9 @@ export function NewsEventDrawer({
         if (!open) onClose();
       }}
       open={Boolean(eventId)}
+      restoreFocusTo={restoreFocusTo}
       title={headline}
+      width={520}
     >
       {query.isLoading && !detail ? (
         <PageState.Loading label="正在读取事件" layout="inline" rows={4} />
@@ -92,46 +97,23 @@ export function NewsEventDrawer({
       {detail && event ? (
         <div className="news-drawer-body">
           <h2 className="news-drawer-headline">{headline}</h2>
-          {triage ? (
-            <p className="news-drawer-verdict">
-              <NewsDirectionChip size="lg" triage={triage} />
-              {triage.event_type_zh ? <span>{triage.event_type_zh}</span> : null}
-            </p>
-          ) : null}
-          {assets.length ? <NewsAssetChips assets={assets} /> : null}
+          <p className="news-drawer-original">{event.leader_title}</p>
+          {assets.length ? <NewsAssetChips assets={assets} quotes={quotesBySymbol} /> : null}
           {triage?.why_zh ? <p className="news-drawer-why">{triage.why_zh}</p> : null}
-          {triage ? (
-            <FactGrid
-              columns={2}
-              facts={[
-                { label: "范围", value: triage.scope_zh },
-                {
-                  label: "把握",
-                  value: triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`,
-                },
-                { label: "新颖度", value: triage.novelty_zh },
-                {
-                  label: "可操作",
-                  value: triage.actionable == null ? "" : triage.actionable ? "是" : "否",
-                },
-              ]}
-              label="判定明细"
-            />
-          ) : null}
-          {quotes.length ? <NewsQuoteTable quotes={quotes} /> : null}
-          <p className="news-drawer-original">
-            <span className="news-drawer-original-label">
-              原文 · {event.reporting_origin || "未知来源"}
-            </span>
-            <span>{event.leader_title}</span>
-            {url ? (
-              <a href={url} rel="noreferrer" target="_blank">
-                打开
-                <ExternalLink aria-hidden />
-              </a>
-            ) : null}
-          </p>
+          <h3 className="news-drawer-section-title">判定链路</h3>
           <NewsEventDrawerTimeline steps={detail.timeline ?? []} />
+          <footer className="news-drawer-footer">
+            <Link state={{ feedSearch }} to={newsEventPath(event.event_id)}>
+              打开事件详情
+              <ChevronRight aria-hidden />
+            </Link>
+            {primarySymbol ? (
+              <Link to={newsSymbolPath(primarySymbol)}>
+                代币页 {primarySymbol}
+                <ChevronRight aria-hidden />
+              </Link>
+            ) : null}
+          </footer>
         </div>
       ) : null}
     </Drawer>
