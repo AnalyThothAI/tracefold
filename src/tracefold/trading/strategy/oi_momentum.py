@@ -17,16 +17,18 @@ from ..decision.regime import permits_entry, regime_side
 
 @dataclass(frozen=True, slots=True)
 class OiMomentumConfig:
+    """No liquidity floor (#264). The absolute OI floor is a universe/routability rule and belongs to
+    the Candidate Gate, which is the only place it is now executed; a strategy re-checking it made the
+    same number an admission rule and an Alpha rule at once, and moving one moved neither."""
+
     allow_short: bool = False
     min_whale_long_profit_bps: int = 9_500
-    min_oi_value_usd: int = 20_000_000
 
     @property
     def snapshot(self) -> dict[str, bool | int | str]:
         return {
             "allow_short": self.allow_short,
             "min_whale_long_profit_bps": self.min_whale_long_profit_bps,
-            "min_oi_value_usd": self.min_oi_value_usd,
         }
 
     @property
@@ -85,8 +87,6 @@ def oi_gate(
         return _no_trade("short_disabled_long_only", permission)
     if oi.whale_long_profit_bps < config.min_whale_long_profit_bps:
         return _no_trade("whale_long_profit_below_floor", permission)
-    if oi.oi_value_usd < config.min_oi_value_usd:
-        return _no_trade("oi_value_below_floor", permission)
     return None
 
 

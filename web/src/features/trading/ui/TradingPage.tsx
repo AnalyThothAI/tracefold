@@ -7,7 +7,7 @@ import { holdCeiling, isActiveOrder } from "../model/tradingLabels";
 import { TradingShell } from "./TradingChrome";
 import { TradingClosed } from "./TradingClosed";
 import { TradingExposure } from "./TradingExposure";
-import { TradingEvidence, TradingFunnel } from "./TradingFunnel";
+import { TradingAdmission, TradingEvidence, TradingFunnel } from "./TradingFunnel";
 
 import "./trading.css";
 
@@ -138,6 +138,9 @@ export function TradingPage({ token }: { token: string }) {
                 ordersToday={status.budget.orders_today}
               />
             </div>
+            {/* Source admission sits beside the funnel rather than inside the technical disclosure:
+                with the lane at zero orders it is the only panel on the page with an answer (#264). */}
+            <TradingAdmission counts={status.counts} />
             <TradingEvidence
               cases={ordersQuery.data?.cases_without_orders ?? []}
               counts={status.counts}

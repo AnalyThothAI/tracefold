@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
 # frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v4"
+TRADING_MANIFEST_VERSION = "trading_manifest_v6"
 TRADING_POLICY_VERSION = "trading_strategy_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
@@ -52,12 +52,31 @@ NewsLearningEpoch = Literal["program_v7"]
 # document and `venue` is provider text that may be absent.
 
 
+def oi_source_key(event_id: object, metric_version: object) -> str:
+    """The deterministic OI lane's source identity, from either a raw row or a typed candidate.
+
+    A row rejected at the source stage never becomes an `OiTradeCandidate`, and its admission decision
+    still has to be filed under the same key the case would have used — so the construction lives here
+    rather than only on the model.
+    """
+
+    return f"oi:{event_id}:{metric_version}"
+
+
 class OiCandidateRow(TypedDict):
-    """One deterministic OI telemetry frame offered to the candidate scanner."""
+    """One parsed deterministic OI telemetry fact offered to the candidate scanner."""
 
     event_id: str
     verdict_created_at_ms: int
+    # The reader's own judgment of this frame, and the named rule behind it. Audit, not admission: since
+    # #264 the Candidate Gate decides whether the fact may trigger, and a reader policy change must not
+    # silently open or close the capital lane.
     final_decision: str
+    source_rule: str | None
+    # What the provider proves about the measurement (#265). Nullable together; `None` means unproven.
+    source_strategy_id: str | None
+    source_contract_version: str | None
+    measurement_window_ms: int | None
     learning_epoch: str
     program_version: str
     program_sha256: str
@@ -154,6 +173,18 @@ ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 TriggerKind = Literal["oi", "liquidation", "news"]
 StrategyPermission = Literal["shadow", "paper", "live_reviewed"]
 StrategyId = Literal[
+    "oi_smart_money_momentum_v1",
+    # Retained as an identity `strategy_from_manifest` still rebuilds; `capital_strategy_id` no longer
+    # routes a new Case to it (#265 §5.1). Its rules — a 95% whale-profit floor inside the shared 1-6%
+    # band — are not the ones the smart-money template describes, and reusing the id would make every
+    # Case frozen under it replay under rules it was never decided by.
+    #
+    # A Case frozen before `trading_manifest_v6` is *not* replayable, and that is what the version bump
+    # means rather than an oversight: `min_oi_value_usd` left both OI strategy configs when the floor
+    # got its single owner, so an older `strategy_config` no longer satisfies `_exact_keys` and its
+    # digest no longer matches. `_uses_current_news_generation` refuses those manifests first, so the
+    # runner never mis-decodes one. Production holds no `oi_momentum_v1` case at all, and every
+    # `news_oi_alignment_v1` case predating the cut is already terminal.
     "oi_momentum_v1",
     "news_oi_alignment_v1",
     "liquidation_continuation_shadow_v1",
@@ -312,7 +343,19 @@ class OiTradeCandidate(_Frozen):
     whale_oi_ratio_bps: int
     rank_in_window: int
 
+    # The reader's verdict on the same frame, frozen into the manifest so a capital decision can be read
+    # beside the judgment that accompanied it. Deliberately `str` rather than a `Literal`: it is no longer
+    # an admission rule, and pinning the reader's decision vocabulary here would turn a News policy change
+    # into a Trading validation failure — the exact coupling #264 removes.
+    final_decision: str
+    source_rule: str
     metric_version: str
+    # The provider's own measurement contract, frozen into the manifest so a Case is a claim about a
+    # *specific* interval rather than about "OI rose". `None` means the interval could not be proven —
+    # the frame is still a usable fact, and a strategy that reads the interval must refuse it by name.
+    source_strategy_id: str | None = None
+    source_contract_version: str | None = None
+    measurement_window_ms: int | None = None
     learning_epoch: NewsLearningEpoch
     program_version: Literal["news_oi_signal_v1"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -324,7 +367,7 @@ class OiTradeCandidate(_Frozen):
 
     @property
     def source_key(self) -> str:
-        return f"oi:{self.event_id}:{self.metric_version}"
+        return oi_source_key(self.event_id, self.metric_version)
 
 
 class NewsTradeCandidate(_Frozen):
@@ -902,6 +945,7 @@ __all__ = [
     "TriggerKind",
     "canonical_base_symbol",
     "canonical_sha256",
+    "oi_source_key",
     "underlying_key",
     "utc_day_key",
 ]

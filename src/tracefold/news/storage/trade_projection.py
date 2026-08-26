@@ -28,7 +28,20 @@ from ..opennews import source_artifact_identity
 # actually visible, and with an ascending `LIMIT` a busy hour of that wider window would have been
 # answered entirely with its oldest rows — spending the whole budget on context and returning none of
 # the fresh triggers the scan exists to find.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v5"
+#
+# v6 (#264): the OI read stops being "the OI verdicts the reader pushed" and becomes "the OI facts this
+# generation parsed and persisted". `final_decision` and the deterministic rule are still selected — a
+# capital decision must be traceable to the judgment beside it — but they no longer decide *visibility*,
+# and the two Trading thresholds the SELECT used to execute (`max_rank_in_window`, `min_oi_value_usd`)
+# are gone from the signature. Measured over the seven days this table has existed, the reader's own
+# `whale_oi_ratio > 80%` push rule admitted 2 of the 7 frames that meet the target strategy's
+# conditions; the other 5 — TUT 15.48%/54.24% among them — were `drop` and never reached Trading at all.
+#
+# v7 (#265): the OI read publishes what the provider proves about *how* the frame was measured —
+# `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
+# measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
+# be proven for this frame and a consumer must refuse it rather than assume five minutes.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v7"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -40,11 +53,19 @@ TRADE_PROJECTION_ROW_LIMIT = 256
 
 
 class OiTradeProjectionRow(TypedDict):
-    """One deterministic OI telemetry verdict that pushed, with its rank-ledger row and frame venue."""
+    """One parsed deterministic OI telemetry fact, with its rank-ledger row and the frame's venue.
+
+    `final_decision` and `source_rule` are the reader's own judgment of the same frame. They are here so
+    a capital decision can be traced to the verdict beside it, and for no other purpose: since #264 the
+    reader's push/drop no longer decides whether Trading can see the fact.
+    """
 
     event_id: str
     verdict_created_at_ms: int
     final_decision: str
+    # `evaluate_oi`'s named rule, from the deterministic judge's own trace. Nullable: a trace written by
+    # an older judge, or one that failed to record the member, must read as absent rather than as a rule.
+    source_rule: str | None
     learning_epoch: str
     program_version: str
     program_sha256: str
@@ -54,6 +75,13 @@ class OiTradeProjectionRow(TypedDict):
     scored_judgment_sha256: str
     runtime_manifest_sha: str
     metric_version: str
+    # What the provider proves about the measurement, not about the market (#265). Nullable together:
+    # a `NULL` window means unproven, and it is the answer a consumer must act on rather than default.
+    # `whale_long_profit_bps` is the provider's own `Whale Long Profit N%` and nothing more — not an
+    # account count, not a total unrealised PnL, and not "every smart-money account is in profit".
+    source_strategy_id: str | None
+    source_contract_version: str | None
+    measurement_window_ms: int | None
     symbol: str
     direction: str
     oi_change_bps: int
@@ -149,11 +177,23 @@ class TradeProjectionStorage:
         metric_version: str,
         after_created_at_ms: int,
         until_created_at_ms: int,
-        max_rank_in_window: int,
-        min_oi_value_usd: int,
         limit: int = TRADE_PROJECTION_ROW_LIMIT,
     ) -> list[OiTradeProjectionRow]:
-        """Deterministic telemetry verdicts that pushed, with their rank-ledger row and the frame's venue.
+        """Every current-generation, live, successfully parsed OI fact in the window (#264).
+
+        What this read proves is that the *fact* is trustworthy: it was parsed by this generation's
+        deterministic judge, under the executable Program/policy identity, from a live ingest. What it
+        deliberately no longer decides is whether the fact may reach capital. Two rules used to live in
+        this SELECT and do not any more:
+
+        * `final_decision IN ('push','escalate')` made the reader's product policy the capital lane's
+          entry. The reader's rule is `whale_oi_ratio > 80%`; the strategy #265 targets needs `> 50%`,
+          so five of the seven qualifying frames in the last seven days were dropped here and Trading
+          never saw them. The column is still selected, as audit, beside `source_rule`.
+        * `rank_in_window <= N` and `oi_value_usd >= N` were Trading's own thresholds executed in News's
+          SQL. A row filtered out here is indistinguishable from a row that never existed, which is what
+          made `oi_rows = 0` unable to say *why*. They now belong to the Trading Candidate Gate, which
+          records a named reason per source instead.
 
         `venue` comes from the Item's own `provider_metadata.source` rather than the ledger, which does
         not store it. That field is the single strongest discriminator the OI research measured
@@ -171,6 +211,7 @@ class TradeProjectionStorage:
             SELECT v.event_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
+                   v.trace -> 'oi_signal' ->> 'rule' AS source_rule,
                    epoch.epoch_id           AS learning_epoch,
                    v.program_version,
                    v.program_sha256,
@@ -180,6 +221,9 @@ class TradeProjectionStorage:
                    v.scored_judgment_sha256,
                    v.runtime_manifest_sha,
                    s.metric_version,
+                   s.source_strategy_id,
+                   s.source_contract_version,
+                   s.measurement_window_ms,
                    s.symbol,
                    s.direction,
                    s.oi_change_bps,
@@ -208,13 +252,10 @@ class TradeProjectionStorage:
                AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
                AND v.scored_judgment_sha256 IS NOT NULL
                AND v.runtime_manifest_sha IS NOT NULL
-               AND v.final_decision IN ('push', 'escalate')
                AND v.degraded = false
                AND e.ingest_mode = 'live'
                AND v.created_at_ms > %s
                AND v.created_at_ms <= %s
-               AND s.rank_in_window <= %s
-               AND s.oi_value_usd >= %s
              ORDER BY v.created_at_ms DESC, v.event_id DESC
              LIMIT %s
             """,
@@ -222,8 +263,6 @@ class TradeProjectionStorage:
                 metric_version,
                 int(after_created_at_ms),
                 int(until_created_at_ms),
-                int(max_rank_in_window),
-                int(min_oi_value_usd),
                 int(limit),
             ),
         ).fetchall()
@@ -379,6 +418,7 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         event_id=row["event_id"],
         verdict_created_at_ms=row["verdict_created_at_ms"],
         final_decision=row["final_decision"],
+        source_rule=row["source_rule"],
         learning_epoch=row["learning_epoch"],
         program_version=row["program_version"],
         program_sha256=row["program_sha256"],
@@ -388,6 +428,9 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         scored_judgment_sha256=row["scored_judgment_sha256"],
         runtime_manifest_sha=row["runtime_manifest_sha"],
         metric_version=row["metric_version"],
+        source_strategy_id=row["source_strategy_id"],
+        source_contract_version=row["source_contract_version"],
+        measurement_window_ms=row["measurement_window_ms"],
         symbol=row["symbol"],
         direction=row["direction"],
         oi_change_bps=row["oi_change_bps"],

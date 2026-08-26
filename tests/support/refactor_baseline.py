@@ -123,8 +123,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # Several migrations have moved the head since that cut, through the Trading exit/kernel work and
     # #221's status metrics (0311). A dict has one key, so the latest intentional migration owns it.
     "migration_head": (
-        "issue_221_news_status_metrics",
-        "20260826_0311",
+        "issue_265_oi_source_contract",
+        "20260827_0313",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
@@ -146,8 +146,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "program_v7",
     ),
     "news_to_trading.schema_sha256.manifest": (
-        "issue_213_versioned_strategy_kernel",
-        "0d2c337053b745c1be0a096947c7a434f522cdb642fe202a51befee2c2fae333",
+        "issue_265_smart_money_strategy",
+        "e2f20efa43208d2bc63d644d30b25db64e7bfdab0b035e225fe0d122a84cfbf7",
     ),
     "news_to_trading.policy_version": ("issue_213_versioned_strategy_kernel", "trading_strategy_policy_v1"),
     "news_to_trading.schema_sha256.news": (
@@ -155,8 +155,61 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "9cb007bf545af72e2ed847fc524101f57b1db06ea5a74554d53f18c4707e2a51",
     ),
     "news_to_trading.schema_sha256.oi": (
-        "issue_162_pr8b_identity_migration_then_issue_211_trigger_identity",
-        "e6a52b7b32ef01757d94d3a2813ea105e4e36ff78b5a115294bb8d2d2284ffe4",
+        "issue_264_oi_fact_projection",
+        "8f74f7a9bf36bd75e2f86598ce066b4a9416c2f6d4db5d405de18219c4a37172",
+    ),
+    # #264: the OI read publishes the reader's own verdict and its named rule as *audit*, and stops
+    # executing Trading's `max_rank_in_window` / `min_oi_value_usd` in News's SQL. Two keys join the
+    # projected row; no key leaves it, and no threshold crosses the seam any more.
+    "news_to_trading.point_in_time_reads.oi.fields": (
+        "issue_265_oi_source_contract",
+        [
+            "direction",
+            "editorial_origin",
+            "editorial_sha256",
+            "event_id",
+            "final_decision",
+            "ingest_mode",
+            "learning_epoch",
+            "measurement_window_ms",
+            "metric_version",
+            "observed_at_ms",
+            "oi_change_bps",
+            "oi_value_usd",
+            "policy_version",
+            "program_sha256",
+            "program_version",
+            "rank_in_window",
+            "runtime_manifest_sha",
+            "scored_judgment_sha256",
+            "source_contract_version",
+            "source_rule",
+            "source_strategy_id",
+            "symbol",
+            "venue",
+            "verdict_created_at_ms",
+            "whale_long_profit_bps",
+            "whale_oi_ratio_bps",
+        ],
+    ),
+    "representative_trading_flow.flow.oi_projection.final_decision": ("issue_264_oi_fact_projection", "push"),
+    "representative_trading_flow.flow.oi_projection.source_rule": (
+        "issue_264_oi_fact_projection",
+        "opening_move_with_whale_concentration",
+    ),
+    # #265: the frame's measurement contract, published beside its measurements. A Case is now a claim
+    # about a *specific* interval; `None` would mean the interval was never proven.
+    "representative_trading_flow.flow.oi_projection.source_strategy_id": (
+        "issue_265_oi_source_contract",
+        "1019",
+    ),
+    "representative_trading_flow.flow.oi_projection.source_contract_version": (
+        "issue_265_oi_source_contract",
+        "opennews_oi_source_v1",
+    ),
+    "representative_trading_flow.flow.oi_projection.measurement_window_ms": (
+        "issue_265_oi_source_contract",
+        300_000,
     ),
     # #193 hard-cuts the two-file Artifact v2 (QualityKernel, route spec, execution contract, RulePacks,
     # DemoBank, embedded compile receipt) down to one document holding a factory id and the two advisory
@@ -225,8 +278,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "news_semantic_program_v5",
     ),
     "representative_trading_flow.flow.manifest_sha256": (
-        "issue_213_versioned_strategy_kernel",
-        "6059dbbfb3d4030a2985bb0e18530733996599169d4f1b1d32584560a3ce00c1",
+        "issue_213_kernel_then_issue_264_capital_gate_then_issue_265_source_contract",
+        "d338992c06224d8107bd0c48f0e79113a215a3ec8a50d91082c90f22d6e199f4",
     ),
     "representative_trading_flow.flow.manifest.case_kind": ("issue_213_versioned_strategy_kernel", _MISSING),
     "representative_trading_flow.flow.manifest.mark_price": ("issue_213_versioned_strategy_kernel", _MISSING),
@@ -253,21 +306,20 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "news_oi_alignment_v1",
     ),
     "representative_trading_flow.flow.manifest.strategy_config_digest": (
-        "issue_213_versioned_strategy_kernel",
-        "3cfcec1cac2af3e17a012b39555c15d67dc78bac404fdd26fa149fc210aac05c",
+        "issue_264_candidate_gate_ledger",
+        "a879dde3fdd9f8722f980c8e6cc23b10b408c544ce6d18ac70feb7c28d0b5147",
     ),
     "representative_trading_flow.flow.manifest.strategy_config": (
         "issue_213_freeze_exact_strategy_config",
         {
             "allow_short": False,
             "min_whale_long_profit_bps": 9_500,
-            "min_oi_value_usd": 20_000_000,
             "live_min_surprise": 2,
             "live_max_price_in": 1,
         },
     ),
     "representative_trading_flow.flow.manifest.contexts": (
-        "issue_213_versioned_strategy_kernel",
+        "issue_213_kernel_then_issue_264_capital_gate_then_issue_265_source_contract",
         {
             "mode": "paper",
             "oi": {
@@ -282,7 +334,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
                 "whale_long_profit_bps": 9_900,
                 "whale_oi_ratio_bps": 21_097,
                 "rank_in_window": 1,
+                "final_decision": "push",
+                "source_rule": "opening_move_with_whale_concentration",
                 "metric_version": "oi_signal_v1",
+                "source_strategy_id": "1019",
+                "source_contract_version": "opennews_oi_source_v1",
+                "measurement_window_ms": 300_000,
                 "learning_epoch": "program_v7",
                 "program_version": "news_oi_signal_v1",
                 "program_sha256": "a" * 64,
@@ -463,10 +520,12 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # OI projection now names when its deterministic verdict became durable — it always had the column
     # and always dropped it — so the manifest layout moves and says so. A case frozen under v2 has no
     # such stamp and must not be replayed as if it did.
-    "news_to_trading.manifest_version": ("issue_213_versioned_strategy_kernel", "trading_manifest_v4"),
+    # #264 makes the OI projection publish the reader's own verdict as audit rather than as admission,
+    # so `final_decision` and `source_rule` join the frozen manifest and the layout moves with them.
+    "news_to_trading.manifest_version": ("issue_265_oi_source_contract", "trading_manifest_v6"),
     "representative_trading_flow.flow.manifest.manifest_version": (
-        "issue_213_versioned_strategy_kernel",
-        "trading_manifest_v4",
+        "issue_265_oi_source_contract",
+        "trading_manifest_v6",
     ),
     "representative_trading_flow.flow.oi_projection.verdict_created_at_ms": (
         "issue_211_point_in_time_trigger_identity",
@@ -488,8 +547,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         5,
     ),
     "representative_trading_flow.snapshot_sha256": (
-        "issue_213_versioned_strategy_kernel",
-        "19dac8a8f2e58928c6a4fdb37aac358e5f3dae469ff95c8d1492ff0cb6d88d66",
+        "issue_213_kernel_then_issue_264_capital_gate_then_issue_265_source_contract",
+        "6121398b8f0b5627e850f92b3af3990b5b9e5043c924e6de389fb9fb4f873b61",
     ),
 }
 
@@ -863,6 +922,10 @@ def _oi_row() -> dict[str, Any]:
         "scored_judgment_sha256": "c" * 64,
         "runtime_manifest_sha": "d" * 64,
         "final_decision": "push",
+        "source_rule": "opening_move_with_whale_concentration",
+        "source_strategy_id": "1019",
+        "source_contract_version": "opennews_oi_source_v1",
+        "measurement_window_ms": 300_000,
         "ingest_mode": "live",
     }
 
@@ -940,7 +1003,7 @@ async def _trading_faults(order: PreparedOrder) -> dict[str, Any]:
 
 def _trading_manifest() -> tuple[OiTradeCandidate, NewsTradeCandidate, TradingCaseManifest]:
     blacklist = Blacklist.from_rows([])
-    oi = oi_candidate(OiCandidateRow(**_oi_row()), now_ms=NOW_MS, blacklist=blacklist)
+    oi = oi_candidate(OiCandidateRow(**_oi_row()))
     projected_news = news_candidate(NewsCandidateRow(**_news_row()), now_ms=NOW_MS, blacklist=blacklist)
     assert isinstance(oi, OiTradeCandidate)
     assert isinstance(projected_news, NewsTradeCandidate)

@@ -60,7 +60,6 @@ def trading_config_from_settings(settings: Settings) -> TradingConfig:
             live_min_surprise=trading.policy.live_min_surprise,
             live_max_price_in=trading.policy.live_max_price_in,
             min_whale_long_profit_bps=trading.policy.min_whale_long_profit_bps,
-            min_oi_value_usd=candidates.min_oi_value_usd,
         ),
         order=OrderPolicy(
             fixed_notional_usd=order.fixed_notional_usd,

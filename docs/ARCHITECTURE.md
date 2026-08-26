@@ -1808,14 +1808,29 @@ stays disabled.
 **Deterministic gates run before the model call.** The selected pure strategy
 evaluates the frozen context before any provider call. Quadrant, long-only,
 whale, OI, permission, and missing-context refusals therefore do not spend the
-daily model budget. For an eligible News-bearing case the runner freezes the
+daily model budget. Since #265 an OI trigger is answered by
+`oi_smart_money_momentum_v1` — three conditions on the frame's own numbers over
+a *proven* five-minute window, a confirmed price direction and the measured
+600 bps chasing ceiling — whatever News happened to attach, so the OI lane
+spends no model budget at all. `news_oi_alignment_v1` is reached only by a News
+trigger and remains the one live-capable strategy; `oi_momentum_v1` is kept as
+a decoder so Cases frozen under it stay replayable and is routed no new Case. For an eligible News-bearing case the runner freezes the
 single model result into a new context and evaluates the same strategy again;
 the strategy, never the model adapter, returns the final named decision.
 
-**Seven tables**, all `trading_*`: `trading_symbol_blacklist`,
+**Eight tables**, all `trading_*`: `trading_symbol_blacklist`,
 `trading_runtime_state` (control, daily counters, the day's funnel),
-`trading_cases`, `trading_orders`, `trading_order_observations`, and
+`trading_candidate_gate_decisions`, `trading_cases`, `trading_orders`,
+`trading_order_observations`, and
 `trading_strategy_registrations` plus `trading_strategy_evaluations`.
+`trading_candidate_gate_decisions` is the admission ledger: one row per
+`(source_key, gate_version, gate_config_digest)` recording whether an OI fact
+became a trigger and, when it did not, the stage and the named reason. It is not
+an event log — a scanner re-reading its overlap window bumps `attempt_count`, the
+monotonic `DEFERRED -> REJECTED | CASE_CREATED | EXPIRED` transition lives in the
+`ON CONFLICT` clause, and `CASE_CREATED` commits inside the case insert's own
+transaction. Its config digest is what keeps a threshold edit from rewriting the
+record of what the previous threshold decided.
 `trading_cases` is the immutable capital
 research decision and freezes trigger plus strategy identity;
 `trading_strategy_registrations` freezes the first durable instant and typed

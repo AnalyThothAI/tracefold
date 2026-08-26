@@ -18,6 +18,7 @@ from .liquidation_burst import LiquidationContinuationConfig, LiquidationContinu
 from .liquidation_exhaustion import LiquidationExhaustionConfig, LiquidationExhaustionStrategy
 from .news_oi_alignment import NewsOiAlignmentConfig, NewsOiAlignmentStrategy
 from .oi_momentum import OiMomentumConfig, OiMomentumStrategy
+from .oi_smart_money_momentum import OiSmartMoneyMomentumConfig, OiSmartMoneyMomentumStrategy
 
 
 class TradingStrategy(Protocol):
@@ -39,20 +40,19 @@ def strategies(
     *,
     allow_short: bool = False,
     min_whale_long_profit_bps: int = 9_500,
-    min_oi_value_usd: int = 20_000_000,
     live_min_surprise: int = 2,
     live_max_price_in: int = 1,
 ) -> dict[StrategyId, TradingStrategy]:
     """No registry lifecycle: this literal map is the complete production strategy set."""
 
     configured: tuple[TradingStrategy, ...] = (
+        cast(TradingStrategy, OiSmartMoneyMomentumStrategy(OiSmartMoneyMomentumConfig(allow_short=allow_short))),
         cast(
             TradingStrategy,
             OiMomentumStrategy(
                 OiMomentumConfig(
                     allow_short=allow_short,
                     min_whale_long_profit_bps=min_whale_long_profit_bps,
-                    min_oi_value_usd=min_oi_value_usd,
                 )
             ),
         ),
@@ -62,7 +62,6 @@ def strategies(
                 NewsOiAlignmentConfig(
                     allow_short=allow_short,
                     min_whale_long_profit_bps=min_whale_long_profit_bps,
-                    min_oi_value_usd=min_oi_value_usd,
                     live_min_surprise=live_min_surprise,
                     live_max_price_in=live_max_price_in,
                 )
@@ -75,13 +74,26 @@ def strategies(
 
 
 def capital_strategy_id(*, trigger_kind: TriggerKind, has_oi: bool, has_news: bool) -> StrategyId | None:
+    """Which strategy decides one frozen Case. One literal mapping; no registry, no lookup order.
+
+    An OI trigger is answered by `oi_smart_money_momentum_v1` whether or not a News verdict attached
+    (#265 §5.2). OI is the primary trigger and its thesis is arithmetic over the frame's own numbers, so
+    a News counterpart is supplemental evidence at most: requiring one would put the reader's own
+    push/drop back in the capital path, and routing on its presence would make the same frame reach two
+    different strategies depending on whether an unrelated Event happened to land nearby. It is also
+    what keeps the OI lane free of model calls — `news_oi_alignment_v1` is the only strategy that spends
+    the daily DSPy budget, and it is now reached only by a News trigger.
+
+    `has_news` is therefore unused for an OI trigger and kept in the signature because the News branch
+    below still describes its two cases through it.
+    """
+
     if trigger_kind == "liquidation":
         return None
-    if has_oi and has_news:
-        return "news_oi_alignment_v1"
-    if trigger_kind == "oi" and has_oi:
-        return "oi_momentum_v1"
-    # News-only is deliberately shadow/no-trade until it has OI context.
+    if trigger_kind == "oi":
+        return "oi_smart_money_momentum_v1" if has_oi else None
+    # News-only is deliberately shadow/no-trade until it has OI context, which the alignment strategy
+    # answers as `oi_context_missing` rather than by refusing to exist.
     return "news_oi_alignment_v1" if trigger_kind == "news" else None
 
 
@@ -93,15 +105,39 @@ def strategy_from_manifest(manifest: TradingCaseManifest) -> TradingStrategy | N
     try:
         strategy: TradingStrategy
         config = manifest.strategy_config
-        if manifest.strategy_id == "oi_momentum_v1":
-            _exact_keys(config, "allow_short", "min_whale_long_profit_bps", "min_oi_value_usd")
+        if manifest.strategy_id == "oi_smart_money_momentum_v1":
+            _exact_keys(
+                config,
+                "allow_short",
+                "max_price_move_bps",
+                "measurement_window_ms",
+                "min_oi_change_bps",
+                "min_price_move_bps",
+                "min_whale_long_profit_bps",
+                "min_whale_oi_ratio_bps",
+            )
+            strategy = cast(
+                TradingStrategy,
+                OiSmartMoneyMomentumStrategy(
+                    OiSmartMoneyMomentumConfig(
+                        allow_short=_bool(config, "allow_short"),
+                        max_price_move_bps=_int(config, "max_price_move_bps"),
+                        measurement_window_ms=_int(config, "measurement_window_ms"),
+                        min_oi_change_bps=_int(config, "min_oi_change_bps"),
+                        min_price_move_bps=_int(config, "min_price_move_bps"),
+                        min_whale_long_profit_bps=_int(config, "min_whale_long_profit_bps"),
+                        min_whale_oi_ratio_bps=_int(config, "min_whale_oi_ratio_bps"),
+                    )
+                ),
+            )
+        elif manifest.strategy_id == "oi_momentum_v1":
+            _exact_keys(config, "allow_short", "min_whale_long_profit_bps")
             strategy = cast(
                 TradingStrategy,
                 OiMomentumStrategy(
                     OiMomentumConfig(
                         allow_short=_bool(config, "allow_short"),
                         min_whale_long_profit_bps=_int(config, "min_whale_long_profit_bps"),
-                        min_oi_value_usd=_int(config, "min_oi_value_usd"),
                     )
                 ),
             )
@@ -110,7 +146,6 @@ def strategy_from_manifest(manifest: TradingCaseManifest) -> TradingStrategy | N
                 config,
                 "allow_short",
                 "min_whale_long_profit_bps",
-                "min_oi_value_usd",
                 "live_min_surprise",
                 "live_max_price_in",
             )
@@ -120,7 +155,6 @@ def strategy_from_manifest(manifest: TradingCaseManifest) -> TradingStrategy | N
                     NewsOiAlignmentConfig(
                         allow_short=_bool(config, "allow_short"),
                         min_whale_long_profit_bps=_int(config, "min_whale_long_profit_bps"),
-                        min_oi_value_usd=_int(config, "min_oi_value_usd"),
                         live_min_surprise=_int(config, "live_min_surprise"),
                         live_max_price_in=_int(config, "live_max_price_in"),
                     )

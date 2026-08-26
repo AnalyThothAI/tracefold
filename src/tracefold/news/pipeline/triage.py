@@ -700,6 +700,10 @@ class TriageConsumer:
             )
             outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
         else:
+            # What the provider proves about *how* the frame was measured, kept beside what it measured
+            # (#265). `None` is a real answer — the interval is unproven — and the frame is still a
+            # perfectly good reader card; it simply may not be read as a claim about an interval.
+            source = oi_signals.oi_source_contract(card.get("provider_metadata"))
 
             def _rank_and_settle(repos: Any) -> _TriageOutcome:
                 # The key is a pure function of the symbol for this admission, so it is known before
@@ -731,8 +735,11 @@ class TriageConsumer:
                     observed_at_ms=observed,
                     rank_in_window=judgment.rank_in_window,
                     now_ms=stamp,
+                    source_strategy_id=None if source is None else source.strategy_id,
+                    source_contract_version=None if source is None else source.contract_version,
+                    measurement_window_ms=None if source is None else source.measurement_window_ms,
                 )
-                trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy)
+                trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
                 return self._decide_and_persist(
                     repos,
                     s=self._deterministic_settle(

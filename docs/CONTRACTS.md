@@ -144,7 +144,11 @@ Workers still start and deliveries settle `terminal/delivery_unavailable`.
 default; a disabled Trading context constructs no program, no adapter and no
 runner. `trading.mode` names `paper | live_reviewed | live_bounded` and is
 startup-owned — a prompt or a tool argument cannot change it, and paper never
-reads the OpenTrade token. `trading.candidates.*` bounds what may become a case
+reads the OpenTrade token. The strategy set and its numbers are code-owned, not
+configuration: `oi_smart_money_momentum_v1` freezes its measurement window,
+OI-change, smart-money-ratio, profit and price-band thresholds into every Case
+it decides, so changing one starts a new config digest rather than re-deciding
+an existing Case. `trading.candidates.*` bounds what may become a case
 (`max_age_seconds`, `news_lookback_seconds`, `oi_lookback_seconds`,
 `symbol_cooldown_seconds`, `max_rank_in_window`, `min_oi_value_usd`,
 `max_dspy_cases_per_day`) — `max_age_seconds` gates the **trigger** and the two
@@ -264,7 +268,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/orders`, `/api/trading/events/{event_id}` | the capital lane's mandate and readiness, its orders and the cases that authored none, and whether one News Event became a case. Reads only — there is no HTTP write anywhere on this surface |
+| Trading | `/api/trading/status`, `/api/trading/orders`, `/api/trading/events/{event_id}` | the capital lane's mandate and readiness, its source-admission ledger, its orders and the cases that authored none, and whether one News Event became a case — with the named reason when it did not. Reads only — there is no HTTP write anywhere on this surface |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -736,6 +740,11 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
+- `tracefold trading replay-oi --days N` is a read-only report, not an endpoint:
+  every parsed OI fact in the window driven through the production source stage,
+  Candidate Gate and strategy, counted by stage and by rule, with the target
+  template's cohort listed separately. It proposes no threshold and evaluates
+  neither the price band nor any outcome, because it fetches no market data.
 - `GET /api/trading/status` returns the capital lane's `budget` (fixed
   notional, fixed stop bps, max hold, `nominal_daily_stop_loss_usd`, the daily
   order ceiling and today's count), `readiness` (`enabled`, `mode`, `control`,
@@ -743,7 +752,15 @@ reader/writer.
   `live_ready`, `live_readiness`, `venues`), `floors` (the capital lane's own
   thresholds, never the News gates) and `counts` (rolling 24 h groupings plus
   `cases_today_by_state`, exact `policy_allowed_today`, `closed_orders_today`,
-  and the unbounded active-order count for the UTC `funnel_day_key`). Same facts
+  and the unbounded active-order count for the UTC `funnel_day_key`). `counts`
+  also carries the durable admission ledger (#264): `candidate_counts_24h` /
+  `candidate_counts_7d` by `DEFERRED | REJECTED | CASE_CREATED | EXPIRED`,
+  `candidate_reasons_24h` / `candidate_reasons_7d` keyed `stage:reason` from a
+  closed vocabulary, and six `latest_*_at_ms` milestones from source through
+  admission, case, order, open and close. Those counts are keyed on when the
+  *frame* was observed rather than on when the gate looked, so a runner that
+  restarts and re-reads a backlog cannot move yesterday's frames into today, and
+  unlike `funnel_today` they survive the UTC day roll. Same facts
   as CLI `trading status`, from the same reads.
   `live_ready` is never `true` from a read: a serve process cannot observe the
   Workers process's startup and canary result, so it reports `not_proven` rather
@@ -774,6 +791,12 @@ reader/writer.
   be asked", which is a different fact from `case: null`, "it was asked and the
   answer is no". Joining by symbol and time instead would record a link the
   ledger does not have.
+  Whether or not there is a case, the response carries the admission decision:
+  `gate_status`, `gate_stage`, `gate_reason`, `gate_retryable`, `gate_version`,
+  `gate_config_digest`, `gate_evidence` (the measurements the decision was taken
+  on, plus the threshold it failed against), and the three evaluation counters.
+  A `gate_status` of `null` means the lane has not evaluated this source under any
+  gate version — an absence, not a refusal, and a different fact from a rejection.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`

@@ -36,6 +36,8 @@ def _oi(symbol: str = "DOGE", at: int = NOW, whale: int = 9_900, value: int = 73
         whale_long_profit_bps=whale,
         whale_oi_ratio_bps=21_097,
         rank_in_window=1,
+        final_decision="push",
+        source_rule="opening_move_with_whale_concentration",
         metric_version="oi_signal_v1",
         learning_epoch="program_v7",
         program_version="news_oi_signal_v1",
@@ -82,7 +84,7 @@ def _news(symbol: str = "DOGE", at: int = NOW) -> NewsTradeCandidate:
 def _one_plan(oi: OiTradeCandidate, news: NewsTradeCandidate, *, policy: EligibilityPolicy) -> Any:
     """The single plan one OI row and one News row produce, or `None` if neither can trigger."""
 
-    plans = plan_triggers(oi=[oi], news=[news], now_ms=NOW, policy=policy)
+    plans = plan_triggers(oi=[oi], news=[news], now_ms=NOW, policy=policy, oi_trigger_keys={oi.source_key})
     return plans[0] if plans else None
 
 
@@ -116,7 +118,12 @@ def test_a_counterpart_outside_its_lookback_is_not_attached() -> None:
 
 
 def test_trigger_shape_does_not_choose_the_strategy_side() -> None:
-    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=False) == "oi_momentum_v1"
+    # #265: an OI trigger is answered by the smart-money strategy whether or not News attached. Routing
+    # on a News counterpart would make the same frame reach two different strategies depending on
+    # whether an unrelated Event happened to land nearby, and would put the reader's push/drop back in
+    # the capital path by the back door.
+    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=False) == "oi_smart_money_momentum_v1"
+    assert capital_strategy_id(trigger_kind="oi", has_oi=True, has_news=True) == "oi_smart_money_momentum_v1"
     assert capital_strategy_id(trigger_kind="news", has_oi=True, has_news=True) == "news_oi_alignment_v1"
     assert capital_strategy_id(trigger_kind="liquidation", has_oi=False, has_news=False) is None
 

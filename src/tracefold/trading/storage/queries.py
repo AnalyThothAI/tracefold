@@ -145,6 +145,9 @@ class QueryStorage:
             (list(ACTIVE_ORDER_STATES),),
         ).fetchone()
         return {
+            # #264: "nothing today" and "nothing ever" are different operational answers, and every
+            # count above returns the same empty document for both.
+            **self.latest_lifecycle_milestones(),
             "cases_by_state": {str(row["state"]): int(row["n"]) for row in cases},
             "cases_by_trigger": {str(row["trigger_kind"]): int(row["n"]) for row in triggers},
             "cases_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in strategies},
@@ -162,6 +165,32 @@ class QueryStorage:
             "closed_orders_today": 0 if closed_today is None else int(closed_today["n"]),
             "active_orders": 0 if active is None else int(active["n"]),
             "funnel_day_key": resolved_day_key,
+        }
+
+    def latest_lifecycle_milestones(self) -> dict[str, int | None]:
+        """When the lane last reached each stage past admission. Unbounded in time on purpose.
+
+        "Nothing today" and "nothing ever" are different operational answers and a 24 h window returns
+        the same empty document for both. These four say which — and read together with the two gate
+        milestones they place the break exactly: a lane with a recent source and no recent case has an
+        admission problem, one with a recent case and no order has a strategy or a risk problem.
+        """
+
+        cases = self.conn.execute("SELECT max(created_at_ms) AS created FROM trading_cases").fetchone()
+        orders = self.conn.execute(
+            "SELECT max(created_at_ms) AS prepared, max(position_opened_at_ms) AS opened, "
+            "max(position_closed_at_ms) AS closed FROM trading_orders"
+        ).fetchone()
+
+        def _at(row: Any, key: str) -> int | None:
+            value = None if row is None else row[key]
+            return None if value is None else int(value)
+
+        return {
+            "latest_case_created_at_ms": _at(cases, "created"),
+            "latest_order_prepared_at_ms": _at(orders, "prepared"),
+            "latest_position_opened_at_ms": _at(orders, "opened"),
+            "latest_position_closed_at_ms": _at(orders, "closed"),
         }
 
     def stage_latency_ms(self, *, since_ms: int) -> dict[str, dict[str, int]]:

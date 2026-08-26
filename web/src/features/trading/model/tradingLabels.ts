@@ -62,17 +62,64 @@ export const STRATEGY_ZH: Record<string, string> = {
   liquidation_continuation_shadow_v1: "清算延续（影子）",
   liquidation_exhaustion_shadow_v1: "清算衰竭（影子）",
   news_oi_alignment_v1: "新闻 × OI 对齐",
+  // Retained because historical Cases still carry it; no new Case is routed to it since #265. The label
+  // is unchanged on purpose: a "（历史）" suffix wrapped the cell to two lines on the token page and told
+  // a reader nothing the case's own date does not.
   oi_momentum_v1: "OI 动量",
+  oi_smart_money_momentum_v1: "OI × 聪明钱动量",
 };
 
 /** Compact approved case labels, each a direct presentation of the immutable strategy identity. */
 export const STRATEGY_CASE_LABEL: Record<string, string> = {
   news_oi_alignment_v1: "news_oi",
   oi_momentum_v1: "oi_only",
+  oi_smart_money_momentum_v1: "oi_smart_money",
 };
 
 export function strategyCaseLabel(strategyId: string): string {
   return STRATEGY_CASE_LABEL[strategyId] ?? STRATEGY_ZH[strategyId] ?? strategyId;
+}
+
+/**
+ * Why a source frame never became a case (#264), keyed `stage:reason` exactly as the ledger writes it.
+ *
+ * The raw key stays on screen beside the Chinese for the same reason `policy_reason` does: it is the
+ * string an operator greps, and the two vocabularies must not drift into synonyms. A key with no entry
+ * here renders as itself rather than as 其他 — a missing translation is a gap in this table, not a
+ * reason to hide a refusal the ledger recorded.
+ */
+export const GATE_REASON_ZH: Record<string, string> = {
+  "eligibility:active_underlying": "该标的已有在场仓位",
+  "eligibility:already_consumed": "同一来源已成案",
+  "eligibility:blacklisted": "标的在拒绝名单",
+  "eligibility:case_in_flight": "该标的已有未决案例",
+  "eligibility:cooldown": "标的冷却期内",
+  "eligibility:lane_capacity_exhausted": "通道当日额度已满",
+  "eligibility:oi_value_below_floor": "持仓额低于流动性地板",
+  "eligibility:rank_above_limit": "窗口内名次超限",
+  "eligibility:superseded_by_newer_trigger": "被同标的更新的帧合并",
+  "eligibility:trigger_stale": "帧已过触发时效",
+  "freeze:case_created": "已开案",
+  "market_context:market_data_invalid": "截面无可用收盘价",
+  "market_context:market_data_unavailable": "行情暂不可读",
+  "routing:no_native_perp": "该场所无原生永续",
+  "routing:unsupported_venue": "场所未启用",
+  "routing:venue_unresolved": "场所标记无法识别",
+  "source:source_contract_invalid": "来源契约不成立",
+  "source:source_generation_mismatch": "来源属于已退役世代",
+  "source:source_not_live": "非 live 摄入",
+};
+
+/** The four terminal answers an admission decision can hold. `DEFERRED` is the only open one. */
+export const GATE_STATUS_ZH: Record<string, string> = {
+  CASE_CREATED: "已开案",
+  DEFERRED: "待重试",
+  EXPIRED: "已过期",
+  REJECTED: "已拒绝",
+};
+
+export function gateReasonLabel(key: string): string {
+  return GATE_REASON_ZH[key] ?? key;
 }
 
 export const REGIME_ZH: Record<string, string> = {

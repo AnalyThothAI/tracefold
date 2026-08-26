@@ -418,6 +418,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     trading_cases.add_argument("--limit", type=_positive_int, default=20)
+    trading_replay = trading_subcommands.add_parser(
+        "replay-oi",
+        help="read-only: every parsed OI fact in a window, and the rule each one stopped on (#265)",
+    )
+    trading_replay.add_argument(
+        "--days",
+        type=_positive_int,
+        default=7,
+        help="how far back to replay; the OI ledger holds 30 days of parsed frames",
+    )
     trading_show = trading_subcommands.add_parser("show", help="one case with its order and remote observations")
     trading_show.add_argument("case_id")
     trading_blacklist = trading_subcommands.add_parser(

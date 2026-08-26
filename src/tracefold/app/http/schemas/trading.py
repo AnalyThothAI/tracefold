@@ -131,6 +131,46 @@ class TradingCountsData(ExactApiSchema):
     active_orders: int = 0
     funnel_today: dict[str, int] = Field(default_factory=dict)
     funnel_day_key: str = ""
+    # #264: the durable admission ledger, which is the only part of this document that survives the
+    # UTC day roll and the only part a lane with zero cases and zero orders can still answer from.
+    # `candidate_reasons_*` are keyed `stage:reason` from a closed vocabulary, never by symbol.
+    candidate_counts_24h: dict[str, int] = Field(default_factory=dict)
+    candidate_counts_7d: dict[str, int] = Field(default_factory=dict)
+    candidate_reasons_24h: dict[str, int] = Field(default_factory=dict)
+    candidate_reasons_7d: dict[str, int] = Field(default_factory=dict)
+    latest_source_at_ms: int | None = None
+    latest_gate_eligible_at_ms: int | None = None
+    latest_case_created_at_ms: int | None = None
+    latest_order_prepared_at_ms: int | None = None
+    latest_position_opened_at_ms: int | None = None
+    latest_position_closed_at_ms: int | None = None
+
+
+class TradingGateEvidenceData(ExactApiSchema):
+    """What one admission decision was taken on. Every key is code-owned and named here on purpose.
+
+    Passing the stored document straight through would put the next evidence key in a browser without
+    anyone deciding that it should, which is the same rule the order and case projections follow. The
+    four measurements are always present past the source stage; the rest are the threshold or the
+    provider detail that the specific rule failed on.
+    """
+
+    venue: str = ""
+    oi_change_bps: int | None = None
+    oi_value_usd: int | None = None
+    whale_oi_ratio_bps: int | None = None
+    whale_long_profit_bps: int | None = None
+    rank_in_window: int | None = None
+    source_decision: str = ""
+    source_rule: str = ""
+    # The number the rule compared against, so a threshold argument is settled from this one row.
+    floor: int | None = None
+    limit: int | None = None
+    age_ms: int | None = None
+    max_age_ms: int | None = None
+    blacklist_reason: str = ""
+    enabled: list[str] = Field(default_factory=list)
+    rule: str = ""
 
 
 class TradingStatusData(ExactApiSchema):
@@ -224,6 +264,19 @@ class TradingEventCaseData(ExactApiSchema):
 
     event_id: str
     joinable: bool
+    # #264: why there is no case, when there is none. `null` means the lane has not evaluated this
+    # source under any gate version — after a `gate_version` deploy that is the honest state, and it is
+    # a different fact from a refusal the console would otherwise have had to invent.
+    gate_status: Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"] | None = None
+    gate_stage: Literal["source", "eligibility", "routing", "market_context", "freeze"] | None = None
+    gate_reason: str | None = None
+    gate_retryable: bool | None = None
+    gate_version: str | None = None
+    gate_config_digest: str | None = None
+    gate_evidence: TradingGateEvidenceData | None = None
+    gate_first_evaluated_at_ms: int | None = None
+    gate_last_evaluated_at_ms: int | None = None
+    gate_attempt_count: int | None = None
     case: TradingCaseData | None = None
     order_id: str | None = None
     order_state: str | None = None
@@ -245,6 +298,7 @@ __all__ = [
     "TradingCountsData",
     "TradingEventCaseData",
     "TradingFloorsData",
+    "TradingGateEvidenceData",
     "TradingOrderData",
     "TradingOrdersData",
     "TradingReadinessData",

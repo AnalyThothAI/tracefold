@@ -118,6 +118,7 @@ def plan_triggers(
     news: Sequence[NewsTradeCandidate],
     now_ms: int,
     policy: EligibilityPolicy = DEFAULT_ELIGIBILITY,
+    oi_trigger_keys: Container[str] = (),
     active_underlyings: Container[str] = (),
     underlyings_in_flight: Container[str] = (),
     cased_source_keys: Container[str] = (),
@@ -126,15 +127,20 @@ def plan_triggers(
     """Every eligible row in, at most one plan per underlying out. Pure; no clock beyond `now_ms`.
 
     `oi` and `news` are the *context* sets — everything the projection returned that eligibility
-    accepted, however old. The fresh subset of each is what may trigger, and the full sets are what a
-    trigger may attach from.
+    accepted, however old. The subset of each that may trigger is what may open a case, and the full
+    sets are what a trigger may attach from.
+
+    The two lanes answer "may this trigger" differently on purpose (#264). The OI lane's answer is the
+    Candidate Gate's, already taken and already written down, and arrives as `oi_trigger_keys`; asking
+    it again here would put freshness and idempotency back in two places, which is what made a refused
+    frame and an absent frame indistinguishable. The News lane still decides its own here.
     """
 
     def count(stage: str, amount: int = 1) -> None:
         if funnel is not None and amount > 0:
             funnel.count(stage, amount)
 
-    def _offer(candidate: OiTradeCandidate | NewsTradeCandidate, at_ms: int, lane: str) -> None:
+    def _offer(candidate: NewsTradeCandidate, at_ms: int, lane: str) -> None:
         if not is_fresh_trigger(at_ms, now_ms=now_ms, policy=policy):
             # Not a rejection: still perfectly good context for a trigger inside the other lookback.
             count(f"{lane}_context_only")
@@ -150,7 +156,12 @@ def plan_triggers(
 
     triggers: dict[str, list[_Trigger]] = {}
     for signal in oi:
-        _offer(signal, signal.observed_at_ms, "oi")
+        if signal.source_key not in oi_trigger_keys:
+            # Not a rejection: still perfectly good context for a News trigger inside its lookback. The
+            # gate has already recorded *why* it may not trigger, under its own reason.
+            count("oi_context_only")
+            continue
+        triggers.setdefault(underlying_key(signal.base_symbol), []).append(_Trigger(payload=signal))
     for item in news:
         _offer(item, item.verdict_created_at_ms, "news")
 

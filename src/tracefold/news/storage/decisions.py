@@ -183,7 +183,8 @@ class DecisionStorage:
 
         row = self.conn.execute(
             "SELECT event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd, "
-            "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window "
+            "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, "
+            "source_strategy_id, source_contract_version, measurement_window_ms "
             "FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
             (event_id, metric_version),
         ).fetchone()
@@ -203,15 +204,29 @@ class DecisionStorage:
         observed_at_ms: int,
         rank_in_window: int,
         now_ms: int,
+        source_strategy_id: str | None = None,
+        source_contract_version: str | None = None,
+        measurement_window_ms: int | None = None,
     ) -> None:
-        """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict."""
+        """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict.
 
+        The three source-contract columns travel together or not at all (#265): a window with no
+        identity behind it is a number nobody can audit, and `NULL` is the honest record of a frame
+        whose measurement interval this judge could not prove. A default of five minutes here would
+        make every unprovable frame claim to be a 5-minute measurement, which is the whole failure the
+        columns exist to prevent.
+        """
+
+        proven = (
+            source_strategy_id is not None and source_contract_version is not None and measurement_window_ms is not None
+        )
         self.conn.execute(
             """
             INSERT INTO news_oi_signals (
               event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
-              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms,
+              source_strategy_id, source_contract_version, measurement_window_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (event_id, metric_version) DO NOTHING
             """,
             (
@@ -226,6 +241,9 @@ class DecisionStorage:
                 int(observed_at_ms),
                 int(rank_in_window),
                 int(now_ms),
+                source_strategy_id if proven else None,
+                source_contract_version if proven else None,
+                int(measurement_window_ms) if proven and measurement_window_ms is not None else None,
             ),
         )
 

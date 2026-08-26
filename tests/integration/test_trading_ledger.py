@@ -123,6 +123,7 @@ def conn(_database):
 
 def _reset(conn: Any) -> None:
     conn.execute("TRUNCATE trading_strategy_evaluations, trading_strategy_registrations CASCADE")
+    conn.execute("TRUNCATE trading_candidate_gate_decisions CASCADE")
     conn.execute("TRUNCATE trading_order_observations, trading_orders, trading_cases CASCADE")
     conn.execute("TRUNCATE news_oi_signals, news_verdicts, news_events, news_items CASCADE")
     conn.execute("DELETE FROM news_market_instruments")
@@ -176,13 +177,13 @@ def _case(
         case_id=case_id,
         underlying_key=underlying,
         trigger_kind="oi",
-        strategy_id="oi_momentum_v1",
-        strategy_version="oi_momentum_v1",
+        strategy_id="oi_smart_money_momentum_v1",
+        strategy_version="oi_smart_money_momentum_v1",
         strategy_config_digest="0" * 64,
         mode="paper",
         primary_source_key=source_key,
         supplemental_source_keys=(),
-        manifest={"trigger_kind": "oi", "strategy_id": "oi_momentum_v1"},
+        manifest={"trigger_kind": "oi", "strategy_id": "oi_smart_money_momentum_v1"},
         manifest_sha256="sha",
         regime="buildup_up",
         observed_at_ms=NOW,
@@ -445,7 +446,19 @@ def test_approval_after_the_operator_window_is_rejected_at_the_database_boundary
 
 
 # ---------------------------------------------------------------------------- runner, end to end
-def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int, venue: str = "hyperliquid") -> None:
+def _seed_oi_event(
+    conn: Any,
+    *,
+    event_id: str,
+    symbol: str,
+    observed_at_ms: int,
+    venue: str = "hyperliquid",
+    decision: str = "push",
+    source_rule: str = "opening_move_with_whale_concentration",
+    source_strategy_id: str | None = "1019",
+    source_contract_version: str | None = "opennews_oi_source_v1",
+    measurement_window_ms: int | None = 300_000,
+) -> None:
     conn.execute(
         "INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms, "
         "provider_metadata, provenance, first_ingest_mode, created_at_ms, updated_at_ms) "
@@ -489,17 +502,37 @@ def _seed_oi_event(conn: Any, *, event_id: str, symbol: str, observed_at_ms: int
         "final_decision, verdict, trace, degraded, published_at_ms, created_at_ms, evidence_version, "
         "evidence_sha256, focus_fact_id, program_version, program_sha256, editorial, "
         "scored_judgment_sha256, runtime_manifest_sha) "
-        "VALUES (%s, 'triage', 'news_triage_policy_v10', 'push', 'push', 'push', '{}'::jsonb, '{}'::jsonb, false, "
+        "VALUES (%s, 'triage', 'news_triage_policy_v10', %s, %s, %s, '{}'::jsonb, "
+        "jsonb_build_object('oi_signal', jsonb_build_object('rule', %s::text)), false, "
         "%s, %s, 1, 'sha', %s, 'news_oi_signal_v1', repeat('a', 64), "
         "jsonb_build_object('editorial_origin', 'telemetry_deterministic', 'editorial_sha256', repeat('b', 64), "
         "'relevance', NULL), repeat('c', 64), repeat('d', 64))",
-        (event_id, observed_at_ms, observed_at_ms, f"f-{event_id}"),
+        (
+            event_id,
+            decision,
+            decision,
+            decision,
+            source_rule,
+            observed_at_ms,
+            observed_at_ms,
+            f"f-{event_id}",
+        ),
     )
     conn.execute(
         "INSERT INTO news_oi_signals (event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd, "
-        "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms) "
-        "VALUES (%s, 'oi_signal_v1', %s, 'rise', 320, 73010000, 9900, 21097, %s, 1, %s)",
-        (event_id, symbol, observed_at_ms, observed_at_ms),
+        "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms, "
+        "source_strategy_id, source_contract_version, measurement_window_ms) "
+        "VALUES (%s, 'oi_signal_v1', %s, 'rise', 1548, 73010000, 9900, 21097, %s, 1, %s, "
+        "%s, %s, %s)",
+        (
+            event_id,
+            symbol,
+            observed_at_ms,
+            observed_at_ms,
+            source_strategy_id,
+            source_contract_version,
+            measurement_window_ms,
+        ),
     )
     # The listing is seeded at the venue the frame itself names. Source-aligned routing (#211) means a
     # Hyperliquid frame may only produce a Hyperliquid manifest, so seeding Binance for a Hyperliquid
@@ -791,8 +824,13 @@ def _prepare_live_reviewed(
 ) -> tuple[TradingConfig, Any]:
     # The live canary enables exactly one venue, so a frame tagged at the other one is refused
     # rather than rerouted (#211). These fixtures are about the capital protocol, not routing.
-    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
-    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    #
+    # The News verdict is the *newer* row and therefore the trigger (#265). An OI trigger is now
+    # answered by `oi_smart_money_momentum_v1`, which is paper-only by identity; `news_oi_alignment_v1`
+    # remains the one live-capable strategy and is reached by a News trigger carrying OI context. That
+    # is the shape a live case has, and these fixtures are about what happens after one exists.
+    _seed_oi_event(conn, event_id="live-c2-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="live-c2-news", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
     _promote_to_model_projection(conn, event_id="live-c2-news", symbol="DOGE")
     live_config = config or _live_config()
     report = asyncio.run(
@@ -867,6 +905,469 @@ def _live_absent_observation(row: Any, *, observed_at_ms: int) -> ExecutionObser
     )
 
 
+# ---------------------------------------------------------------------------- #264 admission ledger
+def _gate(
+    conn: Any,
+    *,
+    source_key: str = "oi:e1:oi_signal_v1",
+    digest: str = "d" * 64,
+    status: str = "DEFERRED",
+    stage: str = "eligibility",
+    reason: str = "market_data_unavailable",
+    retryable: bool = True,
+    observed_at_ms: int = NOW,
+    case_id: str | None = None,
+    evidence: dict[str, Any] | None = None,
+    now_ms: int = NOW,
+) -> None:
+    _repos(conn).trading.record_gate_decision(
+        source_key=source_key,
+        gate_version="trading_candidate_gate_v1",
+        gate_config_digest=digest,
+        trigger_kind="oi",
+        underlying_key="crypto:DOGE",
+        source_observed_at_ms=observed_at_ms,
+        status=status,
+        stage=stage,
+        reason=reason,
+        retryable=retryable,
+        evidence=evidence or {"oi_value_usd": 3_190_000},
+        case_id=case_id,
+        now_ms=now_ms,
+    )
+    conn.commit()
+
+
+def _gate_rows(conn: Any) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM trading_candidate_gate_decisions ORDER BY gate_config_digest, source_key"
+        ).fetchall()
+    ]
+
+
+def test_a_re_scanned_source_bumps_its_counters_and_never_appends(conn) -> None:
+    """The scanner re-reads a 65-minute overlap every two seconds. One row, or the table is a log."""
+
+    for _ in range(5):
+        _gate(conn, now_ms=NOW + 1_000)
+    rows = _gate_rows(conn)
+    assert len(rows) == 1
+    assert rows[0]["attempt_count"] == 5
+    assert rows[0]["first_evaluated_at_ms"] == NOW + 1_000
+
+
+def test_a_terminal_decision_is_final_without_a_trigger_to_enforce_it(conn) -> None:
+    """`DEFERRED` may move once. Nothing in this schema can move a terminal row back."""
+
+    _gate(conn, status="REJECTED", stage="eligibility", reason="oi_value_below_floor", retryable=False)
+    _gate(conn, status="DEFERRED", stage="market_context", reason="market_data_unavailable", now_ms=NOW + 5_000)
+    row = _gate_rows(conn)[0]
+    assert (row["status"], row["stage"], row["reason"]) == ("REJECTED", "eligibility", "oi_value_below_floor")
+    assert row["retryable"] is False
+    # The evaluation counters still move: "re-read 40 times" and "the answer changed" stay separable.
+    assert (row["attempt_count"], row["last_evaluated_at_ms"]) == (2, NOW + 5_000)
+
+
+def test_an_open_decision_advances_to_whichever_terminal_state_the_next_scan_reaches(conn) -> None:
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="PENDING")
+    _gate(conn)
+    _gate(conn, status="CASE_CREATED", stage="freeze", reason="case_created", retryable=False, case_id="case-1")
+    row = _gate_rows(conn)[0]
+    assert (row["status"], row["stage"], row["reason"], row["case_id"]) == (
+        "CASE_CREATED",
+        "freeze",
+        "case_created",
+        "case-1",
+    )
+
+
+def test_a_case_link_exists_exactly_when_a_case_was_created(conn) -> None:
+    """A `case_id` on a refusal would be a claim the ledger cannot support, and vice versa."""
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _gate(conn, status="REJECTED", reason="oi_value_below_floor", retryable=False, case_id="case-1")
+    conn.rollback()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _gate(conn, status="CASE_CREATED", stage="freeze", reason="case_created", retryable=False, case_id=None)
+    conn.rollback()
+
+
+def test_editing_a_threshold_starts_a_new_record_rather_than_reusing_the_old_answer(conn) -> None:
+    """#254 moved the OI floor from 20M to 5M. The record of what 20M decided has to survive that."""
+
+    _gate(conn, digest="a" * 64, status="REJECTED", reason="oi_value_below_floor", retryable=False)
+    _gate(conn, digest="b" * 64, status="DEFERRED", stage="market_context", reason="market_data_unavailable")
+    rows = _gate_rows(conn)
+    assert [(row["gate_config_digest"].strip(), row["reason"]) for row in rows] == [
+        ("a" * 64, "oi_value_below_floor"),
+        ("b" * 64, "market_data_unavailable"),
+    ]
+
+
+def test_a_threshold_edit_does_not_make_one_frame_count_twice(conn) -> None:
+    """The table keeps a row per configuration on purpose; the *report* is a frame count.
+
+    #254 moved the OI floor from 20M to 5M, which is exactly the edit that starts a second row for
+    every source still in the window. Grouping the raw table then counted that frame once under each
+    configuration — potentially under two different statuses at once — so the page's `上游帧` total
+    stopped being a number of frames and the reason distribution stopped summing to it.
+    """
+
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="NO_TRADE")
+    # Under the old floor the frame was too thin; under the new one it created a case.
+    _gate(conn, digest="a" * 64, status="REJECTED", reason="oi_value_below_floor", retryable=False)
+    _gate(
+        conn,
+        digest="b" * 64,
+        status="CASE_CREATED",
+        stage="freeze",
+        reason="case_created",
+        retryable=False,
+        case_id="case-1",
+        now_ms=NOW + 1_000,
+    )
+    # A second frame nobody re-evaluated, so it has exactly one row.
+    _gate(
+        conn,
+        source_key="oi:e2:oi_signal_v1",
+        digest="a" * 64,
+        status="REJECTED",
+        reason="rank_above_limit",
+        retryable=False,
+    )
+
+    assert len(_gate_rows(conn)) == 3
+    counts = _repos(conn).trading.gate_decision_counts(since_ms=NOW - 86_400_000)
+    # Two frames, two answers — not three.
+    assert sum(counts["status"].values()) == 2
+    assert counts["status"] == {"CASE_CREATED": 1, "REJECTED": 1}
+    assert counts["reasons"] == {"freeze:case_created": 1, "eligibility:rank_above_limit": 1}
+
+
+def test_a_frame_that_created_a_case_keeps_that_answer_when_a_later_config_refuses_it(conn) -> None:
+    """`CASE_CREATED` outranks recency, and that is the subtlety, not an accident.
+
+    A source that produced a case is re-read under the next configuration and refused as
+    `already_consumed` — correct as an admission answer, wrong as *the* answer about the frame. It did
+    become a case, and both the report and the console's per-frame lookup have to say so.
+    """
+
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="ORDER_PREPARED")
+    _gate(
+        conn,
+        digest="a" * 64,
+        status="CASE_CREATED",
+        stage="freeze",
+        reason="case_created",
+        retryable=False,
+        case_id="case-1",
+    )
+    _gate(
+        conn,
+        digest="b" * 64,
+        status="REJECTED",
+        reason="already_consumed",
+        retryable=False,
+        now_ms=NOW + 60_000,
+    )
+
+    found = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert found is not None
+    assert (found["status"], found["case_id"]) == ("CASE_CREATED", "case-1")
+    assert _repos(conn).trading.gate_decision_counts(since_ms=NOW - 86_400_000)["status"] == {"CASE_CREATED": 1}
+    # And the milestone still knows the lane cleared admission, rather than forgetting it.
+    assert _repos(conn).trading.latest_gate_milestones()["latest_gate_eligible_at_ms"] == NOW
+
+
+def test_an_open_decision_the_clock_has_answered_is_expired_not_left_pending(conn) -> None:
+    """A `DEFERRED` row promises a later scan could answer differently. Past freshness it cannot."""
+
+    _gate(conn, observed_at_ms=NOW - 600_000)
+    _gate(conn, source_key="oi:e2:oi_signal_v1", observed_at_ms=NOW - 10_000)
+    _gate(
+        conn,
+        source_key="oi:e3:oi_signal_v1",
+        observed_at_ms=NOW - 600_000,
+        status="REJECTED",
+        reason="rank_above_limit",
+        retryable=False,
+    )
+
+    swept = _repos(conn).trading.expire_stale_gate_decisions(stale_before_ms=NOW - 300_000, now_ms=NOW)
+    conn.commit()
+    assert swept == 1
+    by_key = {row["source_key"]: row for row in _gate_rows(conn)}
+    # The status is what the sweep says. The stage and reason stay exactly as the gate wrote them:
+    # overwriting the reason produced `stage:reason` pairs no rule can emit — `routing:trigger_stale`,
+    # `market_context:trigger_stale` — which the read model aggregates on and no label covers. Keeping
+    # them says more, too: this row was waiting on a candle, and the clock closed it.
+    assert (by_key["oi:e1:oi_signal_v1"]["status"], by_key["oi:e1:oi_signal_v1"]["stage"]) == (
+        "EXPIRED",
+        "eligibility",
+    )
+    assert by_key["oi:e1:oi_signal_v1"]["reason"] == "market_data_unavailable"
+    assert by_key["oi:e1:oi_signal_v1"]["retryable"] is False
+    # A frame still inside the budget keeps its open answer, and a terminal row is not re-terminalised.
+    assert by_key["oi:e2:oi_signal_v1"]["status"] == "DEFERRED"
+    assert by_key["oi:e3:oi_signal_v1"]["reason"] == "rank_above_limit"
+
+
+def test_yesterdays_reason_is_still_answerable_after_the_utc_day_rolls(conn) -> None:
+    """The whole point. `trading_runtime_state.funnel` resets on `day_key`; this does not."""
+
+    yesterday = NOW - 30 * 3_600_000
+    _gate(
+        conn,
+        source_key="oi:btw:oi_signal_v1",
+        observed_at_ms=yesterday,
+        status="REJECTED",
+        stage="routing",
+        reason="no_native_perp",
+        retryable=False,
+        evidence={"oi_value_usd": 85_000_000},
+    )
+    counts = _repos(conn).trading.gate_decision_counts(since_ms=yesterday - 3_600_000)
+    assert counts["status"] == {"REJECTED": 1}
+    assert counts["reasons"] == {"routing:no_native_perp": 1}
+    found = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:btw:oi_signal_v1")
+    assert found is not None
+    assert found["evidence"]["oi_value_usd"] == 85_000_000
+    # And a 24 h window genuinely excludes it, rather than the whole document being gone.
+    assert _repos(conn).trading.gate_decision_counts(since_ms=NOW - 86_400_000)["status"] == {}
+
+
+def test_retention_drops_old_decisions_and_touches_no_case(conn) -> None:
+    _case(conn, case_id="case-1", source_key="oi:e1:oi_signal_v1", state="NO_TRADE")
+    _gate(
+        conn,
+        observed_at_ms=NOW - 200 * 86_400_000,
+        status="CASE_CREATED",
+        stage="freeze",
+        reason="case_created",
+        retryable=False,
+        case_id="case-1",
+    )
+    _gate(conn, source_key="oi:e2:oi_signal_v1", observed_at_ms=NOW - 3_600_000)
+
+    dropped = _repos(conn).trading.purge_gate_decisions(observed_before_ms=NOW - 90 * 86_400_000)
+    conn.commit()
+    assert dropped == 1
+    assert [row["source_key"] for row in _gate_rows(conn)] == ["oi:e2:oi_signal_v1"]
+    assert len(_repos(conn).trading.cases()) == 1
+
+
+def test_the_lane_reports_when_it_last_saw_a_source_and_when_one_last_cleared(conn) -> None:
+    _gate(conn, source_key="oi:e1:oi_signal_v1", observed_at_ms=NOW - 7_200_000)
+    _case(conn, case_id="case-1", source_key="oi:e2:oi_signal_v1", state="NO_TRADE")
+    _gate(
+        conn,
+        source_key="oi:e2:oi_signal_v1",
+        observed_at_ms=NOW - 10_800_000,
+        status="CASE_CREATED",
+        stage="freeze",
+        reason="case_created",
+        retryable=False,
+        case_id="case-1",
+    )
+    milestones = _repos(conn).trading.latest_gate_milestones()
+    assert milestones == {
+        "latest_source_at_ms": NOW - 7_200_000,
+        "latest_gate_eligible_at_ms": NOW - 10_800_000,
+    }
+
+
+def test_a_reader_dropped_frame_is_now_a_visible_trading_fact(conn) -> None:
+    """#264 PR-A against the real SELECT. TUT 15.48%/54.24% was `drop` and never reached this lane.
+
+    Five of the seven frames meeting the target strategy's conditions in the seven days the ledger has
+    existed were dropped by the reader's own `whale_oi_ratio > 80%` rule.
+    """
+
+    _seed_oi_event(
+        conn,
+        event_id="tut",
+        symbol="TUT",
+        observed_at_ms=NOW - MINUTE,
+        venue="binance",
+        decision="drop",
+        source_rule="whale_ratio_below_threshold",
+    )
+    rows = _repos(conn).news.trade_candidate_oi_rows(
+        metric_version="oi_signal_v1",
+        after_created_at_ms=NOW - 2 * MINUTE,
+        until_created_at_ms=NOW,
+    )
+    assert [row["event_id"] for row in rows] == ["tut"]
+    assert rows[0]["final_decision"] == "drop"
+    assert rows[0]["source_rule"] == "whale_ratio_below_threshold"
+    # And it survives the seam and the source stage as a usable fact.
+    candidate = oi_candidate(to_oi_candidate_row(rows[0]))
+    assert isinstance(candidate, OiTradeCandidate)
+    assert candidate.final_decision == "drop"
+
+
+def test_the_projection_publishes_a_proven_measurement_window_and_never_invents_one(conn) -> None:
+    """#265: the strategy acts on "5 minute OI rise >= 10%" and must be able to prove the first half.
+
+    The title carries no interval and the provider payload has no interval field, so the contract is
+    either established from the exact strategy identity or it is `NULL`. `NULL` is not a gap to be
+    filled in later — it is the answer, and a consumer that defaults it to five minutes would put an
+    unverified interval into an immutable Case.
+    """
+
+    _seed_oi_event(conn, event_id="proven", symbol="TAC", observed_at_ms=NOW - MINUTE)
+    _seed_oi_event(
+        conn,
+        event_id="unproven",
+        symbol="SOL",
+        observed_at_ms=NOW - 2 * MINUTE,
+        source_strategy_id=None,
+        source_contract_version=None,
+        measurement_window_ms=None,
+    )
+    rows = {
+        row["event_id"]: row
+        for row in _repos(conn).news.trade_candidate_oi_rows(
+            metric_version="oi_signal_v1",
+            after_created_at_ms=NOW - 3 * MINUTE,
+            until_created_at_ms=NOW,
+        )
+    }
+    assert rows["proven"]["measurement_window_ms"] == 300_000
+    assert rows["proven"]["source_strategy_id"] == "1019"
+    assert rows["proven"]["source_contract_version"] == "opennews_oi_source_v1"
+    assert rows["unproven"]["measurement_window_ms"] is None
+
+    # And across the App seam and the source stage, still `None` rather than a default.
+    proven = oi_candidate(to_oi_candidate_row(rows["proven"]))
+    unproven = oi_candidate(to_oi_candidate_row(rows["unproven"]))
+    assert isinstance(proven, OiTradeCandidate) and isinstance(unproven, OiTradeCandidate)
+    assert proven.measurement_window_ms == 300_000
+    assert unproven.measurement_window_ms is None
+    assert unproven.source_strategy_id is None
+
+
+def test_the_three_source_contract_columns_travel_together_or_not_at_all(conn) -> None:
+    """A window with no identity behind it is a number nobody can audit; the schema refuses it."""
+
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=NOW - MINUTE)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            "UPDATE news_oi_signals SET source_strategy_id = NULL WHERE event_id = 'e1'",
+        )
+    conn.rollback()
+
+
+def test_an_oi_fact_a_news_trigger_took_as_context_still_gets_its_own_admission_row(conn) -> None:
+    """#264: every current-generation OI fact has a durable answer, including the ones that lost.
+
+    A News verdict newer than an OI frame for the same issuer wins the group and folds the frame into
+    its manifest as context. The frame was admitted and did not trigger — two different facts — and
+    keying the ledger on "appears anywhere in a plan" left it with no row at all until the next turn.
+    """
+
+    _seed_oi_event(conn, event_id="oi-ctx", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="news-win", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-win", symbol="DOGE")
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    assert report["created"] == 1
+
+    case = _repos(conn).trading.cases()[0]
+    assert case["trigger_kind"] == "news"
+    # The frame is in the manifest as context…
+    assert case["manifest"]["contexts"]["oi"]["event_id"] == "oi-ctx"
+    # …and separately has its own admission answer, which is that it did not trigger.
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:oi-ctx:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"]) == ("DEFERRED", "superseded_by_newer_trigger")
+    assert decision["retryable"] is True
+
+
+def test_a_news_trigger_cannot_ground_a_case_on_a_frame_the_liquidity_floor_excludes(conn) -> None:
+    """#264 gave the floor one owner; it still has to bind the frames a News trigger attaches.
+
+    The 10-50M OI bucket is the worst the research measured (+4h -0.77%), which is what the 20M floor —
+    and the 5M canary under it — exist to keep out. Gating only the trigger path would let a News
+    verdict freeze a `news_oi_alignment_v1` case grounded on exactly that frame.
+    """
+
+    _seed_oi_event(conn, event_id="thin-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    conn.execute("UPDATE news_oi_signals SET oi_value_usd = 1000000 WHERE event_id = 'thin-oi'")
+    _seed_oi_event(conn, event_id="news-win", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-win", symbol="DOGE")
+    conn.commit()
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    assert report["created"] == 1
+    case = _repos(conn).trading.cases()[0]
+    assert case["trigger_kind"] == "news"
+    # The case exists and is grounded on nothing: the thin frame never entered the context set.
+    assert case["manifest"]["contexts"]["oi"] is None
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:thin-oi:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"]) == ("REJECTED", "oi_value_below_floor")
+
+
+def test_the_replay_reads_the_whole_window_through_the_rules_the_scanner_applies(conn) -> None:
+    """#265 PR-C, against the real SELECT and the real pure functions.
+
+    The value of the report is that it cannot describe a funnel the lane does not have: it drives
+    `oi_candidate`, the Candidate Gate and the strategy in the runner's own order. What it must never do
+    is answer the two questions it has no candle for.
+    """
+
+    from tracefold.trading.candidate.gate import GateConfig
+    from tracefold.trading.research.oi_replay import PENDING_MARKET_CONTEXT, replay_oi_facts
+    from tracefold.trading.strategy.oi_smart_money_momentum import OiSmartMoneyMomentumStrategy
+
+    # The seed writes TUT's real 15.48%; these three are the cohorts around it.
+    _seed_oi_event(conn, event_id="tut", symbol="TUT", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="weak", symbol="ADA", observed_at_ms=NOW - 3 * MINUTE, venue="binance")
+    conn.execute("UPDATE news_oi_signals SET oi_change_bps = 320 WHERE event_id = 'weak'")
+    _seed_oi_event(conn, event_id="thin", symbol="STORJ", observed_at_ms=NOW - 4 * MINUTE, venue="binance")
+    conn.execute("UPDATE news_oi_signals SET oi_value_usd = 3190000 WHERE event_id = 'thin'")
+    _seed_oi_event(conn, event_id="unproven", symbol="SOL", observed_at_ms=NOW - 5 * MINUTE, venue="binance")
+    conn.execute(
+        "UPDATE news_oi_signals SET source_strategy_id = NULL, source_contract_version = NULL, "
+        "measurement_window_ms = NULL WHERE event_id = 'unproven'"
+    )
+    conn.commit()
+
+    facts = [
+        to_oi_candidate_row(row)
+        for row in _repos(conn).news.trade_candidate_oi_rows(
+            metric_version="oi_signal_v1",
+            after_created_at_ms=NOW - 10 * MINUTE,
+            until_created_at_ms=NOW,
+            limit=1_000,
+        )
+    ]
+    report = replay_oi_facts(
+        facts,
+        gate=GateConfig.from_policy(
+            EligibilityPolicy(min_oi_value_usd=5_000_000), venue_priority=("binance", "hyperliquid")
+        ),
+        strategy=OiSmartMoneyMomentumStrategy(),
+        blacklist=Blacklist.from_rows(_repos(conn).trading.blacklist_rows()),
+        now_ms=NOW,
+    )
+
+    assert report.facts == 4
+    assert report.by_reason["strategy:smart_money_oi_change_below_floor"] == 1
+    assert report.by_reason["eligibility:oi_value_below_floor"] == 1
+    assert report.by_reason["strategy:source_window_mismatch"] == 1
+    assert [row.symbol for row in report.surviving] == ["TUT"]
+    assert report.by_stage[PENDING_MARKET_CONTEXT] == 1
+    # The template cohort is a different question and includes the frame the liquidity floor refused —
+    # but not the one whose five-minute window could not be proven, because the template names it.
+    assert sorted(row.symbol for row in report.target_cohort) == ["STORJ", "TUT"]
+    # And no price rule is reported as binding, because none was evaluated.
+    assert not any("price_direction" in key or "chasing" in key for key in report.by_reason)
+
+
 def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
     epoch_start = int(
         conn.execute("SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v7'").fetchone()[
@@ -883,8 +1384,6 @@ def test_oi_projection_exposes_only_post_epoch_v10_judgments(conn) -> None:
         metric_version="oi_signal_v1",
         after_created_at_ms=epoch_start - MINUTE,
         until_created_at_ms=NOW,
-        max_rank_in_window=5,
-        min_oi_value_usd=1,
     )
 
     assert [row["event_id"] for row in rows] == ["current"]
@@ -959,8 +1458,6 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
         metric_version="oi_signal_v1",
         after_created_at_ms=after,
         until_created_at_ms=NOW,
-        max_rank_in_window=5,
-        min_oi_value_usd=1,
     )
     news_rows = news_repository.trade_candidate_news_rows(
         after_created_at_ms=after,
@@ -991,6 +1488,14 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
         "rank_in_window",
         "runtime_manifest_sha",
         "scored_judgment_sha256",
+        # The reader's own verdict and the rule behind it, published as audit (#264). Neither decides
+        # whether Trading can see the fact any more.
+        "source_rule",
+        # What the provider proves about *how* the frame was measured (#265). Nullable together, and
+        # `NULL` is the contract: the interval was not proven and a consumer must refuse it.
+        "source_strategy_id",
+        "source_contract_version",
+        "measurement_window_ms",
         "symbol",
         "venue",
         "verdict_created_at_ms",
@@ -1032,11 +1537,7 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
 
     blacklist = Blacklist.from_rows([])
     # Through the App mapper, because that is the only path a projection row takes to the trading lane.
-    oi = oi_candidate(
-        to_oi_candidate_row(next(row for row in oi_rows if row["event_id"] == "oi-a")),
-        now_ms=NOW,
-        blacklist=blacklist,
-    )
+    oi = oi_candidate(to_oi_candidate_row(next(row for row in oi_rows if row["event_id"] == "oi-a")))
     projected_news = news_candidate(
         to_news_candidate_row(next(row for row in news_rows if row["event_id"] == "news-a")),
         now_ms=NOW,
@@ -1088,8 +1589,13 @@ def test_news_to_trading_projection_freezes_fields_boundaries_order_and_content_
     # #211 moves it again: the OI projection now carries when its verdict became durable, and
     # `trading_manifest_v4` also binds trigger and strategy identity, so older case shapes cannot replay.
     # #213's liquidation strategies keep burst momentum and displacement separate from the one-hour
-    # pre-move. Their explicit nulls are part of every v4 frozen market context and therefore its digest.
-    assert manifest.digest() == "9f5b6e5d09ea9b2d56eca44a2f2a92edb8c47f6e55fe1cb159c59828ef6bf875"
+    # pre-move. Their explicit nulls are part of every frozen market context and therefore its digest.
+    # #264 moves it once more, in two ways: the frozen OI context gains the reader's own verdict and
+    # rule as audit, and the strategy config loses the liquidity floor it used to re-check after the
+    # Candidate Gate had already applied it. #265 adds the provider's measurement contract, so a Case
+    # is a claim about a *specific* interval rather than about "OI rose"; `trading_manifest_v6` is
+    # where a case frozen before either of those stops being replayable as if it had them.
+    assert manifest.digest() == "e3927f6efc6be83a4583d9d2aee9455c57e50928bb738609e29a8ee3bf8f8fb0"
 
 
 def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> None:
@@ -1107,9 +1613,11 @@ def test_a_qualifying_frame_becomes_one_paper_order_with_no_model_call(conn) -> 
     assert case["manifest"]["contexts"]["oi"]["learning_epoch"] == "program_v7"
     assert case["manifest"]["contexts"]["oi"]["policy_version"] == "news_triage_policy_v10"
     assert case["trigger_kind"] == "oi"
-    assert case["strategy_id"] == "oi_momentum_v1"
+    # #265: an OI trigger is decided by the smart-money strategy, whatever News attached. The seeded
+    # frame carries TUT's real 15.48% OI change, which is what makes it a qualifying frame at all.
+    assert case["strategy_id"] == "oi_smart_money_momentum_v1"
     assert case["state"] == "ORDER_PREPARED"
-    assert case["policy_reason"] == "oi_momentum_regime"
+    assert case["policy_reason"] == "smart_money_momentum_long"
     order = trading.order_for_case(case_id=case["case_id"])
     assert order is not None
     assert order["state"] == "ACKNOWLEDGED"
@@ -1467,8 +1975,10 @@ def test_an_acknowledged_paper_order_is_reconstructed_after_restart(conn) -> Non
 
 
 def test_live_prepare_uses_fresh_provider_truth_and_the_existing_observation_ledger(conn) -> None:
-    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
-    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    # News is the newer row and therefore the trigger: `news_oi_alignment_v1` is the one live-capable
+    # strategy, and an OI trigger is answered by the paper-only smart-money strategy (#265).
+    _seed_oi_event(conn, event_id="live-c1-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="live-c1-news", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
     _promote_to_model_projection(conn, event_id="live-c1-news", symbol="DOGE")
     adapter = _ReadOnlyLiveAdapter()
     report = asyncio.run(
@@ -2956,8 +3466,8 @@ def test_a_legacy_news_generation_case_is_blocked_before_model_or_order(
         case_id=f"legacy-{case_kind}-{starting_state}",
         underlying_key="crypto:DOGE",
         trigger_kind="oi" if case_kind == "oi_only" else "news",
-        strategy_id="oi_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
-        strategy_version="oi_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
+        strategy_id="oi_smart_money_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1",
+        strategy_version=("oi_smart_money_momentum_v1" if case_kind == "oi_only" else "news_oi_alignment_v1"),
         strategy_config_digest="0" * 64,
         mode="paper",
         primary_source_key=f"legacy:{case_kind}:{starting_state}",
@@ -3014,9 +3524,16 @@ def test_a_blacklisted_underlying_never_reaches_an_order(conn) -> None:
     assert report["created"] == 0
     assert adapter.attempts == 0
     assert conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"] == 0
-    # The rejection is named, and the day's funnel keeps it.
+    # Named in the day's funnel *and* written down, which is the half that used to vanish at midnight.
     funnel = _repos(conn).trading.runtime_state()["funnel"]
-    assert any(key.startswith("oi_reject:blacklisted") for key in funnel)
+    assert funnel["oi_gate:eligibility:blacklisted"] == 1
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert decision is not None
+    # `DEFERRED`, because an operator can lift the entry and a timed one expires — both inside the
+    # trigger budget. A terminal row here would go on claiming `blacklisted` after the next scan had
+    # created a case, since the ledger only advances a row out of `DEFERRED`.
+    assert (decision["status"], decision["stage"], decision["reason"]) == ("DEFERRED", "eligibility", "blacklisted")
+    assert decision["evidence"]["blacklist_reason"] == "benchmark_large_cap"
 
 
 def test_paused_stops_new_exposure_and_still_records_why(conn) -> None:
@@ -3544,8 +4061,8 @@ def test_a_blacklist_entry_added_after_the_freeze_still_stops_the_order(conn) ->
     # Freeze the case, then deny the symbol before the case is advanced.
     state = asyncio.run(runner._read_state(now))
     assert state is not None
-    plans = runner._plan(state, funnel=Funnel(), now=now)
-    assert asyncio.run(runner._freeze(plans[0], funnel=Funnel(), now=now)) is True
+    plans = runner._plan(state, funnel=Funnel(), now=now, gate={})
+    assert asyncio.run(runner._freeze(plans[0], funnel=Funnel(), now=now, gate={})) is True
     _repos(conn).trading.blacklist_upsert(base_symbol="DOGE", reason="operator", expires_at_ms=None, now_ms=now)
     conn.commit()
 
@@ -3559,8 +4076,8 @@ def test_a_case_that_sat_past_its_freshness_window_is_blocked_not_traded(conn) -
     runner = _runner(conn, adapter=PaperAdapter(), now=now)
     state = asyncio.run(runner._read_state(now))
     assert state is not None
-    plans = runner._plan(state, funnel=Funnel(), now=now)
-    assert asyncio.run(runner._freeze(plans[0], funnel=Funnel(), now=now)) is True
+    plans = runner._plan(state, funnel=Funnel(), now=now, gate={})
+    assert asyncio.run(runner._freeze(plans[0], funnel=Funnel(), now=now, gate={})) is True
 
     # Resume hours later: the frozen mark is stale, so the case must not become an order.
     stale_runner = _runner(conn, adapter=PaperAdapter(), now=now + 10 * 3_600_000)
@@ -3687,8 +4204,8 @@ def test_a_case_is_not_blocked_by_the_freshness_its_own_eligibility_already_spen
     runner = _runner(conn, adapter=PaperAdapter(), now=now)
     state = asyncio.run(runner._read_state(now))
     assert state is not None
-    plans = runner._plan(state, funnel=Funnel(), now=now)
-    assert asyncio.run(runner._freeze(plans[0], funnel=Funnel(), now=now)) is True
+    plans = runner._plan(state, funnel=Funnel(), now=now, gate={})
+    assert asyncio.run(runner._freeze(plans[0], funnel=Funnel(), now=now, gate={})) is True
 
     # 30 s later — a plausible model deadline — the case must still be decidable.
     later_runner = _runner(conn, adapter=PaperAdapter(), now=now + 30_000)
@@ -4197,6 +4714,12 @@ def test_a_hyperliquid_frame_never_silently_becomes_a_binance_paper_manifest(con
     assert report["funnel"]["freeze_reject:no_perp_at_signal_venue"] == 1
     assert int(conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"]) == 0
     assert adapter.attempts == 0
+    # #264: the durable answer, so "BTW had a native perp — where did it go?" has one. Deferred rather
+    # than rejected: the universe snapshot refreshes, and the expiry sweep closes it if it never does.
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["stage"], decision["reason"]) == ("DEFERRED", "routing", "no_native_perp")
+    assert decision["retryable"] is True
 
 
 def test_a_frame_from_a_venue_the_lane_cannot_execute_fails_closed_with_a_named_reason(conn) -> None:
@@ -4210,9 +4733,12 @@ def test_a_frame_from_a_venue_the_lane_cannot_execute_fails_closed_with_a_named_
     assert report["created"] == 0
     # Refused at the plan, before fusion: an unroutable frame must not be able to win coalescing from
     # a routable older one, nor be attached as context to a News trigger it would then kill.
-    assert report["funnel"]["oi_reject:venue_unresolved"] == 1
+    assert report["funnel"]["oi_gate:routing:venue_unresolved"] == 1
     assert report["funnel"]["oi_eligible_venue:other"] == 1
     assert int(conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"]) == 0
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"]) == ("REJECTED", "venue_unresolved")
 
 
 def test_a_signal_venue_the_operator_has_not_enabled_is_refused_rather_than_rerouted(conn) -> None:
@@ -4224,7 +4750,11 @@ def test_a_signal_venue_the_operator_has_not_enabled_is_refused_rather_than_rero
     )
 
     assert report["created"] == 0
-    assert report["funnel"]["oi_reject:venue_not_enabled"] == 1
+    assert report["funnel"]["oi_gate:routing:unsupported_venue"] == 1
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"]) == ("REJECTED", "unsupported_venue")
+    assert decision["evidence"]["enabled"] == ["binance"]
 
 
 def test_an_undecided_case_stops_a_second_thesis_for_the_same_underlying(conn) -> None:
@@ -4239,7 +4769,10 @@ def test_an_undecided_case_stops_a_second_thesis_for_the_same_underlying(conn) -
     report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
 
     assert report["created"] == 0
-    assert report["funnel"]["plan_reject:case_in_flight"] == 1
+    assert report["funnel"]["oi_gate:eligibility:case_in_flight"] == 1
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:e1:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"], decision["retryable"]) == ("DEFERRED", "case_in_flight", True)
     # Nothing was routed through a model or an adapter to learn that.
     assert int(conn.execute("SELECT dspy_calls_today FROM trading_runtime_state").fetchone()["dspy_calls_today"]) == 0
     assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 0
@@ -4283,7 +4816,10 @@ def test_the_scan_reaches_back_far_enough_for_a_forty_five_minute_old_verdict_to
     assert report["created"] == 1
     case = _repos(conn).trading.cases()[0]
     assert case["trigger_kind"] == "oi"
-    assert case["strategy_id"] == "news_oi_alignment_v1"
+    # #265: an OI trigger is answered by the smart-money strategy whether or not a verdict attached.
+    # What this test is about is unchanged and is the line below it — the 45-minute-old verdict is in
+    # the manifest, which is the window that used to be unreachable.
+    assert case["strategy_id"] == "oi_smart_money_momentum_v1"
     # The trigger is the frame that just fired; the verdict is the context it attached.
     assert int(case["observed_at_ms"]) == NOW - MINUTE
     assert case["manifest"]["contexts"]["news"]["verdict_created_at_ms"] == NOW - 45 * MINUTE

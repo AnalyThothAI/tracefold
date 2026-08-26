@@ -32,7 +32,7 @@ from tracefold.trading.contracts import (
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v5"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v7"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
@@ -47,6 +47,7 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
         event_id=row["event_id"],
         verdict_created_at_ms=row["verdict_created_at_ms"],
         final_decision=row["final_decision"],
+        source_rule=row["source_rule"],
         learning_epoch=row["learning_epoch"],
         program_version=row["program_version"],
         program_sha256=row["program_sha256"],
@@ -56,6 +57,9 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
         scored_judgment_sha256=row["scored_judgment_sha256"],
         runtime_manifest_sha=row["runtime_manifest_sha"],
         metric_version=row["metric_version"],
+        source_strategy_id=row["source_strategy_id"],
+        source_contract_version=row["source_contract_version"],
+        measurement_window_ms=row["measurement_window_ms"],
         symbol=row["symbol"],
         direction=row["direction"],
         oi_change_bps=row["oi_change_bps"],
@@ -151,13 +155,15 @@ def news_trade_candidates(
     metric_version: str,
     after_created_at_ms: int,
     until_created_at_ms: int,
-    max_rank_in_window: int,
-    min_oi_value_usd: int,
 ) -> tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow], Sequence[LiquidationCandidateRow]]:
     """`CandidateProjectionReader`: one point-in-time News read per lane, mapped into Trading's input.
 
     The window, the ordering and the generation gate belong to the News projection; this reader adds no
     filter of its own, so what Trading scans is exactly what the SQL froze.
+
+    No Trading threshold crosses this seam any more (#264). `max_rank_in_window` and `min_oi_value_usd`
+    used to be passed down into News's SELECT, which meant a frame Trading rejected and a frame that was
+    never written were the same absence on this side.
     """
 
     return (
@@ -167,8 +173,6 @@ def news_trade_candidates(
                 metric_version=metric_version,
                 after_created_at_ms=after_created_at_ms,
                 until_created_at_ms=until_created_at_ms,
-                max_rank_in_window=max_rank_in_window,
-                min_oi_value_usd=min_oi_value_usd,
             )
         ],
         [
