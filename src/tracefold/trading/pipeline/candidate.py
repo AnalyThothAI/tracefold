@@ -529,12 +529,16 @@ class CandidateRunner:
             cased_source_keys=state["cased_source_keys"],
             funnel=funnel,
         )
-        # A trigger that ended up in no plan lost this turn's coalescing to a newer frame for the same
-        # issuer. It is not retired: nothing durable stops it, and it wins the next scan as soon as the
-        # frame that beat it has produced its case.
-        planned = {key for plan in plans for key in (plan.source_key, *plan.supplemental)}
+        # A trigger that is no plan's *trigger* lost this turn's coalescing — either to a newer frame for
+        # the same issuer, or to a News verdict that won the group and attached it as context instead.
+        # Both are the same fact about admission and both get the same row: it did not trigger, and it is
+        # not retired, because nothing durable stops it and it wins the next scan as soon as whatever
+        # beat it has produced its case. Keyed on the trigger alone rather than on the whole manifest —
+        # a frame folded in as a counterpart is *used*, which is a different question from *triggered*,
+        # and treating the two as one left it with no row at all for a turn.
+        triggered = {plan.source_key for plan in plans}
         for signal in oi_triggers:
-            if signal.source_key not in planned:
+            if signal.source_key not in triggered:
                 self._record(
                     defer(signal, stage="eligibility", reason="superseded_by_newer_trigger"),
                     funnel=funnel,
@@ -751,7 +755,11 @@ class CandidateRunner:
 
         created = await self._db.tx("trading_case_insert", _insert, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
         funnel.count("case_created" if created else "freeze_reject:trigger_identity_race")
-        if plan.oi is not None:
+        # Keyed on the *trigger*, not on `plan.oi` being present. A News-triggered plan carries the OI
+        # frame as context, and treating that as the frame's own admission answer dropped the
+        # `superseded_by_newer_trigger` row this turn had already decided for it — and counted a
+        # `case_created` against a case it did not trigger.
+        if plan.trigger_kind == "oi" and plan.oi is not None:
             if created:
                 # Already committed beside the case row; leaving it out of the turn's flush is what
                 # keeps the flush from re-deciding a row that is now terminal.

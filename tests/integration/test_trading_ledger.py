@@ -1180,6 +1180,32 @@ def test_the_three_source_contract_columns_travel_together_or_not_at_all(conn) -
     conn.rollback()
 
 
+def test_an_oi_fact_a_news_trigger_took_as_context_still_gets_its_own_admission_row(conn) -> None:
+    """#264: every current-generation OI fact has a durable answer, including the ones that lost.
+
+    A News verdict newer than an OI frame for the same issuer wins the group and folds the frame into
+    its manifest as context. The frame was admitted and did not trigger — two different facts — and
+    keying the ledger on "appears anywhere in a plan" left it with no row at all until the next turn.
+    """
+
+    _seed_oi_event(conn, event_id="oi-ctx", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="news-win", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-win", symbol="DOGE")
+
+    report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
+    assert report["created"] == 1
+
+    case = _repos(conn).trading.cases()[0]
+    assert case["trigger_kind"] == "news"
+    # The frame is in the manifest as context…
+    assert case["manifest"]["contexts"]["oi"]["event_id"] == "oi-ctx"
+    # …and separately has its own admission answer, which is that it did not trigger.
+    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:oi-ctx:oi_signal_v1")
+    assert decision is not None
+    assert (decision["status"], decision["reason"]) == ("DEFERRED", "superseded_by_newer_trigger")
+    assert decision["retryable"] is True
+
+
 def test_the_replay_reads_the_whole_window_through_the_rules_the_scanner_applies(conn) -> None:
     """#265 PR-C, against the real SELECT and the real pure functions.
 
