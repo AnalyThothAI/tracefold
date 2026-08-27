@@ -211,8 +211,8 @@ product lane.
 ## Operator lifecycle
 
 The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
-Compose, `curl`, and daemon access; runs idempotent initialization; builds the
-frontend and backend image; performs fresh-volume role bootstrap; runs the
+Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
+initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
 console boundaries. A repeated invocation preserves config, passwords, and
 named-volume data.

@@ -14,7 +14,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -210,10 +210,14 @@ preflight: ## verify the one-command startup prerequisites
 		exit 1; \
 	}
 
-verify-main-ci: ## require the exact origin/main SHA to have a trusted green ci-gate
+github-preflight:
+	@command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is not installed or not on PATH" >&2; exit 127; }
+	@gh auth status >/dev/null 2>&1 || { echo "GitHub CLI is not authenticated; run gh auth login" >&2; exit 1; }
+
+verify-main-ci: github-preflight ## require the exact origin/main SHA to have a trusted green ci-gate
 	@uv run python scripts/require_main_ci.py
 
-up: preflight ## build, migrate, start, and verify the complete product
+up: preflight github-preflight ## build, migrate, start, and verify the complete product
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _up-locked
 
 _up-locked:
@@ -259,7 +263,7 @@ _up-locked:
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
-deploy-image: preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
+deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
 
 _deploy-image-locked:

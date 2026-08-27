@@ -129,7 +129,8 @@ make logs
 make down
 ```
 
-`make up` preflights Git, `uv`, Docker, Compose, `curl`, and daemon access, runs
+`make up` preflights Git, `uv`, Docker, Compose, `curl`, an authenticated GitHub
+CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Rerunning it

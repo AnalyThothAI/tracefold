@@ -128,6 +128,12 @@ esac
         encoding="utf-8",
     )
     fake_curl.chmod(0o700)
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        '#!/bin/sh\n[ "$1 $2" = "auth status" ]\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",

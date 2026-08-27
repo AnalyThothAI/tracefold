@@ -259,5 +259,7 @@ def test_every_deployment_entry_requires_the_main_ci_gate(target: str, private_t
     )
 
     assert "scripts/with_deployment_lock.py" in public.stdout
+    assert "command -v gh" in public.stdout
+    assert "gh auth status" in public.stdout
     assert "with_deployment_lock.py --assert-held" in locked.stdout
     assert "scripts/require_main_ci.py" in locked.stdout
