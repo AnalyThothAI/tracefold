@@ -333,6 +333,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_register.add_argument("--hypothesis", default="", help="what this candidate is expected to repair")
     learning_register.add_argument("--out", required=True, help="write the sealed candidate manifest")
+    learning_migrate = learning_subcommands.add_parser(
+        "migrate-corpus",
+        help="carry a stale-cohort development dataset forward by replaying the current arm (#300)",
+    )
+    learning_migrate.add_argument("--from-dataset", required=True, help="development dataset artifact SHA to carry")
+    learning_migrate.add_argument("--semantic-judge", required=True, help="card-equivalence judge model")
+    learning_migrate.add_argument(
+        "--max-model-cases",
+        type=_positive_int,
+        required=True,
+        help="hard bound on replayed cases; must cover the whole dataset",
+    )
+    learning_migrate.add_argument("--out", required=True, help="directory for the receipt and dataset manifest")
     learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
     learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)
     learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)

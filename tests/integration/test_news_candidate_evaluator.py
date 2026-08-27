@@ -2999,6 +2999,94 @@ def test_errored_pair_never_scores_the_blind_pairwise_primary(conn) -> None:
     assert primary["net_preference"] is None
 
 
+def test_corpus_migration_carries_only_replay_equivalent_cases_under_the_new_arm(conn) -> None:
+    """#300: an arm change invalidates recorded-behavior statements, not human judgment about evidence.
+
+    The migration path re-earns those statements case by case: only replay-verified-equivalent cases are
+    re-frozen, the seal is an ordinary dataset under the *current* cohort (so every downstream gate hits
+    unchanged), and the divergent case is excluded by name. The cohort-mismatch refusal for every other
+    reader is pinned here too — migration is the one door, not a hole in the wall.
+    """
+
+    _accepted_compilable_event(conn)
+    arm_a = _arm()
+    store_a = CandidateEvaluator(conn, stable=arm_a, judges={})._datasets
+    development = asyncio.run(
+        store_a.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+
+    arm_b = _arm(program_sha256=_sha({"program": "news_semantic_program_v5", "fixture": "post-route-change"}))
+    with repositories_for_connection(conn).transaction():
+        repositories_for_connection(conn).news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": arm_b.bundle_sha, "runtime": "test-b"}),
+            stable_bundle_sha=arm_b.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:test-image-b",
+            runtime_revision="test-revision-b",
+            now_ms=NOW - 3_600_000,
+        )
+    store_b = CandidateEvaluator(conn, stable=arm_b, judges={})._datasets
+
+    # Every non-migration reader dies at the contract hash before it can even reach the cohort check:
+    # the sealed agent_bundle_sha no longer matches the active arm.
+    with pytest.raises(ValueError, match="news_learning_dataset_contract_hash_mismatch"):
+        store_b.development_compile_export(development.artifact_sha)
+
+    export = store_b.development_migration_export(development.artifact_sha)
+    assert len(export.episodes) == len(development.cases)
+
+    diverged = development.cases[0].case_id
+    receipt = {
+        "schema": "tracefold.news.corpus_migration_receipt.v1",
+        "from_dataset_sha": development.artifact_sha,
+        "receipt_sha256": "0" * 64,
+        "replay_identity": {"program_sha256": arm_b.program_sha256},
+        "counts": {
+            "equivalent": len(development.cases) - 1,
+            "divergent": 1,
+            "error": 0,
+        },
+        "per_case": [
+            {
+                "case_id": case.case_id,
+                "verdict": "divergent" if case.case_id == diverged else "equivalent",
+            }
+            for case in development.cases
+        ],
+    }
+    migrated = store_b.freeze_migrated_dataset(from_dataset_sha=development.artifact_sha, receipt=receipt)
+
+    assert migrated.migration is not None
+    assert migrated.migration["from_dataset_sha"] == development.artifact_sha
+    assert migrated.migration["excluded_case_ids"] == [diverged]
+    assert len(migrated.cases) == len(development.cases) - 1
+    assert diverged not in {case.case_id for case in migrated.cases}
+    assert migrated.agent_cohort["bundle_sha"] == arm_b.bundle_sha
+    assert migrated.agent_cohort["program_sha256"] == arm_b.program_sha256
+    assert migrated.counts["case_n"] == len(migrated.cases)
+
+    # The migrated seal is an ordinary dataset to every downstream reader under the new arm.
+    migrated_export = store_b.development_compile_export(migrated.artifact_sha)
+    assert len(migrated_export.episodes) == len(migrated.cases)
+
+    incomplete = {**receipt, "per_case": receipt["per_case"][1:]}
+    with pytest.raises(ValueError, match="news_learning_migration_receipt_incomplete"):
+        store_b.freeze_migrated_dataset(from_dataset_sha=development.artifact_sha, receipt=incomplete)
+
+    nothing_carried = {
+        **receipt,
+        "counts": {"equivalent": 0, "divergent": len(development.cases), "error": 0},
+        "per_case": [{"case_id": case.case_id, "verdict": "divergent"} for case in development.cases],
+    }
+    with pytest.raises(ValueError, match="news_learning_migration_carries_no_cases"):
+        store_b.freeze_migrated_dataset(from_dataset_sha=development.artifact_sha, receipt=nothing_carried)
+
+
 def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(conn) -> None:
     """#259: the development gate reads coverage; the calendar is a diagnostic beside it.
 

@@ -91,6 +91,10 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return _handle_learning_run(args, settings, stable)
         if action == "draft-reviews":
             return _handle_learning_draft_reviews(args, settings, stable)
+        if action == "migrate-corpus":
+            from .news_learning_baseline import _handle_learning_migrate_corpus
+
+            return _handle_learning_migrate_corpus(args, settings, stable)
         if action in {"snapshot", "compare", "optimize"}:
             from .news_learning_experiment import handle_research
 
