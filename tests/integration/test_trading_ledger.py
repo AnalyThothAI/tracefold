@@ -1382,6 +1382,12 @@ def test_the_console_reads_the_frozen_pre_move_out_of_a_real_manifest(conn) -> N
     assert rows[0]["pre_move_bps"] == frozen
     assert isinstance(rows[0]["pre_move_bps"], int)
 
+    # …and the thresholds it was decided against, so a console explaining this case cannot reach for
+    # whatever configuration happens to be running when someone opens the page.
+    case = _repos(conn).trading.cases()[0]
+    assert rows[0]["strategy_config"] == case["manifest"]["strategy_config"]
+    assert rows[0]["strategy_config"]
+
 
 def test_a_news_trigger_cannot_ground_a_case_on_a_frame_the_liquidity_floor_excludes(conn) -> None:
     """#264 gave the floor one owner; it still has to bind the frames a News trigger attaches.

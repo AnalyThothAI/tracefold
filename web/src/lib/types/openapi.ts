@@ -2071,6 +2071,10 @@ export interface components {
             regime?: string | null;
             /** State */
             state: string;
+            /** Strategy Config */
+            strategy_config?: {
+                [key: string]: string;
+            };
             /** Strategy Id */
             strategy_id: string;
             /** Strategy Version */

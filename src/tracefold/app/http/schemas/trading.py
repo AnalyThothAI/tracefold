@@ -277,6 +277,9 @@ class TradingCaseData(ExactApiSchema):
     policy_reason: str | None = None
     # The frozen pre-move the two price rules are about, so a refusal can state its own number.
     pre_move_bps: int | None = None
+    # And the thresholds this case was decided against, stringified like `/status` stringifies the
+    # running ones. Empty for a case frozen before #273, which is its own honest answer.
+    strategy_config: dict[str, str] = Field(default_factory=dict)
     observed_at_ms: int
     created_at_ms: int
     decided_at_ms: int | None = None

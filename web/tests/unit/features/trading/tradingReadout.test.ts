@@ -1,6 +1,7 @@
 import type { TradingCase, TradingCounts, TradingStatus } from "@features/trading";
 import {
   bindingCaseRule,
+  caseNumbers,
   evidenceByCase,
   funnelLevels,
   laneCounts,
@@ -118,6 +119,33 @@ describe("refusalOf", () => {
     expect(refusalOf("oi_context_missing", { numbers: NUMBERS }).sentence).toBe(
       "新闻旁没有同标的的持仓数据",
     );
+  });
+
+  it("explains a case with the threshold it was decided against, not today's", () => {
+    /*
+     * The sentence this prevents: a 700 bps frame refused under the old 1000 bps floor, rendered
+     * against the running 500, reads "7.00%，未达 5.00%" — a refusal that cannot be. It is not a
+     * cosmetic error either; the headline names the day's binding rule from one of these, so a
+     * threshold edit would make the whole page describe a strategy no case was decided by.
+     */
+    const frozen = caseNumbers(
+      { measurement_window_ms: "300000", min_oi_change_bps: "1000" },
+      NUMBERS,
+    );
+    expect(
+      refusalOf("smart_money_oi_change_below_floor", {
+        evidence: gateEvidence({ oi_change_bps: 700 }),
+        numbers: frozen,
+      }).sentence,
+    ).toBe("5 分钟持仓增幅 7.00%，未达 10.00% 门槛");
+  });
+
+  it("falls back to the running config only when a case froze none", () => {
+    // Cases created before the projection carried the field. Today's numbers are then the best
+    // available answer rather than a wrong one, and an empty document must not read as "zero".
+    for (const empty of [undefined, {}]) {
+      expect(caseNumbers(empty, NUMBERS)).toEqual(NUMBERS);
+    }
   });
 
   it("says the window the frame proved rather than assuming five minutes", () => {

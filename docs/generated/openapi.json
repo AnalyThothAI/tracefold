@@ -4502,6 +4502,13 @@
             "title": "State",
             "type": "string"
           },
+          "strategy_config": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Strategy Config",
+            "type": "object"
+          },
           "strategy_id": {
             "title": "Strategy Id",
             "type": "string"

@@ -12,6 +12,7 @@ import type {
 import { CASE_STATE_ZH } from "../model/tradingLabels";
 import {
   bindingCaseRule,
+  caseNumbers,
   evidenceByCase,
   funnelLevels,
   laneCounts,
@@ -53,13 +54,17 @@ export function TradingHeadline({
   const evidence = evidenceByCase(decisions);
   const binding = bindingCaseRule(cases);
   const example = binding ? cases.find((row) => row.policy_reason === binding.reason) : undefined;
-  const refusal = binding
-    ? refusalOf(binding.reason, {
-        evidence: example ? evidence.get(example.case_id)?.gate_evidence : null,
-        numbers,
-        preMoveBps: example?.pre_move_bps,
-      })
-    : null;
+  const refusal =
+    binding && example
+      ? refusalOf(binding.reason, {
+          evidence: evidence.get(example.case_id)?.gate_evidence,
+          // The example case's own frozen thresholds, never today's: the headline names a
+          // bottleneck, and naming it with the wrong number is how a threshold edit makes the
+          // whole page describe a strategy no case was decided by.
+          numbers: caseNumbers(example.strategy_config, numbers),
+          preMoveBps: example.pre_move_bps,
+        })
+      : null;
 
   const lead =
     seen === 0
@@ -172,7 +177,8 @@ export function TradingDecisions({
           rows.map((row) => {
             const refusal = refusalOf(row.policy_reason, {
               evidence: evidence.get(row.case_id)?.gate_evidence,
-              numbers,
+              // Each row explains itself with the configuration it was decided against.
+              numbers: caseNumbers(row.strategy_config, numbers),
               preMoveBps: row.pre_move_bps,
             });
             return (

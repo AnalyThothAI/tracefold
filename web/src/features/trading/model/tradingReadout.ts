@@ -36,7 +36,10 @@ export type StrategyNumbers = {
 };
 
 /** Every value on `status.strategies[].config` is a string; a missing key is `null`, never a zero. */
-function numberOrNull(config: Record<string, string> | undefined, key: string): number | null {
+function numberOrNull(
+  config: Readonly<Record<string, string>> | undefined,
+  key: string,
+): number | null {
   const raw = config?.[key];
   if (raw == null || raw === "") return null;
   const parsed = Number(raw);
@@ -44,9 +47,29 @@ function numberOrNull(config: Record<string, string> | undefined, key: string): 
 }
 
 export function strategyNumbers(status: TradingStatus | undefined): StrategyNumbers {
-  const config = status?.strategies?.find(
-    (row) => row.strategy_id === SMART_MONEY_STRATEGY,
-  )?.config;
+  return numbersFrom(
+    status?.strategies?.find((row) => row.strategy_id === SMART_MONEY_STRATEGY)?.config,
+  );
+}
+
+/**
+ * The thresholds one *case* was decided against, falling back to the running ones.
+ *
+ * A case froze its own `strategy_config`, and that is the only configuration its `policy_reason` is
+ * true under. Explaining it with today's numbers produces sentences that cannot be — a 700 bps frame
+ * refused under the old 1000 bps floor rendering as "7.00%，未达 5.00%" — and, worse, names the wrong
+ * bottleneck in the headline the moment an operator edits a threshold. The fallback is for cases
+ * frozen before the projection carried the field; those are the only ones where today's numbers are
+ * the best available guess, and they are all older than the current config anyway.
+ */
+export function caseNumbers(
+  frozen: Readonly<Record<string, string>> | undefined,
+  running: StrategyNumbers,
+): StrategyNumbers {
+  return frozen && Object.keys(frozen).length > 0 ? numbersFrom(frozen) : running;
+}
+
+function numbersFrom(config: Readonly<Record<string, string>> | undefined): StrategyNumbers {
   return {
     maxPriceMoveBps: numberOrNull(config, "max_price_move_bps"),
     measurementWindowMs: numberOrNull(config, "measurement_window_ms"),

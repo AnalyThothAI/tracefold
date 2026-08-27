@@ -502,24 +502,6 @@ class CandidateRunner:
             if isinstance(news_result, NewsTradeCandidate):
                 news_all.append(news_result)
 
-        orders_today = int(state["orders_today"])
-        capped = orders_today >= self._config.order.max_orders_per_day
-        if capped:
-            funnel.count("scan_skipped:daily_order_cap")
-        elif len(state["active"]) >= self._config.order.max_open_underlyings:
-            funnel.count("scan_skipped:max_open_underlyings")
-            capped = True
-        if capped:
-            # The lane is full, not the source unusable. Every admitted frame still gets its row, or a
-            # busy day would leave a hole in the one ledger that is supposed to explain the whole lane.
-            for signal in oi_triggers:
-                self._record(
-                    defer(signal, stage="eligibility", reason="lane_capacity_exhausted"),
-                    funnel=funnel,
-                    gate=gate,
-                )
-            return []
-
         plans = plan_triggers(
             oi=oi_context,
             news=news_all,
@@ -563,6 +545,28 @@ class CandidateRunner:
                 )
                 continue
             admitted.append(plan)
+
+        # The capacity decision runs *after* coalescing, not before it. It used to return early, and
+        # the early return only recorded `oi_triggers` — so on a capped day every eligible News
+        # candidate got neither a case nor a gate row and aged out of the scan horizon silently,
+        # leaving a hole in the ledger exactly where an operator would go looking for one. Running it
+        # here costs one pure reduction and gives every plan's trigger the same named answer.
+        #
+        # Order matters: a News trigger with no OI context is refused above on its own rule. Being
+        # told the lane was full would be a different, and wrong, explanation.
+        orders_today = int(state["orders_today"])
+        capped = orders_today >= self._config.order.max_orders_per_day
+        if capped:
+            funnel.count("scan_skipped:daily_order_cap")
+        elif len(state["active"]) >= self._config.order.max_open_underlyings:
+            funnel.count("scan_skipped:max_open_underlyings")
+            capped = True
+        if capped:
+            # The lane is full, not the source unusable. Every admitted frame still gets its row, or a
+            # busy day would leave a hole in the one ledger that is supposed to explain the whole lane.
+            for plan in admitted:
+                self._defer_for_capacity(plan, funnel=funnel, gate=gate)
+            return []
         return admitted
 
     # ------------------------------------------------------------------ freeze

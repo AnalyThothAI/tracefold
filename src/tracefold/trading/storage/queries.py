@@ -338,9 +338,10 @@ class QueryStorage:
             SELECT c.case_id, c.underlying_key, c.primary_source_key,
                    c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.mode, c.state, c.regime,
-                   -- Same column, same reason, both projections: `_case()` is shared, so a field
+                   -- Same columns, same reasons, both projections: `_case()` is shared, so a field
                    -- present on one route and structurally null on the other is a half-truth (#273).
                    (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
+                   c.manifest -> 'strategy_config' AS strategy_config,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms,
                    o.order_id, o.state AS order_state, o.state_reason AS order_state_reason,
                    o.side, o.notional_usd, o.entry_reference, o.stop_price, o.exit_price,
@@ -379,6 +380,13 @@ class QueryStorage:
                    -- today's candles is describing a different measurement from the one the case
                    -- was decided by. Every writer stores it as a JSON integer, so the cast is total.
                    (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
+                   -- And the thresholds it was decided *against*. Without these a console explains a
+                   -- case using whatever configuration is running today, so a 700 bps frame refused
+                   -- under the old 1000 bps floor renders as "700 did not reach 500" - an
+                   -- impossibility on screen, and the wrong bottleneck named in the headline.
+                   -- (No per-cent sign in this comment on purpose: psycopg scans comments for
+                   -- placeholders, and a bare one splits the multibyte characters after it.)
+                   c.manifest -> 'strategy_config' AS strategy_config,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms
               FROM trading_cases c
              WHERE {" AND ".join(where)}
