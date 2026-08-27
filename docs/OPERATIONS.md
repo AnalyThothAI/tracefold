@@ -118,6 +118,47 @@ persists the identity before protection/max-holding reconciliation resumes. A
 known provider identity is immutable: supplying a different ID rejects the
 resolution and leaves the order in manual review.
 
+### Nautilus Binance Demo dark slice (#283 PR 1)
+
+PR 1 installs one optional `tracefold nautilus run` process but does not cut
+over the current Trading writer. Its normal config remains
+`trading.nautilus.accept_intents=false`; RabbitMQ is not involved. Before first
+start, confirm `uv run tracefold config` names
+`~/.tracefold/config.yaml`, reports the exact
+`SOLUSDT-PERP.BINANCE` instrument, and reports only the redacted Demo
+`credentials_configured=true`. Never print the two credential files. The
+dedicated Demo account must be One-way, 1x, and free of external positions or
+orders; startup checks account mode once, and Nautilus reconciliation checks
+the remaining venue state before readiness.
+
+On a fresh database, `tracefold init` and `make up` create the Nautilus password
+and role with the other runtime roles. For an existing PostgreSQL volume that
+predates migration `20260827_0315`, stop the whole stack and run the offline
+`make db-provision-nautilus-role` once before `make up`; the command refuses a
+running Compose container. To start only the dark process after `make up`, from
+the clean primary checkout, preserve the built image identity explicitly:
+
+```bash
+image="$(docker compose config --images migrate | grep -v '@sha256:' | head -n 1)"
+image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+TRACEFOLD_IMAGE_DIGEST="$image_id" docker compose up -d --no-build --force-recreate --wait nautilus
+make status
+```
+
+Once that container exists, subsequent `make up` and `make deploy-image` stop
+and recreate it—even if it had exited—with the other application processes and verify the same image;
+`make status` includes its health/readiness and `make logs` includes its logs.
+An absent container remains a valid PR 1 dark state. The opt-in real Demo
+closure/restart drill is `tests/live/test_nautilus_binance_demo.py`; use its
+isolated database/config/container contract rather than seeding a production
+Intent or adding a bypass CLI.
+
+If execution reaches `MANUAL_REVIEW` or flat cannot be proven, do not start the
+legacy writer or submit another entry. Leave Nautilus running so it can continue
+query/protection/exit reconciliation, block new fences with Trading
+`PAUSED`/`CLOSE_ONLY`, and treat a fresh targeted venue-zero result as the only
+flat terminal proof.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -133,13 +174,13 @@ make down
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
-recreates only migration, Serve, and Workers; it does not recreate a running
-PostgreSQL container. On failure, use `make logs`. Operator config, four
+also recreates Nautilus when that optional dark container already exists; it
+does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
 password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
 
 Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
-creates a non-login owner plus the separate Serve, Workers, and migrate roles
+creates a non-login owner plus the separate Serve, Workers, Nautilus, and migrate roles
 from their mode-`0600` password files, revokes the bootstrap login, and only
 then permits migration. It is not a periodic reconciler and will not mutate an
 unknown non-empty cluster. Such a cluster must already satisfy the role/schema
@@ -147,7 +188,8 @@ contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. It must not be replaced by a liveness-only `curl` or a
+HTML console all pass. If a Nautilus container exists, its health and readiness
+must also pass; if none exists, status reports the expected dark state. It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
 ### Exact-image replacement with the current database schema

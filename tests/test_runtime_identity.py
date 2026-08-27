@@ -68,7 +68,7 @@ def test_compose_passes_the_image_digest_to_the_app_services() -> None:
     text, is what proves a service did not shadow it with its own `environment`."""
 
     compose = yaml.safe_load((_REPO_ROOT / "compose.yaml").read_text())
-    for service in ("migrate", "serve", "workers"):
+    for service in ("migrate", "serve", "workers", "nautilus"):
         environment = compose["services"][service].get("environment") or {}
         assert environment.get(IMAGE_DIGEST_ENV) == f"${{{IMAGE_DIGEST_ENV}:-}}", (
             f"{service} must receive the image digest at start time"

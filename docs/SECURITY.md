@@ -40,7 +40,9 @@ and password-file references, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook, the API bind address and bearer token, and model
 provider/name. The optional `trading.opentrade.token_file` points to the
 OpenTrade bearer token used only by App-owned live composition; Trading domain
-code never reads the filesystem or receives the token.
+code never reads the filesystem or receives the token. The two
+`trading.nautilus` file references point only to the dedicated Binance Demo API
+key and secret consumed by the optional Nautilus process.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
@@ -50,22 +52,24 @@ the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
 fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the five PostgreSQL password files
-(bootstrap, Serve, Review, Workers, migrate), and the optional OpenTrade token
-file named by `trading.opentrade.token_file`.
+(bootstrap, Serve, Workers, migrate, Nautilus), the optional OpenTrade token
+file named by `trading.opentrade.token_file`, and the Binance Demo files named
+by `trading.nautilus.api_key_file` and `api_secret_file`.
 There is no other provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
-`~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/migrate
+`~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/migrate
 secret files with mode `0600`; reruns repair those permissions. Without
 `--force`, an existing config is preserved byte-for-byte. `--force` replaces
 only the generated config and does not rotate existing PostgreSQL passwords.
 Generated defaults contain no live provider, model, or webhook credential and
 leave outbound News push disabled. They do not create or populate the optional
-OpenTrade token file. A live operator creates it separately as a regular,
+OpenTrade token or Binance Demo credential files. A live operator creates each
+required provider file separately as a regular,
 non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`);
-diagnostics expose only configured/readable booleans and its resolved path,
-never its contents. The provider base URL must be credential-free HTTPS, so
+diagnostics expose only configured/readable booleans and resolved paths,
+never contents. The OpenTrade provider base URL must be credential-free HTTPS, so
 plain HTTP is rejected before the token file is read.
 
 The token is attached only by the App-owned OpenTrade adapter. Provider write
@@ -77,6 +81,13 @@ is reachable only after exact-digest approval, code-owned expiry and a fresh
 account/inventory/metadata check, and its durable attempt claim commits before
 the network call. Transport uncertainty therefore becomes read-only
 reconciliation, never a credential-bearing blind resend.
+
+Only the Nautilus container mounts the Binance Demo key and secret. During each
+TradingNode connection, the pinned Binance adapter queries the signed account
+position-mode endpoint; its configured `use_reduce_only=true` rejects Hedge
+Mode before reconciliation, strategy readiness, or an entry fence. The
+credential stays inside that adapter. No Binance credential is exposed to
+Serve, Workers, News, RabbitMQ, or public HTTP.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model

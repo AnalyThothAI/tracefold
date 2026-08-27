@@ -30,13 +30,7 @@ from tracefold.integrations.nautilus import (
     build_node_config,
     installed_nautilus_wheel_identity,
 )
-from tracefold.platform.config.models import Settings
-from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
-from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import INTENT_POLICY_SHA256
-
-from .database import NAUTILUS_POLL_SECONDS, NautilusDatabaseBridge
-from .messages import (
+from tracefold.integrations.nautilus.messages import (
     StrategyCommand,
     StrategyQueues,
     VenueFlatConfirmed,
@@ -44,8 +38,14 @@ from .messages import (
     VenueFlatUnproven,
     strategy_queues,
 )
+from tracefold.integrations.nautilus.strategy import SOLUSDT_PERP, TracefoldNautilusStrategy
+from tracefold.platform.config.models import Settings
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
+from tracefold.platform.runtime_identity import runtime_identity
+from tracefold.trading import INTENT_POLICY_SHA256
+
+from .database import NAUTILUS_POLL_SECONDS, NautilusDatabaseBridge
 from .probe import create_nautilus_probe_app
-from .strategy import SOLUSDT_PERP, TracefoldNautilusStrategy
 
 _INTERNAL_PORT = 8767
 _SHUTDOWN_TIMEOUT_SECONDS = 15.0

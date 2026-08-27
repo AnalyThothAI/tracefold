@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -11,7 +13,7 @@ from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, UniqueVio
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.trading import INTENT_POLICY_SHA256, TradeIntent, deterministic_client_order_id
+from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
@@ -51,16 +53,9 @@ def _intent(
     return TradeIntent.create(
         case_id=case_id,
         case_manifest_sha256=case_manifest_sha256,
-        intent_policy_sha256=INTENT_POLICY_SHA256,
-        instrument_id="SOLUSDT-PERP.BINANCE",
         created_at_ms=NOW,
-        valid_until_ms=NOW + 60_000,
         reference_price=Decimal("60000"),
         target_notional_usd=Decimal("10"),
-        stop_loss_bps=200,
-        max_holding_ms=180_000,
-        max_entry_drift_bps=25,
-        max_spread_bps=30,
     )
 
 
@@ -189,6 +184,40 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     conn.commit()
     recovered = repos.trading.intent_outcome(intent.intent_id)
     assert recovered == fenced
+
+
+def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner(conn: Any) -> None:
+    _case(conn)
+    intent = _intent()
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    conn.commit()
+    barrier = Barrier(2)
+
+    def compete(engine_identity: str) -> IntentOutcome | None:
+        contender = connect_postgres_test(read_only=False)
+        try:
+            contender_repos = repositories_for_connection(contender)
+            barrier.wait(timeout=5)
+            result = contender_repos.trading.fence_entry(
+                intent.intent_id,
+                engine_identity=engine_identity,
+                now_ms=NOW + 2_000,
+            )
+            contender.commit()
+            return result
+        finally:
+            contender.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(compete, ("nt-a", "nt-b")))
+
+    assert sum(result is not None for result in results) == 1
+    stored = repos.trading.intent_outcome(intent.intent_id)
+    assert stored is not None
+    assert stored.execution_state == "IN_FLIGHT"
+    assert stored.engine_identity in {"nt-a", "nt-b"}
 
 
 def test_entry_fence_enforces_the_code_owned_one_entry_per_utc_day(conn: Any) -> None:

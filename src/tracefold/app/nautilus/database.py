@@ -14,9 +14,7 @@ from loguru import logger
 from psycopg import InterfaceError, OperationalError
 
 from tracefold.app.repository_session import repositories
-from tracefold.platform.config.models import Settings
-
-from .messages import (
+from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     CloseSubmitted,
     EntryFenceGranted,
@@ -24,6 +22,7 @@ from .messages import (
     EntryFilled,
     EntryRejected,
     IntentRefused,
+    IntentReleased,
     OrderOutcomeUnknown,
     PositionClosedObserved,
     PositionFlatConfirmed,
@@ -34,6 +33,7 @@ from .messages import (
     StrategyEvent,
     StrategyQueues,
 )
+from tracefold.platform.config.models import Settings
 
 _RepositoryFactory = Callable[..., AbstractContextManager[Any]]
 NAUTILUS_POLL_SECONDS = 1.0
@@ -163,7 +163,7 @@ class NautilusDatabaseBridge:
                 self._pending_event = None
 
         now_ms = self._now_ms()
-        command: AdoptIntent | None = None
+        command: AdoptIntent | IntentReleased | None = None
         with repos.transaction():
             runtime = repos.trading.nautilus_runtime_state()
             active = repos.trading.active_intent()
@@ -175,6 +175,8 @@ class NautilusDatabaseBridge:
                     expired = repos.trading.expire_unfenced_intent(intent.intent_id, now_ms=now_ms)
                     with self._lock:
                         self._expiry_projection_healthy = expired is not None
+                    if expired is not None:
+                        command = IntentReleased(intent_id=intent.intent_id)
                     self._dispatched_intent_id = None
                 elif self._should_dispatch(runtime, outcome) and self._dispatched_intent_id != intent.intent_id:
                     command = AdoptIntent(intent=intent, outcome=outcome)
@@ -222,6 +224,7 @@ class NautilusDatabaseBridge:
                 )
             if outcome is None:
                 self._dispatched_intent_id = None
+                self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
                 return True
             self._queues.commands.put_nowait(EntryFenceGranted(outcome=outcome, quantity=event.quantity))
             return True

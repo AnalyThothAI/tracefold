@@ -12,11 +12,12 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app.nautilus.database import NautilusDatabaseBridge
-from tracefold.app.nautilus.messages import (
+from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
+    IntentReleased,
     OrderOutcomeUnknown,
     PositionClosedObserved,
     PositionFlatConfirmed,
@@ -25,7 +26,7 @@ from tracefold.app.nautilus.messages import (
     StopSubmitted,
     strategy_queues,
 )
-from tracefold.trading import INTENT_POLICY_SHA256, IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
 
 NOW_MS = 1_900_000_000_000
 
@@ -44,16 +45,9 @@ def _intent() -> TradeIntent:
     return TradeIntent.create(
         case_id="case-1",
         case_manifest_sha256="1" * 64,
-        intent_policy_sha256=INTENT_POLICY_SHA256,
-        instrument_id="SOLUSDT-PERP.BINANCE",
         created_at_ms=NOW_MS,
-        valid_until_ms=NOW_MS + 60_000,
         reference_price=Decimal("10000"),
         target_notional_usd=Decimal("10"),
-        stop_loss_bps=200,
-        max_holding_ms=180_000,
-        max_entry_drift_bps=25,
-        max_spread_bps=30,
     )
 
 
@@ -162,6 +156,22 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
     assert repos.order == ["begin", "fence", "commit"]
     assert queues.commands.get_nowait() == EntryFenceGranted(outcome=fenced, quantity=quantity)
     repos.trading.intent.assert_not_called()
+
+
+def test_denied_entry_fence_releases_the_strategy_owned_pending_intent() -> None:
+    intent = _intent()
+    quantity = Decimal("0.001")
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+    repos.trading.fence_entry.return_value = None
+
+    bridge._handle_event(
+        repos,
+        EntryFenceRequested(intent_id=intent.intent_id, engine_identity="nt-v1", quantity=quantity),
+    )
+
+    assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
 
 
 def test_execution_events_write_only_authoritative_identifiers_and_quantities() -> None:
@@ -394,6 +404,7 @@ def test_expiry_projection_failure_blocks_admission_until_the_same_row_updates()
 
     bridge._cycle(repos)
     assert repos.trading.expire_unfenced_intent.call_count == 2
+    assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
     assert bridge.readiness()["ok"] is True
 
 

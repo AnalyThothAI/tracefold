@@ -180,7 +180,7 @@ def test_nautilus_root_rejects_missing_credentials_before_constructing_the_node(
 
 def test_targeted_public_position_report_is_reconciled_before_flat_confirmation() -> None:
     from tracefold.app.nautilus import root
-    from tracefold.app.nautilus.messages import (
+    from tracefold.integrations.nautilus.messages import (
         VenueFlatConfirmed,
         VenueFlatProofRequested,
         strategy_queues,
@@ -248,7 +248,7 @@ def test_targeted_public_position_report_is_reconciled_before_flat_confirmation(
 
 def test_nonzero_targeted_position_report_never_confirms_flat() -> None:
     from tracefold.app.nautilus import root
-    from tracefold.app.nautilus.messages import (
+    from tracefold.integrations.nautilus.messages import (
         VenueFlatProofRequested,
         VenueFlatUnproven,
         strategy_queues,

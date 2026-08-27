@@ -31,7 +31,7 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
-from tracefold.app.nautilus.messages import (
+from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     CloseSubmitted,
     EntryFenceGranted,
@@ -39,6 +39,7 @@ from tracefold.app.nautilus.messages import (
     EntryFilled,
     EntryRejected,
     IntentRefused,
+    IntentReleased,
     OrderOutcomeUnknown,
     PositionClosedObserved,
     PositionFlatConfirmed,
@@ -52,12 +53,12 @@ from tracefold.app.nautilus.messages import (
     VenueFlatUnproven,
     strategy_queues,
 )
-from tracefold.app.nautilus.strategy import (
+from tracefold.integrations.nautilus.strategy import (
     SOLUSDT_PERP,
     TracefoldNautilusStrategy,
     tracefold_strategy_config,
 )
-from tracefold.trading import INTENT_POLICY_SHA256, IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
 
 NOW_MS = 1_900_000_000_000
 
@@ -77,16 +78,9 @@ def _intent(*, case_id: str = "case-1") -> TradeIntent:
     return TradeIntent.create(
         case_id=case_id,
         case_manifest_sha256="1" * 64,
-        intent_policy_sha256=INTENT_POLICY_SHA256,
-        instrument_id="SOLUSDT-PERP.BINANCE",
         created_at_ms=NOW_MS,
-        valid_until_ms=NOW_MS + 60_000,
         reference_price=Decimal("10000"),
         target_notional_usd=Decimal("10"),
-        stop_loss_bps=200,
-        max_holding_ms=180_000,
-        max_entry_drift_bps=25,
-        max_spread_bps=30,
     )
 
 
@@ -350,6 +344,43 @@ def test_terminal_refusal_clears_runtime_for_the_next_intent() -> None:
     refused = queues.events.get_nowait()
     assert isinstance(refused, IntentRefused)
     assert refused.intent_id == second.intent_id
+
+
+def test_database_terminalization_releases_pending_runtime_for_the_next_intent() -> None:
+    strategy, queues = _registered_strategy()
+    first = _intent(case_id="case-1")
+    queues.commands.put_nowait(AdoptIntent(intent=first, outcome=_outcome(first)))
+    strategy.on_timer(None)
+    assert isinstance(queues.events.get_nowait(), EntryFenceRequested)
+
+    queues.commands.put_nowait(IntentReleased(intent_id=first.intent_id))
+    second = _intent(case_id="case-2")
+    queues.commands.put_nowait(AdoptIntent(intent=second, outcome=_outcome(second)))
+    strategy.on_timer(None)
+
+    second_request = queues.events.get_nowait()
+    assert isinstance(second_request, EntryFenceRequested)
+    assert second_request.intent_id == second.intent_id
+
+
+def test_stale_release_for_an_old_intent_cannot_disturb_the_active_intent() -> None:
+    strategy, queues = _registered_strategy()
+    active = _intent(case_id="case-2")
+    outcome = _outcome(
+        active,
+        execution_state="IN_FLIGHT",
+        execution_phase="ENTRY",
+        entry_fenced_at_ms=NOW_MS,
+        entry_client_order_id=deterministic_client_order_id(active.intent_id, "entry"),
+    )
+    strategy._active_intent = active
+    strategy._active_outcome = outcome
+
+    queues.commands.put_nowait(IntentReleased(intent_id="f" * 64))
+    strategy.on_timer(None)
+
+    assert strategy._active_intent == active
+    assert strategy._active_outcome == outcome
 
 
 def test_readiness_rejects_an_unowned_open_order_on_another_symbol() -> None:

@@ -5,7 +5,8 @@ Provide a migrated, empty, isolated PostgreSQL database named
 image runs ``tracefold nautilus run`` against it. Mount a test-owned config at
 ``/root/.tracefold/config.yaml`` with
 ``trading.nautilus.accept_intents: true``, and mount the operator-configured
-0600 Binance Demo key/secret files read-only. Then run::
+0600 Binance Demo key/secret files read-only. The container must set
+``TRACEFOLD_IMAGE_DIGEST`` to that immutable image ID. Then run::
 
     TRACEFOLD_RUN_BINANCE_DEMO=1 \
     TRACEFOLD_BINANCE_DEMO_IMAGE=sha256:<image-id> \
@@ -164,16 +165,9 @@ def _create_intent(conn: Any, reference_price: Decimal) -> TradeIntent:
     intent = TradeIntent.create(
         case_id=f"case-binance-demo-{uuid.uuid4().hex}",
         case_manifest_sha256=manifest_sha,
-        intent_policy_sha256=INTENT_POLICY_SHA256,
-        instrument_id=_INSTRUMENT,
         created_at_ms=now_ms,
-        valid_until_ms=now_ms + 60_000,
         reference_price=reference_price,
         target_notional_usd=Decimal("9.50"),
-        stop_loss_bps=200,
-        max_holding_ms=180_000,
-        max_entry_drift_bps=25,
-        max_spread_bps=30,
     )
     repos = repositories_for_connection(conn)
     with repos.transaction():
@@ -193,7 +187,7 @@ def _create_intent(conn: Any, reference_price: Decimal) -> TradeIntent:
     return intent
 
 
-def _preconditions(container: str, image: str, config_path: Path, key_path: Path, secret_path: Path) -> None:
+def _preconditions(container: str, image: str, config_path: Path, key_path: Path, secret_path: Path) -> str:
     root = Path(__file__).resolve().parents[2]
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
@@ -218,6 +212,7 @@ def _preconditions(container: str, image: str, config_path: Path, key_path: Path
         image,
     )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    container_env = set(inspected["Config"]["Env"])
     if not (
         inspected["Image"] == image
         and revision == head
@@ -228,8 +223,10 @@ def _preconditions(container: str, image: str, config_path: Path, key_path: Path
         and _mounted(inspected, config_path, "/root/.tracefold/config.yaml")
         and _mounted(inspected, key_path)
         and _mounted(inspected, secret_path)
+        and f"TRACEFOLD_IMAGE_DIGEST={image}" in container_env
     ):
         pytest.fail("stopped Nautilus container does not satisfy the live setup contract", pytrace=False)
+    return head
 
 
 def test_binance_demo_entry_restart_and_max_holding_close() -> None:
@@ -265,7 +262,7 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         key, secret = read_secure_secret_text(key_path), read_secure_secret_text(secret_path)
     except SecretFileError as exc:
         pytest.fail(f"operator Binance Demo credential file rejected:{exc.code}", pytrace=False)
-    _preconditions(container, image, config_path, key_path, secret_path)
+    head = _preconditions(container, image, config_path, key_path, secret_path)
 
     try:
         conn = connect_postgres(required["TRACEFOLD_BINANCE_DEMO_POSTGRES_DSN"])
@@ -377,6 +374,12 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         )
         flat_seen = True
         assert closed.close_client_order_id == close_id and closed.flat_verified_at_ms is not None
+        assert closed.engine_identity is not None
+        assert f"tracefold@{head};" in closed.engine_identity
+        assert f"image@{image};" in closed.engine_identity
+        assert "nautilus@1.231.0+27a8e54e7ac3c57d6cbf8891f0283dfbaee97317;" in closed.engine_identity
+        assert "wheel@cp313-cp313-manylinux_2_35_" in closed.engine_identity
+        assert f"intent-policy@{INTENT_POLICY_SHA256}" in closed.engine_identity
 
         orders, algos = _wait(
             "terminal_owned_orders",

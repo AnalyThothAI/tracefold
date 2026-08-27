@@ -62,10 +62,16 @@ if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
 fi
 if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
   : > "$TRACEFOLD_TEST_SERVICES_STOPPED"
+  printf '%s\n' "$*" > "$TRACEFOLD_TEST_STOP_ARGS"
   if [ -n "${TRACEFOLD_TEST_DEPLOY_BLOCK:-}" ]; then
     : > "${TRACEFOLD_TEST_DEPLOY_BLOCK}.entered"
     while [ ! -e "${TRACEFOLD_TEST_DEPLOY_BLOCK}.release" ]; do sleep 0.01; done
   fi
+fi
+if [ "$1" = "compose" ] && [ "$2" = "up" ]; then
+  printf '%s\n' "$*" > "$TRACEFOLD_TEST_UP_ARGS"
+  case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;; esac
+  exit 0
 fi
 if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
   if [ "$#" -eq 3 ] && [ "$3" = "-q" ]; then
@@ -76,6 +82,16 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
   for argument do service="$argument"; done
   case "$service" in
     postgres|rabbitmq|migrate|serve|workers) printf '%s\\n' "${service}-id" ;;
+    nautilus)
+      if [ -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
+        printf '%s\\n' nautilus-id
+      elif [ "${TRACEFOLD_TEST_NAUTILUS_PRESENT:-}" = "1" ]; then
+        case " $* " in
+          *" --all "*) printf '%s\\n' nautilus-id ;;
+          *) if [ "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}" = "running" ]; then printf '%s\\n' nautilus-id; fi ;;
+        esac
+      fi
+      ;;
   esac
   exit 0
 fi
@@ -84,7 +100,13 @@ if [ "$1" = "inspect" ]; then
   container_id="$4"
   case "$format" in
     *State.Status*)
-      if [ "$container_id" = "migrate-id" ]; then printf '%s\\n' exited; else printf '%s\\n' running; fi
+      if [ "$container_id" = "migrate-id" ]; then
+        printf '%s\\n' exited
+      elif [ "$container_id" = "nautilus-id" ] && [ ! -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
+        printf '%s\\n' "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}"
+      else
+        printf '%s\\n' running
+      fi
       ;;
     *State.ExitCode*) printf '%s\\n' 0 ;;
     *State.Health*) printf '%s\\n' healthy ;;
@@ -93,6 +115,7 @@ if [ "$1" = "inspect" ]; then
         migrate-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
         serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
         workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
+        nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
       esac
       ;;
   esac
@@ -140,6 +163,8 @@ esac
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "TRACEFOLD_TEST_EXTERNAL_ACTIVITY": str(external_activity),
         "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
+        "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
+        "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
@@ -147,6 +172,8 @@ esac
         "TRACEFOLD_TEST_RECEIPT": "ok",
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
         "TRACEFOLD_TEST_ROLE_PROVISION": str(tmp_path / "role-provision"),
     }
     return repo, external_activity, services_stopped, env
@@ -258,6 +285,43 @@ def test_up_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not external_activity.exists()
+
+
+def test_exact_image_deploy_recreates_a_running_nautilus_on_the_same_image(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_STOP_ARGS"]).read_text(encoding="utf-8")
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+def test_exact_image_deploy_recovers_a_stopped_nautilus_container(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_NAUTILUS_STATUS"] = "exited"
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
 def test_nautilus_role_provisioning_refuses_a_running_compose_stack(tmp_path: Path) -> None:

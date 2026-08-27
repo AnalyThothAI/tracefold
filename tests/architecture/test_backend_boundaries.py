@@ -151,7 +151,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
 }
 # Concrete integration families may own one business-facing adapter. This is a module-family rule,
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
-INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {"opentrade": {"trading"}}
+INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
+    "nautilus": {"trading"},
+    "opentrade": {"trading"},
+}
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
 # would have to be named here; no News module may write another business package's tables.
 ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES: dict[str, set[str]] = {}

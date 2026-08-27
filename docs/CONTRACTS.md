@@ -21,7 +21,7 @@ model and loader implementation.
 Unknown settings or worker keys fail validation.
 
 `tracefold init` creates the operator directory, config, cache/log directories,
-and bootstrap/Serve/Workers/migrate password files. The operator directory is
+and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
 mode `0700`; config and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
@@ -203,6 +203,18 @@ be proved.
 it a News-bearing case settles as `no_trade / program_unconfigured` and an
 open-interest case still decides, because that lane calls no model at all.
 
+`storage.postgres.nautilus_dsn` and `nautilus_password_file` configure the
+least-privilege #283 execution role. `trading.nautilus` has only three fields:
+`accept_intents` (default false), `api_key_file`, and `api_secret_file`; secret
+paths resolve relative to the operator config directory. Instrument
+`SOLUSDT-PERP.BINANCE`, Binance USD-M Demo, long-only, 1x, the one-second
+database poll, 60-second Intent TTL, at most 10 USDT notional, stop/holding/
+spread/drift bounds, one active Intent, and one fenced entry per UTC day are
+code/database-owned contracts, not YAML knobs. `tracefold config` reports the
+resolved paths plus one redacted `credentials_configured` boolean and never the
+secret contents. `accept_intents=false` still permits process startup and venue
+reconciliation but prevents admission of a new pending Intent.
+
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, News broker topology and consumer set, and all resource
 capacities are code-owned. Configuration cannot add another worker or derived
@@ -214,12 +226,16 @@ The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
 Compose, `curl`, and daemon access; runs idempotent initialization; builds the
 frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. A repeated invocation preserves config, passwords, and
-named-volume data.
+console boundaries. The dark Nautilus service is optional; when its container
+already exists, `make up` stops, recreates, waits for, and verifies it with the same
+image. A repeated invocation preserves config, passwords, and named-volume
+data.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
-runtime readiness endpoint, or console HTML is missing or unhealthy.
-`make logs` follows the bounded startup services. `make down` stops the stack
+required runtime readiness endpoint, or console HTML is missing or unhealthy.
+When a Nautilus container exists it also requires that process and its readiness
+endpoint to be healthy; absence is reported as the expected dark/not-enabled
+state. `make logs` follows the bounded startup services including Nautilus. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
 
@@ -233,7 +249,8 @@ database Alembic heads to match and requires the target image to parse the
 active config. It never builds, pulls, or downgrades. Success additionally
 requires the recreated migration, Serve, and Workers containers, Workers
 readiness identity, runtime manifest, and linked active/deployment receipt to
-prove that exact image. `make up` and `make deploy-image` share one
+prove that exact image. If a Nautilus container existed before replacement it is also
+recreated and its container image is checked against the same ID. `make up` and `make deploy-image` share one
 process-lifetime deployment lock; concurrent mutation is refused and process
 exit releases the lock.
 
@@ -814,7 +831,7 @@ reader/writer.
 
 `uv run tracefold --help` is the exact CLI source of truth. Stable top-level families are:
 
-- service/config: `serve`, `workers`, `init`, `config`;
+- service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
 - Trading: `trading status|cases|show|blacklist|approve|reject|resolve|control`;

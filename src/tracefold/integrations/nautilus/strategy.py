@@ -1,4 +1,4 @@
-"""Public-v1 Nautilus strategy for Tracefold's single Binance Demo intent."""
+"""Public-v1 Nautilus adapter for Tracefold's single Binance Demo intent."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from .messages import (
     EntryFilled,
     EntryRejected,
     IntentRefused,
+    IntentReleased,
     OrderLeg,
     OrderOutcomeUnknown,
     PositionClosedObserved,
@@ -171,6 +172,8 @@ class TracefoldNautilusStrategy(Strategy):
             self._adopt_intent(command)
         elif isinstance(command, EntryFenceGranted):
             self._submit_fenced_entry(command)
+        elif isinstance(command, IntentReleased):
+            self._release_pending_intent(command.intent_id)
         elif isinstance(command, VenueFlatConfirmed):
             self._confirm_venue_flat(command)
         elif isinstance(command, VenueFlatUnproven):
@@ -203,6 +206,15 @@ class TracefoldNautilusStrategy(Strategy):
                 quantity=quantity,
             )
         )
+
+    def _release_pending_intent(self, intent_id: str) -> None:
+        intent = self._active_intent
+        if intent is None or intent.intent_id != intent_id:
+            return
+        outcome = self._active_outcome
+        if outcome is not None and outcome.entry_fenced_at_ms is not None:
+            raise RuntimeError("nautilus_fenced_intent_release_refused")
+        self._clear_active_without_exposure(intent_id)
 
     def _entry_quantity(self, intent: TradeIntent) -> Decimal | None:
         now_ms = int(self.clock.timestamp_ms())

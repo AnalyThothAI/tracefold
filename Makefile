@@ -6,10 +6,13 @@ TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
 TRACEFOLD_WORKERS_PORT ?= 8766
+TRACEFOLD_NAUTILUS_HOST ?= 127.0.0.1
+TRACEFOLD_NAUTILUS_PORT ?= 8767
 TRACEFOLD_API_URL ?= http://127.0.0.1:$(TRACEFOLD_API_PORT)
 TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
+TRACEFOLD_NAUTILUS_URL ?= http://127.0.0.1:$(TRACEFOLD_NAUTILUS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
-export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
+export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT TRACEFOLD_NAUTILUS_HOST TRACEFOLD_NAUTILUS_PORT
 
 .PHONY: help up _up-locked deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
@@ -173,6 +176,8 @@ _up-locked:
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
+		nautilus_was_enabled=false; \
+		if [ -n "$$(docker compose ps --all -q nautilus)" ]; then nautilus_was_enabled=true; fi; \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
@@ -183,9 +188,11 @@ _up-locked:
 			echo "  Deployment continues, but every runtime manifest it writes records" >&2; \
 			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
 		fi; \
-		docker compose stop -t 40 workers serve || fail; \
+		runtime_services="migrate serve workers"; \
+		if [ "$$nautilus_was_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers || fail; \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
@@ -289,10 +296,14 @@ _deploy-image-locked:
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		docker compose stop -t 40 workers serve || fail; \
+		nautilus_was_enabled=false; \
+		if [ -n "$$(docker compose ps --all -q nautilus)" ]; then nautilus_was_enabled=true; fi; \
+		runtime_services="migrate serve workers"; \
+		if [ "$$nautilus_was_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers || fail; \
-		for service in migrate serve workers; do \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
 				echo "$$service container is missing after exact-image deployment." >&2; \
@@ -358,7 +369,7 @@ _deploy-image-locked:
 		make --no-print-directory status || fail; \
 		echo "Tracefold deployed exact local image $$image_id."
 
-status: preflight ## fail closed unless database, API, Workers, and console are ready
+status: preflight ## fail closed unless every enabled runtime is ready
 	@docker compose ps --all
 	@set -eu; \
 		failed=0; \
@@ -376,6 +387,19 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 				failed=1; \
 			fi; \
 		done; \
+		nautilus_id=$$(docker compose ps --all -q nautilus); \
+		if [ -n "$$nautilus_id" ]; then \
+			nautilus_state=$$(docker inspect --format '{{.State.Status}}' "$$nautilus_id"); \
+			nautilus_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$nautilus_id"); \
+			if [ "$$nautilus_state" != "running" ] || [ "$$nautilus_health" != "healthy" ]; then \
+				echo "nautilus: state=$$nautilus_state health=$$nautilus_health" >&2; \
+				failed=1; \
+			else \
+				curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
+			fi; \
+		else \
+			echo "nautilus: not enabled (dark slice)"; \
+		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \
 			echo "migrate: missing" >&2; \
@@ -402,8 +426,8 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 			exit 1; \
 		fi
 
-logs: preflight ## tail Serve, Workers, migration, PostgreSQL, and RabbitMQ logs
-	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq
+logs: preflight ## tail all product runtime and dependency logs
+	@docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
 	@docker compose down

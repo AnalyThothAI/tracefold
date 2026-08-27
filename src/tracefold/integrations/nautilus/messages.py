@@ -29,6 +29,13 @@ class EntryFenceGranted:
 
 
 @dataclass(frozen=True, slots=True)
+class IntentReleased:
+    """Forget a pending Intent that PostgreSQL has terminalized or refused to fence."""
+
+    intent_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class VenueFlatConfirmed:
     """Deliver one targeted, reconciled venue position report with quantity zero."""
 
@@ -173,7 +180,7 @@ class OrderOutcomeUnknown:
     observed_at_ms: int
 
 
-StrategyCommand = AdoptIntent | EntryFenceGranted | VenueFlatConfirmed | VenueFlatUnproven
+StrategyCommand = AdoptIntent | EntryFenceGranted | IntentReleased | VenueFlatConfirmed | VenueFlatUnproven
 StrategyEvent = (
     ReadinessChanged
     | EntryFenceRequested
@@ -212,6 +219,7 @@ __all__ = [
     "EntryFilled",
     "EntryRejected",
     "IntentRefused",
+    "IntentReleased",
     "OrderLeg",
     "OrderOutcomeUnknown",
     "PositionClosedObserved",

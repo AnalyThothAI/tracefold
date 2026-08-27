@@ -42,6 +42,16 @@ an exact operator-approved digest and a durable one-attempt fence. It shares the
 admission rather than the four News lane slots, holds no agent framework, and
 its failure is local the same way the price plane's is.
 
+Issue #283 also ships one **dark** Binance USD-M Demo execution process. It is
+not the current Trading writer: Workers keep their existing paper/OpenTrade
+path until the later atomic hard cut. The dark process polls the single
+`trading_intents` table once per second and may accept rows only when
+`trading.nautilus.accept_intents=true`; the default is false. PostgreSQL is the
+handoff, entry fence, restart checkpoint, execution projection, and audit
+truth. RabbitMQ remains News-only. This avoids a second capital queue plus the
+outbox/confirm/ack/retry/DLQ machinery that would still need the same database
+ledger.
+
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
 capability, singleton runtime status, and the RabbitMQ-driven News consumers
@@ -52,10 +62,11 @@ dependency. Provider raw frames remain inputs until normalized and persisted
 as material facts.
 
 The deployment composition has four required boundaries: PostgreSQL, one
-successful migration job, Serve, and Workers. `make up` is only their
+successful migration job, Serve, and Workers, plus the optional dark Nautilus
+process. `make up` is only their
 fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
 On an empty PostgreSQL volume, the image's `initdb` hook creates the
-non-login owner plus least-privilege Serve, Review, Workers, and migrate roles from
+non-login owner plus least-privilege Serve, Workers, Nautilus, and migrate roles from
 separate password files, then revokes the bootstrap login before the migration
 job runs. That hook is never replayed against a non-empty cluster. Repeated
 startup therefore preserves the database and operator-owned credentials, while
@@ -64,9 +75,10 @@ hard-cut.
 
 The same project-scoped application image contains the Python service and a
 production React build. Migration, Serve, and Workers use that exact image and
-build revision with different commands and credentials.
-`make up` builds the image once and recreates only migration, Serve, and
-Workers; it starts PostgreSQL when absent but does not recreate a running
+build revision with different commands and credentials; an enabled
+Nautilus process uses it too.
+`make up` builds the image once and recreates migration, Serve, Workers, and an
+existing Nautilus container (including a stopped one); it starts PostgreSQL when absent but does not recreate a running
 PostgreSQL container. Serve owns the static console and public HTTP
 boundary; Workers exposes only its loopback operational boundary. Image
 construction and Compose startup do not become alternate configuration
@@ -140,6 +152,7 @@ evidence rather than executable configuration.
 | Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
 | Trading intent preparation / entry | Trading | `capital_truth` | accepted frozen case plus execution adapter | PostgreSQL transaction + provider write | `trading-candidate`; after an accepted decision | prepared `trading_orders`, attempt fence and execution receipt; Trading/operator |
 | Trading execution reconciliation | Trading | `capital_truth` | Trading ledger plus execution-provider truth | PostgreSQL planner + provider read/write | `trading-reconcile`; 30 s | `trading_orders`, observations, fills and positions; Trading/operator |
+| Nautilus Binance Demo dark slice | Trading | `capital_truth` | one immutable `trading_intents` row plus Binance Demo truth | PostgreSQL poll + Nautilus adapter | `tracefold nautilus run`; 1 s while explicitly enabled | the same `trading_intents` row; operator and later hard-cut writer |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
 means one turn-wide cap is divided among the named rows. `adapter-owned` names a
@@ -166,6 +179,7 @@ does not apply.
 | Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
 | Trading intent preparation / entry | accepted decision | immediate within decision TTL | case / underlying | one prepared order/case; one active order/underlying | one provider write behind the attempt fence | one | adapter-owned | reconcile only / durable order state / no | exception becomes `AMBIGUOUS`; the write is never blindly repeated |
 | Trading execution reconciliation | 30 s | ledger/provider current truth | order ID | 32 due orders/turn | provider reads/writes serial | one | adapter-owned | yes / durable state machine / no | ambiguous entry/exit is read back; unknown truth fails closed or escalates |
+| Nautilus Binance Demo dark slice | 1 s PostgreSQL poll | 60 s Intent TTL | globally single active Intent | one active row | one entry, stop, or close operation at a time | one TradingNode | adapter-owned | restart reconciliation / database uniqueness / no | entry is fenced before send; exposure is protected or closing; terminal flat requires a targeted venue-zero proof |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -208,11 +222,12 @@ semantics. Until those facts exist, do not add an `ExternalDataService`,
 provider plugin registry, `BaseCollector`, `BaseWorker`, generic task engine or
 new top-level package.
 
-NautilusTrader is an evidence-gated candidate, not a dependency or production
-authority. An isolated shadow evaluation requires a real sub-second freshness,
-REST rate/byte/CPU, event-stream, shared-stream or Trading execution-engine
-need. It must make no capital write or business decision; PostgreSQL remains
-business truth and News, Triage, Review and Learning stay on their present
+NautilusTrader `1.231.0` is a pinned dependency and the execution authority only
+inside the #283 dark Binance Demo process. It is not a new business truth,
+scheduler, News transport, or provider registry. The adapter receives frozen
+capital policy from `TradeIntent`, verifies the dedicated account once at
+startup, and projects venue outcomes back onto the same row. PostgreSQL remains
+business truth; News, Triage, Review and Learning stay on their present
 runtimes.
 
 <!-- END EXTERNAL DATA INVENTORY -->
@@ -358,7 +373,8 @@ tracefold.trading
   pipeline/           candidate and reconcile runners plus their two-runner composition root
 
 tracefold.integrations
-  provider and external-system adapters: OpenNews, OpenTrade, RabbitMQ, Feishu
+  provider and external-system adapters: OpenNews, OpenTrade, RabbitMQ, Feishu,
+  and the pinned Nautilus/Binance Demo strategy adapter
 
 tracefold.platform
   config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
@@ -366,7 +382,8 @@ tracefold.platform
 
 tracefold.app
   Serve/Workers database composition, `repository_session.py`, HTTP, CLI,
-  and the Workers lifecycle root plus capability wiring (`app/workers/`).
+  the Workers lifecycle root plus capability wiring (`app/workers/`), and the
+  thin Nautilus process/database/probe composition root (`app/nautilus/`).
   `workers/wiring/database.py` satisfies each capability's own database port;
   `workers/wiring/news_to_trading.py` is the single News -> Trading mapper.
   News CLI commands are owned by their bus/instrument/review/learning/diagnostic
@@ -1422,6 +1439,17 @@ See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 `tracefold.trading` is the second business capability and is disabled by
 default. It exists to turn a persisted market trigger plus frozen context into
 at most one small, recoverable, auditable order — not to claim an edge.
+
+The #283 dark slice adds one future hard-cut seam without changing that current
+writer: Workers may insert one immutable `trade_intent_v1` row, and the separate
+Nautilus process is the only role allowed to advance its execution columns.
+The row fixes `SOLUSDT-PERP.BINANCE`, long-only, at most 10 USDT notional, 1x,
+a 60 s entry TTL, fixed stop, at most 180 s holding, and bounded spread/drift.
+Database uniqueness permits at most one active Intent and one fenced entry per
+UTC day. The only capital invariants are entry-at-most-once,
+protected-or-closing after fill, and venue-proven flat before terminal close.
+No Trading RabbitMQ exchange, event table, outbox, generic workflow engine, or
+parallel executor exists.
 
 ```text
 persisted market trigger (News, OI, or typed liquidation)

@@ -11,22 +11,16 @@ from tracefold.trading import INTENT_POLICY_SHA256, IntentOutcome, TradeIntent
 
 
 def _intent(**overrides: object) -> TradeIntent:
-    values: dict[str, object] = {
-        "case_id": "case-1",
-        "case_manifest_sha256": "1" * 64,
-        "intent_policy_sha256": INTENT_POLICY_SHA256,
-        "instrument_id": "SOLUSDT-PERP.BINANCE",
-        "created_at_ms": 1_900_000_000_000,
-        "valid_until_ms": 1_900_000_060_000,
-        "reference_price": Decimal("60000"),
-        "target_notional_usd": Decimal("10"),
-        "stop_loss_bps": 200,
-        "max_holding_ms": 180_000,
-        "max_entry_drift_bps": 25,
-        "max_spread_bps": 30,
-    }
+    intent = TradeIntent.create(
+        case_id="case-1",
+        case_manifest_sha256="1" * 64,
+        created_at_ms=1_900_000_000_000,
+        reference_price=Decimal("60000"),
+        target_notional_usd=Decimal("10"),
+    )
+    values: dict[str, object] = intent.model_dump()
     values.update(overrides)
-    return TradeIntent.create(**values)  # type: ignore[arg-type]
+    return TradeIntent.model_validate(values)
 
 
 @pytest.mark.parametrize(
@@ -47,7 +41,14 @@ def test_v1_policy_rejects_values_outside_the_single_frozen_demo_slice(field: st
 
 
 def test_v1_policy_accepts_the_frozen_demo_slice() -> None:
-    assert _intent().instrument_id == "SOLUSDT-PERP.BINANCE"
+    intent = _intent()
+    assert intent.instrument_id == "SOLUSDT-PERP.BINANCE"
+    assert intent.intent_policy_sha256 == INTENT_POLICY_SHA256
+    assert intent.valid_until_ms == intent.created_at_ms + 60_000
+    assert intent.stop_loss_bps == 200
+    assert intent.max_holding_ms == 180_000
+    assert intent.max_entry_drift_bps == 25
+    assert intent.max_spread_bps == 30
 
 
 def test_v1_policy_identity_is_code_owned() -> None:
