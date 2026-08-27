@@ -73,22 +73,54 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
 
 
 def test_codeowners_protects_the_minimal_verification_trust_root() -> None:
-    entries = {
-        line.split()[0]: line.split()[1:]
-        for line in (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-
-    for path in (
+    owners = ("@amandafanny", "@Giftpaulmo", "@0xbrak")
+    paths = (
         "/.github/CODEOWNERS",
         "/.github/workflows/",
         "/Makefile",
+        "/scripts/require_main_ci.py",
+        "/scripts/with_deployment_lock.py",
         "/tests/support/evidence.py",
+        "/tests/conftest.py",
+        "/tests/**/conftest.py",
+        "/tests/browser/",
+        "/tests/golden/",
+        "/tests/e2e/_uvicorn_entry.py",
+        "/tests/postgres_test_utils.py",
+        "/tests/tracefold_postgres_container.py",
         "/tests/contract/test_evidence_v2_contract.py",
         "/tests/contract/test_verification_gate_contract.py",
-    ):
-        assert path in entries
-        assert entries[path]
+        "/tests/contract/test_runtime_harness_liveness.py",
+        "/tests/deploy/test_main_ci_gate.py",
+        "/tests/architecture/test_docs_surface.py",
+        "/tests/slow/test_frontend_harness_fail_closed.py",
+        "/web/package.json",
+        "/web/vite.config.ts",
+        "/web/tsconfig.json",
+        "/web/eslint.config.js",
+        "/web/.prettierignore",
+        "/web/.prettierrc.json",
+        "/web/playwright.full-stack.config.ts",
+        "/web/tests/setup.ts",
+        "/web/tests/support/",
+        "/web/tests/e2e/fixtures.ts",
+        "/web/tests/e2e/full-stack/",
+        "/web/tests/fixtures/evidence-reporter/",
+        "/web/tests/fixtures/runtime-error-guard/",
+        "/web/tests/fixtures/playwright-semantics/",
+    )
+    raw_entries = [
+        tuple(line.split())
+        for line in (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert all(len(entry) == 1 + len(owners) for entry in raw_entries)
+    assert len({entry[0] for entry in raw_entries}) == len(raw_entries)
+    assert {entry[0]: entry[1:] for entry in raw_entries} == {path: owners for path in paths}
+    for path in paths:
+        if "*" not in path:
+            assert (ROOT / path.removeprefix("/").rstrip("/")).exists(), path
 
 
 def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> None:

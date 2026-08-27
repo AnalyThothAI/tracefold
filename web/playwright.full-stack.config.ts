@@ -9,7 +9,10 @@ const jsonOutput =
 
 export default defineConfig({
   testDir: "./tests/e2e/full-stack",
+  forbidOnly: true,
   fullyParallel: false,
+  repeatEach: 1,
+  retries: 0,
   reporter: [["list"], ["json", { outputFile: jsonOutput }]],
   workers: 1,
   use: {

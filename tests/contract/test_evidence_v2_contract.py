@@ -411,19 +411,59 @@ def test_record_command_persists_failure_and_returns_the_command_status(tmp_path
     assert manifest["errors"] == ["command_exit_nonzero:7"]
 
 
+def _vitest_plain_test(case_id: str) -> dict[str, Any]:
+    return {
+        "id": case_id,
+        "file": "fixture.test.ts",
+        "name": case_id,
+        "mode": "run",
+        "fails": False,
+        "only": False,
+        "state": "passed",
+        "finalState": "passed",
+        "retry": 0,
+        "retries": 0,
+        "retryCount": 0,
+        "repeatCount": 0,
+        "flaky": False,
+        "errors": [],
+    }
+
+
+def _vitest_semantics_report(*tests: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "allowOnly": False,
+        "moduleErrors": [],
+        "numExpectedFailures": 0,
+        "numFailedTests": 0,
+        "numFlakyTests": 0,
+        "numOnlyTests": 0,
+        "numPassedTests": len(tests),
+        "numPendingTests": 0,
+        "numRepeatedTests": 0,
+        "numRetriedTests": 0,
+        "numTodoTests": 0,
+        "numTotalTests": len(tests),
+        "reason": "passed",
+        "schemaVersion": "tracefold_vitest_report_v1",
+        "success": True,
+        "tests": list(tests),
+        "unhandledErrors": [],
+    }
+    report.update(overrides)
+    return report
+
+
 def test_record_vitest_uses_the_reporters_actual_outcomes(tmp_path: Path) -> None:
     report = tmp_path / "vitest.json"
     output = tmp_path / "frontend-unit.json"
     report.write_text(
         json.dumps(
-            {
-                "numTotalTests": 3,
-                "numPassedTests": 3,
-                "numFailedTests": 0,
-                "numPendingTests": 0,
-                "success": True,
-                "unhandledErrors": [],
-            }
+            _vitest_semantics_report(
+                _vitest_plain_test("case-1"),
+                _vitest_plain_test("case-2"),
+                _vitest_plain_test("case-3"),
+            )
         ),
         encoding="utf-8",
     )
@@ -453,14 +493,11 @@ def test_record_vitest_fails_on_reported_unhandled_errors(tmp_path: Path) -> Non
     output = tmp_path / "frontend-unit.json"
     report.write_text(
         json.dumps(
-            {
-                "numTotalTests": 1,
-                "numPassedTests": 1,
-                "numFailedTests": 0,
-                "numPendingTests": 0,
-                "success": True,
-                "unhandledErrors": [{"message": "unhandled request"}],
-            }
+            _vitest_semantics_report(
+                _vitest_plain_test("case-1"),
+                success=False,
+                unhandledErrors=[{"message": "unhandled request"}],
+            )
         ),
         encoding="utf-8",
     )
@@ -481,6 +518,48 @@ def test_record_vitest_fails_on_reported_unhandled_errors(tmp_path: Path) -> Non
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["unhandled"] == 1
     assert manifest["status"] == "failure"
+
+
+@pytest.mark.parametrize(
+    ("test_changes", "report_changes", "manifest_field"),
+    [
+        ({"fails": True}, {"numExpectedFailures": 1}, "xfailed"),
+        ({"retry": 1, "retryCount": 1, "flaky": True}, {"numRetriedTests": 1, "numFlakyTests": 1}, "rerun"),
+        ({"repeats": 1, "repeatCount": 1}, {"numRepeatedTests": 1}, "rerun"),
+        ({"only": True}, {"numOnlyTests": 1}, None),
+    ],
+)
+def test_record_vitest_rejects_non_plain_pass_semantics(
+    tmp_path: Path,
+    test_changes: dict[str, Any],
+    report_changes: dict[str, Any],
+    manifest_field: str | None,
+) -> None:
+    report_path = tmp_path / "vitest.json"
+    output = tmp_path / "frontend-unit.json"
+    case = {**_vitest_plain_test("case-1"), **test_changes}
+    report_path.write_text(
+        json.dumps(_vitest_semantics_report(case, success=False, **report_changes)),
+        encoding="utf-8",
+    )
+
+    result = evidence.main(
+        (
+            "record-vitest",
+            "--lane",
+            "frontend-unit",
+            "--input",
+            str(report_path),
+            "--output",
+            str(output),
+        )
+    )
+
+    assert result != 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failure"
+    if manifest_field is not None:
+        assert manifest[manifest_field] == 1
 
 
 def test_record_vitest_replaces_stale_green_output_when_report_is_invalid(tmp_path: Path) -> None:
@@ -514,12 +593,39 @@ def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) ->
     report.write_text(
         json.dumps(
             {
+                "config": {
+                    "forbidOnly": True,
+                    "grep": {},
+                    "grepInvert": None,
+                    "projects": [{"repeatEach": 1, "retries": 0}],
+                    "shard": None,
+                },
+                "suites": [
+                    {
+                        "specs": [
+                            {
+                                "tests": [
+                                    {
+                                        "expectedStatus": "passed",
+                                        "status": "expected",
+                                        "results": [{"status": "passed", "retry": 0}],
+                                    },
+                                    {
+                                        "expectedStatus": "passed",
+                                        "status": "expected",
+                                        "results": [{"status": "passed", "retry": 0}],
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                ],
                 "stats": {
                     "expected": 2,
                     "unexpected": 0,
                     "flaky": 0,
                     "skipped": 0,
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -543,6 +649,62 @@ def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) ->
     assert manifest["failed"] == manifest["skipped"] == manifest["rerun"] == 0
     assert manifest["status"] == "success"
     assert manifest["tool_versions"]["playwright"] == "1.60.0"
+
+
+def test_record_playwright_rejects_an_expected_failure_reported_as_expected(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "playwright.json"
+    output = tmp_path / "browser.json"
+    report.write_text(
+        json.dumps(
+            {
+                "config": {
+                    "forbidOnly": True,
+                    "grep": {},
+                    "grepInvert": None,
+                    "projects": [{"repeatEach": 1, "retries": 0}],
+                    "shard": None,
+                },
+                "suites": [
+                    {
+                        "specs": [
+                            {
+                                "tests": [
+                                    {
+                                        "expectedStatus": "failed",
+                                        "status": "expected",
+                                        "results": [{"status": "failed", "retry": 0}],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                "stats": {"expected": 1, "unexpected": 0, "flaky": 0, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evidence.main(
+        (
+            "record-playwright",
+            "--lane",
+            "browser",
+            "--input",
+            str(report),
+            "--output",
+            str(output),
+        )
+    )
+
+    assert result != 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failure"
+    assert manifest["selected"] == manifest["xfailed"] == 1
+    assert manifest["passed"] == 0
+    assert "playwright_expected_status_forbidden:failed" in manifest["errors"]
 
 
 @pytest.mark.parametrize(("field", "manifest_field"), [("flaky", "rerun"), ("skipped", "skipped")])
@@ -725,6 +887,82 @@ def test_python_lane_fails_on_a_real_unhandled_thread_exception(
     assert manifest["unhandled"] >= 1
     assert manifest["status"] == "failure"
     assert any(error.startswith("evidence_python_unhandled:") for error in manifest["errors"])
+
+
+def test_python_lane_rejects_a_case_filter_that_hides_unhandled_thread_exceptions(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    (evidence_repository.root / "tests" / "test_unhandled.py").write_text(
+        "import threading\n"
+        "import pytest\n"
+        "@pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')\n"
+        "def test_hidden_thread_exception():\n"
+        "    def explode(): raise RuntimeError('background exploded')\n"
+        "    thread = threading.Thread(target=explode)\n"
+        "    thread.start()\n"
+        "    thread.join()\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert any(
+        "evidence_unhandled_warning_filter_forbidden:tests/test_unhandled.py::test_hidden_thread_exception" in error
+        for error in manifest["errors"]
+    )
+
+
+def test_python_lane_rejects_a_cli_filter_that_hides_unhandled_thread_exceptions(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    result, manifest = evidence_repository.run(
+        "-W",
+        "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+        env={"TRACEFOLD_FIXTURE_FAIL": "0"},
+    )
+
+    assert result.returncode != 0
+    assert (
+        "evidence_unhandled_warning_filter_forbidden:ignore::pytest.PytestUnhandledThreadExceptionWarning"
+        in manifest["errors"]
+    )
+
+
+def test_python_lane_rejects_an_ini_filter_that_hides_unhandled_runtime_warnings(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    pyproject = evidence_repository.root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8") + "filterwarnings = ['ignore::RuntimeWarning']\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert "evidence_unhandled_warning_filter_forbidden:ignore::RuntimeWarning" in manifest["errors"]
+
+
+def test_python_lane_fails_on_an_unretrieved_asyncio_task_exception(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    (evidence_repository.root / "tests" / "test_asyncio_unhandled.py").write_text(
+        "import asyncio\n"
+        "async def scenario():\n"
+        "    async def explode(): raise RuntimeError('task exploded')\n"
+        "    asyncio.create_task(explode())\n"
+        "    await asyncio.sleep(0)\n"
+        "def test_unretrieved_task_exception():\n"
+        "    asyncio.run(scenario())\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert manifest["unhandled"] == 1
+    assert any("evidence_python_unhandled:asyncio_task" in error for error in manifest["errors"])
 
 
 def test_python_lane_rejects_an_empty_declared_required_marker(

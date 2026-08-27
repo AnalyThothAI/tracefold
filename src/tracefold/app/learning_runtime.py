@@ -56,6 +56,8 @@ class NewsProgramRuntimeComposition:
     def slot_aliases(self) -> dict[str, str]:
         """Name every deliberate endpoint alias instead of inferring it from equal hashes."""
 
+        if not self.program_configured:
+            return {}
         aliases: dict[str, str] = {}
         if self.reader_card_primary_alias:
             aliases["reader_card.primary"] = "event_semantics.primary"

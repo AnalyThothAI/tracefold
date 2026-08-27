@@ -58,14 +58,14 @@ test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (ex
 		--lane frontend-lint --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-lint.json" \
 		--tool eslint=$$(node -p "require('./web/node_modules/eslint/package.json').version") \
 		-- npm --prefix web run lint:eslint
-	@cd web && npm run test:architecture -- --reporter=json \
-		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json"
+	@cd web && TRACEFOLD_VITEST_SEMANTICS_REPORT="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
+		npm run test:architecture -- --allowOnly=false --reporter=./tests/support/evidenceReporter.ts
 	@uv run python -m tests.support.evidence record-vitest \
 		--lane frontend-architecture \
 		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-architecture.json"
-	@cd web && npm run test:unit -- --reporter=json \
-		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json"
+	@cd web && TRACEFOLD_VITEST_SEMANTICS_REPORT="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
+		npm run test:unit -- --allowOnly=false --reporter=./tests/support/evidenceReporter.ts
 	@uv run python -m tests.support.evidence record-vitest \
 		--lane frontend-unit \
 		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
@@ -101,7 +101,7 @@ test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly 
 	@uv run python -m pytest -m property
 
 test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
-	@uv run python -m pytest tests/integration -m slow
+	@uv run python -m pytest -m slow
 
 test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
 	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build

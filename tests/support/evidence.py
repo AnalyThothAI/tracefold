@@ -93,6 +93,8 @@ def pytest_configure(config: pytest.Config) -> None:
     recorder = _EvidenceRecorder(root=_REPO_ROOT)
     config.stash[_RECORDER_KEY] = recorder
     _ACTIVE_RECORDER.current = recorder
+    recorder.original_event_loop_policy = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(_EvidenceEventLoopPolicy(recorder.original_event_loop_policy, recorder))
     if os.environ.get("PYTEST_ADDOPTS", "").strip():
         recorder.errors.append("evidence_pytest_addopts_forbidden")
     if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1":
@@ -145,6 +147,10 @@ def pytest_configure(config: pytest.Config) -> None:
     for option in _FORBIDDEN_COLLECTION_OPTIONS:
         if any(argument == option or argument.startswith(f"{option}=") for argument in config.invocation_params.args):
             recorder.errors.append(f"evidence_collection_option_forbidden:{option}")
+    warning_filters = [*config.getini("filterwarnings"), *(config.getoption("pythonwarnings") or [])]
+    for warning_filter in warning_filters:
+        if _warning_filter_can_hide_unhandled(str(warning_filter)):
+            recorder.errors.append(f"evidence_unhandled_warning_filter_forbidden:{warning_filter}")
 
 
 def pytest_deselected(items: list[pytest.Item]) -> None:
@@ -182,6 +188,24 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     for item in session.items:
         if item.get_closest_marker("live") is not None:
             recorder.errors.append(f"evidence_live_test_selected:{item.nodeid}")
+        for marker in item.iter_markers("filterwarnings"):
+            for warning_filter in marker.args:
+                if _warning_filter_can_hide_unhandled(str(warning_filter)):
+                    recorder.errors.append(
+                        f"evidence_unhandled_warning_filter_forbidden:{item.nodeid}:{warning_filter}"
+                    )
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    recorder = _recorder(item.config)
+    if recorder is not None:
+        recorder.current_nodeid = item.nodeid
+
+
+def pytest_runtest_teardown(item: pytest.Item) -> None:
+    recorder = _recorder(item.config)
+    if recorder is not None and recorder.current_nodeid == item.nodeid:
+        recorder.current_nodeid = ""
 
 
 def pytest_collectreport(report: pytest.CollectReport) -> None:
@@ -242,6 +266,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
+    recorder = _recorder(config)
+    if recorder is not None and recorder.original_event_loop_policy is not None:
+        asyncio.set_event_loop_policy(recorder.original_event_loop_policy)
     _ACTIVE_RECORDER.current = None
 
 
@@ -259,6 +286,59 @@ def _unhandled_warning_kind(warning_message: Any) -> str | None:
     if issubclass(category, RuntimeWarning) and "coroutine" in message and "was never awaited" in message:
         return "coroutine_never_awaited"
     return None
+
+
+def _warning_filter_can_hide_unhandled(value: str) -> bool:
+    fields = value.split(":")
+    action = fields[0].strip().lower()
+    if not action or not "ignore".startswith(action):
+        return False
+    category = fields[2].strip() if len(fields) > 2 else ""
+    return category in {
+        "",
+        "Warning",
+        "RuntimeWarning",
+        "pytest.PytestWarning",
+        "pytest.PytestUnhandledThreadExceptionWarning",
+        "pytest.PytestUnraisableExceptionWarning",
+    }
+
+
+class _EvidenceEventLoopPolicy(asyncio.AbstractEventLoopPolicy):
+    def __init__(self, delegate: Any, recorder: _EvidenceRecorder) -> None:
+        self._delegate = delegate
+        self._recorder = recorder
+
+    def get_event_loop(self) -> asyncio.AbstractEventLoop:
+        return self._delegate.get_event_loop()
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
+        self._delegate.set_event_loop(loop)
+
+    def new_event_loop(self) -> asyncio.AbstractEventLoop:
+        loop = self._delegate.new_event_loop()
+        previous = loop.get_exception_handler()
+
+        def handle_exception(event_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+            if context.get("message") == "Task exception was never retrieved":
+                owner = self._recorder.current_nodeid or "<asyncio>"
+                self._recorder.unhandled += 1
+                if self._recorder.current_nodeid:
+                    self._recorder.unhandled_items.add(self._recorder.current_nodeid)
+                self._recorder.errors.append(f"evidence_python_unhandled:asyncio_task:{owner}")
+            if previous is None:
+                event_loop.default_exception_handler(context)
+            else:
+                previous(event_loop, context)
+
+        loop.set_exception_handler(handle_exception)
+        return loop
+
+    def get_child_watcher(self) -> Any:
+        return self._delegate.get_child_watcher()
+
+    def set_child_watcher(self, watcher: Any) -> None:
+        self._delegate.set_child_watcher(watcher)
 
 
 def _hypothesis_metadata() -> dict[str, Any]:
@@ -313,6 +393,8 @@ class _EvidenceRecorder:
     required_markers: list[str] = field(default_factory=list)
     marker_items: dict[str, set[str]] = field(default_factory=dict)
     live_collected_modules: set[str] = field(default_factory=set)
+    current_nodeid: str = ""
+    original_event_loop_policy: Any = None
 
     @property
     def observed(self) -> set[str]:
@@ -588,13 +670,46 @@ def _record_playwright(arguments: Sequence[str]) -> int:
         )
         return 1
     stats = report.get("stats", {})
-    passed = int(stats.get("expected", 0))
+    expected = int(stats.get("expected", 0))
     failed = int(stats.get("unexpected", 0))
-    rerun = int(stats.get("flaky", 0))
+    reported_rerun = int(stats.get("flaky", 0))
     skipped = int(stats.get("skipped", 0))
-    selected = passed + failed + rerun + skipped
+    selected = expected + failed + reported_rerun + skipped
     unhandled = _entry_count(report.get("errors"))
     errors: list[str] = []
+    config = report.get("config") if isinstance(report.get("config"), dict) else {}
+    projects = config.get("projects") if isinstance(config.get("projects"), list) else []
+    if config.get("forbidOnly") is not True:
+        errors.append("playwright_forbid_only_must_be_true")
+    if config.get("shard") is not None or config.get("grep") not in ({}, None) or config.get("grepInvert") is not None:
+        errors.append("playwright_partial_selection_forbidden")
+    if not projects or any(
+        not isinstance(project, dict) or int(project.get("retries", 0)) != 0 or int(project.get("repeatEach", 1)) != 1
+        for project in projects
+    ):
+        errors.append("playwright_retry_or_repeat_policy_forbidden")
+    tests = _playwright_tests(report)
+    expected_failures = 0
+    retried_tests = 0
+    for test in tests:
+        expected_status = str(test.get("expectedStatus", ""))
+        if expected_status != "passed":
+            expected_failures += int(expected_status == "failed")
+            errors.append(f"playwright_expected_status_forbidden:{expected_status or 'missing'}")
+        results = test.get("results")
+        if not isinstance(results, list) or not results:
+            errors.append("playwright_test_result_missing")
+            continue
+        retries = [int(result.get("retry", 0)) for result in results if isinstance(result, dict)]
+        if any(retry > 0 for retry in retries):
+            retried_tests += 1
+        final_result = results[-1] if isinstance(results[-1], dict) else {}
+        if expected_status == "passed" and (test.get("status") != "expected" or final_result.get("status") != "passed"):
+            errors.append("playwright_test_not_plain_pass")
+    if len(tests) != selected:
+        errors.append("playwright_test_result_count_mismatch")
+    rerun = max(reported_rerun, retried_tests)
+    passed = max(expected - expected_failures, 0)
     if selected <= 0:
         errors.append("playwright_report_empty")
     if unhandled:
@@ -608,6 +723,7 @@ def _record_playwright(arguments: Sequence[str]) -> int:
         passed=passed,
         failed=failed,
         skipped=skipped,
+        xfailed=expected_failures,
         rerun=rerun,
         unhandled=unhandled,
         errors=errors,
@@ -615,6 +731,24 @@ def _record_playwright(arguments: Sequence[str]) -> int:
     )
     _write_json(options.output, payload)
     return int(payload["status"] != "success")
+
+
+def _playwright_tests(report: dict[str, Any]) -> list[dict[str, Any]]:
+    tests: list[dict[str, Any]] = []
+
+    def visit_suite(suite: Any) -> None:
+        if not isinstance(suite, dict):
+            return
+        for spec in suite.get("specs", []):
+            if not isinstance(spec, dict):
+                continue
+            tests.extend(test for test in spec.get("tests", []) if isinstance(test, dict))
+        for child in suite.get("suites", []):
+            visit_suite(child)
+
+    for suite in report.get("suites", []):
+        visit_suite(suite)
+    return tests
 
 
 def _record_vitest(arguments: Sequence[str]) -> int:
@@ -640,19 +774,51 @@ def _record_vitest(arguments: Sequence[str]) -> int:
         )
         return 1
     selected = int(report.get("numTotalTests", 0))
-    passed = int(report.get("numPassedTests", 0))
+    reported_passed = int(report.get("numPassedTests", 0))
     failed = int(report.get("numFailedTests", 0))
     skipped = int(report.get("numPendingTests", 0)) + int(report.get("numTodoTests", 0))
-    unhandled = _entry_count(report.get("unhandledErrors")) + _entry_count(report.get("unhandledRejections"))
+    expected_failures = int(report.get("numExpectedFailures", 0))
+    semantic_tests = report.get("tests") if isinstance(report.get("tests"), list) else []
+    derived_expected_failures = sum(int(test.get("fails") is True) for test in semantic_tests if isinstance(test, dict))
+    derived_only = sum(int(test.get("only") is True) for test in semantic_tests if isinstance(test, dict))
+    derived_rerun = sum(
+        int(_vitest_test_was_retried_or_repeated(test)) for test in semantic_tests if isinstance(test, dict)
+    )
+    only = int(report.get("numOnlyTests", 0))
+    rerun = derived_rerun
+    unhandled = _entry_count(report.get("unhandledErrors")) + _entry_count(report.get("moduleErrors"))
     if report.get("success") is False and failed == 0 and unhandled == 0:
-        unhandled = 1
+        unhandled = int(not (expected_failures or only or rerun or skipped))
     errors: list[str] = []
+    if report.get("schemaVersion") != "tracefold_vitest_report_v1":
+        errors.append("vitest_semantics_schema_invalid")
     if report.get("success") is not True:
         errors.append("vitest_report_not_success")
+    if report.get("reason") != "passed":
+        errors.append(f"vitest_run_reason_not_passed:{report.get('reason', 'missing')}")
+    if report.get("allowOnly") is not False:
+        errors.append("vitest_allow_only_must_be_false")
     if selected <= 0:
         errors.append("vitest_report_empty")
-    if passed + failed + skipped != selected:
+    if reported_passed + failed + skipped != selected:
         errors.append("vitest_report_outcome_count_mismatch")
+    if len(semantic_tests) != selected:
+        errors.append("vitest_semantic_test_count_mismatch")
+    if expected_failures != derived_expected_failures:
+        errors.append("vitest_expected_failure_count_mismatch")
+    if only != derived_only:
+        errors.append("vitest_only_count_mismatch")
+    if expected_failures:
+        errors.append(f"vitest_expected_failures:{expected_failures}")
+    if only:
+        errors.append(f"vitest_only_tests:{only}")
+    if rerun:
+        errors.append(f"vitest_retried_or_repeated_tests:{rerun}")
+    errors.extend(
+        f"vitest_test_not_plain_pass:{test.get('id', 'missing')}"
+        for test in semantic_tests
+        if isinstance(test, dict) and not _vitest_test_is_plain_pass(test)
+    )
     if unhandled:
         errors.append(f"vitest_unhandled_errors:{unhandled}")
     vitest_version = _package_lock_version("node_modules/vitest")
@@ -661,15 +827,41 @@ def _record_vitest(arguments: Sequence[str]) -> int:
     payload = _lane_payload(
         lane=options.lane,
         selected=selected,
-        passed=passed,
+        passed=max(reported_passed - expected_failures, 0),
         failed=failed,
         skipped=skipped,
+        xfailed=expected_failures,
+        rerun=rerun,
         unhandled=unhandled,
         errors=errors,
         tool_versions={**_parse_tool_versions(()), "vitest": vitest_version},
     )
     _write_json(options.output, payload)
     return int(payload["status"] != "success")
+
+
+def _vitest_test_was_retried_or_repeated(test: dict[str, Any]) -> bool:
+    retry = test.get("retry", 0)
+    configured_retry = int(retry.get("count", 0)) if isinstance(retry, dict) else int(retry or 0)
+    return bool(
+        configured_retry
+        or int(test.get("retryCount", 0))
+        or int(test.get("repeats", 0))
+        or int(test.get("repeatCount", 0))
+        or test.get("flaky") is True
+    )
+
+
+def _vitest_test_is_plain_pass(test: dict[str, Any]) -> bool:
+    return bool(
+        test.get("fails") is False
+        and test.get("only") is False
+        and test.get("mode") == "run"
+        and test.get("state") == "passed"
+        and test.get("finalState") == "passed"
+        and not test.get("errors")
+        and not _vitest_test_was_retried_or_repeated(test)
+    )
 
 
 def _entry_count(value: Any) -> int:

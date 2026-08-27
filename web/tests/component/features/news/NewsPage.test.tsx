@@ -701,6 +701,9 @@ describe("NewsPage", () => {
     expect(within(funnel).getByText("320")).toBeInTheDocument();
 
     const reasons = screen.getByRole("region", { name: "拦截与推送原因" });
+    for (const reason of newsStatusFixture().reasons_24h ?? []) {
+      expect(within(reasons).getByText(reason.label_zh)).toBeInTheDocument();
+    }
     expect(within(reasons).getByText("模型判定为噪音")).toBeInTheDocument();
     expect(within(reasons).getByText("「中东与能源」话题 4 小时内已推 3 条")).toBeInTheDocument();
     expect(within(reasons).getByText("律所推广模板，规则直接拦截")).toBeInTheDocument();
@@ -835,6 +838,13 @@ describe("NewsPage", () => {
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
     expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
     expect(within(technical).getByText("news_triage_policy_v1")).toBeInTheDocument();
+    for (const [earlier, later] of [
+      [hero, timeline],
+      [timeline, members],
+      [members, technical],
+    ] as const) {
+      expect(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    }
     // Internal identifiers do not leak into the first screen.
     expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
   });

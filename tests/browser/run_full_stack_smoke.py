@@ -98,6 +98,15 @@ def main() -> int:
                 },
                 check=False,
             )
+            if result.returncode == 0:
+                _assert_running(worker, worker_log)
+                _assert_running(serve, serve_log)
+                _assert_http_ready(
+                    f"http://127.0.0.1:{worker_port}/readyz",
+                    worker,
+                    worker_log,
+                )
+                _assert_http_ready(f"{base_url}/readyz", serve, serve_log)
             return result.returncode
         finally:
             _terminate(serve)
@@ -222,6 +231,22 @@ def _wait_for_http(url: str, proc: subprocess.Popen[bytes], log_path: Path) -> N
             last = type(exc).__name__
         time.sleep(0.1)
     raise AssertionError(f"{url} never became ready ({last}):\n{_log(log_path)}")
+
+
+def _assert_http_ready(url: str, proc: subprocess.Popen[bytes], log_path: Path) -> None:
+    """Require a running process and one final successful readiness response."""
+
+    _assert_running(proc, log_path)
+    try:
+        response = httpx.get(url, timeout=5.0, trust_env=False)
+    except httpx.HTTPError as exc:
+        _assert_running(proc, log_path)
+        raise AssertionError(f"{url} final readiness request failed ({type(exc).__name__}):\n{_log(log_path)}") from exc
+    _assert_running(proc, log_path)
+    if response.status_code != 200:
+        raise AssertionError(
+            f"{url} final readiness failed ({response.status_code} {response.text[:200]}):\n{_log(log_path)}"
+        )
 
 
 def _assert_running(proc: subprocess.Popen[bytes], log_path: Path) -> None:
