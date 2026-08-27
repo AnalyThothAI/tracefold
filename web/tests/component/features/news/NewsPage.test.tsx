@@ -165,9 +165,7 @@ describe("NewsPage", () => {
     );
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    fireEvent.click(
-      await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }),
-    );
+    fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
 
     const drawer = await screen.findByRole("dialog");
     const kind = (await within(drawer).findByText("强平")).closest(".news-kind");
