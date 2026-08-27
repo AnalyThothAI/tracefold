@@ -5,12 +5,14 @@
 ## Top level
 
 ```
-usage: tracefold [-h] {serve,workers,init,config,db,news,trading,ops} ...
+usage: tracefold [-h]
+                 {serve,workers,nautilus,init,config,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,init,config,db,news,trading,ops}
+  {serve,workers,nautilus,init,config,db,news,trading,ops}
     serve               run the read-only HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
+    nautilus            run the Binance USD-M Demo execution authority
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
@@ -37,6 +39,30 @@ options:
 
 ```
 usage: tracefold workers [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `nautilus`
+
+```
+usage: tracefold nautilus [-h] {run} ...
+
+positional arguments:
+  {run}
+    run       run the single Nautilus TradingNode process
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `nautilus run`
+
+```
+usage: tracefold nautilus run [-h]
 
 options:
   -h, --help  show this help message and exit

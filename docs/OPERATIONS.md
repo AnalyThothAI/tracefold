@@ -118,6 +118,41 @@ persists the identity before protection/max-holding reconciliation resumes. A
 known provider identity is immutable: supplying a different ID rejects the
 resolution and leaves the order in manual review.
 
+### Nautilus Binance Demo dark slice (#283 PR 1)
+
+PR 1 installs one optional `tracefold nautilus run` process but does not cut
+over the current Trading writer. Its normal config remains
+`trading.nautilus.accept_intents=false`; RabbitMQ is not involved. Before first
+start, confirm `uv run tracefold config` names
+`~/.tracefold/config.yaml`, reports the exact
+`SOLUSDT-PERP.BINANCE` instrument, and reports only the redacted Demo
+`credentials_configured=true`. Never print the two credential files. The
+dedicated Demo account must be One-way, 1x, and free of external positions or
+orders; startup checks account mode once, and Nautilus reconciliation checks
+the remaining venue state before readiness. The redacted credential result is
+the code-owned optional-process selector: configured credentials start the dark
+process even while `accept_intents=false`; missing credentials keep it absent.
+
+On a fresh database, `tracefold init` and `make up` create the Nautilus password
+and role with the other runtime roles. For an existing PostgreSQL volume that
+predates migration `20260828_0316`, stop the whole stack and run the offline
+`make db-provision-nautilus-role` once before `make up`; the command refuses a
+running Compose container. With both secure Demo credential files present,
+`make up` starts Nautilus with the other application processes. Subsequent
+`make up` and `make deploy-image` recreate it—even after `make down` removed its
+container—and verify the same image; `make status` includes its health/readiness
+and `make logs` includes its logs. Without configured credentials, an absent
+container remains a valid PR 1 dark state. The opt-in real Demo
+closure/restart drill is `tests/live/test_nautilus_binance_demo.py`; use its
+isolated database/config/container contract rather than seeding a production
+Intent or adding a bypass CLI.
+
+If execution reaches `MANUAL_REVIEW` or flat cannot be proven, do not start the
+legacy writer or submit another entry. Leave Nautilus running so it can continue
+query/protection/exit reconciliation, block new fences with Trading
+`PAUSED`/`CLOSE_ONLY`, and treat a fresh targeted venue-zero result as the only
+flat terminal proof.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -134,13 +169,13 @@ CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
-recreates only migration, Serve, and Workers; it does not recreate a running
-PostgreSQL container. On failure, use `make logs`. Operator config, four
+also recreates Nautilus when the effective config reports Demo credentials; it
+does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
 password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
 
 Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
-creates a non-login owner plus the separate Serve, Workers, and migrate roles
+creates a non-login owner plus the separate Serve, Workers, Nautilus, and migrate roles
 from their mode-`0600` password files, revokes the bootstrap login, and only
 then permits migration. It is not a periodic reconciler and will not mutate an
 unknown non-empty cluster. Such a cluster must already satisfy the role/schema
@@ -148,7 +183,9 @@ contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. It must not be replaced by a liveness-only `curl` or a
+HTML console all pass. If the Demo credentials are configured, Nautilus health
+and readiness must also pass; otherwise status reports the expected dark state.
+It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
 ### Exact-image replacement with the current database schema
@@ -909,6 +946,9 @@ trips open canary activations and appends the factory-v6 to factory-v7 receipt,
 but neither rewrites nor appends the `program_v7` epoch row. Earlier rows and
 bundles remain immutable audit history; exact current-bundle acceptance makes
 prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
+`0316` adds the #283 immutable Trading Intent handoff and Nautilus execution
+projection; on an existing volume, provision the Nautilus role before applying
+it as described above.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

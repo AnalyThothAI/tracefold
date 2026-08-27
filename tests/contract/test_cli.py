@@ -70,6 +70,8 @@ class CliTests(unittest.TestCase):
 
         assert parser.parse_args(["serve"]).command == "serve"
         assert parser.parse_args(["workers"]).command == "workers"
+        nautilus = parser.parse_args(["nautilus", "run"])
+        assert (nautilus.command, nautilus.nautilus_command) == ("nautilus", "run")
 
     def test_manual_open_recovery_accepts_the_exact_provider_entry_identity(self):
         args = build_parser().parse_args(
@@ -249,12 +251,22 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("worst_case_daily_loss_usd", trading)
         self.assertFalse(trading["opentrade"]["base_url_configured"])
         self.assertFalse(trading["opentrade"]["token_file_configured"])
+        self.assertEqual(
+            trading["nautilus"],
+            {
+                "accept_intents": False,
+                "instrument_id": "SOLUSDT-PERP.BINANCE",
+                "api_key_file": str(home / ".tracefold" / "binance_demo_api_key"),
+                "api_secret_file": str(home / ".tracefold" / "binance_demo_api_secret"),
+                "credentials_configured": False,
+            },
+        )
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())
         self.assertNotIn("private-strategy-beta", stdout.getvalue())
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
         self.assertEqual(
             set(payload["data"]["store"]["postgres_roles"]),
-            {"serve", "workers", "migrate"},
+            {"serve", "workers", "migrate", "nautilus"},
         )
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 7)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
@@ -286,6 +298,27 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("macro_document_analysis_enabled", payload["llm"])
         self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "news"})
 
+    def test_config_reports_nautilus_credentials_without_disclosing_them(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            write_runtime_config(home)
+            app_home = home / ".tracefold"
+            key = "demo-key-value"
+            secret = "demo-secret-value"
+            for name, value in (("binance_demo_api_key", key), ("binance_demo_api_secret", secret)):
+                path = app_home / name
+                path.write_text(value, encoding="utf-8")
+                path.chmod(0o600)
+            stdout = io.StringIO()
+            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                exit_code = main(["config"], stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["data"]["trading"]["nautilus"]["credentials_configured"])
+        self.assertNotIn(key, stdout.getvalue())
+        self.assertNotIn(secret, stdout.getvalue())
+
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
             "watchlist handles": {"handles": ["wallstengine"]},
@@ -315,6 +348,14 @@ class CliTests(unittest.TestCase):
     def test_settings_reject_worker_runtime_configuration(self):
         with self.assertRaises(ValidationError):
             Settings.model_validate({"workers": {"collector": {"enabled": False}}})
+
+    def test_nautilus_instrument_and_database_cadence_are_code_owned(self):
+        for field, value in (
+            ("instrument_id", "SOLUSDT-PERP.BINANCE"),
+            ("poll_seconds", 1.0),
+        ):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                Settings.model_validate({"trading": {"nautilus": {field: value}}})
 
     def test_news_replay_reports_offline_gate_counts_from_a_hits_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -358,6 +399,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "postgres_serve_password",
         "postgres_workers_password",
         "postgres_migrate_password",
+        "postgres_nautilus_password",
     ):
         path = app_home / name
         assert path.is_file()
@@ -377,6 +419,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "postgres_serve_password",
         "postgres_workers_password",
         "postgres_migrate_password",
+        "postgres_nautilus_password",
     )
     before = {name: (app_home / name).read_bytes() for name in tracked_names}
     app_home.chmod(0o755)

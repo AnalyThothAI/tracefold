@@ -2,19 +2,23 @@ UV_CACHE_DIR ?= /tmp/tracefold-uv-cache
 export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
+READ_NAUTILUS_CREDENTIALS_CONFIGURED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["nautilus"]["credentials_configured"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid credentials_configured")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
 TRACEFOLD_WORKERS_PORT ?= 8766
+TRACEFOLD_NAUTILUS_HOST ?= 127.0.0.1
+TRACEFOLD_NAUTILUS_PORT ?= 8767
 TRACEFOLD_API_URL ?= http://127.0.0.1:$(TRACEFOLD_API_PORT)
 TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
+TRACEFOLD_NAUTILUS_URL ?= http://127.0.0.1:$(TRACEFOLD_NAUTILUS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
-export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
+export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT TRACEFOLD_NAUTILUS_HOST TRACEFOLD_NAUTILUS_PORT
 
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -191,6 +195,20 @@ db-migrate: ## apply PostgreSQL migrations
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
 
+db-provision-nautilus-role: preflight ## offline one-shot provisioning for an existing PostgreSQL volume
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-provision-nautilus-role-locked
+
+_db-provision-nautilus-role-locked:
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@set -eu; \
+		running=$$(docker compose ps -q); \
+		if [ -n "$$running" ]; then \
+			echo "Nautilus role provisioning is offline-only; stop the entire Tracefold stack first." >&2; \
+			exit 1; \
+		fi; \
+		docker compose run --rm --no-deps --user postgres \
+			--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres
+
 serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve
 
@@ -250,6 +268,7 @@ _up-locked:
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
+		nautilus_configured=$$($(TRACEFOLD) config | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
@@ -260,9 +279,11 @@ _up-locked:
 			echo "  Deployment continues, but every runtime manifest it writes records" >&2; \
 			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
 		fi; \
-		docker compose stop -t 40 workers serve || fail; \
+		runtime_services="migrate serve workers"; \
+		if [ "$$nautilus_configured" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers || fail; \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
@@ -359,8 +380,12 @@ _deploy-image-locked:
 			echo "Compose did not resolve migrate to the exact requested image ID." >&2; \
 			exit 2; \
 		fi; \
-		if ! docker compose run --rm --no-deps --entrypoint tracefold migrate config >/dev/null; then \
+		if ! runtime_config=$$(docker compose run --rm --no-deps --entrypoint tracefold migrate config); then \
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if ! nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); then \
+			echo "Target image did not report Nautilus credential availability; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
 		fail() { \
@@ -368,10 +393,12 @@ _deploy-image-locked:
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		docker compose stop -t 40 workers serve || fail; \
+		runtime_services="migrate serve workers"; \
+		if [ "$$nautilus_configured" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers || fail; \
-		for service in migrate serve workers; do \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
 				echo "$$service container is missing after exact-image deployment." >&2; \
@@ -437,9 +464,10 @@ _deploy-image-locked:
 		make --no-print-directory status || fail; \
 		echo "Tracefold deployed exact local image $$image_id."
 
-status: preflight ## fail closed unless database, API, Workers, and console are ready
+status: preflight ## fail closed unless every enabled runtime is ready
 	@docker compose ps --all
 	@set -eu; \
+		nautilus_configured=$$($(TRACEFOLD) config | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -455,6 +483,24 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 				failed=1; \
 			fi; \
 		done; \
+		if [ "$$nautilus_configured" = true ]; then \
+			nautilus_id=$$(docker compose ps --all -q nautilus); \
+			if [ -z "$$nautilus_id" ]; then \
+				echo "nautilus: missing or stopped" >&2; \
+				failed=1; \
+			else \
+			nautilus_state=$$(docker inspect --format '{{.State.Status}}' "$$nautilus_id"); \
+			nautilus_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$nautilus_id"); \
+			if [ "$$nautilus_state" != "running" ] || [ "$$nautilus_health" != "healthy" ]; then \
+				echo "nautilus: state=$$nautilus_state health=$$nautilus_health" >&2; \
+				failed=1; \
+			else \
+				curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
+			fi; \
+			fi; \
+		else \
+			echo "nautilus: not configured (dark slice)"; \
+		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \
 			echo "migrate: missing" >&2; \
@@ -481,8 +527,8 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 			exit 1; \
 		fi
 
-logs: preflight ## tail Serve, Workers, migration, PostgreSQL, and RabbitMQ logs
-	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq
+logs: preflight ## tail all product runtime and dependency logs
+	@docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
 	@docker compose down

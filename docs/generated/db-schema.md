@@ -545,6 +545,54 @@
 | `strategy_version` | `TEXT` | False | `None` |
 | `strategy_config_digest` | `TEXT` | False | `None` |
 
+## `trading_intents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `intent_id` | `TEXT` | False | `None` |
+| `intent_version` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `case_manifest_sha256` | `TEXT` | False | `None` |
+| `intent_policy_sha256` | `TEXT` | False | `None` |
+| `execution_environment` | `TEXT` | False | `None` |
+| `instrument_id` | `TEXT` | False | `None` |
+| `side` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `valid_until_ms` | `BIGINT` | False | `None` |
+| `reference_price` | `NUMERIC` | False | `None` |
+| `target_notional_usd` | `NUMERIC` | False | `None` |
+| `stop_loss_bps` | `INTEGER` | False | `None` |
+| `max_holding_ms` | `BIGINT` | False | `None` |
+| `max_entry_drift_bps` | `INTEGER` | False | `None` |
+| `max_spread_bps` | `INTEGER` | False | `None` |
+| `engine_identity` | `TEXT` | True | `None` |
+| `execution_state` | `TEXT` | False | `'PENDING'::text` |
+| `execution_phase` | `TEXT` | True | `None` |
+| `terminal_outcome` | `TEXT` | True | `None` |
+| `reason_code` | `TEXT` | True | `None` |
+| `entry_client_order_id` | `TEXT` | True | `None` |
+| `entry_fenced_at_ms` | `BIGINT` | True | `None` |
+| `stop_client_order_id` | `TEXT` | True | `None` |
+| `stop_generation` | `INTEGER` | True | `None` |
+| `stop_submitted_at_ms` | `BIGINT` | True | `None` |
+| `close_client_order_id` | `TEXT` | True | `None` |
+| `close_submitted_at_ms` | `BIGINT` | True | `None` |
+| `actual_quantity` | `NUMERIC` | True | `None` |
+| `protected_quantity` | `NUMERIC` | True | `None` |
+| `avg_entry_price` | `NUMERIC` | True | `None` |
+| `avg_exit_price` | `NUMERIC` | True | `None` |
+| `position_id` | `TEXT` | True | `None` |
+| `protection_order_id` | `TEXT` | True | `None` |
+| `stop_price` | `NUMERIC` | True | `None` |
+| `opened_at_ms` | `BIGINT` | True | `None` |
+| `protected_at_ms` | `BIGINT` | True | `None` |
+| `closed_at_ms` | `BIGINT` | True | `None` |
+| `flat_verified_at_ms` | `BIGINT` | True | `None` |
+| `realized_pnl_amount` | `NUMERIC` | True | `None` |
+| `realized_pnl_currency` | `TEXT` | True | `None` |
+| `commissions_by_currency` | `JSONB` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint` |
+
 ## `trading_order_observations`
 
 | Column | Type | Nullable | Default |
@@ -608,6 +656,10 @@
 | `dspy_calls_today` | `INTEGER` | False | `0` |
 | `funnel` | `JSONB` | False | `'{}'::jsonb` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `nautilus_heartbeat_at_ms` | `BIGINT` | True | `None` |
+| `nautilus_ready` | `BOOLEAN` | False | `false` |
+| `nautilus_readiness_reason` | `TEXT` | True | `None` |
+| `nautilus_unexpected_exposure` | `BOOLEAN` | False | `false` |
 
 ## `trading_strategy_evaluations`
 

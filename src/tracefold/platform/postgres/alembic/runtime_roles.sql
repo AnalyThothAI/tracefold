@@ -20,6 +20,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_migrate') THEN
       CREATE ROLE tracefold_migrate LOGIN NOINHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_nautilus') THEN
+      CREATE ROLE tracefold_nautilus LOGIN;
+    END IF;
 
     ALTER ROLE tracefold_owner
       NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
@@ -33,6 +36,9 @@ BEGIN
       NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_migrate
       LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
+      NOREPLICATION NOBYPASSRLS;
+    ALTER ROLE tracefold_nautilus
+      LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
 
     GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE;
@@ -101,6 +107,20 @@ BEGIN
        AND NOT rolbypassrls
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_migrate';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_roles
+     WHERE rolname = 'tracefold_nautilus'
+       AND rolcanlogin
+       AND rolinherit
+       AND NOT rolsuper
+       AND NOT rolcreatedb
+       AND NOT rolcreaterole
+       AND NOT rolreplication
+       AND NOT rolbypassrls
+  ) THEN
+    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_nautilus';
   END IF;
   IF NOT EXISTS (
     SELECT 1
@@ -189,11 +209,11 @@ END
 $ownership$;
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public
-  FROM tracefold_serve, tracefold_workers;
+  FROM tracefold_serve, tracefold_workers, tracefold_nautilus;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public
-  FROM tracefold_serve, tracefold_workers;
+  FROM tracefold_serve, tracefold_workers, tracefold_nautilus;
 
-GRANT USAGE ON SCHEMA public TO tracefold_serve, tracefold_workers;
+GRANT USAGE ON SCHEMA public TO tracefold_serve, tracefold_workers, tracefold_nautilus;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO tracefold_serve;
 GRANT SELECT, INSERT, UPDATE, DELETE
   ON ALL TABLES IN SCHEMA public TO tracefold_workers;

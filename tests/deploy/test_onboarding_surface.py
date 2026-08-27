@@ -49,7 +49,17 @@ if [ "$1" = "compose" ] && [ "$2" = "config" ]; then
   printf '%s\\n' 'postgres:18-bookworm@sha256:pinned' "$TRACEFOLD_APP_IMAGE"
   exit 0
 fi
-if [ "$1" = "compose" ] && [ "$2" = "run" ]; then exit 0; fi
+if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
+  if [ -n "${TRACEFOLD_TEST_ROLE_PROVISION:-}" ]; then printf '%s\\n' "$*" > "$TRACEFOLD_TEST_ROLE_PROVISION"; fi
+  case "$*" in
+    *"--entrypoint tracefold migrate config"*)
+      printf '%s' '{"ok":true,"data":{"trading":{"nautilus":{"credentials_configured":'
+      printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
+      printf '}}}}\\n'
+      ;;
+  esac
+  exit 0
+fi
 if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
@@ -59,16 +69,36 @@ if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
 fi
 if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
   : > "$TRACEFOLD_TEST_SERVICES_STOPPED"
+  printf '%s\n' "$*" > "$TRACEFOLD_TEST_STOP_ARGS"
   if [ -n "${TRACEFOLD_TEST_DEPLOY_BLOCK:-}" ]; then
     : > "${TRACEFOLD_TEST_DEPLOY_BLOCK}.entered"
     while [ ! -e "${TRACEFOLD_TEST_DEPLOY_BLOCK}.release" ]; do sleep 0.01; done
   fi
 fi
+if [ "$1" = "compose" ] && [ "$2" = "up" ]; then
+  printf '%s\n' "$*" > "$TRACEFOLD_TEST_UP_ARGS"
+  case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;; esac
+  exit 0
+fi
 if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
+  if [ "$#" -eq 3 ] && [ "$3" = "-q" ]; then
+    printf '%s' "${TRACEFOLD_TEST_RUNNING_CONTAINERS:-}"
+    exit 0
+  fi
   service=''
   for argument do service="$argument"; done
   case "$service" in
     postgres|rabbitmq|migrate|serve|workers) printf '%s\\n' "${service}-id" ;;
+    nautilus)
+      if [ -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
+        printf '%s\\n' nautilus-id
+      elif [ "${TRACEFOLD_TEST_NAUTILUS_PRESENT:-}" = "1" ]; then
+        case " $* " in
+          *" --all "*) printf '%s\\n' nautilus-id ;;
+          *) if [ "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}" = "running" ]; then printf '%s\\n' nautilus-id; fi ;;
+        esac
+      fi
+      ;;
   esac
   exit 0
 fi
@@ -77,7 +107,13 @@ if [ "$1" = "inspect" ]; then
   container_id="$4"
   case "$format" in
     *State.Status*)
-      if [ "$container_id" = "migrate-id" ]; then printf '%s\\n' exited; else printf '%s\\n' running; fi
+      if [ "$container_id" = "migrate-id" ]; then
+        printf '%s\\n' exited
+      elif [ "$container_id" = "nautilus-id" ] && [ ! -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
+        printf '%s\\n' "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}"
+      else
+        printf '%s\\n' running
+      fi
       ;;
     *State.ExitCode*) printf '%s\\n' 0 ;;
     *State.Health*) printf '%s\\n' healthy ;;
@@ -86,6 +122,7 @@ if [ "$1" = "inspect" ]; then
         migrate-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
         serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
         workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
+        nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
       esac
       ;;
   esac
@@ -104,6 +141,17 @@ set -eu
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "scripts/with_deployment_lock.py" ]; then
   shift 3
   exec python3 scripts/with_deployment_lock.py "$@"
+fi
+if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
+  printf '%s' '{"ok":true,"data":{"trading":{"nautilus":{"credentials_configured":'
+  printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
+  printf '}}}}\\n'
+  exit 0
+fi
+if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
+  case "$4" in
+    *credentials_configured*) shift 2; exec python3 "$@" ;;
+  esac
 fi
 case "$*" in
   *image_digest*) printf '%s\\n' "$TRACEFOLD_TEST_READY_IMAGE" ;;
@@ -139,6 +187,8 @@ esac
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "TRACEFOLD_TEST_EXTERNAL_ACTIVITY": str(external_activity),
         "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
+        "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
+        "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
@@ -146,6 +196,10 @@ esac
         "TRACEFOLD_TEST_RECEIPT": "ok",
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
+        "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_ROLE_PROVISION": str(tmp_path / "role-provision"),
     }
     return repo, external_activity, services_stopped, env
 
@@ -161,7 +215,7 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     targets = {line.split(maxsplit=1)[0] for line in result.stdout.splitlines() if line}
 
     assert result.returncode == 0, result.stderr
-    assert {"up", "status", "logs", "down"} <= targets
+    assert {"up", "status", "logs", "down", "db-provision-nautilus-role"} <= targets
     assert {
         "docker-up",
         "docker-status",
@@ -325,6 +379,121 @@ def test_up_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not external_activity.exists()
+
+
+def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("credentials_configured", "expected_ok", "expected_message"),
+    (("true", False, "nautilus: missing or stopped"), ("false", True, "nautilus: not configured (dark slice)")),
+)
+def test_status_uses_demo_credentials_as_nautilus_process_switch(
+    tmp_path: Path,
+    credentials_configured: str,
+    expected_ok: bool,
+    expected_message: str,
+) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
+
+    result = subprocess.run(
+        ["make", "status"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert (result.returncode == 0) is expected_ok
+    assert expected_message in result.stdout + result.stderr
+
+
+def test_exact_image_deploy_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+def test_nautilus_role_provisioning_refuses_a_running_compose_stack(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    provisioned = Path(env["TRACEFOLD_TEST_ROLE_PROVISION"])
+    env["TRACEFOLD_TEST_RUNNING_CONTAINERS"] = "postgres-id\n"
+
+    result = subprocess.run(
+        ["make", "db-provision-nautilus-role"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "offline-only" in result.stderr
+    assert not provisioned.exists()
+
+
+def test_nautilus_role_provisioning_uses_one_offline_single_user_container(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    provisioned = Path(env["TRACEFOLD_TEST_ROLE_PROVISION"])
+
+    result = subprocess.run(
+        ["make", "db-provision-nautilus-role"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    invocation = provisioned.read_text(encoding="utf-8")
+    assert "compose run --rm --no-deps --user postgres" in invocation
+    assert "--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres" in invocation
 
 
 def test_deployment_lock_is_released_by_the_os_when_the_owner_crashes(tmp_path: Path) -> None:
