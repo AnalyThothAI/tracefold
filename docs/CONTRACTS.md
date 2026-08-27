@@ -212,8 +212,11 @@ database poll, 60-second Intent TTL, at most 10 USDT notional, stop/holding/
 spread/drift bounds, one active Intent, and one fenced entry per UTC day are
 code/database-owned contracts, not YAML knobs. `tracefold config` reports the
 resolved paths plus one redacted `credentials_configured` boolean and never the
-secret contents. `accept_intents=false` still permits process startup and venue
-reconciliation but prevents admission of a new pending Intent.
+secret contents. That derived boolean is also the code-owned optional-process
+selector: `make up`, `make deploy-image`, and `make status` require Nautilus when
+both credential files are configured and accept its absence otherwise.
+`accept_intents=false` still permits process startup and venue reconciliation
+but prevents admission of a new pending Intent.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, News broker topology and consumer set, and all resource
@@ -226,16 +229,16 @@ The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
 Compose, `curl`, and daemon access; runs idempotent initialization; builds the
 frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. The dark Nautilus service is optional; when its container
-already exists, `make up` stops, recreates, waits for, and verifies it with the same
-image. A repeated invocation preserves config, passwords, and named-volume
-data.
+console boundaries. The dark Nautilus service is optional; when its Demo
+credentials are configured, `make up` stops, recreates, waits for, and verifies
+it with the same image. A repeated invocation preserves config, passwords, and
+named-volume data, including across `make down`.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
 required runtime readiness endpoint, or console HTML is missing or unhealthy.
-When a Nautilus container exists it also requires that process and its readiness
-endpoint to be healthy; absence is reported as the expected dark/not-enabled
-state. `make logs` follows the bounded startup services including Nautilus. `make down` stops the stack
+When the Demo credentials are configured it also requires that process and its
+readiness endpoint to be healthy; otherwise absence is reported as the expected
+dark/not-configured state. `make logs` follows the bounded startup services including Nautilus. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
 
@@ -249,8 +252,9 @@ database Alembic heads to match and requires the target image to parse the
 active config. It never builds, pulls, or downgrades. Success additionally
 requires the recreated migration, Serve, and Workers containers, Workers
 readiness identity, runtime manifest, and linked active/deployment receipt to
-prove that exact image. If a Nautilus container existed before replacement it is also
-recreated and its container image is checked against the same ID. `make up` and `make deploy-image` share one
+prove that exact image. When the effective config reports Demo credentials
+configured, Nautilus is also recreated and its container image is checked
+against the same ID. `make up` and `make deploy-image` share one
 process-lifetime deployment lock; concurrent mutation is refused and process
 exit releases the lock.
 

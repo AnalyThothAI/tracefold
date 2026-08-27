@@ -129,26 +129,20 @@ start, confirm `uv run tracefold config` names
 `credentials_configured=true`. Never print the two credential files. The
 dedicated Demo account must be One-way, 1x, and free of external positions or
 orders; startup checks account mode once, and Nautilus reconciliation checks
-the remaining venue state before readiness.
+the remaining venue state before readiness. The redacted credential result is
+the code-owned optional-process selector: configured credentials start the dark
+process even while `accept_intents=false`; missing credentials keep it absent.
 
 On a fresh database, `tracefold init` and `make up` create the Nautilus password
 and role with the other runtime roles. For an existing PostgreSQL volume that
 predates migration `20260827_0315`, stop the whole stack and run the offline
 `make db-provision-nautilus-role` once before `make up`; the command refuses a
-running Compose container. To start only the dark process after `make up`, from
-the clean primary checkout, preserve the built image identity explicitly:
-
-```bash
-image="$(docker compose config --images migrate | grep -v '@sha256:' | head -n 1)"
-image_id="$(docker image inspect --format '{{.Id}}' "$image")"
-TRACEFOLD_IMAGE_DIGEST="$image_id" docker compose up -d --no-build --force-recreate --wait nautilus
-make status
-```
-
-Once that container exists, subsequent `make up` and `make deploy-image` stop
-and recreate it—even if it had exited—with the other application processes and verify the same image;
-`make status` includes its health/readiness and `make logs` includes its logs.
-An absent container remains a valid PR 1 dark state. The opt-in real Demo
+running Compose container. With both secure Demo credential files present,
+`make up` starts Nautilus with the other application processes. Subsequent
+`make up` and `make deploy-image` recreate it—even after `make down` removed its
+container—and verify the same image; `make status` includes its health/readiness
+and `make logs` includes its logs. Without configured credentials, an absent
+container remains a valid PR 1 dark state. The opt-in real Demo
 closure/restart drill is `tests/live/test_nautilus_binance_demo.py`; use its
 isolated database/config/container contract rather than seeding a production
 Intent or adding a bypass CLI.
@@ -174,7 +168,7 @@ make down
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
-also recreates Nautilus when that optional dark container already exists; it
+also recreates Nautilus when the effective config reports Demo credentials; it
 does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
 password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
@@ -188,8 +182,9 @@ contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. If a Nautilus container exists, its health and readiness
-must also pass; if none exists, status reports the expected dark state. It must not be replaced by a liveness-only `curl` or a
+HTML console all pass. If the Demo credentials are configured, Nautilus health
+and readiness must also pass; otherwise status reports the expected dark state.
+It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
 ### Exact-image replacement with the current database schema

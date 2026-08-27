@@ -2,6 +2,7 @@ UV_CACHE_DIR ?= /tmp/tracefold-uv-cache
 export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
+READ_NAUTILUS_CREDENTIALS_CONFIGURED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["nautilus"]["credentials_configured"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid credentials_configured")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -176,8 +177,7 @@ _up-locked:
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		nautilus_was_enabled=false; \
-		if [ -n "$$(docker compose ps --all -q nautilus)" ]; then nautilus_was_enabled=true; fi; \
+		nautilus_configured=$$($(TRACEFOLD) config | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
@@ -189,7 +189,7 @@ _up-locked:
 			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
 		fi; \
 		runtime_services="migrate serve workers"; \
-		if [ "$$nautilus_was_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		if [ "$$nautilus_configured" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -287,8 +287,12 @@ _deploy-image-locked:
 			echo "Compose did not resolve migrate to the exact requested image ID." >&2; \
 			exit 2; \
 		fi; \
-		if ! docker compose run --rm --no-deps --entrypoint tracefold migrate config >/dev/null; then \
+		if ! runtime_config=$$(docker compose run --rm --no-deps --entrypoint tracefold migrate config); then \
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if ! nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); then \
+			echo "Target image did not report Nautilus credential availability; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
 		fail() { \
@@ -296,10 +300,8 @@ _deploy-image-locked:
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		nautilus_was_enabled=false; \
-		if [ -n "$$(docker compose ps --all -q nautilus)" ]; then nautilus_was_enabled=true; fi; \
 		runtime_services="migrate serve workers"; \
-		if [ "$$nautilus_was_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		if [ "$$nautilus_configured" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -372,6 +374,7 @@ _deploy-image-locked:
 status: preflight ## fail closed unless every enabled runtime is ready
 	@docker compose ps --all
 	@set -eu; \
+		nautilus_configured=$$($(TRACEFOLD) config | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -387,8 +390,12 @@ status: preflight ## fail closed unless every enabled runtime is ready
 				failed=1; \
 			fi; \
 		done; \
-		nautilus_id=$$(docker compose ps --all -q nautilus); \
-		if [ -n "$$nautilus_id" ]; then \
+		if [ "$$nautilus_configured" = true ]; then \
+			nautilus_id=$$(docker compose ps --all -q nautilus); \
+			if [ -z "$$nautilus_id" ]; then \
+				echo "nautilus: missing or stopped" >&2; \
+				failed=1; \
+			else \
 			nautilus_state=$$(docker inspect --format '{{.State.Status}}' "$$nautilus_id"); \
 			nautilus_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$nautilus_id"); \
 			if [ "$$nautilus_state" != "running" ] || [ "$$nautilus_health" != "healthy" ]; then \
@@ -397,8 +404,9 @@ status: preflight ## fail closed unless every enabled runtime is ready
 			else \
 				curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
 			fi; \
+			fi; \
 		else \
-			echo "nautilus: not enabled (dark slice)"; \
+			echo "nautilus: not configured (dark slice)"; \
 		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \

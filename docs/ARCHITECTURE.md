@@ -77,9 +77,10 @@ The same project-scoped application image contains the Python service and a
 production React build. Migration, Serve, and Workers use that exact image and
 build revision with different commands and credentials; an enabled
 Nautilus process uses it too.
-`make up` builds the image once and recreates migration, Serve, Workers, and an
-existing Nautilus container (including a stopped one); it starts PostgreSQL when absent but does not recreate a running
-PostgreSQL container. Serve owns the static console and public HTTP
+`make up` builds the image once and recreates migration, Serve, Workers, and
+Nautilus when the effective config reports Demo credentials configured; it
+starts PostgreSQL when absent but does not recreate a running PostgreSQL
+container. Serve owns the static console and public HTTP
 boundary; Workers exposes only its loopback operational boundary. Image
 construction and Compose startup do not become alternate configuration
 sources: `tracefold init` remains the single generated-default authority and

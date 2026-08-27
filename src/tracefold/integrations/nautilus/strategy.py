@@ -77,7 +77,8 @@ class TracefoldNautilusStrategy(Strategy):
         self._engine_identity = engine_identity
         self._queues = queues
         self._request_venue_flat = request_venue_flat
-        self._pending_events: deque[StrategyEvent] = deque(maxlen=queues.events.maxsize)
+        # One active lifecycle is retained losslessly behind the bounded thread queue.
+        self._pending_events: deque[StrategyEvent] = deque()
         self._projection_overflow = False
         self._active_intent: TradeIntent | None = None
         self._active_outcome: IntentOutcome | None = None
@@ -148,8 +149,8 @@ class TracefoldNautilusStrategy(Strategy):
         readiness = self._readiness()
         if readiness == self._last_readiness:
             return
-        if self._emit(readiness):
-            self._last_readiness = readiness
+        self._emit(readiness)
+        self._last_readiness = readiness
 
     def on_timer(self, _event: object) -> None:
         """Drain only the bounded command batch on the TradingNode thread."""
@@ -1330,14 +1331,12 @@ class TracefoldNautilusStrategy(Strategy):
         ts_event = int(getattr(event, "ts_event", 0))
         return ts_event // 1_000_000 if ts_event else int(self.clock.timestamp_ms())
 
-    def _emit(self, event: StrategyEvent) -> bool:
+    def _emit(self, event: StrategyEvent) -> None:
         self._flush_events()
         if len(self._pending_events) >= self._queues.events.maxsize:
             self._projection_overflow = True
-            return False
         self._pending_events.append(event)
         self._flush_events()
-        return True
 
     def _flush_events(self) -> None:
         while self._pending_events:
@@ -1346,6 +1345,7 @@ class TracefoldNautilusStrategy(Strategy):
             except Full:
                 return
             self._pending_events.popleft()
+        self._projection_overflow = False
 
 
 __all__ = [

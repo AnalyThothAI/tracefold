@@ -298,6 +298,27 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("macro_document_analysis_enabled", payload["llm"])
         self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "news"})
 
+    def test_config_reports_nautilus_credentials_without_disclosing_them(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            write_runtime_config(home)
+            app_home = home / ".tracefold"
+            key = "demo-key-value"
+            secret = "demo-secret-value"
+            for name, value in (("binance_demo_api_key", key), ("binance_demo_api_secret", secret)):
+                path = app_home / name
+                path.write_text(value, encoding="utf-8")
+                path.chmod(0o600)
+            stdout = io.StringIO()
+            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                exit_code = main(["config"], stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["data"]["trading"]["nautilus"]["credentials_configured"])
+        self.assertNotIn(key, stdout.getvalue())
+        self.assertNotIn(secret, stdout.getvalue())
+
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
             "watchlist handles": {"handles": ["wallstengine"]},

@@ -463,7 +463,7 @@ def test_unowned_position_open_callback_never_creates_protection_for_it() -> Non
     assert len(strategy.submitted) == 1
 
 
-def test_projection_queue_overflow_never_blocks_protection_or_risk_reducing_close() -> None:
+def test_projection_queue_overflow_retains_facts_without_blocking_risk_reduction() -> None:
     strategy, queues, intent = _fenced_strategy(queue_maxsize=1)
     strategy.on_start()
     assert queues.events.get_nowait() == ReadinessChanged(True, "ready", False)
@@ -488,10 +488,78 @@ def test_projection_queue_overflow_never_blocks_protection_or_risk_reducing_clos
     assert close.is_reduce_only is True
 
     assert queues.events.get_nowait() == occupied
+    observed = []
+    for _ in range(6):
+        strategy.on_timer(None)
+        observed.append(queues.events.get_nowait())
+    assert [type(event) for event in observed[:4]] == [
+        EntryFilled,
+        StopSubmitted,
+        OrderOutcomeUnknown,
+        CloseSubmitted,
+    ]
+    assert observed[4:] == [
+        ReadinessChanged(False, "projection_overflow", False),
+        ReadinessChanged(True, "ready", False),
+    ]
+
+
+def test_projection_queue_overflow_retains_terminal_flat_after_lifecycle_cleanup() -> None:
+    strategy, queues, intent = _fenced_strategy(queue_maxsize=1)
+    instrument = _solusdt_perp_binance()
+    position_id = PositionId("SOLUSDT-PERP.BINANCE-TRACEFOLD-001")
+    strategy.on_position_opened(_position_opened_event(strategy, intent, instrument, position_id))
+    queues.events.get_nowait()
     strategy.on_timer(None)
-    assert isinstance(queues.events.get_nowait(), EntryFilled)
+    queues.events.get_nowait()
+    stop = strategy.submitted[-1][0]
+
+    occupied = ReadinessChanged(True, "occupied", False)
+    queues.events.put_nowait(occupied)
+    strategy.on_position_closed(
+        SimpleNamespace(
+            instrument_id=SOLUSDT_PERP,
+            account_id=AccountId("BINANCE-001"),
+            position_id=position_id,
+            closing_order_id=stop.client_order_id,
+            quantity=instrument.make_qty(Decimal("0")),
+            avg_px_close=10_100.0,
+            realized_pnl=None,
+            ts_closed=(NOW_MS + 50) * 1_000_000,
+        )
+    )
+    queues.commands.put_nowait(
+        VenueFlatConfirmed(
+            intent_id=intent.intent_id,
+            instrument_id=SOLUSDT_PERP.value,
+            position_id=position_id.value,
+            authoritative_quantity=Decimal(0),
+            verified_at_ms=NOW_MS + 51,
+        )
+    )
     strategy.on_timer(None)
-    assert queues.events.get_nowait() == ReadinessChanged(False, "projection_overflow", False)
+    strategy.on_order_canceled(
+        SimpleNamespace(
+            client_order_id=stop.client_order_id,
+            ts_event=(NOW_MS + 52) * 1_000_000,
+        )
+    )
+
+    assert queues.events.get_nowait() == occupied
+    strategy.on_timer(None)
+    assert isinstance(queues.events.get_nowait(), PositionClosedObserved)
+    strategy.on_timer(None)
+    assert queues.events.get_nowait() == PositionFlatConfirmed(
+        intent_id=intent.intent_id,
+        position_id=position_id.value,
+        authoritative_quantity=Decimal(0),
+        avg_exit_price=Decimal("10100.0"),
+        realized_pnl_amount=None,
+        realized_pnl_currency=None,
+        commissions_by_currency=None,
+        closed_at_ms=NOW_MS + 50,
+        flat_verified_at_ms=NOW_MS + 51,
+    )
 
 
 def test_position_changed_waits_for_cancel_confirmation_then_replaces_with_a_new_id() -> None:
