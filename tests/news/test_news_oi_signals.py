@@ -305,9 +305,8 @@ def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> No
     assert summary is not None
     assert summary["parsed"] is True
     assert summary["rule"] == "opening_move_with_whale_concentration"
-    # The frame's subject. Nothing else in a feed row carries it for this lane: the Gate grounds
-    # `news_event_assets` from provider coin tags at admission and a 1019 frame ships none, so a live
-    # telemetry Event has `assets == []` and `grounded_assets == []`.
+    # The frame's parsed subject comes from the judgment trace. Public `assets` is a later projection of the
+    # durable Event-asset ledger; it does not replace this structured OI fact or justify parsing the title again.
     assert summary["symbol"] == judgment.signal.symbol
     assert summary["oi_change_bps"] == judgment.signal.oi_change_bps
     assert summary["oi_value_usd"] == judgment.signal.oi_value_usd

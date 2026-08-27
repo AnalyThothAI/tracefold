@@ -16,6 +16,21 @@
     font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
   }
 
+  .news-quote-compact {
+    display: inline-flex;
+    gap: 4px;
+    align-items: baseline;
+    margin-left: 6px;
+  }
+
+  .news-quote-compact .news-quote-change {
+    margin-left: 0;
+  }
+
+  .news-quote-separator {
+    color: var(--text-faint);
+  }
+
   /*
    * Red up, green down — the mainland convention the direction word uses. Applied to *actual* returns only:
    * the model's call is a word, the market's answer is a figure, and they never share a shape.

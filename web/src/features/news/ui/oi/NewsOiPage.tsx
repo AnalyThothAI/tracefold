@@ -13,6 +13,7 @@ import {
   NEWS_OI_TABS,
   useNewsOiFeedHistoryWithToken,
   useNewsOiFeedWithToken,
+  useNewsQuotesWithToken,
   useNewsStatusWithToken,
   type NewsOiTab,
 } from "../../api/newsQueries";
@@ -32,14 +33,14 @@ import "./newsOi.css";
  * question here is whether the telemetry itself parsed, cleared the push gates and occupied a window slot.
  * "Is there a trade in this" is a different question with different thresholds, and it is not asked here.
  *
- * Three bounded reads: `/api/news/status` for thresholds and 24 h counts, `/api/news/feed` filtered to the
- * deterministic lane for frames, and one `/api/trading/orders` batch for exact Event-to-ledger joins.
+ * Bounded reads: `/api/news/status` for thresholds and 24 h counts, `/api/news/feed` filtered to the
+ * deterministic lane for frames, one current-quote batch for the visible assets, and one
+ * `/api/trading/orders` batch for exact Event-to-ledger joins.
  *
  * What this page deliberately does not do: it draws no open-interest curve (the provider emits a frame only
  * when its own trigger fires, so there are no samples between them and a line through them would be
- * invented), it puts no current quote on a frame (a price that changes every few seconds beside a fixed
- * post-event measurement reads as a market screen), and it does not let anyone change a threshold here —
- * `news.oi` is operator configuration and this page only reports what it currently is.
+ * invented), and it does not let anyone change a threshold here — `news.oi` is operator configuration and
+ * this page only reports what it currently is. Current quote and fixed Event price are separate columns.
  */
 export function NewsOiPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -86,6 +87,15 @@ export function NewsOiPage({ token }: { token: string }) {
         .map((event) => [event.event_id, event]),
     ).values(),
   );
+  const quotesQuery = useNewsQuotesWithToken(
+    token,
+    rows.flatMap((event) =>
+      (event.assets ?? []).filter((asset) => asset.listed).map((asset) => asset.symbol),
+    ),
+  );
+  const quotes = Object.fromEntries(
+    (quotesQuery.data?.quotes ?? []).map((quote) => [quote.requested_symbol, quote]),
+  );
   const hasMore = Boolean(moreRequested ? historyQuery.hasNextPage : anchorCursor);
 
   const status = statusQuery.data;
@@ -100,7 +110,7 @@ export function NewsOiPage({ token }: { token: string }) {
     NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
   ) as Record<NewsOiTab, number | null>;
   /*
-   * Three capital reads sit under this page and each fails on its own, so each is named on its own.
+   * Independent supporting reads sit under this page and each fails on its own, so each is named on its own.
    *
    * A *cold* failure counts, not just a stale refresh: with no admission rules read, the Candidate
    * Gate panel has nothing to print, and four `—` tiles beside 已启用 read as "no admission rule is
@@ -108,7 +118,8 @@ export function NewsOiPage({ token }: { token: string }) {
    * it visible above the fold and gives the reader a retry — `PageState.Stale` only offers one when
    * there is a message to attach it to.
    */
-  const capitalReadFailures = [
+  const supportingReadFailures = [
+    quotesQuery.isError ? "当前行情" : "",
     tradingQuery.isError ? "交易账本" : "",
     gateQuery.isError ? "准入台账" : "",
     tradingStatusQuery.isError ? "准入规则" : "",
@@ -142,11 +153,12 @@ export function NewsOiPage({ token }: { token: string }) {
       {status ? (
         <PageState.Stale
           failedRefresh={
-            capitalReadFailures.length
-              ? `${capitalReadFailures.join(" / ")}读取失败，其余内容仍是上次读取。`
+            supportingReadFailures.length
+              ? `${supportingReadFailures.join(" / ")}读取失败，其余内容仍是上次读取。`
               : undefined
           }
           onRetry={() => {
+            void quotesQuery.refetch();
             void tradingQuery.refetch();
             void gateQuery.refetch();
             void tradingStatusQuery.refetch();
@@ -154,6 +166,7 @@ export function NewsOiPage({ token }: { token: string }) {
           updating={
             statusQuery.isFetching ||
             feedQuery.isFetching ||
+            quotesQuery.isFetching ||
             tradingQuery.isFetching ||
             gateQuery.isFetching ||
             tradingStatusQuery.isFetching
@@ -219,6 +232,7 @@ export function NewsOiPage({ token }: { token: string }) {
               onRetry={() => void feedQuery.refetch()}
               onTabChange={(next) => setSearchParams(nextOiParams(next), { replace: true })}
               rows={rows}
+              quotes={quotes}
               tab={tab}
               trading={tradingQuery.data}
               /*

@@ -18,6 +18,7 @@ _NEWS_QUERY_NAMES = (
     "news_feed_symbol_filter",
     "news_feed_search",
     "news_event_detail",
+    "news_event_asset_projection",
     "news_event_members",
     "news_event_verdicts",
     "news_storyline_status",
@@ -81,12 +82,14 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_feed_events",
         "news_feed_symbol_filter",
         "news_feed_search",
+        "news_event_asset_projection",
         "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/events/{event_id}"] == (
         "news_event_detail",
         "news_event_members",
         "news_event_verdicts",
+        "news_event_asset_projection",
         "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)

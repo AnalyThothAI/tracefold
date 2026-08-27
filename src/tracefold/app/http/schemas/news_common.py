@@ -33,11 +33,11 @@ class NewsTriageAssetData(ExactApiSchema):
 
 
 class NewsAssetRefData(ExactApiSchema):
-    """#87: one grounded coin tag, resolved against the #75 instrument universe.
+    """One durable Event asset, resolved against the #75 instrument universe (#87/#287).
 
-    ``listed`` is the whole point: the provider tags `SPOT` on a Spot Gold headline and `NEAR` on the words
-    "near-instant", and until now the console showed those exactly like a real token. ``venue`` is the preferred
-    venue when the base trades on several, and is ``None`` when the tag names nothing.
+    The ledger contains Gate-grounded provider tags and deterministic-judge primaries. ``listed`` keeps a tag
+    such as `SPOT` from looking like a real token; ``venue`` is preferred when the base trades on several and
+    is ``None`` when the symbol names nothing in the instrument universe.
     """
 
     symbol: str

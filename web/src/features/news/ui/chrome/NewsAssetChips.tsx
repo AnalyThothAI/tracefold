@@ -4,12 +4,12 @@ import { Link } from "react-router-dom";
 
 import type { NewsAssetRef, NewsQuote } from "../../api/newsQueries";
 
-import { NewsQuoteChange } from "./NewsQuoteValue";
+import { NewsQuoteChange, NewsQuoteCompact } from "./NewsQuoteValue";
 
 import "./newsAssetChips.css";
 
 /**
- * The assets an Event was grounded on, each shown as what it actually names (#87).
+ * The durable assets an Event concerns, each shown as what it actually names (#87/#287).
  *
  * A grounded tag reads `hl.perp:HYPE +2.6%` — venue, ticker, and what it did — with no frame around it. The
  * one framed thing in a meta line is a tag that resolved to nothing: the provider tags `SPOT` on a Spot Gold
@@ -30,11 +30,13 @@ export function NewsAssetChips({
   label = "关联资产",
   max,
   quotes,
+  withPrice = false,
 }: {
   assets: NewsAssetRef[];
   label?: string;
   max?: number;
   quotes?: Record<string, NewsQuote>;
+  withPrice?: boolean;
 }) {
   const referrer = useRouteReferrer();
   if (!assets.length) return null;
@@ -53,7 +55,13 @@ export function NewsAssetChips({
           >
             {asset.symbol}
           </Link>
-          {asset.listed ? <NewsQuoteChange quote={quotes?.[asset.symbol]} /> : null}
+          {asset.listed ? (
+            withPrice ? (
+              <NewsQuoteCompact quote={quotes?.[asset.symbol]} />
+            ) : (
+              <NewsQuoteChange quote={quotes?.[asset.symbol]} />
+            )
+          ) : null}
         </code>
       ))}
       {/* Three fit a row; the rest are counted and listed in full on the detail page. */}

@@ -1,6 +1,7 @@
 import { displayAssetRefs } from "@features/news/model/newsLabels";
 import { NewsAssetChips } from "@features/news/ui/chrome/NewsAssetChips";
 import { cleanup, render, screen } from "@testing-library/react";
+import { newsQuoteFixture } from "@tests/fixtures/newsFixture";
 import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
@@ -70,6 +71,49 @@ describe("NewsAssetChips", () => {
     expect(screen.getByText("+2")).toBeInTheDocument();
   });
 
+  it("shows current price and rolling 24H change when the feed asks for the compact quote", () => {
+    renderChips(
+      <NewsAssetChips
+        assets={[LISTED]}
+        quotes={{
+          HYPE: newsQuoteFixture({
+            base_symbol: "HYPE",
+            change_pct: 39.38,
+            price: "0.16059",
+            requested_symbol: "HYPE",
+            symbol: "HYPE",
+            venue_symbol: "HYPEUSDT",
+          }),
+        }}
+        withPrice
+      />,
+    );
+
+    const chip = screen.getByText("HYPE").closest("code");
+    expect(chip).toHaveTextContent("0.16059");
+    expect(chip).toHaveTextContent("+39.38%");
+  });
+
+  it("omits missing compact values instead of printing placeholder dashes in a Feed row", () => {
+    const waiting = renderChips(<NewsAssetChips assets={[LISTED]} withPrice />);
+
+    expect(waiting.container.querySelector("code")).toHaveTextContent("hl.perp:HYPE");
+    expect(waiting.container.querySelector("code")).not.toHaveTextContent("—");
+    waiting.unmount();
+
+    const noDayChange = renderChips(
+      <NewsAssetChips
+        assets={[LISTED]}
+        quotes={{ HYPE: newsQuoteFixture({ change_pct: null, price: "0.16059" }) }}
+        withPrice
+      />,
+    );
+    const chip = noDayChange.container.querySelector("code");
+    expect(chip).toHaveTextContent("0.16059");
+    expect(chip).not.toHaveTextContent("·");
+    expect(chip).not.toHaveTextContent("—");
+  });
+
   it("renders nothing rather than an empty container when an Event grounded on nothing", () => {
     const { container } = renderChips(<NewsAssetChips assets={[]} />);
 
@@ -78,6 +122,12 @@ describe("NewsAssetChips", () => {
 });
 
 describe("displayAssetRefs", () => {
+  it("keeps authoritative Event assets when the provider grounded no tag", () => {
+    const btr = { base_symbol: "BTR", listed: true, symbol: "BTR", venue: "binance.perp" };
+
+    expect(displayAssetRefs([], [btr])).toEqual([btr]);
+  });
+
   it("falls back to unlisted for a tag the server did not resolve", () => {
     // A response served before #87, or one whose Event carried a tag the resolver never saw. An unknown tag
     // must read as "we cannot place this", never as a confirmed listing.

@@ -53,15 +53,19 @@ _OUTCOME = {"kind": "queued_publish", "text_zh": "待处理", "reason_zh": "已�
 class _FakeNewsRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.events = [_event()]
+        self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
 
     def list_feed(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("list_feed", kwargs))
         if kwargs.get("cursor") == "broken":
             raise ValueError("news_feed_cursor_invalid")
         return {
-            "events": [{**_event(), "title_zh": "铜价冲击纪录", "outcome": _OUTCOME}],
+            "events": [{**event, "title_zh": "铜价冲击纪录", "outcome": _OUTCOME} for event in self.events],
             "next_cursor": None,
-            "counts": None if kwargs.get("cursor") else {"total": 1, "pushed": 0, "held": 0, "pending": 1},
+            "counts": None
+            if kwargs.get("cursor")
+            else {"total": len(self.events), "pushed": 0, "held": 0, "pending": len(self.events)},
             "filters": {
                 "family": kwargs["family"],
                 "admission": kwargs["admission"],
@@ -79,10 +83,11 @@ class _FakeNewsRepository:
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         self.calls.append(("event_detail", {"event_id": event_id}))
-        if event_id != "ev-1":
+        event = next((event for event in self.events if event["event_id"] == event_id), None)
+        if event is None:
             return None
         return {
-            "event": _event(),
+            "event": dict(event),
             "outcome": _OUTCOME,
             "timeline": [
                 {
@@ -105,6 +110,15 @@ class _FakeNewsRepository:
                 "received_at_ms": None,
                 "rendered_card": None,
             },
+        }
+
+    def event_asset_symbols(self, event_ids: Any) -> dict[str, list[str]]:
+        requested = [str(event_id) for event_id in event_ids]
+        self.calls.append(("event_asset_symbols", {"event_ids": requested}))
+        return {
+            event_id: list(self.event_assets_by_id[event_id])
+            for event_id in requested
+            if event_id in self.event_assets_by_id
         }
 
     def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
@@ -175,7 +189,7 @@ class _FakeInstrumentsRepository:
 
     def asset_refs(self, symbols: Any) -> dict[str, dict[str, Any]]:
         # Keyed by the raw provider tag; `symbol` comes back normalized (the real one strips `XYZ-`).
-        listed = {"COPPER": "hl.xyz"}
+        listed = {"BTR": "binance.perp", "COPPER": "hl.xyz"}
         out: dict[str, dict[str, Any]] = {}
         for raw in symbols:
             norm = str(raw).upper().removeprefix("XYZ-")
@@ -490,8 +504,8 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
     assert "priority" not in body["data"]["events"][0]
     assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
     assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
-    # #87: the raw provider tags stay, and beside them the same tags resolved against the instrument
-    # universe — so the browser can strike through a tag that names nothing without owning a symbol table.
+    # Raw provider/Gate evidence stays, while the durable Event-asset ledger is resolved beside it — so the
+    # browser can strike through a symbol that names nothing without owning a symbol table.
     assert body["data"]["events"][0]["grounded_assets"] == ["COPPER", "XYZ-COPPER", "SPOT"]
     # One entry per instrument named, not per tag: `COPPER` and `XYZ-COPPER` are the same contract, and once
     # resolved they are byte-identical (#87 review).
@@ -590,8 +604,29 @@ def test_feed_resolves_every_tag_even_when_the_universe_knows_none_of_them(clien
     assert [asset["listed"] for asset in body["data"]["events"][0]["assets"]] == [True, False]
 
 
+def test_deterministic_event_assets_project_to_feed_and_detail(client) -> None:
+    """The durable Event-asset ledger is public even when the provider grounded no coin tag (#287)."""
+
+    http, news = client
+    news.events = [
+        {**_event("ev-oi"), "grounded_assets": [], "admission": "telemetry_deterministic"},
+        _event("ev-news"),
+    ]
+    news.event_assets_by_id = {"ev-oi": ["BTR"], "ev-news": ["COPPER", "SPOT"]}
+
+    feed = http.get("/api/news/feed", params={"token": TOKEN})
+    detail = http.get("/api/news/events/ev-oi", params={"token": TOKEN})
+
+    assert feed.status_code == detail.status_code == 200
+    feed_event = next(event for event in feed.json()["data"]["events"] if event["event_id"] == "ev-oi")
+    detail_event = detail.json()["data"]["event"]
+    expected = [{"symbol": "BTR", "base_symbol": "BTR", "venue": "binance.perp", "listed": True}]
+    assert feed_event["grounded_assets"] == detail_event["grounded_assets"] == []
+    assert feed_event["assets"] == detail_event["assets"] == expected
+
+
 def test_status_counts_grounding_from_both_owners_without_either_reaching_across(client) -> None:
-    """#87: News owns which tags an Event carried, the universe owns what they name; the route folds them."""
+    """News owns Event-asset identity, the universe owns what it names; the route folds them (#87/#267)."""
 
     http, news = client
 

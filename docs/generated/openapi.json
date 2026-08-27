@@ -677,7 +677,7 @@
       },
       "NewsAssetRefData": {
         "additionalProperties": false,
-        "description": "#87: one grounded coin tag, resolved against the #75 instrument universe.\n\n``listed`` is the whole point: the provider tags `SPOT` on a Spot Gold headline and `NEAR` on the words\n\"near-instant\", and until now the console showed those exactly like a real token. ``venue`` is the preferred\nvenue when the base trades on several, and is ``None`` when the tag names nothing.",
+        "description": "One durable Event asset, resolved against the #75 instrument universe (#87/#287).\n\nThe ledger contains Gate-grounded provider tags and deterministic-judge primaries. ``listed`` keeps a tag\nsuch as `SPOT` from looking like a real token; ``venue`` is preferred when the base trades on several and\nis ``None`` when the symbol names nothing in the instrument universe.",
         "properties": {
           "base_symbol": {
             "title": "Base Symbol",

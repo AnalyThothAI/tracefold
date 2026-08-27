@@ -206,7 +206,7 @@ async function waitForSettledFeedCount(page: Page) {
     .toBe(true);
 }
 
-/** The 1240px frame grid scrolls inside its panel; neither document nor route column may widen. */
+/** The 1244px frame grid scrolls inside its panel; neither document nor route column may widen. */
 async function expectOiOverflowContract(page: Page) {
   const widths = await page.evaluate(() => {
     const route = document.querySelector<HTMLElement>(".center-column");
