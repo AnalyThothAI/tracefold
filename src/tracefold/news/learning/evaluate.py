@@ -1242,27 +1242,29 @@ class CandidateEvaluator:
                     stable_only_errors += 1
             # An errored arm renders no resource evidence, so counting the healthy side alone would
             # compare a truncated mean against a full one across every resource guardrail below.
-            metric_sources: tuple = ()
+            metric_sources: tuple[
+                tuple[str, Mapping[str, Any], list[int], list[int], list[int], list[int], list[int]], ...
+            ] = ()
             if not (request.stage in {"offline", "holdout"} and (stable_errored or candidate_errored)):
                 metric_sources = (
-                (
-                    "stable",
-                    stable_out,
-                    stable_tokens,
-                    stable_calls,
-                    stable_trace_entries,
-                    stable_costs,
-                    stable_latencies,
-                ),
-                (
-                    "candidate",
-                    candidate_out,
-                    candidate_tokens,
-                    candidate_calls,
-                    candidate_trace_entries,
-                    candidate_costs,
-                    candidate_latencies,
-                ),
+                    (
+                        "stable",
+                        stable_out,
+                        stable_tokens,
+                        stable_calls,
+                        stable_trace_entries,
+                        stable_costs,
+                        stable_latencies,
+                    ),
+                    (
+                        "candidate",
+                        candidate_out,
+                        candidate_tokens,
+                        candidate_calls,
+                        candidate_trace_entries,
+                        candidate_costs,
+                        candidate_latencies,
+                    ),
                 )
             for arm, output, tokens, calls, trace_entries, costs, latencies in metric_sources:
                 for program_obs in output.get("program") or []:
