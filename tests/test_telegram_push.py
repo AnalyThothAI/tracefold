@@ -44,9 +44,16 @@ def _preflight_response(request: httpx.Request) -> httpx.Response | None:
 
 def _card(*, source_url: str = "https://example.test/news/1") -> dict[str, object]:
     return {
-        "header": {"title": {"content": "BTC ETF 净流入"}},
+        "header": {"title": {"content": "BTC ETF 净流入"}, "template": "green"},
         "elements": [
-            {"tag": "markdown", "content": "连续第三日净流入\n利多 · 重要 · BTC"},
+            {
+                "tag": "markdown",
+                "content": (
+                    "连续第三日净流入\n"
+                    "利多 · 新进展 · 影响明显 · BTC · CoinDesk（2 条报道） · 14:32\n"
+                    "行情 BTC $74,553.10 24h +7.91%"
+                ),
+            },
             {
                 "tag": "action",
                 "actions": [{"tag": "button", "text": {"content": "打开来源"}, "url": source_url}],
@@ -88,11 +95,18 @@ def test_sender_posts_plain_text_to_only_the_configured_channel() -> None:
     receipt = sender.send_card(_card())
 
     assert observed["chat_id"] == CHANNEL_ID
-    assert observed["text"] == "BTC ETF 净流入\n\n连续第三日净流入\n利多 · 重要 · BTC\n\nTracefold · abc12345"
-    assert "parse_mode" not in observed
+    assert observed["text"] == (
+        "🟢 <b>BTC ETF 净流入</b>\n\n"
+        "连续第三日净流入\n\n"
+        "🧭 <b>判断</b>  利多 · 新进展 · 影响明显 · BTC\n"
+        "📊 <b>行情</b>  BTC $74,553.10 24h +7.91%\n"
+        "🕒 <b>来源</b>  CoinDesk · 2 条报道 · 14:32"
+    )
+    assert observed["parse_mode"] == "HTML"
+    assert "abc12345" not in str(observed["text"])
     assert observed["link_preview_options"] == {"is_disabled": True}
     assert observed["reply_markup"] == {
-        "inline_keyboard": [[{"text": "打开来源", "url": "https://example.test/news/1"}]]
+        "inline_keyboard": [[{"text": "查看原文 ↗", "url": "https://example.test/news/1"}]]
     }
     assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
     assert all(total <= 5.0 for total in timeout_totals)
@@ -100,6 +114,73 @@ def test_sender_posts_plain_text_to_only_the_configured_channel() -> None:
     assert receipt["message_id"] == 42
     assert len(str(receipt["target_sha256"])) == 64
     assert str(CHANNEL_ID) not in json.dumps(receipt)
+
+
+def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
+    observed: dict[str, object] = {}
+    card = _card()
+    card["header"] = {"title": {"content": "A < B & <i>not markup</i>"}, "template": "red"}
+    card["elements"] = [
+        {
+            "tag": "markdown",
+            "content": "利润 < 预期 & 风险上升\n利空 · 影响明显 · A&B · Reuters · 14:32",
+        }
+    ]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(card)
+
+    assert observed["parse_mode"] == "HTML"
+    assert observed["text"] == (
+        "🔴 <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
+        "利润 &lt; 预期 &amp; 风险上升\n\n"
+        "🧭 <b>判断</b>  利空 · 影响明显 · A&amp;B\n"
+        "🕒 <b>来源</b>  Reuters · 14:32"
+    )
+
+
+def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -> None:
+    observed: dict[str, object] = {}
+    card = _card()
+    card["header"] = {"title": {"content": "交易所恢复提现"}, "template": "grey"}
+    card["elements"] = [
+        {"tag": "markdown", "content": "BTC ETH · opennews · 14:32"},
+    ]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(card)
+
+    assert observed["text"] == ("⚪ <b>交易所恢复提现</b>\n\n🧭 <b>标的</b>  BTC ETH\n🕒 <b>来源</b>  opennews · 14:32")
 
 
 def test_http_client_info_logs_never_include_the_bot_token(caplog: pytest.LogCaptureFixture) -> None:

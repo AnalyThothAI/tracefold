@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import re
 import ssl
 import time
@@ -23,7 +24,11 @@ _TELEGRAM_TEXT_MAX = 4096
 _TELEGRAM_RESPONSE_MAX_BYTES = 1024 * 1024
 _BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
 _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
+_TELEGRAM_TIME_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
+_REPORTING_ORIGIN_RE = re.compile(r"^(?P<origin>.+)（(?P<count>[1-9][0-9]*) 条报道）$")
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage"})
+_DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
+_HEADER_ICON = {"green": "🟢", "red": "🔴", "grey": "⚪"}
 
 
 class TelegramDeliveryError(RuntimeError):
@@ -141,6 +146,7 @@ class TelegramNewsPushSender:
         payload: dict[str, Any] = {
             "chat_id": self._chat_id,
             "text": text,
+            "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
         }
         if source_button is not None:
@@ -251,8 +257,15 @@ class TelegramNewsPushSender:
 
 
 def _telegram_message(card: Mapping[str, Any]) -> tuple[str, dict[str, str] | None]:
-    title = _nested_text(card.get("header"), "title")
-    sections: list[str] = [title] if title else []
+    title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
+    header = card.get("header")
+    template = str(header.get("template") or "") if isinstance(header, Mapping) else ""
+    icon = _HEADER_ICON.get(template, "⚪")
+    if title.startswith("⚡ "):
+        icon = "⚡"
+        title = title.removeprefix("⚡ ").strip()
+
+    content_lines: list[str] = []
     source_button: dict[str, str] | None = None
     elements = card.get("elements")
     if isinstance(elements, Sequence) and not isinstance(elements, str | bytes):
@@ -263,17 +276,69 @@ def _telegram_message(card: Mapping[str, Any]) -> tuple[str, dict[str, str] | No
             if tag == "markdown":
                 content = str(element.get("content") or "").strip()
                 if content:
-                    sections.append(content)
-            elif tag == "note":
-                note = _first_plain_text(element.get("elements"))
-                if note:
-                    sections.append(note)
+                    content_lines.extend(line.strip() for line in content.splitlines() if line.strip())
             elif tag == "action" and source_button is None:
                 source_button = _source_button(element.get("actions"))
-    message = "\n\n".join(sections).strip() or "Tracefold 新闻事件"
-    if len(message) > _TELEGRAM_TEXT_MAX:
-        message = message[: _TELEGRAM_TEXT_MAX - 1].rstrip() + "…"
+
+    market_line = next((line for line in reversed(content_lines) if line.startswith("行情 ")), "")
+    if market_line:
+        content_lines.remove(market_line)
+    facts_line = content_lines.pop() if content_lines else ""
+    explanation = "\n".join(content_lines)
+    signal, source = _telegram_facts(facts_line)
+
+    sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
+    if explanation:
+        sections.append(_escape_html(_clip(explanation, 1800)))
+
+    metadata: list[str] = []
+    if signal:
+        signal_label = "判断" if signal.split(" · ", maxsplit=1)[0] in _DIRECTION_LABELS else "标的"
+        metadata.append(f"🧭 <b>{signal_label}</b>  {_escape_html(_clip(signal, 600))}")
+    if market_line:
+        market = market_line.removeprefix("行情 ").strip()
+        if market:
+            metadata.append(f"📊 <b>行情</b>  {_escape_html(_clip(market, 800))}")
+    if source:
+        metadata.append(f"🕒 <b>来源</b>  {_escape_html(_clip(source, 300))}")
+    if metadata:
+        sections.append("\n".join(metadata))
+
+    message = "\n\n".join(sections).strip()
+    if len(_plain_html_text(message)) > _TELEGRAM_TEXT_MAX:
+        raise TelegramDeliveryError("news_delivery_telegram_message_too_long")
     return message, source_button
+
+
+def _telegram_facts(value: str) -> tuple[str, str]:
+    parts = [part.strip() for part in str(value or "").split(" · ") if part.strip()]
+    if not parts:
+        return "", ""
+    time_text = parts.pop() if parts and _TELEGRAM_TIME_RE.fullmatch(parts[-1]) else ""
+    origin = parts.pop() if time_text and parts else ""
+    source_parts: list[str] = []
+    if origin:
+        match = _REPORTING_ORIGIN_RE.fullmatch(origin)
+        if match is None:
+            source_parts.append(origin)
+        else:
+            source_parts.extend((match.group("origin"), f"{match.group('count')} 条报道"))
+    if time_text:
+        source_parts.append(time_text)
+    return " · ".join(parts), " · ".join(source_parts)
+
+
+def _clip(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _escape_html(value: str) -> str:
+    return html.escape(value, quote=False)
+
+
+def _plain_html_text(value: str) -> str:
+    return html.unescape(re.sub(r"</?(?:b|strong)>", "", value))
 
 
 def _nested_text(value: object, key: str) -> str:
@@ -283,17 +348,6 @@ def _nested_text(value: object, key: str) -> str:
     if not isinstance(nested, Mapping):
         return ""
     return str(nested.get("content") or "").strip()
-
-
-def _first_plain_text(value: object) -> str:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        return ""
-    for item in value:
-        if isinstance(item, Mapping) and item.get("tag") == "plain_text":
-            text = str(item.get("content") or "").strip()
-            if text:
-                return text
-    return ""
 
 
 def _source_button(value: object) -> dict[str, str] | None:
@@ -307,7 +361,8 @@ def _source_button(value: object) -> dict[str, str] | None:
             continue
         label_source = action.get("text")
         label = str(label_source.get("content") or "").strip() if isinstance(label_source, Mapping) else ""
-        return {"text": (label or "打开来源")[:64], "url": url}
+        button_label = "查看原文 ↗" if not label or label == "打开来源" else label
+        return {"text": button_label[:64], "url": url}
     return None
 
 
