@@ -197,3 +197,48 @@ export function holdCeiling(ms: number): string {
   const rest = minutes % 60;
   return rest === 0 ? `${hours} h` : `${hours}h ${String(rest).padStart(2, "0")}m`;
 }
+
+/*
+ * The lane's own clock, in the reader's local zone (#282). Its own rather than News' `clockTime` because
+ * the import runs the wrong way: News composes over this feature's vocabulary, never the reverse, and a
+ * capital surface that needed a News helper to print a timestamp would invert that for a date format.
+ * Same `en-CA` 24-hour basis on both sides, so a case and the frame that authored it agree on the minute.
+ */
+const CASE_CLOCK = new Intl.DateTimeFormat("en-CA", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  hourCycle: "h23",
+});
+
+/** `08-27 14:27` — a case can be older than today, so the day is part of the answer. */
+export function caseClock(value: number | null | undefined): string {
+  if (value == null) return "—";
+  const parts = Object.fromEntries(
+    CASE_CLOCK.formatToParts(new Date(value)).map((part) => [part.type, part.value]),
+  );
+  return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+/** `+2.12%` / `−34 bps` — a realised result in the unit the ledger measured it in. */
+export function realizedLabel(bps: number | null | undefined): string {
+  if (bps == null) return "—";
+  const sign = bps > 0 ? "+" : bps < 0 ? "−" : "";
+  return `${sign}${Math.abs(bps)} bps`;
+}
+
+/** `+1.87% · 带内` — the frozen pre-move against the band the case was decided under. */
+export function preMoveLabel(
+  bps: number | null | undefined,
+  config: Record<string, string>,
+): string {
+  if (bps == null) return "未测量";
+  const sign = bps > 0 ? "+" : bps < 0 ? "−" : "";
+  const move = `${sign}${(Math.abs(bps) / 100).toFixed(2)}%`;
+  const min = Number(config.min_price_move_bps);
+  const max = Number(config.max_price_move_bps);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return move;
+  return `${move} · ${bps >= min && bps <= max ? "带内" : "带外"}`;
+}

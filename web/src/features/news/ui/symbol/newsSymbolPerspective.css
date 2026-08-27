@@ -1,0 +1,220 @@
+@layer app.features {
+  /*
+   * 交易视角 (#282). Three cards on one hairline grid, as the artifact draws them: the quadrant, the band
+   * the strategy would still enter inside, and the frame's measurements against the case's own floors.
+   *
+   * `auto-fit` at 300px so all three sit side by side on the token page's measure and stack one at a time
+   * below it, rather than the page choosing a breakpoint for them.
+   */
+  .news-symbol-perspective {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1px;
+    background: var(--border-faint);
+  }
+
+  .news-symbol-perspective > article {
+    display: grid;
+    gap: 9px;
+    align-content: start;
+    min-width: 0;
+    padding: 13px 15px 15px;
+    background: var(--surface-panel);
+  }
+
+  .news-symbol-perspective > article > small {
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.08em;
+  }
+
+  .news-symbol-perspective p {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+    line-height: 1.55;
+  }
+
+  /* ---------------------------------------------------------------- quadrant */
+
+  .news-symbol-quadrants {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+
+  .news-symbol-quadrant {
+    display: grid;
+    gap: 1px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-faint);
+  }
+
+  .news-symbol-quadrant b {
+    color: var(--text-muted);
+    font-size: var(--font-size-mono-meta);
+    font-weight: 600;
+  }
+
+  .news-symbol-quadrant code {
+    color: var(--text-faint);
+    font: 500 var(--font-size-eyebrow)/1.4 var(--font-mono);
+  }
+
+  /* The one the lane actually assigned. Indigo because it is a pipeline fact, not a direction. */
+  .news-symbol-quadrant[data-active] {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
+  }
+
+  .news-symbol-quadrant[data-active] b,
+  .news-symbol-quadrant[data-active] code {
+    color: var(--accent-primary);
+    font-weight: 640;
+  }
+
+  /* -------------------------------------------------------------------- band */
+
+  .news-symbol-band {
+    position: relative;
+    height: 30px;
+    margin: 18px 4px 0;
+  }
+
+  .news-symbol-band-track {
+    position: absolute;
+    inset: 11px 0;
+    display: flex;
+    gap: 2px;
+  }
+
+  .news-symbol-band-track > span {
+    border-radius: var(--radius-xs);
+    background: var(--border-faint);
+  }
+
+  /* The window the strategy would still enter inside — the only segment that means "yes". */
+  .news-symbol-band-track > span[data-tone="band"] {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
+  }
+
+  /* Past the ceiling is the research's chasing bucket, and amber is what this console calls withheld. */
+  .news-symbol-band-track > span[data-tone="above"] {
+    background: var(--signal-caution-soft);
+  }
+
+  .news-symbol-band-marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    border-radius: var(--radius-pill);
+    background: var(--text-primary);
+  }
+
+  .news-symbol-band-marker b {
+    position: absolute;
+    top: -16px;
+    left: 50%;
+    color: var(--text-primary);
+    font: 640 var(--font-size-mono-meta)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+
+  .news-symbol-band-marker[data-edge="start"] b {
+    left: 0;
+    transform: none;
+  }
+
+  .news-symbol-band-marker[data-edge="end"] b {
+    left: auto;
+    right: 0;
+    transform: none;
+  }
+
+  /* Each tick is absolutely placed on the boundary it names and centred on it; the two at the ends are
+     pulled back inside so a label never hangs off the card. */
+  .news-symbol-band-ticks {
+    position: relative;
+    height: 12px;
+    margin: 0 4px;
+    color: var(--text-faint);
+    font: 500 var(--font-size-eyebrow)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-symbol-band-tick {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+
+  .news-symbol-band-tick:first-child {
+    transform: none;
+  }
+
+  .news-symbol-band-tick:last-child {
+    transform: translateX(-100%);
+  }
+
+  /* ------------------------------------------------------------------ floors */
+
+  .news-symbol-floors {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+  }
+
+  .news-symbol-floors > div {
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr) auto;
+    gap: 4px 8px;
+    align-items: baseline;
+    padding: 5px 0;
+    border-bottom: 1px dashed var(--border-faint);
+  }
+
+  .news-symbol-floors > div:last-child {
+    border-bottom: 0;
+  }
+
+  .news-symbol-floors dt {
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+    font-weight: 560;
+  }
+
+  .news-symbol-floors dd {
+    margin: 0;
+    color: var(--text-primary);
+    font: 620 var(--font-size-meta)/1.3 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-symbol-floors span {
+    color: var(--text-subtle);
+    font: var(--type-mono-meta);
+    font-weight: 620;
+  }
+
+  .news-symbol-floors span[data-verdict="pass"] {
+    color: var(--signal-done);
+  }
+
+  .news-symbol-floors span[data-verdict="fail"] {
+    color: var(--signal-caution);
+  }
+
+  /* The threshold itself, under the measurement it is compared with. */
+  .news-symbol-floors small {
+    grid-column: 2 / 4;
+    color: var(--text-faint);
+    font: 500 var(--font-size-eyebrow)/1.4 var(--font-mono);
+  }
+}

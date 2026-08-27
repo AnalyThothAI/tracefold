@@ -130,6 +130,41 @@ const geometry: Array<{
     value: "minmax(0, 1.32fr) minmax(0, 1fr)",
     why: "今日已了结 is a table and 今日案例去向 is five bars; the artifact weights them accordingly",
   },
+  {
+    file: "features/news/ui/symbol/newsSymbol.css",
+    selector: ".news-symbol-band-row",
+    property: "grid-template-columns",
+    value: "minmax(0, 1.4fr) minmax(0, 1fr)",
+    why: "what this token is, beside how much of it there has been",
+  },
+  {
+    file: "features/news/ui/symbol/newsSymbol.css",
+    selector: ".news-symbol-tiles",
+    property: "grid-template-columns",
+    value: "repeat(3, minmax(0, 1fr))",
+    why: "24H 事件 / 已推送 / OI 窗口, equal thirds of the band's right-hand column",
+  },
+  {
+    file: "features/news/ui/symbol/newsSymbolPerspective.css",
+    selector: ".news-symbol-perspective",
+    property: "grid-template-columns",
+    value: "repeat(auto-fit, minmax(300px, 1fr))",
+    why: "three readings side by side at the token page's measure, stacking one at a time below it",
+  },
+  {
+    file: "features/trading/ui/tradingSymbolSection.css",
+    selector: ".trading-case-head, .trading-case-row",
+    property: "grid-template-columns",
+    value: "104px 118px 158px 128px 132px minmax(220px, 1fr) 96px",
+    why: "the artifact's seven tracks, with 36px moved into the strategy chip this console names in full",
+  },
+  {
+    file: "features/trading/ui/tradingSymbolSection.css",
+    selector: ".trading-case-detail",
+    property: "grid-template-columns",
+    value: "minmax(0, 1.15fr) minmax(0, 1fr)",
+    why: "the named rule carries the row; the frozen manifest qualifies it",
+  },
 ];
 
 describe("v8 artifact geometry contract", () => {

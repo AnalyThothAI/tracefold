@@ -25,6 +25,15 @@
   }
 
   /* ------------------------------------------------------------------ identity */
+  /* The artifact's identity band: `1.4fr` of what this is beside `1fr` of how much there has been, meeting
+     on a hairline. Below the token page's split the two stack and the seam becomes a rule. */
+  .news-symbol-band-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 1px;
+    background: var(--border-faint);
+  }
+
   .news-symbol-identity {
     display: flex;
     flex-wrap: wrap;
@@ -32,6 +41,7 @@
     align-items: baseline;
     justify-content: space-between;
     padding: 14px;
+    background: var(--surface-panel);
   }
 
   .news-symbol-identity-main {
@@ -92,6 +102,48 @@
     letter-spacing: 0.08em;
   }
 
+  /*
+   * The artifact's three figures beside the identity (#282). Hairline seams rather than card gaps, so the
+   * band reads as one block with three cells — the same seam grammar 交易视角 uses directly below it.
+   */
+  .news-symbol-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    margin: 0;
+    background: var(--border-faint);
+  }
+
+  .news-symbol-tiles > div {
+    display: grid;
+    gap: 2px;
+    align-content: center;
+    min-width: 0;
+    padding: 12px 14px;
+    background: var(--surface-panel);
+  }
+
+  .news-symbol-tiles dt {
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.08em;
+  }
+
+  .news-symbol-tiles dd {
+    margin: 0;
+    color: var(--text-primary);
+    font: 660 var(--font-size-metric)/1.15 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-symbol-tiles dd[data-tone="accent"] {
+    color: var(--accent-primary);
+  }
+
+  .news-symbol-tiles dd[data-tone="caution"] {
+    color: var(--signal-caution);
+  }
+
   .news-symbol-contracts {
     display: flex;
     flex-wrap: wrap;
@@ -136,13 +188,8 @@
     font-size: var(--font-size-meta);
   }
 
-  .news-symbol-window b {
-    color: var(--text-primary);
-    font: 640 var(--font-size-item-title)/1.15 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-symbol-window b[data-full] {
+  /* Full is the state with a consequence, so it is the state that carries the colour. */
+  .news-symbol-window span[data-full] {
     color: var(--signal-caution);
   }
 
@@ -273,6 +320,12 @@
   }
 
   @media (max-width: 720px) {
+    /* The band stacks rather than squeezing: three metric tiles beside an identity block at phone width
+       would leave both unreadable, and the seam does the same job horizontally. */
+    .news-symbol-band-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .news-symbol-identity {
       flex-direction: column;
       align-items: stretch;

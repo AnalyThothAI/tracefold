@@ -237,6 +237,18 @@ export function tradingOrderFixture(overrides: Partial<TradingOrder> = {}): Trad
     policy_reason: null,
     position_closed_at_ms: null,
     position_opened_at_ms: TRADING_NOW_MS - 360_000,
+    // The two frozen case facts an order row now carries too (#282). Present by default for the same
+    // reason the case fixture carries them: every surface that explains a case reads them.
+    pre_move_bps: 187,
+    strategy_config: {
+      allow_short: "False",
+      max_price_move_bps: "1000",
+      measurement_window_ms: "300000",
+      min_oi_change_bps: "500",
+      min_price_move_bps: "0",
+      min_whale_long_profit_bps: "9500",
+      min_whale_oi_ratio_bps: "5000",
+    },
     provider_attempt_count: 1,
     provider_symbol: "WIFUSDT",
     quantity: "237.6",
@@ -267,6 +279,21 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     observed_at_ms: TRADING_NOW_MS - 501_000,
     policy_decision: "no_trade",
     policy_reason: "whale_profit_below_floor",
+    /*
+     * The frozen pre-move and the thresholds it was measured against (#273, #282). Present by default
+     * because every surface that explains a case reads them, and a fixture without them exercises only
+     * the 未冻结 path — which is what the token page's 交易视角 baseline froze on its first run.
+     */
+    pre_move_bps: 187,
+    strategy_config: {
+      allow_short: "False",
+      max_price_move_bps: "1000",
+      measurement_window_ms: "300000",
+      min_oi_change_bps: "500",
+      min_price_move_bps: "0",
+      min_whale_long_profit_bps: "9500",
+      min_whale_oi_ratio_bps: "5000",
+    },
     regime: "buildup_up",
     state: "POLICY_REJECTED",
     underlying_key: "crypto:HYPE",
@@ -443,5 +470,26 @@ export function tradingOrdersFixture(overrides: Partial<TradingOrders> = {}): Tr
     ],
     window_hours: 24,
     ...overrides,
+  };
+}
+
+/**
+ * The orders batch as the endpoint answers it for one underlying (#282).
+ *
+ * `/api/trading/orders` accepts `underlying` and filters both halves by it, so a mock that ignored the
+ * parameter handed the WIF token page a HYPE case — whose `event_id` matches no frame that page loaded, so
+ * 交易视角 rendered its "no frame" path on every baseline and froze the panel in the state it says least
+ * in. Filtering here is what the server does, spelled out.
+ */
+export function tradingOrdersForUnderlying(underlying: string | null): TradingOrders {
+  const batch = tradingOrdersFixture();
+  if (!underlying) return batch;
+  const key = underlying.includes(":") ? underlying : `crypto:${underlying.toUpperCase()}`;
+  return {
+    ...batch,
+    cases_without_orders: (batch.cases_without_orders ?? []).filter(
+      (row) => row.underlying_key === key,
+    ),
+    orders: (batch.orders ?? []).filter((row) => row.underlying_key === key),
   };
 }

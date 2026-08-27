@@ -108,15 +108,8 @@
     padding: 0 14px;
   }
 
-  .trading-case-head,
-  .trading-case-row {
-    display: grid;
-    grid-template-columns: 84px 78px 92px minmax(160px, 1fr);
-    gap: 10px;
-    align-items: center;
-    min-width: 460px;
-    padding: 0 14px;
-  }
+  /* 交易复盘's own tracks and its row expansion live in `tradingSymbolSection.css`, beside the one
+     component that renders them; what stays here is the chrome every table on the lane shares. */
 
   .trading-exposure-head,
   .trading-closed-head,
@@ -129,8 +122,7 @@
     letter-spacing: 0.06em;
   }
 
-  .trading-exposure-row,
-  .trading-case-row {
+  .trading-exposure-row {
     min-height: 50px;
     border-bottom: 1px solid var(--border-faint);
   }

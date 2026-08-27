@@ -20,55 +20,77 @@ import { NewsSourceLine } from "../chrome/NewsSourceLine";
 export function NewsSymbolIdentity({
   quote,
   symbol,
+  tiles,
 }: {
   quote: NewsQuote | undefined;
   symbol: NewsSymbol | undefined;
+  /** The artifact's three figures beside the identity: how much arrived, how much was pushed, and how
+      much of the OI window this name is holding. Each already read by the page; none re-derived here. */
+  tiles: ReadonlyArray<{ key: string; label: string; tone?: "accent" | "caution"; value: string }>;
 }) {
   const contracts = symbol?.contracts ?? [];
   const aliases = symbol?.normalization?.aliases ?? [];
   return (
     <Card flush title="标的身份" titleStyle="eyebrow">
-      <div className="news-symbol-identity">
-        <div className="news-symbol-identity-main">
-          <p className="news-symbol-classes">
-            {symbol == null ? (
-              <span className="news-symbol-muted">正在读取标的身份…</span>
-            ) : symbol.known ? (
-              <>
-                {[...new Set(contracts.map((contract) => contract.instrument_class))].map(
-                  (instrumentClass) => (
-                    <code className="news-symbol-class" key={instrumentClass}>
-                      {instrumentClass}
-                    </code>
-                  ),
-                )}
-                <span
-                  className="news-symbol-tradeable"
-                  data-tradeable={symbol.tradeable || undefined}
-                >
-                  {symbol.tradeable ? "已落标的表" : "仅参考行情，无可交易合约"}
+      {/* The artifact's band: what this is on the left, how much of it there has been on the right, one
+          hairline between them. */}
+      <div className="news-symbol-band-row">
+        <div className="news-symbol-identity">
+          <div className="news-symbol-identity-main">
+            <p className="news-symbol-classes">
+              {symbol == null ? (
+                <span className="news-symbol-muted">正在读取标的身份…</span>
+              ) : symbol.known ? (
+                <>
+                  {[...new Set(contracts.map((contract) => contract.instrument_class))].map(
+                    (instrumentClass) => (
+                      <code className="news-symbol-class" key={instrumentClass}>
+                        {instrumentClass}
+                      </code>
+                    ),
+                  )}
+                  <span
+                    className="news-symbol-tradeable"
+                    data-tradeable={symbol.tradeable || undefined}
+                  >
+                    {symbol.tradeable ? "已落标的表" : "仅参考行情，无可交易合约"}
+                  </span>
+                </>
+              ) : (
+                <span className="news-symbol-unknown">
+                  我们轮询的场所都没有这个名字——供应商标了它，标的表里查不到
                 </span>
-              </>
-            ) : (
-              <span className="news-symbol-unknown">
-                我们轮询的场所都没有这个名字——供应商标了它，标的表里查不到
-              </span>
-            )}
-          </p>
-          {aliases.length > 1 ? (
-            <p className="news-symbol-aliases">
-              归一自{" "}
-              {aliases.map((alias) => (
-                <code key={alias}>{alias}</code>
-              ))}
+              )}
             </p>
-          ) : null}
+            {aliases.length > 1 ? (
+              <p className="news-symbol-aliases">
+                归一自{" "}
+                {aliases.map((alias) => (
+                  <code key={alias}>{alias}</code>
+                ))}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="news-symbol-quote">
+            <small>MARK · {quote?.state_zh || (quote ? quote.state : "—")}</small>
+            <NewsQuotePrice quote={quote} />
+          </div>
         </div>
 
-        <div className="news-symbol-quote">
-          <small>MARK · {quote?.state_zh || (quote ? quote.state : "—")}</small>
-          <NewsQuotePrice quote={quote} />
-        </div>
+        {/*
+         * The artifact's three figures, in the band's own right-hand column. They are a glance, not the
+         * answer: the OI window in particular is a count with a consequence, and the card below it is
+         * where that consequence is stated in a sentence and linked to the audit that owns it.
+         */}
+        <dl className="news-symbol-tiles">
+          {tiles.map((tile) => (
+            <div key={tile.key}>
+              <dt>{tile.label}</dt>
+              <dd data-tone={tile.tone}>{tile.value}</dd>
+            </div>
+          ))}
+        </dl>
       </div>
 
       {/*
