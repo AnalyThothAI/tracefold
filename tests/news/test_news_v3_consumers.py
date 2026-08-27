@@ -206,7 +206,7 @@ class InlineFinite:
     async def run(self, _name: str, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
         kwargs.pop("timeout_seconds", None)
         kwargs.pop("allow_shutdown", None)
-        return await fn(*args, **kwargs)
+        return fn(*args, **kwargs)
 
 
 def _card(**overrides: Any) -> dict[str, Any]:
@@ -999,14 +999,21 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
 
 # ---------------------------------------------------------------- Deliverer
 class RecordingSender:
-    def __init__(self) -> None:
+    def __init__(self, order: list[str] | None = None) -> None:
         self.cards: list[dict[str, Any]] = []
+        self.order = order
 
-    async def send_card(self, card: dict[str, Any]) -> dict[str, Any]:
+    def prepare(self) -> None:
+        if self.order is not None:
+            self.order.append("prepare")
+
+    def send_card(self, card: dict[str, Any]) -> dict[str, Any]:
+        if self.order is not None:
+            self.order.append("send")
         self.cards.append(card)
         return {"status_code": 200, "code": 0}
 
-    async def close(self) -> None:
+    def close(self) -> None:
         return None
 
 
@@ -1081,6 +1088,45 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable() -> Non
     assert settle["receipt"] is None
     assert bus.published == []
     assert "get_presentation" not in news.names()
+
+
+def test_deliverer_prepares_the_provider_before_creating_the_sending_row() -> None:
+    order: list[str] = []
+    news = _delivery_news(begin_delivery=lambda **_kwargs: order.append("begin") or "new")
+    sender = RecordingSender(order)
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert order == ["prepare", "begin", "send"]
+
+
+def test_deliverer_settles_a_preflight_failure_without_calling_send() -> None:
+    class PreflightError(RuntimeError):
+        code = "news_delivery_telegram_preflight_transport_failed"
+
+    class FailingPrepareSender(RecordingSender):
+        def prepare(self) -> None:
+            raise PreflightError
+
+    news = _delivery_news()
+    sender = FailingPrepareSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    begin = news.kwargs_of("begin_delivery")
+    settle = news.kwargs_of("settle_delivery")
+    assert begin["card"] == {}
+    assert settle["state"] == "terminal"
+    assert settle["error_code"] == "news_delivery_telegram_preflight_transport_failed"
+    assert sender.cards == []
 
 
 def test_deliverer_without_sender_leaves_existing_delivery_untouched() -> None:

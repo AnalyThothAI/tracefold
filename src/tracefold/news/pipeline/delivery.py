@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Sequence
-from typing import Any, ClassVar
+from collections.abc import Mapping, Sequence
+from typing import Any, ClassVar, Protocol
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, render_first_card
@@ -22,8 +22,18 @@ from .runtime import NewsDatabasePort
 _QUOTE_READ_TIMEOUT_SECONDS = 1.5
 
 
+class NewsPushSender(Protocol):
+    """Synchronous provider boundary executed by the finite-operation runner."""
+
+    def prepare(self) -> None: ...
+
+    def send_card(self, card: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def close(self) -> None: ...
+
+
 class DelivererConsumer:
-    """SAC consumer: one Feishu attempt per (event, kind); crash between send and ack never resends."""
+    """SAC consumer: one provider attempt per (event, kind); crash between send and ack never resends."""
 
     work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
 
@@ -32,7 +42,7 @@ class DelivererConsumer:
         *,
         bus: Any,
         db: NewsDatabasePort,
-        sender: Any | None,
+        sender: NewsPushSender | None,
         finite_operations: Any,
         min_interval_seconds: float,
         oi_policy: OiPolicy = DEFAULT_OI_POLICY,
@@ -72,6 +82,16 @@ class DelivererConsumer:
             return
         if self.sender is None:
             await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
+            return
+        try:
+            await self.finite.run(
+                "news_delivery_prepare",
+                self.sender.prepare,
+                timeout_seconds=8.0,
+            )
+        except Exception as exc:
+            prepare_error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
+            await self._settle_direct(event_id, kind, prepare_error_code, stamp)
             return
         # Only query a quote after every policy return above. A quote failure
         # never changes the delivery decision.
@@ -119,7 +139,7 @@ class DelivererConsumer:
         receipt: dict[str, Any] | None = None
         try:
             result = await self.finite.run(
-                "news_delivery_feishu_send", self.sender.send_card, card_payload, timeout_seconds=8.0
+                "news_delivery_send", self.sender.send_card, card_payload, timeout_seconds=8.0
             )
             receipt = dict(result)
         except Exception as exc:

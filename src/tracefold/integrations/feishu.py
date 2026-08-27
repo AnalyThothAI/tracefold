@@ -173,6 +173,9 @@ class FeishuNewsPushSender:
         self._client = FeishuWebhookClient(webhook_url=webhook_url, signing_secret=signing_secret, transport=transport)
         self._timestamp_seconds = timestamp_seconds or (lambda: int(time.time()))
 
+    def prepare(self) -> None:
+        """Feishu has no separate target preflight; keep the delivery lifecycle uniform."""
+
     def send_card(self, card: Mapping[str, Any]) -> dict[str, Any]:
         try:
             receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())

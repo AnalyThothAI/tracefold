@@ -9,7 +9,10 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.paths import app_home, app_log_path
+
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
 
 
 class ApiConfig(BaseModel):
@@ -181,6 +184,8 @@ class NewsPushSettings(BaseModel):
     enabled: bool = False
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
+    telegram_bot_token_file: str | None = None
+    telegram_chat_id: int | None = None
     min_interval_seconds: float = 0.6
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
@@ -188,6 +193,24 @@ class NewsPushSettings(BaseModel):
     def parse_optional_secret(cls, value: Any) -> str | None:
         normalized = str(value or "").strip()
         return normalized or None
+
+    @field_validator("telegram_bot_token_file", mode="before")
+    @classmethod
+    def parse_optional_token_file(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @field_validator("telegram_chat_id", mode="before")
+    @classmethod
+    def parse_private_channel_id(cls, value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError("news_push_telegram_chat_id_invalid")
+        normalized = str(value).strip()
+        if not re.fullmatch(r"-100[1-9][0-9]{5,15}", normalized):
+            raise ValueError("news_push_telegram_chat_id_invalid")
+        return int(normalized)
 
     @model_validator(mode="after")
     def validate_pacing(self) -> NewsPushSettings:
@@ -692,6 +715,9 @@ class Settings(BaseModel):
             return configured
         return self._config_dir / configured
 
+    def news_telegram_bot_token_file(self) -> Path | None:
+        return self._configured_path(self.news.push.telegram_bot_token_file)
+
     def trading_nautilus_api_key_file(self) -> Path | None:
         return self._configured_path(self.trading.nautilus.api_key_file)
 
@@ -724,27 +750,49 @@ class NewsPushAvailability:
     requested: bool
     delivery_available: bool
     reason: str | None
+    provider: Literal["feishu", "telegram"] | None
     feishu_webhook_url_configured: bool
     feishu_signing_secret_configured: bool
+    telegram_bot_token_file_configured: bool
+    telegram_chat_id_configured: bool
 
 
-def news_push_availability(settings: Settings) -> NewsPushAvailability:
+def news_push_availability(settings: Settings, *, inspect_secret_file: bool = True) -> NewsPushAvailability:
     push = settings.news.push
     requested = push.enabled
     webhook_configured = bool(push.feishu_webhook_url)
+    feishu_configured = bool(push.feishu_webhook_url or push.feishu_signing_secret)
+    token_file_configured = (
+        _telegram_bot_token_file_configured(settings.news_telegram_bot_token_file())
+        if inspect_secret_file
+        else bool(push.telegram_bot_token_file)
+    )
+    telegram_configured = bool(push.telegram_bot_token_file or push.telegram_chat_id)
+    provider: Literal["feishu", "telegram"] | None = (
+        None if feishu_configured == telegram_configured else "feishu" if feishu_configured else "telegram"
+    )
     reason: str | None = None
     if requested and not settings.news.enabled:
         reason = "news_item_push_news_disabled"
-    elif requested and not webhook_configured:
+    elif requested and feishu_configured and telegram_configured:
+        reason = "news_item_push_provider_conflict"
+    elif requested and provider == "telegram" and not token_file_configured:
+        reason = "news_item_push_telegram_bot_token_unavailable"
+    elif requested and provider == "telegram" and push.telegram_chat_id is None:
+        reason = "news_item_push_telegram_chat_id_missing"
+    elif requested and not webhook_configured and provider != "telegram":
         reason = "news_item_push_feishu_webhook_missing"
-    elif requested and not _is_feishu_webhook_url(push.feishu_webhook_url):
+    elif requested and provider == "feishu" and not _is_feishu_webhook_url(push.feishu_webhook_url):
         reason = "news_item_push_feishu_webhook_invalid"
     return NewsPushAvailability(
         requested=requested,
         delivery_available=requested and reason is None,
         reason=reason,
+        provider=provider,
         feishu_webhook_url_configured=webhook_configured,
         feishu_signing_secret_configured=bool(push.feishu_signing_secret),
+        telegram_bot_token_file_configured=token_file_configured,
+        telegram_chat_id_configured=push.telegram_chat_id is not None,
     )
 
 
@@ -812,6 +860,16 @@ def _is_feishu_webhook_url(value: str | None) -> bool:
         and hook_id != parsed.path
         and "/" not in hook_id
     )
+
+
+def _telegram_bot_token_file_configured(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        token = read_secure_secret_text(path)
+    except SecretFileError:
+        return False
+    return _TELEGRAM_BOT_TOKEN_RE.fullmatch(token) is not None
 
 
 def _is_http_base_url(value: str | None) -> bool:

@@ -712,6 +712,32 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     assert isinstance(data["watchlist"], list)
 
 
+def test_status_does_not_call_a_declared_target_available_without_running_workers() -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_chat_id": -1001234567890,
+                },
+            },
+        }
+    )
+    app = create_app(settings=settings)
+    news = _FakeNewsRepository()
+    app.state.service = _FakeRuntime(settings, news)
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workers_state"] is None
+    assert data["delivery"]["delivery_available"] is False
+
+
 def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings.model_validate(
         {

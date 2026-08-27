@@ -1,4 +1,4 @@
-"""Feishu card rendering — the reader contract (issue #57): one Event, one card, four lines (#113).
+"""Reader-card rendering — the delivery contract (issue #57): one Event, one card, four lines (#113).
 
     header  ⚡? headline_zh            (model: one complete headline incl. the decisive fact, Chinese)
     line 1  why_zh                     (model: why it matters now and to whom, Chinese)

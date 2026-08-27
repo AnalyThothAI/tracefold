@@ -28,6 +28,7 @@ from tracefold.app.workers.wiring.market_review import (
 )
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
+from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_review.loops import MarketReviewDatabasePort
 from tracefold.news.oi_signals import OiPolicy
@@ -48,6 +49,7 @@ from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
 
@@ -245,10 +247,25 @@ def _candidate_runtime_arms(
     return canary_arms, candidate_failures
 
 
-def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | None:
+def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNewsPushSender | None:
     push = news_push_availability(settings)
-    if not push.delivery_available:
+    if not push.requested:
         return None
+    if not push.delivery_available:
+        raise RuntimeError(f"news_push_unavailable:{push.reason or 'news_item_push_configuration_invalid'}")
+    if push.provider == "telegram":
+        token_file = settings.news_telegram_bot_token_file()
+        chat_id = settings.news.push.telegram_chat_id
+        if token_file is None or chat_id is None:
+            raise RuntimeError("news_push_unavailable:news_item_push_telegram_configuration_invalid")
+        try:
+            bot_token = read_secure_secret_text(token_file)
+        except SecretFileError:
+            raise RuntimeError("news_push_unavailable:news_item_push_telegram_bot_token_unavailable") from None
+        try:
+            return TelegramNewsPushSender(bot_token=bot_token, chat_id=chat_id)
+        except ValueError:
+            raise RuntimeError("news_push_unavailable:news_item_push_telegram_sender_invalid") from None
     return FeishuNewsPushSender(
         webhook_url=str(settings.news.push.feishu_webhook_url),
         signing_secret=settings.news.push.feishu_signing_secret,

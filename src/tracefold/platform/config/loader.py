@@ -89,6 +89,8 @@ news:
     enabled: false
     feishu_webhook_url:
     feishu_signing_secret:
+    telegram_bot_token_file:
+    telegram_chat_id:
     min_interval_seconds: 0.6
   policy:
     restatement_drop: true

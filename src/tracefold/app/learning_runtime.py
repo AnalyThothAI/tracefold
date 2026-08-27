@@ -132,7 +132,7 @@ def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition
 
     availability = news_model_availability(settings)
     primary_model = str(availability.triage_model or settings.llm.news_triage_model or "unconfigured")
-    event_primary = configured_lm_endpoint(settings, model_name=primary_model)
+    event_primary = configured_lm_endpoint(settings, model_name=primary_model, request_profile="news_event")
     if availability.reader_card_dedicated and availability.reader_card_model:
         reader_settings = settings.llm.news_reader_card
         reader_primary = configured_lm_endpoint(
@@ -140,10 +140,11 @@ def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition
             model_name=availability.reader_card_model,
             api_key=reader_settings.api_key,
             base_url=reader_settings.base_url,
+            request_profile="news_reader",
         )
     else:
         reader_model = availability.reader_card_model or "unconfigured"
-        reader_primary = configured_lm_endpoint(settings, model_name=reader_model)
+        reader_primary = configured_lm_endpoint(settings, model_name=reader_model, request_profile="news_reader")
 
     event_fallback: ConfiguredLMEndpoint | None = None
     reader_fallback: ConfiguredLMEndpoint | None = None
@@ -154,6 +155,7 @@ def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition
             model_name=availability.triage_fallback_model,
             api_key=fallback_settings.api_key,
             base_url=fallback_settings.base_url,
+            request_profile="news_event",
         )
         reader_fallback_settings = settings.llm.news_reader_card_fallback
         if availability.reader_card_fallback_dedicated and availability.reader_card_fallback_model:
@@ -162,6 +164,7 @@ def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition
                 model_name=availability.reader_card_fallback_model,
                 api_key=reader_fallback_settings.api_key,
                 base_url=reader_fallback_settings.base_url,
+                request_profile="news_reader",
             )
         elif not reader_fallback_settings.configured:
             reader_fallback = event_fallback
@@ -256,16 +259,18 @@ def _endpoint_identity(endpoint: ConfiguredLMEndpoint) -> dict[str, str]:
 
 
 def _endpoint_model_sha256(endpoint: ConfiguredLMEndpoint) -> str:
-    """Fingerprint one configured backend without exposing its URL or credential."""
+    """Fingerprint one configured backend and its secret-free request semantics."""
 
     model = str(endpoint.model_name)
     provider = model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
     return canonical_sha(
         {
-            "identity_schema": "configured_endpoint_model_v1",
+            "identity_schema": "configured_endpoint_model_v2",
             "provider": provider,
             "model": model,
             "endpoint_sha256": _canonical_endpoint_sha256(endpoint.api_base),
+            "request_profile": endpoint.request_profile,
+            "model_kwargs_sha256": canonical_sha(endpoint.model_kwargs),
         }
     )
 

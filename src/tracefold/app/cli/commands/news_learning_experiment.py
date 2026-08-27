@@ -360,6 +360,7 @@ def _arm_endpoint(settings: Any, *, arm: str, model: str) -> Any:
             model_name=str(model or primary.model_name),
             api_key=str(primary.api_key),
             base_url=str(primary.api_base),
+            request_profile=primary.request_profile,
         )
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     if reflection is None or not bool(getattr(reflection, "configured", False)):

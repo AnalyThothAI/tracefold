@@ -27,6 +27,7 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     path = write_default_config(force=args.force)
     password_paths = {role: _ensure_postgres_password_file(path.parent, role=role) for role in _POSTGRES_ROLES}
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
+    telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
     return (
         0,
         {
@@ -36,6 +37,7 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "app_home": str(path.parent),
                 "postgres_password_files": {role: str(password_path) for role, password_path in password_paths.items()},
                 "postgres_bootstrap_password_file": str(bootstrap_password_path),
+                "telegram_bot_token_file": str(telegram_bot_token_path),
                 "created": args.force or not existed,
             },
         },
@@ -105,8 +107,11 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         "requested": push_availability.requested,
                         "delivery_available": push_availability.delivery_available,
                         "reason": push_availability.reason,
+                        "provider": push_availability.provider,
                         "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
+                        "telegram_bot_token_file_configured": (push_availability.telegram_bot_token_file_configured),
+                        "telegram_chat_id_configured": push_availability.telegram_chat_id_configured,
                         "min_interval_seconds": settings.news.push.min_interval_seconds,
                     },
                 },
@@ -153,6 +158,15 @@ def _ensure_password_file(path: Path) -> Path:
         raise ValueError(f"postgres_password_path_not_file:{path.name}")
     if not path.exists():
         path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _ensure_optional_secret_file(path: Path) -> Path:
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f"optional_secret_path_not_file:{path.name}")
+    if not path.exists():
+        path.touch(mode=0o600)
     path.chmod(0o600)
     return path
 

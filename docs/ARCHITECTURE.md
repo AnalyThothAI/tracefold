@@ -386,7 +386,7 @@ tracefold.trading
   pipeline/           candidate and reconcile runners plus their two-runner composition root
 
 tracefold.integrations
-  provider and external-system adapters: OpenNews, OpenTrade, RabbitMQ, Feishu,
+  provider and external-system adapters: OpenNews, OpenTrade, RabbitMQ, Feishu, Telegram,
   and the pinned Nautilus/Binance Demo strategy adapter
 
 tracefold.platform
@@ -464,9 +464,10 @@ A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), OpenTrade (the
-reviewed REST execution seam), RabbitMQ (`aio-pika`), and Feishu (the custom-bot
-webhook). No provider owns a durable
-queue. Expected provider failures stay inside the owning bounded
+reviewed REST execution seam), RabbitMQ (`aio-pika`), Feishu (the custom-bot
+webhook), and Telegram (one operator-bound private channel via the Bot API;
+fixed origin and fixed configured target). No provider owns a durable queue.
+Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
 
@@ -572,7 +573,8 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        judgment hashes, exact runtime manifest,
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
        named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
-  -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
+  -> q:news.deliver [single-active-consumer] Deliverer: provider prepare/preflight -> begin(sending)
+       -> one configured-provider delivery attempt
        -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
@@ -918,6 +920,21 @@ attestation, and it never replaced exact image/CI evidence. The code-owned pack
 set is capped at nine and the active reader-memory wording is
 `novelty_told_ledger` revision 3.
 
+The factory owns route topology, slot roles, token ceilings, deadlines and
+breaker policy. The concrete model bound to each slot has a separate
+secret-free `configured_endpoint_model_v2` identity over provider, model,
+endpoint fingerprint, code-selected request profile and normalized LM kwargs.
+That boundary makes provider execution semantics auditable without pretending
+an endpoint change rewrote the Program graph. On the exact Kimi Coding endpoint,
+the `news_event` profile drops the unsupported explicit temperature and binds
+K3 `reasoning_effort=low`; the `news_reader` profile drops temperature but does
+not give `kimi-for-coding` a K3 effort override. The profile and kwargs change
+the runtime-model binding SHA and therefore the exact evidence cohort. Default,
+Trading and non-News endpoints never inherit these News profiles. The learning
+experiment student arm inherits the production `news_event` profile when it
+rebinds a model name, so an experiment cannot silently compare default-effort
+requests with the K3-low production route.
+
 Rendered instructions are derived bytes, never a second editable truth, and
 they now carry no identity hash: a RulePack digest cannot help a model judge
 news, it was billed on every call, and carrying one meant a pure identity
@@ -1194,7 +1211,8 @@ too, so the console feed and the context line name the Event (issue #65). The
 行情 line still renders there: the price is our own fact, not the model's.
 AI copy is sanitized (URLs fall back to the code-owned title). There is no
 retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
-inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
+inserted as `sending` after provider prepare/preflight and before the single
+delivery HTTP call, then settled `sent`/`terminal`;
 interrupted rows are terminalized at startup. Recovery items, suppressed
 events never deliver. There is no operator pause or mute: `news_control_state`
 was removed after never withholding a single card in the whole retained history,
@@ -1544,7 +1562,7 @@ persisted market trigger (News, OI, or typed liquidation)
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
-evaluation only when it existed no later than the cutoff. Feishu `sent` is
+evaluation only when it existed no later than the cutoff. Notification `sent` is
 notification transport success, not a trigger; capital must not depend on a
 notification channel being reachable. The frozen manifest names exactly one
 `primary_trigger`, one `strategy_id` / `strategy_version` /

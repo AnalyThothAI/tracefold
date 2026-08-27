@@ -237,7 +237,7 @@ def _task_endpoint_check(
     """Both reports describe the one task endpoint this run resolved.
 
     The two reports fingerprint that endpoint under different schemas — the baseline records
-    `configured_endpoint_model_v1`, the optimizer records `model_execution_identity.v1` — so the digests
+    `configured_endpoint_model_v2`, the optimizer records `model_execution_identity.v1` — so the digests
     are not equal even when the endpoint is identical, and comparing them directly would fail closed on
     every honest run. Each side is therefore checked against the digest of the endpoint the run composed,
     which is the claim that actually matters: neither report is describing some other host.

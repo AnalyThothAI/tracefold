@@ -277,7 +277,7 @@ export function newsTimelineFixture(): NewsTimelineStep[] {
       at_ms: NEWS_NOW_MS - 20_000,
       facts: { kind: "first", state: "sent" },
       stage: "delivery",
-      summary_zh: "已推送到飞书",
+      summary_zh: "已送达",
       title_zh: "推送",
     },
   ];

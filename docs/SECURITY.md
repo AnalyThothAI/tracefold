@@ -37,7 +37,7 @@
 The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
 and password-file references, the OpenNews token, the RabbitMQ URL, the
-Feishu webhook, the API bind address and bearer token, and model
+Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
 provider/name. The optional `trading.opentrade.token_file` points to the
 OpenTrade bearer token used only by App-owned live composition; Trading domain
 code never reads the filesystem or receives the token. The two
@@ -51,7 +51,8 @@ The complete secret inventory is: `ws_token` (HTTP API bearer token),
 the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
 fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
-`news.push.feishu_signing_secret`, the five PostgreSQL password files
+`news.push.feishu_signing_secret`, the Telegram bot-token file named by
+`news.push.telegram_bot_token_file`, the five PostgreSQL password files
 (bootstrap, Serve, Workers, migrate, Nautilus), the optional OpenTrade token
 file named by `trading.opentrade.token_file`, and the Binance Demo files named
 by `trading.nautilus.api_key_file` and `api_secret_file`.
@@ -62,15 +63,23 @@ There is no other provider key or credential.
 secret files with mode `0600`; reruns repair those permissions. Without
 `--force`, an existing config is preserved byte-for-byte. `--force` replaces
 only the generated config and does not rotate existing PostgreSQL passwords.
-Generated defaults contain no live provider, model, or webhook credential and
-leave outbound News push disabled. They do not create or populate the optional
-OpenTrade token or Binance Demo credential files. A live operator creates each
-required provider file separately as a regular,
+Generated defaults contain no live provider, model, webhook, or bot credential
+and leave outbound News push disabled. They create an empty mode-`0600`
+`telegram_bot_token` placeholder so the Workers-only read-only bind mount is
+stable; an empty file is never treated as configured. They do not create or
+populate the optional OpenTrade token or Binance Demo credential files. A live
+operator populates each required provider file as a regular,
 non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`);
 diagnostics expose only configured/readable booleans and resolved paths,
 never contents. The OpenTrade provider base URL must be credential-free HTTPS, so
 plain HTTP is rejected before the token file is read.
+
+Compose mounts only the generated `telegram_bot_token` filename and only into
+Workers. Serve receives neither the file nor its contents. If outbound push is
+explicitly enabled with an absent, empty, malformed, symlinked, or
+over-permissive token file, Workers fails startup with a stable sanitized reason
+instead of running without the requested delivery boundary.
 
 The token is attached only by the App-owned OpenTrade adapter. Provider write
 bodies are constructed from an explicit allowlist: one reviewed market entry
@@ -302,21 +311,44 @@ close-code, interval, and recovery state. Reconnect restores current WSS health
 but never marks an interval recovered without official Strategy-hit evidence;
 the ledger stores no token, raw exception, payload, or provider reason text.
 
-`news.push.feishu_webhook_url` and the optional
-`news.push.feishu_signing_secret` are operator-owned secrets. They are reported
+`news.push.feishu_webhook_url`, the optional
+`news.push.feishu_signing_secret`, and the Telegram bot-token file are
+operator-owned secrets. They are reported
 only as configured booleans and never appear in logs, errors, status payloads,
-generated artifacts, or persisted delivery rows. A webhook disclosed outside
-the operator config should be treated as compromised and rotated before live
-use. Enabling delivery requires the supported Feishu HTTPS webhook. When a
+generated artifacts, or persisted delivery rows. Telegram diagnostics expose
+only whether a secure token file and channel target are configured, never the
+token, file contents, or numeric channel ID. A webhook or bot token disclosed
+outside the operator config should be treated as compromised and rotated before
+live use. Enabling delivery requires exactly one complete provider. When a
 signing secret is configured, the Adapter sends a timestamp and signature;
 without one it deliberately sends an unsigned body containing neither field.
 Unsigned delivery has weaker request authentication and is an explicit
 operator choice, not a fallback after a signing error. In both modes the
 Adapter accepts only the configured Feishu webhook boundary and never follows
-redirects. Persisted delivery rows store the rendered card (code facts plus sanitized AI
-copy) for audit but never the webhook, signing secret, timestamp, or signature.
-There is exactly one Feishu attempt after the durable `sending` row and no
-retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
+redirects. The Telegram Adapter sends only to the fixed private-channel ID
+loaded from operator configuration, verifies the returned message belongs to
+that same channel, uses a fixed HTTPS Bot API origin, follows no redirects, and
+stores only a token-keyed, domain-separated HMAC-SHA-256 target digest, never
+the channel ID, in the delivery receipt. The keyed digest is not enumerable
+from the small private-channel-ID space and changes when the bot token rotates.
+The credential never enters the httpx request URL seen by its INFO logger: a
+fixed-origin transport injects `/bot{token}/` only while building the TLS wire
+path and converts transport failures to sanitized codes.
+Before the first send it verifies exact target ID, private
+channel type, bot identity, administrator status, and post permission; a public
+channel, group, supergroup, or mismatched target fails closed. Preflight and
+`sendMessage` are separate finite operations: preflight completes before the
+durable `sending` row exists, and the operation behind that row contains only
+`sendMessage`. Each operation uses a seven-second application budget; every HTTP
+phase is capped at 1.25 seconds and later calls stop when the monotonic budget is
+exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
+guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out
+preflight thread still cannot progress into a later send.
+Persisted delivery rows store the
+rendered card (code facts plus sanitized AI copy) for audit but never provider
+credentials, timestamps, or signatures. There is exactly one provider attempt
+after the durable `sending` row and no retry; a crash between send and ack
+terminalizes as `ambiguous_after_crash`.
 
 News Triage receives the Event title/content excerpt (wrapped as untrusted
 material), Gate facts, the storyline status bar, and the watchlist symbols. It

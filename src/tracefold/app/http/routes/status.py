@@ -48,7 +48,10 @@ def get_news_status(request: Request) -> Response:
             usage,
             repos.instruments.asset_refs({symbol for symbols in usage.values() for symbol in symbols}),
         )
-    push = news_push_availability(settings)
+    # Serve receives no provider credential. It can validate the declared target contract, while Workers
+    # owns the secure-file check and provider preflight. A declared target is not callable when Workers is
+    # absent or failed, so the public status must not present that state as delivery-ready.
+    push = news_push_availability(settings, inspect_secret_file=False)
     models = news_model_availability(settings)
     observed = dict(snapshot.get("broker") or {})
     broker_data = {
@@ -71,7 +74,7 @@ def get_news_status(request: Request) -> Response:
     }
     delivery = {
         **snapshot["delivery"],
-        "delivery_available": push.delivery_available,
+        "delivery_available": push.delivery_available and workers_state == "running",
     }
     trading = settings.trading
     oi = {

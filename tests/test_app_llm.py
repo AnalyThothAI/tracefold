@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from tracefold.app import learning_runtime
+from tracefold.app.cli.commands.news_learning_experiment import _arm_endpoint
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.artifact_identity import canonical_sha
@@ -64,6 +65,64 @@ def test_qwen_disables_thinking_via_chat_template_kwargs() -> None:
     assert endpoint.model_kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def test_news_event_kimi_profile_uses_k3_low_and_drops_fixed_temperature() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="k3", request_profile="news_event")
+
+    assert endpoint.request_profile == "news_event"
+    assert endpoint.model_kwargs == {
+        "additional_drop_params": ["temperature"],
+        "extra_body": {"reasoning_effort": "low"},
+    }
+
+
+def test_news_reader_kimi_profile_drops_temperature_without_k3_effort_override() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
+
+    endpoint = configured_lm_endpoint(
+        settings,
+        model_name="kimi-for-coding",
+        request_profile="news_reader",
+    )
+
+    assert endpoint.model_kwargs == {"additional_drop_params": ["temperature"]}
+
+
+def test_default_profile_never_silently_applies_the_news_kimi_strategy() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="k3")
+
+    assert endpoint.request_profile == "default"
+    assert endpoint.model_kwargs == {}
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://user@api.kimi.com/coding/v1",
+        "https://api.kimi.com:444/coding/v1",
+        "https://api.kimi.com/coding/v1?route=other",
+    ],
+)
+def test_news_profile_rejects_any_non_exact_kimi_coding_endpoint(base_url: str) -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url=base_url))
+
+    endpoint = configured_lm_endpoint(settings, model_name="k3", request_profile="news_event")
+
+    assert endpoint.request_profile == "default"
+    assert endpoint.model_kwargs == {}
+
+
+def test_news_request_profile_changes_the_secret_free_runtime_model_identity() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
+    default = configured_lm_endpoint(settings, model_name="k3")
+    news_low = configured_lm_endpoint(settings, model_name="k3", request_profile="news_event")
+
+    assert learning_runtime._endpoint_model_sha256(default) != learning_runtime._endpoint_model_sha256(news_low)
+
+
 def test_endpoint_override_targets_the_fallback_gateway() -> None:
     settings = SimpleNamespace(llm=SimpleNamespace(api_key="local-key", base_url="http://192.168.0.2:8080/v1"))
     endpoint = configured_lm_endpoint(
@@ -98,6 +157,50 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     }
     assert composition.slot_aliases() == {}
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
+
+
+def test_news_runtime_composition_assigns_role_specific_kimi_request_profiles() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://api.kimi.com/coding/v1",
+                "news_triage_model": "k3",
+                "news_reader_card": {
+                    "api_key": "reader-key",
+                    "base_url": "https://api.kimi.com/coding/v1",
+                    "model": "kimi-for-coding",
+                },
+            }
+        }
+    )
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+
+    assert composition.event_semantics_primary.request_profile == "news_event"
+    assert composition.reader_card_primary.request_profile == "news_reader"
+    assert composition.event_semantics_primary.model_kwargs["extra_body"] == {"reasoning_effort": "low"}
+    assert "extra_body" not in composition.reader_card_primary.model_kwargs
+
+
+def test_news_experiment_student_inherits_the_production_kimi_event_profile() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://api.kimi.com/coding/v1",
+                "news_triage_model": "k3",
+            }
+        }
+    )
+
+    student = _arm_endpoint(settings, arm="student", model="k3")
+
+    assert student.request_profile == "news_event"
+    assert student.model_kwargs == {
+        "additional_drop_params": ["temperature"],
+        "extra_body": {"reasoning_effort": "low"},
+    }
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:

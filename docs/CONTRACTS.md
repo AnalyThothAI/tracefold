@@ -21,12 +21,12 @@ model and loader implementation.
 Unknown settings or worker keys fail validation.
 
 `tracefold init` creates the operator directory, config, cache/log directories,
-and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
-mode `0700`; config and password files are `0600`. A normal rerun preserves
+an empty Telegram bot-token placeholder, and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
+mode `0700`; config, Telegram placeholder, and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
 existing database passwords. The generated config has a new API bearer token
-(`ws_token`) but no live provider/model/webhook credential, `news.push.enabled`
+(`ws_token`) but no live provider/model/webhook/bot credential, `news.push.enabled`
 is false, and `news.broker.url` points at the compose RabbitMQ service.
 
 The configuration schema is exactly the top-level keys `ws_token`, `api`
@@ -127,8 +127,10 @@ dashboard.
 run; `news.broker.name_prefix` prefixes every exchange and queue name and
 `news.broker.connect_timeout_seconds` bounds the connect. `news.triage.*`
 (`concurrency`, `circuit_failures`, `circuit_open_seconds`), `news.push.*`
-(`enabled`, `feishu_webhook_url`,
-optional `feishu_signing_secret`, `min_interval_seconds`), and
+(`enabled`, the mutually exclusive Feishu fields `feishu_webhook_url` and
+optional `feishu_signing_secret`, or Telegram fields
+`telegram_bot_token_file` and `telegram_chat_id`, plus
+`min_interval_seconds`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
 Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
@@ -136,9 +138,14 @@ policy versions are image state. `tracefold config` exposes only redacted boolea
 model names, and watchlist symbols; it never prints the token, broker URL,
 keys, or webhook.
 
-Push delivery is available only when `news.push.enabled` is true and the
-webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
-Workers still start and deliveries settle `terminal/delivery_unavailable`.
+Push delivery is available only when `news.push.enabled` is true, exactly one
+provider is complete, and Workers is running. Feishu requires a valid HTTPS custom-bot v2 URL.
+Telegram requires a secure bot-token file and one private channel Bot API ID
+beginning with `-100`. Provider conflicts, invalid targets, and missing or
+insecure credentials fail closed: Serve remains credential-free, while an
+explicitly enabled invalid provider configuration makes Workers fail startup.
+When push is disabled, both processes still start and a verdict that reaches a
+delivery consumer settles `terminal/delivery_unavailable`.
 
 `trading.*` is the whole Trading surface (#104) and it is `enabled: false` by
 default; a disabled Trading context constructs no program, no adapter and no
@@ -483,7 +490,8 @@ title alone selects a deterministic route.
   gates and never merged with them, read from platform configuration so this
   endpoint imports nothing from `tracefold.trading`),
   and `delivery` (sent/terminal
-  counts, last error, end-to-end p50/p95, availability), plus
+  counts, last error, end-to-end p50/p95, availability; availability requires
+  both a complete declared provider and a running Workers runtime), plus
   the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
   snapshot time, per-venue and per-class counts, `dangling_aliases`, and
@@ -690,9 +698,10 @@ direction-neutral push/drop. Parse failure is a deterministic drop.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
-history. States are `sending`, `sent`, `terminal`. There is exactly one HTTP
-attempt; a delivery without a configured sender settles `terminal` immediately
-instead of holding the message.
+history. States are `sending`, `sent`, `terminal`. Telegram target/permission
+preflight completes before `sending`; after that row there is exactly one
+delivery HTTP attempt. A delivery without a configured sender or whose
+preflight fails settles `terminal` immediately instead of holding the message.
 
 Broker contract (code-owned): topic exchange `news`, dead-letter exchange
 `news.dlx`, fanout retry exchange `news.retry`, three quorum business queues —
@@ -1285,7 +1294,7 @@ what "better" means; both observed ceilings are printed in the row. A judge that
 went `unavailable` is reported separately under `judge_availability`, because it
 makes its leg a lower bound rather than a different population. The endpoint check compares each report against the
 digest of the route this run composed rather than the two reports against each
-other, because the baseline fingerprints it as `configured_endpoint_model_v1`
+other, because the baseline fingerprints it as `configured_endpoint_model_v2`
 and the optimizer as `model_execution_identity.v1`. Any `mismatch` makes
 `same_population` false and exits `2` with
 `news_learning_run_population_identity_mismatch`; the summary is still written,
