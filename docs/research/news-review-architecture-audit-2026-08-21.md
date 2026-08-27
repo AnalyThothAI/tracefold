@@ -39,8 +39,8 @@
 - 当前 Prompt/Policy：`news_triage_prompt_v9` / `news_triage_policy_v6`；
 - Prompt SHA-256：`71c42e60c40b2033c20a2f8f068ef70f5f93718e7fe87575afe55e778b9b48ed`；
 - Schema SHA-256：`714f1f524bc2c1f51d0107b8e69e2b6996bac4485d3b4b71e6d8fdd283f31f7b`；
-- 固定输出快照：[`news-review-24h-audit-snapshot-2026-08-21.json`](news-review-24h-audit-snapshot-2026-08-21.json)，SHA-256 `08eb5c2ec7e602cf2878cbb0300370405ed2aa2ded9da6db0f690c3dda43bf4f`；
-- 只读 SQL：[`news-review-24h-audit-2026-08-21.sql`](news-review-24h-audit-2026-08-21.sql)，SHA-256 `8343607442ac720c02bd9bf0d8a8d502e6129c1abb88fb21f4bed332eb34a0b6`。
+- 固定输出快照：[`news-review-24h-audit-snapshot-2026-08-21.json`](../../notebooks/snapshots/news-review-24h-audit-snapshot-2026-08-21.json)，SHA-256 `08eb5c2ec7e602cf2878cbb0300370405ed2aa2ded9da6db0f690c3dda43bf4f`；
+- 只读 SQL：[`news-review-24h-audit-2026-08-21.sql`](../../notebooks/snapshots/news-review-24h-audit-2026-08-21.sql)，SHA-256 `8343607442ac720c02bd9bf0d8a8d502e6129c1abb88fb21f4bed332eb34a0b6`。
 
 SQL 覆盖 funnel、admission、cohort、audience、storyline、delivery truth 与 1h maturity。94 个 near-pairs 与 42 个 uncovered-text proxies 的 event grain、3-gram normalization、containment 阈值和 4h window 也固化在 SQL 注释与 JSON manifest 中。
 
@@ -589,12 +589,12 @@ uv run tracefold news eval --hours 24
 uv run tracefold news why <event_id>
 ```
 
-这些 CLI 适合复核当前健康，不会重现已经冻结的 24h 窗口。固定数字应在 operator 的 Serve 只读连接上执行 [`news-review-24h-audit-2026-08-21.sql`](news-review-24h-audit-2026-08-21.sql)，并用快照 hash 验证交付物：
+这些 CLI 适合复核当前健康，不会重现已经冻结的 24h 窗口。固定数字应在 operator 的 Serve 只读连接上执行 [`news-review-24h-audit-2026-08-21.sql`](../../notebooks/snapshots/news-review-24h-audit-2026-08-21.sql)，并用快照 hash 验证交付物：
 
 ```bash
 shasum -a 256 \
-  docs/research/news-review-24h-audit-snapshot-2026-08-21.json \
-  docs/research/news-review-24h-audit-2026-08-21.sql
+  notebooks/snapshots/news-review-24h-audit-snapshot-2026-08-21.json \
+  notebooks/snapshots/news-review-24h-audit-2026-08-21.sql
 ```
 
 查询使用 `DISTINCT ON (event_id) ... ORDER BY event_id, created_at_ms DESC` 固定 latest Triage verdict。不要把连接串或凭据写入复现脚本。

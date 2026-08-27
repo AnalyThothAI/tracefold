@@ -336,7 +336,7 @@ MRVL/Google 协议、SK Hynix 回购、MRNA Phase III 是很好的**事件类型
 
 ### 6.4 本次 72 小时 snapshot 的描述性结果
 
-可执行 Notebook 见 [trading-agent-72h-event-study.ipynb](./trading-agent-72h-event-study.ipynb)。它在 2026-08-20T16:56:01Z（Asia/Taipei 2026-08-21T00:56:01+08:00）观察到：
+可执行 Notebook 见 [trading-agent-72h-event-study.ipynb](../../notebooks/trading-agent-72h-event-study.ipynb)。它在 2026-08-20T16:56:01Z（Asia/Taipei 2026-08-21T00:56:01+08:00）观察到：
 
 - 3,652 个 Event 中，776 个落在 <code>outcome=pushed</code>，2,876 个 held；delivered share 为 21.25%。这是相对执行时刻的滑动窗口，不是事务级固定 cutoff。
 - 透明标题规则把 MRVL–Google、SK hynix、MRNA 三个 episode 分别归入 7、8、14 个已推送 Event。MRNA 数包含催化剂、价格回声、tokenized-equity 上线、评级与隔日回撤；这些条目不能作为 14 份独立置信度。

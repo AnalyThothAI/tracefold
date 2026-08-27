@@ -98,6 +98,7 @@ route shell, or shared UI changes.
 | Operations, workers, PostgreSQL diagnosis | `docs/OPERATIONS.md`                                                                     |
 | Business package boundaries               | `docs/ARCHITECTURE.md`; the public Python interfaces are the `tracefold.news` and `tracefold.trading` package roots |
 | Durable specs and acceptance              | GitHub Issues; repository conventions are in `docs/agents/issue-tracker.md`              |
+| Research notebooks: channels, run, commit  | `notebooks/README.md`                                                                    |
 | Auto-generated artefacts                  | `docs/generated/`                                                                        |
 
 CLI surface: `uv run tracefold --help` is the source of truth (snapshot at

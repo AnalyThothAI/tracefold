@@ -72,6 +72,7 @@ def test_current_documentation_links_resolve() -> None:
         ROOT / "README.md",
         ROOT / "AGENTS.md",
         ROOT / "CLAUDE.md",
+        ROOT / "notebooks" / "README.md",
         *DOCS.glob("*.md"),
         *(DOCS / "agents").glob("*.md"),
         DOCS / "generated" / "README.md",

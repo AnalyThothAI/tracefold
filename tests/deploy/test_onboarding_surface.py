@@ -596,10 +596,13 @@ def test_deploy_image_rejects_missing_exact_active_deployment_receipt(tmp_path: 
 
 
 def test_deploy_image_allows_an_unrelated_untracked_research_notebook(tmp_path: Path) -> None:
+    # The untracked check is a positive allowlist of deployment inputs, so the research workspace
+    # (#274) is allowed by construction rather than by a path carve-out. This pins that: an operator
+    # drafting in `notebooks/` must never be the reason a deploy refuses.
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    research = repo / "docs" / "research"
-    research.mkdir(parents=True)
-    (research / "trading-agent-72h-event-study.ipynb").write_text("{}\n", encoding="utf-8")
+    notebooks = repo / "notebooks"
+    notebooks.mkdir(parents=True)
+    (notebooks / "trading-agent-72h-event-study.ipynb").write_text("{}\n", encoding="utf-8")
 
     result = subprocess.run(
         ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],

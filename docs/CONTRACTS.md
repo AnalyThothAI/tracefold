@@ -1173,7 +1173,7 @@ The directory holds `readiness.json`, `baseline-compile-live.json`,
 `ADVANCE`, and `run_summary.json`
 (`tracefold.news.gepa_run_summary.v2`). Freezing with `--out
 DIR/development.json` makes the same directory loadable by
-`docs/research/news-gepa-frozen-run-evaluation.ipynb`.
+`notebooks/news-gepa-frozen-run-evaluation.ipynb`.
 
 `run_summary.json` is a projection over those artifacts and never a fourth
 authority: it reads published fields, computes no score, re-derives no plan and

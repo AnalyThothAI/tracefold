@@ -37,3 +37,6 @@ web/test-results/
 # Operator-owned experiment run directories (#193). Never repository content: a run is a
 # notebook on the operator's disk, and an untracked one must not fail the evidence drift check.
 .tracefold/
+
+# Jupyter's own autosave copies of the `notebooks/` research workspace (#274).
+.ipynb_checkpoints/
