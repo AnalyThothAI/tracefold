@@ -1,4 +1,4 @@
-"""Composition root for exactly two Trading runners in the existing Workers process."""
+"""Composition root for Trading candidate and reconciliation capabilities in Workers."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from .runtime import (
 
 @dataclass(slots=True)
 class TradingPipeline:
-    """Exactly two runners in the existing Workers root. No queue, no second process."""
+    """Trading capabilities hosted by the existing Workers root."""
 
     candidate: CandidateRunner
     reconcile: ReconcileRunner
@@ -51,7 +51,7 @@ def build_pipeline(
     adapter: ExecutionAdapter | None = None,
     telemetry: TradingExternalDataTelemetryPort | None = None,
 ) -> TradingPipeline:
-    """Compose the two runners. A live mode without a real adapter refuses to start."""
+    """Compose Trading capabilities. A live mode without a real adapter refuses to start."""
 
     resolved_adapter: ExecutionAdapter
     if config.mode == "live_bounded":

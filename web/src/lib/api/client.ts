@@ -25,11 +25,18 @@ export class ApiError extends Error {
 }
 
 export function setAuthToken(token: string | null): void {
+  if (authToken !== token) etagCache.clear();
   authToken = token;
 }
 
 export function getAuthToken(): string | null {
   return authToken;
+}
+
+/** Reset module state between tests without making a session transition part of the assertion. */
+export function resetApiClientForTests(): void {
+  authToken = null;
+  etagCache.clear();
 }
 
 export async function getApi<T>(

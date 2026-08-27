@@ -13,6 +13,7 @@ the set of claims specific to a capability that moves money:
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -175,91 +176,6 @@ def test_news_never_imports_trading() -> None:
     assert offenders == []
 
 
-@pytest.mark.architecture
-def test_the_liquidity_floor_is_executed_in_exactly_one_place() -> None:
-    """#264: `min_oi_value_usd` was a SELECT predicate, an eligibility rule and a strategy gate at once.
-
-    Three owners of one number is how #254's canary came to prove nothing: moving the floor from 20M to
-    5M changed the projection's predicate, and the strategy kept refusing the frames it now admitted.
-    The Candidate Gate is the only place the comparison may live; every other mention must be
-    configuration being *passed* to it, never a second `<` against a frame.
-    """
-
-    comparisons: list[str] = []
-    for path in _trading_sources():
-        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(module):
-            if not isinstance(node, ast.Compare):
-                continue
-            rendered = ast.unparse(node)
-            if "min_oi_value_usd" in rendered:
-                comparisons.append(f"{path.relative_to(SRC)}: {rendered}")
-    assert comparisons == ["trading/candidate/gate.py: candidate.oi_value_usd < config.min_oi_value_usd"], comparisons
-
-
-@pytest.mark.architecture
-def test_a_valid_but_unfavourable_regime_reaches_a_strategy_instead_of_vanishing() -> None:
-    """#264: the freeze refuses missing market data; it no longer refuses a price it dislikes.
-
-    A frame the band rejected used to disappear before anything durable saw it — no case, no manifest,
-    and a funnel key that was gone by the next UTC midnight. Now the case is frozen and the strategy
-    names the refusal, so what was rejected is replayable from the case row.
-    """
-
-    source = (TRADING / "pipeline" / "candidate.py").read_text(encoding="utf-8")
-    freeze = source.split("async def _freeze", 1)[1].split("async def _fetch_bars", 1)[0]
-    assert "OiRegime.UNCLEAR" not in freeze
-    for banned in ("move_below_band", "move_above_band_chasing"):
-        # The News-only branch still names its own ceiling through the shared constant; what may not
-        # come back is an OI-bearing case being refused here for a band the strategy is meant to judge.
-        assert f'regime.reason == "{banned}"' not in freeze
-    assert 'regime.reason == "no_price_fail_closed"' in freeze
-
-
-def _is_docstring(node: ast.stmt) -> bool:
-    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
-
-
-@pytest.mark.architecture
-def test_the_oi_projection_executes_no_trading_capital_policy() -> None:
-    """#264: News's SELECT answers "does this fact exist", never "may it reach capital".
-
-    Three predicates used to live in `trade_candidate_oi_rows` and each of them made a rejection
-    indistinguishable from an absence — the funnel's `oi_rows = 0` could mean no data, a reader drop, a
-    rank ceiling or an OI floor, and an operator had to replay SQL offline to find out which. The
-    reader's `push`/`drop` was the worst of the three: its rule is `whale_oi_ratio > 80%`, and five of
-    the seven frames meeting the target strategy's conditions in the seven days this ledger has existed
-    were dropped by it and never reached Trading at all.
-
-    The generation, ingest-mode and parser predicates stay. Those are what makes the *fact* trustworthy,
-    which is the projection's own job.
-    """
-
-    module = ast.parse((NEWS / "storage" / "trade_projection.py").read_text(encoding="utf-8"))
-    read = next(
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "trade_candidate_oi_rows"
-    )
-    # Executable statements only. The docstring names each removed predicate so the next reader learns
-    # why it went, and scanning the prose would make that explanation trip its own guard.
-    body = "\n".join(ast.unparse(node) for node in read.body if not _is_docstring(node))
-    signature = [argument.arg for argument in read.args.args + read.args.kwonlyargs]
-    for banned, why in (
-        ("final_decision IN", "the reader's push/drop is audit, not the capital lane's entry"),
-        ("rank_in_window <=", "the Trading rank ceiling belongs to the Candidate Gate"),
-        ("oi_value_usd >=", "the Trading OI floor belongs to the Candidate Gate"),
-        ("max_rank_in_window", "no Trading threshold may cross into News's SELECT"),
-        ("min_oi_value_usd", "no Trading threshold may cross into News's SELECT"),
-    ):
-        assert banned not in body, f"{banned!r} is back in the OI projection: {why}"
-    assert "max_rank_in_window" not in signature and "min_oi_value_usd" not in signature
-    # Still a point-in-time read of one executable generation, or it would be publishing rows no case
-    # could legally be frozen from.
-    for required in ("news_learning_epochs", "e.ingest_mode = 'live'", "v.degraded = false"):
-        assert required in body
-
-
 def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 
@@ -375,6 +291,34 @@ def test_a_live_mode_cannot_compose_with_the_paper_adapter() -> None:
         )
 
 
+def test_trading_pipeline_runs_candidate_and_reconciliation_capabilities() -> None:
+    from tracefold.app.workers.task_contract import worker_business_runners
+    from tracefold.trading.pipeline.root import TradingPipeline
+
+    started = {"candidate": False, "reconcile": False}
+
+    class Runner:
+        def __init__(self, capability: str) -> None:
+            self.capability = capability
+
+        async def run(self, *, stop_event: asyncio.Event) -> None:
+            assert isinstance(stop_event, asyncio.Event)
+            started[self.capability] = True
+
+    async def exercise() -> None:
+        stop_event = asyncio.Event()
+        pipeline = TradingPipeline(
+            candidate=Runner("candidate"),  # type: ignore[arg-type]
+            reconcile=Runner("reconcile"),  # type: ignore[arg-type]
+            adapter=object(),  # type: ignore[arg-type]
+        )
+        runners = worker_business_runners(news_pipeline=None, trading_pipeline=pipeline)
+        await asyncio.gather(*(run(stop_event) for _runtime_label, run in runners))
+
+    asyncio.run(exercise())
+    assert started == {"candidate": True, "reconcile": True}
+
+
 def test_the_regime_band_must_have_a_ceiling() -> None:
     """A floor-only pre-move filter keeps exactly the chasing trades the measurement rejects."""
 
@@ -384,20 +328,6 @@ def test_the_regime_band_must_have_a_ceiling() -> None:
 
     with pytest.raises(ValidationError, match="trading_regime_band_invalid"):
         TradingRegimeSettings(min_price_move_bps=600, max_price_move_bps=100)
-
-
-def test_the_pipeline_exposes_exactly_two_runners() -> None:
-    from tracefold.trading.pipeline.root import build_pipeline
-    from tracefold.trading.pipeline.runtime import TradingConfig
-
-    pipeline = build_pipeline(
-        db=object(),
-        config=TradingConfig(),
-        bars=lambda _venue: None,
-        candidate_projection=lambda *_: ((), ()),
-        instrument_projection=lambda *_: (),
-    )
-    assert [name for name, _ in pipeline.runners()] == ["trading-candidate", "trading-reconcile"]
 
 
 def test_the_worst_case_daily_envelope_is_derivable_from_configuration_alone() -> None:

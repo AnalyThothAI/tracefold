@@ -614,9 +614,8 @@ describe("NewsPage", () => {
 
     const funnel = await screen.findByRole("region", { name: "过去 24 小时漏斗" });
     /*
-     * A permanent green "流水线正常" beside a feed is a light the reader learns to stop seeing. The sidebar
-     * carries a dot for the status destination and the status route carries the full read; the pill appears
-     * here only when a level is not `ok` (see the next test).
+     * The feed owns no duplicate health pill. The frame's topbar keeps the status-page door present after a
+     * successful read, and the status route carries the full diagnosis (including the degraded case below).
      */
     expect(screen.queryByRole("link", { name: "查看流水线状态" })).toBeNull();
     expect(within(funnel).getByLabelText("24 小时漏斗").textContent).toBe(
@@ -701,6 +700,9 @@ describe("NewsPage", () => {
     expect(within(funnel).getByText("320")).toBeInTheDocument();
 
     const reasons = screen.getByRole("region", { name: "拦截与推送原因" });
+    for (const reason of newsStatusFixture().reasons_24h ?? []) {
+      expect(within(reasons).getByText(reason.label_zh)).toBeInTheDocument();
+    }
     expect(within(reasons).getByText("模型判定为噪音")).toBeInTheDocument();
     expect(within(reasons).getByText("「中东与能源」话题 4 小时内已推 3 条")).toBeInTheDocument();
     expect(within(reasons).getByText("律所推广模板，规则直接拦截")).toBeInTheDocument();
@@ -835,6 +837,13 @@ describe("NewsPage", () => {
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
     expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
     expect(within(technical).getByText("news_triage_policy_v1")).toBeInTheDocument();
+    for (const [earlier, later] of [
+      [hero, timeline],
+      [timeline, members],
+      [members, technical],
+    ] as const) {
+      expect(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    }
     // Internal identifiers do not leak into the first screen.
     expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
   });

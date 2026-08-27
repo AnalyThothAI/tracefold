@@ -37,7 +37,7 @@ def pytest_configure(config: pytest.Config) -> None:
     `127.0.0.1:54321` gets routed through `http://127.0.0.1:1080` (or
     whatever the system has) instead of going direct. curl doesn't have this
     problem because it auto-bypasses for the loopback / localhost. Force the
-    bypass explicitly so the in-process clients in test_golden_path.py
+    bypass explicitly so the in-process clients in test_serve_process_smoke.py
     behave the same way.
     """
     bypass = "127.0.0.1,localhost,::1"
@@ -101,8 +101,7 @@ def e2e_postgres() -> Iterator[str]:
         pytest.fail(
             "e2e tests require docker but `docker info` failed. Fix options:\n"
             "  1. Start Docker Desktop / colima / OrbStack and rerun.\n"
-            "  2. Provide an external Postgres at GMGN_E2E_POSTGRES_DSN once that path is implemented.\n"
-            "  3. Do not bypass this lane with an environment skip; an unavailable dependency is a failed gate.",
+            "  2. Do not bypass this lane with an environment skip; an unavailable dependency is a failed gate.",
             pytrace=False,
         )
 

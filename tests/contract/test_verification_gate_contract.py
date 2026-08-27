@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +24,9 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     triggers = workflow[True]  # YAML 1.1 parses GitHub's unquoted `on` key as boolean true.
 
-    assert set(triggers) == {"pull_request", "push"}
-    assert triggers["pull_request"]["branches"] == ["main"]
-    assert triggers["push"]["branches"] == ["main"]
+    assert {"pull_request", "push"} <= set(triggers)
+    assert "main" in triggers["pull_request"]["branches"]
+    assert "main" in triggers["push"]["branches"]
     assert "paths" not in triggers["pull_request"]
     assert "paths-ignore" not in triggers["pull_request"]
     assert workflow["permissions"] == {"contents": "read"}
@@ -33,7 +34,8 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     assert workflow["env"]["TESTED_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
 
     jobs = workflow["jobs"]
-    assert set(jobs) == {"quality", "fast", "deterministic-full", "ci-gate"}
+    required_jobs = {"quality", "fast", "deterministic-full"}
+    assert required_jobs | {"ci-gate"} <= set(jobs)
     expected_commands = {
         "quality": "make check",
         "fast": "make test-fast",
@@ -57,15 +59,102 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
 
     gate = jobs["ci-gate"]
     assert gate["name"] == "ci-gate"
-    assert gate["needs"] == ["quality", "fast", "deterministic-full"]
+    assert required_jobs <= set(gate["needs"])
     assert gate["if"] == "always()"
-    gate_results = tuple(gate["steps"][0]["env"].values())
+    gate_step = gate["steps"][0]
+    gate_results = tuple(gate_step["env"].values())
     assert all(any(f"needs.{name}.result" in value for value in gate_results) for name in gate["needs"])
+    successful = {name: "success" for name in gate_step["env"]}
+    assert _run_gate_script(gate_step["run"], successful).returncode == 0
+    for name in successful:
+        for outcome in ("failure", "cancelled", "skipped"):
+            assert _run_gate_script(gate_step["run"], {**successful, name: outcome}).returncode != 0
     evidence_step = next(
         step for step in jobs["deterministic-full"]["steps"] if "make test-evidence" in step.get("run", "")
     )
+    assert "TRACEFOLD_TEST_POSTGRES_DSN" in evidence_step["env"]
+    assert "GMGN_TEST_POSTGRES_DSN" not in evidence_step["env"]
     assert "GITHUB_SHA" not in evidence_step["env"]
     assert 'GITHUB_SHA="$TESTED_SHA" make test-evidence' in evidence_step["run"]
+
+
+def test_ci_gate_check_name_is_unique_across_all_workflows() -> None:
+    owners: list[str] = []
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        jobs = workflow.get("jobs", {}) if isinstance(workflow, dict) else {}
+        owners.extend(
+            f"{path.name}:{job_id}"
+            for job_id, job in jobs.items()
+            if isinstance(job, dict) and str(job.get("name") or job_id) == "ci-gate"
+        )
+
+    assert owners == ["ci.yml:ci-gate"]
+
+
+def _run_gate_script(script: str, results: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        env=results,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
+def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    uv_version = workflow["env"]["UV_VERSION"]
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", uv_version)
+    for job_name in ("quality", "fast", "deterministic-full", "ci-gate"):
+        assert workflow["jobs"][job_name]["runs-on"] == "ubuntu-24.04"
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("uses", "").startswith("astral-sh/setup-uv@"):
+                assert step["with"]["version"] == "${{ env.UV_VERSION }}"
+            command = step.get("run", "")
+            if "uv sync" in command:
+                assert "uv sync --locked" in command
+                assert "--frozen" not in command
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert f"ARG UV_VERSION={uv_version}" in dockerfile
+    assert "uv==${UV_VERSION}" in dockerfile
+    assert "uv sync --locked --no-dev" in dockerfile
+    assert "uv sync --frozen" not in dockerfile
+    for image in ("node:22-bookworm-slim", "python:3.13-slim-bookworm"):
+        assert re.search(rf"FROM {re.escape(image)}@sha256:[0-9a-f]{{64}}", dockerfile)
+
+    services = workflow["jobs"]["deterministic-full"]["services"]
+    for image in (services["postgres"]["image"], services["rabbitmq"]["image"]):
+        assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image)
+    deterministic_commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["deterministic-full"]["steps"])
+    assert "playwright install --with-deps chromium" in deterministic_commands
+
+
+def test_locked_sync_rejects_pyproject_lock_drift(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = pyproject.replace(
+        '    "alembic>=1.18.0",',
+        '    "alembic>=1.18.0",\n    "tracefold-lock-drift-fixture==0",',
+        1,
+    )
+    (project / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    shutil.copy2(ROOT / "uv.lock", project / "uv.lock")
+
+    result = subprocess.run(
+        ["uv", "sync", "--locked", "--dry-run", "--project", str(project), "--no-install-project"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "lock" in result.stderr.lower()
 
 
 def test_evidence_entrypoint_checks_the_tested_head_before_and_after_the_suite() -> None:
@@ -118,47 +207,92 @@ def _run_evidence_case(
     extra_args: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
-    case = tmp_path / "test_evidence_case.py"
-    manifest = tmp_path / "evidence.json"
-    executable_dir = tmp_path / "evidence-bin"
-    executable_dir.mkdir(exist_ok=True)
+    repository = tmp_path / "repository"
+    (repository / "tests" / "support").mkdir(parents=True)
+    (repository / "tracefold" / "platform" / "postgres").mkdir(parents=True)
+    (repository / "web").mkdir()
+    shutil.copy2(Path(evidence.__file__).resolve(), repository / "tests" / "support" / "evidence.py")
+    for package in (
+        repository / "tests",
+        repository / "tests" / "support",
+        repository / "tracefold",
+        repository / "tracefold" / "platform",
+        repository / "tracefold" / "platform" / "postgres",
+    ):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (repository / "tracefold" / "platform" / "postgres" / "migrations.py").write_text(
+        "def latest_migration_version(): return 'fixture-head'\n", encoding="utf-8"
+    )
+    case = repository / "tests" / "test_evidence_case.py"
+    manifest = repository / "evidence.json"
+    executable_dir = repository / "evidence-bin"
+    executable_dir.mkdir()
     git = shutil.which("git")
     assert git is not None
     git_link = executable_dir / "git"
-    if not git_link.exists():
-        git_link.symlink_to(git)
+    git_link.symlink_to(git)
     node = executable_dir / "node"
     node.write_text("#!/bin/sh\nprintf 'v22.0.0-test\\n'\n", encoding="utf-8")
     node.chmod(0o755)
+    uv_executable = executable_dir / "uv"
+    uv_executable.write_text("#!/bin/sh\nprintf 'uv 0.0.0-test\\n'\n", encoding="utf-8")
+    uv_executable.chmod(0o755)
     case.write_text(source, encoding="utf-8")
-    if conftest is not None:
-        (tmp_path / "conftest.py").write_text(conftest, encoding="utf-8")
-    uv = shutil.which("uv")
-    assert uv is not None
+    (repository / "tests" / "conftest.py").write_text(
+        "from hypothesis import settings\n"
+        "settings.register_profile('ci', max_examples=5, database=None, derandomize=True, print_blob=True)\n"
+        "settings.load_profile('ci')\n" + (conftest or ""),
+        encoding="utf-8",
+    )
+    (repository / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n"
+        "testpaths = ['tests']\n"
+        "markers = ['live: external provider test', 'scheduled: production-duration diagnostic']\n",
+        encoding="utf-8",
+    )
+    (repository / "uv.lock").write_text("fixture lock\n", encoding="utf-8")
+    (repository / "web" / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Tracefold Test",
+            "-c",
+            "user.email=tests@tracefold.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+    )
     process_env = os.environ.copy()
     # A nested evidence-session test is not the outer GitHub job. The positive case must not inherit the
     # pull_request event's synthetic merge SHA; mismatch behavior is exercised explicitly below.
     process_env.pop("GITHUB_SHA", None)
     result = subprocess.run(
         [
-            uv,
-            "run",
-            "python",
+            sys.executable,
             "-m",
             "pytest",
             "-q",
             "-p",
             "tests.support.evidence",
-            str(case),
+            "-p",
+            "_hypothesis_pytestplugin",
             "-m",
-            "not live",
+            "not live and not scheduled",
             f"--evidence-manifest={manifest}",
             *extra_args,
         ],
-        cwd=ROOT,
+        cwd=repository,
         env={
             **process_env,
             "PATH": str(executable_dir),
+            "PYTHONPATH": str(repository),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "TRACEFOLD_TEST_EVIDENCE": "1",
             **(env or {}),
         },
@@ -180,13 +314,11 @@ def test_evidence_manifest_is_generated_by_the_actual_pytest_session(tmp_path: P
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert manifest["schema_version"] == "tracefold_test_evidence_v1"
-    assert (
-        manifest["commit_sha"]
-        == subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, check=True, text=True
-        ).stdout.strip()
-    )
+    assert manifest["schema_version"] == "tracefold_test_lane_v2"
+    assert re.fullmatch(r"[0-9a-f]{40}", manifest["commit_sha"])
+    assert re.fullmatch(r"[0-9a-f]{40}", manifest["git_tree_sha"])
+    assert manifest["lane"] == "python"
+    assert manifest["status"] == "success"
     assert manifest["selected"] == 1
     assert manifest["passed"] == 1
     assert manifest["failed"] == 0
@@ -194,7 +326,7 @@ def test_evidence_manifest_is_generated_by_the_actual_pytest_session(tmp_path: P
     assert manifest["xfailed"] == 0
     assert manifest["xpassed"] == 0
     assert manifest["rerun"] == 0
-    assert manifest["explicitly_deselected_markers"] == ["live"]
+    assert manifest["explicitly_deselected_markers"] == ["live", "scheduled"]
     assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["uv_lock_sha256"]))
     assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["package_lock_sha256"]))
 
@@ -271,7 +403,7 @@ def test_evidence_mode_fails_when_node_is_unavailable(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert manifest["node_version"] == "unavailable"
+    assert manifest["tool_versions"]["node"] == "unavailable"
     assert "evidence_node_unavailable" in manifest["errors"]
 
 

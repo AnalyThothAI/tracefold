@@ -100,9 +100,9 @@ export function NewsFeedPage({ token }: { token: string }) {
   return (
     <NewsPageShell archetype="scan" className="news-feed-shell" label="新闻事件流">
       {/*
-       * The pipeline health pill used to sit here. It is the topbar lamp now (#207): the same "only when it
-       * is not ok" rule, but on every page instead of this one, and two pills on one screen saying the same
-       * thing is one of them the reader learns to skip.
+       * The pipeline health pill used to sit here. It is the topbar lamp now (#207), present after every
+       * successful health read because it is also the status-page door. Two health controls on one screen
+       * saying the same thing is one of them the reader learns to skip.
        */}
       <NewsPageHeader subtitle="每条新闻的判定与去向；符号可点进代币页" title="新闻事件流">
         {statusQuery.data ? (

@@ -164,7 +164,8 @@ make logs
 make down
 ```
 
-`make up` preflights Git, `uv`, Docker, Compose, `curl`, and daemon access, runs
+`make up` preflights Git, `uv`, Docker, Compose, `curl`, an authenticated GitHub
+CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
@@ -214,6 +215,19 @@ docker compose exec -T postgres sh -eu -c '
 docker image inspect --format '{{.Id}}' sha256:REPLACE_WITH_64_LOWERCASE_HEX
 make deploy-image IMAGE_ID=sha256:REPLACE_WITH_64_LOWERCASE_HEX
 ```
+
+Both `make up` and `make deploy-image` acquire the repository deployment lock,
+then run `verify-main-ci` while that lock is held and before any deployment
+mutation. The private implementation targets verify the inherited lock file
+descriptor, so setting an environment flag or invoking them directly cannot
+bypass either control. The gate requires the primary checkout on `main`, a
+clean source tree, `HEAD` equal to both the local and live remote `origin/main`,
+and that exact SHA's latest `ci-gate` check to be completed and successful
+under GitHub Actions integration id `15368`. It also refuses inherited Compose
+topology variables and pins Compose to this checkout's `compose.yaml` and the
+`tracefold` project. A pull-request result cannot authorize a squash commit,
+an old green local ref cannot authorize deployment, an untrusted check with the
+same name cannot authorize deployment, and missing GitHub status fails closed.
 
 The target accepts no tag, short ID or registry reference. It never builds or pulls,
 and it checks the checkout, Compose inputs, active config, three migration heads,

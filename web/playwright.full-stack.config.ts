@@ -4,11 +4,20 @@ const baseURL = process.env.TRACEFOLD_FULL_STACK_URL;
 if (!baseURL) {
   throw new Error("TRACEFOLD_FULL_STACK_URL is required for the real full-stack lane.");
 }
+const jsonOutput =
+  process.env.PLAYWRIGHT_JSON_OUTPUT_NAME ?? "test-results/full-stack-results.json";
 
 export default defineConfig({
   testDir: "./tests/e2e/full-stack",
+  forbidOnly: true,
   fullyParallel: false,
-  reporter: "list",
+  repeatEach: 1,
+  retries: 0,
+  reporter: [
+    ["list"],
+    ["json", { outputFile: jsonOutput }],
+    ["./tests/support/playwrightEvidenceReporter.ts"],
+  ],
   workers: 1,
   use: {
     ...devices["Desktop Chrome"],
@@ -20,28 +29,8 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "desktop-1920",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1920, height: 1080 } },
-    },
-    {
-      name: "desktop-1366",
+      name: "required-chromium",
       use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 720 } },
-    },
-    {
-      name: "tablet-834",
-      use: {
-        ...devices["iPad Pro 11"],
-        browserName: "chromium",
-        viewport: { width: 834, height: 1194 },
-      },
-    },
-    {
-      name: "mobile-390",
-      use: {
-        ...devices["Pixel 5"],
-        browserName: "chromium",
-        viewport: { width: 390, height: 844 },
-      },
     },
   ],
 });

@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS web-builder
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS web-builder
 
 WORKDIR /app/web
 
@@ -21,10 +21,12 @@ RUN --mount=type=cache,target=/root/.npm \
     exit 1
 
 COPY web ./
-RUN npm run build
+RUN npm run build:checked
 
 
-FROM python:3.13-slim-bookworm AS python-deps
+FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS python-deps
+
+ARG UV_VERSION=0.11.7
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -45,7 +47,7 @@ RUN set -eu; \
     done; \
     exit 1
 
-RUN python -m pip install --no-cache-dir uv
+RUN python -m pip install --no-cache-dir "uv==${UV_VERSION}"
 
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY src ./src
@@ -64,7 +66,7 @@ RUN --mount=type=secret,id=github_token \
         git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"; \
     fi; \
     for attempt in 1 2 3 4 5; do \
-        UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv sync --frozen --no-dev \
+        UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv sync --locked --no-dev \
         && exit 0; \
         sleep "$((attempt * 5))"; \
     done; \
@@ -76,7 +78,7 @@ RUN /app/.venv/bin/python -c \
 RUN /app/.venv/bin/python -c \
     'import sys; from importlib.metadata import version; from nautilus_trader.live.node import TradingNode; from tracefold.integrations.nautilus import NAUTILUS_RELEASE, installed_nautilus_wheel_identity; wheel = installed_nautilus_wheel_identity(); assert sys.version_info[:2] == (3, 13); assert version("nautilus-trader") == NAUTILUS_RELEASE.version; assert TradingNode.__module__ == "nautilus_trader.live.node"; assert not wheel.startswith("development@")'
 
-FROM python:3.13-slim-bookworm
+FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca
 
 ARG TRACEFOLD_BUILD_REVISION
 ENV PYTHONDONTWRITEBYTECODE=1 \

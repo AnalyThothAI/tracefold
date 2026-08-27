@@ -54,7 +54,7 @@ import "./newsLeverage.css";
  * the strategy beside it, and printing 冲突 on a row that case had passed.
  *
  * What this page deliberately does not do. It binds no keys — the console cut its keyboard layer whole in
- * #82 and `keyboardLayerHardCut.test.ts` keeps it cut, so the artifact's `j/k/f` bindings are not here and
+ * #82, so the artifact's `j/k/f` bindings are not here and
  * the list is reached by Tab like every other control. It invents no narrative: `oi_momentum_v1` is a pure
  * rule and writes no thesis, so the page names the rule instead of paraphrasing a sentence nobody wrote.
  * And it never lists a frame that authored no case — that population is the OI audit's, in full.

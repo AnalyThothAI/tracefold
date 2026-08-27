@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tracefold.app.workers.probe import _create_workers_probe_app
-from tracefold.app.workers.root import _ProbeState
+from tracefold.app.workers.root import GRACEFUL_DRAIN_TIMEOUT_SECONDS, _ProbeState
 from tracefold.app.workers.runtime import workers_runtime_status
 
 RUNTIME_ID = "00000000-0000-0000-0000-000000000099"
+
+
+def test_production_graceful_deadline_default_is_thirty_seconds() -> None:
+    assert GRACEFUL_DRAIN_TIMEOUT_SECONDS == 30.0
 
 
 def test_workers_probe_has_only_private_operational_routes_and_health_never_calls_readiness() -> None:
@@ -36,6 +39,7 @@ def test_workers_probe_has_only_private_operational_routes_and_health_never_call
 def test_workers_metrics_render_does_not_block_readiness() -> None:
     metrics_entered = threading.Event()
     release_metrics = threading.Event()
+    readiness_completed = threading.Event()
 
     def render_metrics() -> str:
         metrics_entered.set()
@@ -48,24 +52,26 @@ def test_workers_metrics_render_does_not_block_readiness() -> None:
     )
     with TestClient(app) as client:
         metrics_response: list[object] = []
+        readiness_response: list[object] = []
         metrics_thread = threading.Thread(
             target=lambda: metrics_response.append(client.get("/metrics")),
         )
-        release_timer = threading.Timer(0.5, release_metrics.set)
+        readiness_thread = threading.Thread(
+            target=lambda: (readiness_response.append(client.get("/readyz")), readiness_completed.set()),
+        )
         try:
             metrics_thread.start()
             assert metrics_entered.wait(timeout=1.0)
-            release_timer.start()
-            started = time.monotonic()
-            ready = client.get("/readyz")
-            ready_elapsed = time.monotonic() - started
+            readiness_thread.start()
+            assert readiness_completed.wait(timeout=1.0), "readiness was blocked behind metrics rendering"
+            assert metrics_response == [], "metrics must remain blocked until the test releases it"
         finally:
             release_metrics.set()
-            release_timer.cancel()
             metrics_thread.join(timeout=2.0)
+            readiness_thread.join(timeout=2.0)
 
-    assert ready.status_code == 200
-    assert ready_elapsed < 0.2
+    assert len(readiness_response) == 1
+    assert readiness_response[0].status_code == 200
     assert len(metrics_response) == 1
     assert metrics_response[0].status_code == 200
 

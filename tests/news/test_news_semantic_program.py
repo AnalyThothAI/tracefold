@@ -155,7 +155,7 @@ def _program(
     )
 
 
-def _execution(monkeypatch: pytest.MonkeyPatch, **updates: int) -> ProgramStrategyArtifactV1:
+def _execution(monkeypatch: pytest.MonkeyPatch, **updates: int | float) -> ProgramStrategyArtifactV1:
     """Run the graph under a different code-owned execution budget.
 
     Route deadlines and breaker thresholds are code, not artifact state, so a test that needs a
@@ -1068,10 +1068,10 @@ def test_route_deadline_is_shared_and_audited(monkeypatch: pytest.MonkeyPatch) -
 
         async def invoke(self, request: Any, predictor: Any) -> PredictorResponse:
             del request, predictor
-            await asyncio.sleep(2)
+            await asyncio.Event().wait()
             return PredictorResponse(output=_semantics())
 
-    artifact = _execution(monkeypatch, route_deadline_seconds=1)
+    artifact = _execution(monkeypatch, route_deadline_seconds=0.05)
     with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=SlowAdapter()).judge(_context()))
     assert caught.value.code == "news_program_route_deadline"
@@ -1079,7 +1079,7 @@ def test_route_deadline_is_shared_and_audited(monkeypatch: pytest.MonkeyPatch) -
     assert caught.value.attempts == 1
     assert caught.value.partial_trace is not None
     assert caught.value.partial_trace.calls[0].error_code == "news_program_route_deadline"
-    assert caught.value.partial_trace.calls[0].latency_ms >= 900
+    assert caught.value.partial_trace.calls[0].latency_ms >= 25
 
 
 def test_reader_card_deadline_is_attributed_to_reader_predictor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1089,10 +1089,10 @@ def test_reader_card_deadline_is_attributed_to_reader_predictor(monkeypatch: pyt
 
         async def invoke(self, request: Any, predictor: Any) -> PredictorResponse:
             del request, predictor
-            await asyncio.sleep(2)
+            await asyncio.Event().wait()
             return PredictorResponse(output=_card())
 
-    artifact = _execution(monkeypatch, route_deadline_seconds=1)
+    artifact = _execution(monkeypatch, route_deadline_seconds=0.05)
     with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
             DspyNewsSemanticProgram(
@@ -1109,7 +1109,7 @@ def test_reader_card_deadline_is_attributed_to_reader_predictor(monkeypatch: pyt
         "reader_card",
     ]
     assert caught.value.partial_trace.calls[-1].error_code == "news_program_route_deadline"
-    assert caught.value.partial_trace.calls[-1].latency_ms >= 900
+    assert caught.value.partial_trace.calls[-1].latency_ms >= 25
 
 
 def test_runtime_lm_factory_rejects_retry_or_cache_override() -> None:

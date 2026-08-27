@@ -5,15 +5,17 @@
 ## Complete operator startup
 
 Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose
-plugin, and `curl`; start the Docker daemon. From a fresh clone, run:
+plugin, `curl`, and the [GitHub CLI](https://cli.github.com/); run
+`gh auth login --hostname github.com` and start the Docker daemon. From a fresh
+clone, run:
 
 ```bash
 make up
 ```
 
 This is the canonical startup path. It preflights Git, `uv`, Docker, Compose,
-`curl`, and daemon access; idempotently initializes the operator directory;
-builds one application image containing the React console and Python service;
+`curl`, an authenticated GitHub CLI, and daemon access; idempotently initializes
+the operator directory; builds one application image containing the React console and Python service;
 initializes PostgreSQL and its least-privilege roles on a fresh named volume;
 migrates to the current Alembic head; starts Serve and Workers; and waits for
 PostgreSQL, migration, both runtime readiness boundaries, and an HTML console.
@@ -375,9 +377,11 @@ container, failed Serve or Workers readiness endpoint, or missing HTML console.
 It intentionally does not make business-data freshness part of readiness. Use
 `make logs` for the bounded startup evidence named by a failure.
 
-The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, and daemon
-access before a build starts. If the daemon is unavailable, start Docker
-Desktop or grant this shell access to the Docker socket, then rerun `make up`.
+The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, an
+authenticated GitHub CLI, and daemon access before a build starts. GitHub is
+used to bind deployment to the exact green `origin/main` commit. If the daemon
+is unavailable, start Docker Desktop or grant this shell access to the Docker
+socket, then rerun `make up`.
 
 `make deploy-image IMAGE_ID=sha256:<64 lowercase hex>` is the narrow
 database-compatible image rollback/redeployment path. Run it only from the
@@ -444,11 +448,20 @@ cd web && npm run dev
 Developer checks remain separate from startup:
 
 ```bash
+make install-hooks
 uv run pytest
 uv run ruff check .
 uv run python -m compileall src tests
 cd web && npm run typecheck && npm run lint
 ```
+
+`make install-hooks` uses Git's standard repository hook directory. If any
+`core.hooksPath` override is active, it prints the single command that clears
+that override instead of adding custom-path installation logic. After a
+successful install it verifies that the executable hook belongs to this
+repository's Git common directory. The hooks reuse the locked
+Ruff toolchain and run ESLint/Prettier only on staged frontend files. They are
+fast local feedback, not merge or release evidence.
 
 Other frontend commands are:
 

@@ -36,6 +36,7 @@ from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.candidate.eligibility import EligibilityPolicy, Funnel, news_candidate, oi_candidate
 from tracefold.trading.contracts import (
     ACTIVE_ORDER_STATES,
+    TERMINAL_ORDER_STATES,
     TRADING_MANIFEST_VERSION,
     Bar,
     ExecutionObservation,
@@ -48,6 +49,7 @@ from tracefold.trading.contracts import (
     NewsTradeCandidate,
     OiMarketTrigger,
     OiTradeCandidate,
+    OrderState,
     PreparedOrder,
     RemoteExposure,
     StartupReconciliation,
@@ -293,6 +295,27 @@ def test_one_source_fact_produces_one_case_however_often_the_window_is_re_read(c
     # The scanner keeps no cursor; it re-reads a bounded overlap. This is what makes that safe.
     assert _case(conn, case_id="c2", source_key="oi:e1:v1", state="NO_TRADE") is False
     assert len(_repos(conn).trading.cases()) == 1
+
+
+def test_current_schema_accepts_every_public_order_state_and_rejects_unknown_state(conn) -> None:
+    """The migrated database, rather than a historical migration's SQL spelling, owns this invariant."""
+
+    assert {*ACTIVE_ORDER_STATES, *TERMINAL_ORDER_STATES} == {state.value for state in OrderState}
+    _case(conn, case_id="state-contract", source_key="state-contract")
+    _order(
+        conn,
+        order_id="state-contract",
+        case_id="state-contract",
+        underlying="crypto:DOGE",
+        exchange_id="paper",
+        state=OrderState.PREPARED.value,
+    )
+
+    for state in OrderState:
+        conn.execute("UPDATE trading_orders SET state = %s WHERE order_id = %s", (state.value, "state-contract"))
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("UPDATE trading_orders SET state = 'UNKNOWN' WHERE order_id = %s", ("state-contract",))
+    conn.rollback()
 
 
 def test_one_case_authors_at_most_one_order(conn) -> None:
@@ -4251,14 +4274,14 @@ def test_the_exit_retry_is_bounded(conn) -> None:
     _case(conn, case_id="c1", source_key="k1")
     _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="paper", state="OPEN")
     trading = _repos(conn).trading
-    for _ in range(3):
+    for attempt in range(3):
         assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "claimed"
         conn.commit()
         conn.execute("UPDATE trading_orders SET state = 'OPEN' WHERE order_id = 'o1'")
-        trading.release_exit_attempt(order_id="o1", now_ms=NOW)
+        assert trading.release_exit_attempt(order_id="o1", now_ms=NOW) is (attempt < 2)
         conn.commit()
     # Three total attempts is the ceiling; the release cannot lift it.
-    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) in ("already_spent", "exhausted")
+    assert trading.claim_attempt(order_id="o1", kind="exit", now_ms=NOW) == "exhausted"
     conn.commit()
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute("UPDATE trading_orders SET exit_attempt_total = 4 WHERE order_id = 'o1'")

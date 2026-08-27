@@ -1,9 +1,8 @@
 /*
  * The answer layer's own stylesheet (#273).
  *
- * A separate owner file rather than more lines in `trading.css`: that bucket is at 458 of the 500-line
- * side-effect budget the architecture harness enforces, and a feature that grows one stylesheet until
- * it fails the gate is exactly what the budget exists to prevent.
+ * A separate owner file because these rows belong to the operational readout rather than the exposure
+ * tables owned by `trading.css`.
  *
  * Outcome here is pipeline state, never market direction, so nothing in this file reaches for
  * `--dir-*`. The ladder's fill is the accent for the same reason a refusal is not painted red: a frame

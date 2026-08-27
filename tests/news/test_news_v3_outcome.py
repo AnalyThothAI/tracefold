@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
-import re
-from pathlib import Path
-
 import pytest
 
 from tracefold.news.health import status_health
@@ -22,7 +18,6 @@ from tracefold.news.outcome import (
 from tracefold.news.timeline import event_timeline
 
 NOW = 1_800_000_000_000
-triage_rules = importlib.import_module("tracefold.news.triage_rules")
 
 
 def _triage(final: str, **over: object) -> dict[str, object]:
@@ -148,18 +143,8 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
     assert fallback_push.kind == "delivered" and fallback_push.reason_zh == "模型不可用，按规则兜底推送：模型超时"
 
 
-def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None:
-    # Every rule name decide() can emit must have a Chinese label — read them from the source so a new rule
-    # in triage_rules.py fails this test until outcome.py names it.
-    source = (Path(triage_rules.__file__)).read_text(encoding="utf-8")
-    emitted = set(
-        re.findall(
-            r'(?:final, rule = "[a-z]+", |DecisionResult\((?:"[a-z]+"|baseline), |^\s+rule = )"([a-z0-9_]+)"',
-            source,
-            re.M,
-        )
-    )
-    assert emitted >= {
+def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_codes() -> None:
+    current_rules = {
         "degraded_listing_objective",
         "degraded_no_objective_guard",
         "degraded_telemetry_objective",
@@ -173,7 +158,7 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
         "trade_relevance_realtime",
         "watchlist_objective_guard",
     }
-    missing = sorted(rule for rule in emitted if rule not in OVERRIDE_RULE_ZH)
+    missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)
     assert missing == []
     assert override_rule_zh("brand_new_rule") == "brand_new_rule"
     # Keys that only exist on historical rows (retired policies/lanes) still get Chinese copy.

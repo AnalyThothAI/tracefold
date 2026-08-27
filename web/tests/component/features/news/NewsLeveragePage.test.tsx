@@ -342,7 +342,7 @@ describe("NewsLeveragePage", () => {
   });
 
   it("binds no document-level keys", async () => {
-    // #82 cut the console's keyboard layer whole and `keyboardLayerHardCut.test.ts` keeps it cut. The
+    // #82 cut the console's keyboard layer whole. The
     // artifact's `j/k/f` list bindings are deliberately not here; the cards are real buttons in tab order.
     renderLeverage();
     const list = await screen.findByRole("region", { name: "案例列表" });

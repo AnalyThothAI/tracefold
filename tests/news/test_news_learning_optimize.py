@@ -8,6 +8,7 @@ would let the two drift while both suites stayed green.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -212,22 +213,11 @@ def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promot
     assert candidate.objective_summary["optimizer_case_n"] == candidate.objective_summary["optimizer_cluster_n"]
     assert result.report.candidate_sha256 == candidate.candidate_sha256
     assert result.report.reasons == ()
-    # The complete field list. A candidate that could name a stage, an activation or an artifact root would
-    # be a candidate that could ask to ship; #202 §5 is that it cannot.
-    assert set(type(candidate).model_fields) == {
-        "schema_version",
-        "parent_program_sha256",
-        "development_dataset_sha256",
-        "target_runtime_manifest_sha256",
-        "patch",
-        "objective_summary",
-        "optimizer",
-        "model_identities",
-        "budget",
-        "usage",
-        "created_at_ms",
-        "candidate_sha256",
-    }
+    # A proposal that asks to activate or publish itself is outside this contract. Protect that authority
+    # boundary without freezing every harmless metadata field the schema may gain later.
+    for forbidden in ("stage", "activation", "artifact_root", "promote"):
+        with pytest.raises(ValidationError):
+            type(candidate).model_validate({**candidate.model_dump(mode="json"), forbidden: "requested"})
 
 
 def test_a_run_that_learned_nothing_is_a_no_op_with_a_complete_report() -> None:
@@ -379,7 +369,10 @@ def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() ->
 def test_the_write_set_is_two_instructions_and_the_safety_bounds_are_not_restated() -> None:
     patch = PromptPatchV1(event_semantics_instruction="Prefer the filing's own mechanism.", reader_card_instruction="")
 
-    assert set(type(patch).model_fields) == {"event_semantics_instruction", "reader_card_instruction"}
+    assert patch.model_dump(mode="json") == {
+        "event_semantics_instruction": "Prefer the filing's own mechanism.",
+        "reader_card_instruction": "",
+    }
     with pytest.raises(ValidationError):
         PromptPatchV1(
             event_semantics_instruction="",
@@ -475,22 +468,12 @@ def test_the_metered_lm_still_refuses_a_cached_or_silently_retrying_route() -> N
         _BudgetedLM(_Cached("task/model"), role="task", meter=meter)  # type: ignore[arg-type]
 
 
-def test_the_offline_jobs_powers_are_the_fields_of_its_config() -> None:
-    """The list of fields is the list of powers. No session, no repository, no activation, no artifact root.
+@pytest.mark.parametrize("capability", ["session", "repository", "activation", "artifact_root"])
+def test_the_offline_job_rejects_storage_and_activation_capabilities(capability: str) -> None:
+    """The optimizer may gain benign configuration without gaining a path to store or activate a result."""
 
-    The import boundary is asserted separately, in `tests/architecture/test_news_compiler_boundary.py`:
-    this one is about what a caller can hand the job, which is the other half of the same claim.
-    """
-
-    assert set(OptimizationConfig.__dataclass_fields__) == {
-        "task_lm",
-        "reflection_lm",
-        "judge",
-        "budget",
-        "optimizer_factory",
-        "now_ms",
-        "monotonic",
-    }
+    with pytest.raises(TypeError):
+        replace(_config(), **{capability: object()})
 
 
 def test_an_unbounded_or_unstamped_judge_is_refused_before_anything_is_spent() -> None:

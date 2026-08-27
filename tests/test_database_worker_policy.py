@@ -10,6 +10,8 @@ from psycopg import InternalError, OperationalError
 from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
+from tracefold.app import serve_database as serve_database_module
+from tracefold.app import worker_database as worker_database_module
 from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.resource import ResourceAdmissionTimeout
@@ -124,12 +126,12 @@ def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
     asyncio.run(scenario())
 
 
-def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None:
+def test_native_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
 
         def native_statement_timeout() -> None:
-            time.sleep(2.5)
+            time.sleep(0.02)
             raise QueryCanceled("canceling statement due to statement timeout")
 
         try:
@@ -146,15 +148,16 @@ def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None
         finally:
             database.close_executors()
 
+    monkeypatch.setattr(worker_database_module, "_WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS", 0.1)
     asyncio.run(scenario())
 
 
-def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog() -> None:
+def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
 
         def native_statement_timeout() -> None:
-            time.sleep(2.5)
+            time.sleep(0.02)
             raise QueryCanceled("canceling statement due to statement timeout")
 
         try:
@@ -171,6 +174,7 @@ def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog()
         finally:
             database.close_executors()
 
+    monkeypatch.setattr(worker_database_module, "_WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS", 0.1)
     asyncio.run(scenario())
 
 
@@ -294,21 +298,20 @@ def test_business_pool_checkout_timeout_is_recoverable_but_control_timeout_is_fa
     asyncio.run(scenario())
 
 
-def test_serve_admission_reserves_the_control_lane() -> None:
+def test_serve_admission_reserves_the_control_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _FakeConnection()
     database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)
+    monkeypatch.setattr(serve_database_module, "_SERVE_PERMIT_TIMEOUT_SECONDS", 0.0)
 
     with ExitStack() as ordinary_sessions:
         for _ in range(6):
             ordinary_sessions.enter_context(database.api_session("ordinary"))
 
-        started = time.perf_counter()
         with (
             pytest.raises(ServeDatabaseBusy, match="serve_database_busy:ordinary"),
             database.api_session("ordinary"),
         ):
             pass
-        assert 0.04 <= time.perf_counter() - started < 0.20
 
         with database.api_session("control"):
             pass

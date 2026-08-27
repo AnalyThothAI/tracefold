@@ -176,6 +176,12 @@ esac
         encoding="utf-8",
     )
     fake_curl.chmod(0o700)
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        '#!/bin/sh\n[ "$1 $2" = "auth status" ]\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -216,6 +222,63 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
         "docker-logs",
         "docker-down",
     }.isdisjoint(targets)
+
+
+@pytest.mark.parametrize("auth_state", ["missing-cli", "unauthenticated", "authenticated"])
+def test_verify_main_ci_preflights_the_active_github_dot_com_account(tmp_path: Path, auth_state: str) -> None:
+    make = shutil.which("make")
+    assert make is not None
+    verifier_called = tmp_path / "verifier-called"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        '#!/bin/sh\n: > "$TRACEFOLD_TEST_VERIFY_MAIN_CI_CALLED"\n',
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o700)
+    if auth_state != "missing-cli":
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text(
+            "#!/bin/sh\n"
+            "command=$1\n"
+            "subcommand=$2\n"
+            "shift 2\n"
+            "active=0\n"
+            "host=''\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  case "$1" in\n'
+            "    --active) active=1; shift ;;\n"
+            "    --hostname) host=$2; shift 2 ;;\n"
+            "    *) exit 64 ;;\n"
+            "  esac\n"
+            "done\n"
+            '[ "$command $subcommand" = "auth status" ] || exit 64\n'
+            '[ "$active" = 1 ] || exit 64\n'
+            '[ "$host" = github.com ] || exit 64\n'
+            'exit "$TRACEFOLD_TEST_GH_AUTH_EXIT"\n',
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o700)
+
+    result = subprocess.run(
+        [make, "--no-print-directory", "verify-main-ci"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": str(tmp_path),
+            "TRACEFOLD_TEST_GH_AUTH_EXIT": "1" if auth_state == "unauthenticated" else "0",
+            "TRACEFOLD_TEST_VERIFY_MAIN_CI_CALLED": str(verifier_called),
+        },
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert (result.returncode == 0) is (auth_state == "authenticated")
+    assert verifier_called.exists() is (auth_state == "authenticated")
+    if auth_state == "missing-cli":
+        assert "GitHub CLI is not installed or not on PATH" in result.stderr
+    elif auth_state == "unauthenticated":
+        assert "GitHub CLI is not authenticated for github.com" in result.stderr
 
 
 def test_status_rejects_a_still_running_migration(tmp_path: Path) -> None:
@@ -260,11 +323,22 @@ case "$url" in */) printf '<html></html>' ;; esac
     fake_uv = bin_dir / "uv"
     fake_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_uv.chmod(0o700)
+    github_probe = tmp_path / "github-probe"
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        '#!/bin/sh\n: > "$TRACEFOLD_TEST_GH_PROBE"\nexit 99\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
 
     result = subprocess.run(
         ["make", "status"],
         cwd=ROOT,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TRACEFOLD_TEST_GH_PROBE": str(github_probe),
+        },
         capture_output=True,
         check=False,
         text=True,
@@ -272,6 +346,7 @@ case "$url" in */) printf '<html></html>' ;; esac
 
     assert result.returncode != 0
     assert "migrate: state=running exit_code=0" in result.stderr
+    assert not github_probe.exists()
 
 
 def test_deploy_image_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:

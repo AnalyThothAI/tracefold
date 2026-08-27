@@ -15,16 +15,19 @@ from tracefold.platform.postgres.client import connect_postgres
 from tracefold.platform.postgres.migrations import upgrade_head
 
 DEFAULT_TEST_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
+TEST_DATABASE_NAME = "tracefold_test"
 
 
 def test_postgres_dsn() -> str:
-    return os.environ.get("GMGN_TEST_POSTGRES_DSN", DEFAULT_TEST_DSN)
+    return os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_TEST_DSN)
 
 
 def ensure_migrated_postgres_resource(dsn: str, *, resource_name: str) -> None:
     """Migrate one explicitly requested test database or fail its owning gate."""
 
     try:
+        with connect_postgres(dsn) as conn:
+            assert_dedicated_test_database(conn)
         upgrade_head(dsn)
     except Exception as exc:
         pytest.fail(f"alembic upgrade head failed for the declared {resource_name}: {exc}", pytrace=False)
@@ -34,6 +37,7 @@ def connect_postgres_test(*_: Any, read_only: bool = False, **__: Any):
     try:
         conn = connect_postgres(test_postgres_dsn())
         conn.row_factory = _compat_row
+        assert_dedicated_test_database(conn)
     except OperationalError as exc:
         if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
             pytest.fail(f"PostgreSQL test database is required in evidence mode: {exc}", pytrace=False)
@@ -71,11 +75,31 @@ def prepare_postgres_database() -> None:
 def reset_postgres_schema(conn) -> None:
     if _read_only(conn):
         return
+    assert_dedicated_test_database(conn)
     conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
     conn.execute("CREATE SCHEMA public")
     conn.execute("GRANT ALL ON SCHEMA public TO public")
     conn.commit()
     upgrade_head(test_postgres_dsn())
+
+
+def reset_postgres_database(dsn: str) -> None:
+    """Recreate the schema only after the server proves it is the dedicated test database."""
+
+    with connect_postgres(dsn) as identity_conn:
+        assert_dedicated_test_database(identity_conn)
+    with connect_postgres(dsn) as conn:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+    upgrade_head(dsn)
+
+
+def assert_dedicated_test_database(conn: Any) -> None:
+    row = conn.execute("SELECT current_database()").fetchone()
+    database_name = str(row["current_database"] if isinstance(row, dict) else row[0])
+    if database_name != TEST_DATABASE_NAME:
+        raise RuntimeError(f"postgres_test_database_identity_invalid:{database_name}; expected {TEST_DATABASE_NAME}")
 
 
 @contextmanager

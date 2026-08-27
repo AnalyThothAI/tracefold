@@ -44,7 +44,7 @@ down_revision = "20260825_0307"
 branch_labels = None
 depends_on = None
 
-# Byte-identical with `ACTIVE_ORDER_STATES` in `tracefold.trading.contracts`, which one test asserts.
+# Historical state snapshot used by this migration to rebuild the partial unique index.
 _ACTIVE_ORDER_STATES = (
     "PREPARED",
     "AWAITING_APPROVAL",

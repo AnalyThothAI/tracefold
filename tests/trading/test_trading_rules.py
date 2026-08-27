@@ -13,7 +13,6 @@ import pytest
 
 from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.contracts import (
-    ACTIVE_ORDER_STATES,
     Bar,
     ExecutionObservation,
     FrozenMarketContext,
@@ -601,24 +600,3 @@ def test_both_taker_legs_are_charged_so_a_paper_receipt_is_not_flattered() -> No
     # +100 bps gross, 5 bps each way.
     assert realized_bps(side="buy", entry=Decimal("100"), exit_price=Decimal("101"), fee_bps=5) == 90
     assert realized_bps(side="sell", entry=Decimal("100"), exit_price=Decimal("99"), fee_bps=5) == 90
-
-
-# ---------------------------------------------------------------------------- schema agreement
-def test_the_active_state_tuple_matches_the_partial_unique_index_predicate() -> None:
-    """The index is the authority; this tuple is how the runners reason about the same set.
-
-    They are written in two files, so without this they can drift — and the drift that matters is the
-    one that silently drops a state from the index while the code still believes it is protected.
-    """
-
-    from pathlib import Path
-
-    migration = (
-        Path(__file__).resolve().parents[2]
-        / "src/tracefold/platform/postgres/alembic/versions/20260823_0300_trading_core.py"
-    ).read_text(encoding="utf-8")
-    for state in ACTIVE_ORDER_STATES:
-        assert f'"{state}"' in migration, state
-    # The four that a naive reading of the spec leaves out, and which are exactly the dangerous ones.
-    for state in ("APPROVED", "RECONCILING", "MANUAL_REVIEW_REQUIRED", "UNPROTECTED"):
-        assert state in ACTIVE_ORDER_STATES

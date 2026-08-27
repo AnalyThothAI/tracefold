@@ -9,12 +9,11 @@ afterEach(() => cleanup());
  * The topbar health lamp (#207). It replaced two things at once: the sidebar's health dot, which only ever
  * reached the widest frame, and the feed header's pill, which only ever reached one route.
  *
- * The rule the whole design rests on is that a healthy pipeline renders nothing at all. A light that is
- * always on is one the reader learns to stop seeing, which is exactly why 流水线状态 stopped being worth a
- * navigation slot.
+ * A null value means the shell has not read health yet. It renders no diagnosis until the route supplies
+ * one; an explicit healthy result is a CockpitHealth value with level `ok`.
  */
 describe("CockpitTopbar health lamp", () => {
-  it("renders nothing at all while the pipeline is healthy", () => {
+  it("renders no diagnosis before pipeline health has been read", () => {
     renderTopbar(null);
 
     expect(screen.queryByRole("button", { name: /流水线健康/ })).not.toBeInTheDocument();
