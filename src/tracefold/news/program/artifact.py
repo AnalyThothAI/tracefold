@@ -121,7 +121,7 @@ class ProgramStrategyArtifactV1(_ExactModel):
     """The complete optimizer write-set, and the whole of Program behavior identity."""
 
     schema_version: Literal["news_program_strategy_artifact_v1"] = "news_program_strategy_artifact_v1"
-    factory_id: Literal["tracefold.news.program.factory_v6"] = "tracefold.news.program.factory_v6"
+    factory_id: Literal["tracefold.news.program.factory_v7"] = "tracefold.news.program.factory_v7"
     event_semantics_instruction: str = ""
     reader_card_instruction: str = ""
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

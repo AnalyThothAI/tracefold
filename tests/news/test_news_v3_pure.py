@@ -284,7 +284,7 @@ def test_market_telemetry_without_a_provider_score_is_held_back() -> None:
     market frame would otherwise be admitted, cost a Triage call, and could reach a reader.
     """
 
-    base = dict(strategy_ids=("9999",), coins=(), ingest_mode="live", watchlist_symbols=frozenset())
+    base = dict(coins=(), ingest_mode="live", watchlist_symbols=frozenset())
     unscored = evaluate_gate(
         GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=None, **base)
     )
@@ -299,9 +299,7 @@ def test_market_telemetry_without_a_provider_score_is_held_back() -> None:
 
 
 def test_gate_admission_rules() -> None:
-    base = dict(
-        strategy_ids=("1018",), provider_score=75.0, coins=(), ingest_mode="live", watchlist_symbols=frozenset({"BTC"})
-    )
+    base = dict(provider_score=75.0, coins=(), ingest_mode="live", watchlist_symbols=frozenset({"BTC"}))
     # Ungrounded titles are candidates by default: the model, not a lexicon, decides relevance.
     meme = evaluate_gate(GateInput(title="Imagine being this guy", engine_type="meme", **base))
     assert meme.admission == "candidate" and meme.asset_class == "none"
@@ -1344,10 +1342,10 @@ def test_golden_replay_on_real_sample() -> None:
     assert len(replies) >= 2
     reply_report = replay_hits(replies, watchlist_symbols=frozenset())
     assert reply_report["counts"]["events"] == len(replies)
-    # Binance CFX announcement burst collapses into one shared event
+    # Binance CFX announcement burst collapses within each kind; news and listing never merge.
     cfx = [h for h in hits if "Conflux Network (CFX)" in str(h.get("text"))]
     cfx_report = replay_hits(cfx, watchlist_symbols=frozenset())
-    assert cfx_report["counts"]["events"] == 1 and cfx_report["counts"]["exact_members"] == len(cfx) - 1
+    assert cfx_report["counts"]["events"] == 2 and cfx_report["counts"]["exact_members"] == len(cfx) - 2
     # The Gate no longer decides relevance: most items reach Triage (the model is the semantic filter)
     assert report["candidate_share_of_items"] >= 0.65
 

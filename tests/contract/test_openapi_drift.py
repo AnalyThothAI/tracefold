@@ -141,6 +141,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsIngestStatusData",
         "NewsBrokerStatusData",
         "NewsPipelineStatusData",
+        "NewsSourceContractStageCountsData",
+        "NewsSourceContracts24hData",
         "NewsDeliveryStatusData",
         "NewsLearningRetentionStatusData",
         "NewsFeedOiData",
@@ -234,13 +236,29 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
 
     news_components = {name for name in components if "News" in name}
     retired_markers = ("Story", "Brief", "Rss", "Source", "TitleTranslation", "TitlePresentation", "Notification")
-    assert not {name for name in news_components if any(marker in name for marker in retired_markers)}
+    source_contract_components = {
+        "NewsSourceContractStageCountsData",
+        "NewsSourceContracts24hData",
+    }
+    assert not {
+        name
+        for name in news_components - source_contract_components
+        if any(marker in name for marker in retired_markers)
+    }
     for path in ("/api/news/stories/{story_id}", "/api/news/brief", "/api/news/sources", "/api/radar"):
         assert path not in schema["paths"]
 
     event_properties = components["NewsEventData"]["properties"]
     assert {"story_id", "title_translation", "notification", "push_delivery_state"}.isdisjoint(event_properties)
-    assert {"event_id", "family", "leader_title", "admission", "storyline_key"} <= set(event_properties)
+    assert {
+        "event_id",
+        "family",
+        "event_kind",
+        "source_contract_reason",
+        "leader_title",
+        "admission",
+        "storyline_key",
+    } <= set(event_properties)
     assert "priority" not in event_properties
 
 

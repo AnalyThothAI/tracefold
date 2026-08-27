@@ -152,7 +152,7 @@ PROGRAM_LEARNED_STRATEGY_MAX_ESTIMATED_TOKENS: Final[int] = 2_048
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v6"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v7"
 
 PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
 

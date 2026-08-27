@@ -7,10 +7,10 @@ import contextlib
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
-from .. import liquidations
+from .. import liquidations, oi_signals
 from ..bus import (
     Q_RAW,
     RK_EVENT,
@@ -29,6 +29,14 @@ from ..events.titles import description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
+from ..source_contracts import (
+    EventKind,
+    SourceContract,
+    SourceContractReason,
+    classify_source_contract,
+    classify_source_contracts,
+    source_contract_admission,
+)
 from ..telemetry import NewsWorkSemantics
 from .runtime import NewsDatabasePort
 
@@ -44,7 +52,14 @@ _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|tr
 # provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
 # the model call the admission exists to avoid (#137).
 _REGATE_ADMISSIONS = frozenset(
-    {"candidate", "listing_deterministic", "telemetry_deterministic", "liquidation_deterministic", "recovery"}
+    {
+        "candidate",
+        "listing_deterministic",
+        "telemetry_deterministic",
+        "liquidation_deterministic",
+        "unsupported_market_contract",
+        "recovery",
+    }
 )
 _STRONG_MEMBER_SCORE = 80.0
 
@@ -58,6 +73,7 @@ class AdmitResult:
     event_id: str
     event_created: bool
     admission: str
+    event_kind: EventKind
     match_kind: str  # leader | exact | near | none
     gate: GateVerdict | None
     family: str
@@ -80,12 +96,21 @@ def item_identity(*, source_id: str, source_item_key: str) -> str:
     return hashlib.sha256(f"{source_id}\x1f{source_item_key}".encode()).hexdigest()
 
 
-def _event_identity(*, item_id: str, fact: FactUnit) -> str:
-    # Preserve the established one-Item/one-Event identity for ordinary Items.
-    # Explicit digest bullets need distinct stable identities.
-    if fact.method == "whole_item":
-        return item_id
-    return hashlib.sha256(f"{item_id}\x1f{fact.fact_id}".encode()).hexdigest()
+def _event_identity(
+    *,
+    item_id: str,
+    fact: FactUnit,
+    event_kind: EventKind,
+) -> str:
+    # Preserve ordinary News identities. A non-News source contract is a distinct fact
+    # even when the provider emits the same record through more than one Strategy. The
+    # reason is deliberately not identity: a migrated unverified frame must reconcile
+    # in place when the same provider fact is redelivered through the current parser.
+    if event_kind == "news":
+        if fact.method == "whole_item":
+            return item_id
+        return hashlib.sha256(f"{item_id}\x1f{fact.fact_id}".encode()).hexdigest()
+    return hashlib.sha256(f"{item_id}\x1f{fact.fact_id}\x1f{event_kind}".encode()).hexdigest()
 
 
 def admit_frame(
@@ -111,6 +136,15 @@ def admit_frame(
         raw_text=raw_text,
         fallback_title=parent.title or (event.entry.title or "")[:500],
     )
+    contracts: list[SourceContract] = []
+    seen_kinds: set[EventKind] = set()
+    for contract in classify_source_contracts(event.provider_metadata):
+        # Event identity is one provider FactUnit per kind. Keeping the first
+        # durable tuple for a repeated kind makes a merged Item replay exactly
+        # like the original first-seen delivery order.
+        if contract.event_kind not in seen_kinds:
+            seen_kinds.add(contract.event_kind)
+            contracts.append(contract)
     results = tuple(
         admit_item(
             repos,
@@ -124,8 +158,10 @@ def admit_frame(
             suppress_low_signal=suppress_low_signal,
             instrument_classes=instrument_classes,
             _fact_unit=unit,
+            _source_contract=contract,
         )
         for unit in units
+        for contract in contracts
     )
     return AdmitBatchResult(item_id=item_id, item_inserted=any(r.item_inserted for r in results), results=results)
 
@@ -167,6 +203,7 @@ def admit_item(
     suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
     _fact_unit: FactUnit | None = None,
+    _source_contract: SourceContract | None = None,
 ) -> AdmitResult:
     """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item.
 
@@ -176,6 +213,10 @@ def admit_item(
 
     news = repos.news
     metadata = dict(event.provider_metadata)
+    source_contract = _source_contract or classify_source_contract(metadata)
+    source_contract_reason: SourceContractReason | None = source_contract.reason
+    contract_engine = source_contract.identity.engine_type
+    engine_type = contract_engine if contract_engine in {"news", "meme", "listing", "market"} else "unknown"
     strategy_ids = tuple(
         str(s.get("id")) for s in (metadata.get("strategies") or []) if isinstance(s, Mapping) and s.get("id")
     )
@@ -214,7 +255,7 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
-    if liquidations.STRATEGY_ID in strategy_ids:
+    if source_contract.family == "liquidation_v1":
         liquidation = liquidations.parse_liquidation(
             title,
             item_id=item_id,
@@ -224,7 +265,9 @@ def admit_item(
             received_at_ms=int(observed_at_ms),
             provider_record_identity=event.provider_record_id,
         )
-        if liquidation is not None:
+        if liquidation is None:
+            source_contract_reason = "source_contract_drift"
+        else:
             news.insert_market_liquidation(
                 source_key=liquidation.source_key,
                 item_id=liquidation.item_id,
@@ -252,8 +295,23 @@ def admit_item(
                 source_contract_complete=liquidation.source_contract_complete,
                 now_ms=now_ms,
             )
-    existing_membership = news.fact_membership(item_id=item_id, fact_id=fact.fact_id)
+    # Admission exercises the strict parser in both live and recovery modes so contract drift is durable
+    # even when recovery intentionally never reaches Triage. This parse is side-effect free: OI's ranked
+    # fact remains live-only and is still written by the deterministic judge.
+    if source_contract.family == "oi_v1" and oi_signals.parse_oi_signal(title) is None:
+        source_contract_reason = "source_contract_drift"
+    existing_membership = news.fact_membership(
+        item_id=item_id,
+        fact_id=fact.fact_id,
+        event_kind=source_contract.event_kind,
+    )
     if existing_membership is not None:
+        if source_contract.event_kind in {"oi", "liquidation"}:
+            news.resolve_unverified_source_contract(
+                event_id=str(existing_membership["event_id"]),
+                reason=source_contract_reason,
+                now_ms=now_ms,
+            )
         ev = news.event_admission(str(existing_membership["event_id"]))
         return AdmitResult(
             item_id=item_id,
@@ -261,6 +319,7 @@ def admit_item(
             event_id=str(existing_membership["event_id"]),
             event_created=False,
             admission=str(ev["admission"]) if ev else "candidate",
+            event_kind=str(ev["event_kind"]) if ev else source_contract.event_kind,  # type: ignore[arg-type]
             match_kind=str(existing_membership["match_kind"]),
             gate=None,
             family=family,
@@ -279,8 +338,7 @@ def admit_item(
     gate = evaluate_gate(
         GateInput(
             title=title,
-            engine_type=_engine_type(metadata),  # type: ignore[arg-type]
-            strategy_ids=strategy_ids,
+            engine_type=engine_type,  # type: ignore[arg-type]
             provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
             coins=coins,
             ingest_mode=ingest_mode,
@@ -290,13 +348,29 @@ def admit_item(
             instrument_classes=instrument_classes,
         )
     )
-    if liquidations.STRATEGY_ID in strategy_ids:
-        gate = liquidations.admission_verdict(gate)
+    gate = replace(
+        gate,
+        admission=source_contract_admission(
+            source_contract,
+            generic_admission=gate.admission,
+            ingest_mode=ingest_mode,
+        ),
+    )
     tokens = comparison_tokens(comparison)
     window_ms = event_window_ms(family)
     shareable = len(tokens) >= 3
 
-    exact = news.find_exact_event(family=family, fingerprint=fingerprint, now_ms=now_ms) if shareable else None
+    exact = (
+        news.find_exact_event(
+            family=family,
+            event_kind=source_contract.event_kind,
+            fingerprint=fingerprint,
+            now_ms=now_ms,
+            source_contract_reason=source_contract_reason,
+        )
+        if shareable
+        else None
+    )
     if exact is not None and int(exact["opened_at_ms"]) + window_ms <= published_at_ms:
         exact = None
     if exact is None:
@@ -306,11 +380,24 @@ def admit_item(
         exact = news.find_artifact_event(
             source_artifact_id=event.source_artifact_id,
             family=family,
+            event_kind=source_contract.event_kind,
             fingerprint=fingerprint,
             item_id=item_id,
             opened_after_ms=published_at_ms - ARTIFACT_WINDOW_MS,
+            source_contract_reason=source_contract_reason,
         )
     if exact is not None:
+        reconciled_liquidation = (
+            source_contract.event_kind == "liquidation"
+            and exact.get("source_contract_reason") == "source_contract_unverified"
+            and source_contract_reason is None
+        )
+        if source_contract.event_kind in {"oi", "liquidation"}:
+            news.resolve_unverified_source_contract(
+                event_id=str(exact["event_id"]),
+                reason=source_contract_reason,
+                now_ms=now_ms,
+            )
         news.add_member(
             event_id=str(exact["event_id"]),
             item_id=item_id,
@@ -329,12 +416,18 @@ def admit_item(
             inserted=inserted,
             match_kind="exact",
             gate=gate,
+            event_kind=source_contract.event_kind,
             family=family,
             fingerprint=fingerprint,
             title=title,
             reporting_origin=event.entry.reporting_origin or "opennews",
             now_ms=now_ms,
         )
+        if reconciled_liquidation and not result.evidence_focus_changed:
+            # The current Item owns the typed fact that proved this migrated
+            # Event valid. Triage must read that fact rather than the pre-cut
+            # leader, even when ordinary strength heuristics tie.
+            result = replace(result, evidence_focus_changed=True)
         news.append_evidence_snapshot(
             event_id=result.event_id,
             now_ms=now_ms,
@@ -354,14 +447,18 @@ def admit_item(
         # and never count toward its own rank. Byte-identical redeliveries are still collapsed by the
         # exact fingerprint above.
         #
-        # Keyed on Gate admission rather than parser success: strategy 1019 is provider provenance,
-        # and a format-drift frame must reach Triage's explicit `oi_parse_failed` state instead of
-        # disappearing into a near-duplicate Event. Ordinary OI prose has `candidate` admission and
-        # keeps the normal duplicate path.
+        # Keyed on source-contract kind and result rather than live/recovery admission: a format-drift
+        # or recovered deterministic frame must remain its own measurement.
         candidates = (
             ()
-            if gate.admission in {"telemetry_deterministic", "liquidation_deterministic"}
-            else news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms)
+            if source_contract.event_kind in {"oi", "liquidation"}
+            else news.find_band_candidates(
+                family=family,
+                event_kind=source_contract.event_kind,
+                band_keys=keys,
+                now_ms=now_ms,
+                source_contract_reason=source_contract_reason,
+            )
         )
         for cand in candidates:
             cand_tokens = comparison_tokens(str(cand["comparison_title"]))
@@ -389,6 +486,7 @@ def admit_item(
                 inserted=inserted,
                 match_kind="near",
                 gate=gate,
+                event_kind=source_contract.event_kind,
                 family=family,
                 fingerprint=fingerprint,
                 title=title,
@@ -408,12 +506,26 @@ def admit_item(
     storyline = preliminary_storyline_key(
         title=title, grounded_assets=gate.strong_assets, asset_class=gate.asset_class, family=family
     )
-    context_line = f"[{gate.asset_class}/{family}/{_engine_type(metadata)}] " + " ".join(gate.grounded_assets)
-    event_id = _event_identity(item_id=item_id, fact=fact)
+    context_line = f"[{gate.asset_class}/{family}/{engine_type}] " + " ".join(gate.grounded_assets)
+    event_id = _event_identity(
+        item_id=item_id,
+        fact=fact,
+        event_kind=source_contract.event_kind,
+    )
+    if source_contract.event_kind == "news" and not inserted:
+        # Before identity v5, ordinary News owned both the whole-Item and split-
+        # FactUnit encodings. Migration can legitimately reclassify either row
+        # as a non-News kind. If the same material fact later arrives through an
+        # ordinary News Strategy, retain the migrated Event and give only this
+        # legacy collision a deterministic namespaced News identity.
+        occupied = news.event_admission(event_id)
+        if occupied is not None and str(occupied.get("event_kind") or "news") != "news":
+            event_id = hashlib.sha256(f"{item_id}\x1f{fact.fact_id}\x1fnews".encode()).hexdigest()
     news.insert_event(
         event_id=event_id,
         leader_item_id=item_id,
         family=family,
+        event_kind=source_contract.event_kind,
         comparison_fingerprint=fingerprint,
         comparison_title=comparison,
         leader_title=title or "(untitled)",
@@ -428,7 +540,7 @@ def admit_item(
         admission=gate.admission,
         queue_priority=gate.queue_priority,
         provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
-        engine_type=_engine_type(metadata),
+        engine_type=engine_type,
         asset_class=gate.asset_class,
         grounded_assets=gate.grounded_assets,
         watchlist_hits=gate.watchlist_hits,
@@ -439,10 +551,22 @@ def admit_item(
         trace_id=trace_id,
         band_keys=keys if shareable else (),
         now_ms=now_ms,
+        source_contract_reason=source_contract_reason,
     )
     news.append_evidence_snapshot(event_id=event_id, now_ms=now_ms)
     return AdmitResult(
-        item_id, inserted, event_id, True, gate.admission, "leader", gate, family, storyline, fingerprint, title
+        item_id=item_id,
+        item_inserted=inserted,
+        event_id=event_id,
+        event_created=True,
+        admission=gate.admission,
+        event_kind=source_contract.event_kind,
+        match_kind="leader",
+        gate=gate,
+        family=family,
+        storyline_key=storyline,
+        comparison_fingerprint=fingerprint,
+        title=title,
     )
 
 
@@ -454,6 +578,7 @@ def _member_result(
     inserted: bool,
     match_kind: str,
     gate: GateVerdict,
+    event_kind: EventKind,
     family: str,
     fingerprint: str,
     title: str,
@@ -492,18 +617,19 @@ def _member_result(
         )
         admission, upgraded = "candidate", True
     return AdmitResult(
-        item_id,
-        inserted,
-        event_id,
-        upgraded,  # an upgraded Event is published exactly like a new candidate (idempotent by published_at_ms)
-        admission,
-        match_kind,
-        gate,
-        family,
-        str(row["storyline_key"]) if row else "",
-        fingerprint,
-        title,
-        stronger,
+        item_id=item_id,
+        item_inserted=inserted,
+        event_id=event_id,
+        event_created=upgraded,  # an upgraded Event is published exactly like a new candidate
+        admission=admission,
+        event_kind=event_kind,
+        match_kind=match_kind,
+        gate=gate,
+        family=family,
+        storyline_key=str(row["storyline_key"]) if row else "",
+        comparison_fingerprint=fingerprint,
+        title=title,
+        evidence_focus_changed=stronger,
     )
 
 

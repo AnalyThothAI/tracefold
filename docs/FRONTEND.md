@@ -151,7 +151,8 @@ the route components into the eager shell chunk.
   Feed query state is URL-owned and mirrors the server contract exactly. The visible controls own `outcome`
   (`pushed|held|pending|all`, in the order `已推送 / 被拦截 / 处理中 / 全部`), `hours`
   (`1|24|168`), comma-separated `direction` (`bullish|bearish|neutral`) and comma-separated `channel`
-  (`news|oi`). The legacy `family`, `admission`, `decision` and `symbol` query fields remain valid for linked
+  (`news|listing|oi|liquidation|unsupported_market`, rendered as
+  `新闻 / 上币/下币 / OI 帧 / 强平 / 未支持市场`). The legacy `family`, `admission`, `decision` and `symbol` query fields remain valid for linked
   surfaces and old bookmarks but have no second control in the Event-feed toolbar. Absent or invalid
   `outcome` falls back to `pushed`; absent or invalid `hours` falls back to 24. The default request is
   `limit=25`, `hours=24`, `outcome=pushed`, with no direction or channel filter. Topbar search writes `q` on `/news`;
@@ -182,9 +183,11 @@ the route components into the eager shell chunk.
   it read a few percent short and needed a paragraph to explain itself. The
   proportions live on `/news/status`, where the same numbers get a full-width
   bar and a sentence naming the biggest drop. Every figure here is a
-  `funnel_24h` field or the difference between two of them. `parsed` equals the Event population because a
-  provider parse failure never becomes an Event; `admitted` is the actual count whose Gate admission belongs
-  to the admitted set. All five figures use Events opened in the same 24 h cohort; `triaged` and `delivered`
+  `funnel_24h` field or the difference between two of them. This legacy `parsed`
+  means the transport/envelope parser, so it equals the Event population; strict
+  source-contract parsing is reported separately under
+  `pipeline.source_contracts_24h.parsed/parse_failed`. `admitted` is the actual
+  count whose Gate admission belongs to the admitted set. All five figures use Events opened in the same 24 h cohort; `triaged` and `delivered`
   ask whether each Event in that cohort has a durable Triage verdict and sent first delivery. The independent
   rolling judgment and delivery ledgers remain health/throughput facts and do not leak into the funnel. The summary may
   still name `tagged - grounded` as the instrument-universe warning, but it is not one of the five stages.
@@ -198,10 +201,10 @@ the route components into the eager shell chunk.
   are `when · what · one outcome` on a
   `54 / 1fr / 150` grid, tiered by that outcome: the local `HH:MM` of
   `opened_at_ms` (full timestamp and relative time in the title), the Triage
-  `headline_zh` (falling back to `title_zh`, then `leader_title`) as the
-  two-line primary headline linking to `/news/events/:eventId`, the original
-  wire line clamped to one line when it differs, and a meta line of exactly
-  four things — reporting origin `·` `direction_zh` `·` `event_type_zh` `·` up
+  `headline_zh` (falling back to `title_zh`, then `leader_title`) as the two-line
+  primary headline linking to `/news/events/:eventId`, the original wire line
+  clamped to one line when it differs, and a meta line of exactly four things —
+  reporting origin `·` `direction_zh` `·` the compact source-kind badge `·` up
   to three asset chips with `+N` for the rest. Magnitude and the merged-report
   count are real facts but belong to the Event rather than to a scan; both are
   one click away in the drawer and on the Event's own page. A chip renders
@@ -214,6 +217,11 @@ the route components into the eager shell chunk.
   the payload as raw provider/Gate evidence. Server `assets[]` entries render
   even when that evidence is empty; only an unmatched grounded tag is appended
   as an unlisted fallback.
+
+  The source-kind badge reads only the server's durable `event_kind` and maps
+  its five values to `新闻 / 上币/下币 / OI 帧 / 强平 / 未支持市场`; it never infers kind from
+  admission, title, verdict type or whether an OI block happens to exist. The
+  same badge appears beside the outcome on Event detail.
 
   The 3px left rail is the *market call*, not the pipeline state: red for
   利多, green for 利空, and both at 45% on a held row. The pipeline's own state
@@ -275,7 +283,7 @@ the route components into the eager shell chunk.
   `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders,
   in fixed order: a toolbar (`RouteBackLink` to the feed the reader came from
   plus `上一条` / `下一条` and `i / n`); the hero, whose 3px left rail is the
-  direction and whose contents are the `outcome` badge beside its `reason_zh`,
+  direction and whose contents are the `event_kind` badge and `outcome` badge beside its `reason_zh`,
   the publication time with the end-to-end figure, the Triage `headline_zh` as
   `h1`, `title_zh` when it differs, the direction chip with its magnitude and
   the asset chips, the `当前报价` table, `why_zh` as a callout, the
@@ -475,15 +483,15 @@ the route components into the eager shell chunk.
   console links here, including the struck-through ones, so 404 would be the
   ordinary outcome of following one.
 
-  The events table mixes news and OI frames on one clock — the reason a
-  per-token page exists — and its channel tabs (`全部 / 已推送 / 新闻 / OI 帧`)
-  filter the loaded window in the browser, unlike the OI monitor's server-side
-  tabs. That is deliberate and stated in the source line: `/api/news/feed` has
-  no `lane` parameter, so a server count would describe a window the table is
-  not showing; the tab count and the rows under it come from the same loaded
-  set. The lane itself is the server's `admission`, never a guess from the
-  title. The rendered token page has no watchlist control, price chart, or
-  open-interest curve.
+  The events table mixes all five Event kinds on one clock — the reason a
+  per-token page exists — and its channel tabs (`全部 / 已推送 / 新闻 / 上币/下币 /
+  OI 帧 / 强平 / 未支持市场`) filter the loaded window in the browser, unlike the
+  OI monitor's server-side tabs. That is deliberate and stated in the source
+  line: `/api/news/feed` has no `event_kind` parameter, so a server count would
+  describe a window the table is not showing; the tab count and the rows under
+  it come from the same loaded set. The lane is the server's `event_kind`, never
+  a guess from `admission`, title, or verdict. The rendered token page has no
+  watchlist control, price chart, or open-interest curve.
 
   The page's order is the artifact's (#282): identity band, then the capital
   lane's two sections, then the event list. 交易视角 · 最近一帧怎么读 reads the
@@ -862,6 +870,8 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 10. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
     requests latest 25-row pushed pages for the last 24 h with no direction or channel filter; `q`, `outcome`,
     `hours`, comma-separated `direction`, and comma-separated `channel` survive reload and alter server results;
+    the channel control exposes exactly 新闻 / 上币/下币 / OI 帧 / 强平 / 未支持市场 and every feed/detail kind badge reads
+    `event_kind` rather than admission, title or verdict type;
     the header shows the 24 h funnel card; the four task tabs show
     counts that match the rows each tab lists and follow a changed window or
     filter; every row shows time, headline and meta line; a pushed / pending /

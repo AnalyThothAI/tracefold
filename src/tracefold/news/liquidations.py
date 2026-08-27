@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from .events.gate import GateVerdict
 from .models import TriageAsset, TriageVerdict
+from .source_contracts import LIQUIDATION_SOURCE_IDENTITY, SOURCE_CONTRACT_CLASSIFIER_VERSION
 from .triage_rules import DecisionResult
 
 PARSER_VERSION: Final = "liquidation_parser_v1"
@@ -19,7 +19,6 @@ READER_CONTRACT_VERSION: Final = "liquidation_card_v1"
 ADMISSION_POLICY_VERSION: Final = "news_liquidation_admission_v1"
 TRIAGE_POLICY_VERSION: Final = "news_liquidation_policy_v1"
 SOURCE_CONTRACT_VERSION: Final = "opennews_liquidation_source_v1"
-STRATEGY_ID: Final = "2000"
 
 _FRAME = re.compile(
     r"^\s*(?P<symbol>[A-Z0-9._-]{1,16})\s+Large\s+"
@@ -128,12 +127,13 @@ def parse_failure(title: str, *, provider_source: str) -> tuple[TriageVerdict, d
     failure = {
         "parsed": False,
         "rule": "liquidation_parse_failed",
-        "strategy_id": STRATEGY_ID,
+        "strategy_id": LIQUIDATION_SOURCE_IDENTITY.strategy_id,
         "provider": "opennews",
         "provider_source": str(provider_source or ""),
         "title_sha256": hashlib.sha256(str(title or "").encode()).hexdigest(),
         "parser_version": PARSER_VERSION,
-        "failure_stage": "source_contract",
+        "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
+        "failure_stage": "source_contract_drift",
     }
     return (
         TriageVerdict(
@@ -151,12 +151,6 @@ def parse_failure(title: str, *, provider_source: str) -> tuple[TriageVerdict, d
         ),
         failure,
     )
-
-
-def admission_verdict(gate: GateVerdict) -> GateVerdict:
-    """Compose Strategy 2000 after generic Gate v5 without changing v5's policy surface."""
-
-    return gate if gate.admission == "recovery" else replace(gate, admission="liquidation_deterministic")
 
 
 def reader_decision(verdict: TriageVerdict, *, error_code: str | None = None) -> DecisionResult:
@@ -206,6 +200,7 @@ def trace(fact: LiquidationFact) -> dict[str, Any]:
         "received_at_ms": fact.received_at_ms,
         "source_latency_ms": max(0, fact.received_at_ms - fact.event_at_ms),
         "parser_version": fact.parser_version,
+        "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
         "source_contract": {
             "provider_record_identity": fact.provider_record_identity,
             "symbol_contract_identity": fact.symbol_contract_identity,
@@ -232,6 +227,7 @@ def program_sha256() -> str:
                 "triage_policy": TRIAGE_POLICY_VERSION,
                 "parser": PARSER_VERSION,
                 "source_contract": SOURCE_CONTRACT_VERSION,
+                "source_classifier": SOURCE_CONTRACT_CLASSIFIER_VERSION,
                 "side_semantics": {"short": "buy", "long": "sell"},
             },
             sort_keys=True,
@@ -253,10 +249,8 @@ __all__ = [
     "PROGRAM_VERSION",
     "READER_CONTRACT_VERSION",
     "SOURCE_CONTRACT_VERSION",
-    "STRATEGY_ID",
     "TRIAGE_POLICY_VERSION",
     "LiquidationFact",
-    "admission_verdict",
     "parse_failure",
     "parse_liquidation",
     "program_sha256",

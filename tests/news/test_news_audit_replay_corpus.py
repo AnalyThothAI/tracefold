@@ -59,7 +59,9 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # the metric receipt commits to whole. Diffing the report against `main@f56f9a67` changes exactly two lines —
 # the `tracefold.news.learning.objective` source hash and the root over the helper hashes. Every score, case
 # result and dimension outcome below is byte-identical, which is the whole claim this pin exists to check.
-_EXPECTED_REPORT_SHA256 = "11823a13abaed1a837c33ce96c37f4a7ba3655252e8fff3a3dd86be5788f53f4"
+# #288 rebinds the same report to factory v7 for the exact source-contract route. The corpus and every
+# score remain unchanged; only the release-identity block and the report root move.
+_EXPECTED_REPORT_SHA256 = "5304c5588019ca2761b28682d369ec4e12c343afeec1198d1c578edbd1319c9e"
 
 
 @pytest.fixture(scope="module")

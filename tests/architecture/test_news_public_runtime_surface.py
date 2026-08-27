@@ -13,7 +13,9 @@ SRC = ROOT / "src" / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
+    "EVENT_KINDS",
     "EditorialEnvelope",
+    "EventKind",
     "NEWS_RETRIEVAL_SHA256",
     "NewsFeedEntry",
     "OpenNewsEvent",
@@ -28,6 +30,7 @@ PUBLIC_NEWS_INTERFACE = {
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
+    "SourceContractReason",
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",

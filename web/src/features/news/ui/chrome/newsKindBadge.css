@@ -1,0 +1,14 @@
+@layer app.features {
+  .news-kind {
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    padding: 1px 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    font: 600 var(--font-size-mono-meta) / 1.4 var(--font-mono);
+    white-space: nowrap;
+  }
+}

@@ -34,6 +34,7 @@ from ..program.contracts import (
 )
 from ..reader_history import ReaderHistorySnapshot
 from ..release.canary import CanaryRuntimeArm
+from ..source_contracts import LIQUIDATION_SOURCE_IDENTITY, OI_SOURCE_IDENTITY
 from ..telemetry import NewsWorkSemantics
 from ..triage_rules import (
     DEFAULT_POLICY,
@@ -211,17 +212,19 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, history = bundle
-        admission = str(card.get("admission") or "")
-        policy_version = (
-            liquidations.TRIAGE_POLICY_VERSION if admission == "liquidation_deterministic" else TRIAGE_POLICY_VERSION
-        )
+        card, history, _admission, event_kind = bundle
+        # Evidence snapshots are immutable by design, so a pre-cut queued message may still carry the
+        # old candidate admission after a source-contract migration has held the material Event.  Route
+        # from current PostgreSQL truth before looking for a settled verdict or invoking any judge.
+        if event_kind == "unsupported_market":
+            return
+        policy_version = liquidations.TRIAGE_POLICY_VERSION if event_kind == "liquidation" else TRIAGE_POLICY_VERSION
         if await self._republish_settled_verdict(event_id, message, policy_version=policy_version):
             return
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
             raise PermanentError("news_event_evidence_v2_required")
         facts = _gate_facts(card, self.watchlist_symbols)
-        if admission == "telemetry_deterministic":
+        if event_kind == "oi":
             # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
             # structured model calls that would re-read four numbers a regex already has. Everything
             # after the judgment — decide(), the storyline lock, the verdict row, delivery, the receipt,
@@ -235,7 +238,7 @@ class TriageConsumer:
                 message=message,
             )
             return
-        if admission == "liquidation_deterministic":
+        if event_kind == "liquidation":
             await self._judge_liquidation(
                 event_id=event_id,
                 card=card,
@@ -267,7 +270,7 @@ class TriageConsumer:
                 # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
                 # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
                 # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
-                route = await self._refresh_after_stale(
+                refreshed = await self._refresh_after_stale(
                     route,
                     event_id=event_id,
                     attempts=attempts,
@@ -276,6 +279,9 @@ class TriageConsumer:
                     queue_lag_ms=queue_lag_ms,
                     trace=trace,
                 )
+                if refreshed is None:
+                    return
+                route = refreshed
                 continue
             if arm.arm == "candidate" and arm.activation_id:
                 with contextlib.suppress(ValueError, TransientError, DeferError):
@@ -325,7 +331,7 @@ class TriageConsumer:
         facts: GateFacts,
         stamp: int,
         queue_lag_ms: int,
-    ) -> _RouteInputs:
+    ) -> _RouteInputs | None:
         """The Event as the Program will see it, plus the hashes the persist step compares against.
 
         The told context is the <= TOLD_MAX cards the selector ranked against *this* candidate out of bounded
@@ -636,7 +642,9 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, history = bundle
+        card, history, _admission, event_kind = bundle
+        if event_kind == "unsupported_market":
+            return None
         refreshed = self._route_inputs(
             card,
             history,
@@ -711,9 +719,10 @@ class TriageConsumer:
             )
             verdict, failure = oi_signals.oi_parse_failure(title, provider_source=provider_source)
             log.warning(
-                "news_oi_parse_failed event_id=%s strategy_id=1019 provider=opennews "
-                "title_sha256=%s parser_version=%s failure_stage=template_match",
+                "news_oi_parse_failed event_id=%s strategy_id=%s provider=opennews "
+                "title_sha256=%s parser_version=%s failure_stage=source_contract_drift",
                 event_id,
+                OI_SOURCE_IDENTITY.strategy_id,
                 failure["title_sha256"],
                 failure["parser_version"],
             )
@@ -730,7 +739,16 @@ class TriageConsumer:
                 program_version=oi_signals.PROGRAM_VERSION,
                 program_sha256=oi_signals.program_sha256(self.oi_policy),
             )
-            outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
+
+            def _settle_drift(repos: Any) -> _TriageOutcome:
+                repos.news.resolve_unverified_source_contract(
+                    event_id=event_id,
+                    reason="source_contract_drift",
+                    now_ms=stamp,
+                )
+                return self._decide_and_persist(repos, s=settle)
+
+            outcome = await self.db.tx("news_triage_persist", _settle_drift)
         else:
             # What the provider proves about *how* the frame was measured, kept beside what it measured
             # (#265). `None` is a real answer — the interval is unproven — and the frame is still a
@@ -771,6 +789,7 @@ class TriageConsumer:
                     source_contract_version=None if source is None else source.contract_version,
                     measurement_window_ms=None if source is None else source.measurement_window_ms,
                 )
+                repos.news.resolve_unverified_source_contract(event_id=event_id, reason=None, now_ms=stamp)
                 trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
                 return self._decide_and_persist(
                     repos,
@@ -839,13 +858,20 @@ class TriageConsumer:
                 )
                 error_code = "liquidation_parse_failed"
                 log.warning(
-                    "news_liquidation_parse_failed event_id=%s strategy_id=2000 provider=opennews "
-                    "title_sha256=%s parser_version=%s failure_stage=source_contract",
+                    "news_liquidation_parse_failed event_id=%s strategy_id=%s provider=opennews "
+                    "title_sha256=%s parser_version=%s failure_stage=source_contract_drift",
                     event_id,
+                    LIQUIDATION_SOURCE_IDENTITY.strategy_id,
                     fact_trace["title_sha256"],
                     fact_trace["parser_version"],
                 )
+                repos.news.resolve_unverified_source_contract(
+                    event_id=event_id,
+                    reason="source_contract_drift",
+                    now_ms=stamp,
+                )
             else:
+                repos.news.resolve_unverified_source_contract(event_id=event_id, reason=None, now_ms=stamp)
                 fact = liquidations.LiquidationFact(
                     source_key=str(row["source_key"]),
                     item_id=str(row["item_id"]),
@@ -1072,18 +1098,24 @@ class TriageConsumer:
 
     def _load_with_aliases(
         self, repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], ReaderHistorySnapshot] | None:
+    ) -> tuple[dict[str, Any], ReaderHistorySnapshot, str, str] | None:
         """The Triage bundle plus a refreshed alias table, both from the one session (#75)."""
 
         self._refresh_aliases(repos, now=stamp)
         return self._load(repos, event_id, stamp)
 
     @staticmethod
-    def _load(repos: Any, event_id: str, stamp: int) -> tuple[dict[str, Any], ReaderHistorySnapshot] | None:
+    def _load(repos: Any, event_id: str, stamp: int) -> tuple[dict[str, Any], ReaderHistorySnapshot, str, str] | None:
         card = repos.news.event_card(event_id)
-        if card is None:
+        routing = repos.news.event_admission(event_id)
+        if card is None or routing is None:
             return None
-        return card, _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp)
+        return (
+            card,
+            _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
+            str(routing.get("admission") or ""),
+            str(routing.get("event_kind") or ""),
+        )
 
     async def _publish_decision(
         self,

@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from tracefold.news import EventKind, SourceContractReason
+
 from .common import ExactApiSchema
 from .news_common import (
     NewsAssetRefData,
@@ -62,6 +64,8 @@ class NewsEventReactionData(ExactApiSchema):
 class NewsEventData(ExactApiSchema):
     event_id: str
     family: str
+    event_kind: EventKind
+    source_contract_reason: SourceContractReason | None
     leader_title: str
     leader_url: str | None = None
     leader_description: str = ""

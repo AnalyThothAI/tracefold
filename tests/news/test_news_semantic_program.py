@@ -180,7 +180,7 @@ def test_stable_root_is_one_factory_and_two_instructions() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_program_strategy_artifact_v1"
-    assert artifact.factory_id == "tracefold.news.program.factory_v6"
+    assert artifact.factory_id == "tracefold.news.program.factory_v7"
     assert artifact.event_semantics_instruction == ""
     assert artifact.reader_card_instruction == ""
     assert set(artifact.model_dump(mode="json")) == {
@@ -239,7 +239,7 @@ def test_factory_id_is_part_of_the_program_identity() -> None:
     payload = artifact.model_dump(mode="json", exclude={"program_sha256"})
     assert artifact.program_sha256 == canonical_sha(payload)
 
-    forked = dict(payload, factory_id="tracefold.news.program.factory_v7")
+    forked = dict(payload, factory_id="tracefold.news.program.factory_v8")
     assert canonical_sha(forked) != artifact.program_sha256
 
 
@@ -381,7 +381,7 @@ def test_codec_rejects_coercive_state_that_cannot_round_trip_exactly() -> None:
 def test_codec_rejects_a_duplicate_key_document() -> None:
     artifact = load_stable_program_artifact()
     document = ProgramStrategyArtifactCodec.encode(artifact).rstrip("\n")
-    duplicated = document[:-1] + ',"factory_id":"tracefold.news.program.factory_v6"}'
+    duplicated = document[:-1] + ',"factory_id":"tracefold.news.program.factory_v7"}'
 
     with pytest.raises(ValueError, match="artifact_json_invalid"):
         ProgramStrategyArtifactCodec.decode(duplicated)
