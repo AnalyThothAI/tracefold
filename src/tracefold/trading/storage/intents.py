@@ -347,7 +347,10 @@ class IntentStorage:
                AND execution_state IN ('IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
                AND execution_phase IN ('PROTECTION', 'EXIT')
                AND position_id = %(position_id)s
-               AND protected_quantity IS DISTINCT FROM %(quantity)s
+               AND (
+                    protected_quantity IS DISTINCT FROM %(quantity)s
+                    OR avg_entry_price IS DISTINCT FROM %(avg_entry_price)s
+               )
                AND %(quantity)s > 0
          RETURNING {_OUTCOME_COLUMNS}
             """,

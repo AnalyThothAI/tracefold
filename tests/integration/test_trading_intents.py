@@ -829,6 +829,16 @@ def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> 
     )
     conn.commit()
 
+    repriced = repos.trading.record_position_changed(
+        intent.intent_id,
+        position_id="position-1",
+        actual_quantity=Decimal("100"),
+        avg_entry_price=Decimal("0.101"),
+        now_ms=NOW + 1_350,
+    )
+    assert repriced is not None
+    assert repriced.avg_entry_price == Decimal("0.101")
+
     changed = repos.trading.record_position_changed(
         intent.intent_id,
         position_id="position-1",

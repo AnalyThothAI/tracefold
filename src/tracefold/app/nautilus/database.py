@@ -404,7 +404,11 @@ class NautilusDatabaseBridge:
                 and outcome.protected_at_ms == event.accepted_at_ms
             )
         if isinstance(event, PositionQuantityChanged):
-            return bool(outcome.position_id == event.position_id and outcome.actual_quantity == event.actual_quantity)
+            return bool(
+                outcome.position_id == event.position_id
+                and outcome.actual_quantity == event.actual_quantity
+                and outcome.avg_entry_price == event.avg_entry_price
+            )
         if isinstance(event, CloseSubmitted):
             return bool(
                 outcome.close_client_order_id == event.client_order_id

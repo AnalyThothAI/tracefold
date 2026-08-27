@@ -524,6 +524,24 @@ def test_position_changed_waits_for_cancel_confirmation_then_replaces_with_a_new
     assert strategy.canceled == [first_stop]
     assert len(strategy.submitted) == 2
 
+    strategy.on_position_changed(
+        SimpleNamespace(
+            instrument_id=SOLUSDT_PERP,
+            position_id=position_id,
+            quantity=instrument.make_qty(Decimal("0.003")),
+            avg_px_open=10200.0,
+            ts_event=(NOW_MS + 25) * 1_000_000,
+        )
+    )
+    assert queues.events.get_nowait() == PositionQuantityChanged(
+        intent_id=intent.intent_id,
+        position_id=position_id.value,
+        actual_quantity=Decimal("0.003"),
+        avg_entry_price=Decimal("10200.0"),
+        changed_at_ms=NOW_MS + 25,
+    )
+    assert strategy.canceled == [first_stop]
+
     strategy.on_order_canceled(
         SimpleNamespace(
             client_order_id=ClientOrderId(first_submitted.client_order_id),
@@ -540,10 +558,10 @@ def test_position_changed_waits_for_cancel_confirmation_then_replaces_with_a_new
         "stop",
         previous_client_order_id=first_submitted.client_order_id,
     )
-    assert replacement.quantity == Decimal("0.002")
+    assert replacement.quantity == Decimal("0.003")
     replacement_order = strategy.submitted[-1][0]
-    assert replacement_order.quantity.as_decimal() == Decimal("0.002")
-    assert replacement_order.trigger_price.as_decimal() == Decimal("9898.0")
+    assert replacement_order.quantity.as_decimal() == Decimal("0.003")
+    assert replacement_order.trigger_price.as_decimal() == Decimal("9996.0")
     assert replacement_order.client_order_id.value == replacement.client_order_id
 
 

@@ -540,6 +540,36 @@ def test_ambiguous_commit_is_accepted_when_the_same_projection_is_already_durabl
     assert bridge.readiness()["reason"] == "ready"
 
 
+def test_position_change_readback_requires_the_same_authoritative_average() -> None:
+    intent = _intent()
+    event = PositionQuantityChanged(
+        intent_id=intent.intent_id,
+        position_id="position-1",
+        actual_quantity=Decimal("0.002"),
+        avg_entry_price=Decimal("10100"),
+        changed_at_ms=NOW_MS,
+    )
+
+    assert not NautilusDatabaseBridge._event_is_projected(
+        _outcome(
+            intent,
+            position_id="position-1",
+            actual_quantity=Decimal("0.002"),
+            avg_entry_price=Decimal("10000"),
+        ),
+        event,
+    )
+    assert NautilusDatabaseBridge._event_is_projected(
+        _outcome(
+            intent,
+            position_id="position-1",
+            actual_quantity=Decimal("0.002"),
+            avg_entry_price=Decimal("10100"),
+        ),
+        event,
+    )
+
+
 def test_unknown_fee_readback_accepts_a_stronger_durable_snapshot() -> None:
     intent = _intent()
     queues = strategy_queues()
