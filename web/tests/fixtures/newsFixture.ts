@@ -504,6 +504,29 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
  * read back, so a test that wants the withheld or the unparseable shape overrides `rule` and the fields that
  * shape actually carries rather than inventing new ones.
  */
+/**
+ * The OI frame the trading fixture opened `symbol`'s case on (#282).
+ *
+ * The token page joins 交易视角 to its newest case by the `event_id` the ledger published, and the trading
+ * fixture writes `evt-oi-{base}`. Mocks that answered a symbol query with rows carrying neither that id nor
+ * an `oi` block left the panel with no frame to read, which is not a state the server can produce for a
+ * name whose case exists — the page's own tab strip counts an OI 帧 lane.
+ *
+ * `openedAtMs` is the caller's because the two fixture files keep clocks a hundred days apart. A frame left
+ * on the news clock rendered as the case's own frame while carrying a timestamp from before the case, which
+ * is a state the pipeline cannot produce and the panel would nonetheless have printed.
+ */
+export function newsSymbolOiFrameFixture(symbol: string, openedAtMs?: number): NewsFeedEvent {
+  const template = newsOiFrameFixture();
+  return {
+    ...template,
+    event_id: `evt-oi-${symbol.toLowerCase()}`,
+    opened_at_ms: openedAtMs ?? template.opened_at_ms,
+    leader_title: template.leader_title.replace("WIF", symbol),
+    oi: template.oi ? { ...template.oi, symbol } : null,
+  };
+}
+
 export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): NewsFeedEvent {
   return newsFeedEventFixture({
     admission: "telemetry_deterministic",

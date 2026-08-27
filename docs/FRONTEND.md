@@ -479,9 +479,96 @@ the route components into the eager shell chunk.
   set. The lane itself is the server's `admission`, never a guess from the
   title. There is no watchlist star — `watchlistHardCut.test.ts` keeps that
   vocabulary out of production source — no price chart, and no open-interest
-  curve. The 交易视角 and 交易复盘 sections the design shows need `/api/trading/*`
-  and are PR-W4's; an empty panel promising them would be worse than their
-  absence.
+  curve.
+
+  The page's order is the artifact's (#282): identity band, then the capital
+  lane's two sections, then the event list. 交易视角 · 最近一帧怎么读 reads the
+  newest case the lane opened for this token and shows three things in the order
+  the lane asks them — which quadrant it assigned, where the move that had
+  already happened sits against the band the strategy would still enter inside,
+  and how the frame's measurements compare with the floors. 交易复盘 lists every
+  case in the window, and expanding a row shows the named rule beside the frozen
+  `strategy_config` it was decided against. Both read one
+  `/api/trading/orders?underlying=` batch, so they share a poll, and the frame is
+  attached by the `event_id` the ledger itself published — never by symbol and
+  time, the join the OI audit refuses to guess at.
+
+  Each of the band's three figures is printed once, where the artifact puts
+  them: 24H 事件 and 已推送 have no second copy in the page header, and the OI
+  window figure has none in the rank card below, which is left carrying the
+  consequence — a full window withholds this name's next qualifying frame —
+  because that is what no tile can hold. The 结果 column keeps the ledger's bps
+  rather than the artifact's percent, so one field reads the same on this page
+  and on the Trading workbench.
+
+  Every threshold in both sections is the case's own frozen one. The artifact
+  hard-codes a 1–6% band and calls the window 「帧前 1H」; those were the numbers
+  of the strategy running when it was drawn, and today's are 0–10% over five
+  minutes, so the band's edges, its caption and the floor rows all come out of
+  `strategy_config`. A case that froze none says so rather than borrowing
+  today's configuration.
+
+  The floor table is keyed by `strategy_id`, and each row carries the operator
+  its own strategy refuses on. `/api/trading/orders?underlying=` filters on the
+  name alone, so this token's newest case can belong to any lane, and the three
+  freeze disjoint `strategy_config` key sets — one lane's rows over another
+  lane's case label every row 未冻结 and explain nothing. Inclusivity is per key
+  as well: `oi_smart_money_momentum` refuses `whale_oi_ratio_bps <= floor` and
+  `whale_long_profit_bps <= floor`, its own docstring calls that non-negotiable,
+  and its shipped profit floor is 0 — so a table reading `>=` everywhere stamped
+  过地板 on exactly the frames the ledger refused. A row prints `>` or `≥` as
+  the strategy wrote it.
+
+  A floor row has four answers, not three: 过地板 and 低于地板 are comparisons,
+  未冻结 is the case having frozen no such floor, and 未测量 is a frozen floor
+  over a frame carrying nothing to compare it with — the common case, since most
+  cases publish no joinable `event_id` at all. Collapsing the last two printed
+  未冻结 in the same row as the `≥ 95.00%` the case had frozen. The sentence
+  under the table is counted off those rows for the same reason: 「一条都没过」 is
+  itself a measurement, and it was being asserted over rows that had never been
+  read. That sentence names the reader gate only when the frame's own `delivery`
+  says it was sent — the capital lane deliberately consumes frames the reader
+  withheld, so 「这一帧推送了」 over one of those states the opposite of the
+  ledger. The artifact's 研究分桶 card becomes 地板对照 on the same principle:
+  the buckets it names by hand belong to a strategy that no longer runs, where
+  the measurements-against-frozen-floors reading stays true.
+
+  An unanswered read is never an answer. `perspective == null` and an empty case
+  table each carry three states — the lane opened no case, the batch has not
+  come back yet, the batch failed — because rendering all three as the first
+  makes the strongest possible positive claim exactly when the page knows least.
+  The two halves of that batch also have different windows: cases are bounded at
+  `window_hours`, active orders are unbounded in time by design, so neither
+  section calls the batch 「这个窗口」 without naming both.
+
+  Both sections name every endpoint they read in their `NewsSourceLine`. 交易视角
+  joins the case to its frame, so it declares `/api/trading/orders` *and*
+  `/api/news/feed → events[].oi`; the identity band declares the two endpoints
+  its three tiles come from beside the one its contracts do. A card that names
+  one of two sources points an auditing reader at a response that does not carry
+  the figure.
+
+  When the quadrant is 象限不明, the panel names the case's own frozen
+  `contexts.regime.reason`, published beside `pre_move_bps` and
+  `strategy_config` as the projection's third named manifest slice. Not
+  `policy_reason`: that is the strategy's later answer and is null on a Case the
+  strategy went on to trade — which is exactly the traded-with-unclear-quadrant
+  population the smart-money lane creates whenever a move sits between the
+  shared 600 bps ceiling and its own 1000. Reading it there told an operator the
+  ledger had recorded no reason, over a manifest that had recorded one.
+
+  The 案例状态 column carries `case_state` for both halves of the batch. Case
+  states and order states are disjoint vocabularies, so an order row putting its
+  own `CLOSED` there rendered an order fact, in English, under a case heading —
+  and `CLOSED` is not a case state at all. The order's own state stays in the
+  订单 column, where order facts belong.
+
+  Two things the artifact draws that this lane cannot answer. `thesis_zh` and
+  `invalidation_zh` are not written by a pure rule — the same finding #256
+  recorded for 杠杆异动 — so the row expansion names the rule instead of
+  paraphrasing a sentence nobody wrote. And a token the lane never opened a case
+  for gets no reading at all: 「never asked」 and 「asked and found nothing」 are
+  different answers, and four unlit quadrants would assert the second.
 
   Every `base_symbol` on the console routes here (#207 principle 9): the asset
   chips on feed rows, the drawer and the Event detail, and the collapsed

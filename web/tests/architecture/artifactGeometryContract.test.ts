@@ -130,6 +130,41 @@ const geometry: Array<{
     value: "minmax(0, 1.32fr) minmax(0, 1fr)",
     why: "今日已了结 is a table and 今日案例去向 is five bars; the artifact weights them accordingly",
   },
+  {
+    file: "features/news/ui/symbol/newsSymbol.css",
+    selector: ".news-symbol-band-row",
+    property: "grid-template-columns",
+    value: "minmax(0, 1.4fr) minmax(0, 1fr)",
+    why: "what this token is, beside how much of it there has been",
+  },
+  {
+    file: "features/news/ui/symbol/newsSymbol.css",
+    selector: ".news-symbol-tiles",
+    property: "grid-template-columns",
+    value: "repeat(3, minmax(0, 1fr))",
+    why: "24H 事件 / 已推送 / OI 窗口, equal thirds of the band's right-hand column",
+  },
+  {
+    file: "features/news/ui/symbol/newsSymbolPerspective.css",
+    selector: ".news-symbol-perspective",
+    property: "grid-template-columns",
+    value: "repeat(auto-fit, minmax(300px, 1fr))",
+    why: "three readings side by side at the token page's measure, stacking one at a time below it",
+  },
+  {
+    file: "features/trading/ui/tradingSymbolSection.css",
+    selector: ".trading-case-head, .trading-case-row",
+    property: "grid-template-columns",
+    value: "104px 118px 158px 128px 132px minmax(220px, 1fr) 96px",
+    why: "the artifact's seven tracks, with 36px moved into the strategy chip this console names in full",
+  },
+  {
+    file: "features/trading/ui/tradingSymbolSection.css",
+    selector: ".trading-case-detail",
+    property: "grid-template-columns",
+    value: "minmax(0, 1.15fr) minmax(0, 1fr)",
+    why: "the named rule carries the row; the frozen manifest qualifies it",
+  },
 ];
 
 describe("v8 artifact geometry contract", () => {
@@ -137,34 +172,47 @@ describe("v8 artifact geometry contract", () => {
     expect(declaration(file, selector, property)).toBe(value);
   });
 
-  it("keeps the OI frame table's floor at its fixed tracks and no wider", () => {
-    /*
-     * The artifact bakes its trade column's *rendered* width into `min-width`, which forces a horizontal
-     * scrollbar at the width the artifact itself is drawn at. The floor here is the fixed tracks plus
-     * their gutters plus the row padding, so the flexible column is what absorbs a wider frame — the
-     * artifact's intent, without the artifact's own arithmetic error.
-     */
-    const css = read("features/news/ui/oi/newsOiFrameTable.css");
-    const tracks = declaration(
-      "features/news/ui/oi/newsOiFrameTable.css",
-      ".news-oi-head, .news-oi-row-main",
-      "grid-template-columns",
-    );
-    const fixed = [...tracks.replace(/minmax\([^)]*\)/g, "").matchAll(/(\d+)px/g)].map((match) =>
-      Number(match[1]),
-    );
-    // The flexible track absorbs the remainder above its own minimum, and that minimum is part of the floor.
-    const flexible = Number(/minmax\((\d+)px/.exec(tracks)?.[1] ?? 0);
-    const gutters = fixed.length * 10;
-    const padding = 28;
-    const floor = fixed.reduce((total, width) => total + width, 0) + flexible + gutters + padding;
+  /*
+   * The artifact bakes each table's *rendered* width into `min-width`, which forces a horizontal
+   * scrollbar at the width the artifact itself is drawn at. The floor is the fixed tracks plus their
+   * gutters plus the row padding, so the flexible column is what absorbs a wider frame — the artifact's
+   * intent, without the artifact's own arithmetic error. Both scrolling tables answer to it: 交易复盘
+   * shipped the artifact's 1020 against its own 1044, which put its last column outside the row's box.
+   */
+  it.each([
+    {
+      file: "features/news/ui/oi/newsOiFrameTable.css",
+      selector: ".news-oi-head, .news-oi-row-main",
+      fixedTracks: 11,
+      flexibleMin: 170,
+    },
+    {
+      file: "features/trading/ui/tradingSymbolSection.css",
+      selector: ".trading-case-head, .trading-case-row",
+      fixedTracks: 6,
+      flexibleMin: 220,
+    },
+  ])(
+    "keeps $file's floor at its fixed tracks and no wider",
+    ({ file, selector, fixedTracks, flexibleMin }) => {
+      const css = read(file);
+      const tracks = declaration(file, selector, "grid-template-columns");
+      const fixed = [...tracks.replace(/minmax\([^)]*\)/g, "").matchAll(/(\d+)px/g)].map((match) =>
+        Number(match[1]),
+      );
+      // The flexible track absorbs the remainder above its own minimum, and that minimum is part of the floor.
+      const flexible = Number(/minmax\((\d+)px/.exec(tracks)?.[1] ?? 0);
+      const gutters = fixed.length * 10;
+      const padding = 28;
+      const floor = fixed.reduce((total, width) => total + width, 0) + flexible + gutters + padding;
 
-    expect(fixed).toHaveLength(11);
-    expect(flexible).toBe(170);
-    for (const declared of css.matchAll(/min-width:\s*(\d+)px;/g)) {
-      expect(Number(declared[1])).toBe(floor);
-    }
-  });
+      expect(fixed).toHaveLength(fixedTracks);
+      expect(flexible).toBe(flexibleMin);
+      for (const declared of css.matchAll(/min-width:\s*(\d+)px;/g)) {
+        expect(Number(declared[1])).toBe(floor);
+      }
+    },
+  );
 });
 
 /** The stylesheet with comments removed: a `/* … *\/` between two declarations is not a rule boundary. */

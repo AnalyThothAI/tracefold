@@ -2069,6 +2069,8 @@ export interface components {
             pre_move_bps?: number | null;
             /** Regime */
             regime?: string | null;
+            /** Regime Reason */
+            regime_reason?: string | null;
             /** State */
             state: string;
             /** Strategy Config */
@@ -2549,6 +2551,8 @@ export interface components {
             position_closed_at_ms?: number | null;
             /** Position Opened At Ms */
             position_opened_at_ms?: number | null;
+            /** Pre Move Bps */
+            pre_move_bps?: number | null;
             /**
              * Provider Attempt Count
              * @default 0
@@ -2562,6 +2566,8 @@ export interface components {
             realized_bps?: number | null;
             /** Regime */
             regime?: string | null;
+            /** Regime Reason */
+            regime_reason?: string | null;
             /**
              * Side
              * @enum {string}
@@ -2573,6 +2579,10 @@ export interface components {
             state_reason?: string | null;
             /** Stop Price */
             stop_price: string;
+            /** Strategy Config */
+            strategy_config?: {
+                [key: string]: string;
+            };
             /** Strategy Id */
             strategy_id: string;
             /** Strategy Version */

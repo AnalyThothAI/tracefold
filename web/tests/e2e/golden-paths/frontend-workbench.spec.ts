@@ -29,6 +29,16 @@ const tradingArchetype = {
   settled: (page: Page) => page.locator(".trading-ladder-row").first(),
 } as const;
 
+const symbolArchetype = {
+  // #207 PR-W1: the token page composes four endpoints into one column, and since #282 two of them are
+  // the capital lane's. The baseline is what keeps the identity band, the rank window, 交易视角, 交易复盘
+  // and the mixed events table from drifting apart at a viewport.
+  name: "symbol",
+  path: "/news/symbols/WIF",
+  ready: (page: Page) => page.locator(".news-symbol-row").first(),
+  settled: (page: Page) => page.locator(".news-symbol-contract").first(),
+} as const;
+
 const archetypes = [
   {
     name: "news",
@@ -41,14 +51,6 @@ const archetypes = [
     path: "/news/events/evt-global-policy",
     ready: (page: Page) => page.locator(".news-detail-hero"),
     settled: (page: Page) => page.locator(".news-timeline-step").first(),
-  },
-  {
-    // #207 PR-W1: the token page composes four endpoints into one column. The baseline is what keeps the
-    // identity card, the rank window and the mixed events table from drifting apart at a viewport.
-    name: "symbol",
-    path: "/news/symbols/WIF",
-    ready: (page: Page) => page.locator(".news-symbol-row").first(),
-    settled: (page: Page) => page.locator(".news-symbol-contract").first(),
   },
   {
     // #256: a list of cases beside one case in full. The baseline is what keeps the two measures from
@@ -80,14 +82,25 @@ test("freezes the OI monitor at every project viewport", async ({ page }) => {
   await freezeArchetypes(page, [oiArchetype]);
 });
 
-test("freezes the Trading workbench at every project viewport", async ({ page }) => {
+/*
+ * The two pages that read the capital ledger are frozen on the ledger's own clock, because the trading
+ * fixtures are on it and the news fixtures are a hundred days earlier. Under the news clock the token
+ * page's newest case — and the frame it was opened from — sat a month in the page's own *future*, which
+ * `relativeTime` clamps to 「刚刚」: a baseline of a state the pipeline cannot produce.
+ */
+test("freezes the capital-lane pages at every project viewport", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-08-25T12:00:00Z"));
-  await freezeArchetypes(page, [tradingArchetype]);
+  await freezeArchetypes(page, [symbolArchetype, tradingArchetype]);
 });
 
 async function freezeArchetypes(
   page: Page,
-  routes: readonly (typeof oiArchetype | typeof tradingArchetype | (typeof archetypes)[number])[],
+  routes: readonly (
+    | typeof oiArchetype
+    | typeof tradingArchetype
+    | typeof symbolArchetype
+    | (typeof archetypes)[number]
+  )[],
 ) {
   for (const route of routes) {
     await page.goto(route.path);

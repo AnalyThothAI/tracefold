@@ -6,10 +6,13 @@ import { oiWindowLabel } from "../../model/oiSignals";
 import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 /**
- * Whether this name has rank left in the live OI window.
+ * What it means that this name has, or has not, rank left in the live OI window.
  *
  * The one forward-looking fact on the page: a symbol shown full will have its next qualifying frame withheld
  * by `beyond_window_rank`, and this is where a reader who just clicked through from a frame finds that out.
+ *
+ * The figure itself is the identity band's third tile — the artifact draws it once, there. What is left here
+ * is the consequence, which no tile can hold: 2 / 2 is not self-evidently a wall.
  *
  * The count is the server's, measured with the eligibility predicate the judge ranks under. It is not
  * derived from the Events below — that table is a 24 h window and the rank window is four hours, so folding
@@ -34,16 +37,11 @@ export function NewsSymbolWindow({
     >
       <p className="news-symbol-window">
         {occupancy ? (
-          <>
-            <b data-full={occupancy.full || undefined}>
-              {occupancy.used} / {occupancy.max_rank_in_window}
-            </b>
-            <span>
-              {occupancy.full
-                ? "已满：窗口内后续合格帧会被 beyond_window_rank 拦下。"
-                : "还有名次：窗口内下一条合格帧仍会推送。"}
-            </span>
-          </>
+          <span data-full={occupancy.full || undefined}>
+            {occupancy.full
+              ? "已满：窗口内后续合格帧会被 beyond_window_rank 拦下。"
+              : "还有名次：窗口内下一条合格帧仍会推送。"}
+          </span>
         ) : (
           <span className="news-symbol-muted">
             这个标的在当前窗口里没有合格帧——不是被拦，是没有。

@@ -5,6 +5,7 @@ import {
   newsFeedEventFixture,
   newsFeedFixture,
   newsOiFrameFixture,
+  newsSymbolOiFrameFixture,
   newsOutcomeFixture,
   newsQuoteFixture,
   newsStatusFixture,
@@ -12,8 +13,9 @@ import {
   newsTriageFixture,
 } from "@tests/fixtures/newsFixture";
 import {
+  TRADING_NOW_MS,
   tradingGateFixture,
-  tradingOrdersFixture,
+  tradingOrdersForUnderlying,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -64,10 +66,14 @@ export async function installMockApi(
     // The OI monitor asks the same endpoint for one admission (#207), and the rows it gets back carry the
     // `oi` block. Serving the ordinary feed there would exercise only the degraded path.
     if (path === "/api/news/feed") {
+      const symbol = url.searchParams.get("symbol");
+      if (url.searchParams.get("admission") === "telemetry_deterministic") {
+        return fulfill(route, newsOiFeedData(url.searchParams.get("oi")));
+      }
       return fulfill(
         route,
-        url.searchParams.get("admission") === "telemetry_deterministic"
-          ? newsOiFeedData(url.searchParams.get("oi"))
+        symbol && !options.emptyFeed
+          ? newsSymbolFeedData(symbol)
           : newsFeedData(prepended, options.emptyFeed),
       );
     }
@@ -79,7 +85,12 @@ export async function installMockApi(
     // #207 PR-W4: the shell reads trading status on every route for the 交易 badge, so every e2e page
     // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
     if (path === "/api/trading/status") return fulfill(route, tradingStatusFixture());
-    if (path === "/api/trading/orders") return fulfill(route, tradingOrdersFixture());
+    // #282: the token page asks for one underlying, and the case it gets back has to belong to that name
+    // and to a frame the page actually loaded — otherwise 交易视角 renders its "no frame" path on every
+    // baseline and the panel is frozen in the one state it is least useful in.
+    if (path === "/api/trading/orders") {
+      return fulfill(route, tradingOrdersForUnderlying(url.searchParams.get("underlying")));
+    }
     // #269: the admission ledger the OI audit's capital column reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());
     if (path.startsWith("/api/trading/events/")) {
@@ -110,6 +121,24 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
   const requests = unhandledApiRequests.get(page) ?? [];
   requests.push(`${url.pathname}${url.search}`);
   unhandledApiRequests.set(page, requests);
+}
+
+/**
+ * The feed as the token page asks for it: this name's own OI frame on the same clock as its news.
+ *
+ * The page joins 交易视角 to its newest case by the `event_id` the ledger published, and the trading fixture
+ * opens that case on `evt-oi-{base}`. Answering a symbol query with the generic rows every other route gets
+ * meant the panel never found its frame, so the baseline froze the floor table with four unread rows — the
+ * one state it says least in, and the state a reader would wrongly read as "measured, and none passed".
+ *
+ * Production serves this shape: the page's own tab strip counts an OI 帧 lane, and it read 0 on every
+ * baseline for the same reason.
+ */
+function newsSymbolFeedData(symbol: string) {
+  const feed = newsFeedData();
+  // The clock the case is on: this frame is the one it was opened from (`case_observed_at_ms`).
+  const frame = newsSymbolOiFrameFixture(symbol, TRADING_NOW_MS - 400_000);
+  return { ...feed, events: [frame, ...feed.events] };
 }
 
 function newsFeedData(prepended: string[] = [], empty = false) {

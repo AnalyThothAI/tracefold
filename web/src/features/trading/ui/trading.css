@@ -108,15 +108,8 @@
     padding: 0 14px;
   }
 
-  .trading-case-head,
-  .trading-case-row {
-    display: grid;
-    grid-template-columns: 84px 78px 92px minmax(160px, 1fr);
-    gap: 10px;
-    align-items: center;
-    min-width: 460px;
-    padding: 0 14px;
-  }
+  /* 交易复盘's own tracks and its row expansion live in `tradingSymbolSection.css`, beside the one
+     component that renders them; what stays here is the chrome every table on the lane shares. */
 
   .trading-exposure-head,
   .trading-closed-head,
@@ -129,8 +122,7 @@
     letter-spacing: 0.06em;
   }
 
-  .trading-exposure-row,
-  .trading-case-row {
+  .trading-exposure-row {
     min-height: 50px;
     border-bottom: 1px solid var(--border-faint);
   }
@@ -169,14 +161,24 @@
     font-weight: 600;
   }
 
+  /*
+   * The chip clips rather than overflowing, on every table that renders it. `oi_smart_money` is a live
+   * strategy id and it printed straight over the 订单状态 chip beside it in 当前暴露 — a grid item has no
+   * implicit maximum, so a name wider than its track just paints across its neighbour. Each of these
+   * tables gives the chip a `title` carrying the full `strategy_id`, so nothing is lost to the clip.
+   */
   .trading-kind {
     justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
     padding: 2px 6px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-xs);
     background: var(--surface-raised);
     color: var(--text-secondary);
     font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .trading-state {

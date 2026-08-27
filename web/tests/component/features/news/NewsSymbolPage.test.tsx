@@ -9,6 +9,7 @@ import {
   newsStatusFixture,
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
+import { tradingOrdersFixture, tradingOrdersForUnderlying } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -37,6 +38,18 @@ describe("NewsSymbolPage", () => {
         HttpResponse.json({
           ok: true,
           data: newsFeedFixture({ events: [newsOiFrameFixture(), newsFeedEventFixture()] }),
+        }),
+      ),
+      /*
+       * The page reads this on every render and `tests/setup.ts` runs MSW with
+       * `onUnhandledRequest: "error"`, so without it every test here asserted against a page whose capital
+       * read had failed — silently, because the failure surfaced only as `data === undefined` and both
+       * sections rendered their empty copy. A test that means to see that state now says so.
+       */
+      http.get(/.*\/api\/trading\/orders.*/, ({ request }) =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersForUnderlying(new URL(request.url).searchParams.get("underlying")),
         }),
       ),
     );
@@ -186,6 +199,78 @@ describe("NewsSymbolPage", () => {
     expect(cell).not.toHaveTextContent("0.00%");
   });
 
+  /*
+   * #282's acceptance asks for three tokens with three different right answers, and the failure mode it is
+   * guarding against is the panel filling a gap in with something plausible. All three assert on what is
+   * *not* on screen as much as on what is.
+   */
+  it("measures the newest case's own frame against the floors that case froze", async () => {
+    useTradingOrders();
+    renderSymbol();
+
+    expect(await screen.findByText("交易视角 · 最近一帧怎么读")).toBeInTheDocument();
+    // The quadrant the case recorded, not one derived from the frame here.
+    expect(await screen.findByText("buildup_up")).toBeInTheDocument();
+    // 大户占比 143.90% over the 50.00% *this case* froze, on the operator its strategy refuses with.
+    expect(screen.getByText("> 50.00%")).toBeInTheDocument();
+    expect(screen.getAllByText("过地板").length).toBe(2);
+    expect(screen.getByText("低于地板")).toBeInTheDocument();
+    /*
+     * The frame was found, so nothing is 未测量; and the note is counted off those rows rather than
+     * asserting a refusal. Both used to be wrong at once: every row read 未冻结 beside a frozen threshold,
+     * under a sentence that said none of them passed.
+     */
+    expect(screen.queryByText("未测量")).not.toBeInTheDocument();
+    expect(screen.getByText(/只过了 2 条/)).toBeInTheDocument();
+  });
+
+  it("says a token the lane never opened a case for was never asked, not answered", async () => {
+    const served = useTradingOrders(tradingOrdersFixture({ cases_without_orders: [], orders: [] }));
+    renderSymbol();
+
+    await waitFor(() => expect(served.count).toBeGreaterThan(0));
+    // Both sections say it, and both say 「没有开过案」 rather than drawing an answerless answer.
+    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(2);
+    // No quadrant, no band, no floor table: four grey cells would assert a reading that never happened.
+    expect(screen.queryByText("buildup_up")).not.toBeInTheDocument();
+    expect(screen.queryByText("过地板")).not.toBeInTheDocument();
+  });
+
+  it("keeps the capital sections empty rather than inventive for a name off the instrument table", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/symbols\/.*/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsSymbolFixture({
+            base_symbol: "SPOT",
+            contracts: [],
+            known: false,
+            normalization: null,
+            tradeable: false,
+            venues: [],
+          }),
+        }),
+      ),
+    );
+    const served = useTradingOrders(tradingOrdersFixture({ cases_without_orders: [], orders: [] }));
+
+    renderSymbol("/news/symbols/SPOT", "SPOT");
+
+    expect(await screen.findByText(/标的表里查不到/)).toBeInTheDocument();
+    await waitFor(() => expect(served.count).toBeGreaterThan(0));
+    // An unlisted name has no case by construction, and the sections say that rather than nothing at all.
+    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(2);
+    expect(screen.queryByText("过地板")).not.toBeInTheDocument();
+  });
+
+  it("prints this window's counts once, in the identity band the artifact puts them in", async () => {
+    renderSymbol();
+
+    expect(await screen.findByText("24H 事件")).toBeInTheDocument();
+    // The header carried the same two numbers as a stamp, so a reader saw them twice on one screen.
+    expect(screen.queryByText(/条 · 已推送/)).not.toBeInTheDocument();
+  });
+
   it("reports this symbol's rank occupancy from the server, not from the rows below", async () => {
     /*
      * The events table is a 24 h window and the rank window is four hours. Folding the occupancy out of the
@@ -198,6 +283,27 @@ describe("NewsSymbolPage", () => {
     expect(window).toBeInTheDocument();
   });
 });
+
+/**
+ * The batch as the endpoint answers it, filtered by the name the page asked for.
+ *
+ * Returns a served counter, because both capital sections render their empty state while the batch is
+ * still in flight: an assertion made before it lands passes whatever the answer turns out to be.
+ */
+function useTradingOrders(batch?: ReturnType<typeof tradingOrdersFixture>) {
+  const served = { count: 0 };
+  server.use(
+    http.get(/.*\/api\/trading\/orders.*/, ({ request }) => {
+      served.count += 1;
+      return HttpResponse.json({
+        ok: true,
+        data:
+          batch ?? tradingOrdersForUnderlying(new URL(request.url).searchParams.get("underlying")),
+      });
+    }),
+  );
+  return served;
+}
 
 function renderSymbol(path = "/news/symbols/WIF", base = "WIF") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

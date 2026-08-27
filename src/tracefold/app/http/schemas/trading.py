@@ -257,6 +257,14 @@ class TradingOrderData(ExactApiSchema):
     regime: str | None = None
     policy_decision: str | None = None
     policy_reason: str | None = None
+    # The same two frozen case facts `TradingCaseData` carries, on the half that got furthest (#282). An
+    # order row is still a case row, and a reader asking "what was this decided on" should not get a worse
+    # answer for a case that filled than for one that was refused.
+    pre_move_bps: int | None = None
+    strategy_config: dict[str, str] = Field(default_factory=dict)
+    # Why the quadrant came out as it did, frozen at the cutoff. `policy_reason` is the strategy's later
+    # answer and says nothing about the quadrant for a Case the strategy went on to trade.
+    regime_reason: str | None = None
     case_observed_at_ms: int | None = None
 
 
@@ -280,6 +288,9 @@ class TradingCaseData(ExactApiSchema):
     # And the thresholds this case was decided against, stringified like `/status` stringifies the
     # running ones. Empty for a case frozen before #273, which is its own honest answer.
     strategy_config: dict[str, str] = Field(default_factory=dict)
+    # The frozen reason `regime.assess()` recorded, which `regime` alone does not carry: `unclear` is
+    # reached four ways and only one of them is "price and OI did not align".
+    regime_reason: str | None = None
     observed_at_ms: int
     created_at_ms: int
     decided_at_ms: int | None = None

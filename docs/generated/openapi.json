@@ -4498,6 +4498,17 @@
             ],
             "title": "Regime"
           },
+          "regime_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Reason"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -5828,6 +5839,17 @@
             ],
             "title": "Position Opened At Ms"
           },
+          "pre_move_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Move Bps"
+          },
           "provider_attempt_count": {
             "default": 0,
             "title": "Provider Attempt Count",
@@ -5863,6 +5885,17 @@
             ],
             "title": "Regime"
           },
+          "regime_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Reason"
+          },
           "side": {
             "enum": [
               "buy",
@@ -5889,6 +5922,13 @@
           "stop_price": {
             "title": "Stop Price",
             "type": "string"
+          },
+          "strategy_config": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Strategy Config",
+            "type": "object"
           },
           "strategy_id": {
             "title": "Strategy Id",

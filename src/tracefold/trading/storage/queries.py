@@ -252,10 +252,13 @@ class QueryStorage:
         """Orders with the case that authored them, for a read-only operator surface (#207 PR-W4).
 
         Deliberately a named projection rather than `SELECT *`. `trading_orders.payload` is the frozen
-        provider request body and `trading_cases.manifest` is the frozen decision input; neither belongs in
-        a browser, and a `SELECT *` here would put both there the next time a column is added. `account_ref`
-        and `remote_order_id` stay behind for the same reason — they name things outside this system and add
-        nothing the page renders.
+        provider request body and does not leave the store at all. `trading_cases.manifest` is the frozen
+        decision input and leaves only as the three named slices below — `contexts.market.pre_move_bps`,
+        `strategy_config` and `contexts.regime.reason` (#282) — because a case's own frozen thresholds and
+        the recorded reason for its quadrant are the only honest way for a console to explain the
+        decision; the whole document still does not, and a `SELECT *` here would put
+        both documents there the next time a column is added. `account_ref` and `remote_order_id` stay
+        behind for the same reason — they name things outside this system and add nothing the page renders.
 
         `state` is returned verbatim. `ACKNOWLEDGED` is the venue answering, not a fill; `OPEN` is the only
         state that has proven both a position and a native stop covering it (#185). A caller that collapses
@@ -309,7 +312,24 @@ class QueryStorage:
                    o.must_close_at_ms, o.created_at_ms, o.updated_at_ms,
                    c.primary_source_key, c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.regime, c.policy_decision, c.policy_reason, c.state AS case_state,
-                   c.observed_at_ms AS case_observed_at_ms
+                   c.observed_at_ms AS case_observed_at_ms,
+                   -- The same two frozen case facts `console_cases_without_orders` returns, and for the
+                   -- same reason (#282). A case that authored an order was losing both here, so the one
+                   -- population that got furthest was the one a console could say least about: it could
+                   -- name the pre-move for a refused case and not for a filled one, and explain a
+                   -- rejection against its own frozen thresholds while explaining a fill against
+                   -- whatever is configured today.
+                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
+                   -- (No per-cent sign in this comment on purpose: psycopg scans comments for
+                   -- placeholders, and a bare one splits the multibyte characters after it.)
+                   c.manifest -> 'strategy_config' AS strategy_config,
+                   -- Why the quadrant came out as it did, frozen at the cutoff. `regime.assess()` reaches
+                   -- `unclear` four ways and `policy_reason` is the *strategy's* later answer, not this
+                   -- one: the smart-money lane accepts a move between the shared 600 bps ceiling and its
+                   -- own 1000, so a traded Case routinely carries `regime='unclear'` beside a
+                   -- `policy_reason` that says nothing about the quadrant. Without this column a console
+                   -- has to invent a cause or claim the ledger recorded none.
+                   (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason
               FROM trading_orders o
               JOIN trading_cases c ON c.case_id = o.case_id
              WHERE {" AND ".join(where)}
@@ -342,6 +362,7 @@ class QueryStorage:
                    -- present on one route and structurally null on the other is a half-truth (#273).
                    (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
                    c.manifest -> 'strategy_config' AS strategy_config,
+                   (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms,
                    o.order_id, o.state AS order_state, o.state_reason AS order_state_reason,
                    o.side, o.notional_usd, o.entry_reference, o.stop_price, o.exit_price,
@@ -387,6 +408,10 @@ class QueryStorage:
                    -- (No per-cent sign in this comment on purpose: psycopg scans comments for
                    -- placeholders, and a bare one splits the multibyte characters after it.)
                    c.manifest -> 'strategy_config' AS strategy_config,
+                   -- And why the quadrant came out as it did, for the same reason `_case()` needs the
+                   -- other two: it is shared, so a field on one route and structurally null on the
+                   -- other is a half-truth (#273).
+                   (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms
               FROM trading_cases c
              WHERE {" AND ".join(where)}

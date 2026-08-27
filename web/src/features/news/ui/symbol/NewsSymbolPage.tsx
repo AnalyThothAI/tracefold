@@ -1,4 +1,9 @@
-import { TradingSymbolSection } from "@features/trading";
+import {
+  TradingSymbolSection,
+  tradingLedgerEntries,
+  useTradingOrdersWithToken,
+  type TradingOiLedgerEntry,
+} from "@features/trading";
 import { newsOiPath } from "@shared/routing/paths";
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
 import * as PageState from "@shared/ui/PageState";
@@ -16,10 +21,12 @@ import {
   type NewsFeedFilters,
 } from "../../api/newsQueries";
 import { parseSymbolLane } from "../../model/symbolLanes";
-import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
+import { symbolPerspective } from "../../model/symbolPerspective";
+import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
 
 import { NewsSymbolEvents } from "./NewsSymbolEvents";
 import { NewsSymbolIdentity } from "./NewsSymbolIdentity";
+import { NewsSymbolPerspective } from "./NewsSymbolPerspective";
 import { NewsSymbolWindow } from "./NewsSymbolWindow";
 
 import "./newsSymbol.css";
@@ -66,6 +73,8 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   );
   const feedQuery = useNewsFeedWithToken(token, filters);
   const statusQuery = useNewsStatusWithToken(token);
+  /* One batch for both capital sections: `交易视角` reads its newest case and `交易复盘` lists them all. */
+  const tradingQuery = useTradingOrdersWithToken(token, normalized);
   const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
 
   /*
@@ -95,6 +104,25 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
     (row) => row.symbol === normalized,
   );
 
+  /*
+   * The capital lane's reading of this token's newest frame. Same query key as 交易复盘 below, so React
+   * Query serves both from one poll, and the frame is matched by the `event_id` the ledger itself
+   * published — never by symbol and time, which is the join the OI audit refuses to guess at.
+   */
+  const ledger = tradingLedgerEntries(tradingQuery.data);
+  const newestCase = [...ledger.values()].sort(
+    (a, b) => caseObservedAtMs(b) - caseObservedAtMs(a),
+  )[0];
+  /*
+   * Only when the case named a frame. `event_id` is null by design for a case the deterministic OI trigger
+   * did not author, and `=== ""` would have matched any row that carried an empty id rather than none.
+   */
+  const caseEventId = newestCase?.value.event_id ?? null;
+  const perspective = symbolPerspective(
+    caseEventId == null ? undefined : rows.find((row) => row.event_id === caseEventId),
+    newestCase,
+  );
+
   return (
     <NewsPageShell archetype="scan" className="news-symbol-shell" label={`代币 ${normalized}`}>
       {/*
@@ -110,26 +138,62 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
           to={referrer.to}
         />
       </header>
-      <NewsPageHeader subtitle="这个名字最近发生了什么，以及它到底是什么。" title={normalized}>
-        {firstPage?.counts ? (
-          <NewsPageStamp>
-            24h {firstPage.counts.total} 条 · 已推送 {firstPage.counts.pushed}
-          </NewsPageStamp>
-        ) : null}
-      </NewsPageHeader>
+
+      {/* No count stamp here: 24H 事件 and 已推送 are two of the identity band's three tiles below, which
+          is where the artifact puts them. Printing them in the header too showed a reader the same two
+          numbers twice on one screen and made the band look like a restatement rather than the place. */}
+      <NewsPageHeader subtitle="这个名字最近发生了什么，以及它到底是什么。" title={normalized} />
 
       {symbolQuery.isError && !symbolQuery.data ? (
         <PageState.Error error={symbolQuery.error} onRetry={() => void symbolQuery.refetch()} />
       ) : null}
 
       <div className="news-symbol-body">
-        <NewsSymbolIdentity quote={quotesQuery.data?.quotes?.[0]} symbol={symbolQuery.data} />
+        <NewsSymbolIdentity
+          quote={quotesQuery.data?.quotes?.[0]}
+          symbol={symbolQuery.data}
+          tiles={[
+            { key: "events", label: "24H 事件", value: count(firstPage?.counts?.total) },
+            {
+              key: "pushed",
+              label: "已推送",
+              tone: "accent",
+              value: count(firstPage?.counts?.pushed),
+            },
+            {
+              key: "window",
+              label: "OI 窗口",
+              // Caution only when the window is full, which is the one state with a consequence: the
+              // next qualifying frame for this name will be withheld by `beyond_window_rank`.
+              tone: occupancy?.full ? "caution" : undefined,
+              value: occupancy ? `${occupancy.used} / ${occupancy.max_rank_in_window}` : "—",
+            },
+          ]}
+        />
 
         <NewsSymbolWindow
           occupancy={occupancy}
           oiPath={newsOiPath()}
           policy={statusQuery.data?.oi?.policy ?? null}
         />
+
+        {/*
+         * 交易视角 and 交易复盘 sit above the event list, as the artifact draws them (#282). The list is
+         * the long tail; these two are the answer a reader arriving from a frame came for, and they were
+         * both below a table that can run to a hundred rows.
+         */}
+        <NewsSymbolPerspective
+          perspective={perspective}
+          read={
+            tradingQuery.isError && !tradingQuery.data
+              ? "failed"
+              : tradingQuery.data == null
+                ? "loading"
+                : "ready"
+          }
+        />
+
+        <TradingSymbolSection base={normalized} token={token} />
 
         <NewsSymbolEvents
           error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
@@ -150,14 +214,22 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
           onRetry={() => void feedQuery.refetch()}
           rows={rows}
         />
-
-        {/*
-         * The capital lane's own account of this token (#207 PR-W4). Owned by `features/trading` because
-         * every word in it — case state, order state, the rule a case stopped on — is that lane's
-         * vocabulary, and a copy of it here would be a second place those words could drift.
-         */}
-        <TradingSymbolSection base={normalized} token={token} />
       </div>
     </NewsPageShell>
   );
+}
+
+/** A count the read has not answered yet is a dash, never a zero that means "still loading". */
+function count(value: number | undefined): string {
+  return value == null ? "—" : String(value);
+}
+
+/**
+ * When the case observed its source fact. Both halves of the ledger batch answer it, under different names:
+ * an order carries the case's own `case_observed_at_ms`, a case row carries `observed_at_ms`.
+ */
+function caseObservedAtMs(entry: TradingOiLedgerEntry): number {
+  return entry.kind === "order"
+    ? (entry.value.case_observed_at_ms ?? entry.value.created_at_ms)
+    : entry.value.observed_at_ms;
 }
