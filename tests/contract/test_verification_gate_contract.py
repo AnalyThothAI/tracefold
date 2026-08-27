@@ -78,6 +78,20 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     assert 'GITHUB_SHA="$TESTED_SHA" make test-evidence' in evidence_step["run"]
 
 
+def test_ci_gate_check_name_is_unique_across_all_workflows() -> None:
+    owners: list[str] = []
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        jobs = workflow.get("jobs", {}) if isinstance(workflow, dict) else {}
+        owners.extend(
+            f"{path.name}:{job_id}"
+            for job_id, job in jobs.items()
+            if isinstance(job, dict) and str(job.get("name") or job_id) == "ci-gate"
+        )
+
+    assert owners == ["ci.yml:ci-gate"]
+
+
 def _run_gate_script(script: str, results: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "-euo", "pipefail", "-c", script],

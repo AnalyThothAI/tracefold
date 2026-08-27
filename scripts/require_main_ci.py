@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 GITHUB_REPOSITORY = "AnalyThothAI/tracefold"
 GITHUB_ACTIONS_INTEGRATION_ID = 15_368
 REQUIRED_CHECK = "ci-gate"
@@ -27,6 +29,25 @@ def require_clean_deployment_environment(environ: Mapping[str, str]) -> None:
     for name in _COMPOSE_ENVIRONMENT:
         if environ.get(name):
             raise RuntimeError(f"deployment_compose_environment_forbidden:{name}")
+
+
+def require_unique_ci_gate_definition(root: Path) -> None:
+    owners: list[str] = []
+    for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        try:
+            workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise RuntimeError("deployment_workflow_definition_invalid") from exc
+        jobs = workflow.get("jobs", {}) if isinstance(workflow, dict) else {}
+        if not isinstance(jobs, dict):
+            raise RuntimeError("deployment_workflow_definition_invalid")
+        owners.extend(
+            f"{path.name}:{job_id}"
+            for job_id, job in jobs.items()
+            if isinstance(job, dict) and str(job.get("name") or job_id) == REQUIRED_CHECK
+        )
+    if len(owners) != 1:
+        raise RuntimeError("deployment_ci_gate_definition_not_unique")
 
 
 def require_main_ci(root: Path, payload: dict[str, Any]) -> str:
@@ -54,6 +75,7 @@ def require_main_ci(root: Path, payload: dict[str, Any]) -> str:
         raise RuntimeError("deployment_head_not_remote_main")
     if (root / ".env").exists() or _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
         raise RuntimeError("deployment_source_dirty")
+    require_unique_ci_gate_definition(root)
 
     runs = [row for row in payload.get("check_runs", []) if row.get("name") == REQUIRED_CHECK]
     if not runs:

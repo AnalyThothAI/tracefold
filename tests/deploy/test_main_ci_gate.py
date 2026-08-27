@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.deploy
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -16,6 +17,12 @@ def _repository(tmp_path: Path) -> Path:
     root.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
     (root / "tracked.txt").write_text("one\n", encoding="utf-8")
+    workflow_dir = root / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(
+        "name: CI\non: [push]\njobs:\n  gate:\n    name: ci-gate\n    runs-on: ubuntu-24.04\n    steps: []\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(
         [
@@ -49,6 +56,36 @@ def test_exact_main_sha_with_actions_ci_gate_can_deploy(tmp_path: Path) -> None:
     from scripts.require_main_ci import require_main_ci
 
     assert require_main_ci(_repository(tmp_path), {"check_runs": [_check()]})
+
+
+def test_duplicate_ci_gate_definition_blocks_deployment(tmp_path: Path) -> None:
+    from scripts.require_main_ci import require_main_ci
+
+    root = _repository(tmp_path)
+    duplicate = root / ".github" / "workflows" / "duplicate.yml"
+    duplicate.write_text(
+        "name: Duplicate\non: [push]\njobs:\n  other:\n    name: ci-gate\n    runs-on: ubuntu-24.04\n    steps: []\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".github/workflows/duplicate.yml"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Tracefold Test",
+            "-c",
+            "user.email=tests@tracefold.invalid",
+            "commit",
+            "-qm",
+            "duplicate gate",
+        ],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=root, check=True)
+
+    with pytest.raises(RuntimeError, match="deployment_ci_gate_definition_not_unique"):
+        require_main_ci(root, {"check_runs": [_check()]})
 
 
 @pytest.mark.parametrize(

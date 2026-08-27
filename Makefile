@@ -34,7 +34,7 @@ tool-path: ## ensure uv tool executables are on PATH
 test: test-fast ## hermetic default regression (alias for test-fast)
 
 test-fast: ## unit + hermetic contract + semantic architecture; no external resources
-	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not slow and not scheduled and not external_codegen"
+	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
 
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest

@@ -41,7 +41,16 @@ def test_default_test_target_selects_only_hermetic_lanes() -> None:
     commands = result.stdout
 
     assert commands.count("python -m pytest") == 1
-    for excluded in ("integration", "deploy", "e2e", "golden", "slow", "scheduled", "external_codegen"):
+    for excluded in (
+        "integration",
+        "deploy",
+        "e2e",
+        "golden",
+        "live",
+        "slow",
+        "scheduled",
+        "external_codegen",
+    ):
         assert f"not {excluded}" in commands
     assert all(tool not in commands for tool in ("docker", "testcontainers", "uvicorn", "npx", "npm "))
 
