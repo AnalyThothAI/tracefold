@@ -23,7 +23,7 @@ const tradingArchetype = {
   name: "trading",
   path: "/trading",
   ready: (page: Page) => page.locator(".trading-exposure-row").first(),
-  settled: (page: Page) => page.locator(".trading-funnel-row").first(),
+  settled: (page: Page) => page.locator(".trading-ladder-row").first(),
 } as const;
 
 const archetypes = [

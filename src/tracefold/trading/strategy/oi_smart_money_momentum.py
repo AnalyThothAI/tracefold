@@ -2,12 +2,19 @@
 
 The template it implements is three conditions on one frame:
 
-    5-minute OI rise  >= 10%
+    5-minute OI rise  >= 5%
     smart-money / OI  >  50%
     profit metric     >  0
 
-plus the execution safety this lane already measured — a confirmed price direction and the chasing
-ceiling above it.
+plus a confirmed price direction and a chasing ceiling above it.
+
+**The OI floor is 5% and the ceiling is 10% by operator decision, not by measurement (#273).** The
+template's own number was 10%, and at 10% this lane is starved: over the seven days to 2026-08-27,
+462 parsed frames yielded four that cleared all three conditions — 0.6 a day, which makes proving the
+execution kernel a matter of months. At 5% the same corpus yields 32, about 4.6 a day. What the
+operator bought with that is throughput for a *paper* lane whose purpose is to produce receipts; what
+it did not buy is evidence, and the change must not be read as one. The 30-day report in #273
+stratifies the outcome by OI bucket precisely because this issue is open.
 
 **Why this is a new strategy identity and not a retuned `oi_momentum_v1`.** That strategy means "OI
 build-up continuation with 95% whale profit inside the measured 1-6% pre-move band". This one changes
@@ -16,15 +23,31 @@ Four of the five numbers move, and reusing the id would make every historical Ca
 it was never decided by. The old decoder stays so those Cases remain readable.
 
 **Inclusivity is in the field names and it is not negotiable.** `min_` reads `>=` and the two `above`
-conditions read `>`, exactly as the tests spell them: `1000` qualifies and `999` does not; `5001`
+conditions read `>`, exactly as the tests spell them: `500` qualifies and `499` does not; `5001`
 qualifies and `5000` does not; `1` qualifies and `0` does not.
 
 **The price minimum is 0 here and that is a deliberate change, not an oversight.** The lane's shared
 regime band starts at 100 bps, and until #264 that band was applied at the freeze, so a frame with a
 0.4% pre-move never reached any strategy at all. This strategy's thesis is that the OI and smart-money
 conditions are the signal and price only has to *confirm the direction*; a hidden 1% minimum would be a
-second, unmeasured entry condition. The 600 bps ceiling is kept, because it is measured:
-`docs/research/oi-agent-design-2026-08-22.md` §1.6 found every bucket above it has a negative mean.
+second, unmeasured entry condition.
+
+**The 1000 bps ceiling contradicts a measurement, and the contradiction is the point of recording it.**
+`docs/research/oi-agent-design-2026-08-22.md` §1.6 bucketed the full OI corpus by the same 1 h pre-move
+this rule reads: 1-3% returned +1.27% at 4 h, 3-6% returned +0.80%, and **6-12% returned -0.77% on
+N=151, with a median 1 h MAE of -3.35%**. Raising the ceiling from 600 to 1000 admits the bottom half
+of that measured-negative bucket, and against this lane's 200 bps stop an MAE of that size is most of
+those entries stopping out. Two things make it a decision an operator may take rather than a mistake
+to be silently inherited: the measurement is over the *whole* corpus, and whether the three
+smart-money conditions change its sign inside their own cohort is unmeasured; and this lane risks no
+capital, so the cost of finding out is a paper receipt. It is not a prediction that the bucket is
+profitable. #273's report stratifies realised outcomes by pre-move band for exactly this reason.
+
+The shared regime band is deliberately left at 600. It is a different owner's number — it still gates
+the News-only lane at the freeze, and an OI-bearing Case only records it — so a Case may now carry
+`regime=unclear/move_above_band_chasing` and still be a long. That reads as a contradiction and is
+not one: #265 §4 put Alpha thresholds in the strategy, and this is what that looks like when the two
+numbers disagree.
 
 Two things this strategy deliberately does **not** do:
 
@@ -63,7 +86,9 @@ class OiSmartMoneyMomentumConfig:
     # Not a preference: the frame must *prove* it was measured over this window, or the Case has no
     # basis for reading "10%" as a five-minute move.
     measurement_window_ms: int = 300_000
-    min_oi_change_bps: int = 1_000
+    # 5%, not the template's 10%: an operator throughput decision recorded in the module docstring
+    # and in #273. Editing it moves `digest` and therefore only ever decides new Cases.
+    min_oi_change_bps: int = 500
     # Strictly above. 5000 bps is exactly half and does not qualify.
     min_whale_oi_ratio_bps: int = 5_000
     # Strictly above. The provider's own `Whale Long Profit N%` percentage — not an account count and
@@ -71,7 +96,9 @@ class OiSmartMoneyMomentumConfig:
     min_whale_long_profit_bps: int = 0
     # Direction confirmation only. Zero, and stated as zero rather than inherited from the shared band.
     min_price_move_bps: int = 0
-    max_price_move_bps: int = 600
+    # Above the measured 6-12% loss bucket's floor. See the module docstring: this one is a decision
+    # taken against a measurement, not one taken from it.
+    max_price_move_bps: int = 1_000
     allow_short: bool = False
 
     @property

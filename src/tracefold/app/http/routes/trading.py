@@ -483,6 +483,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "observed_at_ms": int(row["observed_at_ms"]),
         "policy_decision": row.get("policy_decision"),
         "policy_reason": row.get("policy_reason"),
+        "pre_move_bps": row.get("pre_move_bps"),
         "regime": row.get("regime"),
         "state": str(row["state"]),
         "underlying_key": str(row["underlying_key"]),

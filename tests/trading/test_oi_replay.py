@@ -193,10 +193,13 @@ def test_the_template_test_reads_only_the_three_conditions_it_names() -> None:
     assert meets_target_template(_candidate(), config=config) is True
     # Liquidity, rank and venue are not template conditions and do not remove a row from the cohort.
     assert meets_target_template(_candidate(oi_value_usd=1, rank_in_window=9, venue="okx"), config=config) is True
+    # Each one step below the *running* config's own threshold, never a literal from the template's
+    # prose: the cohort has to describe the population Cases are actually decided by (#273).
     for kwargs in (
-        {"oi_change_bps": 999},
-        {"whale_oi_ratio_bps": 5_000},
-        {"whale_long_profit_bps": 0},
+        {"oi_change_bps": config.min_oi_change_bps - 1},
+        {"whale_oi_ratio_bps": config.min_whale_oi_ratio_bps},
+        {"whale_long_profit_bps": config.min_whale_long_profit_bps},
         {"measurement_window_ms": 900_000},
     ):
         assert meets_target_template(_candidate(**kwargs), config=config) is False
+    assert meets_target_template(_candidate(oi_change_bps=config.min_oi_change_bps), config=config) is True

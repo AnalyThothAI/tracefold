@@ -127,6 +127,8 @@ class TradingCountsData(ExactApiSchema):
     closed_realized_bps: int = 0
     cases_today_by_state: dict[str, int] = Field(default_factory=dict)
     policy_allowed_today: int = 0
+    # The rolling twin of the field above, so a funnel can be drawn on one clock (#273).
+    policy_allowed_24h: int = 0
     closed_orders_today: int = 0
     active_orders: int = 0
     funnel_today: dict[str, int] = Field(default_factory=dict)
@@ -273,6 +275,8 @@ class TradingCaseData(ExactApiSchema):
     regime: str | None = None
     policy_decision: str | None = None
     policy_reason: str | None = None
+    # The frozen pre-move the two price rules are about, so a refusal can state its own number.
+    pre_move_bps: int | None = None
     observed_at_ms: int
     created_at_ms: int
     decided_at_ms: int | None = None

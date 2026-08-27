@@ -1,4 +1,4 @@
-"""The one place an OI fact is admitted to the capital lane, and the one vocabulary it refuses in.
+"""The one place a source fact is admitted to the capital lane, and the one vocabulary it refuses in.
 
 Every rule here used to be executed somewhere else as well — the rank ceiling and the liquidity floor
 in News's SELECT, the floor again inside the strategy, the venue check in both `_plan` and `_freeze`.
@@ -6,7 +6,18 @@ That is what made `oi_rows = 0` unanswerable: a frame filtered out upstream and 
 existed were the same absence, and the counters that could have told them apart lived in one JSONB
 document reset every UTC midnight.
 
-**What this module owns** is whether an OI fact may become a *trigger* now:
+**Both trigger kinds are admitted here (#273).** Until then only the OI lane wrote rows: a News
+trigger went straight to a frozen Case and was refused by `news_oi_alignment_v1` with
+`oi_context_missing`, which put 64 of production's 76 Cases — every single one of them — in the case
+table for the sole purpose of recording that no OI frame was beside them. That made the case table
+noise, made the console's 成案 bar a number about nothing, and left the News lane as the last double
+admission path in the system. A News trigger with no OI context now stops here, `DEFERRED` on
+`oi_context_missing`, and the expiry sweep closes it when the frame is past the trigger budget. The
+rules themselves stay OI-specific — `admit_context`, `admit_trigger` and `admit_route` all read an
+OI frame's own numbers — because a News trigger's own eligibility is already decided by
+`news_candidate` before it gets here.
+
+**What this module owns** is whether a source fact may become a *trigger* now:
 
     source        the row is a usable, current-generation, live OI fact at all
     eligibility   rank, liquidity floor, blacklist, freshness, cooldown, idempotency, one-per-underlying
@@ -36,7 +47,14 @@ from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
-from ..contracts import LiveExchangeId, OiTradeCandidate, TriggerKind, canonical_sha256, underlying_key
+from ..contracts import (
+    LiveExchangeId,
+    NewsTradeCandidate,
+    OiTradeCandidate,
+    TriggerKind,
+    canonical_sha256,
+    underlying_key,
+)
 from .blacklist import Blacklist
 from .eligibility import EligibilityPolicy, Rejected
 from .routing import signal_exchange_id
@@ -69,6 +87,9 @@ GATE_REASONS: Final[frozenset[str]] = frozenset(
         "market_data_invalid",
         "already_consumed",
         "superseded_by_newer_trigger",
+        # The News lane's one admission rule (#273). `DEFERRED`, because the OI frame it needs may
+        # still arrive inside the trigger budget — the sweep is what closes it when none does.
+        "oi_context_missing",
         # Not in #264's list, and named rather than left silent. The two order caps and the per-turn
         # case budget refuse a source that passed every rule about the source itself; calling that
         # `active_underlying` would blame the frame's own issuer for the lane being full.
@@ -169,7 +190,7 @@ class CandidateGateResult:
 
 def _result(
     *,
-    candidate: OiTradeCandidate,
+    candidate: OiTradeCandidate | NewsTradeCandidate,
     status: GateStatus,
     stage: GateStage,
     reason: str,
@@ -179,11 +200,34 @@ def _result(
 ) -> CandidateGateResult:
     """One admitted-source answer, carrying the frame's own measurements.
 
-    The four numbers ride on every result past the source stage so a threshold argument can be settled
-    from this row alone. Re-deriving them means joining `news_oi_signals` back through the verdict, and
-    the whole point of the ledger is that the answer survives without that join.
+    The four numbers ride on every OI result past the source stage so a threshold argument can be
+    settled from this row alone. Re-deriving them means joining `news_oi_signals` back through the
+    verdict, and the whole point of the ledger is that the answer survives without that join.
+
+    A News trigger carries the verdict's own identifying facts instead, and its clock is
+    `verdict_created_at_ms` — the same field `is_fresh_trigger` reads, so the expiry sweep closes a
+    News row on exactly the budget that made it stale.
     """
 
+    if isinstance(candidate, NewsTradeCandidate):
+        return CandidateGateResult(
+            source_key=candidate.source_key,
+            trigger_kind="news",
+            underlying_key=underlying_key(candidate.base_symbol),
+            source_observed_at_ms=candidate.verdict_created_at_ms,
+            status=status,
+            stage=stage,
+            reason=reason,
+            retryable=retryable,
+            evidence={
+                "event_id": candidate.event_id,
+                "event_type": candidate.event_type,
+                "magnitude": candidate.magnitude,
+                "source_decision": candidate.final_decision,
+                **dict(evidence or {}),
+            },
+            case_id=case_id,
+        )
     return CandidateGateResult(
         source_key=candidate.source_key,
         trigger_kind="oi",
@@ -378,14 +422,14 @@ def admit_route(candidate: OiTradeCandidate, *, config: GateConfig) -> Candidate
     return None
 
 
-def defer(candidate: OiTradeCandidate, *, stage: GateStage, reason: str) -> CandidateGateResult:
+def defer(candidate: OiTradeCandidate | NewsTradeCandidate, *, stage: GateStage, reason: str) -> CandidateGateResult:
     """A refusal a later scan could genuinely answer differently, and the expiry sweep will close."""
 
     return _result(candidate=candidate, status="DEFERRED", stage=stage, reason=reason, retryable=True)
 
 
 def reject(
-    candidate: OiTradeCandidate,
+    candidate: OiTradeCandidate | NewsTradeCandidate,
     *,
     stage: GateStage,
     reason: str,
@@ -398,7 +442,7 @@ def reject(
     )
 
 
-def case_created(candidate: OiTradeCandidate, *, case_id: str) -> CandidateGateResult:
+def case_created(candidate: OiTradeCandidate | NewsTradeCandidate, *, case_id: str) -> CandidateGateResult:
     """The admission succeeded. Written in the same transaction as the case row it names."""
 
     return _result(

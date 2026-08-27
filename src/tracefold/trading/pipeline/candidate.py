@@ -118,9 +118,6 @@ _MAX_CASES_PER_TURN = 4
 # candidate rules already spent, so queueing behind another case's model call cannot discard a signal.
 _CASE_DECISION_TTL_MS = 300_000
 _LIVE_PREFLIGHT_MAX_AGE_MS = TRADING_LIVE_PREFLIGHT_MAX_AGE_MS
-# What still stops a News-only case even though it has no quadrant: no price to enter at, and the
-# measured chasing bucket above the pre-move ceiling.
-_NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_band_chasing"})
 # How long an admission decision is kept. The lane persists about 90 OI facts a day, so this is a few
 # thousand rows — small enough that the question "why was there no case last Tuesday" stays answerable.
 _GATE_RETENTION_MS = 90 * 86_400_000
@@ -269,9 +266,10 @@ class CandidateRunner:
     ) -> None:
         """A source that passed every rule about itself, refused because the lane had no room."""
 
-        if plan.trigger_kind != "oi" or plan.oi is None:
+        source = plan.oi if plan.trigger_kind == "oi" else plan.news
+        if source is None:
             return
-        self._record(defer(plan.oi, stage="eligibility", reason="lane_capacity_exhausted"), funnel=funnel, gate=gate)
+        self._record(defer(source, stage="eligibility", reason="lane_capacity_exhausted"), funnel=funnel, gate=gate)
 
     async def _write_gate(self, gate: dict[str, CandidateGateResult], now: int) -> None:
         """Flush the turn's admission answers. One transaction; a failure here never blocks capital."""
@@ -548,7 +546,24 @@ class CandidateRunner:
                     funnel=funnel,
                     gate=gate,
                 )
-        return plans
+        # The News lane's own admission rule, and the last double gate in the system (#273). A News
+        # trigger with no OI frame beside it used to freeze a case anyway, so that
+        # `news_oi_alignment_v1` could refuse it with `oi_context_missing` — 64 of production's 76
+        # cases, every one of them that answer and nothing else. The refusal is the same; where it is
+        # recorded is what changes, and a case table whose rows are all the same non-event is not a
+        # ledger anyone can read. `DEFERRED`, because an OI frame for the same issuer can still land
+        # inside the trigger budget; the expiry sweep closes the row when none does.
+        admitted: list[_Plan] = []
+        for plan in plans:
+            if plan.trigger_kind == "news" and plan.oi is None and plan.news is not None:
+                self._record(
+                    defer(plan.news, stage="eligibility", reason="oi_context_missing"),
+                    funnel=funnel,
+                    gate=gate,
+                )
+                continue
+            admitted.append(plan)
+        return admitted
 
     # ------------------------------------------------------------------ freeze
     async def _freeze(
@@ -567,9 +582,13 @@ class CandidateRunner:
         rejected instead of the frame disappearing before anything durable saw it.
         """
 
+        # The plan's *trigger*, never whichever candidate happens to be present. A News-triggered plan
+        # carries an OI frame as context, and filing this plan's refusals under that frame's source key
+        # would overwrite the answer the gate already reached about it as a trigger of its own.
+        source: OiTradeCandidate | NewsTradeCandidate | None = plan.oi if plan.trigger_kind == "oi" else plan.news
+
         def _gate(result: CandidateGateResult) -> None:
-            if plan.trigger_kind == "oi":
-                self._record(result, funnel=funnel, gate=gate)
+            self._record(result, funnel=funnel, gate=gate)
 
         seen = await self._db.read(
             "trading_case_seen",
@@ -583,13 +602,13 @@ class CandidateRunner:
         already, last_close, instrument_rows = seen
         if already:
             funnel.count("freeze_reject:source_key_seen")
-            if plan.oi is not None:
-                _gate(reject(plan.oi, stage="eligibility", reason="already_consumed"))
+            if source is not None:
+                _gate(reject(source, stage="eligibility", reason="already_consumed"))
             return False
         if last_close is not None and now - int(last_close) < self._config.eligibility.symbol_cooldown_ms:
             funnel.count("freeze_reject:symbol_cooldown")
-            if plan.oi is not None:
-                _gate(defer(plan.oi, stage="eligibility", reason="cooldown"))
+            if source is not None:
+                _gate(defer(source, stage="eligibility", reason="cooldown"))
             return False
 
         # Source-aligned routing (#211). An OI frame is a claim about *one venue's* open interest, so
@@ -617,17 +636,17 @@ class CandidateRunner:
             funnel.count(
                 "freeze_reject:no_perp_at_signal_venue" if plan.oi is not None else "freeze_reject:no_native_perp"
             )
-            if plan.oi is not None:
+            if source is not None:
                 # Retryable: the universe snapshot refreshes, and an issuer can be listed at the venue
                 # whose open interest moved. The expiry sweep closes the row when the frame goes stale.
-                _gate(defer(plan.oi, stage="routing", reason="no_native_perp"))
+                _gate(defer(source, stage="routing", reason="no_native_perp"))
             return False
 
         bars = await self._fetch_bars(instrument, anchor_at_ms=plan.observed_at_ms)
         if not bars:
             funnel.count("freeze_reject:no_price_fail_closed")
-            if plan.oi is not None:
-                _gate(defer(plan.oi, stage="market_context", reason="market_data_unavailable"))
+            if source is not None:
+                _gate(defer(source, stage="market_context", reason="market_data_unavailable"))
             return False
         move = pre_move_bps(bars, anchor_at_ms=plan.observed_at_ms, policy=self._config.regime)
         regime = assess(
@@ -640,25 +659,19 @@ class CandidateRunner:
             # Missing market data is the gate's, in both lanes: with no price there is no mark to size
             # from and no pre-move to freeze, so there is no manifest to write.
             funnel.count(f"freeze_reject:regime_{regime.reason}")
-            if plan.oi is not None:
-                _gate(defer(plan.oi, stage="market_context", reason="market_data_unavailable"))
+            if source is not None:
+                _gate(defer(source, stage="market_context", reason="market_data_unavailable"))
             return False
-        if plan.oi is None and regime.reason in _NEWS_ONLY_BLOCKING_REASONS:
-            # News-only has no OI quadrant and no capital strategy that reads the band, so its chasing
-            # ceiling stays here. An OI-bearing case carries the band into the manifest instead.
-            funnel.count(f"freeze_reject:regime_{regime.reason}")
-            return False
-
         # The mark is the bar closed at or before the cutoff; a fresher close would leak future evidence.
         anchor_bar = select_bar(
             bars, target_ms=plan.observed_at_ms, gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms
         )
         if anchor_bar is None:
             funnel.count("freeze_reject:no_mark_at_cutoff")
-            if plan.oi is not None:
+            if source is not None:
                 # Terminal: the gap is a property of this frame's own cutoff, so no later scan of the
                 # same frame can find a candle that was never published.
-                _gate(reject(plan.oi, stage="market_context", reason="market_data_invalid"))
+                _gate(reject(source, stage="market_context", reason="market_data_invalid"))
             return False
         mark = anchor_bar.close
         strategy_id = capital_strategy_id(
@@ -668,8 +681,8 @@ class CandidateRunner:
         )
         if strategy_id is None:
             funnel.count("freeze_reject:no_capital_strategy")
-            if plan.oi is not None:
-                _gate(reject(plan.oi, stage="freeze", reason="source_contract_invalid"))
+            if source is not None:
+                _gate(reject(source, stage="freeze", reason="source_contract_invalid"))
             return False
         strategy = self._strategies[strategy_id]
         market_context = FrozenMarketContext(
@@ -714,6 +727,7 @@ class CandidateRunner:
 
         digest = manifest.digest()
         case_id = uuid.uuid4().hex
+        linked = case_created(source, case_id=case_id) if source is not None else None
 
         def _insert(repos: Any) -> bool:
             inserted = bool(
@@ -738,8 +752,7 @@ class CandidateRunner:
             )
             # Same transaction, deliberately. A case with no admission row, or an admission row naming
             # a case that was never written, is exactly the ambiguity the ledger exists to remove.
-            if inserted and plan.trigger_kind == "oi" and plan.oi is not None:
-                linked = case_created(plan.oi, case_id=case_id)
+            if inserted and linked is not None:
                 repos.trading.record_gate_decision(
                     source_key=linked.source_key,
                     gate_version=CANDIDATE_GATE_VERSION,
@@ -763,14 +776,14 @@ class CandidateRunner:
         # frame as context, and treating that as the frame's own admission answer dropped the
         # `superseded_by_newer_trigger` row this turn had already decided for it — and counted a
         # `case_created` against a case it did not trigger.
-        if plan.trigger_kind == "oi" and plan.oi is not None:
+        if source is not None and linked is not None:
             if created:
                 # Already committed beside the case row; leaving it out of the turn's flush is what
                 # keeps the flush from re-deciding a row that is now terminal.
-                gate.pop(plan.oi.source_key, None)
-                funnel.count("oi_gate:freeze:case_created")
+                gate.pop(linked.source_key, None)
+                funnel.count(linked.funnel_key)
             else:
-                _gate(reject(plan.oi, stage="freeze", reason="already_consumed"))
+                _gate(reject(source, stage="freeze", reason="already_consumed"))
         return bool(created)
 
     async def _fetch_bars(self, instrument: InstrumentRef, *, anchor_at_ms: int) -> list[Bar]:

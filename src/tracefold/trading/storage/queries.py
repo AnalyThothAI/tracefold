@@ -124,6 +124,14 @@ class QueryStorage:
             "AND position_closed_at_ms IS NOT NULL AND position_closed_at_ms >= %s",
             (int(since_ms),),
         ).fetchone()
+        # The same question `policy_allowed_today` answers, on the window every other funnel level
+        # uses. A console funnel whose middle bar is a UTC day while the bars around it are a rolling
+        # 24 h is two intervals impersonating one, and the reader has no way to see the seam (#273).
+        policy_allowed_window = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_cases WHERE created_at_ms >= %s "
+            "AND policy_decision IN ('long', 'short')",
+            (int(since_ms),),
+        ).fetchone()
         cases_today = self.conn.execute(
             "SELECT state, count(*) AS n FROM trading_cases "
             "WHERE created_at_ms >= %s AND created_at_ms < %s GROUP BY state",
@@ -162,6 +170,7 @@ class QueryStorage:
             "closed_realized_bps": 0 if realized is None else int(realized["total_bps"]),
             "cases_today_by_state": {str(row["state"]): int(row["n"]) for row in cases_today},
             "policy_allowed_today": 0 if policy_allowed_today is None else int(policy_allowed_today["n"]),
+            "policy_allowed_24h": 0 if policy_allowed_window is None else int(policy_allowed_window["n"]),
             "closed_orders_today": 0 if closed_today is None else int(closed_today["n"]),
             "active_orders": 0 if active is None else int(active["n"]),
             "funnel_day_key": resolved_day_key,

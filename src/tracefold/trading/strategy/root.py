@@ -92,8 +92,11 @@ def capital_strategy_id(*, trigger_kind: TriggerKind, has_oi: bool, has_news: bo
         return None
     if trigger_kind == "oi":
         return "oi_smart_money_momentum_v1" if has_oi else None
-    # News-only is deliberately shadow/no-trade until it has OI context, which the alignment strategy
-    # answers as `oi_context_missing` rather than by refusing to exist.
+    # A News trigger reaches here only with OI context: since #273 the Candidate Gate refuses a
+    # News-only trigger as `eligibility:oi_context_missing` before a Case is frozen, rather than
+    # freezing one so this strategy can say the same thing from inside a manifest. The strategy keeps
+    # its own `oi_context_missing` branch — a strategy that trusts its caller to have checked is a
+    # strategy that cannot be replayed on its own — but nothing in production should reach it.
     return "news_oi_alignment_v1" if trigger_kind == "news" else None
 
 

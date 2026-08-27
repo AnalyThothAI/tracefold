@@ -1,13 +1,18 @@
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 
-import { useTradingOrdersWithToken, useTradingStatusWithToken } from "../api/tradingQueries";
+import {
+  useTradingGateWithToken,
+  useTradingOrdersWithToken,
+  useTradingStatusWithToken,
+} from "../api/tradingQueries";
 import { holdCeiling, isActiveOrder } from "../model/tradingLabels";
 
 import { TradingShell } from "./TradingChrome";
 import { TradingClosed } from "./TradingClosed";
 import { TradingExposure } from "./TradingExposure";
-import { TradingAdmission, TradingEvidence, TradingFunnel } from "./TradingFunnel";
+import { TradingAdmission, TradingEvidence } from "./TradingFunnel";
+import { TradingDecisions, TradingHeadline, TradingLadder } from "./TradingReadout";
 
 import "./trading.css";
 
@@ -35,7 +40,12 @@ export function TradingPage({ token }: { token: string }) {
     undefined,
     status?.counts.funnel_day_key ?? null,
   );
+  // The admission ledger, read for the frame's own four numbers. A case knows which rule it stopped
+  // on; only the gate row kept what the measurement was, and `case_id` is what joins them (#273).
+  const gateQuery = useTradingGateWithToken(token);
   const orders = ordersQuery.data?.orders ?? [];
+  const cases = ordersQuery.data?.cases_without_orders ?? [];
+  const decisions = gateQuery.data?.decisions ?? [];
   const active = orders.filter(isActiveOrder);
   const closed = orders.filter((order) => order.state === "CLOSED");
   const disabled = status != null && !status.readiness.enabled;
@@ -89,6 +99,17 @@ export function TradingPage({ token }: { token: string }) {
         <PageState.Stale updating={statusQuery.isFetching || ordersQuery.isFetching}>
           <div className="trading-body">
             {/*
+             * Before any count: whether the lane is quiet, broken, or working exactly as configured.
+             * Every panel below this one is a number about something that did not happen, and without
+             * a sentence naming the rule they stopped on they all read as an outage (#273).
+             */}
+            <TradingHeadline
+              cases={cases}
+              counts={status.counts}
+              decisions={decisions}
+              status={status}
+            />
+            {/*
              * The lane being off is a fact about this deployment, not an outage, and it is the first thing
              * a reader needs — otherwise every empty panel below reads as a broken page.
              */}
@@ -132,20 +153,15 @@ export function TradingPage({ token }: { token: string }) {
 
             <div className="trading-columns">
               <TradingClosed count={status.counts.closed_orders_today} rows={closed} />
-              <TradingFunnel
-                counts={status.counts}
-                dayKey={status.counts.funnel_day_key}
-                ordersToday={status.budget.orders_today}
-              />
+              <TradingLadder counts={status.counts} />
             </div>
+            {/* What the next order is waiting for, one case at a time, each stating its own
+                measurement against its own threshold. */}
+            <TradingDecisions cases={cases} decisions={decisions} status={status} />
             {/* Source admission sits beside the funnel rather than inside the technical disclosure:
                 with the lane at zero orders it is the only panel on the page with an answer (#264). */}
             <TradingAdmission counts={status.counts} />
-            <TradingEvidence
-              cases={ordersQuery.data?.cases_without_orders ?? []}
-              counts={status.counts}
-              floors={status.floors}
-            />
+            <TradingEvidence counts={status.counts} floors={status.floors} />
           </div>
         </PageState.Stale>
       ) : null}
