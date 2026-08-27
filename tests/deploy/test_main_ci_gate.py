@@ -52,6 +52,30 @@ def _check(*, conclusion: str = "success", app_id: int = 15_368) -> dict[str, ob
     }
 
 
+def test_check_runs_ignores_an_ambient_github_enterprise_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.require_main_ci import _check_runs
+
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\n"
+        "host=''\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  case "$1" in\n'
+        "    --hostname) host=$2; shift 2 ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        '[ "$host" = github.com ] || exit 64\n'
+        "printf '{\"check_runs\": []}\\n'\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("GH_HOST", "github.invalid")
+
+    assert _check_runs("a" * 40) == {"check_runs": []}
+
+
 def test_exact_main_sha_with_actions_ci_gate_can_deploy(tmp_path: Path) -> None:
     from scripts.require_main_ci import require_main_ci
 

@@ -105,6 +105,8 @@ def _check_runs(sha: str) -> dict[str, Any]:
         (
             "gh",
             "api",
+            "--hostname",
+            "github.com",
             "-H",
             "Accept: application/vnd.github+json",
             f"repos/{GITHUB_REPOSITORY}/commits/{sha}/check-runs?per_page=100",

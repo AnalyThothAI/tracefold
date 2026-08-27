@@ -194,7 +194,21 @@ def test_github_preflight_checks_only_the_active_github_dot_com_account(tmp_path
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
         "#!/bin/sh\n"
-        '[ "$*" = "auth status --active --hostname github.com" ] || exit 64\n'
+        "command=$1\n"
+        "subcommand=$2\n"
+        "shift 2\n"
+        "active=0\n"
+        "host=''\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  case "$1" in\n'
+        "    --active) active=1; shift ;;\n"
+        "    --hostname) host=$2; shift 2 ;;\n"
+        "    *) exit 64 ;;\n"
+        "  esac\n"
+        "done\n"
+        '[ "$command $subcommand" = "auth status" ] || exit 64\n'
+        '[ "$active" = 1 ] || exit 64\n'
+        '[ "$host" = github.com ] || exit 64\n'
         'exit "$TRACEFOLD_TEST_GH_AUTH_EXIT"\n',
         encoding="utf-8",
     )
