@@ -10,6 +10,7 @@ from psycopg import InternalError, OperationalError
 from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
+from tracefold.app import worker_database as worker_database_module
 from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.resource import ResourceAdmissionTimeout
@@ -124,12 +125,12 @@ def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
     asyncio.run(scenario())
 
 
-def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None:
+def test_native_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
 
         def native_statement_timeout() -> None:
-            time.sleep(2.5)
+            time.sleep(0.02)
             raise QueryCanceled("canceling statement due to statement timeout")
 
         try:
@@ -146,15 +147,16 @@ def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None
         finally:
             database.close_executors()
 
+    monkeypatch.setattr(worker_database_module, "_WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS", 0.1)
     asyncio.run(scenario())
 
 
-def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog() -> None:
+def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
 
         def native_statement_timeout() -> None:
-            time.sleep(2.5)
+            time.sleep(0.02)
             raise QueryCanceled("canceling statement due to statement timeout")
 
         try:
@@ -171,6 +173,7 @@ def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog()
         finally:
             database.close_executors()
 
+    monkeypatch.setattr(worker_database_module, "_WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS", 0.1)
     asyncio.run(scenario())
 
 

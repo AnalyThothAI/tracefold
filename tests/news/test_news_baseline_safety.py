@@ -13,7 +13,7 @@ import pathlib
 import pytest
 
 import tracefold.news.learning.baseline as baseline_module
-from tests.support.baseline_calibration import load_calibration_corpus
+from tests.support.audit_replay_calibration import load_audit_replay_corpus
 from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 from tracefold.news.program.artifact import load_stable_program_artifact
 
@@ -142,7 +142,7 @@ def test_a_recorded_run_needs_no_connection_no_provider_and_no_credential(monkey
     monkeypatch.setattr(socket, "socket", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
 
-    corpus = load_calibration_corpus()
+    corpus = load_audit_replay_corpus()
     report = run_baseline(
         build_baseline_cases(corpus["episodes"], action_source="recorded"),
         mode="recorded",

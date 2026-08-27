@@ -20,7 +20,7 @@
   enums, symbols, content hashes, opaque identifiers, stable keys — has been
   replaced by a content hash, and a test scans the committed bytes for the shape
   of human language rather than for a list of key names. The allowlist direction
-  is the requirement, not a preference: `tests/support/baseline_calibration.py`
+  is the requirement, not a preference: `tests/support/audit_replay_calibration.py`
   first enumerated the text keys instead and shipped 60 reader-facing Chinese
   cards under a `title_zh` nobody had listed, guarded by an assertion that was a
   tautology for a key-based redactor. Anything richer than that — raw evidence,

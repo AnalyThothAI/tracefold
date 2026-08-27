@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { allowBrowserFailure, expect, test, type Page } from "@tests/e2e/fixtures";
 import {
   expectNoDocumentHorizontalOverflow,
   expectNoUnhandledApiRequests,
@@ -105,6 +105,18 @@ test.describe("desktop sidebar navigation", () => {
   });
 
   test("keeps desktop sidebar navigation available when route APIs fail", async ({ page }) => {
+    allowBrowserFailure(page, {
+      kind: "requestfailed",
+      match:
+        /^GET \/api\/(?:status|news\/(?:feed|status|quotes)|trading\/(?:status|orders|gate)) \(net::ERR_FAILED\)$/,
+      reason:
+        "This case intentionally aborts the known post-bootstrap reads to prove navigation survives.",
+    });
+    allowBrowserFailure(page, {
+      kind: "console.error",
+      match: "Failed to load resource: net::ERR_FAILED",
+      reason: "Chromium reports each intentionally aborted route read in its console.",
+    });
     await installMockApi(page, { failNonBootstrap: true });
     await page.goto("/news/status");
 

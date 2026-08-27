@@ -19,7 +19,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 def test_make_docs_generated_clean_diff() -> None:
     before = _generated_snapshot()
     env = os.environ.copy()
-    env["GMGN_TEST_POSTGRES_DSN"] = _test_postgres_dsn()
+    env["TRACEFOLD_TEST_POSTGRES_DSN"] = _test_postgres_dsn()
     proc = subprocess.run(
         ["make", "docs-generated"],
         cwd=REPO_ROOT,

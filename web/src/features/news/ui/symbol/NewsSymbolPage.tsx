@@ -43,8 +43,8 @@ import "./newsSymbol.css";
  * occupancy out of the OI section of `/api/news/status`. Nothing is recomputed and nothing is merged into a
  * field the browser owns.
  *
- * Deliberately not built. There is no watchlist star: `watchlistHardCut.test.ts` keeps that vocabulary out
- * of production source, and it would be a third browser write besides. There is no price chart and no
+ * Deliberately not built. There is no watchlist star because this read-only page owns no second watchlist
+ * product or browser write. There is no price chart and no
  * open-interest curve — the same reason the OI monitor has none. The design's 交易视角 panel — the OI/price
  * quadrant and the pre-frame 1 h move — is still absent for the reason the OI monitor's is: both need the
  * price one hour before the frame, and the News price plane stores only the Event-anchored p0/p1/p4.

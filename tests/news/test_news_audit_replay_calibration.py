@@ -1,4 +1,4 @@
-"""#160: active calibration uses typed v4 judgments; the v1 corpus stays immutable audit evidence.
+"""Recorded metric/replay calibration; this is not current model-quality evidence.
 
 The policy-v8 fixture cannot be projected into the hard-cut contracts, by
 design. Its old `production_verdict`, `recorded_action` and Gate `priority`
@@ -14,12 +14,12 @@ from typing import Any
 
 import pytest
 
-from tests.support.baseline_calibration import (
-    CALIBRATION_FIXTURE,
-    HISTORICAL_CALIBRATION_FIXTURE,
+from tests.support.audit_replay_calibration import (
+    AUDIT_REPLAY_CORPUS,
+    HISTORICAL_AUDIT_CORPUS,
     _redact,
-    load_calibration_corpus,
-    load_historical_calibration_corpus,
+    load_audit_replay_corpus,
+    load_historical_audit_corpus,
     prose_offenders,
 )
 from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
@@ -32,7 +32,7 @@ _EXPECTED_CLUSTER_MACRO = 0.716667
 _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
-_ACTIVE_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
+_AUDIT_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
 # #193 rebinds the report to the strategy-artifact Program identity: the receipt now names `factory_id`
 # where it named `state_sha256`, and the stable root moved with the hard cut. The corpus, every score and
 # every case result are byte-for-byte what the previous pin covered — re-hashing this report with the old
@@ -64,7 +64,7 @@ _EXPECTED_REPORT_SHA256 = "11823a13abaed1a837c33ce96c37f4a7ba3655252e8fff3a3dd86
 
 @pytest.fixture(scope="module")
 def report() -> Any:
-    corpus = load_calibration_corpus()
+    corpus = load_audit_replay_corpus()
     cases = build_baseline_cases(corpus["episodes"], action_source="recorded")
     return run_baseline(cases, mode="recorded", artifact=load_stable_program_artifact())
 
@@ -83,20 +83,20 @@ def test_recorded_calibration_is_reproducible_from_the_typed_v2_corpus(report: A
     assert report.failures["by_code"] == {}
 
 
-def test_the_calibration_report_is_byte_stable_across_runs() -> None:
-    corpus = load_calibration_corpus()
+def test_the_recorded_metric_report_is_byte_stable_across_runs() -> None:
+    corpus = load_audit_replay_corpus()
     artifact = load_stable_program_artifact()
 
     def run() -> str:
         cases = build_baseline_cases(corpus["episodes"], action_source="recorded")
         return run_baseline(cases, mode="recorded", artifact=artifact).report_sha256
 
-    assert hashlib.sha256(CALIBRATION_FIXTURE.read_bytes()).hexdigest() == _ACTIVE_RAW_SHA256
+    assert hashlib.sha256(AUDIT_REPLAY_CORPUS.read_bytes()).hexdigest() == _AUDIT_RAW_SHA256
     assert run() == run() == _EXPECTED_REPORT_SHA256
 
 
 def test_v2_is_the_hard_cut_contract_not_a_compatibility_projection() -> None:
-    corpus = load_calibration_corpus()
+    corpus = load_audit_replay_corpus()
     cases = build_baseline_cases(corpus["episodes"], action_source="recorded")
     assert len(cases) == _EXPECTED_N
     for raw, case in zip(corpus["episodes"], cases, strict=True):
@@ -125,9 +125,9 @@ def test_v2_is_the_hard_cut_contract_not_a_compatibility_projection() -> None:
 
 
 def test_the_pre_160_fixture_remains_immutable_historical_evidence() -> None:
-    with gzip.open(HISTORICAL_CALIBRATION_FIXTURE, "rb") as handle:
+    with gzip.open(HISTORICAL_AUDIT_CORPUS, "rb") as handle:
         raw = handle.read()
-    historical = load_historical_calibration_corpus()
+    historical = load_historical_audit_corpus()
     assert hashlib.sha256(raw).hexdigest() == _HISTORICAL_RAW_SHA256
     assert historical["schema"] == "tracefold.news.baseline_calibration_corpus.v1"
     assert len(historical["episodes"]) == _HISTORICAL_N
@@ -137,12 +137,12 @@ def test_the_pre_160_fixture_remains_immutable_historical_evidence() -> None:
 
 
 def test_both_public_corpora_carry_no_provider_or_reviewer_prose() -> None:
-    active = load_calibration_corpus()
-    historical = load_historical_calibration_corpus()
-    assert prose_offenders(active["episodes"]) == []
+    audit = load_audit_replay_corpus()
+    historical = load_historical_audit_corpus()
+    assert prose_offenders(audit["episodes"]) == []
     assert prose_offenders(historical["episodes"]) == []
-    assert active["redaction"]["rule"].startswith("allowlist")
-    assert "recorded" in active["redaction"]["property"]
+    assert audit["redaction"]["rule"].startswith("allowlist")
+    assert "recorded" in audit["redaction"]["property"]
 
 
 def test_the_redactor_defaults_to_redacting_a_key_nobody_listed() -> None:
@@ -160,8 +160,8 @@ def test_the_redactor_defaults_to_redacting_a_key_nobody_listed() -> None:
 _V6_AUDIT_CORPUS_PROGRAM_SHA256 = "9334eae481e2d0cdcc3b982d25aa8def22538cadb1a57549074b56fb2a96d1ba"
 
 
-def test_the_active_corpus_is_the_shipped_program_and_names_no_policy(report: Any) -> None:
-    corpus = load_calibration_corpus()
+def test_audit_corpus_keeps_its_original_program_identity_and_recorded_mode_uses_no_policy(report: Any) -> None:
+    corpus = load_audit_replay_corpus()
     shipped = load_stable_program_artifact().program_sha256
     # The report names the Program it ran under; the corpus names the one that produced it.
     assert report.identity["program_sha256"] == shipped
@@ -176,7 +176,7 @@ def test_the_active_corpus_is_the_shipped_program_and_names_no_policy(report: An
 def test_timeliness_is_delivery_metadata_but_never_a_scored_prediction(report: Any) -> None:
     labelled = sum(
         1
-        for episode in load_calibration_corpus()["episodes"]
+        for episode in load_audit_replay_corpus()["episodes"]
         if (episode["accepted_review"].get("dimensions") or {}).get("timeliness") in {"pass", "fail"}
     )
     assert labelled == 3

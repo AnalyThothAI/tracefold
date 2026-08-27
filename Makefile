@@ -11,7 +11,10 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
+TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
+
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -36,17 +39,63 @@ test-fast: ## unit + hermetic contract + semantic architecture; no external reso
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest
 
-TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
-
 test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (explicitly excludes live)
 	@uv run python -m tests.support.evidence --assert-clean
-	@mkdir -p "$(TRACEFOLD_TEST_ARTIFACT_DIR)"
-	@TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pytest -p tests.support.evidence -m "not live" \
+	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json" "$(TRACEFOLD_TEST_LANE_DIR)"/*.json \
+		"$(TRACEFOLD_TEST_ARTIFACT_DIR)"/vitest-*.json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json"
+	@PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pytest \
+		-p tests.support.evidence -p _hypothesis_pytestplugin tests -m "not live" \
 		--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit.xml" \
 		--durations=50 \
-		--evidence-manifest="$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json"
-	@$(MAKE) --no-print-directory test-frontend
+		--evidence-manifest="$(TRACEFOLD_TEST_LANE_DIR)/python.json" \
+		--resource-evidence-manifest="$(TRACEFOLD_TEST_LANE_DIR)/resource.json"
+	@uv run python -m tests.support.evidence record-command \
+		--lane frontend-typecheck --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-typecheck.json" \
+		--tool typescript=$$(node -p "require('./web/node_modules/typescript/package.json').version") \
+		-- npm --prefix web run typecheck
+	@uv run python -m tests.support.evidence record-command \
+		--lane frontend-lint --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-lint.json" \
+		--tool eslint=$$(node -p "require('./web/node_modules/eslint/package.json').version") \
+		-- npm --prefix web run lint:eslint
+	@cd web && npm run test:architecture -- --reporter=json \
+		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json"
+	@uv run python -m tests.support.evidence record-vitest \
+		--lane frontend-architecture \
+		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
+		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-architecture.json"
+	@cd web && npm run test:unit -- --reporter=json \
+		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json"
+	@uv run python -m tests.support.evidence record-vitest \
+		--lane frontend-unit \
+		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
+		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-unit.json"
+	@uv run python -m tests.support.evidence record-command \
+		--lane frontend-format --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-format.json" \
+		--tool prettier=$$(node -p "require('./web/node_modules/prettier/package.json').version") \
+		-- npm --prefix web run format:check
+	@uv run python -m tests.support.evidence record-command \
+		--lane frontend-build --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-build.json" \
+		--tool vite=$$(node -p "require('./web/node_modules/vite/package.json').version") \
+		-- npm --prefix web run build
+	@uv run python -m tests.browser.run_full_stack_smoke \
+		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json"
+	@uv run python -m tests.support.evidence record-playwright \
+		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
 	@uv run python -m tests.support.evidence --assert-clean
+	@uv run python -m tests.support.evidence aggregate \
+		--lane-dir "$(TRACEFOLD_TEST_LANE_DIR)" \
+		--output "$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json" \
+		--required-lane python \
+		--required-lane resource \
+		--required-lane frontend-typecheck \
+		--required-lane frontend-lint \
+		--required-lane frontend-architecture \
+		--required-lane frontend-unit \
+		--required-lane frontend-format \
+		--required-lane frontend-build \
+		--required-lane browser
 
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property
@@ -56,6 +105,18 @@ test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
 
 test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
 	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
+
+test-browser-smoke: ## one real FastAPI static/bootstrap/bearer/news path in Chromium
+	@npm --prefix web run build:checked
+	@mkdir -p "$(TRACEFOLD_TEST_ARTIFACT_DIR)" "$(TRACEFOLD_TEST_LANE_DIR)"
+	@uv run python -m tests.browser.run_full_stack_smoke \
+		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json"
+	@uv run python -m tests.support.evidence record-playwright \
+		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
+
+test-visual: ## explicit four-viewport Playwright interaction/screenshot diagnostics
+	@npm --prefix web run test:e2e
 
 lint: ## run ruff
 	@uv run python -m ruff check .
@@ -68,9 +129,8 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 	@uv run ruff format --check .
 	@uv run mypy src
 	@uv run python scripts/regen_cli_help.py --check
-	@uv run python -m tests.support.refactor_baseline --check
 	@uv run python scripts/sync_agent_router.py --check
-	@uv run python -m pytest tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen"
+	@uv run python -m pytest tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow"
 	@uv run python -m compileall src tests
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
@@ -89,10 +149,10 @@ test-deploy: ## run deploy/operations subprocess and lifecycle tests
 test-e2e: ## run only tests/e2e/ (running service boundary)
 	@uv run python -m pytest tests/e2e -m e2e
 
-test-golden: ## run only tests/golden/ (real Postgres golden corpus)
+test-golden: ## run the real RabbitMQ -> Workers -> PostgreSQL -> HTTP golden path
 	@uv run python -m pytest tests/golden -m golden
 
-test-architecture: ## run only tests/architecture/ (AST/grep checks)
+test-architecture: ## run only semantic architecture contracts
 	@uv run python -m pytest tests/architecture -m architecture
 
 test-contract: ## run only tests/contract/
@@ -105,8 +165,8 @@ regen-contract: ## regenerate openapi.json + web/src/lib/types/openapi.ts
 	@uv run python scripts/regen_openapi.py
 	@cd web && npm run generate:types && cd ..
 
-install-hooks: ## install pre-commit hooks
-	@uv run pre-commit install
+install-hooks: ## diagnose and install this repository's pre-commit hook
+	@uv run python scripts/install_hooks.py
 
 init: ## create ~/.tracefold/config.yaml + PostgreSQL role password files
 	@$(TRACEFOLD) init
@@ -139,13 +199,26 @@ preflight: ## verify the one-command startup prerequisites
 		exit 1; \
 	}
 
+verify-main-ci: ## require the exact origin/main SHA to have a trusted green ci-gate
+	@uv run python scripts/require_main_ci.py
+
 up: preflight ## build, migrate, start, and verify the complete product
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _up-locked
 
 _up-locked:
-	@test "$${TRACEFOLD_DEPLOY_LOCK_HELD:-}" = "1" || { echo "Use make up; the locked implementation target is private." >&2; exit 2; }
-	@$(TRACEFOLD) init
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@uv run python scripts/require_main_ci.py
 	@set -eu; \
+		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
+			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
+			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
+			echo "up refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
+			exit 2; \
+		fi; \
+		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
+		COMPOSE_PROJECT_NAME=tracefold; \
+		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		$(TRACEFOLD) init; \
 		unset TRACEFOLD_APP_IMAGE; \
 		token="$${GITHUB_TOKEN:-}"; \
 		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
@@ -179,11 +252,13 @@ deploy-image: preflight ## deploy an explicit local DB-compatible sha256 image f
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
 
 _deploy-image-locked:
-	@test "$${TRACEFOLD_DEPLOY_LOCK_HELD:-}" = "1" || { echo "Use make deploy-image; the locked implementation target is private." >&2; exit 2; }
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@uv run python scripts/require_main_ci.py
 	@set -eu; \
 		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
-			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ]; then \
-			echo "deploy-image refuses inherited Compose stack variables; unset COMPOSE_FILE, COMPOSE_PROJECT_NAME, COMPOSE_ENV_FILES, and COMPOSE_PROFILES." >&2; \
+			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
+			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
+			echo "deploy-image refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
 			exit 2; \
 		fi; \
 		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \

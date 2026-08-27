@@ -1066,7 +1066,7 @@ The recorded calibration is pinned to a checked-in corpus
 (`tests/fixtures/news_baseline_calibration_v2.json` for metric v4), not to the live
 database, so it proves metric wiring rather than tracking corpus growth. The v1
 fixture remains frozen metric-v3 audit evidence. The
-expected values are held only by `tests/news/test_news_baseline_calibration.py`;
+expected values are held only by `tests/news/test_news_audit_replay_calibration.py`;
 no document restates them, because four copies of one number is how a receipt
 starts disagreeing with itself. A live run over the same window will differ, by
 design — the database keeps accepting reviews and superseding evidence. Every

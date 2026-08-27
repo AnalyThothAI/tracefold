@@ -1,4 +1,4 @@
-"""OpenTrade's reviewed execution-truth seam for #185 PR-C2."""
+"""OpenTrade adapter parsing, preflight, and fail-closed execution contract."""
 
 from __future__ import annotations
 

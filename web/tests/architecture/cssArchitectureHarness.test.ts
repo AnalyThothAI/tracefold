@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import postcss from "postcss";
+import selectorParser from "postcss-selector-parser";
 import { describe, expect, it } from "vitest";
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -9,14 +11,14 @@ const srcRoot = join(webRoot, "src");
 const appLayerOrder =
   "@layer properties, theme, base, components, utilities, app.base, app.primitives, app.shell, app.features, app.overrides;";
 
-const retiredGlobalCssBuckets = new Set([
+const globalStyleFiles = new Set(["styles/base.css", "styles/tailwind.css", "styles/tokens.css"]);
+const retiredGlobalBuckets = new Set([
   "cockpit.css",
   "macro.css",
   "macroResponsive.css",
   "shared.css",
   "signalLab.css",
 ]);
-const globalStyleFiles = new Set(["styles/base.css", "styles/tailwind.css", "styles/tokens.css"]);
 
 const featureClassPrefixes: Record<string, string[]> = {
   cockpit: ["brand", "brand-", "center-column", "cockpit-", "searchbar", "topbar", "topbar-"],
@@ -85,6 +87,14 @@ const modifierClassNames = new Set([
 ]);
 
 describe("CSS architecture harness", () => {
+  it("does not recreate retired global CSS buckets", () => {
+    const recreated = collectFiles(srcRoot)
+      .filter((path) => retiredGlobalBuckets.has(basename(path)))
+      .map(relativeToSrc);
+
+    expect(recreated).toEqual([]);
+  });
+
   it("declares app cascade layers before split CSS chunks can load", () => {
     const indexHtml = readFileSync(join(webRoot, "index.html"), "utf8");
     const tokensCss = readFileSync(join(srcRoot, "styles/tokens.css"), "utf8");
@@ -92,58 +102,6 @@ describe("CSS architecture harness", () => {
     expect(tokensCss.trimStart().startsWith(appLayerOrder)).toBe(true);
     expect(indexHtml).toContain(appLayerOrder);
     expect(indexHtml.indexOf(appLayerOrder)).toBeLessThan(indexHtml.indexOf('<link rel="icon"'));
-  });
-
-  it("does not recreate retired side-effect CSS buckets", () => {
-    const cssFiles = collectFiles(srcRoot).filter(isCssFile);
-    const retiredFiles = cssFiles
-      .filter((path) => retiredGlobalCssBuckets.has(basename(path)))
-      .map(relativeToSrc);
-
-    const retiredImports = collectFiles(srcRoot)
-      .filter((path) => [".ts", ".tsx"].includes(extname(path)))
-      .flatMap((path) =>
-        cssImports(path)
-          .filter((item) => retiredGlobalCssBuckets.has(basename(item.specifier)))
-          .map((item) => `${relativeToSrc(path)} imports ${item.specifier}`),
-      );
-
-    expect([...retiredFiles, ...retiredImports]).toEqual([]);
-  });
-
-  it("keeps retired route and sidebar selector fragments out of production side-effect CSS", () => {
-    const retiredFragments = ["desktop-side-rail", "mobile-route-nav", "side-rail", "route-nav"];
-    const offenders = collectFiles(srcRoot)
-      .filter(isSideEffectCssFile)
-      .flatMap((path) => {
-        const css = readFileSync(path, "utf8");
-
-        return cssRules(css).flatMap((rule) =>
-          retiredFragments
-            .filter((fragment) => rule.selector.includes(fragment))
-            .map(
-              (fragment) =>
-                `${relativeToSrc(path)}:${lineNumber(css, rule.start)} keeps retired ${fragment} fragment via ${compactSelector(
-                  rule.selector,
-                )}`,
-            ),
-        );
-      });
-
-    expect(offenders).toEqual([]);
-  });
-
-  it("keeps legacy migration selector names out of production CSS", () => {
-    const offenders = collectFiles(srcRoot)
-      .filter(isCssFile)
-      .flatMap((path) => {
-        const css = readFileSync(path, "utf8");
-        return cssClassNames(css)
-          .filter((className) => /legacy/i.test(className))
-          .map((className) => `${relativeToSrc(path)} keeps .${className}`);
-      });
-
-    expect(offenders).toEqual([]);
   });
 
   it("keeps global custom property definitions in the token stylesheet", () => {
@@ -156,7 +114,7 @@ describe("CSS architecture harness", () => {
           .filter((rule) =>
             rule.selector.split(",").some((selector) => selector.trim() === ":root"),
           )
-          .map((rule) => `${relativeToSrc(path)}:${lineNumber(css, rule.start)} defines :root`);
+          .map((rule) => `${relativeToSrc(path)}:${rule.line} defines :root`);
       });
 
     expect(offenders).toEqual([]);
@@ -167,10 +125,13 @@ describe("CSS architecture harness", () => {
       .filter(isCssFile)
       .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
       .flatMap((path) => {
-        const css = sanitizeCss(readFileSync(path, "utf8"));
-        return [...css.matchAll(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g)].map(
-          (match) => `${relativeToSrc(path)}:${lineNumber(css, match.index)} uses ${match[0]}`,
-        );
+        const css = readFileSync(path, "utf8");
+        return cssDeclarations(css)
+          .filter((declaration) => /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/.test(declaration.value))
+          .map(
+            (declaration) =>
+              `${relativeToSrc(path)}:${declaration.line} uses ${declaration.property}: ${declaration.value}`,
+          );
       });
 
     expect(
@@ -184,10 +145,13 @@ describe("CSS architecture harness", () => {
       .filter(isCssFile)
       .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
       .flatMap((path) => {
-        const css = sanitizeCss(readFileSync(path, "utf8"));
-        return [...css.matchAll(/\bcolor-mix\([^;]+/g)].map(
-          (match) => `${relativeToSrc(path)}:${lineNumber(css, match.index)} derives ${match[0]}`,
-        );
+        const css = readFileSync(path, "utf8");
+        return cssDeclarations(css)
+          .filter((declaration) => declaration.value.includes("color-mix("))
+          .map(
+            (declaration) =>
+              `${relativeToSrc(path)}:${declaration.line} derives ${declaration.property}: ${declaration.value}`,
+          );
       });
 
     expect(
@@ -203,18 +167,22 @@ describe("CSS architecture harness", () => {
     for (const path of collectFiles(srcRoot)
       .filter(isCssFile)
       .filter((path) => relativeToSrc(path) !== "styles/tokens.css")) {
-      const css = sanitizeCss(readFileSync(path, "utf8"));
-      for (const match of css.matchAll(/\bfont(?:-size)?\s*:\s*([^;]+);/g)) {
-        if (/\b\d*\.?\d+(?:px|rem)\b/.test(match[1])) {
+      const css = readFileSync(path, "utf8");
+      for (const declaration of cssDeclarations(css)) {
+        if (
+          (declaration.property === "font" || declaration.property === "font-size") &&
+          /\b\d*\.?\d+(?:px|rem)\b/.test(declaration.value)
+        ) {
           typographyOffenders.push(
-            `${relativeToSrc(path)}:${lineNumber(css, match.index)} uses ${match[0]}`,
+            `${relativeToSrc(path)}:${declaration.line} uses ${declaration.property}: ${declaration.value}`,
           );
         }
-      }
-      for (const match of css.matchAll(/\bborder-radius\s*:\s*([^;]+);/g)) {
-        if (!match[1].trim().startsWith("var(")) {
+        if (
+          declaration.property === "border-radius" &&
+          !declaration.value.trim().startsWith("var(")
+        ) {
           radiusOffenders.push(
-            `${relativeToSrc(path)}:${lineNumber(css, match.index)} uses ${match[0]}`,
+            `${relativeToSrc(path)}:${declaration.line} uses border-radius: ${declaration.value}`,
           );
         }
       }
@@ -234,19 +202,18 @@ describe("CSS architecture harness", () => {
     const cssFiles = collectFiles(srcRoot).filter(isCssFile);
     const defined = new Set(
       cssFiles.flatMap((path) =>
-        [...sanitizeCss(readFileSync(path, "utf8")).matchAll(/(--[a-z0-9-]+)\s*:/g)].map(
-          (match) => match[1],
-        ),
+        cssDeclarations(readFileSync(path, "utf8"))
+          .filter((declaration) => declaration.property.startsWith("--"))
+          .map((declaration) => declaration.property),
       ),
     );
     const offenders = cssFiles.flatMap((path) => {
-      const css = sanitizeCss(readFileSync(path, "utf8"));
-      return [...css.matchAll(/var\((--[a-z0-9-]+)(\s*,[^)]*)?\)/g)]
-        .filter((match) => !defined.has(match[1]) && !match[2])
-        .map(
-          (match) =>
-            `${relativeToSrc(path)}:${lineNumber(css, match.index)} references ${match[1]}`,
-        );
+      const css = readFileSync(path, "utf8");
+      return cssDeclarations(css).flatMap((declaration) =>
+        [...declaration.value.matchAll(/var\((--[a-z0-9-]+)(\s*,[^)]*)?\)/g)]
+          .filter((match) => !defined.has(match[1]) && !match[2])
+          .map((match) => `${relativeToSrc(path)}:${declaration.line} references ${match[1]}`),
+      );
     });
 
     expect(
@@ -309,7 +276,7 @@ describe("CSS architecture harness", () => {
     const sharedUiClasses = new Set(
       collectFiles(join(srcRoot, "shared/ui"))
         .filter(isSideEffectCssFile)
-        .flatMap((path) => cssClassNames(readFileSync(path, "utf8")))
+        .flatMap((path) => cssRules(readFileSync(path, "utf8")).flatMap((rule) => rule.classNames))
         .filter((className) => !isModifierClassName(className)),
     );
 
@@ -323,7 +290,7 @@ describe("CSS architecture harness", () => {
             .filter((className) => sharedUiClasses.has(className))
             .map(
               (className) =>
-                `${relativeToSrc(path)}:${lineNumber(css, rule.start)} redefines shared UI class .${className}`,
+                `${relativeToSrc(path)}:${rule.line} redefines shared UI class .${className}`,
             ),
         );
       });
@@ -358,7 +325,7 @@ describe("CSS architecture harness", () => {
 
           return [...foreignClasses, ...unscopedModifiers].map(
             (className) =>
-              `${relativeToSrc(path)}:${lineNumber(css, rule.start)} uses unowned class .${className} in ${compactSelector(rule.selector)}`,
+              `${relativeToSrc(path)}:${rule.line} uses unowned class .${className} in ${compactSelector(rule.selector)}`,
           );
         });
       });
@@ -375,7 +342,9 @@ describe("CSS architecture harness", () => {
     for (const path of collectFiles(join(srcRoot, "features")).filter(isSideEffectCssFile)) {
       const featureName = featureNameFromPath(path);
 
-      for (const className of cssClassNames(readFileSync(path, "utf8"))) {
+      for (const className of cssRules(readFileSync(path, "utf8")).flatMap(
+        (rule) => rule.classNames,
+      )) {
         if (isModifierClassName(className)) {
           continue;
         }
@@ -401,8 +370,14 @@ type CssImport = {
 
 type CssRule = {
   classNames: string[];
+  line: number;
   selector: string;
-  start: number;
+};
+
+type CssDeclaration = {
+  line: number;
+  property: string;
+  value: string;
 };
 
 function collectFiles(root: string): string[] {
@@ -442,36 +417,38 @@ function isAllowedCssImport(sourcePath: string, specifier: string): boolean {
 }
 
 function cssRules(css: string): CssRule[] {
-  const normalizedCss = sanitizeCss(css);
   const rules: CssRule[] = [];
-  const pattern = /([^{}]+)\{([^{}]*)\}/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(normalizedCss)) !== null) {
-    const selector = match[1].trim();
-
-    if (!selector || selector.startsWith("@")) {
-      continue;
-    }
-
+  postcss.parse(css).walkRules((rule) => {
     rules.push({
-      classNames: cssClassNames(selector),
-      selector,
-      start: match.index,
+      classNames: cssClassNames(rule.selector),
+      line: rule.source?.start?.line ?? 1,
+      selector: rule.selector,
     });
-  }
+  });
 
   return rules;
 }
 
 function cssClassNames(input: string): string[] {
-  const normalizedInput = sanitizeCss(input);
+  const classes = new Set<string>();
+  selectorParser((selectors) => {
+    selectors.walkClasses((node) => {
+      classes.add(node.value);
+    });
+  }).processSync(input);
+  return [...classes];
+}
 
-  return [
-    ...new Set(
-      [...normalizedInput.matchAll(/\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)/g)].map((item) => item[1]),
-    ),
-  ];
+function cssDeclarations(css: string): CssDeclaration[] {
+  const declarations: CssDeclaration[] = [];
+  postcss.parse(css).walkDecls((declaration) => {
+    declarations.push({
+      line: declaration.source?.start?.line ?? 1,
+      property: declaration.prop,
+      value: declaration.value,
+    });
+  });
+  return declarations;
 }
 
 function compactSelector(selector: string): string {
@@ -504,10 +481,6 @@ function isModifierClassName(className: string): boolean {
   );
 }
 
-function lineNumber(input: string, index: number): number {
-  return input.slice(0, index).split(/\r?\n/).length;
-}
-
 function matchesAnyPrefix(className: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) =>
     prefix.endsWith("-") ? className.startsWith(prefix) : className === prefix,
@@ -516,10 +489,4 @@ function matchesAnyPrefix(className: string, prefixes: string[]): boolean {
 
 function relativeToSrc(path: string): string {
   return relative(srcRoot, path);
-}
-
-function sanitizeCss(input: string): string {
-  return input
-    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, " "))
-    .replace(/(@layer\s+app)\.([_a-zA-Z]+[_a-zA-Z0-9-]*)/g, "$1-$2");
 }

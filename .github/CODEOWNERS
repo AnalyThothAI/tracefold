@@ -1,0 +1,11 @@
+# Verification trust root: changes here require review from a maintainer other
+# than the repository's normal automation author.
+/.github/CODEOWNERS @amandafanny @Giftpaulmo @0xbrak
+/.github/workflows/ @amandafanny @Giftpaulmo @0xbrak
+/Makefile @amandafanny @Giftpaulmo @0xbrak
+/scripts/require_main_ci.py @amandafanny @Giftpaulmo @0xbrak
+/tests/support/evidence.py @amandafanny @Giftpaulmo @0xbrak
+/tests/contract/test_evidence_v2_contract.py @amandafanny @Giftpaulmo @0xbrak
+/tests/contract/test_verification_gate_contract.py @amandafanny @Giftpaulmo @0xbrak
+/tests/deploy/test_main_ci_gate.py @amandafanny @Giftpaulmo @0xbrak
+/tests/architecture/test_docs_surface.py @amandafanny @Giftpaulmo @0xbrak

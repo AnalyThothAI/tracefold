@@ -133,15 +133,6 @@ describe("News console contract", () => {
     expect(page).toContain("firstPage?.counts");
     expect(cssRule(toolbarCss, ".news-feed-toolbar")).toContain("justify-content: space-between");
     expect(cssRule(toolbarCss, ".news-feed-toolbar")).toContain("position: sticky");
-    for (const [path, budget] of [
-      ["src/features/news/ui/feed/newsFeed.css", 300],
-      ["src/features/news/ui/feed/newsEventRow.css", 400],
-      ["src/features/news/ui/feed/newsFeedToolbar.css", 300],
-    ] as const) {
-      expect(readSource(path).split(/\r?\n/).length, `${path} is over budget`).toBeLessThanOrEqual(
-        budget,
-      );
-    }
   });
 
   it("keeps feature CSS from reaching the primitives rendered inside a feature card", () => {

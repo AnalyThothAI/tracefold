@@ -39,6 +39,13 @@ class NewsProgramRuntimeComposition:
     reader_card_fallback_alias: bool
 
     def secret_free_slot_identities(self) -> dict[str, dict[str, str] | None]:
+        if not self.program_configured:
+            return {
+                "event_semantics.primary": None,
+                "reader_card.primary": None,
+                "event_semantics.fallback": None,
+                "reader_card.fallback": None,
+            }
         return {
             "event_semantics.primary": _optional_endpoint_identity(self.event_semantics_primary),
             "reader_card.primary": _optional_endpoint_identity(self.reader_card_primary),

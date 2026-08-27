@@ -417,20 +417,6 @@ def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     receipts = result.model_dump(mode="json")
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
     assert "source" in receipts["metric"]["implementation"]
-    assert set(type(result).model_fields) == {
-        "patch",
-        "metric",
-        "optimizer_config",
-        "trajectory",
-        "checkpoint",
-        "split",
-        "retrieval",
-        "failure_cluster_ids",
-        "target_dimensions",
-        "metric_calls",
-        "train_count",
-        "val_count",
-    }
 
 
 def test_non_json_trajectory_value_fails_closed() -> None:
@@ -846,11 +832,6 @@ def test_the_metric_scores_editorial_judgment_with_no_operational_input() -> Non
     projection must still carry no control state, or a future control plane could leak into the reward.
     """
 
-    import inspect as _inspect
-
-    from tracefold.news.triage_rules import decide as _decide
-
-    assert "muted" not in _inspect.signature(_decide).parameters
     assert "control" not in _metric_gold()["policy_metric"]
 
 

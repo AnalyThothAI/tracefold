@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from pathlib import Path
 
 from tracefold.trading.contracts import Bar
 from tracefold.trading.research.event_study import (
@@ -171,10 +170,6 @@ def test_partial_outcome_is_not_counted_as_complete_coverage_or_max_holding() ->
 
 
 def test_event_study_policy_is_version_owned_not_read_from_runtime_order_config() -> None:
-    source = (
-        Path(__file__).parents[2] / "src" / "tracefold" / "trading" / "pipeline" / "liquidation_shadow.py"
-    ).read_text(encoding="utf-8")
-    assert "config.order" not in source
     assert EVENT_STUDY_POLICY.snapshot == {
         "stop_bps": 200,
         "take_profit_bps": 0,

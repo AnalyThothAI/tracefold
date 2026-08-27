@@ -28,6 +28,7 @@ from tests.postgres_test_utils import (
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
+from tracefold.app.workers.root import GRACEFUL_DRAIN_TIMEOUT_SECONDS
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -589,18 +590,22 @@ def test_sigterm_after_provider_completion_preserves_inflight_publication() -> N
         _ensure_process_stopped(process)
 
 
-def test_real_workers_absolute_graceful_deadline_covers_never_returning_future() -> None:
+def test_production_graceful_deadline_default_remains_thirty_seconds() -> None:
+    assert GRACEFUL_DRAIN_TIMEOUT_SECONDS == 30.0
+
+
+def test_workers_absolute_graceful_deadline_covers_never_returning_future() -> None:
     prepare_postgres_database()
     port = _free_port()
-    process = _start_workers_process("finite_never_returns", port)
+    process = _start_workers_process("finite_never_returns", port, graceful_timeout_seconds=0.5)
     try:
         _wait_ready(process, port)
         _wait_for_output(process, "FINITE_STARTED")
         started = time.monotonic()
         process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=32.0) != 0
+        assert process.wait(timeout=2.0) != 0
         elapsed = time.monotonic() - started
-        assert 29.0 <= elapsed <= 32.0
+        assert 0.4 <= elapsed <= 2.0
         _assert_probe_closed(port)
         row = _runtime_row()
         assert row["lifecycle_state"] == "failed"
@@ -654,18 +659,22 @@ def _start_workers_process(
     port: int,
     *,
     extra_env: dict[str, str] | None = None,
+    graceful_timeout_seconds: float | None = None,
 ) -> subprocess.Popen[str]:
+    command = [
+        sys.executable,
+        str(_PROCESS_ENTRY),
+        "--dsn",
+        _test_postgres_dsn(),
+        "--port",
+        str(port),
+        "--mode",
+        mode,
+    ]
+    if graceful_timeout_seconds is not None:
+        command.extend(("--graceful-timeout-seconds", str(graceful_timeout_seconds)))
     return subprocess.Popen(
-        [
-            sys.executable,
-            str(_PROCESS_ENTRY),
-            "--dsn",
-            _test_postgres_dsn(),
-            "--port",
-            str(port),
-            "--mode",
-            mode,
-        ],
+        command,
         cwd=_PROCESS_ENTRY.parents[2],
         env={**os.environ, **(extra_env or {}), "PYTHONUNBUFFERED": "1"},
         stdout=subprocess.PIPE,

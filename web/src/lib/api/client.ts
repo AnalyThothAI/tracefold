@@ -25,6 +25,7 @@ export class ApiError extends Error {
 }
 
 export function setAuthToken(token: string | null): void {
+  if (authToken !== token) etagCache.clear();
   authToken = token;
 }
 

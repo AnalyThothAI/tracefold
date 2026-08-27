@@ -1,4 +1,4 @@
-"""The frozen recorded-baseline calibration corpora, and the redaction that makes them publishable.
+"""Frozen recorded metric-audit corpora and their publication-safe redaction.
 
 The recorded calibration was reproducible only against the operator's live database, so it stopped being a
 calibration the moment the corpus grew — #143 published `0.896373 / n=162` and by 2026-08-23 the same command
@@ -8,7 +8,7 @@ prove that metric *wiring* is unchanged, which is the only thing this check exis
 The pre-#160 corpus remains frozen at `tests/fixtures/news_baseline_calibration_v1.json.gz`. It is historical
 audit evidence only: its `production_verdict`, `recorded_action`, policy-v8 and Gate `priority` fields are
 deliberately rejected by the current hard-cut contracts. Rewriting it would erase the evidence of what the
-old ruler measured. The active typed corpus is the separate
+old ruler measured. The current-format audit corpus is the separate
 `tests/fixtures/news_baseline_calibration_v2.json`, with `production_judgment`, the complete persisted
 `recorded_decision_result`, policy v10 and `queue_priority`.
 
@@ -29,7 +29,7 @@ would read different neighbours out of redacted headlines. This fixture is there
 
 Regenerate v2 (requires the operator's database and `~/.tracefold/config.yaml`):
 
-    uv run python -m tests.support.baseline_calibration tests/fixtures/news_baseline_calibration_v2.json
+    uv run python -m tests.support.audit_replay_calibration tests/fixtures/news_baseline_calibration_v2.json
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ from pathlib import Path
 from typing import Any
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
-HISTORICAL_CALIBRATION_FIXTURE = _FIXTURE_DIR / "news_baseline_calibration_v1.json.gz"
-HISTORICAL_CALIBRATION_SCHEMA = "tracefold.news.baseline_calibration_corpus.v1"
-CALIBRATION_FIXTURE = _FIXTURE_DIR / "news_baseline_calibration_v2.json"
-CALIBRATION_SCHEMA = "tracefold.news.baseline_calibration_corpus.v2"
+HISTORICAL_AUDIT_CORPUS = _FIXTURE_DIR / "news_baseline_calibration_v1.json.gz"
+HISTORICAL_AUDIT_SCHEMA = "tracefold.news.baseline_calibration_corpus.v1"
+AUDIT_REPLAY_CORPUS = _FIXTURE_DIR / "news_baseline_calibration_v2.json"
+AUDIT_REPLAY_SCHEMA = "tracefold.news.baseline_calibration_corpus.v2"
 
 # Keys whose values the recorded metric, the cluster grouping or the retrieval receipt compare or count, and
 # which carry no prose: rubric labels, enums, symbols, content hashes, opaque identifiers and stable keys.
@@ -149,7 +149,7 @@ def _redact(value: Any, *, key: str = "") -> Any:
     return value
 
 
-def redact_calibration_episode(episode: dict[str, Any]) -> dict[str, Any]:
+def redact_audit_episode(episode: dict[str, Any]) -> dict[str, Any]:
     """Redact one current episode and reissue identities over the redacted bytes.
 
     `ScoredJudgment` hashes its verdict. Redacting reader copy after issuing the
@@ -199,23 +199,23 @@ def _load_fixture(path: Path, schema: str) -> dict[str, Any]:
         raw = path.read_bytes()
     payload: dict[str, Any] = json.loads(raw)
     if payload.get("schema") != schema:
-        raise ValueError(f"news_baseline_calibration_schema_unknown:{payload.get('schema')}")
+        raise ValueError(f"news_audit_replay_schema_unknown:{payload.get('schema')}")
     return payload
 
 
-def load_calibration_corpus() -> dict[str, Any]:
-    """Load the current typed, policy-v10 calibration corpus."""
+def load_audit_replay_corpus() -> dict[str, Any]:
+    """Load the current-format, policy-v10 recorded metric-audit corpus."""
 
-    return _load_fixture(CALIBRATION_FIXTURE, CALIBRATION_SCHEMA)
+    return _load_fixture(AUDIT_REPLAY_CORPUS, AUDIT_REPLAY_SCHEMA)
 
 
-def load_historical_calibration_corpus() -> dict[str, Any]:
+def load_historical_audit_corpus() -> dict[str, Any]:
     """Load the immutable pre-#160 audit corpus without projecting it into current models."""
 
-    return _load_fixture(HISTORICAL_CALIBRATION_FIXTURE, HISTORICAL_CALIBRATION_SCHEMA)
+    return _load_fixture(HISTORICAL_AUDIT_CORPUS, HISTORICAL_AUDIT_SCHEMA)
 
 
-def write_calibration_corpus(path: Path, payload: dict[str, Any]) -> int:
+def write_audit_replay_corpus(path: Path, payload: dict[str, Any]) -> int:
     """Deterministic *content*: sorted keys and no timestamp, so a regeneration that changed nothing produces
     the same JSON document. The gzip container is not byte-reproducible across zlib builds, so the fixture's
     identity is the decompressed document and never its compressed size."""
@@ -246,7 +246,7 @@ def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs 
         episodes = datasets.baseline_episodes(window, cohort=False, limit=5000)
 
     payload = {
-        "schema": CALIBRATION_SCHEMA,
+        "schema": AUDIT_REPLAY_SCHEMA,
         "captured_window": {"from_ms": window.from_ms, "to_ms": window.to_ms},
         "program_sha256": artifact.program_sha256,
         "redaction": {
@@ -255,12 +255,12 @@ def _main(destination: str) -> None:  # pragma: no cover - operator tool, needs 
             "rule": "allowlist: every string outside structural_keys is redacted",
             "property": "equality-preserving, not similarity-preserving; valid for --mode recorded only",
         },
-        "episodes": [redact_calibration_episode(dict(episode)) for episode in episodes],
+        "episodes": [redact_audit_episode(dict(episode)) for episode in episodes],
     }
     offenders = prose_offenders(payload["episodes"])
     if offenders:  # never write a fixture the guard test would reject
-        raise SystemExit(f"news_baseline_calibration_prose_survived:{len(offenders)}:{offenders[0][0]}")
-    size = write_calibration_corpus(Path(destination), payload)
+        raise SystemExit(f"news_audit_replay_prose_survived:{len(offenders)}:{offenders[0][0]}")
+    size = write_audit_replay_corpus(Path(destination), payload)
     print(json.dumps({"episodes": len(payload["episodes"]), "raw_bytes": size}))
 
 

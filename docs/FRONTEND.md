@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/orders`, and `/api/trading/events/{event_id}` over HTTP. Every one of them is a read: since #256 the browser has no write path at all — the ReviewDesk page and its two mutation endpoints are gone, and `lib/api/client.ts` no longer exposes a `postApi`, so "the console cannot write" is true by construction rather than by convention. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
+The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/orders`, `/api/trading/gate`, and `/api/trading/events/{event_id}` over HTTP. Every one of them is a read: since #256 the browser has no write path at all — the ReviewDesk page and its two mutation endpoints are gone, and `lib/api/client.ts` no longer exposes a `postApi`, so "the console cannot write" is true by construction rather than by convention. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -48,6 +48,7 @@ the route components into the eager shell chunk.
 | `msw/`              | MSW server, handlers, and named API scenarios.                                                         |
 | `render/`           | React Testing Library render wrappers and route render harnesses.                                      |
 | `e2e/golden-paths/` | Playwright browser golden paths.                                                                       |
+| `e2e/full-stack/`   | Required Chromium smoke against real FastAPI static/bootstrap/API reads.                               |
 
 ## Conventions
 
@@ -132,8 +133,8 @@ the route components into the eager shell chunk.
   drops it, and the lane it fed did not need a browser. `tracefold news review
   queue | evidence | submit | accept-drafts | external-miss` is the whole
   ReviewDesk contract now, appending to the same `news_reviews` rows the
-  learning lane reads. `web/tests/architecture/reviewDeskHardCut.test.ts` keeps
-  the route, the page, the queries and the write verb out.
+  learning lane reads. The public route and generated HTTP contracts keep the
+  route and every browser write verb out.
 
   Current quotes are a separate 15 s query (`/api/news/quotes`) keyed by the
   sorted symbol batch, never a feed field: a price that changed must not
@@ -390,8 +391,8 @@ the route components into the eager shell chunk.
   `program_output.decision.thesis_zh` exists only for the model lane, so the page
   names the rule (`policyRuleZh`, the same map the OI table's 交易判定 cell uses)
   instead of paraphrasing a decision nobody wrote. And it binds no keys: #82 cut
-  the console's keyboard layer whole, `keyboardLayerHardCut.test.ts` keeps it
-  cut, and the cards are real buttons in the tab order. The artifact's
+  the console's keyboard layer whole, and the cards are real buttons in the tab
+  order. The artifact's
   「N 个新案例到达 · 点击合并」 pill is likewise absent: selection is URL-owned by
   `?case=`, so an arriving case cannot move what the pane is showing.
 
@@ -689,7 +690,7 @@ the route components into the eager shell chunk.
   bootstrap token is missing must never leave an infinite skeleton.
 - **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `PageState`, and `RouteBackLink` own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, side-effect class names reused across feature roots, literal or locally derived colours outside `styles/tokens.css`, raw type sizes and radii outside the global scale, and unresolved custom properties. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
-- **Artifact geometry contract.** `web/tests/architecture/artifactGeometryContract.test.ts` pins the track lists, measures and shell offsets the console's design artifact fixes, as the strings it fixes them to. Every other CSS gate asks whether a rule is *allowed*; this one asks whether it is the value the artifact drew. It exists because #207/#256 rebuilt four pages that matched the artifact's structure and none of its measurements — `336px / 856px` had become `1fr / 1.22fr`, a column the artifact lets grow had become a fixed width, 14px between navigation groups had become zero — and neither the visual baselines (`maxDiffPixelRatio` passes a column moving fifty pixels) nor any review caught it (#280). Moving a value is fine when the design moves; move the expectation with it and name the artifact version.
+- **Rendered geometry.** Responsive navigation, overflow, landmarks and interaction are protected in Playwright, where computed layout exists. The explicit four-viewport visual lane remains diagnostic rather than merge evidence. Source tests do not pin selector spelling, file layout, exact track strings or a CSS line budget, so equivalent refactors remain possible.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, `.topbar-sidebar-trigger` and `.cockpit-app-sidebar`, split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, `AppBottomNav.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Tablet route navigation is the shared `Drawer` primitive opened from the topbar trigger; below `768px` there is no drawer at all and `AppBottomNav` carries every destination (#87).
 - **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, and the main route scroll container.
@@ -736,7 +737,11 @@ the route components into the eager shell chunk.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
-- **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
+- **Side-effect CSS review signal.** Large owner stylesheets are a cohesion signal
+  for review, not a correctness threshold. CSS ownership and forbidden
+  cross-owner selectors remain mechanical boundaries; equivalent selector,
+  variable or file refactors are judged by rendered geometry, overflow,
+  accessibility and the explicit visual lane rather than an exact line budget.
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
 - **Colour axes.** Colour carries exactly two axes and they never share a hue.
   *Market direction* owns red and green — 红 = 利多, 绿 = 利空, the mainland
@@ -780,7 +785,8 @@ Common frontend gates:
 - `cd web && npm run typecheck`
 - `cd web && npm test -- --run`
 - `cd web && npm run build`
-- `cd web && npm run test:e2e`
+- `cd web && npm run test:e2e` (explicit four-project visual/interaction lane)
+- `make test-browser-smoke` (required single-Chromium FastAPI/browser seam)
 
 Playwright projects are part of the frontend contract:
 
@@ -791,13 +797,23 @@ Playwright projects are part of the frontend contract:
 
 Desktop-only specs must explicitly skip non-desktop projects. Mobile-only specs must explicitly skip non-mobile projects. New `page.setViewportSize` calls are allowed only in dedicated responsive specs or explicitly marked desktop-only specs.
 
+The required smoke uses a separate single-Chromium project with no route
+interception and no skips. It loads the production bundle from FastAPI,
+observes `/api/bootstrap`, verifies the installed bearer reaches
+`/api/news/feed`, and renders a service-owned Event fact on `/news`. Every
+Playwright spec uses the shared guard fixture: unexpected `pageerror`, console
+error, failed request or unhandled API request fails the case. The four-project
+mock/visual lane remains valuable for responsive interaction and screenshots
+but is not evidence of a backend seam and is not required on every PR.
+
 Repository fast gate:
 
 - `make check`
 
-Integration, backend E2E, golden, and browser lanes are selected explicitly
-from the changed seam per `TESTING.md`; there is no monolithic repository-wide
-completion target.
+Focused development runs select integration, backend E2E, golden, browser and
+visual lanes from the changed seam per `DEVELOPMENT.md`. `make test-evidence`
+is the one exact-HEAD aggregate used for merge/release evidence; the visual
+matrix and scheduled diagnostics remain explicit separate lanes.
 
 Production bundles ship inside the same Docker image as the Python service and are served by the FastAPI static-file mount.
 

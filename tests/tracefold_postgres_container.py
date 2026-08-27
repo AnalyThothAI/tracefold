@@ -19,4 +19,9 @@ TRACEFOLD_POSTGRES_COMMAND = [
 
 
 def tracefold_postgres_container(postgres_container_cls: type[Any]) -> Any:
-    return postgres_container_cls(TEST_POSTGRES_IMAGE).with_command(TRACEFOLD_POSTGRES_COMMAND)
+    return postgres_container_cls(
+        TEST_POSTGRES_IMAGE,
+        username="postgres",
+        password="postgres",
+        dbname="tracefold_test",
+    ).with_command(TRACEFOLD_POSTGRES_COMMAND)

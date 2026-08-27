@@ -444,11 +444,19 @@ cd web && npm run dev
 Developer checks remain separate from startup:
 
 ```bash
+make install-hooks
 uv run pytest
 uv run ruff check .
 uv run python -m compileall src tests
 cd web && npm run typecheck && npm run lint
 ```
+
+`make install-hooks` first resolves Git's effective hook directory. It refuses a
+stale or external `core.hooksPath` and prints the smallest recovery command;
+after a successful install it verifies that the executable pre-commit hook
+belongs to this repository's Git common directory. The hooks reuse the locked
+Ruff toolchain and run ESLint/Prettier only on staged frontend files. They are
+fast local feedback, not merge or release evidence.
 
 Other frontend commands are:
 

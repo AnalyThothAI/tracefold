@@ -1,9 +1,15 @@
 import "@testing-library/jest-dom/vitest";
-import { configure } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { toHaveNoViolations } from "jest-axe";
-import { afterAll, afterEach, beforeAll, expect } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
 
 import { server } from "./msw/server";
+import {
+  beginRuntimeErrorGuard,
+  finishRuntimeErrorGuard,
+  installRuntimeErrorGuard,
+  uninstallRuntimeErrorGuard,
+} from "./support/runtimeErrorGuard";
 
 expect.extend(toHaveNoViolations);
 
@@ -19,6 +25,14 @@ configure({ asyncUtilTimeout: 5_000 });
  * projects.
  */
 const NOMINAL_TEST_WIDTH = 1440;
+let unhandledRequests: string[] = [];
+
+installRuntimeErrorGuard();
+
+server.events.on("request:unhandled", ({ request }) => {
+  const url = new URL(request.url);
+  unhandledRequests.push(`${request.method} ${url.pathname}`);
+});
 
 function matchesWidthQuery(query: string): boolean {
   const min = /min-width:\s*(\d+(?:\.\d+)?)px/.exec(query);
@@ -44,5 +58,24 @@ beforeAll(() => {
   });
   server.listen({ onUnhandledRequest: "error" });
 });
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
+beforeEach(() => {
+  unhandledRequests = [];
+  beginRuntimeErrorGuard();
+});
+afterEach(async () => {
+  // Unmount before removing runtime handlers so query cancellation cannot race a handler reset and turn
+  // an otherwise covered poll into a request:unhandled event between tests.
+  cleanup();
+  server.resetHandlers();
+  const failures = await finishRuntimeErrorGuard();
+  if (unhandledRequests.length > 0) {
+    failures.push(
+      `Unhandled API requests must have explicit MSW handlers:\n${unhandledRequests.join("\n")}`,
+    );
+  }
+  if (failures.length > 0) throw new Error(failures.join("\n\n"));
+});
+afterAll(() => {
+  uninstallRuntimeErrorGuard();
+  server.close();
+});

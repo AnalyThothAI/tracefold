@@ -2,21 +2,64 @@
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
 import subprocess
 import sys
+import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import __version__ as hypothesis_version
+from hypothesis import settings
 
-SCHEMA_VERSION = "tracefold_test_evidence_v1"
+LANE_SCHEMA_VERSION = "tracefold_test_lane_v2"
+AGGREGATE_SCHEMA_VERSION = "tracefold_test_evidence_v2"
+SCHEMA_VERSION = LANE_SCHEMA_VERSION
 _ALLOWED_DESELECTED_MARKERS = ("live",)
+_RESOURCE_MARKERS = ("deploy", "e2e", "external_codegen", "golden", "integration", "slow")
+_REQUIRED_MARKER_LANES = (
+    "architecture",
+    "contract",
+    "deploy",
+    "e2e",
+    "external_codegen",
+    "generated",
+    "golden",
+    "integration",
+    "property",
+    "slow",
+)
+_NON_GREEN_OUTCOME_FIELDS = ("failed", "skipped", "xfailed", "xpassed", "rerun", "unhandled")
+_FORBIDDEN_COLLECTION_OPTIONS = (
+    "--collect-only",
+    "--confcutdir",
+    "--continue-on-collection-errors",
+    "--deselect",
+    "--failed-first",
+    "--ff",
+    "--ignore",
+    "--ignore-glob",
+    "--keep-duplicates",
+    "--keepduplicates",
+    "--last-failed",
+    "--lf",
+    "--new-first",
+    "--nf",
+    "--noconftest",
+    "--pyargs",
+    "--stepwise",
+    "--stepwise-skip",
+    "--sw",
+)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RECORDER_KEY: pytest.StashKey[Any] = pytest.StashKey()
 
@@ -34,7 +77,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--evidence-manifest",
         action="store",
         default=None,
-        help="write the tracefold_test_evidence_v1 JSON manifest",
+        help="write the tracefold_test_lane_v2 JSON manifest",
+    )
+    parser.addoption(
+        "--resource-evidence-manifest",
+        action="store",
+        default=None,
+        help="write the independently aggregated resource lane manifest",
     )
 
 
@@ -44,6 +93,37 @@ def pytest_configure(config: pytest.Config) -> None:
     recorder = _EvidenceRecorder(root=_REPO_ROOT)
     config.stash[_RECORDER_KEY] = recorder
     _ACTIVE_RECORDER.current = recorder
+    if os.environ.get("PYTEST_ADDOPTS", "").strip():
+        recorder.errors.append("evidence_pytest_addopts_forbidden")
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1":
+        recorder.errors.append("evidence_pytest_plugin_autoload_must_be_disabled")
+    hypothesis_plugin_loaded = any(
+        getattr(plugin, "__name__", None) == "_hypothesis_pytestplugin"
+        for _, plugin in config.pluginmanager.list_name_plugin()
+    )
+    if not hypothesis_plugin_loaded:
+        recorder.errors.append("evidence_hypothesis_plugin_must_be_explicit")
+    recorder.pytest_plugins = [
+        {"name": "hypothesis", "version": hypothesis_version},
+        {"name": "tracefold-evidence", "version": LANE_SCHEMA_VERSION},
+    ]
+    recorder.hypothesis = _hypothesis_metadata()
+    if recorder.hypothesis != {
+        "profile": "ci",
+        "derandomize": True,
+        "database": None,
+        "print_blob": True,
+        "replay_policy": "derandomize",
+    }:
+        recorder.errors.append("evidence_hypothesis_profile_not_replayable")
+    declared_markers = _declared_markers(config)
+    if _is_tracefold_project(_REPO_ROOT):
+        for marker in _REQUIRED_MARKER_LANES:
+            if marker not in declared_markers:
+                recorder.errors.append(f"evidence_required_marker_not_declared:{marker}")
+        recorder.required_markers = list(_REQUIRED_MARKER_LANES)
+    else:
+        recorder.required_markers = sorted(set(_REQUIRED_MARKER_LANES) & declared_markers)
     if str(config.option.markexpr).replace(" ", "") != "notlive":
         recorder.errors.append("evidence_marker_expression_must_be_not_live")
     if str(config.option.keyword or "").strip():
@@ -52,6 +132,19 @@ def pytest_configure(config: pytest.Config) -> None:
         recorder.errors.append("evidence_maxfail_forbidden")
     if config.pluginmanager.hasplugin("rerunfailures"):
         recorder.errors.append("evidence_rerun_plugin_forbidden")
+    expected_test_root = (_REPO_ROOT / "tests").resolve()
+    selected_roots: list[Path] = []
+    for argument in config.args:
+        raw_path = str(argument).split("::", 1)[0]
+        selected_path = Path(raw_path)
+        if not selected_path.is_absolute():
+            selected_path = _REPO_ROOT / selected_path
+        selected_roots.append(selected_path.resolve())
+    if selected_roots != [expected_test_root]:
+        recorder.errors.append("evidence_test_root_must_be_complete")
+    for option in _FORBIDDEN_COLLECTION_OPTIONS:
+        if any(argument == option or argument.startswith(f"{option}=") for argument in config.invocation_params.args):
+            recorder.errors.append(f"evidence_collection_option_forbidden:{option}")
 
 
 def pytest_deselected(items: list[pytest.Item]) -> None:
@@ -62,6 +155,10 @@ def pytest_deselected(items: list[pytest.Item]) -> None:
     for item in items:
         if item.get_closest_marker("live") is None:
             recorder.errors.append(f"evidence_unexpected_deselection:{item.nodeid}")
+            continue
+        path = item.path.resolve()
+        if path.is_relative_to(recorder.root.resolve()):
+            recorder.live_collected_modules.add(path.relative_to(recorder.root.resolve()).as_posix())
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
@@ -69,6 +166,19 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     if recorder is None:
         return
     recorder.selected = len(session.items)
+    collected_modules = {
+        item.path.resolve().relative_to(recorder.root.resolve()).as_posix()
+        for item in session.items
+        if item.path.resolve().is_relative_to(recorder.root.resolve())
+    } | recorder.live_collected_modules
+    for module in sorted(_tracked_test_modules(recorder.root) - collected_modules):
+        recorder.errors.append(f"evidence_tracked_test_module_not_collected:{module}")
+    for marker in recorder.required_markers:
+        recorder.marker_items[marker] = {
+            item.nodeid for item in session.items if item.get_closest_marker(marker) is not None
+        }
+        if not recorder.marker_items[marker]:
+            recorder.errors.append(f"evidence_required_marker_lane_empty:{marker}")
     for item in session.items:
         if item.get_closest_marker("live") is not None:
             recorder.errors.append(f"evidence_live_test_selected:{item.nodeid}")
@@ -96,6 +206,21 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         (recorder.xpassed if was_xfail else recorder.passed).add(nodeid)
 
 
+def pytest_warning_recorded(warning_message: Any, when: str, nodeid: str, location: Any) -> None:
+    del location
+    recorder = _ACTIVE_RECORDER.current
+    if recorder is None:
+        return
+    kind = _unhandled_warning_kind(warning_message)
+    if kind is None:
+        return
+    owner = nodeid or f"<{when}>"
+    recorder.unhandled += 1
+    if nodeid:
+        recorder.unhandled_items.add(nodeid)
+    recorder.errors.append(f"evidence_python_unhandled:{kind}:{owner}")
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     recorder = _recorder(session.config)
     if recorder is None:
@@ -107,7 +232,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if not manifest_path:
         recorder.errors.append("evidence_manifest_path_required")
         manifest_path = "artifacts/test-evidence/manifest.json"
-    recorder.write(Path(str(manifest_path)))
+    resource_manifest = session.config.getoption("--resource-evidence-manifest")
+    resource_path = Path(str(resource_manifest)) if resource_manifest else None
+    if _is_tracefold_project(recorder.root) and resource_path is None:
+        recorder.errors.append("evidence_resource_manifest_path_required")
+    recorder.write(Path(str(manifest_path)), resource_path=resource_path)
     if recorder.not_green or exitstatus != pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
@@ -118,6 +247,45 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 def _enabled() -> bool:
     return os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1"
+
+
+def _unhandled_warning_kind(warning_message: Any) -> str | None:
+    category = getattr(warning_message, "category", Warning)
+    if issubclass(category, pytest.PytestUnhandledThreadExceptionWarning):
+        return "thread_exception"
+    if issubclass(category, pytest.PytestUnraisableExceptionWarning):
+        return "unraisable_exception"
+    message = str(getattr(warning_message, "message", ""))
+    if issubclass(category, RuntimeWarning) and "coroutine" in message and "was never awaited" in message:
+        return "coroutine_never_awaited"
+    return None
+
+
+def _hypothesis_metadata() -> dict[str, Any]:
+    active = settings.default
+    return {
+        "profile": settings.get_current_profile_name(),
+        "derandomize": active.derandomize,
+        "database": None if active.database is None else type(active.database).__name__,
+        "print_blob": active.print_blob,
+        "replay_policy": "derandomize" if active.derandomize else "random",
+    }
+
+
+def _declared_markers(config: pytest.Config) -> set[str]:
+    return {
+        declaration.split(":", 1)[0].split("(", 1)[0].strip()
+        for declaration in config.getini("markers")
+        if declaration.strip()
+    }
+
+
+def _is_tracefold_project(root: Path) -> bool:
+    try:
+        project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")).get("project", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    return project.get("name") == "tracefold"
 
 
 def _recorder(config: pytest.Config | None) -> _EvidenceRecorder | None:
@@ -136,8 +304,15 @@ class _EvidenceRecorder:
     xfailed: set[str] = field(default_factory=set)
     xpassed: set[str] = field(default_factory=set)
     rerun: set[str] = field(default_factory=set)
+    unhandled: int = 0
+    unhandled_items: set[str] = field(default_factory=set)
     session_failures: int = 0
     errors: list[str] = field(default_factory=list)
+    pytest_plugins: list[dict[str, str]] = field(default_factory=list)
+    hypothesis: dict[str, Any] = field(default_factory=dict)
+    required_markers: list[str] = field(default_factory=list)
+    marker_items: dict[str, set[str]] = field(default_factory=dict)
+    live_collected_modules: set[str] = field(default_factory=set)
 
     @property
     def observed(self) -> set[str]:
@@ -151,11 +326,12 @@ class _EvidenceRecorder:
             or self.xfailed
             or self.xpassed
             or self.rerun
+            or self.unhandled
             or self.session_failures
             or self.errors
         )
 
-    def write(self, path: Path) -> None:
+    def write(self, path: Path, *, resource_path: Path | None) -> None:
         commit_sha = _capture(("git", "rev-parse", "HEAD"), cwd=self.root)
         github_sha = os.environ.get("GITHUB_SHA")
         if github_sha and github_sha != commit_sha:
@@ -163,34 +339,100 @@ class _EvidenceRecorder:
         node_version = _capture(("node", "--version"), cwd=self.root, required=False)
         if node_version == "unavailable":
             self.errors.append("evidence_node_unavailable")
-        failed_count = max(len(self.failed), self.session_failures, int(bool(self.errors)))
+        uv_version = _capture(("uv", "--version"), cwd=self.root, required=False)
+        if uv_version == "unavailable":
+            self.errors.append("evidence_uv_unavailable")
+        resource_payload: dict[str, Any] | None = None
+        if _is_tracefold_project(self.root):
+            resource_payload, resource_errors = self._resource_lane()
+            self.errors.extend(f"evidence_resource:{error}" for error in resource_errors)
+        failed_count = max(len(self.failed), self.session_failures)
         passed_count = len(self.passed - self.failed - self.skipped - self.xfailed - self.xpassed - self.rerun)
-        manifest: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "commit_sha": commit_sha,
-            "python_version": platform.python_version(),
-            "node_version": node_version,
-            "uv_lock_sha256": _sha256(self.root / "uv.lock"),
-            "package_lock_sha256": _sha256(self.root / "web" / "package-lock.json"),
-            "migration_head": _migration_head(),
-            "selected": self.selected,
-            "passed": passed_count,
-            "failed": failed_count,
-            "skipped": len(self.skipped),
-            "xfailed": len(self.xfailed),
-            "xpassed": len(self.xpassed),
-            "rerun": len(self.rerun),
-            "explicitly_deselected_markers": list(_ALLOWED_DESELECTED_MARKERS),
-            "errors": sorted(set(self.errors)),
-        }
-        destination = path if path.is_absolute() else self.root / path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(destination.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        manifest = _lane_payload(
+            lane="python",
+            selected=self.selected,
+            passed=passed_count,
+            failed=failed_count,
+            skipped=len(self.skipped),
+            xfailed=len(self.xfailed),
+            xpassed=len(self.xpassed),
+            rerun=len(self.rerun),
+            unhandled=self.unhandled,
+            errors=self.errors,
+            tool_versions={
+                "python": platform.python_version(),
+                "pytest": pytest.__version__,
+                "hypothesis": hypothesis_version,
+                "uv": uv_version,
+                "node": node_version,
+            },
         )
-        temporary.replace(destination)
+        manifest.update(
+            {
+                "commit_sha": commit_sha,
+                "uv_lock_sha256": _sha256(self.root / "uv.lock"),
+                "package_lock_sha256": _sha256(self.root / "web" / "package-lock.json"),
+                "migration_head": _migration_head(),
+                "explicitly_deselected_markers": list(_ALLOWED_DESELECTED_MARKERS),
+                "pytest_plugins": self.pytest_plugins,
+                "hypothesis": self.hypothesis,
+                "marker_lanes": {marker: self._marker_lane(marker) for marker in self.required_markers},
+            }
+        )
+        _write_json(path, manifest)
+        if resource_payload is not None and resource_path is not None:
+            _write_json(resource_path, resource_payload)
+
+    def _marker_lane(self, marker: str) -> dict[str, int | str]:
+        return self._outcomes(self.marker_items.get(marker, set()))
+
+    def _outcomes(self, selected_items: set[str]) -> dict[str, int | str]:
+        failed = len(selected_items & self.failed)
+        skipped = len(selected_items & self.skipped)
+        xfailed = len(selected_items & self.xfailed)
+        xpassed = len(selected_items & self.xpassed)
+        rerun = len(selected_items & self.rerun)
+        unhandled = len(selected_items & self.unhandled_items)
+        passed = len(
+            (selected_items & self.passed) - self.failed - self.skipped - self.xfailed - self.xpassed - self.rerun
+        )
+        selected = len(selected_items)
+        not_green = bool(
+            selected <= 0 or passed != selected or failed or skipped or xfailed or xpassed or rerun or unhandled
+        )
+        return {
+            "status": "failure" if not_green else "success",
+            "selected": selected,
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "xfailed": xfailed,
+            "xpassed": xpassed,
+            "rerun": rerun,
+            "unhandled": unhandled,
+        }
+
+    def _resource_lane(self) -> tuple[dict[str, Any], list[str]]:
+        selected_items: set[str] = set()
+        for marker in _RESOURCE_MARKERS:
+            selected_items.update(self.marker_items.get(marker, set()))
+        outcomes = self._outcomes(selected_items)
+        tool_versions, resources, errors = _resource_identity()
+        payload = _lane_payload(
+            lane="resource",
+            selected=int(outcomes["selected"]),
+            passed=int(outcomes["passed"]),
+            failed=int(outcomes["failed"]),
+            skipped=int(outcomes["skipped"]),
+            xfailed=int(outcomes["xfailed"]),
+            xpassed=int(outcomes["xpassed"]),
+            rerun=int(outcomes["rerun"]),
+            unhandled=int(outcomes["unhandled"]),
+            errors=errors,
+            tool_versions=tool_versions,
+            metadata={"markers": list(_RESOURCE_MARKERS), "resources": resources},
+        )
+        return payload, errors
 
 
 def _capture(command: tuple[str, ...], *, cwd: Path, required: bool = True) -> str:
@@ -202,6 +444,74 @@ def _capture(command: tuple[str, ...], *, cwd: Path, required: bool = True) -> s
         return "unavailable"
     value = result.stdout.strip()
     return value if result.returncode == 0 and value else "unavailable"
+
+
+def _resource_identity() -> tuple[dict[str, str], dict[str, Any], list[str]]:
+    tool_versions = {
+        "python": platform.python_version(),
+        "pytest": pytest.__version__,
+        "uv": _capture(("uv", "--version"), cwd=_REPO_ROOT, required=False),
+        "psycopg": _installed_version("psycopg"),
+        "aio-pika": _installed_version("aio-pika"),
+        "docker": _capture(("docker", "version", "--format", "{{.Server.Version}}"), cwd=_REPO_ROOT, required=False),
+    }
+    resources: dict[str, Any] = {}
+    errors: list[str] = []
+
+    dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", "")
+    if not dsn:
+        errors.append("postgresql_dsn_missing")
+    else:
+        try:
+            import psycopg
+
+            with psycopg.connect(dsn, connect_timeout=5) as connection:
+                database, server_version = connection.execute(
+                    "SELECT current_database(), current_setting('server_version')"
+                ).fetchone()
+            resources["postgresql"] = {
+                "database": str(database),
+                "server_version": str(server_version),
+            }
+            tool_versions["postgresql-server"] = str(server_version)
+            if database != "tracefold_test":
+                errors.append("postgresql_database_identity_invalid")
+        except Exception as exc:  # pragma: no cover - exercised by the canonical resource lane
+            errors.append(f"postgresql_identity_unavailable:{type(exc).__name__}")
+
+    amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "")
+    if not amqp_url:
+        errors.append("rabbitmq_url_missing")
+    else:
+        try:
+            properties = asyncio.run(_rabbitmq_server_properties(amqp_url))
+            product = str(properties.get("product", ""))
+            server_version = str(properties.get("version", ""))
+            resources["rabbitmq"] = {"product": product, "server_version": server_version}
+            tool_versions["rabbitmq-server"] = server_version or "unavailable"
+            if product != "RabbitMQ" or not server_version:
+                errors.append("rabbitmq_identity_invalid")
+        except Exception as exc:  # pragma: no cover - exercised by the canonical resource lane
+            errors.append(f"rabbitmq_identity_unavailable:{type(exc).__name__}")
+
+    return tool_versions, resources, errors
+
+
+async def _rabbitmq_server_properties(url: str) -> dict[str, Any]:
+    import aiormq
+
+    connection = await asyncio.wait_for(aiormq.connect(url), timeout=5)
+    try:
+        return dict(connection.server_properties or {})
+    finally:
+        await connection.close()
+
+
+def _installed_version(distribution: str) -> str:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return "unavailable"
 
 
 def tested_head_changes(root: Path) -> tuple[str, ...]:
@@ -218,18 +528,330 @@ def tested_head_changes(root: Path) -> tuple[str, ...]:
     return tuple(line for line in result.stdout.splitlines() if line)
 
 
+def _tracked_test_modules(root: Path) -> set[str]:
+    result = subprocess.run(
+        ("git", "ls-files", "--", "tests/test_*.py", "tests/**/test_*.py"),
+        cwd=root,
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=10,
+    )
+    return {line for line in result.stdout.splitlines() if line}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Fail unless the repository exactly matches the tested HEAD."""
 
     arguments = tuple(sys.argv[1:] if argv is None else argv)
-    if arguments != ("--assert-clean",):
-        sys.stderr.write("usage: python -m tests.support.evidence --assert-clean\n")
-        return 2
-    changes = tested_head_changes(_REPO_ROOT)
-    if not changes:
+    if arguments == ("--assert-clean",):
+        changes = tested_head_changes(_REPO_ROOT)
+        if not changes:
+            return 0
+        sys.stderr.write("evidence_tested_head_dirty:\n" + "\n".join(changes) + "\n")
+        return 1
+    if arguments and arguments[0] == "aggregate":
+        return _aggregate(arguments[1:])
+    if arguments and arguments[0] == "record-command":
+        return _record_command(arguments[1:])
+    if arguments and arguments[0] == "record-vitest":
+        return _record_vitest(arguments[1:])
+    if arguments and arguments[0] == "record-playwright":
+        return _record_playwright(arguments[1:])
+    sys.stderr.write(
+        "usage: python -m tests.support.evidence --assert-clean | "
+        "aggregate --lane-dir DIR --output PATH --required-lane NAME [...]\n"
+    )
+    return 2
+
+
+def _record_playwright(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tests.support.evidence record-playwright")
+    parser.add_argument("--lane", required=True)
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    options = parser.parse_args(arguments)
+    report = _read_json_report(options.input)
+    if report is None:
+        _write_json(
+            options.output,
+            _lane_payload(
+                lane=options.lane,
+                selected=0,
+                passed=0,
+                errors=("playwright_report_invalid",),
+                tool_versions={
+                    **_parse_tool_versions(()),
+                    "playwright": _package_lock_version("node_modules/@playwright/test"),
+                },
+            ),
+        )
+        return 1
+    stats = report.get("stats", {})
+    passed = int(stats.get("expected", 0))
+    failed = int(stats.get("unexpected", 0))
+    rerun = int(stats.get("flaky", 0))
+    skipped = int(stats.get("skipped", 0))
+    selected = passed + failed + rerun + skipped
+    unhandled = _entry_count(report.get("errors"))
+    errors: list[str] = []
+    if selected <= 0:
+        errors.append("playwright_report_empty")
+    if unhandled:
+        errors.append(f"playwright_unhandled_errors:{unhandled}")
+    playwright_version = _package_lock_version("node_modules/@playwright/test")
+    if playwright_version == "unavailable":
+        errors.append("playwright_version_unavailable")
+    payload = _lane_payload(
+        lane=options.lane,
+        selected=selected,
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+        rerun=rerun,
+        unhandled=unhandled,
+        errors=errors,
+        tool_versions={**_parse_tool_versions(()), "playwright": playwright_version},
+    )
+    _write_json(options.output, payload)
+    return int(payload["status"] != "success")
+
+
+def _record_vitest(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tests.support.evidence record-vitest")
+    parser.add_argument("--lane", required=True)
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    options = parser.parse_args(arguments)
+    report = _read_json_report(options.input)
+    if report is None:
+        _write_json(
+            options.output,
+            _lane_payload(
+                lane=options.lane,
+                selected=0,
+                passed=0,
+                errors=("vitest_report_invalid",),
+                tool_versions={
+                    **_parse_tool_versions(()),
+                    "vitest": _package_lock_version("node_modules/vitest"),
+                },
+            ),
+        )
+        return 1
+    selected = int(report.get("numTotalTests", 0))
+    passed = int(report.get("numPassedTests", 0))
+    failed = int(report.get("numFailedTests", 0))
+    skipped = int(report.get("numPendingTests", 0)) + int(report.get("numTodoTests", 0))
+    unhandled = _entry_count(report.get("unhandledErrors")) + _entry_count(report.get("unhandledRejections"))
+    if report.get("success") is False and failed == 0 and unhandled == 0:
+        unhandled = 1
+    errors: list[str] = []
+    if report.get("success") is not True:
+        errors.append("vitest_report_not_success")
+    if selected <= 0:
+        errors.append("vitest_report_empty")
+    if passed + failed + skipped != selected:
+        errors.append("vitest_report_outcome_count_mismatch")
+    if unhandled:
+        errors.append(f"vitest_unhandled_errors:{unhandled}")
+    vitest_version = _package_lock_version("node_modules/vitest")
+    if vitest_version == "unavailable":
+        errors.append("vitest_version_unavailable")
+    payload = _lane_payload(
+        lane=options.lane,
+        selected=selected,
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+        unhandled=unhandled,
+        errors=errors,
+        tool_versions={**_parse_tool_versions(()), "vitest": vitest_version},
+    )
+    _write_json(options.output, payload)
+    return int(payload["status"] != "success")
+
+
+def _entry_count(value: Any) -> int:
+    if value is None:
         return 0
-    sys.stderr.write("evidence_tested_head_dirty:\n" + "\n".join(changes) + "\n")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value)
     return 1
+
+
+def _read_json_report(path: Path) -> dict[str, Any] | None:
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _package_lock_version(package: str) -> str:
+    try:
+        lock = json.loads((_REPO_ROOT / "web" / "package-lock.json").read_text(encoding="utf-8"))
+        version = lock["packages"][package]["version"]
+    except (KeyError, OSError, TypeError, json.JSONDecodeError):
+        return "unavailable"
+    return str(version)
+
+
+def _record_command(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tests.support.evidence record-command")
+    parser.add_argument("--lane", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--tool", action="append", default=[])
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    options = parser.parse_args(arguments)
+    command = tuple(options.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        parser.error("a command is required after --")
+    tool_versions = _parse_tool_versions(options.tool)
+    try:
+        result = subprocess.run(command, cwd=_REPO_ROOT, check=False)
+        returncode = result.returncode
+    except OSError:
+        returncode = 127
+    errors = [] if returncode == 0 else [f"command_exit_nonzero:{returncode}"]
+    payload = _lane_payload(
+        lane=options.lane,
+        selected=1,
+        passed=int(returncode == 0),
+        failed=int(returncode != 0),
+        errors=errors,
+        tool_versions=tool_versions,
+    )
+    _write_json(options.output, payload)
+    return returncode
+
+
+def _parse_tool_versions(values: Sequence[str]) -> dict[str, str]:
+    versions = {
+        "python": platform.python_version(),
+        "uv": _capture(("uv", "--version"), cwd=_REPO_ROOT, required=False),
+    }
+    for value in values:
+        name, separator, version = value.partition("=")
+        if not separator or not name.strip() or not version.strip():
+            raise ValueError(f"invalid tool version {value!r}; expected NAME=VERSION")
+        versions[name.strip()] = version.strip()
+    return versions
+
+
+def _lane_payload(
+    *,
+    lane: str,
+    selected: int,
+    passed: int,
+    failed: int = 0,
+    skipped: int = 0,
+    xfailed: int = 0,
+    xpassed: int = 0,
+    rerun: int = 0,
+    unhandled: int = 0,
+    errors: Sequence[str] = (),
+    tool_versions: dict[str, str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    not_green = bool(
+        selected <= 0 or passed != selected or failed or skipped or xfailed or xpassed or rerun or unhandled or errors
+    )
+    payload: dict[str, Any] = {
+        "schema_version": LANE_SCHEMA_VERSION,
+        "lane": lane,
+        "required": True,
+        "status": "failure" if not_green else "success",
+        "commit_sha": _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT),
+        "git_tree_sha": _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT),
+        "selected": selected,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "xfailed": xfailed,
+        "xpassed": xpassed,
+        "rerun": rerun,
+        "unhandled": unhandled,
+        "errors": sorted(set(errors)),
+        "tool_versions": tool_versions or _parse_tool_versions(()),
+    }
+    if metadata:
+        payload["metadata"] = metadata
+    return payload
+
+
+def _aggregate(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tests.support.evidence aggregate")
+    parser.add_argument("--lane-dir", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--required-lane", action="append", required=True)
+    options = parser.parse_args(arguments)
+    required_lanes = tuple(dict.fromkeys(options.required_lane))
+    errors: list[str] = []
+    lanes: dict[str, Any] = {}
+    commit_sha = _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT)
+    git_tree_sha = _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT)
+    for lane in required_lanes:
+        path = options.lane_dir / f"{lane}.json"
+        if not path.is_file():
+            errors.append(f"required_lane_manifest_missing:{lane}")
+            continue
+        lane_manifest = _read_json_report(path)
+        if lane_manifest is None:
+            errors.append(f"required_lane_manifest_invalid:{lane}")
+            continue
+        lanes[lane] = lane_manifest
+        if lane_manifest.get("schema_version") != LANE_SCHEMA_VERSION:
+            errors.append(f"required_lane_schema_invalid:{lane}")
+        if lane_manifest.get("lane") != lane:
+            errors.append(f"required_lane_name_mismatch:{lane}")
+        if lane_manifest.get("required") is not True:
+            errors.append(f"required_lane_not_required:{lane}")
+        if lane_manifest.get("selected", 0) <= 0:
+            errors.append(f"required_lane_empty:{lane}")
+        if lane_manifest.get("passed") != lane_manifest.get("selected"):
+            errors.append(f"required_lane_pass_count_mismatch:{lane}")
+        status = lane_manifest.get("status")
+        if status != "success":
+            errors.append(f"required_lane_status_not_success:{lane}:{status}")
+        for field_name in _NON_GREEN_OUTCOME_FIELDS:
+            value = lane_manifest.get(field_name, 0)
+            if value != 0:
+                errors.append(f"required_lane_not_green:{lane}:{field_name}={value}")
+        if lane_manifest.get("errors"):
+            errors.append(f"required_lane_has_errors:{lane}")
+        if not lane_manifest.get("tool_versions"):
+            errors.append(f"required_lane_tool_versions_missing:{lane}")
+        if lane_manifest.get("commit_sha") != commit_sha:
+            errors.append(f"required_lane_commit_mismatch:{lane}")
+        if lane_manifest.get("git_tree_sha") != git_tree_sha:
+            errors.append(f"required_lane_tree_mismatch:{lane}")
+    manifest = {
+        "schema_version": AGGREGATE_SCHEMA_VERSION,
+        "commit_sha": commit_sha,
+        "git_tree_sha": git_tree_sha,
+        "required_lanes": list(required_lanes),
+        "overall": "failure" if errors else "success",
+        "errors": sorted(set(errors)),
+        "lanes": lanes,
+    }
+    _write_json(options.output, manifest)
+    return int(bool(errors))
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    destination = path if path.is_absolute() else _REPO_ROOT / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(destination)
 
 
 def _sha256(path: Path) -> str:
@@ -242,7 +864,7 @@ def _migration_head() -> str:
     return latest_migration_version()
 
 
-__all__ = ["SCHEMA_VERSION", "main", "tested_head_changes"]
+__all__ = ["AGGREGATE_SCHEMA_VERSION", "LANE_SCHEMA_VERSION", "SCHEMA_VERSION", "main", "tested_head_changes"]
 
 
 if __name__ == "__main__":

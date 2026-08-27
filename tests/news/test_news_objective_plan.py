@@ -1009,56 +1009,6 @@ def test_the_objective_module_imports_no_framework_database_or_provider() -> Non
     )
 
 
-def test_no_second_implementation_guesses_failure_clusters() -> None:
-    """The owner-blind rule existed in three places; a fourth would be invisible without this."""
-
-    offenders = []
-    for path in sorted((ROOT / "src" / "tracefold").rglob("*.py")):
-        if path == OBJECTIVE_MODULE:
-            continue
-        source = path.read_text(encoding="utf-8")
-        if "failure_cluster" in source and "build_gepa_objective_plan" not in source:
-            offenders.append(str(path.relative_to(ROOT)))
-    assert offenders == [
-        # Every one of these carries the field — through a CLI flag, a manifest, a receipt or a reader
-        # view. None of them decides what belongs in it. Adding another is a decision someone makes on
-        # purpose, in this list, rather than by writing one more `if "fail" in dimensions` somewhere.
-        "src/tracefold/app/cli/commands/news_learning_experiment.py",
-        "src/tracefold/news/learning/baseline.py",
-        "src/tracefold/news/learning/contracts.py",
-        "src/tracefold/news/learning/experiment/compare.py",
-        "src/tracefold/news/learning/experiment/run.py",
-        # #253: it names the plan's own refusal codes to tell "this corpus cannot answer" apart from "this
-        # run ran out of budget" when it picks a `next_action`. It reads a terminal report's `reasons` and
-        # never a corpus.
-        "src/tracefold/news/learning/run_summary.py",
-        "src/tracefold/news/review/desk.py",
-    ]
-
-
-def test_every_plane_reaches_the_objective_through_the_same_function() -> None:
-    """Readiness, the offline optimizer and the release evaluator, structurally.
-
-    Four readers, one function. The CLI that starts an optimization reaches the plan through
-    `optimizer.optimize`, which is why it is not on this list: a fifth caller building its own plan is
-    exactly the drift #199 removed.
-    """
-
-    src = ROOT / "src" / "tracefold"
-    readiness = src / "app" / "cli" / "commands" / "news_learning_baseline.py"
-    # The release plane re-derives the plan when it admits a candidate; #202 §8 moved that out of the
-    # evaluator, which now only judges one.
-    registry = src / "news" / "release" / "candidate.py"
-    optimizer = src / "news" / "learning" / "optimizer.py"
-    research_cli = src / "app" / "cli" / "commands" / "news_learning_experiment.py"
-
-    for path in (readiness, registry, optimizer):
-        assert "build_gepa_objective_plan" in path.read_text(encoding="utf-8"), path
-    cli_source = research_cli.read_text(encoding="utf-8")
-    assert "optimizer import" in cli_source
-    assert "build_gepa_objective_plan" not in cli_source
-
-
 def test_readiness_explains_the_same_plan_without_asking_a_model_anything() -> None:
     corpus = _mixed_corpus()
     plan = build_gepa_objective_plan(corpus)

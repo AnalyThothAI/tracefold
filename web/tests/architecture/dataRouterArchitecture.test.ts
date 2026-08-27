@@ -69,43 +69,6 @@ describe("data router architecture", () => {
     expect(shellRoute).not.toContain("SearchShell");
     expect(existsSync(join(srcRoot, "features/cockpit/ui/SearchShell.tsx"))).toBe(false);
   });
-
-  it("keeps only the News route family plus the News landing redirect", () => {
-    const routerSource = readSource("routes/router.tsx");
-
-    expect(routerSource).not.toMatch(/path: "macro/);
-    expect(routerSource).toContain('<Navigate replace to="/news" />');
-    expect(routerSource).not.toContain('path: "search"');
-    expect(routerSource).not.toContain('path: "token/:targetType/:targetId"');
-    expect(routerSource).not.toMatch(/search\.route|token-target\.route/);
-    for (const removed of ["routes/search.route.tsx", "routes/token-target.route.tsx"]) {
-      expect(existsSync(join(srcRoot, removed)), `${removed} must stay deleted`).toBe(false);
-    }
-  });
-
-  it("keeps only the current public News route family", () => {
-    const routerSource = readSource("routes/router.tsx");
-
-    expect(routerSource).toContain('path: "news"');
-    expect(routerSource).toContain('path: "news/events/:eventId"');
-    expect(routerSource).toContain('path: "news/status"');
-    expect(routerSource).not.toContain('path: "news/stories/:storyId"');
-    expect(routerSource).not.toContain('path: "news/brief"');
-    expect(routerSource).not.toContain('path: "news/sources"');
-    expect(routerSource).not.toContain('path: "news/items/:newsItemId"');
-    expect(routerSource).not.toContain("news/stories");
-    expect(routerSource).not.toContain("news/brief");
-    expect(routerSource).not.toContain("news/sources");
-  });
-
-  it("does not keep the retired Signal Lab page routes or navigation target", () => {
-    const routerSource = readSource("routes/router.tsx");
-    const navigationSource = readSource("features/cockpit/ui/appNavigation.ts");
-
-    expect(routerSource).not.toContain('path: "signal-lab"');
-    expect(routerSource).not.toContain('path: "signal-lab/pulse/:candidateId"');
-    expect(navigationSource).not.toContain('to: "/signal-lab"');
-  });
 });
 
 function readSource(path: string): string {

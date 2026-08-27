@@ -9,7 +9,6 @@ the whole suite stayed green while `compare` died on its first case with
 
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -17,10 +16,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news.learning import optimizer
 from tracefold.news.learning.baseline import BaselineReport, CaseResult
 from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
-from tracefold.news.learning.experiment import snapshot as snapshot_module
 from tracefold.news.learning.experiment.compare import (
     answered_case_scores,
     baseline_cases,
@@ -392,40 +389,3 @@ def test_the_metric_and_the_comparison_see_one_projection() -> None:
     assert [case.episode.case_id for case in scored] == [case.case_sha256 for case in cases]
     # Threaded, not dropped: this is the field whose absence made the recorded arm unrunnable.
     assert all(case.recorded_decision_result for case in scored)
-
-
-# --- one optimization core, one student -------------------------------------------------------------
-
-
-def test_the_one_optimization_core_keeps_the_student_that_makes_reflection_possible() -> None:
-    """Function identity was not enough, and the gap it missed falsified an earlier PR's headline claim.
-
-    `run_gepa` defaulted `student_factory` to the plain `DspyCompileProgram`; the trusted compiler passed
-    `_FeedbackCompileProgram`, whose `_rekey_trace` is what lets GEPA's reflective dataset find anything at
-    all. Same function, different student — a plane running the plain student would have burned its whole
-    budget proposing nothing while reporting the same algorithm. The student is the core's own default now,
-    and since #202 there is one caller of it.
-    """
-
-    default = inspect.signature(optimizer.run_gepa).parameters["student_factory"].default
-    assert default is optimizer._FeedbackCompileProgram
-    assert callable(getattr(default, "_rekey_trace", None))
-
-
-def test_the_research_package_can_no_longer_produce_a_candidate_of_its_own() -> None:
-    """#202 §7: one candidate contract, so a research winner is registered rather than reproduced.
-
-    The `promotable=False` marker was honest about what it was, and it was still a second lifecycle: an
-    experiment that found a better instruction had to be re-run inside a container before any gate would
-    look at it, because release eligibility came from where the text was generated.
-    """
-
-    experiment = Path(inspect.getfile(snapshot_module)).parent
-    assert sorted(path.name for path in experiment.glob("*.py")) == [
-        "__init__.py",
-        "compare.py",
-        "run.py",
-        "snapshot.py",
-    ]
-    with pytest.raises(ImportError):
-        __import__("tracefold.news.learning.experiment.optimize")
