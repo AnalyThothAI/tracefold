@@ -123,15 +123,19 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # Several migrations have moved the head since that cut, through the Trading exit/kernel work and
     # #221's status metrics (0311). A dict has one key, so the latest intentional migration owns it.
     "migration_head": (
-        "issue_267_deterministic_event_assets",
-        "20260827_0314",
+        "issue_283_trade_intent_dark_slice",
+        "20260827_0315",
     ),
     # #190 added the dedicated real-package compiler target; #202 deletes it, along with the smoke lane
     # that exercised it. Program source, dependency lock, prompts, routes and call budgets stay unchanged
     # — what leaves the file is one build stage that only ever produced an image for the sandbox.
     "infrastructure_and_dependency_sha256.Dockerfile": (
-        "issue_202_compiler_image_deleted",
-        "e777fbc00a1f67bb2cbc7a3b349171beb2f10a2c3c33c8dd8c18ed3e2188e6cb",
+        "issue_283_pinned_nautilus_runtime",
+        "8c28e9cc0577fa100425bfca4c0076eb4098a5dbb046b66770984d2d4a340094",
+    ),
+    "infrastructure_and_dependency_sha256.compose.yaml": (
+        "issue_283_dark_nautilus_service",
+        "3cd7a224cc4f7fdd1bb38a3de1fb5ed07b38c8d91a6fd203349510c5fd3130fd",
     ),
     # A dict has one key, so the latest intentional lock change owns it. Two have landed: #276 folded
     # Hypothesis into the dev group and deleted `requirements/property.lock`, and #274 added the
@@ -140,8 +144,8 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
     # install the default groups, so a service, a worker and the image resolve exactly what they
     # resolved before; `research` has to be asked for by name.
     "infrastructure_and_dependency_sha256.uv.lock": (
-        "issue_276_single_uv_dependency_lock+issue_274_research_dependency_group",
-        "1f69b61696862f1d8c6b9a560a0e8b3fbfb84a9de4f1a66ac2f54bd9ad17e7fc",
+        "issue_283_pinned_nautilus_runtime",
+        "52ac20945246b8ed352b22c307900f2389b1764eb7b8596cecaa27295f5f3f17",
     ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",

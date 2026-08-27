@@ -29,6 +29,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import workers
 
         return _finish(workers.handle_workers(args), stdout)
+    if command == "nautilus":
+        from .commands import nautilus
+
+        return _finish(nautilus.handle_nautilus(args), stdout)
     if command == "config":
         from .commands import config
 

@@ -23,14 +23,18 @@ from .contracts import (
     StartupReconciliation,
     TradingMode,
 )
+from .intent import INTENT_POLICY_SHA256, IntentOutcome, IntentReasonCode, TradeIntent, deterministic_client_order_id
 
 __all__ = [
+    "INTENT_POLICY_SHA256",
     "Bar",
     "ExecutionAdapter",
     "ExecutionObservation",
     "ExecutionObservationState",
     "ExecutionReceipt",
     "InstrumentRef",
+    "IntentOutcome",
+    "IntentReasonCode",
     "LiveExchangeId",
     "LiveExecutionAdapter",
     "LivePreflight",
@@ -39,5 +43,7 @@ __all__ = [
     "PreparedOrder",
     "RemoteExposure",
     "StartupReconciliation",
+    "TradeIntent",
     "TradingMode",
+    "deterministic_client_order_id",
 ]

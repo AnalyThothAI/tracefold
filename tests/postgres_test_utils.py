@@ -51,9 +51,11 @@ def postgres_settings_storage() -> dict[str, Any]:
             "serve_dsn": dsn,
             "workers_dsn": dsn,
             "migrate_dsn": dsn,
+            "nautilus_dsn": dsn,
             "serve_password_file": None,
             "workers_password_file": None,
             "migrate_password_file": None,
+            "nautilus_password_file": None,
         }
     }
 

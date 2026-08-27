@@ -49,7 +49,10 @@ if [ "$1" = "compose" ] && [ "$2" = "config" ]; then
   printf '%s\\n' 'postgres:18-bookworm@sha256:pinned' "$TRACEFOLD_APP_IMAGE"
   exit 0
 fi
-if [ "$1" = "compose" ] && [ "$2" = "run" ]; then exit 0; fi
+if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
+  if [ -n "${TRACEFOLD_TEST_ROLE_PROVISION:-}" ]; then printf '%s\\n' "$*" > "$TRACEFOLD_TEST_ROLE_PROVISION"; fi
+  exit 0
+fi
 if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
@@ -65,6 +68,10 @@ if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
   fi
 fi
 if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
+  if [ "$#" -eq 3 ] && [ "$3" = "-q" ]; then
+    printf '%s' "${TRACEFOLD_TEST_RUNNING_CONTAINERS:-}"
+    exit 0
+  fi
   service=''
   for argument do service="$argument"; done
   case "$service" in
@@ -140,6 +147,7 @@ esac
         "TRACEFOLD_TEST_RECEIPT": "ok",
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_ROLE_PROVISION": str(tmp_path / "role-provision"),
     }
     return repo, external_activity, services_stopped, env
 
@@ -155,7 +163,7 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     targets = {line.split(maxsplit=1)[0] for line in result.stdout.splitlines() if line}
 
     assert result.returncode == 0, result.stderr
-    assert {"up", "status", "logs", "down"} <= targets
+    assert {"up", "status", "logs", "down", "db-provision-nautilus-role"} <= targets
     assert {
         "docker-up",
         "docker-status",
@@ -250,6 +258,44 @@ def test_up_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not external_activity.exists()
+
+
+def test_nautilus_role_provisioning_refuses_a_running_compose_stack(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    provisioned = Path(env["TRACEFOLD_TEST_ROLE_PROVISION"])
+    env["TRACEFOLD_TEST_RUNNING_CONTAINERS"] = "postgres-id\n"
+
+    result = subprocess.run(
+        ["make", "db-provision-nautilus-role"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "offline-only" in result.stderr
+    assert not provisioned.exists()
+
+
+def test_nautilus_role_provisioning_uses_one_offline_single_user_container(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    provisioned = Path(env["TRACEFOLD_TEST_ROLE_PROVISION"])
+
+    result = subprocess.run(
+        ["make", "db-provision-nautilus-role"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    invocation = provisioned.read_text(encoding="utf-8")
+    assert "compose run --rm --no-deps --user postgres" in invocation
+    assert "--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres" in invocation
 
 
 def test_deployment_lock_is_released_by_the_os_when_the_owner_crashes(tmp_path: Path) -> None:

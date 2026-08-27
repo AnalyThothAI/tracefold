@@ -10,6 +10,7 @@ RUNTIME_LOGIN_ROLES = (
     "tracefold_serve",
     "tracefold_workers",
     "tracefold_migrate",
+    "tracefold_nautilus",
 )
 LEGACY_RUNTIME_ROLE = "tracefold_app"
 
@@ -67,6 +68,7 @@ def runtime_role_contract(
     serve = by_name.get("tracefold_serve")
     workers = by_name.get("tracefold_workers")
     migrate = by_name.get("tracefold_migrate")
+    nautilus = by_name.get("tracefold_nautilus")
     legacy = by_name.get(LEGACY_RUNTIME_ROLE)
     schema_owner_row = conn.execute(
         """
@@ -145,6 +147,84 @@ def runtime_role_contract(
                 'public.news_external_miss_snapshots',
                 'INSERT'
               ) AS serve_external_miss_insert,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_intents',
+                'SELECT'
+              ) AS workers_intents_select,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_intents',
+                'case_id',
+                'INSERT'
+              ) AS workers_intents_identity_insert,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_intents',
+                'execution_state',
+                'INSERT'
+              ) AS workers_intents_execution_insert,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_intents',
+                'execution_state',
+                'UPDATE'
+              ) AS workers_intents_execution_update,
+              has_table_privilege(
+                'tracefold_serve',
+                'public.trading_intents',
+                'SELECT'
+              ) AS serve_intents_select,
+              has_table_privilege(
+                'tracefold_serve',
+                'public.trading_intents',
+                'INSERT'
+              ) AS serve_intents_insert,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_intents',
+                'SELECT'
+              ) AS nautilus_intents_select,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_intents',
+                'INSERT'
+              ) AS nautilus_intents_insert,
+              has_column_privilege(
+                'tracefold_nautilus',
+                'public.trading_intents',
+                'execution_state',
+                'UPDATE'
+              ) AS nautilus_execution_update,
+              has_column_privilege(
+                'tracefold_nautilus',
+                'public.trading_intents',
+                'case_id',
+                'UPDATE'
+              ) AS nautilus_identity_update,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_cases',
+                'UPDATE'
+              ) AS nautilus_cases_update,
+              has_column_privilege(
+                'tracefold_nautilus',
+                'public.trading_runtime_state',
+                'id',
+                'SELECT'
+              ) AS nautilus_runtime_id_select,
+              has_column_privilege(
+                'tracefold_nautilus',
+                'public.trading_runtime_state',
+                'control',
+                'SELECT'
+              ) AS nautilus_runtime_control_select,
+              has_column_privilege(
+                'tracefold_nautilus',
+                'public.trading_runtime_state',
+                'orders_today',
+                'SELECT'
+              ) AS nautilus_runtime_counter_select,
               pg_has_role(
                 'tracefold_migrate',
                 'tracefold_owner',
@@ -165,6 +245,7 @@ def runtime_role_contract(
         "migrate_login_noinherit": (
             migrate is not None and bool(migrate["rolcanlogin"]) and not bool(migrate["rolinherit"])
         ),
+        "nautilus_login": nautilus is not None and bool(nautilus["rolcanlogin"]),
         "legacy_login_state": legacy_login_state,
         "schema_owner": bool(schema_owner_row) and str(schema_owner_row["owner"]) == "tracefold_owner",
         "serve_select": bool(privileges["serve_select"]),
@@ -179,6 +260,20 @@ def runtime_role_contract(
         "workers_create_denied": not bool(privileges["workers_create"]),
         "serve_review_append": bool(privileges["serve_review_insert"])
         and bool(privileges["serve_external_miss_insert"]),
+        "workers_intents_append": bool(privileges["workers_intents_select"])
+        and bool(privileges["workers_intents_identity_insert"])
+        and not bool(privileges["workers_intents_execution_insert"])
+        and not bool(privileges["workers_intents_execution_update"]),
+        "serve_intents_read_only": bool(privileges["serve_intents_select"])
+        and not bool(privileges["serve_intents_insert"]),
+        "nautilus_intents_projection_only": bool(privileges["nautilus_intents_select"])
+        and not bool(privileges["nautilus_intents_insert"])
+        and bool(privileges["nautilus_execution_update"])
+        and not bool(privileges["nautilus_identity_update"])
+        and not bool(privileges["nautilus_cases_update"])
+        and bool(privileges["nautilus_runtime_id_select"])
+        and bool(privileges["nautilus_runtime_control_select"])
+        and not bool(privileges["nautilus_runtime_counter_select"]),
         "migrate_owner_member": bool(privileges["migrate_owner_member"]),
     }
     failures = [name for name, passed in checks.items() if not passed]

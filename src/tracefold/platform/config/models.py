@@ -25,12 +25,14 @@ class PostgresConfig(BaseModel):
     serve_dsn: str = "postgresql://tracefold_serve@postgres:5432/tracefold"
     workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: str = "postgresql://tracefold_migrate@postgres:5432/tracefold"
+    nautilus_dsn: str = "postgresql://tracefold_nautilus@postgres:5432/tracefold"
     serve_password_file: str | None = "postgres_serve_password"
     workers_password_file: str | None = "postgres_workers_password"
     migrate_password_file: str | None = "postgres_migrate_password"
+    nautilus_password_file: str | None = "postgres_nautilus_password"
     connect_timeout_seconds: float = 5.0
 
-    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", mode="before")
+    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", "nautilus_dsn", mode="before")
     @classmethod
     def parse_dsn(cls, value: Any) -> str:
         normalized = str(value or "").strip()
@@ -42,6 +44,7 @@ class PostgresConfig(BaseModel):
         "serve_password_file",
         "workers_password_file",
         "migrate_password_file",
+        "nautilus_password_file",
         mode="before",
     )
     @classmethod
@@ -570,6 +573,24 @@ class TradingOpenTradeSettings(BaseModel):
         return bool(self.base_url and self.token_file)
 
 
+class TradingNautilusSettings(BaseModel):
+    """The single dark/demo execution process introduced by #283."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    accept_intents: bool = False
+    api_key_file: str | None = "binance_demo_api_key"
+    api_secret_file: str | None = "binance_demo_api_secret"
+
+    @field_validator("api_key_file", "api_secret_file", mode="before")
+    @classmethod
+    def parse_optional_secret_path(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
 class TradingSettings(BaseModel):
     """`tracefold.trading`. Disabled by default; paper never reads the OpenTrade token."""
 
@@ -586,6 +607,7 @@ class TradingSettings(BaseModel):
     venues: TradingVenueSettings = Field(default_factory=TradingVenueSettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
     opentrade: TradingOpenTradeSettings = Field(default_factory=TradingOpenTradeSettings)
+    nautilus: TradingNautilusSettings = Field(default_factory=TradingNautilusSettings)
 
     @field_validator("live_symbol", mode="before")
     @classmethod
@@ -646,12 +668,12 @@ class Settings(BaseModel):
     def app_home(self) -> Path:
         return self._config_dir
 
-    def postgres_dsn(self, role: Literal["serve", "workers", "migrate"]) -> str:
+    def postgres_dsn(self, role: Literal["serve", "workers", "migrate", "nautilus"]) -> str:
         return cast(str, getattr(self.storage.postgres, f"{role}_dsn"))
 
     def postgres_password_file(
         self,
-        role: Literal["serve", "workers", "migrate"],
+        role: Literal["serve", "workers", "migrate", "nautilus"],
     ) -> Path | None:
         value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
         if not value:
@@ -663,6 +685,20 @@ class Settings(BaseModel):
 
     def trading_opentrade_token_file(self) -> Path | None:
         value = self.trading.opentrade.token_file
+        if not value:
+            return None
+        configured = Path(value).expanduser()
+        if configured.is_absolute():
+            return configured
+        return self._config_dir / configured
+
+    def trading_nautilus_api_key_file(self) -> Path | None:
+        return self._configured_path(self.trading.nautilus.api_key_file)
+
+    def trading_nautilus_api_secret_file(self) -> Path | None:
+        return self._configured_path(self.trading.nautilus.api_secret_file)
+
+    def _configured_path(self, value: str | None) -> Path | None:
         if not value:
             return None
         configured = Path(value).expanduser()

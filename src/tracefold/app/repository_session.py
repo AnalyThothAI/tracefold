@@ -64,7 +64,7 @@ def repositories_for_connection(
 def postgres_connection(
     settings: Any,
     *,
-    role: Literal["serve", "workers", "migrate"],
+    role: Literal["serve", "workers", "migrate", "nautilus"],
 ) -> Iterator[Any]:
     """Open the short-lived PostgreSQL connection used by application operations."""
     postgres = settings.storage.postgres
@@ -83,7 +83,7 @@ def postgres_connection(
 def repositories(
     settings: Any,
     *,
-    role: Literal["serve", "workers"] = "workers",
+    role: Literal["serve", "workers", "nautilus"] = "workers",
 ) -> Iterator[RepositorySession]:
     """Open one short-lived repository session for a CLI/application operation."""
     with postgres_connection(settings, role=role) as conn:

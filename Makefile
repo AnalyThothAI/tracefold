@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -119,6 +119,20 @@ db-migrate: ## apply PostgreSQL migrations
 
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
+
+db-provision-nautilus-role: preflight ## offline one-shot provisioning for an existing PostgreSQL volume
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-provision-nautilus-role-locked
+
+_db-provision-nautilus-role-locked:
+	@test "$${TRACEFOLD_DEPLOY_LOCK_HELD:-}" = "1" || { echo "Use make db-provision-nautilus-role; the locked implementation target is private." >&2; exit 2; }
+	@set -eu; \
+		running=$$(docker compose ps -q); \
+		if [ -n "$$running" ]; then \
+			echo "Nautilus role provisioning is offline-only; stop the entire Tracefold stack first." >&2; \
+			exit 1; \
+		fi; \
+		docker compose run --rm --no-deps --user postgres \
+			--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres
 
 serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve

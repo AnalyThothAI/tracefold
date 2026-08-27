@@ -18,6 +18,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
 
     assert set(services) == {
         "migrate",
+        "nautilus",
         "postgres",
         "rabbitmq",
         "serve",
@@ -42,7 +43,10 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert (
         "./docker/postgres-init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-tracefold-runtime-roles.sh:ro"
     ) in services["postgres"]["volumes"]
-    assert len(services["postgres"]["volumes"]) == 2
+    assert (
+        "./docker/postgres-provision-nautilus-role.sh:/usr/local/bin/tracefold-provision-nautilus-role:ro"
+    ) in services["postgres"]["volumes"]
+    assert len(services["postgres"]["volumes"]) == 3
     assert services["postgres"]["healthcheck"]["test"][0] == "CMD-SHELL"
     postgres_healthcheck = services["postgres"]["healthcheck"]["test"][1]
     assert "pg_isready" in postgres_healthcheck
@@ -54,6 +58,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         "postgres_serve_password",
         "postgres_workers_password",
         "postgres_migrate_password",
+        "postgres_nautilus_password",
     ]
 
     shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
@@ -64,21 +69,27 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         },
         "secrets": ["github_token"],
     }
-    for role in ("migrate", "serve", "workers"):
+    for role in ("migrate", "serve", "workers", "nautilus"):
         assert services[role]["image"] == shared_app_image
         assert services[role]["build"] == shared_app_build
 
-    for role in ("serve", "workers"):
+    for role in ("serve", "workers", "nautilus"):
         depends = services[role]["depends_on"]
         assert depends["postgres"]["condition"] == "service_healthy"
         assert depends["migrate"]["condition"] == "service_completed_successfully"
         assert "rsshub" not in depends
+    assert "rabbitmq" not in services["nautilus"]["depends_on"]
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
+    assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
     assert services["workers"]["ports"] == ["${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"]
+    assert services["nautilus"]["ports"] == [
+        "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
+    ]
+    assert "http://127.0.0.1:8767/healthz" in services["nautilus"]["healthcheck"]["test"][3]
 
 
 def test_compose_declares_host_role_password_files_as_postgres_init_secrets() -> None:
@@ -87,6 +98,7 @@ def test_compose_declares_host_role_password_files_as_postgres_init_secrets() ->
     assert compose["secrets"]["postgres_serve_password"]["file"] == "${HOME}/.tracefold/postgres_serve_password"
     assert compose["secrets"]["postgres_workers_password"]["file"] == "${HOME}/.tracefold/postgres_workers_password"
     assert compose["secrets"]["postgres_migrate_password"]["file"] == "${HOME}/.tracefold/postgres_migrate_password"
+    assert compose["secrets"]["postgres_nautilus_password"]["file"] == "${HOME}/.tracefold/postgres_nautilus_password"
     assert "postgres_review_password" not in compose["secrets"]
 
 
@@ -97,6 +109,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
         "postgres_serve_password": "A" * 43,
         "postgres_workers_password": "B" * 43,
         "postgres_migrate_password": "C" * 43,
+        "postgres_nautilus_password": "D" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -137,6 +150,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "CREATE ROLE tracefold_workers" in sql
     assert "tracefold_review" not in sql
     assert "CREATE ROLE tracefold_migrate" in sql
+    assert "CREATE ROLE tracefold_nautilus" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH SET TRUE" in sql
@@ -157,6 +171,7 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
         "postgres_serve_password": invalid_password,
         "postgres_workers_password": "B" * 43,
         "postgres_migrate_password": "C" * 43,
+        "postgres_nautilus_password": "D" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -187,6 +202,7 @@ def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_
         "tracefold_serve",
         "tracefold_workers",
         "tracefold_migrate",
+        "tracefold_nautilus",
         "tracefold_migrate_owner_membership",
         "public_schema_owner",
         "bootstrap_login_disabled",
@@ -199,10 +215,71 @@ def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_
     assert "AND NOT rolsuper" in migration
 
 
+def test_offline_nautilus_role_provisioning_is_narrow_and_keeps_the_password_out_of_output(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    password = "N" * 43
+    password_file = secrets_dir / "postgres_nautilus_password"
+    password_file.write_text(password + "\n", encoding="utf-8")
+    password_file.chmod(0o600)
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    capture_path = tmp_path / "captured.sql"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_postgres = bin_dir / "postgres"
+    fake_postgres.write_text('#!/bin/sh\ncat > "$TRACEFOLD_CAPTURE_SQL"\n', encoding="utf-8")
+    fake_postgres.chmod(0o700)
+
+    result = subprocess.run(
+        ["sh", "docker/postgres-provision-nautilus-role.sh", str(secrets_dir)],
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "PGDATA": str(pgdata),
+            "POSTGRES_DB": "tracefold",
+            "TRACEFOLD_CAPTURE_SQL": str(capture_path),
+        },
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert password not in result.stdout
+    assert password not in result.stderr
+    sql = capture_path.read_text(encoding="utf-8")
+    assert "CREATE ROLE tracefold_nautilus LOGIN" in sql
+    assert "ALTER ROLE tracefold_nautilus" in sql
+    assert "NOCREATEROLE" in sql
+    assert "GRANT tracefold_owner" not in sql
+
+
+def test_offline_nautilus_role_provisioning_refuses_a_running_cluster(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "postgres_nautilus_password").write_text("N" * 43 + "\n", encoding="utf-8")
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    (pgdata / "postmaster.pid").write_text("123\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", "docker/postgres-provision-nautilus-role.sh", str(secrets_dir)],
+        capture_output=True,
+        check=False,
+        env={**os.environ, "PGDATA": str(pgdata), "POSTGRES_DB": "tracefold"},
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "offline" in result.stderr.lower()
+
+
 def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())
     serve_volumes = compose["services"]["serve"].get("volumes", [])
     worker_volumes = compose["services"]["workers"].get("volumes", [])
+    nautilus_volumes = compose["services"]["nautilus"].get("volumes", [])
 
     assert any("postgres_serve_password" in volume for volume in serve_volumes)
     assert not any(
@@ -212,5 +289,19 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     assert not any(
         "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
     )
-    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes])
+    assert any("postgres_nautilus_password" in volume for volume in nautilus_volumes)
+    assert any("binance_demo_api_key" in volume for volume in nautilus_volumes)
+    assert any("binance_demo_api_secret" in volume for volume in nautilus_volumes)
+    assert not any(
+        role_password in volume
+        for volume in nautilus_volumes
+        for role_password in ("postgres_serve_password", "postgres_workers_password", "postgres_migrate_password")
+    )
+    for service_name, service in compose["services"].items():
+        if service_name != "nautilus":
+            assert not any(
+                "binance_demo_api_key" in volume or "binance_demo_api_secret" in volume
+                for volume in service.get("volumes", [])
+            )
+    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])
     assert "tracefold-postgres" in compose["volumes"]

@@ -264,12 +264,15 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 
     assert trading.__all__ == [
+        "INTENT_POLICY_SHA256",
         "Bar",
         "ExecutionAdapter",
         "ExecutionObservation",
         "ExecutionObservationState",
         "ExecutionReceipt",
         "InstrumentRef",
+        "IntentOutcome",
+        "IntentReasonCode",
         "LiveExchangeId",
         "LiveExecutionAdapter",
         "LivePreflight",
@@ -278,7 +281,9 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "PreparedOrder",
         "RemoteExposure",
         "StartupReconciliation",
+        "TradeIntent",
         "TradingMode",
+        "deterministic_client_order_id",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CandidateRunner" not in trading.__dict__

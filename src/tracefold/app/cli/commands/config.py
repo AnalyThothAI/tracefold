@@ -14,15 +14,18 @@ from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.platform.paths import config_path
 
 # The closed role vocabulary the Settings accessors are keyed by.
-_POSTGRES_ROLES: tuple[Literal["serve", "workers", "migrate"], ...] = ("serve", "workers", "migrate")
+_POSTGRES_ROLES: tuple[Literal["serve", "workers", "migrate", "nautilus"], ...] = (
+    "serve",
+    "workers",
+    "migrate",
+    "nautilus",
+)
 
 
 def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists()
     path = write_default_config(force=args.force)
-    password_paths = {
-        role: _ensure_postgres_password_file(path.parent, role=role) for role in ("serve", "workers", "migrate")
-    }
+    password_paths = {role: _ensure_postgres_password_file(path.parent, role=role) for role in _POSTGRES_ROLES}
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     return (
         0,
@@ -44,6 +47,8 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     push_availability = news_push_availability(settings)
     model_availability = news_model_availability(settings)
     opentrade_token_file = settings.trading_opentrade_token_file()
+    nautilus_api_key_file = settings.trading_nautilus_api_key_file()
+    nautilus_api_secret_file = settings.trading_nautilus_api_secret_file()
     return (
         0,
         {
@@ -116,6 +121,16 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         "base_url_configured": bool(settings.trading.opentrade.base_url),
                         "token_file": None if opentrade_token_file is None else str(opentrade_token_file),
                         "token_file_configured": secret_file_configured(opentrade_token_file),
+                    },
+                    "nautilus": {
+                        "accept_intents": settings.trading.nautilus.accept_intents,
+                        "instrument_id": "SOLUSDT-PERP.BINANCE",
+                        "api_key_file": None if nautilus_api_key_file is None else str(nautilus_api_key_file),
+                        "api_secret_file": (
+                            None if nautilus_api_secret_file is None else str(nautilus_api_secret_file)
+                        ),
+                        "credentials_configured": secret_file_configured(nautilus_api_key_file)
+                        and secret_file_configured(nautilus_api_secret_file),
                     },
                 },
             },

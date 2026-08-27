@@ -86,6 +86,7 @@ TRADING_TABLES = (
     "trading_strategy_evaluations",
     "trading_orders",
     "trading_order_observations",
+    "trading_intents",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
