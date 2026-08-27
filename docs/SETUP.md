@@ -6,7 +6,8 @@
 
 Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose
 plugin, `curl`, and the [GitHub CLI](https://cli.github.com/); run
-`gh auth login` and start the Docker daemon. From a fresh clone, run:
+`gh auth login --hostname github.com` and start the Docker daemon. From a fresh
+clone, run:
 
 ```bash
 make up

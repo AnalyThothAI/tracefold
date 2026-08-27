@@ -212,7 +212,10 @@ preflight: ## verify the one-command startup prerequisites
 
 github-preflight:
 	@command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is not installed or not on PATH" >&2; exit 127; }
-	@gh auth status >/dev/null 2>&1 || { echo "GitHub CLI is not authenticated; run gh auth login" >&2; exit 1; }
+	@gh auth status --active --hostname github.com >/dev/null 2>&1 || { \
+		echo "GitHub CLI is not authenticated for github.com; run gh auth login --hostname github.com" >&2; \
+		exit 1; \
+	}
 
 verify-main-ci: github-preflight ## require the exact origin/main SHA to have a trusted green ci-gate
 	@uv run python scripts/require_main_ci.py

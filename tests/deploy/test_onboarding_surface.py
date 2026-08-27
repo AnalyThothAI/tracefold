@@ -170,6 +170,54 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     }.isdisjoint(targets)
 
 
+def test_github_preflight_requires_the_cli(tmp_path: Path) -> None:
+    make = shutil.which("make")
+    assert make is not None
+
+    result = subprocess.run(
+        [make, "--no-print-directory", "github-preflight"],
+        cwd=ROOT,
+        env={**os.environ, "PATH": str(tmp_path)},
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "GitHub CLI is not installed or not on PATH" in result.stderr
+
+
+@pytest.mark.parametrize("auth_exit", [0, 1])
+def test_github_preflight_checks_only_the_active_github_dot_com_account(tmp_path: Path, auth_exit: int) -> None:
+    make = shutil.which("make")
+    assert make is not None
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\n"
+        '[ "$*" = "auth status --active --hostname github.com" ] || exit 64\n'
+        'exit "$TRACEFOLD_TEST_GH_AUTH_EXIT"\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+
+    result = subprocess.run(
+        [make, "--no-print-directory", "github-preflight"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": str(tmp_path),
+            "TRACEFOLD_TEST_GH_AUTH_EXIT": str(auth_exit),
+        },
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert (result.returncode == 0) is (auth_exit == 0)
+    if auth_exit:
+        assert "GitHub CLI is not authenticated for github.com" in result.stderr
+
+
 def test_status_rejects_a_still_running_migration(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -212,11 +260,22 @@ case "$url" in */) printf '<html></html>' ;; esac
     fake_uv = bin_dir / "uv"
     fake_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_uv.chmod(0o700)
+    github_probe = tmp_path / "github-probe"
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        '#!/bin/sh\n: > "$TRACEFOLD_TEST_GH_PROBE"\nexit 99\n',
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
 
     result = subprocess.run(
         ["make", "status"],
         cwd=ROOT,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TRACEFOLD_TEST_GH_PROBE": str(github_probe),
+        },
         capture_output=True,
         check=False,
         text=True,
@@ -224,6 +283,7 @@ case "$url" in */) printf '<html></html>' ;; esac
 
     assert result.returncode != 0
     assert "migrate: state=running exit_code=0" in result.stderr
+    assert not github_probe.exists()
 
 
 def test_deploy_image_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
