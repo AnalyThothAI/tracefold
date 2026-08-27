@@ -52,9 +52,7 @@ export function TradingHeadline({
   const numbers = strategyNumbers(status);
   const evidence = evidenceByCase(decisions);
   const binding = bindingCaseRule(cases);
-  const example = binding
-    ? cases.find((row) => row.policy_reason === binding.reason)
-    : undefined;
+  const example = binding ? cases.find((row) => row.policy_reason === binding.reason) : undefined;
   const refusal = binding
     ? refusalOf(binding.reason, {
         evidence: example ? evidence.get(example.case_id)?.gate_evidence : null,

@@ -341,9 +341,7 @@ describe("TradingPage", () => {
     renderTrading();
 
     const ladder = (await screen.findByText("信号去了哪里")).closest("section") as HTMLElement;
-    const rows = within(ladder).getAllByText(
-      /^(上游帧到达|建成案例|策略放行|提交订单|已了结)$/,
-    );
+    const rows = within(ladder).getAllByText(/^(上游帧到达|建成案例|策略放行|提交订单|已了结)$/);
     expect(rows.map((node) => node.textContent)).toEqual([
       "上游帧到达",
       "建成案例",

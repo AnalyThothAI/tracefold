@@ -1,4 +1,3 @@
-
 import type { TradingCase, TradingCounts, TradingStatus } from "@features/trading";
 import {
   bindingCaseRule,
@@ -215,7 +214,6 @@ describe("evidenceByCase", () => {
     const byCase = evidenceByCase([
       { case_id: "c1", gate_evidence: { oi_change_bps: 700 } },
       { case_id: null, gate_evidence: { oi_change_bps: 100 } },
-       
     ] as any);
     expect(byCase.get("c1")?.gate_evidence?.oi_change_bps).toBe(700);
     expect(byCase.size).toBe(1);

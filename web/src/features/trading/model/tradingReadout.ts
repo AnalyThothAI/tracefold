@@ -194,6 +194,12 @@ export type LaneCounts = {
  * tables. The two sources describe the same population but are keyed on different clocks — a gate row
  * on when the *frame* was observed, a case on when it was *created* — and mixing them drew 策略放行 as
  * a larger number than the 建成案例 above it, a funnel disproving itself on screen.
+ *
+ * One seam remains and it closes itself: `seen` counts the OI lane, because the gate ledger's read
+ * model is OI by construction, while the case levels count every trigger kind. Since #273 a News
+ * trigger no longer freezes a case at all, so the two populations are the same one — but for the
+ * first window after that deploy, cases created under the old behaviour are still inside 24 h and
+ * `建成案例` reads high by however many of them there were.
  */
 export function laneCounts(counts: TradingCounts): LaneCounts {
   const admission = counts.candidate_counts_24h ?? {};
