@@ -410,20 +410,33 @@ class QuoteStorage:
             ),
         )
 
-    def event_reactions(self, event_id: str) -> list[dict[str, Any]]:
+    def event_reactions(self, event_id: str, *, metric_version: str | None = None) -> list[dict[str, Any]]:
         """Every per-asset Reaction for one Event, with the raw closes the returns were computed from."""
 
-        rows = self.conn.execute(
-            """
-            SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
-                   p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                   is_primary, state, unavailable_reason, updated_at_ms
-              FROM news_event_reactions
-             WHERE event_id = %s
-             ORDER BY symbol
-            """,
-            (str(event_id),),
-        ).fetchall()
+        if metric_version is None:
+            rows = self.conn.execute(
+                """
+                SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
+                       p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
+                       is_primary, state, unavailable_reason, updated_at_ms
+                  FROM news_event_reactions
+                 WHERE event_id = %s
+                 ORDER BY symbol, metric_version
+                """,
+                (str(event_id),),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
+                       p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
+                       is_primary, state, unavailable_reason, updated_at_ms
+                  FROM news_event_reactions
+                 WHERE event_id = %s AND metric_version = %s
+                 ORDER BY symbol
+                """,
+                (str(event_id), str(metric_version)),
+            ).fetchall()
         return [_reaction_public(dict(row)) for row in rows]
 
     def event_reaction_aggregates(self, event_ids: Sequence[str], *, now_ms: int) -> dict[str, dict[str, Any]]:

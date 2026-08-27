@@ -790,6 +790,26 @@ class EventStorage:
             ).fetchone(),
         )
 
+    def event_delivery_timing(self, event_id: str) -> Mapping[str, Any] | None:
+        """Source publication and first local observation for reader-facing delivery latency."""
+
+        row = self.conn.execute(
+            """
+            SELECT i.published_at_ms AS news_at_ms, i.observed_at_ms, i.canonical_url
+              FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
+             WHERE e.event_id = %s
+            """,
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        _, artifact_at_ms = source_artifact_identity(str(data.get("canonical_url") or ""))
+        return {
+            "news_at_ms": int(artifact_at_ms or data["news_at_ms"]),
+            "observed_at_ms": int(data["observed_at_ms"]),
+        }
+
     def resolve_unverified_source_contract(
         self,
         *,

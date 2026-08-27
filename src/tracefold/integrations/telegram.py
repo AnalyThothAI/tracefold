@@ -9,13 +9,16 @@ import re
 import ssl
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from http.client import HTTPException, HTTPSConnection
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
-from tracefold.news import ReaderTradeTarget
+from tracefold.news import ReaderDeliveryPresentation, ReaderMarketMovement, ReaderTradeTarget
 
 _TELEGRAM_API_ORIGIN = "https://api.telegram.org"
 _TELEGRAM_TIMEOUT_SECONDS = 6.5
@@ -24,6 +27,7 @@ _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS = 0.05
 _TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS = 1.25
 _TELEGRAM_TEXT_MAX = 4096
 _TELEGRAM_RESPONSE_MAX_BYTES = 1024 * 1024
+_SOURCE_URL_MAX_LENGTH = 2_048
 _BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
 _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
 _TELEGRAM_TIME_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
@@ -34,7 +38,25 @@ _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong)>|<a href="[^"]+">|</a>')
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
+_NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
+_MAGNITUDE_LABELS = {
+    "影响很小": "很小",
+    "影响有限": "有限",
+    "影响明显": "明显",
+    "影响重大": "重大",
+}
 _HEADER_ICON = {"green": "🟢", "red": "🔴", "grey": "⚪"}
+_READER_TIMEZONE = timezone(timedelta(hours=8))
+
+
+@dataclass(frozen=True, slots=True)
+class _TelegramFacts:
+    direction: str = ""
+    novelty: str = ""
+    magnitude: str = ""
+    assets: tuple[str, ...] = ()
+    origin: str = ""
+    report_count: int | None = None
 
 
 class TelegramDeliveryError(RuntimeError):
@@ -108,6 +130,7 @@ class TelegramNewsPushSender:
         chat_id: int,
         transport: httpx.BaseTransport | None = None,
         monotonic: Callable[[], float] | None = None,
+        wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
         normalized_token = str(bot_token or "").strip()
         if not _BOT_TOKEN_RE.fullmatch(normalized_token):
@@ -126,6 +149,7 @@ class TelegramNewsPushSender:
         ).hexdigest()
         self._target_validated = False
         self._monotonic = monotonic or time.monotonic
+        self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
         selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
         self._client = httpx.Client(
             base_url=f"{_TELEGRAM_API_ORIGIN}/",
@@ -148,11 +172,20 @@ class TelegramNewsPushSender:
         self,
         card: Mapping[str, Any],
         *,
-        trade_targets: Sequence[ReaderTradeTarget] = (),
+        presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
         if not self._target_validated:
             raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
-        text, source_button = _telegram_message(card, trade_targets=trade_targets)
+        view = presentation or ReaderDeliveryPresentation()
+        pushed_at_ms = int(self._wall_clock_ms())
+        text = _telegram_message(
+            card,
+            trade_targets=view.trade_targets,
+            market_movements=view.market_movements,
+            news_at_ms=view.news_at_ms,
+            observed_at_ms=view.observed_at_ms,
+            pushed_at_ms=pushed_at_ms,
+        )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         payload: dict[str, Any] = {
             "chat_id": self._chat_id,
@@ -160,8 +193,6 @@ class TelegramNewsPushSender:
             "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
         }
-        if source_button is not None:
-            payload["reply_markup"] = {"inline_keyboard": [[source_button]]}
         try:
             result = self._call_api(
                 "sendMessage",
@@ -271,7 +302,11 @@ def _telegram_message(
     card: Mapping[str, Any],
     *,
     trade_targets: Sequence[ReaderTradeTarget] = (),
-) -> tuple[str, dict[str, str] | None]:
+    market_movements: Sequence[ReaderMarketMovement] = (),
+    news_at_ms: int | None = None,
+    observed_at_ms: int | None = None,
+    pushed_at_ms: int | None = None,
+) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
     template = str(header.get("template") or "") if isinstance(header, Mapping) else ""
@@ -281,7 +316,7 @@ def _telegram_message(
         title = title.removeprefix("⚡ ").strip()
 
     content_lines: list[str] = []
-    source_button: dict[str, str] | None = None
+    source_url = ""
     elements = card.get("elements")
     if isinstance(elements, Sequence) and not isinstance(elements, str | bytes):
         for element in elements:
@@ -292,15 +327,15 @@ def _telegram_message(
                 content = str(element.get("content") or "").strip()
                 if content:
                     content_lines.extend(line.strip() for line in content.splitlines() if line.strip())
-            elif tag == "action" and source_button is None:
-                source_button = _source_button(element.get("actions"))
+            elif tag == "action" and not source_url:
+                source_url = _source_url(element.get("actions"))
 
     market_line = next((line for line in reversed(content_lines) if line.startswith("行情 ")), "")
     if market_line:
         content_lines.remove(market_line)
     facts_line = content_lines.pop() if content_lines else ""
     explanation = "\n".join(content_lines)
-    signal, source = _telegram_facts(facts_line)
+    facts = _telegram_facts(facts_line)
     ticker_links = _binance_ticker_links(trade_targets)
 
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
@@ -308,40 +343,192 @@ def _telegram_message(
         sections.append(_escape_html(_clip(explanation, 1800)))
 
     metadata: list[str] = []
-    if signal:
-        signal_label = "判断" if signal.split(" · ", maxsplit=1)[0] in _DIRECTION_LABELS else "标的"
-        metadata.append(f"🧭 <b>{signal_label}</b>  {_telegram_ticker_html(_clip(signal, 600), ticker_links)}")
-    if market_line:
-        market = market_line.removeprefix("行情 ").strip()
-        if market:
-            metadata.append(f"📊 <b>行情</b>  {_telegram_ticker_html(_clip(market, 800), ticker_links)}")
-    if source:
-        metadata.append(f"🕒 <b>来源</b>  {_escape_html(_clip(source, 300))}")
+    if facts.assets:
+        metadata.append(
+            "🎯 <b>标的</b>\n"
+            + "\n".join(
+                _telegram_asset_lines(
+                    facts.assets,
+                    market_line=market_line,
+                    ticker_links=ticker_links,
+                    market_movements=market_movements,
+                )
+            )
+        )
+    if facts.direction or facts.magnitude:
+        direction = _escape_html(facts.direction or "不明确")
+        magnitude = _escape_html(_MAGNITUDE_LABELS.get(facts.magnitude, facts.magnitude or "未知"))
+        metadata.append(f"🧭 <b>方向</b>  {direction}")
+        metadata.append(f"📊 <b>影响程度</b>  {magnitude}")
+    if facts.novelty:
+        metadata.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
+    if facts.origin or source_url:
+        source = _telegram_source_html(facts.origin, source_url)
+        count = f" · {facts.report_count} 条报道" if facts.report_count is not None else ""
+        metadata.append(f"🔗 <b>来源</b>  {source}{count}")
+    timing = _telegram_timing_html(news_at_ms=news_at_ms, observed_at_ms=observed_at_ms, pushed_at_ms=pushed_at_ms)
+    if timing:
+        metadata.append(f"⏱ <b>时间</b>  {timing}")
     if metadata:
         sections.append("\n".join(metadata))
 
     message = "\n\n".join(sections).strip()
     if len(_plain_html_text(message)) > _TELEGRAM_TEXT_MAX:
         raise TelegramDeliveryError("news_delivery_telegram_message_too_long")
-    return message, source_button
+    return message
 
 
-def _telegram_facts(value: str) -> tuple[str, str]:
+def _telegram_facts(value: str) -> _TelegramFacts:
     parts = [part.strip() for part in str(value or "").split(" · ") if part.strip()]
     if not parts:
-        return "", ""
-    time_text = parts.pop() if parts and _TELEGRAM_TIME_RE.fullmatch(parts[-1]) else ""
-    origin = parts.pop() if time_text and parts else ""
-    source_parts: list[str] = []
-    if origin:
-        match = _REPORTING_ORIGIN_RE.fullmatch(origin)
-        if match is None:
-            source_parts.append(origin)
-        else:
-            source_parts.extend((match.group("origin"), f"{match.group('count')} 条报道"))
-    if time_text:
-        source_parts.append(time_text)
-    return " · ".join(parts), " · ".join(source_parts)
+        return _TelegramFacts()
+    if _TELEGRAM_TIME_RE.fullmatch(parts[-1]):
+        parts.pop()
+    origin = parts.pop() if parts else ""
+    report_count: int | None = None
+    match = _REPORTING_ORIGIN_RE.fullmatch(origin)
+    if match is not None:
+        origin = match.group("origin")
+        report_count = int(match.group("count"))
+    direction = parts.pop(0) if parts and parts[0] in _DIRECTION_LABELS else ""
+    novelty = parts.pop(0) if parts and parts[0] in _NOVELTY_LABELS else ""
+    magnitude = parts.pop(0) if parts and parts[0] in _MAGNITUDE_LABELS else ""
+    asset_text = " ".join(parts).strip()
+    assets = tuple(part for part in asset_text.split() if part and part != "-")
+    return _TelegramFacts(
+        direction=direction,
+        novelty=novelty,
+        magnitude=magnitude,
+        assets=assets,
+        origin=origin if origin != "-" else "",
+        report_count=report_count,
+    )
+
+
+def _telegram_asset_lines(
+    assets: Sequence[str],
+    *,
+    market_line: str,
+    ticker_links: Mapping[str, str],
+    market_movements: Sequence[ReaderMarketMovement],
+) -> list[str]:
+    movements = {
+        movement.ticker: movement for movement in market_movements if isinstance(movement, ReaderMarketMovement)
+    }
+    lines: list[str] = []
+    for asset in assets:
+        ticker = _telegram_ticker_html(asset, ticker_links)
+        movement = movements.get(asset)
+        if movement is not None:
+            after_news = (
+                _format_bps(movement.after_news_bps)
+                if movement.after_news_bps is not None
+                else ("待计算" if movement.one_hour_state in {"not_due", "pending"} else "暂无")
+            )
+            one_hour = (
+                _format_bps(movement.return_1h_bps)
+                if movement.return_1h_bps is not None
+                else {
+                    "not_due": "待到期",
+                    "pending": "计算中",
+                    "available": "暂无",
+                    "unavailable": "暂无",
+                }[movement.one_hour_state]
+            )
+            day_change = _format_bps(movement.change_24h_bps) if movement.change_24h_bps is not None else "暂无"
+            lines.append(f"{ticker} 新闻后 {after_news}，1h {one_hour}，24h {day_change}")
+            continue
+        change_match = re.search(
+            rf"(?<![A-Z0-9.-]){re.escape(asset)}\s+\$[0-9,.]+\s+24h\s+(?P<pct>[+-]?[0-9]+(?:\.[0-9]+)?%)(?![A-Z0-9.-])",
+            market_line,
+        )
+        day_change = _escape_html(change_match.group("pct")) if change_match is not None else "暂无"
+        lines.append(f"{ticker} 新闻后 待计算，1h 待到期，24h {day_change}")
+    return lines
+
+
+def _format_bps(value: int) -> str:
+    percentage = Decimal(value) / Decimal(100)
+    return f"{'+' if value > 0 else ''}{percentage:.2f}%"
+
+
+def _telegram_timing_html(
+    *,
+    news_at_ms: int | None,
+    observed_at_ms: int | None,
+    pushed_at_ms: int | None,
+) -> str:
+    if not _positive_timestamp(pushed_at_ms):
+        return ""
+    news_text = _format_reader_time(int(news_at_ms)) if _positive_timestamp(news_at_ms) else ""
+    pushed_text = _format_reader_time(int(pushed_at_ms))
+    if not pushed_text:
+        return ""
+    if _positive_timestamp(observed_at_ms):
+        processing_seconds = max(0, int(pushed_at_ms) - int(observed_at_ms)) // 1000
+        processing = f"{processing_seconds} 秒"
+    else:
+        processing = "暂无"
+    return f"新闻 {news_text or '暂无'}｜处理 {processing}｜推送 {pushed_text}"
+
+
+def _positive_timestamp(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
+def _format_reader_time(value_ms: int) -> str:
+    try:
+        return datetime.fromtimestamp(value_ms / 1000, tz=_READER_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _telegram_source_html(origin: str, source_url: str) -> str:
+    label = _clip(_normalized_source_label(origin, source_url), 160)
+    if not _safe_https_url(source_url):
+        return _escape_html(label)
+    return f'<a href="{html.escape(source_url, quote=True)}">{_escape_html(label)}</a>'
+
+
+def _normalized_source_label(origin: str, source_url: str) -> str:
+    normalized = str(origin or "").strip()
+    lowered = normalized.casefold()
+    try:
+        parsed = urlsplit(source_url)
+        host = str(parsed.hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        parsed, host = None, ""
+    if host in {"x.com", "twitter.com"} or host.endswith(".x.com") or host.endswith(".twitter.com"):
+        path_handle = parsed.path.strip("/").split("/", maxsplit=1)[0].removeprefix("@") if parsed else ""
+        handle = path_handle if path_handle.casefold() not in {"", "home", "i", "search"} else ""
+        if not handle and lowered not in {"", "x", "twitter", "opennews"}:
+            handle = normalized.removeprefix("@").strip()
+        return f"{handle} 的推特" if handle else "推特"
+    aliases = {
+        "jin10": "金十",
+        "金十数据": "金十",
+        "bloomberg": "彭博社",
+        "彭博": "彭博社",
+        "reuters": "路透社",
+        "路透": "路透社",
+    }
+    if host in {"jin10.com", "jin10.com.cn"} or host.endswith((".jin10.com", ".jin10.com.cn")):
+        return "金十"
+    if host == "bloomberg.com" or host.endswith(".bloomberg.com"):
+        return "彭博社"
+    if host == "reuters.com" or host.endswith(".reuters.com"):
+        return "路透社"
+    if host == "coindesk.com" or host.endswith(".coindesk.com"):
+        return "CoinDesk"
+    if host == "ft.com" or host.endswith(".ft.com"):
+        return "金融时报"
+    if host == "theblock.co" or host.endswith(".theblock.co"):
+        return "The Block"
+    # A URL and a publisher label are one claim. Unknown destinations therefore show their hostname instead
+    # of inheriting a trusted brand from provider text (for example `Reuters` + `reuters.com.evil.test`).
+    if host:
+        return host
+    return aliases.get(lowered, normalized or "未知来源")
 
 
 def _clip(value: object, limit: int) -> str:
@@ -385,23 +572,22 @@ def _nested_text(value: object, key: str) -> str:
     return str(nested.get("content") or "").strip()
 
 
-def _source_button(value: object) -> dict[str, str] | None:
+def _source_url(value: object) -> str:
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        return None
+        return ""
     for action in value:
         if not isinstance(action, Mapping) or action.get("tag") != "button":
             continue
         url = str(action.get("url") or "").strip()
         if not _safe_https_url(url):
             continue
-        label_source = action.get("text")
-        label = str(label_source.get("content") or "").strip() if isinstance(label_source, Mapping) else ""
-        button_label = "查看原文 ↗" if not label or label == "打开来源" else label
-        return {"text": button_label[:64], "url": url}
-    return None
+        return url
+    return ""
 
 
 def _safe_https_url(value: str) -> bool:
+    if len(value) > _SOURCE_URL_MAX_LENGTH:
+        return False
     try:
         parsed = urlsplit(value)
         port = parsed.port

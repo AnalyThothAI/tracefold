@@ -147,7 +147,16 @@ explicitly enabled invalid provider configuration makes Workers fail startup.
 On Telegram, a reader ticker is clickable only when the same quote read proves an exact Binance contract;
 perpetuals open the matching Futures contract and spot instruments open the matching base/quote trade page.
 Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
-persisted reader card and Feishu payload are unchanged.
+Telegram projection lists one asset per line as
+`BTC 新闻后 +1.10%，1h +0.80%，24h +3.20%`. Current-vs-anchor and fixed 1 h returns come only from the
+`reaction_v1` Event Reaction row whose venue and venue symbol exactly equal the current quote contract; 24 h
+appears only from that asset's fresh `rolling_24h` quote. Reaction maturity follows its persisted anchor, never
+the potentially earlier original-source timestamp. An unavailable or immature value is labelled rather than
+replaced with another window. Direction and impact are two independent lines. The normalized source words carry
+the original HTTPS link; there is no separate source button. The time line names news publication,
+observation-to-send-start processing duration, and send start at whole-second precision in UTC+8; any missing
+input is displayed as `暂无` without hiding known timestamps. The persisted reader card and Feishu payload are
+unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 

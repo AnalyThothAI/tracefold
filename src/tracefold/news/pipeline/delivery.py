@@ -9,8 +9,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Protocol
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
-from ..delivery import reader_assets, reader_trade_targets, render_first_card
-from ..models import ReaderTradeTarget
+from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
+from ..market_review.pricing import REACTION_METRIC_VERSION
+from ..models import ReaderDeliveryPresentation
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
@@ -32,7 +33,7 @@ class NewsPushSender(Protocol):
         self,
         card: Mapping[str, Any],
         *,
-        trade_targets: Sequence[ReaderTradeTarget] = (),
+        presentation: ReaderDeliveryPresentation | None = None,
     ) -> Mapping[str, Any]: ...
 
     def close(self) -> None: ...
@@ -77,7 +78,7 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, oi_signal, _admission, event_kind = bundle
+        card, triage_row, oi_signal, _admission, event_kind, timing = bundle
         # A delivery message can outlive the source-contract migration that held its Event. Immutable
         # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
         # a delivery ledger row, quote read, or external send is attempted.
@@ -110,7 +111,7 @@ class DelivererConsumer:
             expected_program_sha256=self._oi_program_sha256,
             oi_signal=oi_signal,
         )
-        quotes = await self._quotes(shown, stamp)
+        quotes, reactions = await self._market_data(event_id, shown, stamp)
         card_payload = render_first_card(
             event=card,
             verdict=tv,
@@ -120,7 +121,20 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
-        trade_targets = reader_trade_targets(quotes)
+        news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
+        observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
+        presentation = ReaderDeliveryPresentation(
+            trade_targets=reader_trade_targets(quotes),
+            market_movements=reader_market_movements(
+                shown,
+                quotes,
+                reactions,
+                news_at_ms=news_at_ms,
+                now_ms=stamp,
+            ),
+            news_at_ms=news_at_ms,
+            observed_at_ms=observed_at_ms,
+        )
         state = await self.db.tx(
             "news_delivery_begin",
             lambda repos: repos.news.begin_delivery(event_id=event_id, kind=kind, card=card_payload, now_ms=stamp),
@@ -149,7 +163,7 @@ class DelivererConsumer:
                 "news_delivery_send",
                 self.sender.send_card,
                 card_payload,
-                trade_targets=trade_targets,
+                presentation=presentation,
                 timeout_seconds=8.0,
             )
             receipt = dict(result)
@@ -183,7 +197,7 @@ class DelivererConsumer:
 
         await self.db.tx("news_delivery_settle_direct", _fn)
 
-    async def _quotes(self, shown: Sequence[str], stamp: int) -> list[Any]:
+    async def _market_data(self, event_id: str, shown: Sequence[str], stamp: int) -> tuple[list[Any], list[Any]]:
         """Fresh prices for exactly the assets rendered on the card.
 
         The caller passes the same code-verified asset list to the renderer, so
@@ -193,27 +207,32 @@ class DelivererConsumer:
         """
 
         if not shown:
-            return []
+            return [], []
         try:
             rows = await self.db.read(
                 "news_delivery_quotes",
-                lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
+                lambda repos: (
+                    repos.price.quotes_for_symbols(shown, now_ms=stamp),
+                    repos.price.event_reactions(event_id, metric_version=REACTION_METRIC_VERSION),
+                ),
                 timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
             )
         except Exception:  # price is display-only; all failures degrade to no line
-            return []
-        return list(rows or [])
+            return [], []
+        quotes, reactions = rows
+        return list(quotes or []), list(reactions or [])
 
     def _load(self, repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
         del stamp
         card = repos.news.event_card(event_id)
         routing = repos.news.event_admission(event_id)
+        timing = repos.news.event_delivery_timing(event_id)
         if card is None or routing is None:
             return None
         admission = str(routing.get("admission") or "")
         event_kind = str(routing.get("event_kind") or "")
         if event_kind == "unsupported_market":
-            return card, None, None, admission, event_kind
+            return card, None, None, admission, event_kind, timing
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if triage is None:
             return None
@@ -224,7 +243,7 @@ class DelivererConsumer:
             and str(triage.get("program_sha256") or "") == self._oi_program_sha256
         ):
             oi_signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
-        return card, triage, oi_signal, admission, event_kind
+        return card, triage, oi_signal, admission, event_kind, timing
 
     async def close(self) -> None:
         if self.sender is not None:

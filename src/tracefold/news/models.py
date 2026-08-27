@@ -62,6 +62,30 @@ class ReaderTradeTarget:
     quote_asset: str
 
 
+ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderMarketMovement:
+    """Reader-facing returns for one displayed ticker, with an explicit 1 h readiness state."""
+
+    ticker: str
+    after_news_bps: int | None
+    return_1h_bps: int | None
+    change_24h_bps: int | None
+    one_hour_state: ReaderMarketState
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderDeliveryPresentation:
+    """Ephemeral adapter-only context; never part of the persisted reader card."""
+
+    trade_targets: tuple[ReaderTradeTarget, ...] = ()
+    market_movements: tuple[ReaderMarketMovement, ...] = ()
+    news_at_ms: int | None = None
+    observed_at_ms: int | None = None
+
+
 class ExactNewsModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -231,6 +255,9 @@ __all__ = [
     "ExactNewsModel",
     "NewsFeedEntry",
     "Novelty",
+    "ReaderDeliveryPresentation",
+    "ReaderMarketMovement",
+    "ReaderMarketState",
     "ReaderReceipt",
     "ReaderReceiptState",
     "ReaderTradeTarget",

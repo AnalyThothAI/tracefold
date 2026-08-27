@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
-from tracefold.news import ReaderTradeTarget
+from tracefold.news import ReaderDeliveryPresentation, ReaderMarketMovement, ReaderTradeTarget
 
 CHANNEL_ID = -1001234567890
 BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
@@ -43,7 +43,7 @@ def _preflight_response(request: httpx.Request) -> httpx.Response | None:
     return None
 
 
-def _card(*, source_url: str = "https://example.test/news/1") -> dict[str, object]:
+def _card(*, source_url: str = "https://www.coindesk.com/news/1") -> dict[str, object]:
     return {
         "header": {"title": {"content": "BTC ETF 净流入"}, "template": "green"},
         "elements": [
@@ -64,7 +64,13 @@ def _card(*, source_url: str = "https://example.test/news/1") -> dict[str, objec
     }
 
 
-def test_sender_posts_plain_text_to_only_the_configured_channel() -> None:
+def _without_timing(value: object) -> str:
+    """Keep layout assertions deterministic; timing has its own fixed-clock contract tests below."""
+
+    return str(value).rsplit("\n⏱ <b>时间</b>", maxsplit=1)[0]
+
+
+def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() -> None:
     observed: dict[str, object] = {}
     methods: list[str] = []
     timeout_totals: list[float] = []
@@ -96,19 +102,20 @@ def test_sender_posts_plain_text_to_only_the_configured_channel() -> None:
     receipt = sender.send_card(_card())
 
     assert observed["chat_id"] == CHANNEL_ID
-    assert observed["text"] == (
+    assert _without_timing(observed["text"]) == (
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
-        "🧭 <b>判断</b>  利多 · 新进展 · 影响明显 · BTC\n"
-        "📊 <b>行情</b>  BTC $74,553.10 24h +7.91%\n"
-        "🕒 <b>来源</b>  CoinDesk · 2 条报道 · 14:32"
+        "🎯 <b>标的</b>\n"
+        "BTC 新闻后 待计算，1h 待到期，24h +7.91%\n"
+        "🧭 <b>方向</b>  利多\n"
+        "📊 <b>影响程度</b>  明显\n"
+        "🆕 <b>进展</b>  新进展\n"
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
     assert observed["parse_mode"] == "HTML"
     assert "abc12345" not in str(observed["text"])
     assert observed["link_preview_options"] == {"is_disabled": True}
-    assert observed["reply_markup"] == {
-        "inline_keyboard": [[{"text": "查看原文 ↗", "url": "https://example.test/news/1"}]]
-    }
+    assert "reply_markup" not in observed
     assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
     assert all(total <= 5.0 for total in timeout_totals)
     assert receipt["provider"] == "telegram"
@@ -144,25 +151,237 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
     sender.prepare()
     sender.send_card(
         card,
-        trade_targets=(
-            ReaderTradeTarget(
-                ticker="BTC",
-                venue="binance.perp",
-                venue_symbol="BTCUSDT",
-                base_symbol="BTC",
-                quote_asset="USDT",
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="BTC",
+                    venue="binance.perp",
+                    venue_symbol="BTCUSDT",
+                    base_symbol="BTC",
+                    quote_asset="USDT",
+                ),
             ),
         ),
     )
 
     ticker = '<a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>'
-    assert observed["text"] == (
+    assert _without_timing(observed["text"]) == (
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
-        f"🧭 <b>判断</b>  利多 · 新进展 · 影响明显 · BTC-USDT {ticker}\n"
-        f"📊 <b>行情</b>  {ticker} $74,553.10 24h +7.91%\n"
-        "🕒 <b>来源</b>  CoinDesk · 2 条报道 · 14:32"
+        "🎯 <b>标的</b>\n"
+        "BTC-USDT 新闻后 待计算，1h 待到期，24h 暂无\n"
+        f"{ticker} 新闻后 待计算，1h 待到期，24h +7.91%\n"
+        "🧭 <b>方向</b>  利多\n"
+        "📊 <b>影响程度</b>  明显\n"
+        "🆕 <b>进展</b>  新进展\n"
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
+
+
+def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
+    observed: dict[str, object] = {}
+    card = _card(source_url="https://x.com/serenity/status/1234567890123456789")
+    card["header"]["template"] = "red"
+    card["elements"][0]["content"] = (
+        "资金从 BTC 轮动至 ETH\n"
+        "利空 · 影响重大 · BTC ETH · serenity · 14:32\n"
+        "行情 BTC $74,553.10 24h +3.20% · ETH $2,300.00 24h +1.70%"
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="BTC",
+                    venue="binance.perp",
+                    venue_symbol="BTCUSDT",
+                    base_symbol="BTC",
+                    quote_asset="USDT",
+                ),
+                ReaderTradeTarget(
+                    ticker="ETH",
+                    venue="binance.spot",
+                    venue_symbol="ETHUSDT",
+                    base_symbol="ETH",
+                    quote_asset="USDT",
+                ),
+            ),
+            market_movements=(
+                ReaderMarketMovement(
+                    ticker="BTC",
+                    after_news_bps=110,
+                    return_1h_bps=80,
+                    change_24h_bps=320,
+                    one_hour_state="available",
+                ),
+                ReaderMarketMovement(
+                    ticker="ETH",
+                    after_news_bps=-40,
+                    return_1h_bps=None,
+                    change_24h_bps=170,
+                    one_hour_state="not_due",
+                ),
+            ),
+        ),
+    )
+
+    btc = '<a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>'
+    eth = '<a href="https://www.binance.com/en/trade/ETH_USDT">ETH</a>'
+    assert _without_timing(observed["text"]) == (
+        "🔴 <b>BTC ETF 净流入</b>\n\n"
+        "资金从 BTC 轮动至 ETH\n\n"
+        "🎯 <b>标的</b>\n"
+        f"{btc} 新闻后 +1.10%，1h +0.80%，24h +3.20%\n"
+        f"{eth} 新闻后 -0.40%，1h 待到期，24h +1.70%\n"
+        "🧭 <b>方向</b>  利空\n"
+        "📊 <b>影响程度</b>  重大\n"
+        '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>'
+    )
+    assert "reply_markup" not in observed
+
+
+def test_sender_shows_second_level_news_processing_and_push_times() -> None:
+    observed: dict[str, object] = {}
+    card = _card(source_url="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin")
+    card["elements"][0]["content"] = (
+        "现货 ETF 资金继续流入\n利多 · 影响明显 · BTC · Bloomberg · 14:32\n行情 BTC $74,553.10 24h +7.91%"
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+        wall_clock_ms=lambda: 1_787_898_733_400,
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            news_at_ms=1_787_898_725_000,
+            observed_at_ms=1_787_898_725_000,
+        ),
+    )
+
+    assert str(observed["text"]).endswith(
+        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>\n'
+        "⏱ <b>时间</b>  新闻 2026-08-28 14:32:05｜处理 8 秒｜推送 2026-08-28 14:32:13"
+    )
+
+
+def test_sender_keeps_known_push_time_when_news_time_is_missing() -> None:
+    observed: dict[str, object] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+        wall_clock_ms=lambda: 1_787_898_733_400,
+    )
+    sender.prepare()
+    sender.send_card(_card(), presentation=ReaderDeliveryPresentation())
+
+    assert str(observed["text"]).endswith("⏱ <b>时间</b>  新闻 暂无｜处理 暂无｜推送 2026-08-28 14:32:13")
+
+
+def test_sender_uses_source_url_host_when_card_origin_is_missing() -> None:
+    observed: dict[str, object] = {}
+    card = _card(source_url="https://www.reuters.com/world/example")
+    card["elements"][0]["content"] = "利多 · 影响明显 · BTC · - · 14:32"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(card)
+
+    assert '<a href="https://www.reuters.com/world/example">路透社</a>' in str(observed["text"])
+
+
+@pytest.mark.parametrize(
+    ("origin", "source_url", "label"),
+    [
+        ("serenity", "https://x.com/serenity/status/1234567890123456789", "serenity 的推特"),
+        ("jin10", "https://xnews.jin10.com/details/123", "金十"),
+        ("Bloomberg", "https://www.bloomberg.com/news/articles/123", "彭博社"),
+        ("wire", "https://jin10.com.evil.test/story", "jin10.com.evil.test"),
+        ("jin10", "https://jin10.com.evil.test/story", "jin10.com.evil.test"),
+        ("Bloomberg", "https://bloomberg.com.evil.test/story", "bloomberg.com.evil.test"),
+        ("Reuters", "https://reuters.com.evil.test/story", "reuters.com.evil.test"),
+    ],
+)
+def test_sender_normalizes_only_proven_source_domains(origin: str, source_url: str, label: str) -> None:
+    observed: dict[str, object] = {}
+    card = _card(source_url=source_url)
+    card["elements"][0]["content"] = f"利多 · 影响明显 · BTC · {origin} · 14:32"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(card)
+
+    assert f'<a href="{source_url}">{label}</a>' in str(observed["text"])
 
 
 def test_sender_never_turns_untrusted_ticker_destinations_into_links() -> None:
@@ -196,27 +415,29 @@ def test_sender_never_turns_untrusted_ticker_destinations_into_links() -> None:
     sender.prepare()
     sender.send_card(
         card,
-        trade_targets=(
-            ReaderTradeTarget(
-                ticker="BTC",
-                venue="binance.perp",
-                venue_symbol="ETHUSDT",
-                base_symbol="ETH",
-                quote_asset="USDT",
-            ),
-            ReaderTradeTarget(
-                ticker="ETH",
-                venue="binance.perp",
-                venue_symbol="ETH/USDT",
-                base_symbol="ETH",
-                quote_asset="USDT",
-            ),
-            ReaderTradeTarget(
-                ticker="SOL",
-                venue="binance.spot",
-                venue_symbol="SOLUSDT",
-                base_symbol="SOL",
-                quote_asset="USDT",
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="BTC",
+                    venue="binance.perp",
+                    venue_symbol="ETHUSDT",
+                    base_symbol="ETH",
+                    quote_asset="USDT",
+                ),
+                ReaderTradeTarget(
+                    ticker="ETH",
+                    venue="binance.perp",
+                    venue_symbol="ETH/USDT",
+                    base_symbol="ETH",
+                    quote_asset="USDT",
+                ),
+                ReaderTradeTarget(
+                    ticker="SOL",
+                    venue="binance.spot",
+                    venue_symbol="SOLUSDT",
+                    base_symbol="SOL",
+                    quote_asset="USDT",
+                ),
             ),
         ),
     )
@@ -256,11 +477,14 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
     sender.send_card(card)
 
     assert observed["parse_mode"] == "HTML"
-    assert observed["text"] == (
+    assert _without_timing(observed["text"]) == (
         "🔴 <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
-        "🧭 <b>判断</b>  利空 · 影响明显 · A&amp;B\n"
-        "🕒 <b>来源</b>  Reuters · 14:32"
+        "🎯 <b>标的</b>\n"
+        "A&amp;B 新闻后 待计算，1h 待到期，24h 暂无\n"
+        "🧭 <b>方向</b>  利空\n"
+        "📊 <b>影响程度</b>  明显\n"
+        "🔗 <b>来源</b>  路透社"
     )
 
 
@@ -290,7 +514,13 @@ def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -
     sender.prepare()
     sender.send_card(card)
 
-    assert observed["text"] == ("⚪ <b>交易所恢复提现</b>\n\n🧭 <b>标的</b>  BTC ETH\n🕒 <b>来源</b>  opennews · 14:32")
+    assert _without_timing(observed["text"]) == (
+        "⚪ <b>交易所恢复提现</b>\n\n"
+        "🎯 <b>标的</b>\n"
+        "BTC 新闻后 待计算，1h 待到期，24h 暂无\n"
+        "ETH 新闻后 待计算，1h 待到期，24h 暂无\n"
+        "🔗 <b>来源</b>  opennews"
+    )
 
 
 def test_http_client_info_logs_never_include_the_bot_token(caplog: pytest.LogCaptureFixture) -> None:
@@ -432,7 +662,14 @@ def test_sender_accepts_only_a_private_channel_bot_api_id(chat_id: object) -> No
         TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=chat_id)  # type: ignore[arg-type]
 
 
-def test_sender_drops_a_non_https_source_button() -> None:
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://example.test/not-allowed",
+        "https://example.test/" + "a" * 2_100,
+    ],
+)
+def test_sender_keeps_an_unsafe_source_destination_as_plain_text(source_url: str) -> None:
     observed: dict[str, object] = {}
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -451,9 +688,11 @@ def test_sender_drops_a_non_https_source_button() -> None:
         transport=httpx.MockTransport(handle),
     )
     sender.prepare()
-    sender.send_card(_card(source_url="http://example.test/not-allowed"))
+    sender.send_card(_card(source_url=source_url))
 
     assert "reply_markup" not in observed
+    assert "<a href=" not in str(observed["text"])
+    assert "🔗 <b>来源</b>  CoinDesk · 2 条报道\n⏱ <b>时间</b>" in str(observed["text"])
 
 
 @pytest.mark.parametrize(

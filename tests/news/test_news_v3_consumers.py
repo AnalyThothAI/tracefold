@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 from types import SimpleNamespace
@@ -24,7 +24,13 @@ from tracefold.news.bus import (
     PermanentError,
     TransientError,
 )
-from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, ReaderTradeTarget
+from tracefold.news.models import (
+    OUTBOX_MAX_AGE_MS,
+    TRIAGE_POLICY_VERSION,
+    ReaderDeliveryPresentation,
+    ReaderMarketMovement,
+    ReaderTradeTarget,
+)
 from tracefold.news.oi_signals import DEFAULT_OI_POLICY, program_sha256
 from tracefold.news.pipeline import admission as admission_module
 from tracefold.news.pipeline import triage_audit as triage_audit_module
@@ -131,10 +137,18 @@ class RecordingInstruments:
 class RecordingPrice:
     """Quote-plane double; silent by default so non-price tests keep their contract."""
 
-    def __init__(self, *, quotes: list[dict[str, Any]] | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        quotes: list[dict[str, Any]] | None = None,
+        reactions: list[dict[str, Any]] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.quotes = quotes or []
+        self.reactions = reactions or []
         self.error = error
         self.requested: list[list[str]] = []
+        self.requested_reaction_versions: list[str | None] = []
 
     def quotes_for_symbols(self, symbols: Any, *, now_ms: int) -> list[dict[str, Any]]:
         del now_ms
@@ -142,6 +156,13 @@ class RecordingPrice:
         if self.error is not None:
             raise self.error
         return list(self.quotes)
+
+    def event_reactions(self, event_id: str, *, metric_version: str | None = None) -> list[dict[str, Any]]:
+        del event_id
+        self.requested_reaction_versions.append(metric_version)
+        if self.error is not None:
+            raise self.error
+        return list(self.reactions)
 
 
 class FakeWorkerDatabase:
@@ -1002,7 +1023,7 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
 class RecordingSender:
     def __init__(self, order: list[str] | None = None) -> None:
         self.cards: list[dict[str, Any]] = []
-        self.trade_targets: list[tuple[ReaderTradeTarget, ...]] = []
+        self.presentations: list[ReaderDeliveryPresentation] = []
         self.order = order
 
     def prepare(self) -> None:
@@ -1013,12 +1034,12 @@ class RecordingSender:
         self,
         card: Mapping[str, Any],
         *,
-        trade_targets: Sequence[ReaderTradeTarget] = (),
+        presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
         if self.order is not None:
             self.order.append("send")
         self.cards.append(dict(card))
-        self.trade_targets.append(tuple(trade_targets))
+        self.presentations.append(presentation or ReaderDeliveryPresentation())
         return {"status_code": 200, "code": 0}
 
     def close(self) -> None:
@@ -1207,17 +1228,105 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
 
     assert price.requested == [["NVDA"]]
     assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
-    assert sender.trade_targets == [
-        (
-            ReaderTradeTarget(
-                ticker="NVDA",
-                venue="binance.perp",
-                venue_symbol="NVDAUSDT",
-                base_symbol="NVDA",
-                quote_asset="USDT",
+    assert sender.presentations[0].trade_targets == (
+        ReaderTradeTarget(
+            ticker="NVDA",
+            venue="binance.perp",
+            venue_symbol="NVDAUSDT",
+            base_symbol="NVDA",
+            quote_asset="USDT",
+        ),
+    )
+
+
+def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+    price = RecordingPrice(
+        quotes=[
+            {
+                "requested_symbol": "BTC",
+                "symbol": "BTC",
+                "base_symbol": "BTC",
+                "venue": "binance.perp",
+                "venue_symbol": "BTCUSDT",
+                "quote_asset": "USDT",
+                "price": "101.10",
+                "change_pct": 3.2,
+                "change_basis": "rolling_24h",
+                "instrument_class": "crypto",
+                "state": "fresh",
+            },
+            {
+                "requested_symbol": "ETH",
+                "symbol": "ETH",
+                "base_symbol": "ETH",
+                "venue": "binance.spot",
+                "venue_symbol": "ETHUSDT",
+                "quote_asset": "USDT",
+                "price": "201.00",
+                "change_pct": 1.7,
+                "change_basis": "rolling_24h",
+                "instrument_class": "crypto",
+                "state": "fresh",
+            },
+        ],
+        reactions=[
+            {
+                "symbol": "BTC",
+                "metric_version": "reaction_v1",
+                "venue": "binance.perp",
+                "venue_symbol": "BTCUSDT",
+                "p0": "100.00",
+                "return_1h_bps": 80,
+                "state": "partial",
+            }
+        ],
+    )
+    news = _delivery_news(
+        event_card=_card(
+            leader_published_at_ms=NOW_MS - 20_000,
+            leader_url="https://www.bloomberg.com/news/articles/example",
+            grounded_assets=["BTC", "ETH"],
+        ),
+        event_delivery_timing={"news_at_ms": NOW_MS - 20_000, "observed_at_ms": NOW_MS - 8_000},
+        latest_verdict=lambda *, event_id, stage: {
+            "final_decision": "push",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "比特币与以太坊走强",
+                "assets": [
+                    {"symbol": "BTC", "role": "primary"},
+                    {"symbol": "ETH", "role": "primary"},
+                ],
+            },
+        },
+    )
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert sender.presentations == [
+        ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget("BTC", "binance.perp", "BTCUSDT", "BTC", "USDT"),
+                ReaderTradeTarget("ETH", "binance.spot", "ETHUSDT", "ETH", "USDT"),
             ),
+            market_movements=(
+                ReaderMarketMovement("BTC", 110, 80, 320, "available"),
+                ReaderMarketMovement("ETH", None, None, 170, "pending"),
+            ),
+            news_at_ms=NOW_MS - 20_000,
+            observed_at_ms=NOW_MS - 8_000,
         )
     ]
+    assert price.requested_reaction_versions == ["reaction_v1"]
 
 
 def _oi_delivery_news() -> RecordingNews:

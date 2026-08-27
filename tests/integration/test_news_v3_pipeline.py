@@ -1428,6 +1428,39 @@ def test_source_artifact_backfill_matches_the_parser(conn) -> None:
     conn.commit()
 
 
+def test_delivery_timing_uses_original_tweet_time_and_first_local_observation(conn) -> None:
+    repos = repositories_for_connection(conn)
+    hit = _hit(
+        hit_id=9_109_901,
+        text="Bitcoin ETF inflows accelerate",
+        engine="news",
+        score=90,
+        coins=[{"symbol": "BTC", "grade": "A"}],
+        source="serenity",
+        ts="2026-08-19T18:10:00+08:00",
+    )
+    hit["link"] = "https://x.com/serenity/status/2089761853727490268"
+    event = parse_opennews_message({"method": "strategy.triggered", "params": hit})
+    assert event is not None
+    observed_at_ms = int(event.entry.published_at_ms or 0) + 4_321
+    with repos.transaction():
+        admitted = admit_item(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=observed_at_ms,
+            trace_id="delivery-timing",
+            watchlist_symbols=frozenset({"BTC"}),
+            now_ms=observed_at_ms,
+        )
+
+    assert repos.news.event_delivery_timing(admitted.event_id) == {
+        "news_at_ms": 1_787_073_026_483,
+        "observed_at_ms": observed_at_ms,
+    }
+    conn.commit()
+
+
 def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn) -> None:
     """A low-score ungrounded post opens a suppressed Event (low-signal switch on); the same headline arriving from a
     news source with score 85 and a grade-A tag re-gates the Event to candidate and reports it as publishable once."""

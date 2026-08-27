@@ -351,6 +351,13 @@ destination with an allowlisted Futures or Spot path, no query, fragment, userin
 only an exact ticker token in HTML after escaping all other card text. A non-Binance, malformed, aliased or
 inconsistent target therefore degrades to plain text and cannot introduce an arbitrary link; Feishu ignores the
 ephemeral target and receives the persisted card unchanged.
+The source hyperlink is reconstructed only from the stable card's existing original-source action and remains
+HTTPS-only with no redirects followed by Tracefold. Provider text never supplies HTML: the Adapter escapes the
+normalized source label and every other card character before inserting the validated URL into one anchor. It
+recognizes a publisher brand from a hostname only on the exact domain or a dot-delimited subdomain, so a name
+such as `jin10.com.evil.test` cannot inherit the trusted reader label. It does not create an inline keyboard or
+a second destination. Ephemeral market/timing presentation values contain
+no credential and are neither added to the persisted card nor written to the provider receipt.
 Persisted delivery rows store the
 rendered card (code facts plus sanitized AI copy) for audit but never provider
 credentials, timestamps, or signatures. There is exactly one provider attempt

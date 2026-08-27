@@ -6,7 +6,15 @@ configuration constants remain under their owning modules instead of becoming an
 
 from __future__ import annotations
 
-from .models import NewsFeedEntry, ReaderReceipt, ReaderTradeTarget, TriageVerdict
+from .models import (
+    NewsFeedEntry,
+    ReaderDeliveryPresentation,
+    ReaderMarketMovement,
+    ReaderMarketState,
+    ReaderReceipt,
+    ReaderTradeTarget,
+    TriageVerdict,
+)
 from .opennews import (
     OpenNewsEvent,
     OpenNewsExpectedError,
@@ -41,6 +49,9 @@ __all__ = [
     "ProgramTrace",
     "ProgramUsage",
     "ReaderCardSemanticView",
+    "ReaderDeliveryPresentation",
+    "ReaderMarketMovement",
+    "ReaderMarketState",
     "ReaderReceipt",
     "ReaderTradeTarget",
     "ScoredJudgment",

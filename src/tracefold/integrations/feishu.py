@@ -7,14 +7,14 @@ import hashlib
 import hmac
 import json
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
-from tracefold.news import ReaderTradeTarget
+from tracefold.news import ReaderDeliveryPresentation
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
@@ -182,9 +182,9 @@ class FeishuNewsPushSender:
         self,
         card: Mapping[str, Any],
         *,
-        trade_targets: Sequence[ReaderTradeTarget] = (),
+        presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
-        del trade_targets  # Feishu receives the stable reader card unchanged; trade links are Telegram-only.
+        del presentation  # Feishu receives the stable reader card unchanged; rich context is adapter-only.
         try:
             receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())
         except FeishuDeliveryError as exc:

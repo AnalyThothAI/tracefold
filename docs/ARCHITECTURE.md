@@ -1203,7 +1203,21 @@ Binance catalogue base and `venue_symbol == base_symbol + quote_asset`. The targ
 `news_delivery_card_v10`: only the Telegram Adapter uses it to link exact ticker tokens to the matching Binance
 Futures or Spot page, while aliases, non-Binance venues and inconsistent metadata stay plain text and Feishu
 receives the card unchanged.
-Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
+The same ephemeral `ReaderDeliveryPresentation` carries one ordered market row per displayed asset. `新闻后`
+is current fresh price versus the Event anchor price, `1h` is the immutable `reaction_v1` fixed-horizon return,
+and `24h` is present only for a quote that explicitly declares `rolling_24h`. Delivery reads only
+`reaction_v1`, then joins a Reaction to a quote only when ticker, venue and venue symbol all agree; the
+Reaction's own anchor controls whether 1 h is due, while the original-source timestamp is display-only.
+Missing or immature evidence is named as `待计算` / `待到期` / `计算中` / `暂无` instead of borrowing another
+window's number. Telegram renders each asset on its own row as
+`BTC 新闻后 +1.10%，1h +0.80%，24h +3.20%`, then renders direction and impact on two independent rows. It turns
+the normalized reporting-origin
+text itself into the original-source HTTPS link (X/Twitter handles become `<handle> 的推特`; known wire brands
+use their reader names), so it has no separate source button. A final time row shows the original artifact or
+provider publication time, local processing duration from first observation to send start, and send-start time,
+all in the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
+remain visible. This presentation context is not persisted and Feishu still receives the stable card unchanged.
+The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or
 scope enum, no provider score, and no line labelled as AI: those internals stay
 in the console and `tracefold news why`.

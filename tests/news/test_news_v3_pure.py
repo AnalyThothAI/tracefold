@@ -16,6 +16,7 @@ from tracefold.news.delivery import (
     _CHANGE_BASIS_LABEL,
     _quote_line,
     card_assets,
+    reader_market_movements,
     reader_trade_targets,
     render_first_card,
     sanitize_ai_text,
@@ -33,7 +34,7 @@ from tracefold.news.events.storyline import (
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
-from tracefold.news.models import ReaderReceipt, ReaderTradeTarget, TriageAsset, TriageVerdict
+from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTradeTarget, TriageAsset, TriageVerdict
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, throttled_by_zh
 from tracefold.news.similarity import similarity
@@ -1289,6 +1290,83 @@ def test_card_market_line_is_display_only() -> None:
     )
     assert degraded["elements"][0]["content"].splitlines()[-1] == "行情 ETH $2,348.14 24h +4.25%"
     assert "新进展" not in json.dumps(degraded, ensure_ascii=False)
+
+
+def test_reader_market_movements_require_current_metric_and_exact_contract_identity() -> None:
+    quote = _quote(
+        "BTC",
+        "101.10",
+        3.2,
+        requested_symbol="BTC",
+        base_symbol="BTC",
+        venue="binance.perp",
+        venue_symbol="BTCUSDT",
+        quote_asset="USDT",
+    )
+    valid = {
+        "symbol": "BTC",
+        "metric_version": "reaction_v1",
+        "venue": "binance.perp",
+        "venue_symbol": "BTCUSDT",
+        "anchor_at_ms": 1_799_999_400_000,
+        "p0": "100.00",
+        "return_1h_bps": 80,
+        "state": "partial",
+    }
+    bogus = [
+        {**valid, "metric_version": "reaction_v0", "p0": "1", "return_1h_bps": 9_999},
+        {**valid, "venue": "binance.spot", "p0": "1", "return_1h_bps": 9_999},
+        {**valid, "venue_symbol": "ETHUSDT", "p0": "1", "return_1h_bps": 9_999},
+    ]
+
+    assert reader_market_movements(
+        ["BTC"],
+        [quote],
+        [*bogus, valid],
+        news_at_ms=1_799_990_000_000,
+        now_ms=1_800_000_000_000,
+    ) == (ReaderMarketMovement("BTC", 110, 80, 320, "available"),)
+
+    # An old source timestamp is display evidence only. Readiness follows the Event Reaction anchor.
+    pending = {**valid, "return_1h_bps": None, "state": "pending"}
+    assert reader_market_movements(
+        ["BTC"],
+        [quote],
+        [pending],
+        news_at_ms=1_799_990_000_000,
+        now_ms=1_800_000_000_000,
+    ) == (ReaderMarketMovement("BTC", 110, None, 320, "not_due"),)
+
+
+def test_reader_market_movements_ignore_unmatched_reaction_rows() -> None:
+    quote = _quote(
+        "BTC",
+        "101.10",
+        3.2,
+        requested_symbol="BTC",
+        base_symbol="BTC",
+        venue="binance.perp",
+        venue_symbol="BTCUSDT",
+        quote_asset="USDT",
+    )
+    wrong_contract = {
+        "symbol": "BTC",
+        "metric_version": "reaction_v1",
+        "venue": "binance.spot",
+        "venue_symbol": "BTCUSDT",
+        "anchor_at_ms": 1_799_999_400_000,
+        "p0": "1",
+        "return_1h_bps": 9_999,
+        "state": "complete",
+    }
+
+    assert reader_market_movements(
+        ["BTC"],
+        [quote],
+        [wrong_contract],
+        news_at_ms=1_799_990_000_000,
+        now_ms=1_800_000_000_000,
+    ) == (ReaderMarketMovement("BTC", None, None, 320, "pending"),)
 
 
 def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_changing_the_card() -> None:
