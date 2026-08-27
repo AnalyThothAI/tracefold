@@ -20,11 +20,11 @@ repos:
         name: eslint (staged web files)
         entry: uv run --locked python scripts/run_web_hook.py eslint
         language: system
-        types_or: [ts, tsx]
-        files: ^web/(?:src|tests)/.*\.(?:ts|tsx)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$
+        types_or: [javascript, ts, tsx]
+        files: ^web/(?:src|tests)/.*\.(?:ts|tsx)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/eslint\.config\.js$
 
       - id: prettier-web
         name: prettier (staged web files)
         entry: uv run --locked python scripts/run_web_hook.py prettier
         language: system
-        files: ^web/(?:src|tests)/.*\.(?:ts|tsx|css|json)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/(?:package|tsconfig|components)\.json$
+        files: ^web/(?:src|tests)/.*\.(?:ts|tsx|css|json)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/(?:package(?:-lock)?|tsconfig|components)\.json$|^web/(?:eslint\.config\.js|\.prettierrc\.json)$

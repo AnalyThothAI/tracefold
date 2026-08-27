@@ -806,6 +806,14 @@ error, failed request or unhandled API request fails the case. The four-project
 mock/visual lane remains valuable for responsive interaction and screenshots
 but is not evidence of a backend seam and is not required on every PR.
 
+Required Vitest runs set `allowOnly=false` and write their lane result through
+the runtime reporter in `tests/support/evidenceReporter.ts`. A plain pass is
+the only green outcome: `test.fails`, retry/repeat, `.only`, skip/todo, flaky,
+module errors, and unhandled errors all fail evidence. The deliberately failing
+fixtures that prove those semantics run under pytest's `slow` marker; they do
+not spawn nested Vitest/Playwright processes from the frontend architecture
+lane or `make check`.
+
 Repository fast gate:
 
 - `make check`

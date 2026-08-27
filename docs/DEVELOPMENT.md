@@ -133,6 +133,7 @@ instruction, and the empty demo section left with the DemoBank family.
 | `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
 | `make test-browser-smoke` | required browser/backend seam | production FastAPI static mount, bootstrap bearer, real API envelope and one Chromium `/news` fact | visual matrix and screenshot baselines |
+| `make test-slow` | explicit process/meta-test diagnostics | shortened injected deadlines and nested fail-closed harness F2P | `make check`, `make test-fast`, live/provider truth |
 | `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD or fail-closed evidence claims |
 | `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python/resource lanes, frontend typecheck/architecture/behavior/build, required Chromium smoke | `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
@@ -225,9 +226,10 @@ test-evidence`), and the stable `ci-gate` aggregate. `ci-gate` uses
 `needs` with `if: always()` and fails when any input job failed, was cancelled,
 or was skipped. The `main` ruleset requires only this stable context, binds it
 to the GitHub Actions integration, requires the branch to be current, and
-allows neither force push nor deletion. Verification trust-root paths are owned
-by maintainers in `.github/CODEOWNERS`; product paths do not gain a blanket
-review requirement.
+allows neither force push nor deletion. Verification trust-root changes are
+guarded by the same exact-HEAD CI contract: required `ci-gate` is bound to GitHub
+Actions and every Action is SHA-pinned. The repository deliberately adds no
+special non-author approval requirement for these paths.
 
 The pull-request run proves the exact PR-head commit and tree. A squash merge
 creates a different `main` commit, so the post-merge push run is the first

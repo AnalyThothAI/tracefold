@@ -82,7 +82,12 @@ def test_pre_commit_uses_the_locked_ruff_and_staged_frontend_files() -> None:
     assert eslint["pass_filenames"] is True
     assert eslint["entry"] == "uv run --locked python scripts/run_web_hook.py eslint"
     assert "test:architecture" not in eslint["entry"]
-    for path in ("web/src/App.tsx", "web/tests/unit/example.test.ts", "web/vite.config.ts"):
+    for path in (
+        "web/src/App.tsx",
+        "web/tests/unit/example.test.ts",
+        "web/vite.config.ts",
+        "web/eslint.config.js",
+    ):
         assert re.search(eslint["files"], path), path
 
     prettier = hooks["prettier-web"]
@@ -93,6 +98,9 @@ def test_pre_commit_uses_the_locked_ruff_and_staged_frontend_files() -> None:
         "web/tests/unit/example.test.ts",
         "web/playwright.config.ts",
         "web/package.json",
+        "web/package-lock.json",
+        "web/.prettierrc.json",
+        "web/eslint.config.js",
     ):
         assert re.search(prettier["files"], path), path
 
