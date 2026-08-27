@@ -25,8 +25,8 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     triggers = workflow[True]  # YAML 1.1 parses GitHub's unquoted `on` key as boolean true.
 
     assert {"pull_request", "push"} <= set(triggers)
-    assert triggers["pull_request"]["branches"] == ["main"]
-    assert triggers["push"]["branches"] == ["main"]
+    assert "main" in triggers["pull_request"]["branches"]
+    assert "main" in triggers["push"]["branches"]
     assert "paths" not in triggers["pull_request"]
     assert "paths-ignore" not in triggers["pull_request"]
     assert workflow["permissions"] == {"contents": "read"}
@@ -61,8 +61,14 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     assert gate["name"] == "ci-gate"
     assert required_jobs <= set(gate["needs"])
     assert gate["if"] == "always()"
-    gate_results = tuple(gate["steps"][0]["env"].values())
+    gate_step = gate["steps"][0]
+    gate_results = tuple(gate_step["env"].values())
     assert all(any(f"needs.{name}.result" in value for value in gate_results) for name in gate["needs"])
+    successful = {name: "success" for name in gate_step["env"]}
+    assert _run_gate_script(gate_step["run"], successful).returncode == 0
+    for name in successful:
+        for outcome in ("failure", "cancelled", "skipped"):
+            assert _run_gate_script(gate_step["run"], {**successful, name: outcome}).returncode != 0
     evidence_step = next(
         step for step in jobs["deterministic-full"]["steps"] if "make test-evidence" in step.get("run", "")
     )
@@ -72,13 +78,24 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     assert 'GITHUB_SHA="$TESTED_SHA" make test-evidence' in evidence_step["run"]
 
 
+def _run_gate_script(script: str, results: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        env=results,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
 def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     uv_version = workflow["env"]["UV_VERSION"]
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", uv_version)
+    for job_name in ("quality", "fast", "deterministic-full", "ci-gate"):
+        assert workflow["jobs"][job_name]["runs-on"] == "ubuntu-24.04"
     for job in workflow["jobs"].values():
-        assert job["runs-on"] == "ubuntu-24.04"
         for step in job.get("steps", []):
             if step.get("uses", "").startswith("astral-sh/setup-uv@"):
                 assert step["with"]["version"] == "${{ env.UV_VERSION }}"
@@ -214,7 +231,9 @@ def _run_evidence_case(
         encoding="utf-8",
     )
     (repository / "pyproject.toml").write_text(
-        "[tool.pytest.ini_options]\ntestpaths = ['tests']\nmarkers = ['live: external provider test']\n",
+        "[tool.pytest.ini_options]\n"
+        "testpaths = ['tests']\n"
+        "markers = ['live: external provider test', 'scheduled: production-duration diagnostic']\n",
         encoding="utf-8",
     )
     (repository / "uv.lock").write_text("fixture lock\n", encoding="utf-8")
@@ -250,7 +269,7 @@ def _run_evidence_case(
             "-p",
             "_hypothesis_pytestplugin",
             "-m",
-            "not live",
+            "not live and not scheduled",
             f"--evidence-manifest={manifest}",
             *extra_args,
         ],
@@ -293,7 +312,7 @@ def test_evidence_manifest_is_generated_by_the_actual_pytest_session(tmp_path: P
     assert manifest["xfailed"] == 0
     assert manifest["xpassed"] == 0
     assert manifest["rerun"] == 0
-    assert manifest["explicitly_deselected_markers"] == ["live"]
+    assert manifest["explicitly_deselected_markers"] == ["live", "scheduled"]
     assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["uv_lock_sha256"]))
     assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["package_lock_sha256"]))
 

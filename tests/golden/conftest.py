@@ -184,14 +184,12 @@ def golden_runtime(
         base_url = f"http://127.0.0.1:{serve_port}"
         _wait_for_http(f"{base_url}/readyz", serve, serve_log, timeout=60.0)
         yield GoldenRuntime(base_url=base_url, amqp_url=golden_rabbitmq_url, name_prefix=name_prefix)
-        _assert_running(worker, worker_log)
-        _assert_running(serve, serve_log)
-        _assert_http_ready(
-            f"http://127.0.0.1:{worker_port}/readyz",
-            worker,
-            worker_log,
+        _assert_runtime_ready(
+            (
+                (f"http://127.0.0.1:{worker_port}/readyz", worker, worker_log),
+                (f"{base_url}/readyz", serve, serve_log),
+            )
         )
-        _assert_http_ready(f"{base_url}/readyz", serve, serve_log)
     finally:
         _terminate(serve)
         _terminate(worker, timeout=35.0)
@@ -258,6 +256,19 @@ def _assert_http_ready(url: str, proc: subprocess.Popen[bytes], log_path: Path) 
         )
 
 
+def _assert_runtime_ready(
+    checks: tuple[tuple[str, subprocess.Popen[bytes], Path], ...],
+) -> None:
+    """Finish all readiness reads, then prove every participating root is still alive."""
+
+    for _, proc, log_path in checks:
+        _assert_running(proc, log_path)
+    for url, proc, log_path in checks:
+        _assert_http_ready(url, proc, log_path)
+    for _, proc, log_path in checks:
+        _assert_running(proc, log_path)
+
+
 def _assert_running(proc: subprocess.Popen[bytes], log_path: Path) -> None:
     if proc.poll() is not None:
         raise AssertionError(f"subprocess exited rc={proc.returncode}:\n{_log(log_path)}")
@@ -267,10 +278,17 @@ def _log(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
-def _terminate(proc: subprocess.Popen[bytes], *, timeout: float = 5.0) -> None:
+def _terminate(
+    proc: subprocess.Popen[bytes],
+    *,
+    timeout: float = 5.0,
+) -> None:
     if proc.poll() is not None:
         return
-    proc.terminate()
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

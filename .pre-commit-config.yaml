@@ -27,4 +27,4 @@ repos:
         name: prettier (staged web files)
         entry: uv run --locked python scripts/run_web_hook.py prettier
         language: system
-        files: ^web/(?:src|tests)/.*\.(?:ts|tsx|css|json)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/(?:package(?:-lock)?|tsconfig|components)\.json$|^web/(?:eslint\.config\.js|\.prettierrc\.json)$
+        files: ^web/(?:src|tests)/.*\.(?:ts|tsx|css|json)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/(?:package(?:-lock)?|tsconfig|components)\.json$|^web/(?:eslint\.config\.js|\.prettierrc\.json|\.prettierignore)$

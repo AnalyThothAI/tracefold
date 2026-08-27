@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 from pre_commit.clientlib import load_config
 
+from scripts.run_web_hook import _hook_command
+
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "scripts" / "install_hooks.py"
 
@@ -50,7 +52,7 @@ def test_installer_rejects_an_overriding_hooks_path_with_a_recovery_command(tmp_
     result = _install(repo)
 
     assert result.returncode == 2
-    assert "core.hooksPath overrides this repository's hooks" in result.stderr
+    assert "core.hooksPath overrides the standard repository hook directory" in result.stderr
     assert str(external / "pre-commit") in result.stderr
     assert "git config --local --unset core.hooksPath" in result.stderr
     assert not (external / "pre-commit").exists()
@@ -72,9 +74,10 @@ def test_installer_verifies_the_executable_hook_belongs_to_the_repository(tmp_pa
 
 def test_pre_commit_uses_the_locked_ruff_and_staged_frontend_files() -> None:
     config = load_config(str(ROOT / ".pre-commit-config.yaml"))
-    hooks = {hook["id"]: hook for repository in config["repos"] for hook in repository["hooks"]}
+    local_repositories = [repository for repository in config["repos"] if repository["repo"] == "local"]
 
-    assert {repository["repo"] for repository in config["repos"]} == {"local"}
+    assert len(local_repositories) == 1
+    hooks = {hook["id"]: hook for hook in local_repositories[0]["hooks"]}
     assert hooks["ruff"]["entry"] == "uv run --locked ruff check --fix"
     assert hooks["ruff-format"]["entry"] == "uv run --locked ruff format"
 
@@ -100,9 +103,23 @@ def test_pre_commit_uses_the_locked_ruff_and_staged_frontend_files() -> None:
         "web/package.json",
         "web/package-lock.json",
         "web/.prettierrc.json",
+        "web/.prettierignore",
         "web/eslint.config.js",
     ):
         assert re.search(prettier["files"], path), path
+
+
+def test_frontend_tool_configuration_changes_validate_the_full_affected_scope() -> None:
+    executable = Path("web/node_modules/.bin/tool")
+
+    assert _hook_command("eslint", ["eslint.config.js"], executable) == ["npm", "run", "lint:eslint"]
+    assert _hook_command("prettier", [".prettierrc.json"], executable) == ["npm", "run", "format:check"]
+    assert _hook_command("prettier", [".prettierignore"], executable) == ["npm", "run", "format:check"]
+    assert _hook_command("prettier", ["src/styles/base.css"], executable) == [
+        str(executable),
+        "--check",
+        "src/styles/base.css",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -113,6 +130,7 @@ def test_pre_commit_uses_the_locked_ruff_and_staged_frontend_files() -> None:
         ("prettier-web", "web/src/styles/base.css"),
     ],
 )
+@pytest.mark.slow
 def test_staged_frontend_hook_executes_from_the_web_project(hook_id: str, path: str) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "pre_commit", "run", hook_id, "--files", path],

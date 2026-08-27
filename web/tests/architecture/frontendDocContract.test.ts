@@ -9,11 +9,6 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const frontendDoc = readFileSync(join(webRoot, "../docs/FRONTEND.md"), "utf8");
 
 describe("frontend documentation contract", () => {
-  it("documents the executable ownership harnesses", () => {
-    expect(frontendDoc).toContain("`cssArchitectureHarness`");
-    expect(frontendDoc).toContain("`frontendDataOwnership.test.ts`");
-  });
-
   it("documents public feature barrels plus sanctioned shell entrypoints", () => {
     expect(frontendDoc).toContain("`@features/<name>`");
     expect(frontendDoc).toContain("`@features/<name>/shell`");

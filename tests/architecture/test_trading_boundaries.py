@@ -13,6 +13,7 @@ the set of claims specific to a capability that moves money:
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -285,6 +286,34 @@ def test_a_live_mode_cannot_compose_with_the_paper_adapter() -> None:
         )
 
 
+def test_trading_pipeline_runs_candidate_and_reconciliation_capabilities() -> None:
+    from tracefold.app.workers.task_contract import worker_business_runners
+    from tracefold.trading.pipeline.root import TradingPipeline
+
+    started = {"candidate": False, "reconcile": False}
+
+    class Runner:
+        def __init__(self, capability: str) -> None:
+            self.capability = capability
+
+        async def run(self, *, stop_event: asyncio.Event) -> None:
+            assert isinstance(stop_event, asyncio.Event)
+            started[self.capability] = True
+
+    async def exercise() -> None:
+        stop_event = asyncio.Event()
+        pipeline = TradingPipeline(
+            candidate=Runner("candidate"),  # type: ignore[arg-type]
+            reconcile=Runner("reconcile"),  # type: ignore[arg-type]
+            adapter=object(),  # type: ignore[arg-type]
+        )
+        runners = worker_business_runners(news_pipeline=None, trading_pipeline=pipeline)
+        await asyncio.gather(*(run(stop_event) for _runtime_label, run in runners))
+
+    asyncio.run(exercise())
+    assert started == {"candidate": True, "reconcile": True}
+
+
 def test_the_regime_band_must_have_a_ceiling() -> None:
     """A floor-only pre-move filter keeps exactly the chasing trades the measurement rejects."""
 
@@ -294,20 +323,6 @@ def test_the_regime_band_must_have_a_ceiling() -> None:
 
     with pytest.raises(ValidationError, match="trading_regime_band_invalid"):
         TradingRegimeSettings(min_price_move_bps=600, max_price_move_bps=100)
-
-
-def test_the_pipeline_exposes_exactly_two_runners() -> None:
-    from tracefold.trading.pipeline.root import build_pipeline
-    from tracefold.trading.pipeline.runtime import TradingConfig
-
-    pipeline = build_pipeline(
-        db=object(),
-        config=TradingConfig(),
-        bars=lambda _venue: None,
-        candidate_projection=lambda *_: ((), ()),
-        instrument_projection=lambda *_: (),
-    )
-    assert [name for name, _ in pipeline.runners()] == ["trading-candidate", "trading-reconcile"]
 
 
 def test_the_worst_case_daily_envelope_is_derivable_from_configuration_alone() -> None:

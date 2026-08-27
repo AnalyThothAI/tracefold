@@ -55,7 +55,7 @@ def install() -> int:
             scope, value = configured
             resolved = _absolute_git_path("hooks/pre-commit")
             print(
-                "core.hooksPath overrides this repository's hooks; "
+                "core.hooksPath overrides the standard repository hook directory; "
                 f"configured={value!r}, resolved={resolved}.\n"
                 f"Clear that setting explicitly, then retry: {_recovery_command(scope)}",
                 file=sys.stderr,

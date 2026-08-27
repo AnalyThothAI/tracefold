@@ -24,10 +24,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.runtime",
         "tracefold.news.learning.baseline",
         "tracefold.news.review.drafter",
-        # The two names here that run an optimizer in this process. `optimizer` is the one offline entry
-        # point (#202) and `experiment` is the operator's research run directory. They are reachable from
-        # exactly one CLI module — `tests/architecture/test_news_optimizer_boundary.py` asserts which — and
-        # neither can register a candidate or move a canary.
+        # The two offline optimization capabilities. App composition may invoke them, while the capability
+        # tests assert that neither can reach database review, candidate registration or canary promotion.
         "tracefold.news.learning.optimizer",
         "tracefold.news.learning.experiment",
         # #202 §8: freezing a corpus, admitting a candidate and judging one are three objects now, and

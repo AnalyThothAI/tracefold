@@ -339,7 +339,6 @@ class _BinanceLike:
         self.reference = reference
         self.calls: list[tuple[str, str, tuple[str, ...]]] = []
         self.fail: BaseException | None = None
-        self.slow = False
 
     def fetcher_for(self, source: str):
         async def fetch(symbols):
@@ -356,8 +355,6 @@ class _BinanceLike:
 
         async def fetch(symbols):
             self.calls.append(("day", source, tuple(symbols)))
-            if self.slow:
-                await asyncio.sleep(30)
             if self.fail is not None:
                 raise self.fail
             return [
@@ -451,25 +448,6 @@ def test_a_symbol_no_venue_answers_for_cannot_pin_the_source_to_the_wide_endpoin
         asyncio.run(loop.turn())
 
     assert [kind for kind, _, _ in venue.calls] == ["day", "price", "price"]
-
-
-def test_a_slow_day_read_cannot_be_scheduled_beside_the_price_read_it_replaces() -> None:
-    """A second, larger optional request sharing the turn deadline would void every price this turn."""
-
-    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("hl.perp", "HYPE", "HYPE")])
-    venue = _BinanceLike()
-    venue.slow = True
-    loop = venue.loop(price, period_seconds=0.01)
-    loop.day_period_ms = 0.0
-
-    async def _bounded() -> Any:
-        return await asyncio.wait_for(loop.turn(), timeout=2.0)
-
-    with pytest.raises(TimeoutError):
-        asyncio.run(_bounded())
-
-    # The slow source is the only casualty: Hyperliquid answered and nothing else was cancelled with it.
-    assert [call[1] for call in venue.calls] == ["binance.perp", "hl.perp"]
 
 
 def test_a_failed_day_read_leaves_the_source_due_and_writes_nothing_of_its_own() -> None:

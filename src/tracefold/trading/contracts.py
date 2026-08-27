@@ -229,9 +229,8 @@ class OrderState(StrEnum):
     CLOSED = "CLOSED"
 
 
-# Kept byte-identical with the partial unique index predicate in `20260823_0300_trading_core`. The index
-# is the authority; this tuple is what the runners use to reason about the same set, and one test asserts
-# the two agree so they cannot drift.
+# States that can retain, or later reveal, capital exposure. Runners use this public classification for
+# admission decisions; integration tests exercise the independently migrated database constraints.
 ACTIVE_ORDER_STATES: tuple[str, ...] = (
     OrderState.PREPARED,
     OrderState.AWAITING_APPROVAL,

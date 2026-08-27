@@ -134,6 +134,7 @@ instruction, and the empty demo section left with the DemoBank family.
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
 | `make test-browser-smoke` | required browser/backend seam | production FastAPI static mount, bootstrap bearer, real API envelope and one Chromium `/news` fact | visual matrix and screenshot baselines |
 | `make test-slow` | explicit process/meta-test diagnostics | shortened injected deadlines and nested fail-closed harness F2P | `make check`, `make test-fast`, live/provider truth |
+| `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the default developer loop |
 | `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD or fail-closed evidence claims |
 | `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python/resource lanes, frontend typecheck/architecture/behavior/build, required Chromium smoke | `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
@@ -164,7 +165,7 @@ Every bug or refactor PR records four pieces of evidence:
 
 `make test-evidence` is the only complete merge/release evidence entry. It
 runs Python with `TRACEFOLD_TEST_EVIDENCE=1` and explicitly deselects only the
-`live` marker, then runs the required frontend and Chromium lanes. Every lane
+`live` and `scheduled` markers, then runs the required frontend and Chromium lanes. Every lane
 writes a small manifest under `artifacts/test-evidence/lanes/`; only a final
 fail-closed aggregation writes `artifacts/test-evidence/manifest.json`. CI
 uploads those files; they are evidence for one run, not a second business or
@@ -192,7 +193,7 @@ release database.
    rerun, `--maxfail`, rerun plugins, and catch-and-continue behavior. Golden
    or snapshot outputs are checked for drift; a required run may not silently
    update them and continue green. The only allowed deselection is the entry's
-   explicit `not live` expression, recorded in the manifest.
+   explicit `not live and not scheduled` expression, recorded in the manifest.
 7. **Acceptance-test changes.** When the same PR changes an existing
    acceptance test, its verification section classifies the change as a
    product-contract change, a test defect, or a fixture repair and links the
@@ -296,8 +297,9 @@ uv run pytest -q \
 `make test` aliases `make test-fast` and never starts an external resource.
 Tests that need PostgreSQL declare the explicit `postgres_dsn` fixture; their
 directory is not a resource trigger. `make test-integration`, `make
-test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, and `make
-test-external-codegen` expose the larger lanes; `make trading-smoke` is a named
+test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
+test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
+diagnostics are reported separately and never feed the merge gate. `make trading-smoke` is a named
 subset of the integration lane and never evidence on its own. `make test-all` remains a local
 complete-suite convenience. `make test-evidence` is the canonical
 merge/release entry, runs every deterministic lane with fail-closed resource
@@ -615,14 +617,14 @@ and a missing or tampered policy raises rather than scoring — a corpus that
 cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
-The metric-v4 recorded calibration lives in
-`tests/fixtures/news_baseline_calibration_v2.json`, not in the operator's
+The metric-v4 audit/replay corpus lives in
+`tests/fixtures/news_audit_replay_corpus_v2.json`, not in the operator's
 database; the v1 fixture remains frozen metric-v3 history. A check that moves
 with live data cannot prove the *wiring* is unchanged. The recorded pins live only in
-`tests/news/test_news_audit_replay_calibration.py` — one place to read, one place to
+`tests/news/test_news_audit_replay_corpus.py` — one place to read, one place to
 update when the fixture is regenerated.
 Every string in the fixture outside an explicit structural allowlist is redacted
-through an equality-preserving map (`tests/support/audit_replay_calibration.py`),
+through an equality-preserving map (`tests/support/audit_replay_corpus.py`),
 which keeps every comparison the recorded metric makes — all equality — while
 publishing no provider or reviewer prose. The allowlist direction matters: the
 first version listed the *text* keys instead and shipped 60 reader-facing
@@ -631,8 +633,8 @@ compared, which is a tautology for a key-based redactor. The guard now scans the
 shipped bytes for the shape of human language. The fixture is valid for
 `--mode recorded` only, because `decide()`'s character-bigram duplicate check
 would read different neighbours out of redacted headlines. Regenerate it with
-`uv run python -m tests.support.audit_replay_calibration <path>` and update the
-pinned numbers in `tests/news/test_news_audit_replay_calibration.py` in the same
+`uv run python -m tests.support.audit_replay_corpus <path>` and update the
+pinned numbers in `tests/news/test_news_audit_replay_corpus.py` in the same
 commit.
 
 The tariff is not optional bookkeeping. Neither the local llama.cpp endpoint nor

@@ -451,10 +451,11 @@ uv run python -m compileall src tests
 cd web && npm run typecheck && npm run lint
 ```
 
-`make install-hooks` first resolves Git's effective hook directory. It refuses a
-stale or external `core.hooksPath` and prints the smallest recovery command;
-after a successful install it verifies that the executable pre-commit hook
-belongs to this repository's Git common directory. The hooks reuse the locked
+`make install-hooks` uses Git's standard repository hook directory. If any
+`core.hooksPath` override is active, it prints the single command that clears
+that override instead of adding custom-path installation logic. After a
+successful install it verifies that the executable hook belongs to this
+repository's Git common directory. The hooks reuse the locked
 Ruff toolchain and run ESLint/Prettier only on staged frontend files. They are
 fast local feedback, not merge or release evidence.
 

@@ -10,6 +10,7 @@ from psycopg import InternalError, OperationalError
 from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
+from tracefold.app import serve_database as serve_database_module
 from tracefold.app import worker_database as worker_database_module
 from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.worker_database import WorkerDatabase
@@ -297,21 +298,20 @@ def test_business_pool_checkout_timeout_is_recoverable_but_control_timeout_is_fa
     asyncio.run(scenario())
 
 
-def test_serve_admission_reserves_the_control_lane() -> None:
+def test_serve_admission_reserves_the_control_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _FakeConnection()
     database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)
+    monkeypatch.setattr(serve_database_module, "_SERVE_PERMIT_TIMEOUT_SECONDS", 0.0)
 
     with ExitStack() as ordinary_sessions:
         for _ in range(6):
             ordinary_sessions.enter_context(database.api_session("ordinary"))
 
-        started = time.perf_counter()
         with (
             pytest.raises(ServeDatabaseBusy, match="serve_database_busy:ordinary"),
             database.api_session("ordinary"),
         ):
             pass
-        assert 0.04 <= time.perf_counter() - started < 0.20
 
         with database.api_session("control"):
             pass

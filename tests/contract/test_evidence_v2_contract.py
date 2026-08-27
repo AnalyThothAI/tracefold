@@ -15,6 +15,8 @@ from hypothesis import settings
 
 from tests.support import evidence
 
+pytestmark = pytest.mark.slow
+
 
 @dataclass(frozen=True)
 class _EvidenceRepository:
@@ -36,7 +38,7 @@ class _EvidenceRepository:
                 "-p",
                 "_hypothesis_pytestplugin",
                 "-m",
-                "not live",
+                "not live and not scheduled",
                 f"--evidence-manifest={self.manifest}",
                 *extra_args,
             ],
@@ -81,7 +83,9 @@ def evidence_repository(tmp_path: Path) -> _EvidenceRepository:
         "import os\ndef test_fail(): assert os.environ.get('TRACEFOLD_FIXTURE_FAIL') != '1'\n", encoding="utf-8"
     )
     (root / "pyproject.toml").write_text(
-        "[tool.pytest.ini_options]\ntestpaths = ['tests']\nmarkers = ['live: external provider test']\n",
+        "[tool.pytest.ini_options]\n"
+        "testpaths = ['tests']\n"
+        "markers = ['live: external provider test', 'scheduled: production-duration diagnostic']\n",
         encoding="utf-8",
     )
     (root / "uv.lock").write_text("fixture lock\n", encoding="utf-8")
@@ -114,6 +118,7 @@ def evidence_repository(tmp_path: Path) -> _EvidenceRepository:
     process_env = os.environ.copy()
     process_env.pop("GITHUB_SHA", None)
     process_env.pop("PYTEST_ADDOPTS", None)
+    process_env.pop("PYTHONWARNINGS", None)
     process_env.update(
         {
             "PATH": str(executable_dir),
@@ -147,6 +152,58 @@ def test_evidence_rejects_pytest_addopts(evidence_repository: _EvidenceRepositor
     assert "evidence_pytest_addopts_forbidden" in manifest["errors"]
 
 
+def test_evidence_rejects_runxfail_even_when_it_turns_an_xpass_into_a_pass(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    xfail_module = evidence_repository.root / "tests" / "test_passing_xfail.py"
+    xfail_module.write_text(
+        "import pytest\n@pytest.mark.xfail\ndef test_passing_xfail(): assert True\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", str(xfail_module.relative_to(evidence_repository.root))],
+        cwd=evidence_repository.root,
+        check=True,
+    )
+
+    result, manifest = evidence_repository.run("--runxfail", env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert "evidence_runxfail_forbidden" in manifest["errors"]
+
+
+def test_evidence_rejects_override_ini_that_hides_a_failing_item_in_a_collected_module(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    for name in ("test_pass.py", "test_fail.py"):
+        (evidence_repository.root / "tests" / name).unlink()
+    mixed_module = evidence_repository.root / "tests" / "test_mixed.py"
+    mixed_module.write_text(
+        "def visible(): assert True\ndef hidden_failure(): assert False\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=evidence_repository.root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Tracefold Test",
+            "-c",
+            "user.email=tests@tracefold.invalid",
+            "commit",
+            "-qm",
+            "override ini fixture",
+        ],
+        cwd=evidence_repository.root,
+        check=True,
+    )
+
+    result, manifest = evidence_repository.run("--override-ini=python_functions=visible")
+
+    assert result.returncode != 0
+    assert "evidence_override_ini_forbidden" in manifest["errors"]
+
+
 def test_evidence_rejects_last_failed_selection(evidence_repository: _EvidenceRepository) -> None:
     result, manifest = evidence_repository.run("--lf", "--ignore=tests/test_fail.py")
 
@@ -161,21 +218,26 @@ def test_evidence_requires_every_tracked_test_module(evidence_repository: _Evide
     assert "evidence_tracked_test_module_not_collected:tests/test_fail.py" in manifest["errors"]
 
 
-def test_live_only_tracked_module_participates_in_collection_without_being_selected(
-    evidence_repository: _EvidenceRepository,
+@pytest.mark.parametrize("marker", ["live", "scheduled"])
+def test_explicitly_deselected_tracked_module_participates_in_collection_without_being_selected(
+    evidence_repository: _EvidenceRepository, marker: str
 ) -> None:
-    live_module = evidence_repository.root / "tests" / "test_live_only.py"
-    live_module.write_text(
-        "import pytest\n@pytest.mark.live\ndef test_live_only(): assert True\n",
+    deselected_module = evidence_repository.root / "tests" / f"test_{marker}_only.py"
+    deselected_module.write_text(
+        f"import pytest\n@pytest.mark.{marker}\ndef test_{marker}_only(): assert True\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "tests/test_live_only.py"], cwd=evidence_repository.root, check=True)
+    subprocess.run(
+        ["git", "add", str(deselected_module.relative_to(evidence_repository.root))],
+        cwd=evidence_repository.root,
+        check=True,
+    )
 
     result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert manifest["selected"] == manifest["passed"] == 2
-    assert not any("test_live_only.py" in error for error in manifest["errors"])
+    assert not any(deselected_module.name in error for error in manifest["errors"])
 
 
 @pytest.mark.parametrize(
@@ -281,6 +343,36 @@ def _lane_payload(lane: str, *, selected: int = 1, passed: int = 1, **overrides:
     }
     payload.update(overrides)
     return payload
+
+
+def _playwright_selection(selected: int) -> dict[str, Any]:
+    default_grep = [{"flags": "", "source": ".*"}]
+    return {
+        "configFile": "playwright.full-stack.config.ts",
+        "forbidOnly": True,
+        "fullyParallel": False,
+        "grep": default_grep,
+        "grepInvert": [],
+        "invocation": ["test", "--config=playwright.full-stack.config.ts"],
+        "maxFailures": 0,
+        "projects": [
+            {
+                "browserName": "chromium",
+                "grep": default_grep,
+                "grepInvert": [],
+                "name": "required-chromium",
+                "repeatEach": 1,
+                "retries": 0,
+                "testDir": "tests/e2e/full-stack",
+                "testIgnore": [],
+                "testMatch": [{"literal": "**/*.@(spec|test).?(c|m)[jt]s?(x)"}],
+            }
+        ],
+        "schemaVersion": "tracefold_playwright_selection_v1",
+        "selectedTestIds": [f"fixture-{index}" for index in range(selected)],
+        "selectedTestFiles": ["tests/e2e/full-stack/fastapi-news-smoke.spec.ts"],
+        "shard": None,
+    }
 
 
 def test_aggregate_fails_when_a_required_lane_is_empty(tmp_path: Path) -> None:
@@ -431,8 +523,10 @@ def _vitest_plain_test(case_id: str) -> dict[str, Any]:
 
 
 def _vitest_semantics_report(*tests: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    test_files = sorted({str(test["file"]) for test in tests})
     report: dict[str, Any] = {
         "allowOnly": False,
+        "invocation": ["run", *test_files],
         "moduleErrors": [],
         "numExpectedFailures": 0,
         "numFailedTests": 0,
@@ -444,9 +538,12 @@ def _vitest_semantics_report(*tests: dict[str, Any], **overrides: Any) -> dict[s
         "numRetriedTests": 0,
         "numTodoTests": 0,
         "numTotalTests": len(tests),
+        "numXfailedTests": 0,
+        "numXpassedTests": 0,
         "reason": "passed",
-        "schemaVersion": "tracefold_vitest_report_v1",
+        "schemaVersion": "tracefold_vitest_report_v3",
         "success": True,
+        "testFiles": test_files,
         "tests": list(tests),
         "unhandledErrors": [],
     }
@@ -456,7 +553,7 @@ def _vitest_semantics_report(*tests: dict[str, Any], **overrides: Any) -> dict[s
 
 def test_record_vitest_uses_the_reporters_actual_outcomes(tmp_path: Path) -> None:
     report = tmp_path / "vitest.json"
-    output = tmp_path / "frontend-unit.json"
+    output = tmp_path / "frontend-fixture.json"
     report.write_text(
         json.dumps(
             _vitest_semantics_report(
@@ -472,7 +569,7 @@ def test_record_vitest_uses_the_reporters_actual_outcomes(tmp_path: Path) -> Non
         (
             "record-vitest",
             "--lane",
-            "frontend-unit",
+            "frontend-fixture",
             "--input",
             str(report),
             "--output",
@@ -490,7 +587,7 @@ def test_record_vitest_uses_the_reporters_actual_outcomes(tmp_path: Path) -> Non
 
 def test_record_vitest_fails_on_reported_unhandled_errors(tmp_path: Path) -> None:
     report = tmp_path / "vitest.json"
-    output = tmp_path / "frontend-unit.json"
+    output = tmp_path / "frontend-fixture.json"
     report.write_text(
         json.dumps(
             _vitest_semantics_report(
@@ -506,7 +603,7 @@ def test_record_vitest_fails_on_reported_unhandled_errors(tmp_path: Path) -> Non
         (
             "record-vitest",
             "--lane",
-            "frontend-unit",
+            "frontend-fixture",
             "--input",
             str(report),
             "--output",
@@ -523,7 +620,11 @@ def test_record_vitest_fails_on_reported_unhandled_errors(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("test_changes", "report_changes", "manifest_field"),
     [
-        ({"fails": True}, {"numExpectedFailures": 1}, "xfailed"),
+        (
+            {"fails": True},
+            {"numExpectedFailures": 1, "numPassedTests": 0, "numXfailedTests": 1},
+            "xfailed",
+        ),
         ({"retry": 1, "retryCount": 1, "flaky": True}, {"numRetriedTests": 1, "numFlakyTests": 1}, "rerun"),
         ({"repeats": 1, "repeatCount": 1}, {"numRepeatedTests": 1}, "rerun"),
         ({"only": True}, {"numOnlyTests": 1}, None),
@@ -536,7 +637,7 @@ def test_record_vitest_rejects_non_plain_pass_semantics(
     manifest_field: str | None,
 ) -> None:
     report_path = tmp_path / "vitest.json"
-    output = tmp_path / "frontend-unit.json"
+    output = tmp_path / "frontend-fixture.json"
     case = {**_vitest_plain_test("case-1"), **test_changes}
     report_path.write_text(
         json.dumps(_vitest_semantics_report(case, success=False, **report_changes)),
@@ -547,7 +648,7 @@ def test_record_vitest_rejects_non_plain_pass_semantics(
         (
             "record-vitest",
             "--lane",
-            "frontend-unit",
+            "frontend-fixture",
             "--input",
             str(report_path),
             "--output",
@@ -564,15 +665,15 @@ def test_record_vitest_rejects_non_plain_pass_semantics(
 
 def test_record_vitest_replaces_stale_green_output_when_report_is_invalid(tmp_path: Path) -> None:
     report = tmp_path / "vitest.json"
-    output = tmp_path / "frontend-unit.json"
+    output = tmp_path / "frontend-fixture.json"
     report.write_text("not json\n", encoding="utf-8")
-    output.write_text(json.dumps(_lane_payload("frontend-unit")), encoding="utf-8")
+    output.write_text(json.dumps(_lane_payload("frontend-fixture")), encoding="utf-8")
 
     result = evidence.main(
         (
             "record-vitest",
             "--lane",
-            "frontend-unit",
+            "frontend-fixture",
             "--input",
             str(report),
             "--output",
@@ -587,49 +688,46 @@ def test_record_vitest_replaces_stale_green_output_when_report_is_invalid(tmp_pa
     assert manifest["errors"] == ["vitest_report_invalid"]
 
 
-def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) -> None:
-    report = tmp_path / "playwright.json"
-    output = tmp_path / "browser.json"
-    report.write_text(
-        json.dumps(
+def _playwright_plain_report(selected: int) -> dict[str, Any]:
+    return {
+        "config": {
+            "forbidOnly": True,
+            "grep": {},
+            "grepInvert": None,
+            "projects": [{"repeatEach": 1, "retries": 0}],
+            "shard": None,
+        },
+        "suites": [
             {
-                "config": {
-                    "forbidOnly": True,
-                    "grep": {},
-                    "grepInvert": None,
-                    "projects": [{"repeatEach": 1, "retries": 0}],
-                    "shard": None,
-                },
-                "suites": [
+                "specs": [
                     {
-                        "specs": [
+                        "tests": [
                             {
-                                "tests": [
-                                    {
-                                        "expectedStatus": "passed",
-                                        "status": "expected",
-                                        "results": [{"status": "passed", "retry": 0}],
-                                    },
-                                    {
-                                        "expectedStatus": "passed",
-                                        "status": "expected",
-                                        "results": [{"status": "passed", "retry": 0}],
-                                    },
-                                ]
+                                "expectedStatus": "passed",
+                                "status": "expected",
+                                "results": [{"status": "passed", "retry": 0}],
                             }
+                            for _ in range(selected)
                         ]
                     }
-                ],
-                "stats": {
-                    "expected": 2,
-                    "unexpected": 0,
-                    "flaky": 0,
-                    "skipped": 0,
-                },
+                ]
             }
-        ),
-        encoding="utf-8",
-    )
+        ],
+        "stats": {
+            "expected": selected,
+            "unexpected": 0,
+            "flaky": 0,
+            "skipped": 0,
+        },
+    }
+
+
+def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) -> None:
+    report = tmp_path / "playwright.json"
+    selection = tmp_path / "playwright-selection.json"
+    output = tmp_path / "browser.json"
+    report.write_text(json.dumps(_playwright_plain_report(2)), encoding="utf-8")
+    selection.write_text(json.dumps(_playwright_selection(2)), encoding="utf-8")
 
     result = evidence.main(
         (
@@ -638,6 +736,8 @@ def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) ->
             "browser",
             "--input",
             str(report),
+            "--selection",
+            str(selection),
             "--output",
             str(output),
         )
@@ -651,10 +751,67 @@ def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) ->
     assert manifest["tool_versions"]["playwright"] == "1.60.0"
 
 
+@pytest.mark.parametrize("tool", ["vitest", "playwright"])
+@pytest.mark.parametrize(
+    ("runtime_version", "expected_error"),
+    [
+        ("999.0.0", "lock_runtime_version_mismatch"),
+        ("unavailable", "runtime_version_unavailable"),
+    ],
+)
+def test_node_test_evidence_fails_closed_on_runtime_version_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+    runtime_version: str,
+    expected_error: str,
+) -> None:
+    report = tmp_path / f"{tool}.json"
+    output = tmp_path / f"{tool}-lane.json"
+    monkeypatch.setattr(evidence, "_node_module_version", lambda package: runtime_version)
+    if tool == "vitest":
+        report.write_text(
+            json.dumps(_vitest_semantics_report(_vitest_plain_test("case-1"))),
+            encoding="utf-8",
+        )
+        arguments = (
+            "record-vitest",
+            "--lane",
+            "frontend-fixture",
+            "--input",
+            str(report),
+            "--output",
+            str(output),
+        )
+    else:
+        selection = tmp_path / "playwright-selection.json"
+        report.write_text(json.dumps(_playwright_plain_report(1)), encoding="utf-8")
+        selection.write_text(json.dumps(_playwright_selection(1)), encoding="utf-8")
+        arguments = (
+            "record-playwright",
+            "--lane",
+            "browser-fixture",
+            "--input",
+            str(report),
+            "--selection",
+            str(selection),
+            "--output",
+            str(output),
+        )
+
+    result = evidence.main(arguments)
+
+    assert result != 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert f"{tool}_{expected_error}" in manifest["errors"]
+    assert manifest["tool_versions"][tool] == runtime_version
+
+
 def test_record_playwright_rejects_an_expected_failure_reported_as_expected(
     tmp_path: Path,
 ) -> None:
     report = tmp_path / "playwright.json"
+    selection = tmp_path / "playwright-selection.json"
     output = tmp_path / "browser.json"
     report.write_text(
         json.dumps(
@@ -686,6 +843,7 @@ def test_record_playwright_rejects_an_expected_failure_reported_as_expected(
         ),
         encoding="utf-8",
     )
+    selection.write_text(json.dumps(_playwright_selection(1)), encoding="utf-8")
 
     result = evidence.main(
         (
@@ -694,6 +852,8 @@ def test_record_playwright_rejects_an_expected_failure_reported_as_expected(
             "browser",
             "--input",
             str(report),
+            "--selection",
+            str(selection),
             "--output",
             str(output),
         )
@@ -712,10 +872,12 @@ def test_record_playwright_rejects_flaky_or_skipped_required_cases(
     tmp_path: Path, field: str, manifest_field: str
 ) -> None:
     report = tmp_path / "playwright.json"
+    selection = tmp_path / "playwright-selection.json"
     output = tmp_path / "browser.json"
     stats = {"expected": 1, "unexpected": 0, "flaky": 0, "skipped": 0}
     stats[field] = 1
     report.write_text(json.dumps({"stats": stats}), encoding="utf-8")
+    selection.write_text(json.dumps(_playwright_selection(2)), encoding="utf-8")
 
     result = evidence.main(
         (
@@ -724,6 +886,8 @@ def test_record_playwright_rejects_flaky_or_skipped_required_cases(
             "browser",
             "--input",
             str(report),
+            "--selection",
+            str(selection),
             "--output",
             str(output),
         )
@@ -857,6 +1021,26 @@ def test_python_lane_records_replay_and_tool_identity(evidence_repository: _Evid
     }
 
 
+def test_python_lane_manifest_rejects_a_nonzero_session_exit_without_a_test_failure(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    conftest = evidence_repository.root / "tests" / "conftest.py"
+    conftest.write_text(
+        conftest.read_text(encoding="utf-8")
+        + "\nimport pytest\n"
+        + "def pytest_sessionfinish(session, exitstatus):\n"
+        + "  session.exitstatus = pytest.ExitCode.INTERRUPTED\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode == int(pytest.ExitCode.INTERRUPTED), result.stdout + result.stderr
+    assert manifest["failed"] == 0
+    assert manifest["status"] == "failure"
+    assert "evidence_pytest_exitstatus_nonzero:2" in manifest["errors"]
+
+
 def test_python_lane_rejects_transitive_pytest_plugin_autoload(
     evidence_repository: _EvidenceRepository,
 ) -> None:
@@ -866,6 +1050,38 @@ def test_python_lane_rejects_transitive_pytest_plugin_autoload(
 
     assert result.returncode != 0
     assert "evidence_pytest_plugin_autoload_must_be_disabled" in manifest["errors"]
+
+
+@pytest.mark.parametrize("module_name", ["extra_plugin", "evilconftest"])
+def test_python_lane_records_and_rejects_an_extra_explicit_plugin(
+    evidence_repository: _EvidenceRepository, module_name: str
+) -> None:
+    (evidence_repository.root / f"{module_name}.py").write_text("__version__ = 'fixture-1'\n", encoding="utf-8")
+
+    result, manifest = evidence_repository.run("-p", module_name, env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert f"evidence_pytest_plugin_forbidden:{module_name}" in manifest["errors"]
+    plugins = {plugin["name"]: plugin["version"] for plugin in manifest["pytest_plugins"]}
+    assert set(plugins) == {module_name, "hypothesis", "tracefold-evidence"}
+    assert plugins[module_name] == "fixture-1"
+
+
+@pytest.mark.parametrize(
+    ("plugin_name", "module_name"),
+    [
+        ("threadexception", "_pytest.threadexception"),
+        ("unraisableexception", "_pytest.unraisableexception"),
+        ("warnings", "_pytest.warnings"),
+    ],
+)
+def test_python_lane_requires_core_background_exception_plugins(
+    evidence_repository: _EvidenceRepository, plugin_name: str, module_name: str
+) -> None:
+    result, manifest = evidence_repository.run("-p", f"no:{plugin_name}", env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert f"evidence_pytest_core_plugin_missing:{module_name}" in manifest["errors"]
 
 
 def test_python_lane_fails_on_a_real_unhandled_thread_exception(
@@ -887,6 +1103,79 @@ def test_python_lane_fails_on_a_real_unhandled_thread_exception(
     assert manifest["unhandled"] >= 1
     assert manifest["status"] == "failure"
     assert any(error.startswith("evidence_python_unhandled:") for error in manifest["errors"])
+
+
+@pytest.mark.parametrize(
+    ("kind", "cleanup_body"),
+    [
+        (
+            "thread_exception",
+            "    def explode(): raise RuntimeError('late background exploded')\n"
+            "    thread = threading.Thread(target=explode)\n"
+            "    thread.start()\n"
+            "    thread.join()\n",
+        ),
+        (
+            "unraisable_exception",
+            "    class BrokenCleanup:\n"
+            "        def __del__(self): raise RuntimeError('late unraisable exploded')\n"
+            "    broken = BrokenCleanup()\n"
+            "    broken.cycle = broken\n"
+            "    del broken\n"
+            "    gc.collect()\n",
+        ),
+        (
+            "coroutine_never_awaited",
+            "    async def abandoned(): return None\n    abandoned()\n    gc.collect()\n",
+        ),
+    ],
+)
+def test_python_lane_fails_on_an_unhandled_exception_from_final_config_cleanup(
+    evidence_repository: _EvidenceRepository,
+    kind: str,
+    cleanup_body: str,
+) -> None:
+    conftest = evidence_repository.root / "tests" / "conftest.py"
+    conftest.write_text(
+        conftest.read_text(encoding="utf-8")
+        + "\nimport gc\nimport threading\n"
+        + "def pytest_configure(config):\n"
+        + "  def late_cleanup():\n"
+        + cleanup_body
+        + "  config.add_cleanup(late_cleanup)\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert manifest["status"] == "failure"
+    assert manifest["unhandled"] >= 1
+    assert any(error.startswith(f"evidence_python_unhandled:{kind}:") for error in manifest["errors"])
+
+
+def test_python_lane_records_an_unhandled_warning_from_a_later_initial_conftest_wrapper_cleanup(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    (evidence_repository.root / "late_initial_cleanup_plugin.py").write_text(
+        "import gc\n"
+        "import pytest\n"
+        "@pytest.hookimpl(wrapper=True, trylast=True)\n"
+        "def pytest_load_initial_conftests(early_config):\n"
+        "  def late_cleanup():\n"
+        "    async def abandoned(): return None\n"
+        "    abandoned()\n"
+        "    gc.collect()\n"
+        "  early_config.add_cleanup(late_cleanup)\n"
+        "  yield\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run("-p", "late_initial_cleanup_plugin", env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert manifest["status"] == "failure"
+    assert any(error.startswith("evidence_python_unhandled:coroutine_never_awaited:") for error in manifest["errors"])
 
 
 def test_python_lane_rejects_a_case_filter_that_hides_unhandled_thread_exceptions(
@@ -944,6 +1233,32 @@ def test_python_lane_rejects_an_ini_filter_that_hides_unhandled_runtime_warnings
     assert "evidence_unhandled_warning_filter_forbidden:ignore::RuntimeWarning" in manifest["errors"]
 
 
+def test_python_lane_rejects_an_environment_filter_that_hides_unawaited_coroutines(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    result, manifest = evidence_repository.run(
+        env={"TRACEFOLD_FIXTURE_FAIL": "0", "PYTHONWARNINGS": "ignore::RuntimeWarning"},
+    )
+
+    assert result.returncode != 0
+    assert "evidence_unhandled_warning_filter_forbidden:ignore::RuntimeWarning" in manifest["errors"]
+
+
+def test_python_lane_rejects_a_qualified_ini_category_that_hides_unawaited_coroutines(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    pyproject = evidence_repository.root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8") + "filterwarnings = ['ignore::builtins.RuntimeWarning']\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert "evidence_unhandled_warning_filter_forbidden:ignore::builtins.RuntimeWarning" in manifest["errors"]
+
+
 def test_python_lane_fails_on_an_unretrieved_asyncio_task_exception(
     evidence_repository: _EvidenceRepository,
 ) -> None:
@@ -965,14 +1280,78 @@ def test_python_lane_fails_on_an_unretrieved_asyncio_task_exception(
     assert any("evidence_python_unhandled:asyncio_task" in error for error in manifest["errors"])
 
 
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        (
+            "    future = asyncio.get_running_loop().create_future()\n"
+            "    future.set_exception(RuntimeError('future exploded'))\n"
+            "    del future\n"
+            "    gc.collect()\n"
+            "    await asyncio.sleep(0)\n",
+            "asyncio_future",
+        ),
+        (
+            "    asyncio.get_running_loop().call_soon(lambda: 1 / 0)\n    await asyncio.sleep(0)\n",
+            "asyncio_callback",
+        ),
+    ],
+)
+def test_python_lane_fails_on_other_event_loop_exceptions(
+    evidence_repository: _EvidenceRepository,
+    body: str,
+    kind: str,
+) -> None:
+    (evidence_repository.root / "tests" / "test_asyncio_unhandled.py").write_text(
+        "import asyncio\n"
+        "import gc\n"
+        "async def scenario():\n"
+        f"{body}"
+        "def test_unretrieved_asyncio_error():\n"
+        "    asyncio.run(scenario())\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert manifest["unhandled"] == 1
+    assert any(f"evidence_python_unhandled:{kind}" in error for error in manifest["errors"])
+
+
+def test_python_lane_keeps_recording_after_a_test_installs_an_asyncio_handler(
+    evidence_repository: _EvidenceRepository,
+) -> None:
+    (evidence_repository.root / "tests" / "test_asyncio_unhandled.py").write_text(
+        "import asyncio\n"
+        "async def scenario():\n"
+        "    seen = []\n"
+        "    loop = asyncio.get_running_loop()\n"
+        "    loop.set_exception_handler(lambda _loop, context: seen.append(context))\n"
+        "    loop.call_soon(lambda: 1 / 0)\n"
+        "    await asyncio.sleep(0)\n"
+        "    assert len(seen) == 1\n"
+        "def test_replaced_handler():\n"
+        "    asyncio.run(scenario())\n",
+        encoding="utf-8",
+    )
+
+    result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
+
+    assert result.returncode != 0
+    assert manifest["unhandled"] == 1
+    assert any("evidence_python_unhandled:asyncio_callback" in error for error in manifest["errors"])
+
+
 def test_python_lane_rejects_an_empty_declared_required_marker(
     evidence_repository: _EvidenceRepository,
 ) -> None:
     pyproject = evidence_repository.root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text(encoding="utf-8").replace(
-            "markers = ['live: external provider test']",
-            "markers = ['live: external provider test', 'golden: required evidence lane']",
+            "markers = ['live: external provider test', 'scheduled: production-duration diagnostic']",
+            "markers = ['live: external provider test', 'scheduled: production-duration diagnostic', "
+            "'golden: required evidence lane']",
         ),
         encoding="utf-8",
     )
@@ -1000,8 +1379,9 @@ def test_python_lane_records_actual_required_marker_outcomes(
     pyproject = evidence_repository.root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text(encoding="utf-8").replace(
-            "markers = ['live: external provider test']",
-            "markers = ['live: external provider test', 'golden: required evidence lane']",
+            "markers = ['live: external provider test', 'scheduled: production-duration diagnostic']",
+            "markers = ['live: external provider test', 'scheduled: production-duration diagnostic', "
+            "'golden: required evidence lane']",
         ),
         encoding="utf-8",
     )
@@ -1031,8 +1411,9 @@ def test_python_lane_records_failed_required_marker_outcome(
     pyproject = evidence_repository.root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text(encoding="utf-8").replace(
-            "markers = ['live: external provider test']",
-            "markers = ['live: external provider test', 'golden: required evidence lane']",
+            "markers = ['live: external provider test', 'scheduled: production-duration diagnostic']",
+            "markers = ['live: external provider test', 'scheduled: production-duration diagnostic', "
+            "'golden: required evidence lane']",
         ),
         encoding="utf-8",
     )

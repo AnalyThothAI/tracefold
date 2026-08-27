@@ -1,8 +1,8 @@
-import { getApi, setAuthToken } from "@lib/api/client";
+import { getApi, resetApiClientForTests, setAuthToken } from "@lib/api/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => {
-  setAuthToken(null);
+  resetApiClientForTests();
   vi.unstubAllGlobals();
 });
 
@@ -113,6 +113,19 @@ describe("API client ETag contract", () => {
     await getApi("/api/news/events/old", { etagKey: "event" });
 
     expect(requestHeaders(fetchMock, 1).has("authorization")).toBe(false);
+    expect(requestHeaders(fetchMock, 1).has("if-none-match")).toBe(false);
+  });
+
+  it("lets tests clear an anonymous ETag without inventing an auth transition", async () => {
+    const fetchMock = stubFetch(
+      jsonResponse({ ok: true, data: { id: "old" } }, 200, { etag: '"old"' }),
+      jsonResponse({ ok: true, data: { id: "fresh" } }),
+    );
+    await getApi("/api/news/events/old", { etagKey: "event" });
+
+    resetApiClientForTests();
+    await getApi("/api/news/events/old", { etagKey: "event" });
+
     expect(requestHeaders(fetchMock, 1).has("if-none-match")).toBe(false);
   });
 });

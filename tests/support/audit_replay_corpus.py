@@ -1,6 +1,6 @@
 """Frozen recorded metric-audit corpora and their publication-safe redaction.
 
-The recorded calibration was reproducible only against the operator's live database, so it stopped being a
+The original recorded calibration was reproducible only against the operator's live database, so it stopped being a
 calibration the moment the corpus grew — #143 published `0.896373 / n=162` and by 2026-08-23 the same command
 answered `0.888426 / n=243` because #148 added 81 reviews. A number that moves when the data moves cannot
 prove that metric *wiring* is unchanged, which is the only thing this check exists to prove.
@@ -9,7 +9,7 @@ The pre-#160 corpus remains frozen at `tests/fixtures/news_baseline_calibration_
 audit evidence only: its `production_verdict`, `recorded_action`, policy-v8 and Gate `priority` fields are
 deliberately rejected by the current hard-cut contracts. Rewriting it would erase the evidence of what the
 old ruler measured. The current-format audit corpus is the separate
-`tests/fixtures/news_baseline_calibration_v2.json`, with `production_judgment`, the complete persisted
+`tests/fixtures/news_audit_replay_corpus_v2.json`, with `production_judgment`, the complete persisted
 `recorded_decision_result`, policy v10 and `queue_priority`.
 
 Every string is redacted except an explicit structural allowlist. `_redact()` maps each remaining value to
@@ -20,16 +20,16 @@ different strings stay different.
 **The allowlist is the whole design.** The first version enumerated the *text* keys instead and failed open
 in the obvious way: `title_zh` was not on the list, so 60 reader-facing Chinese cards shipped into a public
 repository under a docstring promising they had not. A forgotten key has to fail safe. It now does — an
-unlisted key is redacted, and the only cost of forgetting one is a score that moves, which the calibration
+unlisted key is redacted, and the only cost of forgetting one is a score that moves, which the audit/replay
 test catches immediately.
 
 The redaction is deliberately *not* similarity-preserving: `decide()`'s character-bigram duplicate check
 would read different neighbours out of redacted headlines. This fixture is therefore valid for
-`--mode recorded` only, and the calibration test pins that.
+`--mode recorded` only, and the audit/replay test pins that.
 
-Regenerate v2 (requires the operator's database and `~/.tracefold/config.yaml`):
+Regenerate the v2 audit corpus (requires the operator's database and `~/.tracefold/config.yaml`):
 
-    uv run python -m tests.support.audit_replay_calibration tests/fixtures/news_baseline_calibration_v2.json
+    uv run python -m tests.support.audit_replay_corpus tests/fixtures/news_audit_replay_corpus_v2.json
 """
 
 from __future__ import annotations
@@ -44,8 +44,8 @@ from typing import Any
 _FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 HISTORICAL_AUDIT_CORPUS = _FIXTURE_DIR / "news_baseline_calibration_v1.json.gz"
 HISTORICAL_AUDIT_SCHEMA = "tracefold.news.baseline_calibration_corpus.v1"
-AUDIT_REPLAY_CORPUS = _FIXTURE_DIR / "news_baseline_calibration_v2.json"
-AUDIT_REPLAY_SCHEMA = "tracefold.news.baseline_calibration_corpus.v2"
+AUDIT_REPLAY_CORPUS = _FIXTURE_DIR / "news_audit_replay_corpus_v2.json"
+AUDIT_REPLAY_SCHEMA = "tracefold.news.audit_replay_corpus.v2"
 
 # Keys whose values the recorded metric, the cluster grouping or the retrieval receipt compare or count, and
 # which carry no prose: rubric labels, enums, symbols, content hashes, opaque identifiers and stable keys.

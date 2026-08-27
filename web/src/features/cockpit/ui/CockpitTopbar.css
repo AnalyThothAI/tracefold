@@ -342,8 +342,8 @@
    * the same two numbers lead the feed's funnel card.
    *
    * The health lamp is the one exception, and only while it exists: it has to reach every frame or a phone
-   * reader never learns the pipeline is degraded (#207). A healthy pipeline renders no lamp, so the brand
-   * column stays collapsed and the search box keeps the whole row.
+   * reader never learns the pipeline is degraded (#207). Before health has been read there is no lamp, so
+   * the brand column stays collapsed and the search box keeps the whole row.
    */
   @media (max-width: 767px) {
     .topbar {

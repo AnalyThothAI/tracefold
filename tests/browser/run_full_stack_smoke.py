@@ -28,6 +28,7 @@ SERVICE_FACT = "BTC OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Wh
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--playwright-json", required=True, type=Path)
+    parser.add_argument("--playwright-selection", required=True, type=Path)
     options = parser.parse_args()
     dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
     amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", DEFAULT_AMQP_URL)
@@ -88,25 +89,32 @@ def main() -> int:
             asyncio.run(_publish_opennews(amqp_url, name_prefix))
             _wait_for_service_fact(base_url)
             options.playwright_json.parent.mkdir(parents=True, exist_ok=True)
+            options.playwright_selection.parent.mkdir(parents=True, exist_ok=True)
+            options.playwright_json.unlink(missing_ok=True)
+            options.playwright_selection.unlink(missing_ok=True)
             result = subprocess.run(
-                ["npm", "run", "test:e2e:full-stack"],
+                [
+                    "node",
+                    "node_modules/@playwright/test/cli.js",
+                    "test",
+                    "--config=playwright.full-stack.config.ts",
+                ],
                 cwd=ROOT / "web",
                 env={
                     **os.environ,
                     "TRACEFOLD_FULL_STACK_URL": base_url,
                     "PLAYWRIGHT_JSON_OUTPUT_NAME": str(options.playwright_json.resolve()),
+                    "TRACEFOLD_PLAYWRIGHT_SELECTION_OUTPUT": str(options.playwright_selection.resolve()),
                 },
                 check=False,
             )
             if result.returncode == 0:
-                _assert_running(worker, worker_log)
-                _assert_running(serve, serve_log)
-                _assert_http_ready(
-                    f"http://127.0.0.1:{worker_port}/readyz",
-                    worker,
-                    worker_log,
+                _assert_runtime_ready(
+                    (
+                        (f"http://127.0.0.1:{worker_port}/readyz", worker, worker_log),
+                        (f"{base_url}/readyz", serve, serve_log),
+                    )
                 )
-                _assert_http_ready(f"{base_url}/readyz", serve, serve_log)
             return result.returncode
         finally:
             _terminate(serve)
@@ -249,6 +257,19 @@ def _assert_http_ready(url: str, proc: subprocess.Popen[bytes], log_path: Path) 
         )
 
 
+def _assert_runtime_ready(
+    checks: tuple[tuple[str, subprocess.Popen[bytes], Path], ...],
+) -> None:
+    """Finish all readiness reads, then prove every participating root is still alive."""
+
+    for _, proc, log_path in checks:
+        _assert_running(proc, log_path)
+    for url, proc, log_path in checks:
+        _assert_http_ready(url, proc, log_path)
+    for _, proc, log_path in checks:
+        _assert_running(proc, log_path)
+
+
 def _assert_running(proc: subprocess.Popen[bytes], log_path: Path) -> None:
     if proc.poll() is not None:
         raise AssertionError(f"subprocess exited rc={proc.returncode}:\n{_log(log_path)}")
@@ -258,10 +279,17 @@ def _log(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
-def _terminate(proc: subprocess.Popen[bytes], *, timeout: float = 5.0) -> None:
+def _terminate(
+    proc: subprocess.Popen[bytes],
+    *,
+    timeout: float = 5.0,
+) -> None:
     if proc.poll() is not None:
         return
-    proc.terminate()
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

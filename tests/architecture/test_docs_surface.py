@@ -24,8 +24,8 @@ def test_make_check_runs_each_canonical_drift_checker_once_without_external_reso
         "scripts/sync_agent_router.py --check",
     ):
         assert commands.count(checker) == 1, checker
-    assert "refactor_baseline" not in commands
     assert "not slow" in commands
+    assert "not scheduled" in commands
     assert commands.count("python -m pytest") == 1
     assert all(tool not in commands for tool in ("docker", "npx", "npm "))
 
@@ -41,12 +41,12 @@ def test_default_test_target_selects_only_hermetic_lanes() -> None:
     commands = result.stdout
 
     assert commands.count("python -m pytest") == 1
-    for excluded in ("integration", "deploy", "e2e", "golden", "slow", "external_codegen"):
+    for excluded in ("integration", "deploy", "e2e", "golden", "slow", "scheduled", "external_codegen"):
         assert f"not {excluded}" in commands
     assert all(tool not in commands for tool in ("docker", "testcontainers", "uvicorn", "npx", "npm "))
 
 
-def test_evidence_target_selects_every_deterministic_lane_and_excludes_live_explicitly() -> None:
+def test_evidence_target_selects_every_deterministic_lane_and_excludes_opt_in_diagnostics() -> None:
     result = subprocess.run(
         ["make", "--dry-run", "test-evidence"],
         cwd=ROOT,
@@ -58,7 +58,7 @@ def test_evidence_target_selects_every_deterministic_lane_and_excludes_live_expl
 
     assert "TRACEFOLD_TEST_EVIDENCE=1" in commands
     assert "-p tests.support.evidence" in commands
-    assert '-m "not live"' in commands
+    assert '-m "not live and not scheduled"' in commands
     assert "--evidence-manifest=" in commands
     assert "--resource-evidence-manifest=" in commands
     assert "--junitxml=" in commands

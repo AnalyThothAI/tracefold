@@ -8,6 +8,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
+_FULL_SCOPE_CONFIG = {
+    "eslint": {"eslint.config.js"},
+    "prettier": {".prettierignore", ".prettierrc.json"},
+}
+
+
+def _hook_command(tool: str, paths: list[str], executable: Path) -> list[str]:
+    if _FULL_SCOPE_CONFIG[tool].intersection(paths):
+        script = "lint:eslint" if tool == "eslint" else "format:check"
+        return ["npm", "run", script]
+    options = ["--max-warnings=0", "--no-warn-ignored"] if tool == "eslint" else ["--check"]
+    return [str(executable), *options, *paths]
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -30,8 +42,7 @@ def main(arguments: list[str] | None = None) -> int:
     if not executable.is_file():
         print("frontend hook dependencies are missing; run `npm ci --prefix web`", file=sys.stderr)
         return 2
-    options = ["--max-warnings=0", "--no-warn-ignored"] if tool == "eslint" else ["--check"]
-    return subprocess.run([str(executable), *options, *paths], cwd=WEB_ROOT, check=False).returncode
+    return subprocess.run(_hook_command(tool, paths, executable), cwd=WEB_ROOT, check=False).returncode
 
 
 if __name__ == "__main__":

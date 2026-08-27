@@ -13,7 +13,11 @@ export default defineConfig({
   fullyParallel: false,
   repeatEach: 1,
   retries: 0,
-  reporter: [["list"], ["json", { outputFile: jsonOutput }]],
+  reporter: [
+    ["list"],
+    ["json", { outputFile: jsonOutput }],
+    ["./tests/support/playwrightEvidenceReporter.ts"],
+  ],
   workers: 1,
   use: {
     ...devices["Desktop Chrome"],

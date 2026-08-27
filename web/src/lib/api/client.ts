@@ -33,6 +33,12 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
+/** Reset module state between tests without making a session transition part of the assertion. */
+export function resetApiClientForTests(): void {
+  authToken = null;
+  etagCache.clear();
+}
+
 export async function getApi<T>(
   path: string,
   options: RequestOptions = {},

@@ -63,7 +63,13 @@ def test_browser_success_fails_when_workers_exited_after_persisting_the_fact(
     monkeypatch.setattr(
         run_full_stack_smoke.sys,
         "argv",
-        ["run_full_stack_smoke.py", "--playwright-json", str(tmp_path / "playwright.json")],
+        [
+            "run_full_stack_smoke.py",
+            "--playwright-json",
+            str(tmp_path / "playwright.json"),
+            "--playwright-selection",
+            str(tmp_path / "playwright-selection.json"),
+        ],
     )
 
     with pytest.raises(AssertionError, match="workers root failed after persisting the fact"):
@@ -124,7 +130,13 @@ def test_browser_success_fails_when_serve_readiness_regresses(
     monkeypatch.setattr(
         run_full_stack_smoke.sys,
         "argv",
-        ["run_full_stack_smoke.py", "--playwright-json", str(tmp_path / "playwright.json")],
+        [
+            "run_full_stack_smoke.py",
+            "--playwright-json",
+            str(tmp_path / "playwright.json"),
+            "--playwright-selection",
+            str(tmp_path / "playwright-selection.json"),
+        ],
     )
 
     def readiness(url: str, **_kwargs: object) -> httpx.Response:
@@ -169,3 +181,67 @@ def test_golden_teardown_fails_when_serve_readiness_regresses(
 
     with pytest.raises(AssertionError, match="serve readiness regressed after golden assertions"):
         next(fixture)
+
+
+@pytest.mark.parametrize("harness", ["browser", "golden"])
+def test_final_readiness_fails_if_workers_exit_during_the_serve_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    harness: str,
+) -> None:
+    module = run_full_stack_smoke if harness == "browser" else golden_conftest
+    worker = _Process()
+    serve = _Process()
+    worker_port = 43501
+    serve_port = 43502
+    monkeypatch.setattr(module.subprocess, "Popen", _popen_pair(worker, serve))
+    monkeypatch.setattr(module, "_reset_postgres", lambda *_args: None)
+    monkeypatch.setattr(module, "_unused_port", lambda: worker_port)
+    monkeypatch.setattr(module, "_wait_for_http", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_wait_for_logged_port", lambda *_args, **_kwargs: serve_port)
+    monkeypatch.setattr(module, "_terminate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_delete_topology", _async_noop)
+
+    def readiness(url: str, **_kwargs: object) -> httpx.Response:
+        if url == f"http://127.0.0.1:{worker_port}/readyz":
+            return httpx.Response(200, text="worker ready")
+        worker.returncode = 17
+        worker.log.write("workers exited during the serve readiness check\n")
+        worker.log.flush()
+        return httpx.Response(200, text="serve ready")
+
+    monkeypatch.setattr(module.httpx, "get", readiness)
+    if harness == "browser":
+        monkeypatch.setattr(module, "_require_resources", lambda *_args: None)
+        monkeypatch.setattr(module, "_publish_opennews", _async_noop)
+        monkeypatch.setattr(module, "_wait_for_service_fact", lambda *_args: None)
+        monkeypatch.setattr(
+            module.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(args=(), returncode=0),
+        )
+        monkeypatch.setattr(
+            module.sys,
+            "argv",
+            [
+                "run_full_stack_smoke.py",
+                "--playwright-json",
+                str(tmp_path / "playwright.json"),
+                "--playwright-selection",
+                str(tmp_path / "playwright-selection.json"),
+            ],
+        )
+        invoke = module.main
+    else:
+        fixture = module.golden_runtime.__wrapped__(
+            "postgresql://example/tracefold_test",
+            "amqp://example/",
+            tmp_path,
+        )
+        next(fixture)
+
+        def invoke() -> None:
+            next(fixture)
+
+    with pytest.raises(AssertionError, match="workers exited during the serve readiness check"):
+        invoke()

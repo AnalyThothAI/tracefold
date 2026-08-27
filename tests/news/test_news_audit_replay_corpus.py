@@ -1,9 +1,9 @@
-"""Recorded metric/replay calibration; this is not current model-quality evidence.
+"""Recorded metric audit/replay; this is not current model-quality evidence.
 
 The policy-v8 fixture cannot be projected into the hard-cut contracts, by
 design. Its old `production_verdict`, `recorded_action` and Gate `priority`
 shape is retained byte-for-byte so the epoch boundary is reviewable. The
-separate v2 fixture is the reproducible policy-v10 / metric-v4 calibration.
+separate v2 fixture is a reproducible policy-v10 / metric-v4 audit corpus.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.audit_replay_calibration import (
+from tests.support.audit_replay_corpus import (
     AUDIT_REPLAY_CORPUS,
     HISTORICAL_AUDIT_CORPUS,
     _redact,
@@ -32,7 +32,7 @@ _EXPECTED_CLUSTER_MACRO = 0.716667
 _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
-_AUDIT_RAW_SHA256 = "9ea9330f6c17ea92f96946901d6b41c16db6d8d85027b1367ef6f132f14a7cd1"
+_AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6d0fd3"
 # #193 rebinds the report to the strategy-artifact Program identity: the receipt now names `factory_id`
 # where it named `state_sha256`, and the stable root moved with the hard cut. The corpus, every score and
 # every case result are byte-for-byte what the previous pin covered — re-hashing this report with the old
@@ -69,7 +69,7 @@ def report() -> Any:
     return run_baseline(cases, mode="recorded", artifact=load_stable_program_artifact())
 
 
-def test_recorded_calibration_is_reproducible_from_the_typed_v2_corpus(report: Any) -> None:
+def test_recorded_audit_replay_is_reproducible_from_the_typed_v2_corpus(report: Any) -> None:
     assert report.population == {
         "requested_n": _EXPECTED_N,
         "answered_n": _EXPECTED_N,

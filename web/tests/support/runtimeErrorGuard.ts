@@ -13,7 +13,12 @@ let unhandledRejectionAllowances: RuntimeErrorAllowance[] = [];
 let originalConsoleError: ConsoleError | undefined;
 
 const captureUnhandledRejection = (reason: unknown) => {
-  if (active) unhandledRejections.push(formatValue(reason));
+  const message = formatValue(reason);
+  if (active) {
+    unhandledRejections.push(message);
+    return;
+  }
+  throw new Error(`Unexpected unhandled rejection outside a test case:\n${message}`);
 };
 
 function formatValue(value: unknown): string {
@@ -56,9 +61,12 @@ export function installRuntimeErrorGuard(): void {
   if (originalConsoleError) return;
   originalConsoleError = console.error;
   console.error = (...values: unknown[]) => {
-    if (active) consoleErrors.push(values.map(formatValue).join(" "));
+    const message = values.map(formatValue).join(" ");
+    if (active) consoleErrors.push(message);
     originalConsoleError?.apply(console, values);
+    if (!active) throw new Error(`Unexpected console.error outside a test case:\n${message}`);
   };
+  process.on("unhandledRejection", captureUnhandledRejection);
 }
 
 export function beginRuntimeErrorGuard(): void {
@@ -67,14 +75,12 @@ export function beginRuntimeErrorGuard(): void {
   consoleErrorAllowances = [];
   unhandledRejections = [];
   unhandledRejectionAllowances = [];
-  process.on("unhandledRejection", captureUnhandledRejection);
 }
 
 export async function finishRuntimeErrorGuard(): Promise<string[]> {
   // Node reports an unhandled rejection at the end of the current event-loop turn. Waiting for a native
   // immediate keeps the guard reliable even when a case has replaced the browser timer APIs.
   await new Promise<void>((resolve) => setImmediate(resolve));
-  process.off("unhandledRejection", captureUnhandledRejection);
   const failures = consoleErrors
     .filter(
       (message) =>

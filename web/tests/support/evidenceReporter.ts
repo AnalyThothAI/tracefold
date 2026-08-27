@@ -10,7 +10,7 @@ import type {
   Vitest,
 } from "vitest/node";
 
-export const EVIDENCE_REPORT_SCHEMA_VERSION = "tracefold_vitest_report_v1";
+export const EVIDENCE_REPORT_SCHEMA_VERSION = "tracefold_vitest_report_v3";
 
 interface EvidenceReporterOptions {
   outputFile?: string;
@@ -41,6 +41,7 @@ interface EvidenceTestResult {
 
 export interface EvidenceReport {
   allowOnly: boolean;
+  invocation: string[];
   moduleErrors: EvidenceError[];
   numExpectedFailures: number;
   numFailedTests: number;
@@ -52,9 +53,12 @@ export interface EvidenceReport {
   numRetriedTests: number;
   numTodoTests: number;
   numTotalTests: number;
+  numXfailedTests: number;
+  numXpassedTests: number;
   reason: TestRunEndReason;
   schemaVersion: typeof EVIDENCE_REPORT_SCHEMA_VERSION;
   success: boolean;
+  testFiles: string[];
   tests: EvidenceTestResult[];
   unhandledErrors: EvidenceError[];
 }
@@ -79,12 +83,19 @@ export default class EvidenceReporter implements Reporter {
     const moduleErrors = testModules.flatMap((testModule) =>
       testModule.errors().map(toEvidenceError),
     );
+    const testFiles = [
+      ...new Set(testModules.map((testModule) => testModule.relativeModuleId)),
+    ].sort();
     const serializedUnhandledErrors = unhandledErrors.map(toEvidenceError);
     const numExpectedFailures = tests.filter((test) => test.fails).length;
-    const numFailedTests = tests.filter((test) => test.finalState === "failed").length;
+    const numFailedTests = tests.filter(
+      (test) => !test.fails && test.finalState === "failed",
+    ).length;
     const numFlakyTests = tests.filter((test) => test.flaky).length;
     const numOnlyTests = tests.filter((test) => test.only).length;
-    const numPassedTests = tests.filter((test) => test.finalState === "passed").length;
+    const numPassedTests = tests.filter(
+      (test) => !test.fails && test.finalState === "passed",
+    ).length;
     const numPendingTests = tests.filter(
       (test) =>
         test.finalState === "pending" || (test.finalState === "skipped" && test.mode !== "todo"),
@@ -98,9 +109,16 @@ export default class EvidenceReporter implements Reporter {
     const numTodoTests = tests.filter(
       (test) => test.finalState === "skipped" && test.mode === "todo",
     ).length;
+    const numXfailedTests = tests.filter(
+      (test) => test.fails && test.finalState === "passed",
+    ).length;
+    const numXpassedTests = tests.filter(
+      (test) => test.fails && test.finalState === "failed",
+    ).length;
     const allowOnly = this.context?.config.allowOnly ?? true;
     const report: EvidenceReport = {
       allowOnly,
+      invocation: process.argv.slice(2),
       moduleErrors,
       numExpectedFailures,
       numFailedTests,
@@ -112,6 +130,8 @@ export default class EvidenceReporter implements Reporter {
       numRetriedTests,
       numTodoTests,
       numTotalTests: tests.length,
+      numXfailedTests,
+      numXpassedTests,
       reason,
       schemaVersion: EVIDENCE_REPORT_SCHEMA_VERSION,
       success:
@@ -126,6 +146,7 @@ export default class EvidenceReporter implements Reporter {
         numRetriedTests === 0 &&
         moduleErrors.length === 0 &&
         serializedUnhandledErrors.length === 0,
+      testFiles,
       tests,
       unhandledErrors: serializedUnhandledErrors,
     };

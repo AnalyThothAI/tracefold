@@ -13,7 +13,7 @@ import pathlib
 import pytest
 
 import tracefold.news.learning.baseline as baseline_module
-from tests.support.audit_replay_calibration import load_audit_replay_corpus
+from tests.support.audit_replay_corpus import load_audit_replay_corpus
 from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 from tracefold.news.program.artifact import load_stable_program_artifact
 

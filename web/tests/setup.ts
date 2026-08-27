@@ -8,7 +8,6 @@ import {
   beginRuntimeErrorGuard,
   finishRuntimeErrorGuard,
   installRuntimeErrorGuard,
-  uninstallRuntimeErrorGuard,
 } from "./support/runtimeErrorGuard";
 
 expect.extend(toHaveNoViolations);
@@ -76,6 +75,5 @@ afterEach(async () => {
   if (failures.length > 0) throw new Error(failures.join("\n\n"));
 });
 afterAll(() => {
-  uninstallRuntimeErrorGuard();
   server.close();
 });

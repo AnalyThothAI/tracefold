@@ -614,9 +614,8 @@ describe("NewsPage", () => {
 
     const funnel = await screen.findByRole("region", { name: "过去 24 小时漏斗" });
     /*
-     * A permanent green "流水线正常" beside a feed is a light the reader learns to stop seeing. The sidebar
-     * carries a dot for the status destination and the status route carries the full read; the pill appears
-     * here only when a level is not `ok` (see the next test).
+     * The feed owns no duplicate health pill. The frame's topbar keeps the status-page door present after a
+     * successful read, and the status route carries the full diagnosis (including the degraded case below).
      */
     expect(screen.queryByRole("link", { name: "查看流水线状态" })).toBeNull();
     expect(within(funnel).getByLabelText("24 小时漏斗").textContent).toBe(

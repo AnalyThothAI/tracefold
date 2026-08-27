@@ -14,7 +14,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -34,7 +34,7 @@ tool-path: ## ensure uv tool executables are on PATH
 test: test-fast ## hermetic default regression (alias for test-fast)
 
 test-fast: ## unit + hermetic contract + semantic architecture; no external resources
-	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not slow and not external_codegen"
+	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not slow and not scheduled and not external_codegen"
 
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest
@@ -43,9 +43,10 @@ test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (ex
 	@uv run python -m tests.support.evidence --assert-clean
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json" "$(TRACEFOLD_TEST_LANE_DIR)"/*.json \
-		"$(TRACEFOLD_TEST_ARTIFACT_DIR)"/vitest-*.json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json"
+		"$(TRACEFOLD_TEST_ARTIFACT_DIR)"/vitest-*.json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
 	@PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pytest \
-		-p tests.support.evidence -p _hypothesis_pytestplugin tests -m "not live" \
+		-p tests.support.evidence -p _hypothesis_pytestplugin tests -m "not live and not scheduled" \
 		--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit.xml" \
 		--durations=50 \
 		--evidence-manifest="$(TRACEFOLD_TEST_LANE_DIR)/python.json" \
@@ -79,9 +80,11 @@ test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (ex
 		--tool vite=$$(node -p "require('./web/node_modules/vite/package.json').version") \
 		-- npm --prefix web run build
 	@uv run python -m tests.browser.run_full_stack_smoke \
-		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json"
+		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		--playwright-selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
 	@uv run python -m tests.support.evidence record-playwright \
 		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		--selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
 	@uv run python -m tests.support.evidence --assert-clean
 	@uv run python -m tests.support.evidence aggregate \
@@ -101,18 +104,26 @@ test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly 
 	@uv run python -m pytest -m property
 
 test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
-	@uv run python -m pytest -m slow
+	@uv run python -m pytest -m "slow and not scheduled"
+
+test-scheduled: ## production-duration diagnostics; explicitly outside merge evidence
+	@uv run python -m pytest -m scheduled --durations=20
 
 test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
 	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
 
 test-browser-smoke: ## one real FastAPI static/bootstrap/bearer/news path in Chromium
+	@rm -f "$(TRACEFOLD_TEST_LANE_DIR)/browser.json" \
+		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
 	@npm --prefix web run build:checked
 	@mkdir -p "$(TRACEFOLD_TEST_ARTIFACT_DIR)" "$(TRACEFOLD_TEST_LANE_DIR)"
 	@uv run python -m tests.browser.run_full_stack_smoke \
-		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json"
+		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		--playwright-selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
 	@uv run python -m tests.support.evidence record-playwright \
 		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
+		--selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
 
 test-visual: ## explicit four-viewport Playwright interaction/screenshot diagnostics
@@ -130,11 +141,11 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 	@uv run mypy src
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
-	@uv run python -m pytest tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow"
+	@uv run python -m pytest tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow and not scheduled"
 	@uv run python -m compileall src tests
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
-	@uv run python -m pytest tests/integration -m "integration and not slow"
+	@uv run python -m pytest tests/integration -m "integration and not slow and not scheduled"
 
 trading-smoke: ## paper exit acceptance on real PostgreSQL: SL / TP / MAX_HOLDING reach CLOSED + flat (#209)
 	@echo "paper exits are priced off CLOSED bar closes only: no intrabar wick, no venue-native stop,"

@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import postcss from "postcss";
@@ -11,14 +11,8 @@ const srcRoot = join(webRoot, "src");
 const appLayerOrder =
   "@layer properties, theme, base, components, utilities, app.base, app.primitives, app.shell, app.features, app.overrides;";
 
-const globalStyleFiles = new Set(["styles/base.css", "styles/tailwind.css", "styles/tokens.css"]);
-const retiredGlobalBuckets = new Set([
-  "cockpit.css",
-  "macro.css",
-  "macroResponsive.css",
-  "shared.css",
-  "signalLab.css",
-]);
+const globalStylesDir = join(srcRoot, "styles");
+const existingGlobalUtilityClasses = new Set(["lucide", "sr-only"]);
 
 const featureClassPrefixes: Record<string, string[]> = {
   cockpit: ["brand", "brand-", "center-column", "cockpit-", "searchbar", "topbar", "topbar-"],
@@ -87,27 +81,80 @@ const modifierClassNames = new Set([
 ]);
 
 describe("CSS architecture harness", () => {
-  it("does not recreate retired global CSS buckets", () => {
-    const recreated = collectFiles(srcRoot)
-      .filter((path) => retiredGlobalBuckets.has(basename(path)))
-      .map(relativeToSrc);
+  it("keeps the application's global CSS entrypoints inside styles", () => {
+    const mainPath = join(srcRoot, "main.tsx");
+    const importedByMain = cssImports(mainPath)
+      .map((cssImport) => resolve(dirname(mainPath), cssImport.specifier))
+      .sort();
 
-    expect(recreated).toEqual([]);
+    expect(importedByMain.length).toBeGreaterThan(0);
+    expect(
+      importedByMain.every((path) => isSideEffectCssFile(path) && isGlobalStyleFile(path)),
+    ).toBe(true);
+  });
+
+  it("keeps component and feature selectors out of global styles", () => {
+    const offenders = collectFiles(globalStylesDir)
+      .filter(isSideEffectCssFile)
+      .flatMap((path) =>
+        cssRules(readFileSync(path, "utf8")).flatMap((rule) =>
+          rule.classNames
+            .filter(
+              (className) =>
+                !existingGlobalUtilityClasses.has(className) && !className.startsWith("tf-global-"),
+            )
+            .map(
+              (className) =>
+                `${relativeToSrc(path)}:${rule.line} defines non-global class .${className}`,
+            ),
+        ),
+      );
+
+    expect(
+      offenders,
+      "Component and feature classes live beside their owners; new application-wide utilities use the tf-global- namespace.",
+    ).toEqual([]);
+  });
+
+  it("keeps relative global stylesheet imports inside styles", () => {
+    const offenders = collectFiles(globalStylesDir)
+      .filter(isSideEffectCssFile)
+      .flatMap((path) =>
+        cssAtImports(readFileSync(path, "utf8")).flatMap((specifier) => {
+          if (specifier === "tailwindcss") return [];
+          const importedPath = resolve(dirname(path), specifier);
+          if (
+            specifier.startsWith(".") &&
+            isGlobalStyleFile(importedPath) &&
+            isSideEffectCssFile(importedPath) &&
+            existsSync(importedPath)
+          ) {
+            return [];
+          }
+          return [`${relativeToSrc(path)} imports global CSS from ${specifier}`];
+        }),
+      );
+
+    expect(
+      offenders,
+      "Global styles may import Tailwind or other CSS under src/styles; component and feature CSS stays owner-local.",
+    ).toEqual([]);
   });
 
   it("declares app cascade layers before split CSS chunks can load", () => {
     const indexHtml = readFileSync(join(webRoot, "index.html"), "utf8");
-    const tokensCss = readFileSync(join(srcRoot, "styles/tokens.css"), "utf8");
+    const tokensCss = readFileSync(globalTokenOwner(), "utf8");
 
     expect(tokensCss.trimStart().startsWith(appLayerOrder)).toBe(true);
     expect(indexHtml).toContain(appLayerOrder);
     expect(indexHtml.indexOf(appLayerOrder)).toBeLessThan(indexHtml.indexOf('<link rel="icon"'));
   });
 
-  it("keeps global custom property definitions in the token stylesheet", () => {
+  it("keeps global custom property definitions in one token owner", () => {
+    const tokenOwner = globalTokenOwner();
     const offenders = collectFiles(srcRoot)
       .filter(isSideEffectCssFile)
-      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
+      .filter((path) => path !== tokenOwner)
       .flatMap((path) => {
         const css = readFileSync(path, "utf8");
         return cssRules(css)
@@ -120,10 +167,11 @@ describe("CSS architecture harness", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps literal colours in the token stylesheet", () => {
+  it("keeps literal colours in the token owner", () => {
+    const tokenOwner = globalTokenOwner();
     const offenders = collectFiles(srcRoot)
       .filter(isCssFile)
-      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
+      .filter((path) => path !== tokenOwner)
       .flatMap((path) => {
         const css = readFileSync(path, "utf8");
         return cssDeclarations(css)
@@ -136,14 +184,15 @@ describe("CSS architecture harness", () => {
 
     expect(
       offenders,
-      "Semantic colours belong in styles/tokens.css; route and component CSS must consume a token.",
+      "Semantic colours belong in the global token owner; route and component CSS must consume a token.",
     ).toEqual([]);
   });
 
-  it("keeps semantic colour derivation in the token stylesheet", () => {
+  it("keeps semantic colour derivation in the token owner", () => {
+    const tokenOwner = globalTokenOwner();
     const offenders = collectFiles(srcRoot)
       .filter(isCssFile)
-      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")
+      .filter((path) => path !== tokenOwner)
       .flatMap((path) => {
         const css = readFileSync(path, "utf8");
         return cssDeclarations(css)
@@ -163,10 +212,11 @@ describe("CSS architecture harness", () => {
   it("keeps type sizes and radii on the global scale", () => {
     const typographyOffenders: string[] = [];
     const radiusOffenders: string[] = [];
+    const tokenOwner = globalTokenOwner();
 
     for (const path of collectFiles(srcRoot)
       .filter(isCssFile)
-      .filter((path) => relativeToSrc(path) !== "styles/tokens.css")) {
+      .filter((path) => path !== tokenOwner)) {
       const css = readFileSync(path, "utf8");
       for (const declaration of cssDeclarations(css)) {
         if (
@@ -190,11 +240,11 @@ describe("CSS architecture harness", () => {
 
     expect(
       typographyOffenders,
-      "Production type sizes must consume one of the seven steps from styles/tokens.css.",
+      "Production type sizes must consume one of the seven steps from the global token owner.",
     ).toEqual([]);
     expect(
       radiusOffenders,
-      "Production radii must consume the shape scale from styles/tokens.css.",
+      "Production radii must consume the shape scale from the global token owner.",
     ).toEqual([]);
   });
 
@@ -232,7 +282,7 @@ describe("CSS architecture harness", () => {
       for (const cssImport of cssImports(sourceFile)) {
         const cssPath = resolve(dirname(sourceFile), cssImport.specifier);
 
-        if (isModuleCssFile(cssPath) || globalStyleFiles.has(relativeToSrc(cssPath))) {
+        if (isModuleCssFile(cssPath) || isGlobalStyleFile(cssPath)) {
           continue;
         }
 
@@ -253,7 +303,7 @@ describe("CSS architecture harness", () => {
 
     const orphanedSideEffectCss = collectFiles(srcRoot)
       .filter(isSideEffectCssFile)
-      .filter((path) => !globalStyleFiles.has(relativeToSrc(path)))
+      .filter((path) => !isGlobalStyleFile(path))
       .filter((path) => !importersByCssPath.has(path))
       .map(relativeToSrc);
 
@@ -400,6 +450,15 @@ function cssImports(path: string): CssImport[] {
   return imports;
 }
 
+function cssAtImports(css: string): string[] {
+  const imports: string[] = [];
+  postcss.parse(css).walkAtRules("import", (rule) => {
+    const match = rule.params.trim().match(/^(?:url\(\s*)?["']?([^"')\s]+)["']?/);
+    imports.push(match?.[1] ?? rule.params.trim());
+  });
+  return imports;
+}
+
 function isAllowedCssImport(sourcePath: string, specifier: string): boolean {
   if (!specifier.startsWith("./")) {
     return false;
@@ -407,9 +466,8 @@ function isAllowedCssImport(sourcePath: string, specifier: string): boolean {
 
   const cssPath = resolve(dirname(sourcePath), specifier);
   const sourceRelative = relativeToSrc(sourcePath);
-  const cssRelative = relativeToSrc(cssPath);
 
-  if (sourceRelative === "main.tsx" && globalStyleFiles.has(cssRelative)) {
+  if (sourceRelative === "main.tsx" && isGlobalStyleFile(cssPath)) {
     return existsSync(cssPath);
   }
 
@@ -451,6 +509,31 @@ function cssDeclarations(css: string): CssDeclaration[] {
   return declarations;
 }
 
+function globalTokenOwner(): string {
+  const owners = collectFiles(globalStylesDir)
+    .filter(isSideEffectCssFile)
+    .filter((path) => {
+      const css = readFileSync(path, "utf8");
+      let ownsRootTokens = false;
+      postcss.parse(css).walkRules((rule) => {
+        if (
+          rule.selector.split(",").some((selector) => selector.trim() === ":root") &&
+          rule.nodes.some((node) => node.type === "decl" && node.prop === "--surface-canvas")
+        ) {
+          ownsRootTokens = true;
+        }
+      });
+      return ownsRootTokens;
+    });
+
+  if (owners.length !== 1) {
+    throw new Error(
+      `Expected exactly one global semantic token owner, found: ${owners.map(relativeToSrc).join(", ") || "none"}`,
+    );
+  }
+  return owners[0];
+}
+
 function compactSelector(selector: string): string {
   return selector.replace(/\s+/g, " ");
 }
@@ -489,4 +572,14 @@ function matchesAnyPrefix(className: string, prefixes: string[]): boolean {
 
 function relativeToSrc(path: string): string {
   return relative(srcRoot, path);
+}
+
+function isGlobalStyleFile(path: string): boolean {
+  const ownerRelative = relative(globalStylesDir, path);
+  return (
+    ownerRelative !== "" &&
+    ownerRelative !== ".." &&
+    !ownerRelative.startsWith(`..${sep}`) &&
+    !isAbsolute(ownerRelative)
+  );
 }
