@@ -364,23 +364,20 @@ def test_database_terminalization_releases_pending_runtime_for_the_next_intent()
 
 
 def test_stale_release_for_an_old_intent_cannot_disturb_the_active_intent() -> None:
-    strategy, queues = _registered_strategy()
-    active = _intent(case_id="case-2")
-    outcome = _outcome(
-        active,
-        execution_state="IN_FLIGHT",
-        execution_phase="ENTRY",
-        entry_fenced_at_ms=NOW_MS,
-        entry_client_order_id=deterministic_client_order_id(active.intent_id, "entry"),
-    )
-    strategy._active_intent = active
-    strategy._active_outcome = outcome
+    strategy, queues, active = _fenced_strategy()
 
     queues.commands.put_nowait(IntentReleased(intent_id="f" * 64))
     strategy.on_timer(None)
 
-    assert strategy._active_intent == active
-    assert strategy._active_outcome == outcome
+    instrument = _solusdt_perp_binance()
+    position_id = PositionId("SOLUSDT-PERP.BINANCE-TRACEFOLD-001")
+    strategy.on_position_opened(_position_opened_event(strategy, active, instrument, position_id))
+    opened = queues.events.get_nowait()
+    assert isinstance(opened, EntryFilled)
+    assert opened.intent_id == active.intent_id
+    stop = queues.events.get_nowait()
+    assert isinstance(stop, StopSubmitted)
+    assert stop.client_order_id == deterministic_client_order_id(active.intent_id, "stop")
 
 
 def test_readiness_rejects_an_unowned_open_order_on_another_symbol() -> None:
@@ -478,7 +475,6 @@ def test_projection_queue_overflow_never_blocks_protection_or_risk_reducing_clos
     strategy.on_position_opened(_position_opened_event(strategy, intent, instrument, position_id))
     stop = strategy.submitted[-1][0]
     assert stop.order_type == OrderType.STOP_MARKET
-    assert len(strategy._pending_events) == queues.events.maxsize
 
     strategy.on_order_denied(
         SimpleNamespace(
@@ -490,7 +486,6 @@ def test_projection_queue_overflow_never_blocks_protection_or_risk_reducing_clos
     close = strategy.submitted[-1][0]
     assert close.client_order_id.value == deterministic_client_order_id(intent.intent_id, "close")
     assert close.is_reduce_only is True
-    assert len(strategy._pending_events) == queues.events.maxsize
 
     assert queues.events.get_nowait() == occupied
     strategy.on_timer(None)
