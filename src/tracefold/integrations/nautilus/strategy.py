@@ -86,7 +86,6 @@ class TracefoldNautilusStrategy(Strategy):
         self._position_id: PositionId | None = None
         self._position_quantity: Decimal | None = None
         self._opened_at_ms: int | None = None
-        self._recovered_past_close_deadline = False
         self._stop_order: Any = None
         self._stop_trigger_price: Decimal | None = None
         self._stop_generation: int | None = None
@@ -368,10 +367,6 @@ class TracefoldNautilusStrategy(Strategy):
             self._position_id = position.id
             self._position_quantity = position.quantity.as_decimal()
             self._opened_at_ms = outcome.opened_at_ms or int(position.ts_opened) // 1_000_000
-            deadline = self._opened_at_ms + intent.max_holding_ms
-            self._recovered_past_close_deadline = (
-                outcome.close_client_order_id is None and int(self.clock.timestamp_ms()) >= deadline
-            )
             if outcome.position_id is None or outcome.actual_quantity is None or outcome.opened_at_ms is None:
                 self._emit(
                     EntryFilled(
@@ -558,7 +553,6 @@ class TracefoldNautilusStrategy(Strategy):
         self._position_id = event.position_id
         self._position_quantity = quantity
         self._opened_at_ms = opened_at_ms
-        self._recovered_past_close_deadline = False
         self._emit(
             EntryFilled(
                 intent_id=intent.intent_id,
@@ -1308,17 +1302,6 @@ class TracefoldNautilusStrategy(Strategy):
         close_id = deterministic_client_order_id(intent.intent_id, "close")
         if close_id in self._orders:
             return
-        if self._recovered_past_close_deadline:
-            self._orders[close_id] = (intent.intent_id, "close")
-            self._emit(
-                OrderOutcomeUnknown(
-                    intent_id=intent.intent_id,
-                    leg="close",
-                    observed_at_ms=int(self.clock.timestamp_ms()),
-                )
-            )
-            return
-
         reconciled = self.cache.order(ClientOrderId(close_id))
         if reconciled is not None:
             self._close_order = reconciled

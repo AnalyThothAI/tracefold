@@ -5,7 +5,8 @@ Provide a migrated, empty, isolated PostgreSQL database named
 image runs ``tracefold nautilus run`` against it. Mount a test-owned config at
 ``/root/.tracefold/config.yaml`` with
 ``trading.nautilus.accept_intents: true``, and mount the operator-configured
-0600 Binance Demo key/secret files read-only. The container must set
+0600 Binance Demo key/secret and Nautilus-role password files at their exact
+container paths, read-only. The container must set
 ``TRACEFOLD_IMAGE_DIGEST`` to that immutable image ID. Then run::
 
     TRACEFOLD_RUN_BINANCE_DEMO=1 \
@@ -39,6 +40,7 @@ from urllib.parse import urlencode
 import httpx
 import pytest
 import yaml
+from psycopg import conninfo
 
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.config.loader import load_settings
@@ -117,10 +119,20 @@ def _wait[T](label: str, seconds: int, read: Any, accept: Any) -> T:
     raise AssertionError(f"timed_out_waiting_for_{label}{suffix}")
 
 
-def _mounted(inspect: dict[str, Any], source: Path, destination: str | None = None) -> bool:
+def _mounted(
+    inspect: dict[str, Any],
+    source: Path,
+    destination: str,
+    *,
+    read_only: bool,
+) -> bool:
     for mount in inspect["Mounts"]:
         with suppress(OSError):
-            if Path(mount["Source"]).samefile(source) and (destination is None or mount["Destination"] == destination):
+            if (
+                Path(mount["Source"]).samefile(source)
+                and mount["Destination"] == destination
+                and (not read_only or mount.get("RW") is False)
+            ):
                 return True
     return False
 
@@ -187,7 +199,14 @@ def _create_intent(conn: Any, reference_price: Decimal) -> TradeIntent:
     return intent
 
 
-def _preconditions(container: str, image: str, config_path: Path, key_path: Path, secret_path: Path) -> str:
+def _preconditions(
+    container: str,
+    image: str,
+    config_path: Path,
+    key_path: Path,
+    secret_path: Path,
+    postgres_password_path: Path,
+) -> str:
     root = Path(__file__).resolve().parents[2]
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
@@ -212,6 +231,23 @@ def _preconditions(container: str, image: str, config_path: Path, key_path: Path
         image,
     )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    try:
+        postgres_config = config["storage"]["postgres"]
+        nautilus_config = config["trading"]["nautilus"]
+        dsn = conninfo.conninfo_to_dict(str(postgres_config["nautilus_dsn"]))
+        config_bound = bool(
+            dsn.get("user") == "tracefold_nautilus"
+            and dsn.get("dbname") == "tracefold_283_live"
+            and dsn.get("host") == "postgres"
+            and dsn.get("port", "5432") == "5432"
+            and "password" not in dsn
+            and postgres_config.get("nautilus_password_file", "postgres_nautilus_password")
+            == "postgres_nautilus_password"
+            and nautilus_config.get("api_key_file", "binance_demo_api_key") == "binance_demo_api_key"
+            and nautilus_config.get("api_secret_file", "binance_demo_api_secret") == "binance_demo_api_secret"
+        )
+    except Exception:
+        pytest.fail("Binance Demo harness config is not bound to the isolated Nautilus role", pytrace=False)
     container_env = set(inspected["Config"]["Env"])
     if not (
         inspected["Image"] == image
@@ -219,10 +255,17 @@ def _preconditions(container: str, image: str, config_path: Path, key_path: Path
         and not inspected["State"]["Running"]
         and inspected["HostConfig"]["RestartPolicy"]["Name"] in {"", "no"}
         and inspected["Config"]["Cmd"] == ["tracefold", "nautilus", "run"]
-        and config["trading"]["nautilus"]["accept_intents"] is True
-        and _mounted(inspected, config_path, "/root/.tracefold/config.yaml")
-        and _mounted(inspected, key_path)
-        and _mounted(inspected, secret_path)
+        and nautilus_config["accept_intents"] is True
+        and config_bound
+        and _mounted(inspected, config_path, "/root/.tracefold/config.yaml", read_only=True)
+        and _mounted(inspected, key_path, "/root/.tracefold/binance_demo_api_key", read_only=True)
+        and _mounted(inspected, secret_path, "/root/.tracefold/binance_demo_api_secret", read_only=True)
+        and _mounted(
+            inspected,
+            postgres_password_path,
+            "/root/.tracefold/postgres_nautilus_password",
+            read_only=True,
+        )
         and f"TRACEFOLD_IMAGE_DIGEST={image}" in container_env
     ):
         pytest.fail("stopped Nautilus container does not satisfy the live setup contract", pytrace=False)
@@ -256,13 +299,22 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
             pytest.fail("Binance Demo harness refuses the operator runtime config", pytrace=False)
     key_path = settings.trading_nautilus_api_key_file()
     secret_path = settings.trading_nautilus_api_secret_file()
-    if key_path is None or secret_path is None:
+    postgres_password_path = settings.postgres_password_file("nautilus")
+    if key_path is None or secret_path is None or postgres_password_path is None:
         pytest.fail("operator Binance Demo credential files are not configured", pytrace=False)
     try:
         key, secret = read_secure_secret_text(key_path), read_secure_secret_text(secret_path)
+        read_secure_secret_text(postgres_password_path)
     except SecretFileError as exc:
-        pytest.fail(f"operator Binance Demo credential file rejected:{exc.code}", pytrace=False)
-    head = _preconditions(container, image, config_path, key_path, secret_path)
+        pytest.fail(f"operator secret file rejected:{exc.code}", pytrace=False)
+    head = _preconditions(
+        container,
+        image,
+        config_path,
+        key_path,
+        secret_path,
+        postgres_password_path,
+    )
 
     try:
         conn = connect_postgres(required["TRACEFOLD_BINANCE_DEMO_POSTGRES_DSN"])
@@ -300,13 +352,20 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
 
         _block_projection(conn)
         blocked = True
+        process_started_at_ms = int(time.time() * 1_000)
         _docker("start", container)
         repos = repositories_for_connection(conn)
         _wait(
             "paused_readiness",
             90,
             repos.trading.nautilus_runtime_state,
-            lambda row: bool(row and row["ready"] and not row["unexpected_exposure"]),
+            lambda row: bool(
+                row
+                and row["nautilus_ready"]
+                and not row["nautilus_unexpected_exposure"]
+                and row["nautilus_heartbeat_at_ms"] is not None
+                and row["nautilus_heartbeat_at_ms"] >= process_started_at_ms
+            ),
         )
         sol = next(row for row in venue.positions() if row["symbol"] == _SYMBOL)
         assert int(sol["leverage"]) == 1 and Decimal(str(sol["positionAmt"])) == 0
@@ -363,17 +422,22 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
             lambda row: bool(row and row.execution_state == "OPEN_PROTECTED"),
         )
         assert protected.stop_client_order_id == stop_id
+        assert protected.opened_at_ms is not None
+        close_deadline_ms = protected.opened_at_ms + intent.max_holding_ms
+        assert venue.now_ms() < close_deadline_ms
         assert [row["clientOrderId"] for row in venue.orders(start_ms) if row["clientOrderId"].startswith("tf-e-")] == [
             entry_id
         ]
+        assert [row for row in venue.orders(start_ms) if row["clientOrderId"] == close_id] == []
         closed = _wait(
             "closed_flat",
             300,
             lambda: _outcome(conn, intent.intent_id),
             lambda row: bool(row and row.execution_state == "TERMINAL" and row.terminal_outcome == "CLOSED_FLAT"),
         )
-        flat_seen = True
         assert closed.close_client_order_id == close_id and closed.flat_verified_at_ms is not None
+        assert closed.close_submitted_at_ms is not None
+        assert closed.close_submitted_at_ms >= close_deadline_ms
         assert closed.engine_identity is not None
         assert f"tracefold@{head};" in closed.engine_identity
         assert f"image@{image};" in closed.engine_identity
@@ -404,17 +468,21 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         assert stop["algoStatus"] in {"CANCELED", "EXPIRED"}
         fresh_position = next(row for row in venue.positions() if row["symbol"] == _SYMBOL)
         assert Decimal(str(fresh_position["positionAmt"])) == 0
+        flat_seen = True
         trades = venue.get("/fapi/v1/userTrades", {"symbol": _SYMBOL, "startTime": start_ms, "limit": 1_000})
         assert {str(row["orderId"]) for row in trades if row["buyer"]} == {str(by_id[entry_id]["orderId"])}
         assert str(by_id[close_id]["orderId"]) in {str(row["orderId"]) for row in trades if not row["buyer"]}
     except BaseException as exc:
+        with suppress(Exception):
+            conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        with suppress(Exception):
+            _set_dark(config_path)
         if blocked:
             with suppress(Exception):
                 _unblock_projection(conn)
         if capital_possible and not flat_seen:
             if not _running(container):
                 with suppress(Exception):
-                    _set_dark(config_path)
                     _docker("start", container)
             exc.add_note(f"Demo exposure may remain; production recovery container {container} was left running")
         else:

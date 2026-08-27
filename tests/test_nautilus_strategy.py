@@ -1292,7 +1292,10 @@ def test_restart_adopts_reconciled_position_and_stop_when_the_db_projection_lags
     assert queues.events.empty()
 
 
-def test_open_protected_recovery_rebuilds_the_original_max_holding_deadline() -> None:
+@pytest.mark.parametrize("restart_after_deadline", [False, True], ids=["before-deadline", "after-deadline"])
+def test_open_protected_recovery_rebuilds_the_original_max_holding_deadline(
+    restart_after_deadline: bool,
+) -> None:
     strategy, queues = _registered_strategy()
     intent = _intent()
     instrument = _solusdt_perp_binance()
@@ -1380,25 +1383,48 @@ def test_open_protected_recovery_rebuilds_the_original_max_holding_deadline() ->
         opened_at_ms=NOW_MS + 10,
         protected_at_ms=NOW_MS + 12,
     )
+    close_deadline_ms = NOW_MS + 10 + intent.max_holding_ms
+    if restart_after_deadline:
+        strategy.clock.set_time((close_deadline_ms + 1) * 1_000_000)
 
     queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=protected))
     strategy.on_timer(None)
 
     assert strategy.queried == [entry, stop]
-    assert strategy.submitted == []
-    assert queues.events.get_nowait() == ReadinessChanged(
-        ready=True,
-        reason="ready",
-        unexpected_exposure=False,
+    events = []
+    while not queues.events.empty():
+        events.append(queues.events.get_nowait())
+    assert (
+        ReadinessChanged(
+            ready=True,
+            reason="ready",
+            unexpected_exposure=False,
+        )
+        in events
     )
+
+    close_id = deterministic_client_order_id(intent.intent_id, "close")
+    if restart_after_deadline:
+        assert not any(isinstance(event, OrderOutcomeUnknown) for event in events)
+        assert any(isinstance(event, CloseSubmitted) for event in events)
+        assert len(strategy.submitted) == 1
+        close = strategy.submitted[0][0]
+        assert close.client_order_id.value == close_id
+        assert close.quantity.as_decimal() == Decimal("0.001")
+        assert close.is_reduce_only
+        assert strategy.canceled == []
+        strategy.on_timer(None)
+        assert len(strategy.submitted) == 1
+        return
+
+    assert strategy.submitted == []
 
     strategy.on_timer(None)
     assert queues.events.empty()
 
-    strategy.clock.set_time((NOW_MS + 10 + intent.max_holding_ms) * 1_000_000)
+    strategy.clock.set_time(close_deadline_ms * 1_000_000)
     strategy.on_timer(None)
 
-    close_id = deterministic_client_order_id(intent.intent_id, "close")
     assert strategy.submitted[-1][0].client_order_id.value == close_id
     assert strategy.submitted[-1][0].quantity.as_decimal() == Decimal("0.001")
     assert strategy.canceled == []
