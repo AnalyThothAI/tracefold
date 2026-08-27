@@ -4,7 +4,9 @@ import {
   leverageCases,
   leverageFramelessCount,
   leverageFunnel,
+  leverageHorizon,
   leverageListRows,
+  leverageRemaining,
   leverageTabCount,
   leverageTimeline,
   leverageTopReasons,
@@ -472,6 +474,102 @@ describe("leverageTimeline", () => {
 
     expect(offPage.event).toBeUndefined();
     expect(leverageTimeline(offPage)[0].key).toBe("trigger");
+  });
+});
+
+describe("leverageRemaining", () => {
+  it("stops the clock when the position is gone, rather than counting down a deadline nobody kept", () => {
+    /*
+     * The ledger never clears `must_close_at_ms` on close — `orders.py` writes
+     * `coalesce(%s, must_close_at_ms)` — so a position that exited early on its native stop still carries
+     * a deadline hours out. Reading the order before the phase printed a live countdown against a
+     * position that no longer existed, and 已到期 after the deadline passed, which claims a forced close
+     * that never happened.
+     */
+    const closed = tradingOrderFixture({
+      exit_reason: "native_stop",
+      must_close_at_ms: NOW_MS + 2 * 3_600_000,
+      position_closed_at_ms: NOW_MS - 1_800_000,
+      position_opened_at_ms: NOW_MS - 3_600_000,
+      state: "CLOSED",
+    });
+    const [item] = build([], tradingOrdersFixture({ cases_without_orders: [], orders: [closed] }));
+
+    expect(item.phase).toBe("resolved");
+    expect(leverageRemaining(item, NOW_MS)).toBe("已了结");
+  });
+
+  it("counts down only a position the ledger says is open", () => {
+    const open = tradingOrderFixture({
+      must_close_at_ms: NOW_MS + 3 * 3_600_000 + 12 * 60_000,
+      position_opened_at_ms: NOW_MS - 60_000,
+      state: "OPEN",
+    });
+    const [item] = build([], tradingOrdersFixture({ cases_without_orders: [], orders: [open] }));
+
+    expect(leverageRemaining(item, NOW_MS)).toBe("剩 3h 12m");
+  });
+
+  it("says which state an unfilled intent is in rather than inventing a TTL for it", () => {
+    // The artifact draws `TTL 42s` here; this ledger publishes no approval expiry, and `must_close_at_ms`
+    // is measured from the first fill, so nothing has started counting.
+    const waiting = tradingOrderFixture({
+      must_close_at_ms: null,
+      position_opened_at_ms: null,
+      state: "AWAITING_APPROVAL",
+    });
+    const [item] = build([], tradingOrdersFixture({ cases_without_orders: [], orders: [waiting] }));
+
+    expect(leverageRemaining(item, NOW_MS)).toBe("未起算");
+  });
+
+  it("reads the permission chip off the case, not off the strategy's current setting", () => {
+    /*
+     * `mode` is the ledger's record of what this decision was allowed to do. The chip used to read
+     * `strategies[].permission` from the live status document, so promoting a strategy relabelled every
+     * case still inside the window — including ones that only ever ran on paper, which is the exact
+     * confusion a chip saying 「LONG, on paper」 exists to prevent.
+     */
+    const [item] = build(
+      [],
+      tradingOrdersFixture({
+        cases_without_orders: [tradingCaseFixture({ mode: "live_reviewed" })],
+        orders: [],
+      }),
+    );
+
+    expect(item.mode).toBe("live_reviewed");
+  });
+});
+
+describe("leverageHorizon", () => {
+  it("reads the window the order froze, not the mandate running today", () => {
+    /*
+     * `must_close_at_ms` is written from the budget at order time and measured from the first fill, so the
+     * span between them is what this position was opened under. Reading `budget.max_hold_ms` re-described
+     * a historical case with today's configuration — the same mistake the permission chip made, on the
+     * row directly beneath it, on a field that is a risk limit.
+     */
+    const opened = NOW_MS - 600_000;
+    const order = tradingOrderFixture({
+      must_close_at_ms: opened + 4 * 3_600_000,
+      position_opened_at_ms: opened,
+      state: "OPEN",
+    });
+    const [item] = build([], tradingOrdersFixture({ cases_without_orders: [], orders: [order] }));
+
+    expect(leverageHorizon(item, 1_800_000)).toBe("4 小时");
+  });
+
+  it("names the mandate as the current budget when the case froze no window of its own", () => {
+    const [item] = build(
+      [],
+      tradingOrdersFixture({ cases_without_orders: [tradingCaseFixture()], orders: [] }),
+    );
+
+    expect(leverageHorizon(item, 1_800_000)).toBe("30 分钟 · 当前预算");
+    // An unread mandate is a dash, never a plausible default.
+    expect(leverageHorizon(item, undefined)).toBe("—");
   });
 });
 

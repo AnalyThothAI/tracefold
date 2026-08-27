@@ -71,13 +71,25 @@
     border-top: 1px solid var(--border-subtle);
   }
 
+  /*
+   * The artifact's twelve tracks (#280). Two things were wrong before and they compounded: `1H` and `4H`
+   * held a 66px column each where the artifact gives the pair one right-aligned cell, and the trade column
+   * was a fixed 150px where the artifact lets it take the remainder. Together they pushed the one column
+   * that carries a sentence — 拒 · 鲸盈利 80.2% < 95% — off the right edge of every row.
+   *
+   * `min-width` is the fixed tracks plus their gutters and nothing more, so the flexible trade column is
+   * what absorbs a wider frame. The artifact's own 1240 was its trade column's *rendered* width baked into
+   * the floor, which forced a horizontal scrollbar at 1440 even though every fixed track fits there.
+   */
   .news-oi-head,
   .news-oi-row-main {
     display: grid;
-    grid-template-columns: 54px 105px 72px 74px 74px 80px 80px 60px 104px 155px 66px 66px 150px;
-    gap: 6px;
+    grid-template-columns:
+      46px 96px 64px 62px 64px 64px 62px 46px 118px 140px 100px
+      minmax(170px, 1fr);
+    gap: 0 10px;
     align-items: center;
-    min-width: 1240px;
+    min-width: 1170px;
     padding: 0 14px;
   }
 
@@ -90,16 +102,8 @@
     letter-spacing: 0.055em;
   }
 
-  .news-oi-reaction-head {
-    grid-column: 11 / 13;
-  }
-
-  .news-oi-trading-head {
-    grid-column: 13;
-  }
-
   .news-oi-row {
-    min-width: 1240px;
+    min-width: 1170px;
     border-bottom: 1px solid var(--border-faint);
   }
 
@@ -211,6 +215,23 @@
     white-space: nowrap;
   }
 
+  /* One cell for the pair, right-aligned, with a hairline slash between them — as the artifact draws it.
+     Two columns of their own made the row 66px wider than it had and cost the trade cell the difference. */
+  .news-oi-reaction {
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+    align-items: baseline;
+    /* 100px rather than the artifact's 90, and `研究分桶`/`判定` give the ten back. The mock's figures are
+       all `+1.90%`; production reaches `+15.96%`, and at 90px the pair wrapped onto two lines on exactly
+       the rows that had both horizons to report. */
+    white-space: nowrap;
+  }
+
+  .news-oi-reaction-slash {
+    color: var(--border-strong);
+  }
+
   .news-oi-reaction b {
     font: 600 var(--font-size-mono-meta)/1 var(--font-mono);
   }
@@ -229,32 +250,47 @@
     font-style: normal;
   }
 
+  /*
+   * The quadrant beside the verdict, not stacked above it (#280). Stacked, the cell needed no width and
+   * got none; side by side it is what the artifact draws — a classification chip and the sentence the
+   * capital lane wrote about it, in the order a reader asks them.
+   */
   .news-oi-trading-cell {
-    display: grid;
-    gap: 1px;
-    align-content: center;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    min-width: 0;
     overflow: hidden;
     color: var(--text-primary);
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .news-oi-trading-cell small,
   .news-oi-trading-cell b {
+    min-width: 0;
     overflow: hidden;
+    color: var(--text-primary);
     font: inherit;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  /* The gate's own stage word, when there is one. Quiet and unboxed: it qualifies the verdict, where the
+     quadrant beside it is a category the lane assigned. */
   .news-oi-trading-cell small {
+    flex: 0 0 auto;
     color: var(--text-subtle);
     font-size: var(--font-size-eyebrow);
   }
 
-  .news-oi-trading-cell b {
-    color: var(--text-primary);
-    font-weight: 600;
+  .news-oi-quadrant {
+    flex: 0 0 auto;
+    padding: 0 5px;
+    border-radius: var(--radius-xs);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+    color: var(--text-secondary);
+    font: 600 var(--font-size-eyebrow)/1.8 var(--font-mono);
+    white-space: nowrap;
   }
 
   .news-oi-more {
@@ -275,7 +311,7 @@
     display: grid;
     grid-template-columns: minmax(0, 0.9fr) repeat(2, minmax(0, 1fr));
     gap: 10px;
-    min-width: 1240px;
+    min-width: 1170px;
     padding: 0 14px 12px;
     background: var(--surface-raised);
   }
@@ -341,9 +377,15 @@
     margin: 0;
   }
 
+  /*
+   * `minmax(0, 1.3fr) minmax(0, 1fr)`, as the artifact sets it, rather than a fixed 145px key column. The
+   * ledger writes keys as long as `policy.whale_oi_ratio_above_bps`, and at a fixed width they ran past
+   * their track and printed straight through the value beside them — `policy.max_rank_in_wind2w` was one
+   * row of this table on the live console.
+   */
   .news-oi-trace > div {
     display: grid;
-    grid-template-columns: 145px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
     gap: 8px;
     padding: 3px 0;
     border-bottom: 1px solid var(--border-faint);
@@ -357,11 +399,13 @@
 
   .news-oi-trace dt {
     color: var(--text-subtle);
+    overflow-wrap: anywhere;
   }
 
   .news-oi-trace dd {
     color: var(--text-primary);
     font-weight: 600;
+    text-align: right;
     word-break: break-all;
   }
 

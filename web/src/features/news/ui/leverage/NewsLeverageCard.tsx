@@ -1,8 +1,8 @@
-import type { LeverageCase } from "../../model/leverageCases";
+import { leverageRemaining, type LeverageCase } from "../../model/leverageCases";
 
 import "./newsLeverageCard.css";
 
-import { DECISION_LABEL, EVIDENCE_GLYPH, PHASE_LABEL } from "./leverageChrome";
+import { DECISION_LABEL, EVIDENCE_GLYPH } from "./leverageChrome";
 
 /**
  * One case in the list: what was decided, on what, and where the money stands.
@@ -20,6 +20,9 @@ export function NewsLeverageCard({
   onSelect: () => void;
   selected: boolean;
 }) {
+  /* Read on every render, not memoised: the wall clock is the input, so a memo would either pin a stale
+     `Date.now()` or list it as a dependency and never hit. */
+  const remaining = leverageRemaining(item, Date.now());
   return (
     <button
       aria-pressed={selected}
@@ -39,12 +42,14 @@ export function NewsLeverageCard({
         </span>
       </span>
 
+      {/*
+       * No phase chip here (#280). The artifact keeps 进行中 / 酝酿中 on the pane's header, where it
+       * qualifies the one case being read; on a card it competed with the decision chip a few pixels
+       * above it, and the two together made a five-line summary carry three verdict-shaped badges.
+       */}
       <span className="news-leverage-card-tags">
         <span className="news-leverage-regime">{item.regime}</span>
         <code>{item.strategyLabel}</code>
-        <span className="news-leverage-phase" data-phase={item.phase}>
-          {PHASE_LABEL[item.phase]}
-        </span>
       </span>
 
       <span className="news-leverage-card-why">{item.why}</span>
@@ -67,6 +72,12 @@ export function NewsLeverageCard({
 
       <span className="news-leverage-card-foot">
         <small>{item.age}</small>
+        {/*
+         * How long this case still has, from the ledger's own `must_close_at_ms` (#280). Age alone said
+         * when it started and never when it ends, which on a lane whose whole risk control is a forced
+         * close is the half a reader actually needs.
+         */}
+        <small className="news-leverage-card-remain">{remaining}</small>
         <small data-capital={item.capital ?? undefined}>
           {item.capital ? `资本 ${item.capital}` : "资本 —"}
         </small>

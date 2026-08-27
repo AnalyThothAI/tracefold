@@ -1,4 +1,10 @@
 @layer app.features {
+  /* The artifact gives this page and 杠杆异动 1360px, twenty more than the reading surfaces: both carry a
+     wide right-hand region — the frame table's trade column here — that a narrower measure clips first. */
+  .news-panel.news-oi-shell {
+    max-width: 1360px;
+  }
+
   .news-oi-shell .news-page-header h1 {
     line-height: 1.5;
   }

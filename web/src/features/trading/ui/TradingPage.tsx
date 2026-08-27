@@ -99,19 +99,10 @@ export function TradingPage({ token }: { token: string }) {
         <PageState.Stale updating={statusQuery.isFetching || ordersQuery.isFetching}>
           <div className="trading-body">
             {/*
-             * Before any count: whether the lane is quiet, broken, or working exactly as configured.
-             * Every panel below this one is a number about something that did not happen, and without
-             * a sentence naming the rule they stopped on they all read as an outage (#273).
-             */}
-            <TradingHeadline
-              cases={cases}
-              counts={status.counts}
-              decisions={decisions}
-              status={status}
-            />
-            {/*
-             * The lane being off is a fact about this deployment, not an outage, and it is the first thing
-             * a reader needs — otherwise every empty panel below reads as a broken page.
+             * The mandate opens the page, as the artifact draws it (#280). These five are the standing
+             * rules — what one order is allowed to be — and they are the same five whether the lane placed
+             * three orders today or none; opening on today's narrative instead pushed the artifact's first
+             * block below the fold on every day, to explain a thing the reader had not seen yet.
              */}
             <MetricRow className="trading-mandate" columns={5} label="固定交易预算">
               <Metric
@@ -141,6 +132,19 @@ export function TradingPage({ token }: { token: string }) {
                 value="1 / 1"
               />
             </MetricRow>
+
+            {/*
+             * Then today: whether the lane is quiet, broken, or working exactly as configured. Every panel
+             * below this one is a number about something that did not happen, and without a sentence
+             * naming the rule they stopped on they all read as an outage (#273). It sits directly above
+             * the first of those zeroes rather than above the mandate that does not change (#280).
+             */}
+            <TradingHeadline
+              cases={cases}
+              counts={status.counts}
+              decisions={decisions}
+              status={status}
+            />
 
             <TradingExposure
               count={status.counts.active_orders}

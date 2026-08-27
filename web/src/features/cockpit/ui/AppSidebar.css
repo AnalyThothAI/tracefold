@@ -90,6 +90,15 @@
     gap: 1px;
   }
 
+  /*
+   * 14px between groups, as the artifact sets on its second heading. `WORKBENCH` and `SYSTEM · 数据健康`
+   * answer different questions asked at different times; at the 6px the heading's own margin gives, the
+   * two runs read as one list with a stray label in the middle.
+   */
+  .cockpit-app-sidebar-group + .cockpit-app-sidebar-group .cockpit-app-sidebar-group-heading {
+    margin-top: 14px;
+  }
+
   .cockpit-app-sidebar-item {
     position: relative;
     display: flex;

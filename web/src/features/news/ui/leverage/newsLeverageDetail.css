@@ -1,12 +1,19 @@
 @layer app.features {
   /* ---------------------------------------------------------------- detail */
 
+  /*
+   * One panel with ruled sections rather than a padded stack of blocks (#280).
+   *
+   * The artifact draws this pane as a document: header, thesis, planes, evidence, timeline and the folded
+   * raw frame, each separated by a hairline. Whitespace-separated blocks said the same things in the same
+   * order and read as six cards that happened to be adjacent — a rule is what tells a reader that section
+   * four is still about the case named in section one.
+   */
   .news-leverage-detail {
     display: grid;
-    gap: 14px;
     align-content: start;
     min-width: 0;
-    padding: 14px;
+    overflow: hidden;
     border-radius: var(--radius-lg);
     background: var(--surface-panel);
     box-shadow: var(--ring-panel);
@@ -15,8 +22,10 @@
   .news-leverage-detail-head {
     display: flex;
     gap: 9px;
-    align-items: baseline;
+    align-items: center;
     flex-wrap: wrap;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border-faint);
   }
 
   .news-leverage-detail-symbol {
@@ -49,10 +58,61 @@
     letter-spacing: 0.02em;
   }
 
+  /*
+   * 进行中 / 酝酿中 / 已了结, beside the verdict. It moved here from the card's sheet with the chip itself
+   * (#280): the artifact keeps phase on the pane and the card dropped it, and a rule left in a stylesheet
+   * only its former owner imports renders by luck — here, only because the pane never mounts without at
+   * least one card beside it.
+   */
+  .news-leverage-phase {
+    display: inline-flex;
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+    font: var(--type-mono-meta);
+  }
+
+  .news-leverage-phase[data-phase="active"] {
+    color: var(--signal-done);
+    background: var(--signal-done-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-done-border);
+  }
+
+  .news-leverage-phase[data-phase="forming"] {
+    color: var(--signal-caution);
+    background: var(--signal-caution-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
+  }
+
+  /* Neutral on purpose. `PAPER` is a statement of what the lane is, not an alarm; the moment it says
+     something else the words themselves are the alarm and a colour would have pre-empted them. */
+  .news-leverage-permission {
+    display: inline-flex;
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+    color: var(--text-secondary);
+    font: var(--type-mono-meta);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  /* The 1px gap on a hairline ground is the seam: two cells that meet on a rule, not two cards with air
+     between them. Each cell repaints the panel colour over it. */
   .news-leverage-thesis {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-    gap: 14px;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    gap: 1px;
+    background: var(--border-faint);
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-leverage-thesis > * {
+    padding: 13px 16px 14px;
+    background: var(--surface-panel);
   }
 
   .news-leverage-thesis small {
@@ -73,16 +133,56 @@
     margin-bottom: 0;
   }
 
+  /*
+   * Underline tabs, not the console's segmented pill. The pill is the page-level control — which slice of
+   * the list am I looking at — and it sits eighty pixels above this one on the same screen. The artifact
+   * gives an in-document plane switch its own shape for exactly that reason, and the OI table's tab strip
+   * already uses it: two levels of "switch what this shows" that cannot be mistaken for each other.
+   */
   .news-leverage-planes {
     display: flex;
-    gap: 12px;
-    align-items: center;
+    gap: 2px;
+    align-items: baseline;
     flex-wrap: wrap;
-    padding-top: 2px;
-    border-top: 1px solid var(--border-faint);
+    padding: 9px 16px 0;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-leverage-plane-tabs {
+    display: flex;
+    gap: 2px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+
+  .news-leverage-plane-tab {
+    min-height: 26px;
+    padding: 0 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    background: transparent;
+    color: var(--text-subtle);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--font-size-meta);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .news-leverage-plane-tab:hover {
+    color: var(--text-primary);
+  }
+
+  .news-leverage-plane-tab[data-active] {
+    border-bottom-color: var(--accent-primary);
+    background: var(--surface-hover);
+    color: var(--text-primary);
+    font-weight: 640;
   }
 
   .news-leverage-planes small {
+    margin-left: auto;
     color: var(--text-subtle);
     font: var(--type-mono-meta);
     font-weight: 500;
@@ -90,17 +190,19 @@
 
   .news-leverage-plane-items {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--border-faint);
+    border-bottom: 1px solid var(--border-faint);
   }
 
   .news-leverage-plane-items > div {
     display: grid;
-    gap: 3px;
+    gap: 2px;
+    align-content: start;
     min-width: 0;
-    padding: 9px 10px;
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
+    padding: 11px 14px 12px;
+    background: var(--surface-panel);
   }
 
   .news-leverage-plane-items small {
@@ -120,7 +222,9 @@
 
   .news-leverage-evidence {
     display: grid;
-    gap: 6px;
+    gap: 4px;
+    padding: 12px 16px 13px;
+    border-bottom: 1px solid var(--border-faint);
   }
 
   .news-leverage-evidence > small {
@@ -131,9 +235,15 @@
 
   .news-leverage-evidence > div {
     display: grid;
-    grid-template-columns: 56px 60px minmax(0, 1fr);
+    grid-template-columns: 78px 62px minmax(0, 1fr);
     gap: 10px;
     align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px dashed var(--border-faint);
+  }
+
+  .news-leverage-evidence > div:last-child {
+    border-bottom: 0;
   }
 
   .news-leverage-evidence > div > small {
@@ -178,10 +288,10 @@
 
   .news-leverage-columns {
     display: grid;
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-    gap: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-faint);
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 1px;
+    background: var(--border-faint);
+    border-bottom: 1px solid var(--border-faint);
   }
 
   .news-leverage-timeline,
@@ -190,6 +300,8 @@
     gap: 7px;
     align-content: start;
     min-width: 0;
+    padding: 12px 16px 14px;
+    background: var(--surface-panel);
   }
 
   .news-leverage-timeline > small,
@@ -292,11 +404,38 @@
     font-size: var(--font-size-meta);
   }
 
-  .news-leverage-raw {
-    display: grid;
-    gap: 6px;
+  /*
+   * The fold is the panel's own last strip, not a card inside a card. `.news-technical` is a standalone
+   * panel everywhere else on the console; inside this pane it gives up its ring and its corners so the
+   * document ends on a rule rather than on a second border a pixel inside the first.
+   */
+  .news-leverage-detail .news-technical {
+    border-radius: var(--radius-none);
+    background: var(--surface-raised);
+    box-shadow: none;
   }
 
+  .news-leverage-detail .news-technical > summary {
+    min-height: 36px;
+    padding: 0 16px;
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  .news-leverage-detail .news-technical > div {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    padding: 12px 16px 16px;
+  }
+
+  .news-leverage-raw,
+  .news-leverage-trace {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+    min-width: 0;
+  }
+
+  .news-leverage-trace > small,
   .news-leverage-raw small {
     color: var(--text-subtle);
     font: var(--type-eyebrow);

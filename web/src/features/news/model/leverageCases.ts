@@ -91,6 +91,15 @@ export type LeverageCase = {
   /** The frame, when the loaded frame page holds it. `undefined` is a page boundary, not a missing case. */
   event: NewsFeedEvent | undefined;
   /**
+   * What *this* case was allowed to do, frozen on the ledger row — `paper`, `live_reviewed`.
+   *
+   * Read from the case, never from the strategy's current published `permission`. Promoting a strategy
+   * from paper to live would otherwise relabel every case still inside the window, including ones that
+   * only ever ran on paper — on a chip whose entire reason for existing is that 「LONG」 and 「LONG, on
+   * paper」 are different claims.
+   */
+  mode: string;
+  /**
    * The Event id the ledger published, independent of whether the frame is loaded. Non-null only for the
    * deterministic OI trigger; it is not the row's identity, only a legacy link target and a frame key.
    */
@@ -121,6 +130,7 @@ type CaseFacts = {
   caseState: string;
   createdAtMs: number;
   decidedAtMs: number | null;
+  mode: string;
   observedAtMs: number;
   policyDecision: string | null;
   policyReason: string | null;
@@ -139,6 +149,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
       // An order row carries no `decided_at_ms`: the decision that authored it is the case's, and the
       // order's own clock starts later. Naming it here would date the decision to the write that followed.
       decidedAtMs: null,
+      mode: order.mode,
       observedAtMs: order.case_observed_at_ms ?? order.created_at_ms,
       policyDecision: order.policy_decision ?? null,
       policyReason: order.policy_reason ?? null,
@@ -153,6 +164,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
     caseState: record.state,
     createdAtMs: record.created_at_ms,
     decidedAtMs: record.decided_at_ms ?? null,
+    mode: record.mode,
     observedAtMs: record.observed_at_ms,
     policyDecision: record.policy_decision ?? null,
     policyReason: record.policy_reason ?? null,
@@ -218,6 +230,7 @@ function buildCase(
     eventId: entry.value.event_id ?? null,
     evidence: evidenceRows(event?.oi, facts.strategyId, facts.triggerKind, thresholds),
     id: facts.caseId,
+    mode: facts.mode,
     numbers: frameNumbers(event?.oi, facts.triggerKind),
     observedAtMs: facts.observedAtMs,
     phase: phaseOf(entry, decision),
@@ -706,6 +719,176 @@ function rank(item: LeverageCase): number {
  */
 export function leverageFramelessCount(cases: readonly LeverageCase[]): number {
   return cases.filter((item) => item.event === undefined).length;
+}
+
+/** One `标签 数字` pair on the page's title row. `tone` is this console's grammar, not the artifact's. */
+export type LeverageFigure = {
+  key: string;
+  label: string;
+  tone: "accent" | "alert" | "caution" | "plain" | "quiet";
+  value: string;
+};
+
+/**
+ * How long ago the newest frame landed before the lane reads as stale.
+ *
+ * Thirty minutes, from the lane's own arrival rate rather than from a round number: production runs a
+ * little over a hundred deterministic frames a day, so the mean gap between two of them is roughly ten
+ * minutes and thirty is about three expected frames that did not arrive. Tighter than that and the figure
+ * turns amber on an ordinary quiet half hour, which teaches a reader to stop looking at it.
+ */
+const FRAME_STALE_AFTER_MS = 30 * 60_000;
+
+/**
+ * The five figures the artifact puts on the title row: how fresh the lane's input is, how much is live,
+ * how much of that has a direction, how much is still short an input, and whether any capital sits in a
+ * state nobody has proven safe.
+ *
+ * They are not the four tab counts repeated. 数据新鲜 and 数据不足 answer "is this page describing now",
+ * and 资本警报 is the one figure an operator wants before clicking anything — where the tabs answer "how
+ * many of each kind", a different question asked at a different moment.
+ *
+ * Tone follows this console's two axes rather than the artifact's. The artifact tints 数据新鲜 in the same
+ * green it spends on 流水线正常, and green here is 利空. A fresh lane is indigo — the pipeline acted — and
+ * the two figures that can mean "a person is needed" carry amber and brick only when they are non-zero.
+ */
+export function leverageFigures(
+  cases: readonly LeverageCase[],
+  frames: readonly NewsFeedEvent[],
+  nowMs: number,
+): LeverageFigure[] {
+  const forming = cases.filter((item) => item.phase === "forming").length;
+  /* The same four states `leverageOrder` already floats to the top of the list: exposure that is, or may
+     yet turn out to be, unprotected. One definition of "a person is needed", not two. */
+  const alerts = cases.filter(
+    (item) => item.capital != null && RISK_STATES.has(item.capital),
+  ).length;
+  const newest = frames.reduce((latest, frame) => Math.max(latest, frame.opened_at_ms), 0);
+  return [
+    {
+      key: "freshness",
+      label: "数据新鲜",
+      tone: newest === 0 ? "quiet" : nowMs - newest > FRAME_STALE_AFTER_MS ? "caution" : "accent",
+      value: newest === 0 ? "—" : elapsedShort(nowMs - newest),
+    },
+    {
+      key: "live",
+      label: "活跃案例",
+      tone: "plain",
+      value: String(leverageTabCount(cases, "live")),
+    },
+    {
+      key: "directional",
+      label: "有方向",
+      tone: "accent",
+      value: String(leverageTabCount(cases, "directional")),
+    },
+    {
+      key: "forming",
+      label: "数据不足",
+      tone: forming ? "caution" : "quiet",
+      value: String(forming),
+    },
+    { key: "alerts", label: "资本警报", tone: alerts ? "alert" : "quiet", value: String(alerts) },
+  ];
+}
+
+/** `8s` / `4m` / `2h` — the shortest true reading of an elapsed span, truncated and never rounded up. */
+function elapsedShort(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h`;
+}
+
+/**
+ * How long *this case* is allowed to run.
+ *
+ * The frozen answer first, and it is the only one the ledger records: `must_close_at_ms` is written from
+ * the budget at order time and measured from the first fill, so the span between them is the window this
+ * position was actually opened under. Reading the mandate's current `max_hold_ms` instead re-describes a
+ * historical case with today's configuration — the same mistake the permission chip made, on the row
+ * directly beneath it, and on a page whose 预期窗口 is a risk limit.
+ *
+ * A case that never opened a position has no frozen window, because nothing froze one. It falls back to
+ * the mandate and says so rather than presenting a standing rule as this case's own.
+ *
+ * The artifact writes 「小时级」 here, which is a description of a policy rather than the policy; the
+ * budget publishes the window in milliseconds and the console prints that. A mandate that has not been
+ * read says `—`, never a plausible default.
+ */
+export function leverageHorizon(item: LeverageCase, maxHoldMs: number | null | undefined): string {
+  const order = item.entry.kind === "order" ? item.entry.value : null;
+  if (order?.must_close_at_ms != null && order.position_opened_at_ms != null) {
+    return holdSpan(order.must_close_at_ms - order.position_opened_at_ms);
+  }
+  const mandate = holdSpan(maxHoldMs);
+  return mandate === "—" ? mandate : `${mandate} · 当前预算`;
+}
+
+function holdSpan(spanMs: number | null | undefined): string {
+  if (spanMs == null || spanMs <= 0) return "—";
+  const minutes = Math.floor(spanMs / 60_000);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} 小时` : `${hours}h ${String(rest).padStart(2, "0")}m`;
+}
+
+/**
+ * The ledger's own words for this case, for the artifact's 判定痕迹 column behind the technical fold.
+ *
+ * Keys are verbatim ledger field names and values are verbatim ledger values — this is the row as written,
+ * not a rendering of it. It is the one place on the page where `case_id` appears: the pane above answers
+ * "what was decided and why", and an opaque identifier belongs with the other opaque identifiers.
+ */
+export function leverageTrace(item: LeverageCase): Array<[string, string]> {
+  const facts = caseFacts(item.entry);
+  const order = item.entry.kind === "order" ? item.entry.value : null;
+  return [
+    ["case_id", facts.caseId],
+    ["case_state", facts.caseState],
+    ["trigger_kind", facts.triggerKind],
+    ["strategy_id", facts.strategyId],
+    ["regime", facts.regime ?? "—"],
+    ["policy_decision", facts.policyDecision ?? "—"],
+    ["policy_reason", facts.policyReason ?? "—"],
+    ...(order
+      ? ([
+          ["order_id", order.order_id],
+          ["order_state", order.state],
+          ["mode", order.mode],
+        ] as Array<[string, string]>)
+      : ([["order", "未成单"]] as Array<[string, string]>)),
+  ];
+}
+
+/**
+ * What is left of this case's own clock, for the card's foot.
+ *
+ * Phase is asked *before* the order, and that order is the whole correctness of this function. The ledger
+ * never clears `must_close_at_ms` on close — `orders.py` writes `coalesce(%s, must_close_at_ms)` — so a
+ * position that exited on its native stop at t+68 min under a four-hour window still carries a deadline
+ * two and a half hours out. Reading the order first printed 剩 2h 52m against a position that no longer
+ * existed, and 已到期 after the deadline passed, which claims a forced close that never happened.
+ *
+ * Only an order holding a live position has a clock at all: `must_close_at_ms` is measured from the first
+ * fill, so a prepared or acknowledged intent has not started counting and `holdWindow` says 未起算. The
+ * artifact also draws a `TTL 42s` on an awaiting-approval row; this ledger publishes no approval expiry,
+ * so that row reports the state it is in rather than a countdown nobody wrote down.
+ */
+export function leverageRemaining(item: LeverageCase, nowMs: number): string {
+  if (item.phase === "resolved") return "已了结";
+  if (item.phase === "forming") return "评估中";
+  const order = item.entry.kind === "order" ? item.entry.value : null;
+  if (order) {
+    return holdWindow(order.must_close_at_ms ?? null, order.position_opened_at_ms ?? null, nowMs);
+  }
+  /* A refused case has no clock to run down, and beside the `资本 —` at the other end of the same row a
+     second dash reads as two missing values rather than as one answer. */
+  if (item.phase === "no_trade") return "不适用";
+  return "—";
 }
 
 /** One stage of the lane's own 24 h funnel, read off the durable admission ledger. */

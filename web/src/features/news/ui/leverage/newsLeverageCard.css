@@ -88,10 +88,17 @@
     flex-wrap: wrap;
   }
 
+  /* A bordered key, as the artifact draws it: 增仓↑ · 价升↑ is a classification the lane assigned, and as
+     plain text at body weight it read as part of the sentence under it. */
   .news-leverage-regime {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
     color: var(--text-secondary);
-    font-size: var(--font-size-meta);
-    font-weight: 560;
+    font: 600 var(--font-size-mono-meta)/1.9 var(--font-mono);
+    white-space: nowrap;
   }
 
   .news-leverage-card-tags code {
@@ -99,32 +106,17 @@
     font: var(--type-mono-meta);
   }
 
-  .news-leverage-phase {
-    display: inline-flex;
-    padding: 0 6px;
-    border-radius: var(--radius-xs);
-    color: var(--text-muted);
-    background: var(--surface-raised);
-    box-shadow: inset 0 0 0 1px var(--border-subtle);
-    font: var(--type-mono-meta);
-  }
-
-  .news-leverage-phase[data-phase="active"] {
-    color: var(--signal-done);
-    background: var(--signal-done-soft);
-    box-shadow: inset 0 0 0 1px var(--signal-done-border);
-  }
-
-  .news-leverage-phase[data-phase="forming"] {
-    color: var(--signal-caution);
-    background: var(--signal-caution-soft);
-    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
-  }
-
+  /*
+   * One line, clipped. The artifact clamps it so every card is the same height and the list scans as a
+   * column of equals; the full sentence is the first thing the pane beside it prints, one click away.
+   */
   .news-leverage-card-why {
+    overflow: hidden;
     color: var(--text-secondary);
     font-size: var(--font-size-meta);
     line-height: 1.5;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .news-leverage-card-numbers {
@@ -157,16 +149,27 @@
     color: var(--signal-alert);
   }
 
+  /* 起点 · 终点 · 钱，left to right. The capital word is pushed to the right edge rather than spaced
+     evenly, so a column of cards puts every ledger state on one vertical line. */
   .news-leverage-card-foot {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     align-items: center;
-    justify-content: space-between;
-    padding-top: 8px;
-    border-top: 1px solid var(--border-faint);
+    padding-top: 7px;
+    border-top: 1px dashed var(--border-faint);
     color: var(--text-subtle);
     font: var(--type-mono-meta);
     font-weight: 500;
+  }
+
+  .news-leverage-card-foot > small:last-child {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  .news-leverage-card-remain {
+    color: var(--text-secondary);
+    font-weight: 600;
   }
 
   .news-leverage-card-foot small[data-capital="OPEN"] {

@@ -11,7 +11,11 @@ describe("OI Trading ledger presentation", () => {
     const order = tradingOrderFixture({ realized_bps: -34 });
     const copy = tradingOiCellCopy(lookup({ kind: "order", value: order }));
 
-    expect(copy.secondary).toBe("增仓 · 价升");
+    // `quadrant`, not `secondary` (#280): the OI table draws this as a bordered classification chip, and
+    // the gate branch puts a stage word in `secondary` — a slot that held both taught a reader they were
+    // the same kind of fact.
+    expect(copy.quadrant).toBe("增仓 · 价升");
+    expect(copy.secondary).toBeUndefined();
     expect(copy.primary).toBe("多 · OPEN −34bps");
     expect(tradingOiTraceEntries(lookup({ kind: "order", value: order }))).toContainEqual([
       "case_state",

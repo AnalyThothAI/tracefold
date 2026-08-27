@@ -8,6 +8,7 @@ import type { NewsQuote } from "../../api/newsQueries";
 import {
   leveragePlanes,
   leverageTimeline,
+  leverageTrace,
   triggerLabel,
   type LeverageCase,
 } from "../../model/leverageCases";
@@ -30,10 +31,13 @@ type Plane = "t0" | "now" | "out";
  * page never computes across them.
  */
 export function NewsLeverageDetail({
+  horizon,
   item,
   quote,
   symbolHref,
 }: {
+  /** The mandate's forced-close window, already formatted. `—` when the status read has not answered. */
+  horizon: string;
   item: LeverageCase;
   quote: NewsQuote | undefined;
   symbolHref: string;
@@ -57,6 +61,16 @@ export function NewsLeverageDetail({
         <span className="news-leverage-regime">{item.regime}</span>
         <span className="news-leverage-detail-verdict">
           <b data-decision={item.decision}>{DECISION_LABEL[item.decision].big}</b>
+          {/*
+           * The case's own frozen `mode`, not the strategy's current published `permission`. The artifact
+           * puts a permission word beside the verdict because 「LONG」 and 「LONG, on paper」 are different
+           * claims; reading it live would relabel every case in the window the moment a strategy was
+           * promoted, including ones that only ever ran on paper — the exact confusion the chip exists
+           * to prevent.
+           */}
+          <span className="news-leverage-permission" title="这个案例当时被允许做到哪一步">
+            {item.mode.toUpperCase()}
+          </span>
           <span className="news-leverage-phase" data-phase={item.phase}>
             {PHASE_LABEL[item.phase]}
           </span>
@@ -70,21 +84,26 @@ export function NewsLeverageDetail({
           <small>失效条件 · INVALIDATION</small>
           <p>{invalidationSentence(item, order)}</p>
         </div>
+        {/* The artifact's five rows. `case_id` used to hold the third slot and is now in the trace behind
+            the fold: it is an identifier, not an answer, and it was the one row here nobody reads. */}
         <KeyValue className="news-leverage-kv">
           <KeyValueRow k="策略" v={item.strategyLabel} />
           <KeyValueRow k="规则" v={item.rule} />
-          <KeyValueRow k="案例" v={item.caseId} />
+          <KeyValueRow k="预期窗口" v={horizon} />
           <KeyValueRow k="触发" v={`${triggerLabel(item.triggerKind)} · ${item.age}`} />
           <KeyValueRow k="数据缺口" v={gaps || "—"} />
         </KeyValue>
       </div>
 
       <div className="news-leverage-planes">
-        <div aria-label="事实平面" className="news-segmented" role="tablist">
+        {/* Underline tabs, not the page's segmented pill: the pill above chooses which cases the list
+            shows, this chooses which moment the case is described at, and the artifact keeps the two
+            shapes apart so a reader never mistakes one control for the other. */}
+        <div aria-label="事实平面" className="news-leverage-plane-tabs" role="tablist">
           {(Object.keys(PLANE_LABEL) as Plane[]).map((value) => (
             <button
               aria-selected={plane === value}
-              className="news-segmented-option"
+              className="news-leverage-plane-tab"
               data-active={plane === value || undefined}
               key={value}
               onClick={() => setPlane(value)}
@@ -170,6 +189,11 @@ export function NewsLeverageDetail({
         </div>
       </div>
 
+      {/*
+       * Two columns behind the fold, as the artifact draws them: the provider's line on the left and the
+       * ledger's own row on the right. The trace was nowhere on this page before — the pane translated
+       * every field into a sentence and then had no way to show what it had translated *from*.
+       */}
       <NewsTechnical summary="原始证据与技术详情">
         <div className="news-leverage-raw">
           <small>供应商原帧</small>
@@ -185,6 +209,14 @@ export function NewsLeverageDetail({
             <Link to={newsOiPath()}>在 OI 遥测审计中查看 ›</Link>
             <Link to={symbolHref}>代币页 {item.base} ›</Link>
           </div>
+        </div>
+        <div className="news-leverage-trace">
+          <small>判定痕迹 · CASE_TRACE</small>
+          <KeyValue>
+            {leverageTrace(item).map(([key, value]) => (
+              <KeyValueRow k={key} key={key} v={value} />
+            ))}
+          </KeyValue>
         </div>
       </NewsTechnical>
     </section>
