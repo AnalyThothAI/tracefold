@@ -33,19 +33,12 @@ type Plane = "t0" | "now" | "out";
 export function NewsLeverageDetail({
   horizon,
   item,
-  permission,
   quote,
   symbolHref,
 }: {
   /** The mandate's forced-close window, already formatted. `—` when the status read has not answered. */
   horizon: string;
   item: LeverageCase;
-  /**
-   * What this strategy is allowed to do — `paper`, `shadow`, `live_reviewed` — from the strategy's own
-   * published config. The artifact puts it beside the verdict because "LONG" and "LONG, on paper" are
-   * different claims and only one of them can move money.
-   */
-  permission: string | null;
   quote: NewsQuote | undefined;
   symbolHref: string;
 }) {
@@ -68,11 +61,16 @@ export function NewsLeverageDetail({
         <span className="news-leverage-regime">{item.regime}</span>
         <span className="news-leverage-detail-verdict">
           <b data-decision={item.decision}>{DECISION_LABEL[item.decision].big}</b>
-          {permission ? (
-            <span className="news-leverage-permission" title="该策略被允许做到哪一步">
-              {permission.toUpperCase()}
-            </span>
-          ) : null}
+          {/*
+           * The case's own frozen `mode`, not the strategy's current published `permission`. The artifact
+           * puts a permission word beside the verdict because 「LONG」 and 「LONG, on paper」 are different
+           * claims; reading it live would relabel every case in the window the moment a strategy was
+           * promoted, including ones that only ever ran on paper — the exact confusion the chip exists
+           * to prevent.
+           */}
+          <span className="news-leverage-permission" title="这个案例当时被允许做到哪一步">
+            {item.mode.toUpperCase()}
+          </span>
           <span className="news-leverage-phase" data-phase={item.phase}>
             {PHASE_LABEL[item.phase]}
           </span>

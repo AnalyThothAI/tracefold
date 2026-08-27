@@ -106,28 +106,6 @@
     font: var(--type-mono-meta);
   }
 
-  .news-leverage-phase {
-    display: inline-flex;
-    padding: 0 6px;
-    border-radius: var(--radius-xs);
-    color: var(--text-muted);
-    background: var(--surface-raised);
-    box-shadow: inset 0 0 0 1px var(--border-subtle);
-    font: var(--type-mono-meta);
-  }
-
-  .news-leverage-phase[data-phase="active"] {
-    color: var(--signal-done);
-    background: var(--signal-done-soft);
-    box-shadow: inset 0 0 0 1px var(--signal-done-border);
-  }
-
-  .news-leverage-phase[data-phase="forming"] {
-    color: var(--signal-caution);
-    background: var(--signal-caution-soft);
-    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
-  }
-
   /*
    * One line, clipped. The artifact clamps it so every card is the same height and the list scans as a
    * column of equals; the full sentence is the first thing the pane beside it prints, one click away.

@@ -59,11 +59,14 @@ import "./newsLeverage.css";
  * rule and writes no thesis, so the page names the rule instead of paraphrasing a sentence nobody wrote.
  * And it never lists a frame that authored no case — that population is the OI audit's, in full.
  *
- * Two smaller departures from the artifact, both for the same reason. There is no "N 个新案例到达 · 列表已
- * 固定" pin: selection is URL-owned by `event_id`, so a case arriving at the top cannot move what the pane
- * is showing, and a pill that pinned a list nothing was disturbing would be ceremony. And the four figures
- * above are the four tabs rather than the artifact's five: every one of them is a number a reader can click
- * and count, where 数据新鲜 and 资本警报 would be figures with no list behind them.
+ * One smaller departure. There is no "N 个新案例到达 · 列表已固定" pin: selection is URL-owned by `?case=`
+ * — a `case_id`, with the published `event_id` accepted only so links shared before #262 still resolve —
+ * so a case arriving at the top cannot move what the pane is showing, and a pill that pinned a list
+ * nothing was disturbing would be ceremony.
+ *
+ * The title row carries the artifact's five figures (#280). They are not the four tabs repeated: 数据新鲜
+ * and 数据不足 answer "is this page describing now", and 资本警报 is the figure an operator wants before
+ * spending a click — all three from reads this page already makes.
  */
 export function NewsLeveragePage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -261,15 +264,10 @@ export function NewsLeveragePage({ token }: { token: string }) {
           </section>
           {selected ? (
             <NewsLeverageDetail
-              /* Both from the capital lane's own status read, which this page already makes: the
-                 forced-close window is the mandate's and the permission is the strategy's own. */
+              /* The mandate's own forced-close window, from the status read this page already makes.
+                 The permission beside the verdict is not passed: it is the case's own frozen `mode`. */
               horizon={leverageHorizon(statusQuery.data?.budget?.max_hold_ms)}
               item={selected}
-              permission={
-                thresholds.strategies.find(
-                  (strategy) => strategy.strategy_id === selected.strategyId,
-                )?.permission ?? null
-              }
               quote={quote?.requested_symbol === selected.base ? quote : undefined}
               symbolHref={newsSymbolPath(selected.base)}
             />

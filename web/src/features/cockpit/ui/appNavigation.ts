@@ -73,7 +73,10 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
          * audit's own count one group below.
          */
         count: "cases",
-        countTitle: "过去 24 小时成案",
+        /* Not 「过去 24 小时」 like its two siblings: their fields are named `*_24h` and the window is part
+           of the field, where `cases_by_state` follows the capital lane's published `window_hours` and a
+           tooltip that hard-coded 24 would be wrong the first time an operator changed it. */
+        countTitle: "资本通道成案 · 账本滚动窗口",
         icon: LeverageGaugeIcon,
         isActive: (pathname) => pathname === "/news/leverage",
         label: "杠杆异动",

@@ -102,10 +102,6 @@
     letter-spacing: 0.055em;
   }
 
-  .news-oi-trading-head {
-    grid-column: 12;
-  }
-
   .news-oi-row {
     min-width: 1170px;
     border-bottom: 1px solid var(--border-faint);
@@ -277,6 +273,14 @@
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* The gate's own stage word, when there is one. Quiet and unboxed: it qualifies the verdict, where the
+     quadrant beside it is a category the lane assigned. */
+  .news-oi-trading-cell small {
+    flex: 0 0 auto;
+    color: var(--text-subtle);
+    font-size: var(--font-size-eyebrow);
   }
 
   .news-oi-quadrant {

@@ -91,6 +91,15 @@ export type LeverageCase = {
   /** The frame, when the loaded frame page holds it. `undefined` is a page boundary, not a missing case. */
   event: NewsFeedEvent | undefined;
   /**
+   * What *this* case was allowed to do, frozen on the ledger row — `paper`, `live_reviewed`.
+   *
+   * Read from the case, never from the strategy's current published `permission`. Promoting a strategy
+   * from paper to live would otherwise relabel every case still inside the window, including ones that
+   * only ever ran on paper — on a chip whose entire reason for existing is that 「LONG」 and 「LONG, on
+   * paper」 are different claims.
+   */
+  mode: string;
+  /**
    * The Event id the ledger published, independent of whether the frame is loaded. Non-null only for the
    * deterministic OI trigger; it is not the row's identity, only a legacy link target and a frame key.
    */
@@ -121,6 +130,7 @@ type CaseFacts = {
   caseState: string;
   createdAtMs: number;
   decidedAtMs: number | null;
+  mode: string;
   observedAtMs: number;
   policyDecision: string | null;
   policyReason: string | null;
@@ -139,6 +149,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
       // An order row carries no `decided_at_ms`: the decision that authored it is the case's, and the
       // order's own clock starts later. Naming it here would date the decision to the write that followed.
       decidedAtMs: null,
+      mode: order.mode,
       observedAtMs: order.case_observed_at_ms ?? order.created_at_ms,
       policyDecision: order.policy_decision ?? null,
       policyReason: order.policy_reason ?? null,
@@ -153,6 +164,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
     caseState: record.state,
     createdAtMs: record.created_at_ms,
     decidedAtMs: record.decided_at_ms ?? null,
+    mode: record.mode,
     observedAtMs: record.observed_at_ms,
     policyDecision: record.policy_decision ?? null,
     policyReason: record.policy_reason ?? null,
@@ -218,6 +230,7 @@ function buildCase(
     eventId: entry.value.event_id ?? null,
     evidence: evidenceRows(event?.oi, facts.strategyId, facts.triggerKind, thresholds),
     id: facts.caseId,
+    mode: facts.mode,
     numbers: frameNumbers(event?.oi, facts.triggerKind),
     observedAtMs: facts.observedAtMs,
     phase: phaseOf(entry, decision),
@@ -790,14 +803,6 @@ function elapsedShort(elapsedMs: number): string {
 }
 
 /**
- * What is left of this case's own clock, for the card's foot.
- *
- * Only an order that actually opened a position has one: `must_close_at_ms` is measured from the first
- * fill, so a prepared or acknowledged intent has not started counting and says so. The artifact also draws
- * a `TTL 42s` on an awaiting-approval row; this ledger publishes no approval expiry, so that row reports
- * the state it is in rather than a countdown nobody wrote down.
- */
-/**
  * How long a case of this lane is allowed to run, from the mandate's own `max_hold_ms`.
  *
  * The artifact writes 「小时级」 here, which is a description of a policy rather than the policy; the
@@ -841,13 +846,27 @@ export function leverageTrace(item: LeverageCase): Array<[string, string]> {
   ];
 }
 
+/**
+ * What is left of this case's own clock, for the card's foot.
+ *
+ * Phase is asked *before* the order, and that order is the whole correctness of this function. The ledger
+ * never clears `must_close_at_ms` on close — `orders.py` writes `coalesce(%s, must_close_at_ms)` — so a
+ * position that exited on its native stop at t+68 min under a four-hour window still carries a deadline
+ * two and a half hours out. Reading the order first printed 剩 2h 52m against a position that no longer
+ * existed, and 已到期 after the deadline passed, which claims a forced close that never happened.
+ *
+ * Only an order holding a live position has a clock at all: `must_close_at_ms` is measured from the first
+ * fill, so a prepared or acknowledged intent has not started counting and `holdWindow` says 未起算. The
+ * artifact also draws a `TTL 42s` on an awaiting-approval row; this ledger publishes no approval expiry,
+ * so that row reports the state it is in rather than a countdown nobody wrote down.
+ */
 export function leverageRemaining(item: LeverageCase, nowMs: number): string {
+  if (item.phase === "resolved") return "已了结";
+  if (item.phase === "forming") return "评估中";
   const order = item.entry.kind === "order" ? item.entry.value : null;
   if (order) {
     return holdWindow(order.must_close_at_ms ?? null, order.position_opened_at_ms ?? null, nowMs);
   }
-  if (item.phase === "forming") return "评估中";
-  if (item.phase === "resolved") return "已了结";
   /* A refused case has no clock to run down, and beside the `资本 —` at the other end of the same row a
      second dash reads as two missing values rather than as one answer. */
   if (item.phase === "no_trade") return "不适用";

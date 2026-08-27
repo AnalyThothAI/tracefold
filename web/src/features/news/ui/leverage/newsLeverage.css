@@ -99,7 +99,11 @@
     min-width: 0;
     max-height: calc(100dvh - var(--shell-topbar-height) - 28px);
     overflow-y: auto;
-    overscroll-behavior: contain;
+    /*
+     * Scroll chaining stays on. `overscroll-behavior: contain` is the reflex here and it would trap the
+     * reader: the 24 h funnel now sits below the whole two-column body, so a wheel that stopped at the
+     * bottom of the case list would leave the page frozen under the pointer with the funnel unreachable.
+     */
     padding-bottom: 2px;
   }
 

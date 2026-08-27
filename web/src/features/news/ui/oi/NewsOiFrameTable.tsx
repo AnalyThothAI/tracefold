@@ -119,7 +119,7 @@ export function NewsOiFrameTable({
             <span>研究分桶</span>
             <span>判定</span>
             <span className="news-oi-num">1H / 4H</span>
-            <span className="news-oi-trading-head">交易 · OI_ONLY</span>
+            <span>交易 · OI_ONLY</span>
           </div>
           {rows.map((event) => (
             <FrameRow
@@ -264,8 +264,10 @@ function TradingCell({ lookup }: { lookup: TradingOiLookup }) {
   return (
     <span className="news-oi-trading-cell" title={copy.title}>
       {/* The lane's own quadrant, from `regime` on the case — not a pre-frame price this page does not
-          have. It leads the cell because it is the first gate the decision beside it went through. */}
-      {copy.secondary ? <span className="news-oi-quadrant">{copy.secondary}</span> : null}
+          have. It leads the cell because it is the first gate the decision beside it went through, and it
+          is a separate field from `secondary` so a gate stage can never arrive dressed as a quadrant. */}
+      {copy.quadrant ? <span className="news-oi-quadrant">{copy.quadrant}</span> : null}
+      {copy.secondary ? <small>{copy.secondary}</small> : null}
       <b>{copy.primary}</b>
     </span>
   );

@@ -36,6 +36,16 @@ export type TradingOiLookup = {
 
 export type TradingOiCellCopy = {
   primary: string;
+  /**
+   * The OI/price quadrant the capital lane assigned this case, in Chinese, and only ever that.
+   *
+   * It is separate from `secondary` on purpose. The OI table renders it as a bordered classification chip
+   * beside the verdict (#280), and a chip that sometimes held `增仓 · 价升` and sometimes held the gate's
+   * `eligibility` — which is most of a production day's rows — teaches a reader that the two are the same
+   * kind of fact. Only the branches that read a case's `regime` set this.
+   */
+  quadrant?: string;
+  /** Any other qualifier the cell carries as quiet text above the verdict. Never a quadrant. */
   secondary?: string;
   title?: string;
 };
@@ -148,7 +158,7 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
     const realized = value.realized_bps == null ? "" : ` ${signedBps(value.realized_bps)}`;
     return {
       primary: `${value.side === "buy" ? "多" : "空"} · ${value.state}${realized}`,
-      secondary: regimeLabel(value.regime),
+      quadrant: regimeLabel(value.regime),
       title: `${value.case_id} · ${value.order_id}`,
     };
   }
@@ -158,7 +168,7 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
       value.state === "POLICY_REJECTED"
         ? `拒 · ${policyRuleZh(value.policy_reason)}`
         : (CASE_STATE_ZH[value.state] ?? value.state),
-    secondary: regimeLabel(value.regime),
+    quadrant: regimeLabel(value.regime),
     title: value.policy_reason ?? value.state,
   };
 }
@@ -288,6 +298,10 @@ export function policyRuleZh(value: string | null | undefined): string {
       smart_money_profit_not_positive: "大户盈利不为正",
       smart_money_ratio_below_or_equal_floor: "大户占比未过地板",
       source_window_mismatch: "窗口口径不符",
+      /* Latent while the lane is `paper` — `oi_smart_money_momentum.py` writes it only once a strategy is
+         promoted — and universal for that strategy the moment it is, which is exactly the day nobody wants
+         to be reading an English key. */
+      strategy_permission_paper_only: "策略权限只允许 paper",
       strategy_permission_shadow_or_paper: "策略权限不允许",
       whale_long_profit_below_floor: "鲸盈利未达地板",
       // Older fixtures/ledgers used the shorter spelling; keep its meaning without changing the raw trace.

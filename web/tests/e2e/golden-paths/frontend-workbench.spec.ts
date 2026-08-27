@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { expectNoUnhandledApiRequests } from "@tests/e2e/support/layoutAssertions";
+import {
+  expectNoUnhandledApiRequests,
+  expectScrollableToLastMeaningfulElement,
+} from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
 test.setTimeout(60_000);
@@ -95,6 +98,7 @@ async function freezeArchetypes(
     }
     if (route.name === "oi") await expectOiOverflowContract(page);
     if (route.name === "trading") await expectTradingOverflowContract(page);
+    if (route.name === "leverage") await expectLeverageScrollContract(page);
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {
@@ -113,6 +117,43 @@ async function freezeArchetypes(
   }
 
   await expectNoUnhandledApiRequests(page);
+}
+
+/**
+ * The case list is a bounded nested scroller (#280), which `docs/FRONTEND.md` allows only with a
+ * reachability assertion behind it. Two things have to stay true and neither is visible in a screenshot:
+ * the last card must be reachable inside the list, and the funnel below the whole body must be reachable
+ * on the page — the second is what `overscroll-behavior: contain` would have quietly broken.
+ */
+async function expectLeverageScrollContract(page: Page) {
+  const list = ".news-leverage-list";
+  const bounded = await page.evaluate((selector) => {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) return null;
+    return {
+      sticky: getComputedStyle(el).position === "sticky",
+      chains: getComputedStyle(el).overscrollBehaviorY !== "contain",
+      capped: el.clientHeight <= window.innerHeight,
+    };
+  }, list);
+  expect(bounded).not.toBeNull();
+  expect(bounded?.chains, "the list must not trap the wheel above the funnel").toBe(true);
+  expect(bounded?.capped, "the list must not grow past the viewport").toBe(true);
+  // Desktop only: below 1280 the list is a plain block and the page is the only scroller.
+  if ((page.viewportSize()?.width ?? 0) >= 1280) expect(bounded?.sticky).toBe(true);
+
+  await expectScrollableToLastMeaningfulElement(page, list, `${list} > *:last-child`);
+  await expectScrollableToLastMeaningfulElement(
+    page,
+    ".center-column",
+    ".news-leverage-funnel .news-source-line",
+  );
+  // Both scrollers, not just the page: reaching the last card scrolls the list itself, and a baseline
+  // taken from there would freeze a half-cropped first card as the intended look.
+  await page.evaluate(() => {
+    document.querySelector(".center-column")?.scrollTo(0, 0);
+    document.querySelector(".news-leverage-list")?.scrollTo(0, 0);
+  });
 }
 
 async function expectTradingOverflowContract(page: Page) {
