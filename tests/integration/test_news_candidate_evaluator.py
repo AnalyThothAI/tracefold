@@ -456,6 +456,20 @@ class _MissingProviderCostJudge(_StaticJudge):
         )
 
 
+class _FirstCaseMissingProviderCostJudge(_StaticJudge):
+    async def judge(self, context: TriageContext) -> SemanticJudgment:
+        judgment = await super().judge(context)
+        if len(self.calls) > 1:
+            return judgment
+        calls = tuple(call.model_copy(update={"provider_cost_microusd": None}) for call in judgment.trace.calls)
+        return judgment.model_copy(
+            update={
+                "trace": judgment.trace.model_copy(update={"calls": calls}),
+                "usage": judgment.usage.model_copy(update={"provider_cost_microusd": None}),
+            }
+        )
+
+
 class _SyntheticFallbackJudge(_StaticJudge):
     async def judge(self, context: TriageContext) -> SemanticJudgment:
         judgment = await super().judge(context)
@@ -2784,8 +2798,136 @@ def test_symmetric_provider_cost_blindness_is_not_a_release_blocker(conn) -> Non
     assert "provider_cost_observation_incomplete" not in report.evidence["blockers"]
     assert report.evidence["provider_cost_observation_complete"] is False
     assert report.evidence["provider_cost_observation_incomplete_arms"] == ["candidate", "stable"]
+    assert report.evidence["provider_cost_symmetrically_unobservable"] is True
     assert report.evidence["stable_mean_provider_cost_microusd"] is None
     assert report.evidence["candidate_mean_provider_cost_microusd"] is None
+
+
+def test_partial_provider_cost_blindness_on_both_arms_still_blocks(conn) -> None:
+    """#292 exempts *total* symmetric blindness only.
+
+    Both arms here price every case but their first: the cost-mean guardrail would compare the two arms
+    over silently different call subsets, so this must stay an evidence gap even though the incomplete-arm
+    set looks symmetric.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    judges = {
+        ("stable", stable.bundle_sha): _FirstCaseMissingProviderCostJudge(stable),
+        ("candidate", candidate.candidate_arm.bundle_sha): _FirstCaseMissingProviderCostJudge(
+            candidate.candidate_arm,
+            candidate=True,
+        ),
+    }
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(candidate,),
+    )
+
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    assert "provider_cost_observation_incomplete" in report.evidence["blockers"]
+    assert report.evidence["provider_cost_observation_incomplete_arms"] == ["candidate", "stable"]
+    assert report.evidence["provider_cost_symmetrically_unobservable"] is False
+
+
+def test_errored_pair_never_scores_the_blind_pairwise_primary(conn) -> None:
+    """#294: a card against an errored arm's absence is execution evidence, not preference evidence.
+
+    Without this, every below-cap stable failure would hand the candidate a near-automatic blind win, and
+    at holdout 5% of gifted clusters can push `interval_95` past zero. The errored pairs also leave
+    `planned_cluster_n`, so an unresolvable cluster cannot hold resolution hostage.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges={
+            ("stable", stable.bundle_sha): _AlwaysUnavailableJudge(stable),
+            ("candidate", candidate.candidate_arm.bundle_sha): _StaticJudge(candidate.candidate_arm, candidate=True),
+        },
+        candidate_catalog=(candidate,),
+    )
+    request = EvaluationRequest(
+        development_dataset_sha=development.artifact_sha,
+        candidate_sha=candidate.candidate_sha,
+        stage="offline",
+    )
+    first = asyncio.run(evaluator.evaluate(request))
+    assert "stable_or_common_execution_unavailable" in first.evidence["blockers"]
+    assert first.evidence["primary"]["planned_cluster_n"] == 0
+
+    desk = ReviewDesk(conn, now_ms=NOW)
+    tasks = desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"]
+    if tasks:
+        # The queue may still surface the pair; an accepted candidate-preference on it must not count.
+        task = tasks[0]
+        reviewed_case_id = str(task["task_id"]).rsplit(".", 1)[-1]
+        row = conn.execute(
+            "SELECT comparison FROM news_learning_cases WHERE run_sha = %s AND case_id = %s",
+            (first.run_sha, reviewed_case_id),
+        ).fetchone()
+        candidate_side = "A" if row["comparison"]["pair_order"] == "candidate_A" else "B"
+        with repositories_for_connection(conn).transaction():
+            desk.submit(
+                TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+                BlindPairwiseSubmission(
+                    preference=candidate_side,
+                    evidence_refs=[f"output:{candidate_side}"],
+                ),
+                principal=PRINCIPAL,
+                idempotency_key=str(uuid.uuid4()),
+            )
+
+    report = asyncio.run(evaluator.evaluate(request))
+    primary = report.evidence["primary"]
+    assert primary["planned_cluster_n"] == 0
+    assert primary["resolved_cluster_n"] == 0
+    assert primary["candidate_win_n"] == 0
+    assert primary["net_preference"] is None
 
 
 def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(conn) -> None:

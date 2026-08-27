@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import pytest
 
@@ -538,20 +539,24 @@ def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "mode
 def test_stable_or_common_execution_blocks_only_past_the_shared_rate_cap() -> None:
     """#294: a handful of transient stable/common failures cannot veto a corpus-scale live comparison.
 
-    The affected cases already sit outside every comparison denominator; what must keep blocking is a
+    The affected pairs are excluded from every comparison denominator; what must keep blocking is a
     mass failure, which would otherwise turn into a vacuous PASS. The cap is deliberately the same
-    `candidate_degraded_or_error_rate_max` that bounds candidate degradation — one knob, one concern.
+    `candidate_degraded_or_error_rate_max` that bounds candidate degradation — one knob, one concern —
+    so the boundary cases below are derived from the sealed profile value rather than pinned to it.
     """
 
-    blocked = candidate_evaluator_module.stable_or_common_execution_blocked
+    unavailability = candidate_evaluator_module.stable_or_common_execution_unavailability
     cap = float(_PROFILE["guardrails"]["candidate_degraded_or_error_rate_max"])
-    assert cap == 0.05  # the assertions below are calibrated against the sealed profile value
+    pair_n = 477
+    at_cap = math.floor(cap * pair_n)  # the largest count whose rate does not exceed the cap
 
-    assert not blocked(0, 477)
-    # the first live evaluation's actual reading: 1 stable-only + 3 common over 477 observations
-    assert not blocked(4, 477)
-    assert not blocked(23, 477)  # 4.8% — just under the cap
-    assert blocked(25, 477)  # 5.2% — just over
-    assert blocked(1, 8)  # a tiny corpus cannot absorb even one unavailable comparison
-    assert blocked(3, 3)  # every case failing is the vacuous-PASS shape the blocker exists for
-    assert blocked(1, 0)  # no observations at all is an evidence gap, never a pass
+    rate, blocked = unavailability(0, pair_n)
+    assert (rate, blocked) == (0.0, False)
+    rate, blocked = unavailability(at_cap, pair_n)
+    assert not blocked and rate == at_cap / pair_n
+    rate, blocked = unavailability(at_cap + 1, pair_n)
+    assert blocked and rate == (at_cap + 1) / pair_n
+    # every pair failing is exactly the vacuous-PASS shape the blocker exists for
+    assert unavailability(pair_n, pair_n) == (1.0, True)
+    # no assigned pairs at all is an evidence gap, never a pass
+    assert unavailability(1, 0) == (1.0, True)
