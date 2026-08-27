@@ -224,11 +224,15 @@ def test_offline_nautilus_role_provisioning_is_narrow_and_keeps_the_password_out
     password_file.chmod(0o600)
     pgdata = tmp_path / "pgdata"
     pgdata.mkdir()
+    capture_args_path = tmp_path / "captured.args"
     capture_path = tmp_path / "captured.sql"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_postgres = bin_dir / "postgres"
-    fake_postgres.write_text('#!/bin/sh\ncat > "$TRACEFOLD_CAPTURE_SQL"\n', encoding="utf-8")
+    fake_postgres.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$TRACEFOLD_CAPTURE_ARGS"\ncat > "$TRACEFOLD_CAPTURE_SQL"\n',
+        encoding="utf-8",
+    )
     fake_postgres.chmod(0o700)
 
     result = subprocess.run(
@@ -240,6 +244,7 @@ def test_offline_nautilus_role_provisioning_is_narrow_and_keeps_the_password_out
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "PGDATA": str(pgdata),
             "POSTGRES_DB": "tracefold",
+            "TRACEFOLD_CAPTURE_ARGS": str(capture_args_path),
             "TRACEFOLD_CAPTURE_SQL": str(capture_path),
         },
         text=True,
@@ -248,6 +253,13 @@ def test_offline_nautilus_role_provisioning_is_narrow_and_keeps_the_password_out
     assert result.returncode == 0, result.stderr
     assert password not in result.stdout
     assert password not in result.stderr
+    assert capture_args_path.read_text(encoding="utf-8").splitlines() == [
+        "--single",
+        "-j",
+        "-D",
+        str(pgdata),
+        "tracefold",
+    ]
     sql = capture_path.read_text(encoding="utf-8")
     assert "CREATE ROLE tracefold_nautilus LOGIN" in sql
     assert "ALTER ROLE tracefold_nautilus" in sql
