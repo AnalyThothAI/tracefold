@@ -1405,12 +1405,11 @@ a candidate registered against the old chain names a receipt that no longer
 validates and can no longer be evaluated. It does not re-open `program_v7`
 either — how a compile is serialized says nothing about whether an accepted
 review is true.
-Because the physical rename makes the old exact image incompatible, release
-requires a separately built and drilled new-schema/v5-behaviour rollback image;
-it is never part of the production registry or a second runtime loader. No
-chained revision has a downgrade. Earlier hard cuts live only in git history;
-a fresh database and a database upgraded through the chain reach
-byte-identical schemas.
+No chained revision has a downgrade. Exact-image replacement requires the
+source, image and live database to share the current migration head; a schema
+change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
+cuts live only in Git history, never in a compatibility loader. A fresh database
+and a database upgraded through the chain reach byte-identical schemas.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.

@@ -150,81 +150,14 @@ migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
 HTML console all pass. It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
-### Exact-image rollback with the current database schema
+### Exact-image replacement with the current database schema
 
-An image rollback is a runtime replacement, not an Alembic downgrade. The #160
-physical `priority -> queue_priority` rename means the pre-0301 image cannot run
-against the current schema. Before the first v6/v10 deployment, build, retain
-and drill the reviewed new-schema/v5-behaviour rollback image from the clean
-primary checkout:
+An image replacement is a runtime change, never an Alembic downgrade. Use only a
+reviewed local image identified by its full `sha256:` ID. The current source, the
+target image and the live database must report the same migration head.
 
-The same release hard-cuts the News-to-Trading input contract. New projections
-expose only post-epoch v10 judgments and new cases freeze the current
-`trading_manifest_*` version. Any undecided case frozen under an earlier one is
-blocked as `news_generation_retired` before model or order work; existing
-prepared orders remain owned by reconciliation and are never rewritten by the
-News migration. The manifest version is a constant in the deployed image, not a
-schema fact: #213 moves it to `trading_manifest_v4`, so the *image* retires
-every case frozen under v3 and rolling the image back retires everything frozen
-since. Schema `0309` is a separate thing — it adds the two upstream stage stamps
-and coalesces any undecided cases that share an underlying down to one (recorded
-with the same `news_generation_retired` reason the runner would write, since the
-version bump retires them all anyway) before creating the partial unique index
-that keeps one undecided case per underlying from then on. A case that already
-authored an order is never the one coalesced away. `0309` has no downgrade: the
-coalescing cannot be told apart afterwards from any other block. Both statements
-are no-ops on a deployment where Trading has been disabled. Schema `0310`
-renames `case_kind` to `trigger_kind`, freezes strategy identity on every new
-case, and creates the typed liquidation fact, exact strategy-registration and
-shadow-evaluation ledgers. It
-has no downgrade because those new material facts cannot be represented in the
-old schema. A rollback must therefore be a reviewed image that understands
-schema `0310`, never an Alembic downgrade.
-
-```bash
-cd ~/Documents/Code/tracefold
-make build-news-rollback-image
-```
-
-The target verifies a rollback binary that understands schema 0301 while
-reproducing v5 behaviour, then checks its source revision, exact behavior-
-profile identity and image label. It does not deploy or mutate PostgreSQL.
-Record the full `sha256:` image ID it prints; that ID, not its local tag, is the
-only accepted rollback input. The artifact is deployment safety only: it is not
-in the v7 factory registry, artifact loader or normal runtime image and cannot
-be used for canary or daily execution. The production image contains exactly
-factory v6 / executable v5; there is no runtime flag or dual loader. A failed build
-or drill fails the release gate.
-
-The #175 reader-history rollout uses the same-schema previous runtime image as
-its rollback target; it never downgrades migrations `0302`/`0303`. During the first 24 h,
-manually review every newly held `restatement` whose trace reports
-`reader_history.targeted_count > 0`. `tracefold news why <event_id>` must name
-the prior sent time, headline, and retrieval reason. If any such hold is really
-a `progression` or `new_fact`, replace the runtime with the recorded previous
-image digest immediately and retain the verdict/trace as regression evidence.
-The #190 canonical-number hard cut follows the same one-image rule: rollback is
-the recorded previous same-schema image, never the removed Program registry
-root, and any attempted NaN/Infinity identity must remain a hard failure.
-The #193 strategy-artifact cut follows it too, with one extra operator step:
-migration `0304` trips every armed or active canary, because its candidate is a
-two-file artifact the new image cannot load. Expect `canary status` to report
-`tripped` with reason `program_strategy_artifact_v1_hard_cut` after the
-upgrade; a candidate has to be recompiled against the new root and re-armed
-from the start of the promotion ladder. Rolling back to the previous
-same-schema image does not un-trip it, and `0304` has no downgrade.
-Migration `0305` trips them a second time for the same reason on the compile
-side: a candidate registered against the retired receipt chain names a
-`compile_receipt` row the new image cannot validate, so it cannot be evaluated.
-Expect reason `compile_record_v1_hard_cut` there, recompile, and re-arm. Old
-`compile_receipt` rows stay readable as audit history; they are simply not
-release evidence any more. `0305` has no downgrade either.
-
-For the #160 drill and rollback, use the full image ID printed by
-`build-news-rollback-image` directly. After both sides of a later deployment
-already use schema 0301, the most recent recorded previous runtime image may
-also be used. From the primary checkout on `main`, verify the chosen ID locally;
-the SQL below is only the later same-schema lookup:
+From the deployment-clean primary checkout on `main`, resolve the latest
+recorded previous image candidate, then inspect and deploy that exact ID:
 
 ```bash
 cd ~/Documents/Code/tracefold
@@ -245,44 +178,16 @@ docker image inspect --format '{{.Id}}' sha256:REPLACE_WITH_64_LOWERCASE_HEX
 make deploy-image IMAGE_ID=sha256:REPLACE_WITH_64_LOWERCASE_HEX
 ```
 
-Copy the literal `sha256:` ID into both commands; do not substitute a tag,
-short ID, `name@sha256:` registry reference, or shell-discovered latest image.
-The target does not pull. It requires a deployment-clean primary checkout at an
-exact local `origin/main` commit; tracked/staged changes, `.env`, untracked or
-ignored Compose overrides, and untracked or ignored Alembic revisions fail
-closed, while unrelated untracked research files do not affect the rollback
-boundary. Inherited `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, `COMPOSE_ENV_FILES`,
-and `COMPOSE_PROFILES` are refused; the target then pins Compose to the repository's
-absolute `compose.yaml` and the `tracefold` project. `IMAGE_ID` must arrive on the
-Make command line. The target re-inspects the local image to the
-same full ID, runs `latest_migration_version()` inside both the current source
-and target image, and reads the live database's `alembic_version` through the
-read-only Serve role. All three heads must match before anything stops. It also
-mounts the active operator config through the migration service and silently
-runs the target image's redacted `tracefold config` parser. A missing image,
-dirty/stale checkout, head mismatch, or config incompatibility is therefore a
-no-op failure. `make up` and `make deploy-image` share one kernel-held deployment
-lock from before initialization/mutation through the final status and success
-output; a concurrent lifecycle command is refused, and process exit releases the
-lock without stale-lock cleanup. Their `make -n` forms only print the plan.
+The target accepts no tag, short ID or registry reference. It never builds or pulls,
+and it checks the checkout, Compose inputs, active config, three migration heads,
+deployment lock, recreated container IDs, Workers readiness and durable deployment
+receipt before reporting success. A recorded previous image digest is only a
+candidate: local retention and schema compatibility are still required.
 
-After those checks it sets both Compose's app image and
-`TRACEFOLD_IMAGE_DIGEST` to the inspected ID, stops Workers and Serve, and
-recreates `migrate`, `serve`, and `workers` with `--no-build`. Compose waits for
-the one-shot migration and both runtimes. Before reporting success, the target
-requires all three recreated containers' Docker image IDs to equal the requested
-ID, requires Workers `/readyz.image_digest` to equal it, and uses read-only SQL
-to require that the latest `active_agent`, linked `runtime_deploy` receipt, and
-runtime manifest all carry the same identity. It then runs the canonical
-`make status` gate. PostgreSQL and RabbitMQ are not replaced.
-
-The receipt's 24-hour rollback window is audit intent, not a promise that local
-Docker garbage collection retained the image. If the ID is absent, recover the
-trusted image into the local store through the operator's image-distribution
-process first; never weaken the target to a mutable tag or bypass the schema
-check. If recreation fails after the services were stopped, inspect
-`make logs`, then either correct the exact-image problem or use normal
-`make up` to rebuild and redeploy the current source.
+A schema-changing release cannot roll back to an older-schema image. Its Issue must
+approve a current-schema recovery or roll-forward plan before migration. Historical
+implementations remain in Git history and never become compatibility code in the
+runtime.
 
 ## Health and status
 
