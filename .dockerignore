@@ -17,7 +17,7 @@ data
 logs
 docs
 .worktrees
-web/node_modules
+**/node_modules
 web/dist
 web/.vite
 web/coverage

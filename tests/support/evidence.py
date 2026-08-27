@@ -171,7 +171,6 @@ class _EvidenceRecorder:
             "python_version": platform.python_version(),
             "node_version": node_version,
             "uv_lock_sha256": _sha256(self.root / "uv.lock"),
-            "property_lock_sha256": _sha256(self.root / "requirements" / "property.lock"),
             "package_lock_sha256": _sha256(self.root / "web" / "package-lock.json"),
             "migration_head": _migration_head(),
             "selected": self.selected,
