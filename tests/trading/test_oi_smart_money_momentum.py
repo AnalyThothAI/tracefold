@@ -1,10 +1,14 @@
 """`oi_smart_money_momentum_v1`: the three-dimensional template, boundary by boundary (#265).
 
 Every threshold here is one side of an inequality that the issue spells out in words, and each of these
-tests is the pair that proves which side. `1000` qualifies and `999` does not; `5001` qualifies and
-`5000` does not; `1` qualifies and `0` does not; `0` qualifies and `-1` does not; `600` qualifies and
-`601` does not. Getting one of them backwards would not fail loudly — it would quietly trade a cohort
+tests is the pair that proves which side. `500` qualifies and `499` does not; `5001` qualifies and
+`5000` does not; `1` qualifies and `0` does not; `0` qualifies and `-1` does not; `1000` qualifies and
+`1001` does not. Getting one of them backwards would not fail loudly — it would quietly trade a cohort
 nobody measured, or refuse the one that was.
+
+The OI floor and the chasing ceiling moved in #273 (1000 → 500, 600 → 1000). The pairs below are the
+only place those two numbers are asserted against a decision, so they are what stops the next edit
+from moving a threshold without moving the boundary that proves it.
 """
 
 from __future__ import annotations
@@ -100,7 +104,7 @@ def test_the_real_tut_frame_is_the_long_this_strategy_exists_for() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "rule"),
     [
-        ({"oi_change_bps": 999}, "smart_money_oi_change_below_floor"),
+        ({"oi_change_bps": 499}, "smart_money_oi_change_below_floor"),
         ({"whale_oi_ratio_bps": 5_000}, "smart_money_ratio_below_or_equal_floor"),
         ({"whale_long_profit_bps": 0}, "smart_money_profit_not_positive"),
         ({"oi_direction": "fall"}, "not_oi_rise"),
@@ -116,7 +120,7 @@ def test_each_condition_refuses_by_name_one_step_below_its_threshold(kwargs: dic
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"oi_change_bps": 1_000},
+        {"oi_change_bps": 500},
         {"whale_oi_ratio_bps": 5_001},
         {"whale_long_profit_bps": 1},
     ],
@@ -125,22 +129,42 @@ def test_each_condition_passes_exactly_at_its_threshold(kwargs: dict[str, Any]) 
     assert STRATEGY.evaluate(_context(**kwargs)).decision == "long"
 
 
+def test_the_cohort_the_lower_oi_floor_opened_is_the_one_production_was_stopping_on() -> None:
+    """#273's reason for 5%: every OI Case in production had stopped on the old 1000 bps floor.
+
+    These are the frozen `oi_change_bps` of real Cases from 2026-08-26/27, all of which carried a
+    ratio and a profit that already qualified. Under the template's 10% every one of them was a
+    `smart_money_oi_change_below_floor`; the floor is the only thing this asserts has changed.
+    """
+
+    for oi_change_bps in (533, 701, 791, 662, 541):
+        outcome = STRATEGY.evaluate(_context(oi_change_bps=oi_change_bps))
+        assert (outcome.decision, outcome.rule) == ("long", "smart_money_momentum_long")
+    # And the floor is still a floor: the 313 bps frame from the same batch stays refused.
+    assert STRATEGY.evaluate(_context(oi_change_bps=313)).rule == "smart_money_oi_change_below_floor"
+
+
 @pytest.mark.parametrize(
     ("pre_move_bps", "decision", "rule"),
     [
         (-1, "no_trade", "price_direction_not_confirmed"),
         (0, "long", "smart_money_momentum_long"),
         (600, "long", "smart_money_momentum_long"),
-        (601, "no_trade", "move_above_band_chasing"),
+        (1_000, "long", "smart_money_momentum_long"),
+        (1_001, "no_trade", "move_above_band_chasing"),
         (None, "no_trade", "price_direction_not_confirmed"),
     ],
 )
-def test_the_price_band_is_zero_to_six_hundred_inclusive(pre_move_bps: int | None, decision: str, rule: str) -> None:
-    """The 0 bps minimum is the change, and 50 bps is the case it exists for.
+def test_the_price_band_is_zero_to_one_thousand_inclusive(pre_move_bps: int | None, decision: str, rule: str) -> None:
+    """The 0 bps minimum is one change, and the 1000 bps ceiling is #273's.
 
     The lane's shared regime band starts at 100 bps and, until #264, was applied at the freeze — so a
     frame with a 0.4% pre-move never reached a strategy at all. A hidden 1% minimum here would be a
     second, unmeasured entry condition on top of the three the template names.
+
+    601 used to be the first refusal and is now a long: the 6-10% slice this opened is the one
+    `docs/research/oi-agent-design-2026-08-22.md` §1.6 measured at -0.77% over 4 h. The strategy is
+    where that decision lives, so this is where it is asserted.
     """
 
     outcome = STRATEGY.evaluate(_context(pre_move_bps=pre_move_bps))

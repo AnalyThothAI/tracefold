@@ -30,6 +30,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       cases_by_trigger: { news: 5, oi: 4 },
       cases_by_state: { NO_TRADE: 2, ORDER_PREPARED: 3, POLICY_REJECTED: 4 },
       cases_today_by_state: { NO_TRADE: 2, ORDER_PREPARED: 3, POLICY_REJECTED: 4 },
+      policy_allowed_24h: 3,
       policy_allowed_today: 3,
       active_orders: 4,
       closed_orders: 2,
@@ -153,9 +154,9 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       {
         config: {
           allow_short: "False",
-          max_price_move_bps: "600",
+          max_price_move_bps: "1000",
           measurement_window_ms: "300000",
-          min_oi_change_bps: "1000",
+          min_oi_change_bps: "500",
           min_price_move_bps: "0",
           min_whale_long_profit_bps: "0",
           min_whale_oi_ratio_bps: "5000",
@@ -274,7 +275,7 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
 }
 
 /** The evidence document's own defaults, so a fixture states only the keys its rule compared. */
-function gateEvidence(
+export function gateEvidence(
   overrides: Partial<NonNullable<TradingGateDecision["gate_evidence"]>> = {},
 ): NonNullable<TradingGateDecision["gate_evidence"]> {
   return {

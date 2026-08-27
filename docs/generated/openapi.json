@@ -4476,6 +4476,17 @@
             ],
             "title": "Policy Reason"
           },
+          "pre_move_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Move Bps"
+          },
           "regime": {
             "anyOf": [
               {
@@ -4490,6 +4501,13 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "strategy_config": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Strategy Config",
+            "type": "object"
           },
           "strategy_id": {
             "title": "Strategy Id",
@@ -4704,6 +4722,11 @@
             },
             "title": "Orders By State",
             "type": "object"
+          },
+          "policy_allowed_24h": {
+            "default": 0,
+            "title": "Policy Allowed 24H",
+            "type": "integer"
           },
           "policy_allowed_today": {
             "default": 0,

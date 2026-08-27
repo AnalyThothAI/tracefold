@@ -483,10 +483,24 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "observed_at_ms": int(row["observed_at_ms"]),
         "policy_decision": row.get("policy_decision"),
         "policy_reason": row.get("policy_reason"),
+        "pre_move_bps": row.get("pre_move_bps"),
         "regime": row.get("regime"),
         "state": str(row["state"]),
+        "strategy_config": _frozen_config(row.get("strategy_config")),
         "underlying_key": str(row["underlying_key"]),
     }
+
+
+def _frozen_config(value: Any) -> dict[str, str]:
+    """The case's own thresholds, stringified exactly as `/status` stringifies the running ones.
+
+    One shape for both, so a console reads a threshold the same way whether it came from the case or
+    from today's configuration — and never has to decide which parser to use for which.
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in sorted(value.items())}
 
 
 def _execution_capability(settings: Any) -> dict[str, Any]:

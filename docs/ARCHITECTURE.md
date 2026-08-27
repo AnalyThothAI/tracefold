@@ -1809,9 +1809,15 @@ evaluates the frozen context before any provider call. Quadrant, long-only,
 whale, OI, permission, and missing-context refusals therefore do not spend the
 daily model budget. Since #265 an OI trigger is answered by
 `oi_smart_money_momentum_v1` — three conditions on the frame's own numbers over
-a *proven* five-minute window, a confirmed price direction and the measured
-600 bps chasing ceiling — whatever News happened to attach, so the OI lane
-spends no model budget at all. `news_oi_alignment_v1` is reached only by a News
+a *proven* five-minute window, a confirmed price direction and a chasing
+ceiling — whatever News happened to attach, so the OI lane spends no model
+budget at all. Its OI floor and chasing ceiling were set to 500 bps and
+1000 bps by operator decision in #273 to give the paper lane enough throughput
+to produce receipts; the strategy module records what that traded away, since
+the corpus measurement behind the older 600 bps ceiling still stands. The
+lane-wide `trading.regime.*` band is a different owner and keeps its own
+numbers, so an OI Case may record `move_above_band_chasing` and still be a
+long. `news_oi_alignment_v1` is reached only by a News
 trigger and remains the one live-capable strategy; `oi_momentum_v1` is kept as
 a decoder so Cases frozen under it stay replayable and is routed no new Case. For an eligible News-bearing case the runner freezes the
 single model result into a new context and evaluates the same strategy again;

@@ -198,6 +198,14 @@ class CandidateGateStorage:
     def gate_decisions_since(self, *, since_ms: int, trigger_kind: str = "oi", limit: int) -> list[dict[str, Any]]:
         """One admission answer per source in the window, newest frame first (#269).
 
+        One lane per call, defaulting to OI, and that default is the read model's whole shape. Since
+        #273 the News lane writes rows here too, but every reader of this table is asking an OI
+        question: `/api/trading/gate` joins each row back to an OI frame by `oi:{event}:{version}`,
+        and the console funnel counts the capital lane a frame at a time. Mixing a News trigger into
+        either would put two populations under one bar — the same error as counting a 24 h rolling
+        window and a UTC day in one chart. News rows are durable evidence, queryable by source key or
+        by SQL; they are deliberately not console numbers.
+
         The same one-row-per-source rule the counts use, so the table a reader scrolls and the
         distribution above it cannot disagree: a frame two configurations have looked at appears once,
         and `CASE_CREATED` is that appearance whenever one exists.

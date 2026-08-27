@@ -2065,10 +2065,16 @@ export interface components {
             policy_decision?: string | null;
             /** Policy Reason */
             policy_reason?: string | null;
+            /** Pre Move Bps */
+            pre_move_bps?: number | null;
             /** Regime */
             regime?: string | null;
             /** State */
             state: string;
+            /** Strategy Config */
+            strategy_config?: {
+                [key: string]: string;
+            };
             /** Strategy Id */
             strategy_id: string;
             /** Strategy Version */
@@ -2181,6 +2187,11 @@ export interface components {
             orders_by_state?: {
                 [key: string]: number;
             };
+            /**
+             * Policy Allowed 24H
+             * @default 0
+             */
+            policy_allowed_24h: number;
             /**
              * Policy Allowed Today
              * @default 0

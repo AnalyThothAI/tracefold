@@ -152,9 +152,15 @@ def meets_target_template(
     shape this lane was built for actually occur" — and the funnel answers a different one: "of the
     frames that occurred, where did each stop". Liquidity, rank and routing are not in this test.
 
-    The measurement window is, though. The template is "**5 minute** OI rise >= 10%", so a frame whose
-    interval the provider contract could not establish is not an instance of it — it is three numbers
-    over an unknown period, and counting it would make the cohort a claim nobody checked.
+    The three numbers come from the running strategy's own config, never from a constant here. The
+    template was written as ">= 10%" and the lane executes ">= 5%" (#273); a cohort report that kept
+    the literal would describe a population no Case is decided by, which is the one thing a replay
+    must never do.
+
+    The measurement window is not negotiable in the same way. The template is a **5 minute** OI rise,
+    so a frame whose interval the provider contract could not establish is not an instance of it — it
+    is three numbers over an unknown period, and counting it would make the cohort a claim nobody
+    checked.
     """
 
     return (

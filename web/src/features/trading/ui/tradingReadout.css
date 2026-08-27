@@ -1,0 +1,178 @@
+/*
+ * The answer layer's own stylesheet (#273).
+ *
+ * A separate owner file rather than more lines in `trading.css`: that bucket is at 458 of the 500-line
+ * side-effect budget the architecture harness enforces, and a feature that grows one stylesheet until
+ * it fails the gate is exactly what the budget exists to prevent.
+ *
+ * Outcome here is pipeline state, never market direction, so nothing in this file reaches for
+ * `--dir-*`. The ladder's fill is the accent for the same reason a refusal is not painted red: a frame
+ * stopping at a threshold is the lane working as configured, not a loss.
+ */
+@layer app.features {
+  .trading-readout {
+    display: grid;
+    gap: 6px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+  }
+
+  .trading-readout-lead {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    line-height: 1.5;
+  }
+
+  .trading-readout-why {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    line-height: 1.5;
+  }
+
+  .trading-readout-why b {
+    color: var(--signal-caution);
+    font-weight: 600;
+  }
+
+  .trading-readout-why small {
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  /* ------------------------------------------------------------------ ladder */
+  .trading-ladder {
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .trading-ladder-row {
+    display: grid;
+    grid-template-columns: 128px minmax(0, 1fr) 32px;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .trading-ladder-row small {
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-ladder-track {
+    position: relative;
+    height: 8px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-raised);
+    overflow: hidden;
+  }
+
+  .trading-ladder-track span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: var(--radius-xs);
+    background: var(--accent-primary);
+  }
+
+  .trading-ladder-row b {
+    color: var(--text-primary);
+    font: 620 var(--font-size-mono-meta) / 1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  /* The reason sits under its own level rather than beside it: the drop it explains happened between
+     this row and the one above, and a third column would read as a property of the count. */
+  .trading-ladder-row em {
+    grid-column: 1 / -1;
+    color: var(--text-subtle);
+    font-style: normal;
+    font-size: var(--font-size-mono-meta);
+  }
+
+  /* ------------------------------------------------------------------ decisions */
+  .trading-decisions {
+    display: grid;
+  }
+
+  .trading-decision-row {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr) 84px;
+    gap: 10px;
+    align-items: baseline;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .trading-decision-row:first-child {
+    border-top: none;
+  }
+
+  .trading-decision-symbol {
+    display: grid;
+    gap: 1px;
+    font-size: var(--font-size-meta);
+  }
+
+  .trading-decision-symbol small {
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-decision-why {
+    display: grid;
+    gap: 2px;
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    line-height: 1.45;
+  }
+
+  /* The rule key, kept on screen beside its sentence so the translated vocabulary can never become the
+     only one a reader has seen. */
+  .trading-decision-why code {
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-decision-state {
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+    text-align: right;
+  }
+
+  .trading-decision-state[data-state="POLICY_REJECTED"] {
+    color: var(--text-subtle);
+  }
+
+  .trading-decisions-more {
+    margin: 0;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  @media (max-width: 767px) {
+    .trading-ladder-row {
+      grid-template-columns: 104px minmax(0, 1fr) 28px;
+    }
+
+    .trading-decision-row {
+      grid-template-columns: 68px minmax(0, 1fr);
+    }
+
+    .trading-decision-state {
+      grid-column: 2;
+      text-align: left;
+    }
+  }
+}

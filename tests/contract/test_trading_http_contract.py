@@ -463,7 +463,7 @@ def test_the_status_publishes_the_rules_that_actually_decide_a_frame(client) -> 
     # The template's own numbers, not the 95 % whale-profit floor of the strategy beside it. A console
     # measuring a smart-money case against `floors.min_whale_long_profit_bps` was using the wrong rule.
     assert smart_money["config"]["min_whale_oi_ratio_bps"] == "5000"
-    assert smart_money["config"]["min_oi_change_bps"] == "1000"
+    assert smart_money["config"]["min_oi_change_bps"] == "500"
     assert smart_money["config"]["min_whale_long_profit_bps"] == "0"
     assert strategies["news_oi_alignment_v1"]["config"]["min_whale_long_profit_bps"] == "9500"
     # The admission floor stays out of every strategy: one owner, and the digest says which (#264).

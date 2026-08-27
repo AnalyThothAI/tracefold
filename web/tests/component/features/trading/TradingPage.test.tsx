@@ -2,6 +2,10 @@ import { TradingPage } from "@features/trading";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
+  gateEvidence,
+  tradingCaseFixture,
+  tradingGateDecisionFixture,
+  tradingGateFixture,
   tradingOrderFixture,
   tradingOrdersFixture,
   tradingStatusFixture,
@@ -252,27 +256,107 @@ describe("TradingPage", () => {
     expect(within(panel).queryByText("freeze:case_created")).not.toBeInTheDocument();
   });
 
-  it("starts the funnel before the case, and names the clock each row is counted on", async () => {
+  it("opens by saying why there is no order, with the measurement and the threshold", async () => {
+    // #273's whole reason for existing. A lane at zero orders and a broken one look identical, and
+    // every count on this page is a count of something that did not happen — so the first thing on
+    // screen has to be the rule most frames stopped on, in words, with its own numbers.
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            counts: {
+              ...tradingStatusFixture().counts,
+              candidate_counts_24h: { CASE_CREATED: 2, REJECTED: 8 },
+              orders_by_state: {},
+              policy_allowed_24h: 0,
+            },
+            strategies: [
+              {
+                config: {
+                  max_price_move_bps: "1000",
+                  measurement_window_ms: "300000",
+                  min_oi_change_bps: "500",
+                  min_whale_oi_ratio_bps: "5000",
+                },
+                config_digest: "a".repeat(64),
+                permission: "paper",
+                strategy_id: "oi_smart_money_momentum_v1",
+                strategy_version: "oi_smart_money_momentum_v1",
+                trigger_kinds: ["oi"],
+              },
+            ],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/orders$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersFixture({
+            cases_without_orders: [
+              tradingCaseFixture({
+                case_id: "case-magma",
+                policy_reason: "smart_money_oi_change_below_floor",
+                strategy_id: "oi_smart_money_momentum_v1",
+              }),
+            ],
+            orders: [],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/gate$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingGateFixture({
+            decisions: [
+              tradingGateDecisionFixture({
+                case_id: "case-magma",
+                gate_evidence: gateEvidence({ oi_change_bps: 313 }),
+                gate_reason: "case_created",
+                gate_stage: "freeze",
+                gate_status: "CASE_CREATED",
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
     renderTrading();
 
-    const funnel = (await screen.findByText(/案例去向/)).closest("section") as HTMLElement;
-    // Matched on the label alone; the clock is a nested `<em>` and rides on `textContent` below.
-    const rows = within(funnel).getAllByText(
-      /^(上游帧|过准入|成案|政策放行|提交订单|已了结|在场)$/,
-    );
+    // Scoped and awaited: the section renders as soon as the status arrives, and the measurement it
+    // names comes from the admission ledger one request later.
+    const readout = (await screen.findByLabelText("资本通道状态")) as HTMLElement;
+    expect(
+      await within(readout).findByText(/5 分钟持仓增幅 3\.13%，未达 5\.00% 门槛/),
+    ).toBeInTheDocument();
+    expect(within(readout).getByText(/还没有订单/)).toBeInTheDocument();
+    // And the arrival count says the lane is receiving frames, which separates quiet from broken.
+    expect(within(readout).getByText(/10 帧到达/)).toBeInTheDocument();
+  });
+
+  it("draws one funnel on one clock, each level a subset of the one above it", async () => {
+    // #273. The funnel this replaces drew seven bars on three clocks — two rolling, four on the UTC
+    // budget day, one unbounded — and named the seam in a hint line instead of removing it. A reader
+    // comparing 过准入 to 提交订单 was comparing two different intervals without being told.
+    renderTrading();
+
+    const ladder = (await screen.findByText("信号去了哪里")).closest("section") as HTMLElement;
+    const rows = within(ladder).getAllByText(/^(上游帧到达|建成案例|策略放行|提交订单|已了结)$/);
     expect(rows.map((node) => node.textContent)).toEqual([
-      "上游帧24h",
-      "过准入24h",
-      "成案日",
-      "政策放行日",
-      "提交订单日",
-      "已了结日",
-      "在场当前",
+      "上游帧到达",
+      "建成案例",
+      "策略放行",
+      "提交订单",
+      "已了结",
     ]);
     // 87 + 2 + 1 + 1 = 91 frames the admission ledger holds for the window.
-    expect(within(funnel).getByText("91")).toBeInTheDocument();
-    // Two clocks, labelled rather than merged: a rolling 24 h and a UTC calendar day.
-    expect(within(funnel).getAllByText("24h")).toHaveLength(2);
+    expect(within(ladder).getByText("91")).toBeInTheDocument();
+    // No row carries a clock of its own any more, because there is only one to carry.
+    expect(within(ladder).queryByText("24h")).not.toBeInTheDocument();
+    expect(within(ladder).queryByText("日")).not.toBeInTheDocument();
+    // Exposure is not a funnel level: an open position from yesterday is current and real, and a bar
+    // chart on a 24 h window is the wrong place to say so. It keeps its own card.
+    expect(within(ladder).queryByText("在场")).not.toBeInTheDocument();
   });
 
   it("says so plainly when the admission ledger has never held a frame", async () => {

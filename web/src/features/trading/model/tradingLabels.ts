@@ -95,6 +95,9 @@ export const GATE_REASON_ZH: Record<string, string> = {
   "eligibility:case_in_flight": "该标的已有未决案例",
   "eligibility:cooldown": "标的冷却期内",
   "eligibility:lane_capacity_exhausted": "通道当日额度已满",
+  // #273: the News lane's own admission rule. It is the reason a News trigger no longer freezes a
+  // case just so a strategy can say the same thing from inside a manifest.
+  "eligibility:oi_context_missing": "新闻旁没有同标的持仓数据",
   "eligibility:oi_value_below_floor": "持仓额低于流动性地板",
   "eligibility:rank_above_limit": "窗口内名次超限",
   "eligibility:superseded_by_newer_trigger": "被同标的更新的帧合并",

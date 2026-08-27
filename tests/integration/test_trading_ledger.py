@@ -1360,12 +1360,46 @@ def test_an_oi_fact_a_news_trigger_took_as_context_still_gets_its_own_admission_
     assert decision["retryable"] is True
 
 
+def test_the_console_reads_the_frozen_pre_move_out_of_a_real_manifest(conn) -> None:
+    """#273: the two price rules can only state their own number if the projection carries it.
+
+    Against the real SELECT, not a hand-built row. The column is a JSON path plus an `::int` cast, and
+    a fake repository returning a dict would prove nothing about either — a manifest shape that made
+    the cast fail, or a key that was never there, both look like a passing test and a 500 in
+    production. The console contract test above uses a fake on purpose; this is its counterweight.
+    """
+
+    _seed_oi_event(conn, event_id="oi-ctx", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="news-win", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-win", symbol="DOGE")
+
+    assert asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())["created"] == 1
+    frozen = _repos(conn).trading.cases()[0]["manifest"]["contexts"]["market"]["pre_move_bps"]
+
+    rows = _repos(conn).trading.console_cases_without_orders(since_ms=NOW - 60 * MINUTE)
+    assert len(rows) == 1
+    # The same number the strategy was handed, not one recomputed from today's candles.
+    assert rows[0]["pre_move_bps"] == frozen
+    assert isinstance(rows[0]["pre_move_bps"], int)
+
+    # …and the thresholds it was decided against, so a console explaining this case cannot reach for
+    # whatever configuration happens to be running when someone opens the page.
+    case = _repos(conn).trading.cases()[0]
+    assert rows[0]["strategy_config"] == case["manifest"]["strategy_config"]
+    assert rows[0]["strategy_config"]
+
+
 def test_a_news_trigger_cannot_ground_a_case_on_a_frame_the_liquidity_floor_excludes(conn) -> None:
     """#264 gave the floor one owner; it still has to bind the frames a News trigger attaches.
 
     The 10-50M OI bucket is the worst the research measured (+4h -0.77%), which is what the 20M floor —
     and the 5M canary under it — exist to keep out. Gating only the trigger path would let a News
     verdict freeze a `news_oi_alignment_v1` case grounded on exactly that frame.
+
+    Since #273 the consequence is stronger and cheaper to read: the thin frame is not admissible
+    context, so the News trigger has none, so it is refused at the gate and no case is frozen at all.
+    The two frames each carry their own durable answer, and neither is a case row that exists only to
+    say a strategy had nothing to work with.
     """
 
     _seed_oi_event(conn, event_id="thin-oi", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
@@ -1375,14 +1409,22 @@ def test_a_news_trigger_cannot_ground_a_case_on_a_frame_the_liquidity_floor_excl
     conn.commit()
 
     report = asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())
-    assert report["created"] == 1
-    case = _repos(conn).trading.cases()[0]
-    assert case["trigger_kind"] == "news"
-    # The case exists and is grounded on nothing: the thin frame never entered the context set.
-    assert case["manifest"]["contexts"]["oi"] is None
-    decision = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:thin-oi:oi_signal_v1")
-    assert decision is not None
-    assert (decision["status"], decision["reason"]) == ("REJECTED", "oi_value_below_floor")
+    assert report["created"] == 0
+    assert _repos(conn).trading.cases() == []
+
+    thin = _repos(conn).trading.gate_decision_for_source_key(source_key="oi:thin-oi:oi_signal_v1")
+    assert thin is not None
+    assert (thin["status"], thin["reason"]) == ("REJECTED", "oi_value_below_floor")
+
+    # Read straight from the table: the console's admission report is the OI capital lane by
+    # construction, so a News row is ledger evidence rather than a console number.
+    news = conn.execute(
+        "SELECT status, stage, reason, retryable FROM trading_candidate_gate_decisions WHERE trigger_kind = 'news'"
+    ).fetchall()
+    assert len(news) == 1
+    assert (news[0]["status"], news[0]["stage"], news[0]["reason"]) == ("DEFERRED", "eligibility", "oi_context_missing")
+    # Retryable on purpose: a qualifying frame for the same issuer can still land inside the budget.
+    assert news[0]["retryable"] is True
 
 
 def test_the_replay_reads_the_whole_window_through_the_rules_the_scanner_applies(conn) -> None:
