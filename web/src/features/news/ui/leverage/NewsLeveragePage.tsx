@@ -264,9 +264,10 @@ export function NewsLeveragePage({ token }: { token: string }) {
           </section>
           {selected ? (
             <NewsLeverageDetail
-              /* The mandate's own forced-close window, from the status read this page already makes.
-                 The permission beside the verdict is not passed: it is the case's own frozen `mode`. */
-              horizon={leverageHorizon(statusQuery.data?.budget?.max_hold_ms)}
+              /* This case's own forced-close window when the ledger froze one, and the mandate's — named
+                 as such — when it did not. The permission beside it is not passed at all: that is the
+                 case's frozen `mode`, read from the item. */
+              horizon={leverageHorizon(selected, statusQuery.data?.budget?.max_hold_ms)}
               item={selected}
               quote={quote?.requested_symbol === selected.base ? quote : undefined}
               symbolHref={newsSymbolPath(selected.base)}

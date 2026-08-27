@@ -393,12 +393,19 @@ the route components into the eager shell chunk.
   「N 个新案例到达 · 点击合并」 pill is likewise absent: selection is URL-owned by
   `?case=`, so an arriving case cannot move what the pane is showing.
 
-  The pane's header carries the strategy's own `permission` beside the verdict —
-  `LONG` and `LONG, on paper` are different claims — and 预期窗口 is the mandate's
-  `budget.max_hold_ms`, not a description of one. Behind 原始证据与技术详情 the
-  provider line sits beside `leverageTrace`, the ledger row verbatim; `case_id`
-  lives there rather than in the key/value block above, which is where the
-  artifact puts an identifier.
+  Two facts in the pane's header are read off the case, never off today's
+  configuration, and both were the same bug before #280 closed them. The
+  permission beside the verdict is the case's frozen `mode` — `LONG` and
+  `LONG, on paper` are different claims, and reading `strategies[].permission`
+  live relabelled every case in the window the moment a strategy was promoted,
+  including ones that only ever ran on paper. 预期窗口 is likewise the span the
+  order actually froze, `must_close_at_ms − position_opened_at_ms`; a case that
+  never opened a position has no frozen window and falls back to the mandate's
+  `budget.max_hold_ms` *labelled as the current budget*, rather than presenting a
+  standing rule as that case's own. Behind 原始证据与技术详情 the provider line
+  sits beside `leverageTrace`, the ledger row verbatim; `case_id` lives there
+  rather than in the key/value block above, which is where the artifact puts an
+  identifier.
 
   `/news/oi` is `OI 遥测审计` (#207, #137, #256): the deterministic open-interest lane,
   which is roughly a fifth of the day's volume and is judged by rule rather than

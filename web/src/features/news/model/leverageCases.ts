@@ -803,15 +803,33 @@ function elapsedShort(elapsedMs: number): string {
 }
 
 /**
- * How long a case of this lane is allowed to run, from the mandate's own `max_hold_ms`.
+ * How long *this case* is allowed to run.
+ *
+ * The frozen answer first, and it is the only one the ledger records: `must_close_at_ms` is written from
+ * the budget at order time and measured from the first fill, so the span between them is the window this
+ * position was actually opened under. Reading the mandate's current `max_hold_ms` instead re-describes a
+ * historical case with today's configuration — the same mistake the permission chip made, on the row
+ * directly beneath it, and on a page whose 预期窗口 is a risk limit.
+ *
+ * A case that never opened a position has no frozen window, because nothing froze one. It falls back to
+ * the mandate and says so rather than presenting a standing rule as this case's own.
  *
  * The artifact writes 「小时级」 here, which is a description of a policy rather than the policy; the
- * budget publishes the forced-close window in milliseconds and the console prints that. A mandate that has
- * not been read says `—`, never a plausible default: this row is a risk limit.
+ * budget publishes the window in milliseconds and the console prints that. A mandate that has not been
+ * read says `—`, never a plausible default.
  */
-export function leverageHorizon(maxHoldMs: number | null | undefined): string {
-  if (maxHoldMs == null || maxHoldMs <= 0) return "—";
-  const minutes = Math.floor(maxHoldMs / 60_000);
+export function leverageHorizon(item: LeverageCase, maxHoldMs: number | null | undefined): string {
+  const order = item.entry.kind === "order" ? item.entry.value : null;
+  if (order?.must_close_at_ms != null && order.position_opened_at_ms != null) {
+    return holdSpan(order.must_close_at_ms - order.position_opened_at_ms);
+  }
+  const mandate = holdSpan(maxHoldMs);
+  return mandate === "—" ? mandate : `${mandate} · 当前预算`;
+}
+
+function holdSpan(spanMs: number | null | undefined): string {
+  if (spanMs == null || spanMs <= 0) return "—";
+  const minutes = Math.floor(spanMs / 60_000);
   if (minutes < 60) return `${minutes} 分钟`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;

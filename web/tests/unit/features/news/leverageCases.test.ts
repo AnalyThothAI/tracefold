@@ -4,6 +4,7 @@ import {
   leverageCases,
   leverageFramelessCount,
   leverageFunnel,
+  leverageHorizon,
   leverageListRows,
   leverageRemaining,
   leverageTabCount,
@@ -538,6 +539,37 @@ describe("leverageRemaining", () => {
     );
 
     expect(item.mode).toBe("live_reviewed");
+  });
+});
+
+describe("leverageHorizon", () => {
+  it("reads the window the order froze, not the mandate running today", () => {
+    /*
+     * `must_close_at_ms` is written from the budget at order time and measured from the first fill, so the
+     * span between them is what this position was opened under. Reading `budget.max_hold_ms` re-described
+     * a historical case with today's configuration — the same mistake the permission chip made, on the
+     * row directly beneath it, on a field that is a risk limit.
+     */
+    const opened = NOW_MS - 600_000;
+    const order = tradingOrderFixture({
+      must_close_at_ms: opened + 4 * 3_600_000,
+      position_opened_at_ms: opened,
+      state: "OPEN",
+    });
+    const [item] = build([], tradingOrdersFixture({ cases_without_orders: [], orders: [order] }));
+
+    expect(leverageHorizon(item, 1_800_000)).toBe("4 小时");
+  });
+
+  it("names the mandate as the current budget when the case froze no window of its own", () => {
+    const [item] = build(
+      [],
+      tradingOrdersFixture({ cases_without_orders: [tradingCaseFixture()], orders: [] }),
+    );
+
+    expect(leverageHorizon(item, 1_800_000)).toBe("30 分钟 · 当前预算");
+    // An unread mandate is a dash, never a plausible default.
+    expect(leverageHorizon(item, undefined)).toBe("—");
   });
 });
 

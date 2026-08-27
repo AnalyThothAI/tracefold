@@ -241,9 +241,9 @@ function FrameRow({
             each let the row spend 132px saying so. */}
         <span className="news-oi-num news-oi-reaction">
           <ReactionValue event={event} horizon="1h" />
-          <span aria-hidden className="news-oi-reaction-slash">
-            /
-          </span>
+          {/* Not `aria-hidden`. The row is one button and its accessible name is its whole text, so
+              hiding the only delimiter ran the two horizons together as `+15.96%未到期`. */}
+          <span className="news-oi-reaction-slash">/</span>
           <ReactionValue event={event} horizon="4h" />
         </span>
         <TradingCell lookup={tradingLookup} />
