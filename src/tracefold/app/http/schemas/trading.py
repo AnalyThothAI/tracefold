@@ -257,6 +257,11 @@ class TradingOrderData(ExactApiSchema):
     regime: str | None = None
     policy_decision: str | None = None
     policy_reason: str | None = None
+    # The same two frozen case facts `TradingCaseData` carries, on the half that got furthest (#282). An
+    # order row is still a case row, and a reader asking "what was this decided on" should not get a worse
+    # answer for a case that filled than for one that was refused.
+    pre_move_bps: int | None = None
+    strategy_config: dict[str, str] = Field(default_factory=dict)
     case_observed_at_ms: int | None = None
 
 

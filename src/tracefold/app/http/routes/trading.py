@@ -454,6 +454,11 @@ def _order(row: dict[str, Any]) -> dict[str, Any]:
         "policy_reason": row.get("policy_reason"),
         "position_closed_at_ms": row.get("position_closed_at_ms"),
         "position_opened_at_ms": row.get("position_opened_at_ms"),
+        # The two frozen case facts, published on both halves of this response (#282). An order row is
+        # still a case row: 代币页's 交易复盘 shows the pre-move and the thresholds a case was decided
+        # against for every row, and a filled case that could not answer either was the one row on the
+        # page where the reader had to fall back to today's configuration.
+        "pre_move_bps": row.get("pre_move_bps"),
         "provider_attempt_count": int(row.get("provider_attempt_count") or 0),
         "provider_symbol": str(row["provider_symbol"]),
         "quantity": str(row["quantity"]),
@@ -463,6 +468,7 @@ def _order(row: dict[str, Any]) -> dict[str, Any]:
         "state": str(row["state"]),
         "state_reason": row.get("state_reason"),
         "stop_price": str(row["stop_price"]),
+        "strategy_config": _frozen_config(row.get("strategy_config")),
         "take_profit_price": _decimal(row.get("take_profit_price")),
         "underlying_key": str(row["underlying_key"]),
         "updated_at_ms": int(row["updated_at_ms"]),

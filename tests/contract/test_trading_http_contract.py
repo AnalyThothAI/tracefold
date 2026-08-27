@@ -44,6 +44,9 @@ def _order(**overrides: Any) -> dict[str, Any]:
         "payload": {"provider": "request body"},
         "policy_decision": "trade",
         "policy_reason": None,
+        # The two frozen case facts the join now carries for an order row too (#282).
+        "pre_move_bps": 187,
+        "strategy_config": {"max_price_move_bps": 1000, "min_price_move_bps": 0},
         "primary_source_key": "oi:evt-oi-wif:oi_signal_v1",
         "position_closed_at_ms": None,
         "position_opened_at_ms": NOW - 120_000,
@@ -205,6 +208,8 @@ class _FakeTradingRepository:
                 "observed_at_ms": NOW - 401_000,
                 "policy_decision": "no_trade",
                 "policy_reason": "whale_profit_below_floor",
+                "pre_move_bps": 731,
+                "strategy_config": {"max_price_move_bps": 1000, "min_price_move_bps": 0},
                 "primary_source_key": "oi:evt-oi-hype:oi_signal_v1",
                 "regime": "buildup_up",
                 "state": "POLICY_REJECTED",
@@ -490,6 +495,15 @@ def test_orders_carry_the_ledgers_own_state_and_no_frozen_payload(client) -> Non
     assert rejected["policy_reason"] == "whale_profit_below_floor"
     assert rejected["event_id"] == "evt-oi-hype"
     assert "manifest" not in rejected
+
+    # Both halves answer the same two questions about the case (#282). An order row is still a case row,
+    # and a console that could name the pre-move for a refusal but not for a fill had to explain the fill
+    # against whatever is configured today — the one row on the page where that is least acceptable.
+    for row in (order, rejected):
+        assert row["pre_move_bps"] is not None, row["case_id"]
+        assert row["strategy_config"]["max_price_move_bps"] == "1000", row["case_id"]
+        # Stringified exactly as `/status` stringifies the running ones, so one parser reads both.
+        assert all(isinstance(value, str) for value in row["strategy_config"].values())
 
 
 def test_orders_never_invent_an_event_join_for_other_source_keys(client) -> None:

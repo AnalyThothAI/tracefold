@@ -309,7 +309,17 @@ class QueryStorage:
                    o.must_close_at_ms, o.created_at_ms, o.updated_at_ms,
                    c.primary_source_key, c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.regime, c.policy_decision, c.policy_reason, c.state AS case_state,
-                   c.observed_at_ms AS case_observed_at_ms
+                   c.observed_at_ms AS case_observed_at_ms,
+                   -- The same two frozen case facts `console_cases_without_orders` returns, and for the
+                   -- same reason (#282). A case that authored an order was losing both here, so the one
+                   -- population that got furthest was the one a console could say least about: it could
+                   -- name the pre-move for a refused case and not for a filled one, and explain a
+                   -- rejection against its own frozen thresholds while explaining a fill against
+                   -- whatever is configured today.
+                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
+                   -- (No per-cent sign in this comment on purpose: psycopg scans comments for
+                   -- placeholders, and a bare one splits the multibyte characters after it.)
+                   c.manifest -> 'strategy_config' AS strategy_config
               FROM trading_orders o
               JOIN trading_cases c ON c.case_id = o.case_id
              WHERE {" AND ".join(where)}
