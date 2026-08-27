@@ -498,10 +498,11 @@ def _seed_oi_event(
         ),
     )
     conn.execute(
-        "INSERT INTO news_events (event_id, leader_item_id, family, comparison_fingerprint, comparison_title, "
+        "INSERT INTO news_events (event_id, leader_item_id, family, event_kind, comparison_fingerprint, "
+        "comparison_title, "
         "leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority, "
         "engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon, storyline_key, ingest_mode, "
-        "focus_fact_id, created_at_ms, updated_at_ms) VALUES (%s, %s, 'market', %s, %s, %s, %s, %s, %s, 1, "
+        "focus_fact_id, created_at_ms, updated_at_ms) VALUES (%s, %s, 'market', 'oi', %s, %s, %s, %s, %s, %s, 1, "
         "'telemetry_deterministic', 'normal', 'market', 'crypto', %s::jsonb, '[]'::jsonb, false, %s, 'live', "
         "%s, %s, %s)",
         (

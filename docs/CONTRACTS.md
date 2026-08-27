@@ -313,10 +313,33 @@ filter, sort or badge for it. The hard-renamed `queue_priority` exists only in
 broker scheduling, storage/audit/measurement and explicit operator review
 projections; there is no public alias.
 
-- `GET /api/news/feed?family={family}&admission={admission}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}&oi={pushed|withheld|parse_failed}&direction={bullish,bearish,neutral}&channel={news,oi}`
+Every normalized OpenNews frame is classified once by
+`opennews_source_classifier_v1` from the exact
+`strategy_id + strategy_name + source_type + engine_type` tuple. The closed
+result is `news_v1|listing_v1|oi_v1|liquidation_v1|unsupported_market`, persisted
+as `event_kind=news|listing|oi|liquidation|unsupported_market`. Ordinary enabled
+News and listing still use Gate and the Program; only the exact 1019 OI and 2000
+liquidation contracts select their strict parsers. The pinned tuples are
+`1019 / OI Event Monitor / market / market` and
+`2000 / 实时清算 / market / market`; `2026 / 聪明钱监控 / wallet / market` and
+`2083 / Large-scale liquidation / market / market` are explicitly unsupported.
+Known tuple drift and unbound scoreless market/wallet frames persist Item/Event
+provenance with nullable Event field
+`source_contract_reason=source_contract_drift|source_contract_unverified|unsupported_market_contract`,
+with `source_contract_unverified` reserved for pre-cut deterministic rows that
+have no durable typed success evidence/read-model row. Unsupported rows call no model and create
+no delivery. A malformed OI/liquidation frame stores `source_contract_drift`;
+a valid current-writer contract stores `null`. Recovery uses the same classifier
+and, when provider history includes the complete tuple, the same strict parser;
+it persists the result but does not write the live OI rank fact and never
+delivers. An incomplete history tuple fails closed as drift. No Strategy id or
+title alone selects a deterministic route.
+
+- `GET /api/news/feed?family={family}&admission={admission}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}&oi={pushed|withheld|parse_failed}&direction={bullish,bearish,neutral}&channel={news,listing,oi,liquidation,unsupported_market}`
   returns Events newest first with the leader title,
   the derived display `title_zh` (`models.display_title`, normally the current
-  verdict's `headline_zh`), admission,
+  verdict's `headline_zh`), durable `event_kind`, nullable
+  `source_contract_reason`, admission,
   asset class, grounded assets, watchlist hits, storyline key, context line,
   **one `outcome`** (`kind` from the stable enum `held_recovery`, `held_gate`,
   `queued_publish`, `queued_triage`, `dropped`, `throttled`,
@@ -331,10 +354,12 @@ projections; there is no public alias.
   outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
   or absent = no bound).
 
-  `direction` and `channel` accept comma-separated, duplicate-free closed sets. `direction` filters the latest
-  stored Triage verdict; `channel=oi` means `admission=telemetry_deterministic`, while `channel=news` means
-  every other admission. Selecting both channels narrows nothing. The axes compose with every existing
-  predicate before the count aggregate and cursor pagination.
+  `direction` and `channel` accept comma-separated, duplicate-free closed sets.
+  `direction` filters the latest stored Triage verdict. `channel` maps exactly to
+  the five durable `event_kind` values `news|listing|oi|liquidation|unsupported_market`;
+  it is never inferred from admission, title or verdict type. Selecting all five
+  channels narrows nothing. The axes compose with every existing predicate
+  before the count aggregate and cursor pagination.
 
   `q` matches the Event search document and leader title, the leader item's `reporting_origin`, and any attached
   asset's raw symbol, canonical `base_symbol`, instrument `venue`, or `venue_symbol`. Search is applied by the
@@ -390,7 +415,8 @@ projections; there is no public alias.
   venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
   real listing. Each response reads all Event assets in one bounded batch and
   resolves all symbols in one instrument batch, never one query per Event.
-- `GET /api/news/events/{event_id}` returns one Event, its `outcome`, a
+- `GET /api/news/events/{event_id}` returns one Event, its durable `event_kind`, nullable
+  `source_contract_reason`, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw
   `facts` it was built from), its member Items (title, URL, origin,
@@ -426,7 +452,15 @@ projections; there is no public alias.
   Strategy IDs/counts), `broker`
   (configured, connected, per-queue message/consumer counts when observed,
   error code), `pipeline` (events and candidates per hour/day, Triage counts,
-  degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
+  `source_classifier_version`, and `source_contracts_24h` keyed by the five
+  closed families. Each family counts the same Event cohort opened in the last
+  24 h: `received`; `parsed` (durably verified OI/liquidation parses, all
+  supported News/listing Events, and zero for unsupported; unverified legacy
+  rows remain the explicit gap rather than being inferred successful);
+  `parse_failed` (`source_contract_reason=source_contract_drift`, with the old
+  parser-failure verdict as migration compatibility); `unsupported`; and
+  `verdict` (any Triage verdict for the Event). It also returns degraded counts
+  incl. `triage_degraded_by_code_24h`, decided pushes,
   throttled, OI telemetry received/parsed/parse-failed/pushed counts, Triage
   p50/p95, queue lag p95, the Triage model name, the cohort fields
   `funnel_received_24h`/`funnel_parsed_24h`/`funnel_admitted_24h`/`funnel_triaged_24h`/
@@ -485,10 +519,21 @@ honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores
 `measured_at_ms`. All News routes require the operator token.
 
 Item identity is `sha256(source_id, params.id)`; `params.strategy.id` is
-provenance, not fact identity. Event identity is the leader Item id; Events
-merge Items by exact comparison fingerprint or MinHash/LSH near-duplicate
-(estimated Jaccard >= 0.55 with strong-fact compatibility) inside the family
-window (market telemetry 2 h, disaster 6 h, filing 72 h, general 12 h).
+provenance, not fact identity. Event identity v5 preserves the established
+leader-Item identity for ordinary News and namespaces every non-News FactUnit
+by `event_kind`. The same Item/FactUnit/kind remains one Event while a migrated
+`source_contract_unverified` reason is settled by the current parser. Events
+whose pre-v5 ordinary-News identity (`item_id` for a whole Item or
+`sha256(item_id,fact_id)` for a split FactUnit) was migrated to a non-News kind
+reserve that legacy key; a later ordinary-News projection uses
+`sha256(item_id,fact_id,"news")` rather than colliding or rekeying history.
+Events
+merge different Items only within the same `event_kind` and current
+source-contract reason, by exact comparison fingerprint or MinHash/LSH
+near-duplicate (estimated Jaccard >= 0.55 with strong-fact compatibility)
+inside the family window (market telemetry 2 h, disaster 6 h, filing 72 h,
+general 12 h). An unverified migration Event may match exact/artifact evidence
+and is resolved before membership; verified drift/success cohorts never cross.
 Fingerprints of at most two tokens never share an Event.
 
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` keeps
@@ -551,14 +596,17 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, factory
-`tracefold.news.program.factory_v6`, and epoch `program_v7`.
+`tracefold.news.program.factory_v7`, source classifier
+`opennews_source_classifier_v1`, and epoch `program_v7`.
 The exact Program identity is its content SHA, not the display version alone.
 
-Strategy 2000 is a separate deterministic contract composed after Gate v5; it
-does not silently widen that policy or editorial policy v10. Its release
-identities are `news_liquidation_admission_v1`,
+The normalized tuple `2000 / 实时清算 / market / market` is a separate
+deterministic contract composed after Gate v5; strategy id `2000` alone has no
+routing authority and does not silently widen that policy or editorial policy
+v10. Its release identities are `news_liquidation_admission_v1`,
 `news_liquidation_fact_v1`, `news_liquidation_policy_v1`,
-`liquidation_parser_v1`, and `opennews_liquidation_source_v1`. The source
+`liquidation_parser_v1`, `opennews_liquidation_source_v1`, and
+`opennews_source_classifier_v1`. The source
 contract records provider-record and unresolved contract identity, position
 side, quantity/notional/price semantics, completeness and throttle assumptions.
 Its current `complete=false` is a material fact.
@@ -569,7 +617,7 @@ it is one canonical JSON document — `schema_version`, `factory_id`, the
 `program_sha256` over exactly those four values — carried in the application
 image as `<program_sha256>.json` and selected by the code-owned registry. The
 stable root is
-`e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`.
+`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
@@ -636,7 +684,7 @@ are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
 verdict or accepted review is evidence and outlives the raw tier.
-Strategy 2000 never enters that order: after generic Gate v5 it is composed as
+The exact Strategy 2000 source contract never enters that order: after generic Gate v5 it is composed as
 `liquidation_deterministic`, then its own v1 policy emits the parser's
 direction-neutral push/drop. Parse failure is a deterministic drop.
 
@@ -720,6 +768,14 @@ re-issues a third time inside v7, now as the 262-byte
 trips every armed or active canary: a candidate registered against the old
 receipt chain names a document the new image cannot validate, so it can no
 longer be evaluated. `program_v7` is again not re-opened.
+`20260827_0315` carries Issue #288's exact source-contract route and Event-kind
+hard cut. It trips open canary activations and appends the factory-v6 to
+factory-v7 receipt without rewriting or appending the `program_v7` epoch row.
+Accepted review labels remain immutable truth, while exact current-bundle
+eligibility makes prior-factory judgments audit-only and starts the factory-v7
+cohort at zero.
+`20260828_0316` then adds the #283 immutable `trading_intents` handoff and its
+least-privilege Workers, Serve, and Nautilus grants.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

@@ -18,6 +18,7 @@ from tracefold.news.opennews import (
     parse_opennews_strategy_list,
 )
 from tracefold.news.pipeline import runtime as news_pipeline_runtime
+from tracefold.news.source_contracts import classify_source_contract
 from tracefold.platform.config.models import NewsSettings
 
 
@@ -101,7 +102,7 @@ def test_websocket_connect_does_not_hide_programming_errors(monkeypatch) -> None
         asyncio.run(client.connect())
 
 
-def test_allowlisted_market_strategy_is_normalized_as_a_linkless_report() -> None:
+def test_market_strategy_is_normalized_before_the_exact_source_classifier() -> None:
     event = parse_opennews_message(
         {
             "jsonrpc": "2.0",
@@ -150,6 +151,8 @@ def test_allowlisted_market_strategy_is_normalized_as_a_linkless_report() -> Non
             }
         ],
     }
+    contract = classify_source_contract(event.provider_metadata)
+    assert (contract.family, contract.event_kind, contract.reason) == ("oi_v1", "oi", None)
 
 
 def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() -> None:
@@ -215,6 +218,11 @@ def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() 
         strategy_hits,
     )
     assert [event.provider_record_id for event in parsed_hits.events] == ["3568500"]
+    # The official history shape in this fixture omits Strategy.sourceType.
+    # Recovery must preserve that absence and fail closed, never infer a
+    # deterministic contract from id/name/engine alone.
+    contract = classify_source_contract(parsed_hits.events[0].provider_metadata)
+    assert (contract.event_kind, contract.reason) == ("unsupported_market", "source_contract_drift")
     assert parsed_hits.has_more is False
     assert [request.url.path for request in requests] == [
         "/open/strategy_list",

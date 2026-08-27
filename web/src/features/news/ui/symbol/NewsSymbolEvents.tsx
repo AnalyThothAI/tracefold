@@ -7,20 +7,20 @@ import { Link } from "react-router-dom";
 import type { NewsFeedEvent } from "../../api/newsQueries";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import {
-  isOiFrame,
   matchesLane,
-  SYMBOL_LANE_LABELS,
   SYMBOL_LANES,
+  symbolLaneLabel,
   type NewsSymbolLane,
 } from "../../model/symbolLanes";
 import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
+import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 /**
- * Everything that happened to this name, news and OI frames on one clock.
+ * Every persisted Event kind for this name on one clock.
  *
  * The two lanes are mixed on purpose — a listing headline and an open-interest frame minutes apart is the
  * whole reason a per-token page exists, and the console had no surface where they appeared together.
@@ -51,17 +51,14 @@ export function NewsSymbolEvents({
   onRetry: () => void;
   rows: readonly NewsFeedEvent[];
 }) {
-  const counts: Record<NewsSymbolLane, number> = {
-    all: rows.length,
-    news: rows.filter((event) => !isOiFrame(event)).length,
-    oi: rows.filter(isOiFrame).length,
-    pushed: rows.filter((event) => event.outcome.group === "pushed").length,
-  };
+  const counts = Object.fromEntries(
+    SYMBOL_LANES.map((value) => [value, rows.filter((event) => matchesLane(event, value)).length]),
+  ) as Record<NewsSymbolLane, number>;
   const shown = rows.filter((event) => matchesLane(event, lane));
 
   return (
-    <Card flush hint="新闻与 OI 帧同一条时间轴" title="这个代币经历的事件">
-      <div aria-label="按通道筛选" className="news-symbol-tabs" role="tablist">
+    <Card flush hint="全部事件类型共用一条时间轴" title="这个代币经历的事件">
+      <div aria-label="按事件类型筛选" className="news-symbol-tabs" role="tablist">
         {SYMBOL_LANES.map((value) => (
           <button
             aria-selected={lane === value}
@@ -72,7 +69,7 @@ export function NewsSymbolEvents({
             role="tab"
             type="button"
           >
-            {SYMBOL_LANE_LABELS[value]}
+            {symbolLaneLabel(value)}
             <span aria-hidden className="news-symbol-tab-count">
               {formatCount(counts[value])}
             </span>
@@ -88,14 +85,14 @@ export function NewsSymbolEvents({
         <NewsEmptyNote>这个窗口里没有关于这个代币的事件。</NewsEmptyNote>
       ) : null}
       {!error && rows.length > 0 && shown.length === 0 ? (
-        <NewsEmptyNote>已加载的事件里没有这个通道的。</NewsEmptyNote>
+        <NewsEmptyNote>已加载的事件里没有这个类型的。</NewsEmptyNote>
       ) : null}
 
       {!error && shown.length > 0 ? (
         <div className="news-symbol-table">
           <div aria-hidden className="news-symbol-head">
             <span>TIME</span>
-            <span>通道</span>
+            <span>类型</span>
             <span>EVENT</span>
             <span>去向</span>
             <span className="news-symbol-num">1H / 4H</span>
@@ -116,7 +113,7 @@ export function NewsSymbolEvents({
       ) : null}
 
       <NewsSourceLine
-        note="通道页签在已加载的这批里筛，计数与它筛的是同一批——feed 没有 lane 参数，服务端计数会描述另一个窗口"
+        note="类型页签在已加载的这批里筛，计数与它筛的是同一批——feed 没有 lane 参数，服务端计数会描述另一个窗口"
         path="GET /api/news/feed?symbol={base}&hours=24"
       />
     </Card>
@@ -135,7 +132,7 @@ function EventRow({ event }: { event: NewsFeedEvent }) {
       >
         {clockTime(event.opened_at_ms)}
       </time>
-      <span className="news-symbol-lane">{isOiFrame(event) ? "OI 帧" : "新闻"}</span>
+      <NewsKindBadge kind={event.event_kind} />
       <span className="news-symbol-headline">
         <Link to={newsEventPath(event.event_id)}>{headline}</Link>
         {triage ? <NewsDirectionChip triage={triage} withStrength={false} /> : null}

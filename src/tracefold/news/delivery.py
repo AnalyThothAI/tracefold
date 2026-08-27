@@ -189,7 +189,7 @@ def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> l
 
 def reader_assets(
     *,
-    event: Mapping[str, Any],
+    event_kind: str,
     verdict: Mapping[str, Any],
     grounded_assets: Sequence[str],
     program_version: str = "",
@@ -206,7 +206,7 @@ def reader_assets(
 
     ordinary = card_assets(verdict, grounded_assets)
     if (
-        str(event.get("admission") or "") != "telemetry_deterministic"
+        event_kind != "oi"
         or str(program_version or "") != OI_PROGRAM_VERSION
         or not verdict_program_sha256
         or verdict_program_sha256 != expected_program_sha256

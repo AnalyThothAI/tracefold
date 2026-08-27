@@ -80,6 +80,7 @@ def _event(
     event_type: str = "listing",
     ingest_mode: str = "live",
     admission: str = "candidate",
+    event_kind: str = "news",
     ground_assets: bool = True,
 ) -> None:
     conn.execute(
@@ -94,15 +95,16 @@ def _event(
     conn.execute(
         """
         INSERT INTO news_events (
-          event_id, leader_item_id, family, comparison_fingerprint, comparison_title, leader_title,
+          event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title, leader_title,
           focus_fact_id,
           opened_at_ms, last_member_at_ms, expires_at_ms, admission, storyline_key, ingest_mode,
           created_at_ms, updated_at_ms
-        ) VALUES (%s, %s, 'general', %s, 'c', 'leader headline', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, 'general', %s, %s, 'c', 'leader headline', %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             event_id,
             f"i-{event_id}",
+            event_kind,
             event_id,
             f"fact:{event_id}",
             opened_at_ms,
@@ -380,6 +382,7 @@ def test_a_telemetry_frame_reaches_the_price_plane_only_once_its_asset_is_record
         symbols=("TRUMP",),
         opened_at_ms=NOW - 2 * HOUR,
         admission="telemetry_deterministic",
+        event_kind="oi",
         ground_assets=False,
     )
     repos = repositories_for_connection(conn)

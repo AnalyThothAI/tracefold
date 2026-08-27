@@ -6,6 +6,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
+from tracefold.news import EVENT_KINDS
+
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
 from ..responses import _etagged
@@ -20,6 +22,8 @@ _ADMISSIONS = {
     "candidate",
     "listing_deterministic",
     "telemetry_deterministic",
+    "liquidation_deterministic",
+    "unsupported_market_contract",
     "suppressed_pr_template",
     "suppressed_low_signal",
     "recovery",
@@ -31,7 +35,7 @@ _DECISIONS = {"push", "escalate", "drop", "throttled", "degraded"}
 # whole window while the rows below described one page of it.
 _OI_OUTCOMES = {"all", "pushed", "withheld", "parse_failed"}
 _DIRECTIONS = ("bullish", "bearish", "neutral")
-_CHANNELS = ("news", "oi")
+_CHANNELS = EVENT_KINDS
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
@@ -50,7 +54,7 @@ def get_news_feed(
     # the named `news_feed_oi_invalid` rather than a shape error that says nothing about the vocabulary.
     oi: Annotated[str, Query(max_length=40)] = "",
     direction: Annotated[str, Query(max_length=40)] = "",
-    channel: Annotated[str, Query(max_length=16)] = "",
+    channel: Annotated[str, Query(max_length=64)] = "",
 ) -> Response:
     _validate_query_params(
         request,

@@ -45,11 +45,11 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
         conn.execute(
             """
             INSERT INTO news_events (
-              event_id, leader_item_id, family, comparison_fingerprint, comparison_title,
+              event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title,
               leader_title, focus_fact_id, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
               storyline_key, ingest_mode, created_at_ms, updated_at_ms
             )
-            SELECT 'status-event-' || g, 'status-item-' || g, 'general', 'status-fingerprint-' || g,
+            SELECT 'status-event-' || g, 'status-item-' || g, 'general', 'news', 'status-fingerprint-' || g,
                    'comparison', 'leader ' || g, 'fact:' || g, %s, %s, %s + 3600000,
                    'candidate', 'asset:STATUS' || g, 'live', %s, %s
               FROM generate_series(1, %s) AS g

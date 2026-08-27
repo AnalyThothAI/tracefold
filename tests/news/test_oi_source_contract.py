@@ -41,6 +41,26 @@ def test_the_pinned_real_frame_proves_the_five_minute_window() -> None:
     assert contract.measurement_window_ms == expected["measurement_window_ms"] == 300_000
 
 
+def test_merged_item_provenance_can_prove_oi_when_news_arrived_first() -> None:
+    metadata = {
+        **FIXTURE["provider_metadata"],
+        "strategies": [
+            {
+                "id": "1018",
+                "name": "News Score > 70",
+                "source_type": "news",
+                "engine_type": "news",
+            },
+            *FIXTURE["provider_metadata"]["strategies"],
+        ],
+    }
+
+    contract = oi_source_contract(metadata)
+
+    assert contract is not None
+    assert (contract.strategy_id, contract.measurement_window_ms) == ("1019", 300_000)
+
+
 def test_the_same_frame_still_parses_to_the_four_numbers_it_always_did() -> None:
     """The contract is published *beside* the measurements, never instead of them."""
 

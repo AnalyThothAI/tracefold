@@ -276,7 +276,6 @@ def test_asset_class_keeps_the_old_reading_for_a_symbol_the_universe_does_not_kn
 def test_gate_labels_the_event_from_the_universe() -> None:
     base = {
         "engine_type": "news",
-        "strategy_ids": ("1018",),
         "provider_score": 80.0,
         "ingest_mode": "live",
     }
@@ -450,7 +449,6 @@ def test_a_word_collision_never_reaches_the_class_map() -> None:
             coins=_coins("SPOT"),
             instrument_classes={"SPOT": "equity"},
             engine_type="news",
-            strategy_ids=("1018",),
             provider_score=85.0,
             ingest_mode="live",
         )

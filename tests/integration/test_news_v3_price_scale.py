@@ -72,10 +72,10 @@ def _seed(conn: Any) -> None:
     )
     conn.execute(
         """
-        INSERT INTO news_events (event_id, leader_item_id, family, comparison_fingerprint, comparison_title,
+        INSERT INTO news_events (event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title,
                                  leader_title, focus_fact_id, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
                                  storyline_key, ingest_mode, created_at_ms, updated_at_ms)
-        SELECT 'e-' || g, 'i-' || g, 'general', 'f-' || g, 'c', 'leader ' || g, 'fact:' || g,
+        SELECT 'e-' || g, 'i-' || g, 'general', 'news', 'f-' || g, 'c', 'leader ' || g, 'fact:' || g,
                %s + g * %s::bigint, %s + g * %s::bigint, %s + g * %s::bigint + 3600000, 'candidate',
                'asset:S' || (g %% 500), 'live', %s, %s
           FROM generate_series(1, %s) AS g

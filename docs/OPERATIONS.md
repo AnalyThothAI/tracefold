@@ -135,7 +135,7 @@ process even while `accept_intents=false`; missing credentials keep it absent.
 
 On a fresh database, `tracefold init` and `make up` create the Nautilus password
 and role with the other runtime roles. For an existing PostgreSQL volume that
-predates migration `20260827_0315`, stop the whole stack and run the offline
+predates migration `20260828_0316`, stop the whole stack and run the offline
 `make db-provision-nautilus-role` once before `make up`; the command refuses a
 running Compose container. With both secure Demo credential files present,
 `make up` starts Nautilus with the other application processes. Subsequent
@@ -403,8 +403,10 @@ News:
 ```text
 OpenNews account Strategy WSS (whatever the account has enabled; no local allowlist)
   -> Receiver publishes each accepted frame to RabbitMQ (confirms)
-  -> q:news.raw [SAC] Deduper: Item upsert -> title/identity -> Event new|member
-     -> Gate -> storyline key -> publish event.<family>.<queue_priority> for admitted Events
+  -> q:news.raw [SAC] Deduper: Item upsert -> exact source contract + event_kind
+     -> title/identity -> same-kind Event new|member -> Gate -> storyline key
+     -> publish event.<family>.<queue_priority> for admitted Events
+        (unsupported_market persists and stops here)
   -> q:news.triage Triage (prefetch news.triage.concurrency):
      SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1 -> SemanticNormalizer
      -> ReaderCard.v2
@@ -417,6 +419,30 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      expiry, 30-day purge, broker snapshot
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
 ```
+
+`opennews_source_classifier_v1` is a pure step inside the existing Deduper, not
+a registry, queue or worker. Diagnose every first-seen Strategy tuple retained
+on the normalized Item by its `id`, `name`, `source_type` and `engine_type`,
+plus the Event's durable
+`event_kind`. A known id with a changed tuple is `source_contract_drift`; an
+unbound scoreless market/wallet frame is `unsupported_market_contract`. Both
+persist in nullable `news_events.source_contract_reason` and intentionally
+produce no Triage message, model call or delivery. Recovery applies the same
+classifier and, for a complete history tuple, the same strict parser without
+writing the live OI rank fact; it never delivers. A history hit missing
+`source_type` or another tuple field is named drift and must not be repaired by
+guessing from Strategy id. Ordinary and deterministic recovery remains
+`admission=recovery`, while a newly observed unsupported contract retains its
+named `admission=unsupported_market_contract`. The hard cut does not rewrite a
+historical verdict/delivery ledger; a durable sent receipt still projects as
+delivered even though the current admission is the named hold. Current
+`event_kind` stops any pre-cut queued Triage or Delivery message, so an old push
+verdict with no delivery becomes held rather than permanently pending.
+Pre-cut deterministic rows lacking durable typed success evidence read
+`source_contract_unverified`; they remain an honest historical parsed gap until
+current Admission or an already queued deterministic Triage run settles that
+same Event with the strict parser. The OI signal row used during migration is a
+derived read-model row, not an alternate material truth.
 
 Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
 the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).
@@ -544,10 +570,13 @@ Diagnose News in this order:
 1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,
    `open_incidents`. Which Strategies are feeding the pipeline is a question for
    the OpenNews dashboard, not for Tracefold.
-2. `tracefold news bus-check`: consumers attached to every queue (Deduper and
+2. For a market-contract frame, inspect its normalized four-field Strategy
+   identity, `event_kind`, `source_contract_reason`, admission, classifier version and parser
+   version. Do not retry a named unsupported contract into the model lane.
+3. `tracefold news bus-check`: consumers attached to every queue (Deduper and
    Deliverer show exactly one), `news.dead` depth, `news.retry` depth;
    `tracefold news dlq inspect` for the dead-letter bodies.
-3. `pipeline`: `candidate_share_24h` (the Gate now admits nearly every Item;
+4. `pipeline`: `candidate_share_24h` (the Gate now admits nearly every ordinary News Item;
    a share far below ~90% means the low-signal switch or a template flood),
    `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
    `pushed_by_rule`, `reviewed_should_push_24h`,
@@ -560,12 +589,12 @@ Diagnose News in this order:
    `telemetry_parsed_24h`, `telemetry_parse_failed_24h`, and
    `telemetry_push_24h`; `dropped_by_rule.oi_parse_failed` is a provider parser
    contract fault, not ordinary model noise.
-4. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
+5. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or webhook invalid;
    `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
    still contain the retired `delivery_paused` and
    `hourly_cap_reached` error, but policy v7 never writes it.
-5. `tracefold news review queue --view coverage --hours 168` first checks
+6. `tracefold news review queue --view coverage --hours 168` first checks
    whether there is enough same-version production evidence and accepted
    review coverage to make a quality claim. Work the deterministic strata with
    `review queue`, inspect the exact frozen input using `review evidence`, and
@@ -656,10 +685,11 @@ Diagnose News in this order:
    Deduper+Gate on a saved provider payload without broker or model.
 
 The current evidence eligibility window starts at the deployment timestamp
-stored in `news_learning_epochs(program_v7)`. Only accepted
-`news_review_v4` rows from this epoch enter metric v4, GEPA or release evidence. Every earlier
-Prompt/Program baseline remains readable audit history but cannot enter a
-dataset or release stage. Do not
+stored in `news_learning_epochs(program_v7)`. Only accepted `news_review_v4`
+rows from this epoch that are bound to the exact current factory/Program bundle
+enter metric v4, GEPA or release evidence. Every earlier Prompt/Program
+baseline remains readable audit history but cannot enter a dataset or release
+stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality; that claim begins only after
 post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
@@ -911,6 +941,14 @@ learning-artifact kind constraint while keeping `compile_receipt` in it, and
 trips every armed or active canary whose candidate was registered against the
 retired receipt chain. It leaves `program_v7` open for the same reason and is
 irreversible as well.
+`0315` is the #288 exact source-contract route and Event-kind hard cut. It
+trips open canary activations and appends the factory-v6 to factory-v7 receipt,
+but neither rewrites nor appends the `program_v7` epoch row. Earlier rows and
+bundles remain immutable audit history; exact current-bundle acceptance makes
+prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
+`0316` adds the #283 immutable Trading Intent handoff and Nautilus execution
+projection; on an existing volume, provision the Nautilus role before applying
+it as described above.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

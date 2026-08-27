@@ -167,7 +167,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     registered_at_ms=registered_at_ms,
                     declared_target_dimensions=plan.target_dimensions,
                     guardrails=(
-                        "fixed_factory_v6",
+                        "fixed_factory_v7",
                         "development_only",
                         "holdout_unseen",
                         "no_dynamic_code",

@@ -274,16 +274,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .news-symbol-lane {
-    justify-self: start;
-    padding: 2px 7px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xs);
-    background: var(--surface-raised);
-    color: var(--text-subtle);
-    font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
-  }
-
   .news-symbol-headline {
     display: flex;
     gap: 8px;

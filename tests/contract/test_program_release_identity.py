@@ -17,8 +17,8 @@ def test_current_news_release_identity_is_byte_exact() -> None:
 
     artifact = load_stable_program_artifact()
     assert ProgramStrategyArtifactCodec.encode(artifact) == (
-        '{"event_semantics_instruction":"","factory_id":"tracefold.news.program.factory_v6",'
-        '"program_sha256":"e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06",'
+        '{"event_semantics_instruction":"","factory_id":"tracefold.news.program.factory_v7",'
+        '"program_sha256":"535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0",'
         '"reader_card_instruction":"","schema_version":"news_program_strategy_artifact_v1"}\n'
     )
     assert {
@@ -29,7 +29,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "metric_id": METRIC_ID,
     } == {
-        "factory_id": "tracefold.news.program.factory_v6",
+        "factory_id": "tracefold.news.program.factory_v7",
         "program_version": "news_semantic_program_v5",
         "learning_epoch": "program_v7",
         "policy_version": "news_triage_policy_v10",

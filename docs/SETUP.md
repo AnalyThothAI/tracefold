@@ -256,14 +256,20 @@ same issue's compile-record cut: it admits the `compile_record` learning
 artifact kind, keeps `compile_receipt` readable as audit history, and trips
 open activations again, because a candidate registered against the retired
 receipt chain can no longer be evaluated. It does not re-open the epoch either.
+Migration `0315` carries #288's exact source route and factory-v7 cut. It trips
+open activations and records the cut without rewriting or appending the
+`program_v7` epoch row. Accepted review labels remain immutable truth, but
+prior-factory judgments are audit-only under exact current-bundle eligibility,
+so the factory-v7 cohort starts at zero.
 The production image has one loader only: the
-`news_program_strategy_artifact_v1` document, factory v6, executable v5,
+`news_program_strategy_artifact_v1` document, factory v7, executable v5,
 epoch v7 and policy v10. Issue #175 reissues that sole stable Program and bundle
 inside v7; Issue #190 reissues it again for fail-closed NaN/Infinity canonical
 identity; Issue #193 reissues it a third time as the one-document artifact whose
-root is the hash of the factory id plus the two instructions. Rollback uses the
-recorded previous same-schema runtime image, never an alternate registry entry
-or runtime switch.
+root is the hash of the factory id plus the two instructions; Issue #288
+reissues it under factory v7 for the exact source-contract route. Rollback uses
+the recorded previous same-schema runtime image, never an alternate registry
+entry or runtime switch.
 `tracefold config` prints the effective values. Policy v10 retains policy v7's
 removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes the semantic contract moves
 to delivery; the sent-reader ledger remains only for same-fact suppression.

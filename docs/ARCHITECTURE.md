@@ -261,8 +261,20 @@ The current read model is `news_events` (plus `news_event_members`,
 `news_event_bands`, `news_event_assets`). It uses stable product identity, has
 exactly one runtime writer, is rebuildable from facts, and writes zero serving
 rows when its business payload is unchanged. `news_events` is rebuildable by
-replaying `news_items` through the Deduper (`tracefold news replay` performs
-the same computation in memory). OpenNews's raw `coins` annotation remains
+replaying `news_items` through the Deduper: `admit_frame` expands every
+first-seen Strategy tuple retained on the material Item, while `tracefold news
+replay` applies the same classifier and Deduper policy to saved provider hits.
+Its durable `event_kind` is the closed source
+classification `news|listing|oi|liquidation|unsupported_market`; exact,
+artifact and near-duplicate joins are restricted to the same kind so source
+contracts cannot collapse into each other. Its nullable durable
+`source_contract_reason` records only `source_contract_drift` or
+`source_contract_unverified` or `unsupported_market_contract`. A missing value
+means the current writer parsed the selected contract (or it needs no strict
+parser); pre-cut OI/liquidation rows without durable typed success evidence are
+backfilled as unverified rather than inferred successful. An OI signal row is
+derived read-model evidence for that conservative migration, not a second
+material fact source. OpenNews's raw `coins` annotation remains
 source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it. `news_event_assets` is the durable Event-market
 identity ledger: it contains those Gate-grounded symbols and the primary symbol
@@ -294,11 +306,11 @@ as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
 current `program_v7` epoch was opened for `news_semantic_program_v5`, and its
 row keeps naming the factory, artifact schema and baseline root it was *opened*
-with; the running image is `tracefold.news.program.factory_v6` on the
+with; the running image is `tracefold.news.program.factory_v7` on the
 `news_program_strategy_artifact_v1` document. Every earlier Prompt/Program row
 remains append-only audit history. Only accepted `news_review_v4` evidence
-created in the v7 epoch is eligible for metric v4, compiler, replay or release
-gates.
+created in the v7 epoch and bound to the exact current factory/Program bundle
+is eligible for metric v4, compiler, replay or release gates.
 Beside that plane, and deliberately not in it, sits the operator's fast loop
 (`tracefold.news.learning.experiment`, #193). It freezes one closed window into
 a run directory on disk, compares arms on the frozen cases, and runs the same
@@ -537,12 +549,14 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
      (routing key raw.opennews.<strategy_id>; recovery frames use raw.recovery.<strategy_id>)
   -> q:news.raw [single-active-consumer] Deduper:
        Item upsert (provenance union) -> content-block title + pinned normalization
-       -> exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
+       -> exact normalized source-contract classification and durable event_kind
+       -> same-kind exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
        -> Event new|member (family window) -> Gate (provider-graded grounded_assets,
           macro/energy lexicon, PR-template veto, low-signal switch) -> preliminary
           storyline key; a stronger later member re-gates a suppressed Event
        -> publish event.<family>.<queue_priority> for every admitted candidate,
-          listing or telemetry Event; the suffix affects broker scheduling only
+          listing, OI or liquidation Event; unsupported_market is a named held
+          Event and never reaches Triage; the suffix affects broker scheduling only
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
        SemanticJudge.judge(TriageContext) -> DSPy EventSemantics.v2 with nested
           TradeRelevanceV1
@@ -710,8 +724,16 @@ News consumers use their own four-slot database lane
 a lane admission timeout is a `DeferError` (uncounted requeue), a statement
 overrun is a `TransientError` (counted).
 
-Identity: `news_items.item_id = sha256(source_id, params.id)`;
-`news_events.event_id` is the leader item id. `tracefold.news.events.titles`
+Identity: `news_items.item_id = sha256(source_id, params.id)`. Event identity
+v5 keeps the legacy encoding for ordinary News (`item_id` for a whole Item,
+`sha256(item_id, fact_id)` for a split FactUnit) and uses
+`sha256(item_id, fact_id, event_kind)` for every non-News kind.
+If migration reclassified a pre-v5 ordinary-News identity — `item_id` for a
+whole Item or `sha256(item_id, fact_id)` for a split FactUnit — as non-News, a
+later ordinary-News projection for that same fact uses the deterministic
+collision fallback `sha256(item_id, fact_id, "news")`; no existing Event or
+dependent ledger is rekeyed.
+`tracefold.news.events.titles`
 extracts the first content block (skipping URL-only, label-only, `reply/quote:`
 lines and pinned wire source labels/suffixes; exchange names and `@handles`
 are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
@@ -719,7 +741,12 @@ are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
 normalizes for comparison, `tracefold.news.events.tokens` + `minhash` produce the
 band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.admit_item`
 is the single Deduper transaction. Fingerprints of at most two tokens never
-share an Event.
+share an Event. `event_kind` fences every dedupe candidate lookup and namespaces
+non-News Event identity. A source-contract reason never splits the same
+Item/FactUnit/kind identity: a migrated `source_contract_unverified` Event is
+settled in place by the current parser. Cross-Item exact/artifact/near joins are
+reason-fenced; the sole exception is an unverified migration candidate, which
+is resolved to the current parser result before the new member joins.
 
 That text-derived identity is deliberately weak, and #154 adds the exact one
 beside it rather than loosening it. `news_items.source_artifact_id` is the
@@ -742,8 +769,45 @@ days that age is bimodal (2491 within 10 s, 7 beyond 16 h, nothing between) and
 never negative. `published_at_ms` is untouched: `opened_at_ms` derives from it
 and anchors `reaction_v1`.
 
+Before Gate, one pure OpenNews source classifier matches the normalized
+`strategy_id + strategy_name + source_type + engine_type` tuple exactly. It is
+the sole owner of the five route families: ordinary News and listing continue
+through Gate and the generic Program, OI and liquidation select their existing
+strict deterministic parsers, and an unbound scoreless market/wallet contract
+or known tuple drift becomes the named held `unsupported_market_contract`.
+Parser failure is `source_contract_drift` and never falls back to a model.
+Recovery runs the same classifier and, when history carries the complete tuple,
+the same side-effect-free parser and persists that reason; it does not write the
+live OI rank fact and never delivers. A provider history row missing a tuple
+field fails closed as drift rather than inferring a contract from its id.
+Ordinary and
+deterministic recovery keeps `admission=recovery`, while unsupported contracts
+retain the named `unsupported_market_contract` admission. Event identity v5
+keeps ordinary News identities stable and namespaces non-News FactUnits by
+kind, so different contracts for one provider record cannot merge by arrival
+order. There is no source registry, queue, worker, or ID-only routing.
+The hard cut keeps historical verdict/delivery rows, moves unsupported Events
+to the current named hold, and gives a durable `delivery.state=sent` priority
+over that routing admission so a card the reader received remains delivered.
+Both consumers re-read current `event_kind` before model or outbound work,
+which safely drains pre-cut queued messages without leaving a false pending card.
+Migration 0315 deliberately does not manufacture extra historical Events from
+secondary Strategy tuples on a merged Item. For an already judged Event it
+uses the exact evidence snapshot bound to the latest Triage verdict and keeps
+the route named by that verdict's Program; unsupported contracts and known tuple
+drift still fail closed first. This migration-only compatibility rule prevents
+a pre-cut generic verdict from being replayed as an OI or liquidation verdict.
+An unjudged Event uses its latest evidence focus and the exact source classifier.
+The tuple and provider score always come from the same snapshot. Only an
+incomplete tuple may fall back to an explicit deterministic admission, or to a
+recovery liquidation typed fact. This preserves the Item's complete tuple union
+without rewriting a verdict already queued for delivery. The missing secondary
+Event is a declared historical projection residual, not a loss of fact truth;
+rebuilding the Item through current Admission, or a later provider redelivery,
+creates it deterministically.
+
 Gate and storyline (`tracefold.news.events.gate`, `tracefold.news.events.storyline`) are pure
-functions and keep no name table of their own: grounded assets are the
+functions and keep no Strategy name table of their own: grounded assets are the
 provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
 provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is
 grounded only in energy context and a short stop-list drops English-word tags.
@@ -761,10 +825,10 @@ on three exchanges *and* Atomera on the NYSE, and the venue that lists a symbol
 always describes it. The tier is excluded from `asset_refs`, from the console's
 `符号落表` funnel segment, and from the `trading` / `by_venue` figures; only
 `instrument_classes()` reads it.
-The Gate does not decide relevance: every Item is a `candidate` unless it is a
-recovery replay, a law-firm template notice (strong template phrases always;
-weak ones only without a grounded asset), an under-80 market-telemetry frame,
-or — behind `news.gate.suppress_low_signal`, default off — an ungrounded,
+The Gate does not decide relevance: every ordinary-news Item is a `candidate`
+unless it is a recovery replay, a law-firm template notice (strong template
+phrases always; weak ones only without a grounded asset), an under-80 scored
+market frame, or — behind `news.gate.suppress_low_signal`, default off — an ungrounded,
 non-macro social post under 70. A `listing` frame takes the
 `listing_deterministic` admission, which is admitted and judged like a
 candidate (#72). A member that
@@ -823,15 +887,17 @@ per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
 The only executable generation is `news_semantic_program_v5` from
-`tracefold.news.program.factory_v6` in learning epoch `program_v7`.
+`tracefold.news.program.factory_v7` in learning epoch `program_v7`.
 Issue #193 hard-cuts the artifact to one canonical JSON document holding
-`schema_version` `news_program_strategy_artifact_v1`, `factory_id`
-`tracefold.news.program.factory_v6`, and the two advisory instructions an
-optimizer may write, one per Predictor. `program_sha256` is the canonical hash
-of exactly those four values, and the stable root is
-`e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`. Like #175
-and #190 this re-issues the sole v7 root rather than opening a generation; the
-old manifest/state root is not a second runtime option.
+`schema_version` `news_program_strategy_artifact_v1`, one `factory_id`, and the
+two advisory instructions an optimizer may write, one per Predictor.
+Issue #288 keeps that shape but bumps the factory for the code-owned exact
+source route; the current document carries
+`factory_id=tracefold.news.program.factory_v7`. `program_sha256` is the
+canonical hash of exactly those four values, and the stable root is
+`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`.
+Like #175 and #190 this re-issues the sole v7 root rather than opening a
+generation; the old root is not a second runtime option.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
 parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
@@ -1096,7 +1162,7 @@ and the card said nothing), magnitude label, the tickers the model called
 primary and the Gate grounded, source（N 条报道）, and the leader item's
 publication time in the reader's zone (UTC+8). Ordinary News derives this list
 from model-primary ∩ Gate-grounded assets; deterministic OI derives one symbol
-from its matching rank-ledger row only when the admission and full OI Program
+from its matching rank-ledger row only when the current Event kind and full OI Program
 identity also match. The third body line is the market's own number for those
 same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`
 — and it exists only when `PriceRepository.quotes_for_symbols` answered `fresh`:
@@ -1141,8 +1207,9 @@ Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in
 `news_opennews_incidents`; reconnect closes transport incidents and requests
 recovery, which pages the official Strategy hits endpoints for the closed
-interval and publishes `raw.recovery.*` frames (`admission=recovery`, never
-delivered). Dead letters are operator-visible through `tracefold news dlq
+interval and publishes `raw.recovery.*` frames (normally
+`admission=recovery`; unsupported contracts retain their named admission;
+never delivered). Dead letters are operator-visible through `tracefold news dlq
 inspect|replay|purge`.
 
 News storage is split by meaning, not by a fragile table count. Material
@@ -1425,6 +1492,15 @@ a candidate registered against the old chain names a receipt that no longer
 validates and can no longer be evaluated. It does not re-open `program_v7`
 either — how a compile is serialized says nothing about whether an accepted
 review is true.
+`20260827_0315` persists the #288 exact source-contract route and Event-kind
+hard cut, trips open canary activations, and records the factory-v6 to
+factory-v7 migration receipt. It neither rewrites nor appends the `program_v7`
+epoch row: all earlier rows and bundles remain immutable audit history. Because
+current acceptance is bound to the exact factory and Program bundle, prior
+factory evidence is audit-only and the factory-v7 cohort starts with zero
+eligible evidence.
+`20260828_0316` adds the one-table Trading Intent handoff, its Nautilus
+execution projection, and the least-privilege grants for that separate runtime.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -1936,9 +2012,10 @@ duplicate-safe and loss-bounded.
 
 OpenNews strategy `1019` (`OI Event Monitor`) pushes a fixed-format frame about
 190 times a day: `{SYM} OI Rise {x}%, OI Value {y}, Whale Long Profit {z}%,
-Whale/OI Ratio {w}%`. The Gate reads `1019` off the frame's own metadata exactly
-as it reads `1353` for a listing notice — provenance, not configuration — and
-admits it as `telemetry_deterministic`.
+Whale/OI Ratio {w}%`. The shared classifier admits it as
+`telemetry_deterministic` only when the complete normalized tuple is exactly
+`1019 / OI Event Monitor / market / market`; `1019` alone has no routing
+authority.
 
 Those four numbers are the whole message, so Triage judges the frame by
 arithmetic instead of spending two structured model calls re-reading them.
@@ -1998,14 +2075,14 @@ quote leaves that ticker/行情 context absent. The decision itself lives in `ne
 other decision, which is also where the lane's idempotency comes from — Triage
 already re-publishes an unpublished push on redelivery.
 
-Strategy provenance and parser success are separate contracts. Every live 1019
+Strategy provenance and parser success are separate contracts. Every live `oi_v1`
 frame bypasses near-duplicate matching so provider format drift reaches Triage;
 an unparseable frame fails closed without a model call and persists the named
 `oi_parse_failed` rule/error. Its trace and structured warning carry strategy
 id, OpenNews/provider source, a title SHA-256 rather than raw text, parser
-version and failure stage. Status exposes 24 h received, parsed, parse-failed
-and pushed counts, while ordinary non-1019 OI prose keeps the normal Deduper and
-model path.
+version, source-classifier version and failure stage. Status exposes 24 h
+received, parsed, parse-failed and pushed counts, while ordinary OI prose keeps
+the normal Deduper and model path.
 
 Two places treat these Events specially and both are explicit: they are exempt
 from near-duplicate matching (two frames for one symbol differ only in their

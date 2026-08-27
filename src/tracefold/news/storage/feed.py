@@ -20,14 +20,22 @@ from ..outcome import (
     novelty_zh,
     scope_zh,
 )
+from ..source_contracts import (
+    EVENT_KINDS,
+    OI_SOURCE_IDENTITY,
+    SOURCE_CONTRACT_CLASSIFIER_VERSION,
+    SOURCE_CONTRACT_FAMILIES,
+    EventKind,
+)
 from ..timeline import event_timeline
 from .sql_values import _ADMITTED_SQL
 
 # Feed task tabs mirror OUTCOME_GROUP in outcome.py over the feed's joined rows.
 _PENDING_CORE_SQL: Final = (
-    f"e.admission IN ({_ADMITTED_SQL})"
-    " AND (t.final_decision IS NULL"
-    "      OR (t.final_decision IN ('push', 'escalate') AND (d.state IS NULL OR d.state = 'sending')))"
+    "COALESCE(d.state = 'sending', false) OR ("
+    "d.state IS NULL"
+    f" AND e.admission IN ({_ADMITTED_SQL})"
+    " AND (t.final_decision IS NULL OR t.final_decision IN ('push', 'escalate')))"
 )
 _OUTCOME_GROUP_SQL: Final = {
     "pushed": "d.state = 'sent'",
@@ -85,7 +93,7 @@ class FeedStorage:
         hours: int | None = None,
         oi: str | None = None,
         directions: tuple[str, ...] | None = None,
-        channels: tuple[str, ...] | None = None,
+        channels: tuple[EventKind, ...] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
@@ -147,12 +155,9 @@ class FeedStorage:
         if directions:
             where.append("t.direction = ANY(%s)")
             params.append(list(directions))
-        if channels and len(channels) == 1:
-            where.append(
-                "e.admission = 'telemetry_deterministic'"
-                if channels[0] == "oi"
-                else "e.admission <> 'telemetry_deterministic'"
-            )
+        if channels and len(channels) < len(EVENT_KINDS):
+            where.append("e.event_kind = ANY(%s)")
+            params.append(list(channels))
         if oi in OI_FILTERS:
             # The judge's own rule, from the trace it wrote. `final_decision` cannot answer this: a frame held
             # by a threshold and one whose provider template stopped parsing are both `drop`, and both carry
@@ -179,7 +184,8 @@ class FeedStorage:
             params.extend([cursor_opened, cursor_id])
         rows = self.conn.execute(
             f"""
-            SELECT e.event_id, e.family, e.leader_title, e.opened_at_ms, e.last_member_at_ms, e.member_count,
+            SELECT e.event_id, e.family, e.event_kind, e.source_contract_reason, e.leader_title,
+                   e.opened_at_ms, e.last_member_at_ms, e.member_count,
                    e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
                    e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
                    i.canonical_url AS leader_url, i.reporting_origin, i.provenance,
@@ -404,7 +410,14 @@ class FeedStorage:
             SELECT
               (SELECT count(*) FROM news_items
                 WHERE observed_at_ms >= %s
-                  AND provider_metadata @> '{"strategies":[{"id":"1019"}]}'::jsonb
+                  AND EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements(COALESCE(provider_metadata -> 'strategies', '[]'::jsonb)) s
+                     WHERE s ->> 'id' = %s
+                       AND s ->> 'name' = %s
+                       AND s ->> 'source_type' = %s
+                       AND s ->> 'engine_type' = %s
+                  )
               ) AS telemetry_received_24h,
               (SELECT count(*) FROM news_oi_signals
                 WHERE created_at_ms >= %s) AS telemetry_parsed_24h,
@@ -415,18 +428,71 @@ class FeedStorage:
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s
                   AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
-              -- #207: Events, not provider items. `telemetry_received_24h` counts 1019 items *before* the
-              -- Gate, so it names frames the monitor's table can never show; the three by-rule buckets
-              -- count judged verdicts, so together they miss a frame still waiting for one. This is the
-              -- table's own universe — exactly the rows `admission=telemetry_deterministic&hours=24`
+              -- #207: Events, not provider items. `telemetry_received_24h` counts exact OI source frames
+              -- *before* the Gate, so it names frames the monitor's table can never show; the three by-rule
+              -- buckets count judged verdicts, so together they miss a frame still waiting for one. This is
+              -- the table's own universe — exactly the rows `admission=telemetry_deterministic&hours=24`
               -- serves — and it is what the 全部 tab counts.
               (SELECT count(*) FROM news_events
                 WHERE opened_at_ms >= %s
                   AND admission = 'telemetry_deterministic') AS telemetry_events_24h
             """,
-            (day_ago, day_ago, day_ago, day_ago, day_ago),
+            (
+                day_ago,
+                OI_SOURCE_IDENTITY.strategy_id,
+                OI_SOURCE_IDENTITY.strategy_name,
+                OI_SOURCE_IDENTITY.source_type,
+                OI_SOURCE_IDENTITY.engine_type,
+                day_ago,
+                day_ago,
+                day_ago,
+                day_ago,
+            ),
         ).fetchone()
         return {key: int(value or 0) for key, value in dict(row or {}).items()}
+
+    def _source_contracts_24h(self, *, day_ago: int) -> dict[str, dict[str, int]]:
+        """One bounded Event cohort, projected into the five closed source-contract funnels."""
+
+        rows = self.conn.execute(
+            """
+            SELECT e.event_kind, count(*) AS received,
+                   count(*) FILTER (WHERE COALESCE(v.has_verdict, false)) AS verdict,
+                   count(*) FILTER (
+                     WHERE e.source_contract_reason IS NULL
+                       AND NOT COALESCE(v.parse_failed, false)
+                   ) AS parsed,
+                   count(*) FILTER (
+                     WHERE e.source_contract_reason = 'source_contract_drift'
+                        OR COALESCE(v.parse_failed, false)
+                   ) AS parse_failed
+              FROM news_events e
+              LEFT JOIN LATERAL (
+                SELECT bool_or(true) AS has_verdict,
+                       bool_or(error_code IN ('oi_parse_failed', 'liquidation_parse_failed')) AS parse_failed
+                  FROM news_verdicts
+                 WHERE event_id = e.event_id AND stage = 'triage'
+              ) v ON true
+             WHERE e.opened_at_ms >= %s
+             GROUP BY e.event_kind
+            """,
+            (day_ago,),
+        ).fetchall()
+        by_kind = {str(row["event_kind"]): row for row in rows}
+        result: dict[str, dict[str, int]] = {}
+        for event_kind, family in zip(EVENT_KINDS, SOURCE_CONTRACT_FAMILIES, strict=True):
+            row = by_kind.get(event_kind, {})
+            received = int(row.get("received") or 0)
+            parse_failed = int(row.get("parse_failed") or 0) if event_kind in {"oi", "liquidation"} else 0
+            parsed = int(row.get("parsed") or 0) if event_kind in {"oi", "liquidation"} else received
+            result[family] = {
+                "received": received,
+                "parsed": 0 if event_kind == "unsupported_market" else parsed,
+                "parse_failed": parse_failed,
+                "unsupported": received if event_kind == "unsupported_market" else 0,
+                "verdict": int(row.get("verdict") or 0),
+            }
+        return result
 
     def _oi_by_rule_24h(self, *, day_ago: int) -> dict[str, int]:
         """The deterministic judge's own gate, counted over 24 h.
@@ -591,6 +657,8 @@ class FeedStorage:
                     for k, v in dict(pipeline or {}).items()
                 },
                 **self._oi_telemetry_24h(day_ago=day_ago),
+                "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
+                "source_contracts_24h": self._source_contracts_24h(day_ago=day_ago),
                 **funnel,
             },
             "oi": {"by_rule_24h": self._oi_by_rule_24h(day_ago=day_ago)},
@@ -771,8 +839,9 @@ class FeedStorage:
             "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
             "admitted_24h": admitted,
-            # A material Event exists only after the provider parser succeeds, so `parsed` truthfully equals
-            # the received Event cohort. Provider frames are transport input, never an alternate fact table.
+            # A material Event exists only after the transport/envelope parser succeeds, so this legacy
+            # `parsed` equals the Event cohort. Strict source-contract parser outcomes live in
+            # `source_contracts_24h`; provider frames are never an alternate fact table.
             "funnel_received_24h": events,
             "funnel_parsed_24h": events,
             "funnel_admitted_24h": admitted,
@@ -800,6 +869,8 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "event_id": card["event_id"],
         "family": card["family"],
+        "event_kind": card["event_kind"],
+        "source_contract_reason": card.get("source_contract_reason"),
         "leader_title": card["leader_title"],
         "leader_url": card.get("leader_url"),
         "leader_description": card.get("leader_description", ""),

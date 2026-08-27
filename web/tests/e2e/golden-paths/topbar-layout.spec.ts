@@ -193,7 +193,7 @@ test("a News row stays flat and carries one visible conclusion", async ({ page }
   await expect(row.locator(".news-event-verdict")).toHaveCount(0);
 
   await expect(page.locator(".news-direction")).toContainText("利空");
-  await expect(page.locator(".news-event-kind")).toContainText("宏观");
+  await expect(page.locator(".news-kind")).toContainText("新闻");
   await expect(page.locator(".news-event-badge")).toContainText("已推送");
   await expect(page.locator(".news-event-reason")).toContainText("模型判断值得推送");
 

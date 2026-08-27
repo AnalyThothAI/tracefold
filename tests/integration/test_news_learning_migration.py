@@ -72,7 +72,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260827_0315"
+        assert revision["version_num"] == "20260828_0316"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -176,7 +176,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
     finally:
         if conn is not None:
             conn.close()
@@ -218,7 +218,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -541,7 +541,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -633,6 +633,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert (
             news.find_exact_event(
                 family="general",
+                event_kind="news",
                 fingerprint="same-fingerprint",
                 now_ms=program_v6["starts_at_ms"],
             )
@@ -642,6 +643,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
             news.find_artifact_event(
                 source_artifact_id="x:12345",
                 family="general",
+                event_kind="news",
                 fingerprint="same-fingerprint",
                 item_id="new-item",
                 opened_after_ms=program_v6["starts_at_ms"] - 7 * 24 * 3_600_000,
@@ -651,6 +653,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert (
             news.find_band_candidates(
                 family="general",
+                event_kind="news",
                 band_keys=("same-band",),
                 now_ms=program_v6["starts_at_ms"],
             )
@@ -782,7 +785,7 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -822,7 +825,8 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
 
         receipts = conn.execute(
             "SELECT artifact_sha, parent_sha, payload, created_by, created_at_ms "
-            "FROM news_learning_artifacts WHERE kind = 'epoch_reset'"
+            "FROM news_learning_artifacts WHERE kind = 'epoch_reset' "
+            "AND created_by = 'migration_20260824_0304'"
         ).fetchall()
         assert len(receipts) == 1
         receipt = receipts[0]
@@ -935,7 +939,7 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -1004,8 +1008,13 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         )
 
         # A serialization change is not an epoch reset, so this migration writes no ledger receipt of its
-        # own: the only `epoch_reset` row is still the one 20260824_0304 wrote.
-        receipts = conn.execute("SELECT created_by FROM news_learning_artifacts WHERE kind = 'epoch_reset'").fetchall()
+        # own. Later hard cuts may add receipts, so scope this historical assertion to the two migrations
+        # whose boundary this test owns.
+        receipts = conn.execute(
+            "SELECT created_by FROM news_learning_artifacts WHERE kind = 'epoch_reset' "
+            "AND created_by IN ('migration_20260824_0304', 'migration_20260825_0305') "
+            "ORDER BY created_by"
+        ).fetchall()
         assert [row["created_by"] for row in receipts] == ["migration_20260824_0304"]
     finally:
         if conn is not None:
@@ -1055,7 +1064,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
 
         activation = dict(
             conn.execute(
@@ -1124,7 +1133,7 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0316"
 
         activation = dict(
             conn.execute(

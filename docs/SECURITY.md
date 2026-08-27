@@ -137,7 +137,7 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one canonical, content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version, `factory_id` `tracefold.news.program.factory_v6`, and
+holds a schema version, `factory_id` `tracefold.news.program.factory_v7`, and
 the two bounded advisory instructions; `program_sha256` is the canonical hash
 of exactly those four values. The loader re-verifies that hash, the schema and
 the factory, applies the advisory bounds — NFC, size, forbidden authority and
@@ -227,6 +227,10 @@ truth stays eligible. Every earlier
 review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v4,
 validation, holdout or promotion evidence for the current Program factory.
+`0315` then records #288's exact source route and factory-v7 cut without
+rewriting or appending the `program_v7` epoch row. Accepted review labels remain
+immutable truth, but prior-factory judgments are audit-only under the exact
+current-bundle filter and the factory-v7 eligible cohort starts at zero.
 The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
 
@@ -235,7 +239,8 @@ PostgreSQL runtime roles are code-owned:
 `20260818_0275` baseline migration and extended by the #112 migrations,
 creates the non-login `tracefold_owner` plus `tracefold_serve`
 (`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control
-writes), and `tracefold_migrate`. Serve has SELECT plus INSERT only on
+writes), `tracefold_nautilus` (only the #283 execution projection), and
+`tracefold_migrate`. Serve has SELECT plus INSERT only on
 `news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
 those append-only facts and no write grant on Event, verdict, delivery,
 learning-artifact or control tables. Every ordinary Serve transaction remains
@@ -248,6 +253,9 @@ read-write transaction; auditing the write surface therefore means auditing that
 CLI, not the API. Learning
 freeze/evaluate and canary control run under Workers, while assignment and
 runtime/deployment receipts are append-only.
+Migration `0316` grants Workers immutable Intent insertion, Serve read-only
+visibility, and Nautilus updates only to execution/result columns and its
+runtime readiness fields.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as

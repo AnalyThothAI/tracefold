@@ -12,6 +12,7 @@ import {
 } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
+import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 
 import "./newsEventRow.css";
@@ -102,14 +103,10 @@ export function NewsEventRow({
               <NewsDirectionChip triage={triage} withStrength={false} />
             </>
           ) : null}
-          {triage?.event_type_zh ? (
-            <>
-              <span aria-hidden className="news-event-divider">
-                ·
-              </span>
-              <span className="news-event-kind">{triage.event_type_zh}</span>
-            </>
-          ) : null}
+          <span aria-hidden className="news-event-divider">
+            ·
+          </span>
+          <NewsKindBadge kind={event.event_kind} />
           {assets.length ? (
             <>
               <span aria-hidden className="news-event-divider">

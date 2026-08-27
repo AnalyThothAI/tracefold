@@ -42,6 +42,8 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
     engine_type: "news",
     event_id: "evt-global-policy",
+    event_kind: "news",
+    source_contract_reason: null,
     family: "general",
     focus_fact_context: "Central banks respond as the policy outlook changes.",
     focus_fact_id: "fact-global-policy",
@@ -138,6 +140,8 @@ export function newsEventFixture(overrides: Partial<NewsEvent> = {}): NewsEvent 
     context_line: feedEvent.context_line,
     engine_type: feedEvent.engine_type,
     event_id: feedEvent.event_id,
+    event_kind: feedEvent.event_kind,
+    source_contract_reason: feedEvent.source_contract_reason,
     family: feedEvent.family,
     focus_fact_context: feedEvent.focus_fact_context,
     focus_fact_id: feedEvent.focus_fact_id,
@@ -420,6 +424,14 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       candidates_24h: 180,
       decided_push_24h: 40,
       model_triage_24h: 41,
+      source_classifier_version: "opennews_source_classifier_v1",
+      source_contracts_24h: {
+        news_v1: { received: 170, parsed: 170, parse_failed: 0, unsupported: 0, verdict: 100 },
+        listing_v1: { received: 8, parsed: 8, parse_failed: 0, unsupported: 0, verdict: 8 },
+        oi_v1: { received: 141, parsed: 140, parse_failed: 1, unsupported: 0, verdict: 140 },
+        liquidation_v1: { received: 1, parsed: 1, parse_failed: 0, unsupported: 0, verdict: 1 },
+        unsupported_market: { received: 0, parsed: 0, parse_failed: 0, unsupported: 0, verdict: 0 },
+      },
       telemetry_parse_failed_24h: 1,
       telemetry_parsed_24h: 139,
       telemetry_push_24h: 3,
@@ -531,6 +543,7 @@ export function newsSymbolOiFrameFixture(symbol: string, openedAtMs?: number): N
 export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): NewsFeedEvent {
   return newsFeedEventFixture({
     admission: "telemetry_deterministic",
+    event_kind: "oi",
     /*
      * The provider/Gate evidence stays empty, while the public projection carries the deterministic asset
      * that Triage durably recorded in `news_event_assets` (#267/#287). They are intentionally different facts.

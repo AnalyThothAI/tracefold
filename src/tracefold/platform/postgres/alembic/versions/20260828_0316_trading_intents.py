@@ -1,15 +1,15 @@
 """Add the one-table TradeIntent handoff and Nautilus execution projection (#283).
 
-Revision ID: 20260827_0315
-Revises: 20260827_0314
+Revision ID: 20260828_0316
+Revises: 20260827_0315
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260827_0315"
-down_revision = "20260827_0314"
+revision = "20260828_0316"
+down_revision = "20260827_0315"
 branch_labels = None
 depends_on = None
 
@@ -275,4 +275,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260827_0315 owns immutable capital intents and cannot be downgraded")
+    raise RuntimeError("20260828_0316 owns immutable capital intents and cannot be downgraded")

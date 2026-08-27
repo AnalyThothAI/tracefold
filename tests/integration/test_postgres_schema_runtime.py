@@ -74,6 +74,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert {
         "event_id",
         "family",
+        "event_kind",
         "leader_item_id",
         "leader_title",
         "comparison_fingerprint",
@@ -123,6 +124,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_incidents_recovery",
         "ix_news_items_published",
         "ix_news_events_opened",
+        "ix_news_events_kind_opened",
         "ix_news_events_admission",
         "ix_news_events_expires",
         "ix_news_events_storyline",
@@ -145,12 +147,14 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     } <= set(news_v3_indexes)
     assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
     assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
+    assert "event_kind, opened_at_ms DESC, event_id DESC" in news_v3_indexes["ix_news_events_kind_opened"]
     # The Janitor's rescue index must cover every admitted admission, not just `candidate`: a partial index on
     # `candidate` alone left crashed-before-publish listing Events unrecoverable (#72).
     unpublished_index = news_v3_indexes["ix_news_events_unpublished"]
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260827_0315"
+    assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
+    assert version == latest_migration_version() == "20260828_0316"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -175,4 +179,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260827_0315"
+    assert version == latest_migration_version() == "20260828_0316"

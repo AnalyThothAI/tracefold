@@ -61,7 +61,12 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, oi_signal = bundle
+        card, triage_row, oi_signal, _admission, event_kind = bundle
+        # A delivery message can outlive the source-contract migration that held its Event. Immutable
+        # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
+        # a delivery ledger row, quote read, or external send is attempted.
+        if event_kind == "unsupported_market":
+            return
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
             return
@@ -71,7 +76,7 @@ class DelivererConsumer:
         # Only query a quote after every policy return above. A quote failure
         # never changes the delivery decision.
         shown = reader_assets(
-            event=card,
+            event_kind=event_kind,
             verdict=tv,
             grounded_assets=list(card.get("grounded_assets") or []),
             program_version=str(triage_row.get("program_version") or ""),
@@ -171,17 +176,24 @@ class DelivererConsumer:
     def _load(self, repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
         del stamp
         card = repos.news.event_card(event_id)
+        routing = repos.news.event_admission(event_id)
+        if card is None or routing is None:
+            return None
+        admission = str(routing.get("admission") or "")
+        event_kind = str(routing.get("event_kind") or "")
+        if event_kind == "unsupported_market":
+            return card, None, None, admission, event_kind
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
-        if card is None or triage is None:
+        if triage is None:
             return None
         oi_signal = None
         if (
-            str(card.get("admission") or "") == "telemetry_deterministic"
+            event_kind == "oi"
             and str(triage.get("program_version") or "") == OI_PROGRAM_VERSION
             and str(triage.get("program_sha256") or "") == self._oi_program_sha256
         ):
             oi_signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
-        return card, triage, oi_signal
+        return card, triage, oi_signal, admission, event_kind
 
     async def close(self) -> None:
         if self.sender is not None:

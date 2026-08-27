@@ -6,14 +6,13 @@ import {
   NEWS_FEED_CHANNELS,
   NEWS_FEED_DIRECTIONS,
   NEWS_FEED_HOURS,
-  type NewsFeedChannel,
   type NewsFeedCounts,
   type NewsFeedDirection,
   type NewsFeedFilters,
   type NewsFeedOutcome,
 } from "../../api/newsQueries";
 import { type FeedFilterChanges, toggleFilterValue } from "../../model/feedFilters";
-import { formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
+import { eventKindLabel, formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
 
 import "./newsFeedToolbar.css";
 
@@ -23,7 +22,6 @@ const DIRECTION_LABELS: Record<NewsFeedDirection, string> = {
   bearish: "▼ 利空",
   neutral: "◆ 中性",
 };
-const CHANNEL_LABELS: Record<NewsFeedChannel, string> = { news: "新闻", oi: "OI 帧" };
 
 /** The Event-feed controls in the approved order: task, count, window, then two bounded filter axes. */
 export function NewsFeedToolbar({
@@ -211,7 +209,7 @@ function FilterPanel({
           </button>
         ))}
       </div>
-      <small>通道</small>
+      <small>类型</small>
       <div>
         {NEWS_FEED_CHANNELS.map((value) => (
           <button
@@ -224,7 +222,7 @@ function FilterPanel({
             }
             type="button"
           >
-            {CHANNEL_LABELS[value]}
+            {eventKindLabel(value)}
           </button>
         ))}
       </div>

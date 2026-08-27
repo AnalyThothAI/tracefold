@@ -176,6 +176,8 @@
 | `focus_fact_method` | `TEXT` | False | `'legacy_reconstructed'::text` |
 | `focus_span_start` | `INTEGER` | False | `0` |
 | `focus_span_end` | `INTEGER` | False | `0` |
+| `event_kind` | `TEXT` | False | `None` |
+| `source_contract_reason` | `TEXT` | True | `None` |
 
 ## `news_external_miss_snapshots`
 

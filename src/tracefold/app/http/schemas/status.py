@@ -60,10 +60,28 @@ class NewsBrokerStatusData(ExactApiSchema):
     observed_at_ms: int | None = None
 
 
+class NewsSourceContractStageCountsData(ExactApiSchema):
+    received: int = 0
+    parsed: int = 0
+    parse_failed: int = 0
+    unsupported: int = 0
+    verdict: int = 0
+
+
+class NewsSourceContracts24hData(ExactApiSchema):
+    news_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
+    listing_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
+    oi_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
+    liquidation_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
+    unsupported_market: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
+
+
 class NewsPipelineStatusData(ExactApiSchema):
     events_1h: int = 0
     events_24h: int = 0
     candidates_24h: int = 0
+    source_classifier_version: str = ""
+    source_contracts_24h: NewsSourceContracts24hData = Field(default_factory=NewsSourceContracts24hData)
     triage_24h: int = 0
     # The funnel counts every judgment; model health counts only the model's (#137).
     model_triage_24h: int = 0
@@ -286,5 +304,7 @@ __all__ = [
     "NewsPriceStatusData",
     "NewsQuoteVenueData",
     "NewsReasonCountData",
+    "NewsSourceContractStageCountsData",
+    "NewsSourceContracts24hData",
     "NewsStatusData",
 ]

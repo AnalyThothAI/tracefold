@@ -89,6 +89,14 @@ class RecordingNews:
                     "evidence_sha256": str(card.get("evidence_sha256") or "e" * 64),
                     "focus_fact_id": str(card.get("focus_fact_id") or "fact-1"),
                 }
+            if name == "event_admission" and name not in self.responses:
+                response = self.responses.get("event_card") or {}
+                card = response if isinstance(response, dict) else {}
+                return {
+                    "admission": str(card.get("admission") or "candidate"),
+                    "event_kind": str(card.get("event_kind") or "news"),
+                    "storyline_key": str(card.get("storyline_key") or ""),
+                }
             if name == "outbox_scan" and name not in self.responses:
                 # #76: the Janitor turn is one read — rows to rescue plus how many the ceiling gave up on.
                 return (self.responses.get("unpublished_candidates") or [], self.responses.get("expired_count", 0))
@@ -353,6 +361,67 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
     assert bus.published == [] and news.calls == []
 
 
+@pytest.mark.parametrize(
+    ("strategy_id", "strategy_name", "source_type"),
+    [
+        (2026, "聪明钱监控", "wallet"),
+        (2083, "Large-scale liquidation", "market"),
+    ],
+)
+def test_unsupported_market_contracts_are_auditable_without_triage_or_delivery(
+    strategy_id: int,
+    strategy_name: str,
+    source_type: str,
+) -> None:
+    news = RecordingNews(
+        upsert_item=True,
+        fact_membership=None,
+        find_exact_event=None,
+        find_artifact_event=None,
+        find_band_candidates=[],
+    )
+    bus = FakeBus()
+    deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset())
+    raw = _message(
+        "raw",
+        {
+            "params": {
+                "id": strategy_id * 1_000,
+                "engineType": "market",
+                "text": "BTC market frame whose field semantics are not contracted",
+                "source": "opennews",
+                "ts": NOW_MS,
+                "strategy": {
+                    "id": strategy_id,
+                    "name": strategy_name,
+                    "sourceType": source_type,
+                },
+            },
+            "strategy_id": str(strategy_id),
+            "ingest_mode": "live",
+            "observed_at_ms": NOW_MS,
+        },
+        routing_key=RK_RAW_LIVE.format(strategy_id=str(strategy_id)),
+    )
+
+    asyncio.run(deduper.handle(raw))
+
+    inserted = news.kwargs_of("insert_event")
+    assert inserted["event_kind"] == "unsupported_market"
+    assert inserted["admission"] == "unsupported_market_contract"
+    assert inserted["source_contract_reason"] == "unsupported_market_contract"
+    assert news.kwargs_of("upsert_item")["provider_metadata"]["strategies"] == [
+        {
+            "id": str(strategy_id),
+            "name": strategy_name,
+            "source_type": source_type,
+            "engine_type": "market",
+        }
+    ]
+    assert bus.published == [], "unsupported means no Triage message, hence no model or Delivery path"
+    assert "mark_event_published" not in news.names()
+
+
 # ---------------------------------------------------------------- Triage
 class _RecordingJudge:
     """Counts model calls so a test can assert one never happened."""
@@ -379,6 +448,29 @@ def _triage(news: RecordingNews, bus: FakeBus, *, judge: Any = None) -> TriageCo
         circuit_open_seconds=60.0,
         runtime_manifest={"manifest_sha": "d" * 64},
     )
+
+
+def test_triage_holds_a_queued_event_reclassified_by_the_current_source_contract() -> None:
+    evidence_card = _card(admission="candidate")
+    news = RecordingNews(
+        event_card=evidence_card,
+        event_admission={
+            "admission": "unsupported_market_contract",
+            "event_kind": "unsupported_market",
+            "storyline_key": "asset:NVDA",
+        },
+        get_verdict=lambda **_kwargs: pytest.fail("held Event must not inspect or republish a verdict"),
+    )
+    judge = _RecordingJudge()
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert evidence_card["admission"] == "candidate", "the immutable evidence snapshot is not rewritten"
+    assert judge.calls == 0
+    assert "get_verdict" not in news.names()
+    assert "insert_verdict" not in news.names()
+    assert bus.published == []
 
 
 def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_editorial_identity() -> None:
@@ -953,6 +1045,29 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
     return RecordingNews(**responses)
 
 
+def test_deliverer_holds_a_queued_push_reclassified_by_the_current_source_contract() -> None:
+    sender = RecordingSender()
+    news = _delivery_news(
+        event_admission={
+            "admission": "unsupported_market_contract",
+            "event_kind": "unsupported_market",
+            "storyline_key": "asset:NVDA",
+        },
+        latest_verdict=lambda **_kwargs: pytest.fail("held Event must not read the historical push verdict"),
+    )
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert sender.cards == []
+    assert "latest_verdict" not in news.names()
+    assert "begin_delivery" not in news.names()
+    assert "settle_delivery" not in news.names()
+
+
 def test_deliverer_without_sender_settles_terminal_delivery_unavailable() -> None:
     news = _delivery_news()
     bus = FakeBus()
@@ -1037,7 +1152,9 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
 
 def _oi_delivery_news() -> RecordingNews:
     return _delivery_news(
-        event_card=_card(admission="telemetry_deterministic", grounded_assets=[]),
+        # Migration can recover the durable kind while retaining the historical
+        # admission. Delivery therefore follows event_kind, not stale routing.
+        event_card=_card(admission="candidate", event_kind="oi", grounded_assets=[]),
         latest_verdict=lambda *, event_id, stage: {
             "final_decision": "push",
             "program_version": "news_oi_signal_v1",
@@ -2192,6 +2309,7 @@ _OI_TITLE = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Wha
 def _oi_card(**overrides: Any) -> dict[str, Any]:
     card = _card(
         event_id="ev-oi",
+        event_kind="oi",
         leader_title=_OI_TITLE,
         admission="telemetry_deterministic",
         engine_type="market",
@@ -2240,6 +2358,9 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
+    resolved = news.kwargs_of("resolve_unverified_source_contract")
+    assert resolved["event_id"] == "ev-oi" and resolved["reason"] is None
+    assert isinstance(resolved["now_ms"], int)
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -2281,6 +2402,7 @@ def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:
     asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
 
     assert news.kwargs_of("insert_verdict")["error_code"] == "oi_parse_failed"
+    assert news.kwargs_of("resolve_unverified_source_contract")["reason"] == "source_contract_drift"
     assert "record_event_assets" not in news.names()
     assert "insert_oi_signal" not in news.names()
 
@@ -2323,6 +2445,7 @@ def test_a_redelivered_telemetry_verdict_republishes_through_the_existing_guard(
 def _liquidation_card(**overrides: Any) -> dict[str, Any]:
     card = _card(
         event_id="ev-liquidation",
+        event_kind="liquidation",
         leader_item_id="item-liquidation",
         leader_title="SPCX Large Short Liquidation 202.71K at $137.01",
         admission="liquidation_deterministic",
@@ -2396,6 +2519,7 @@ def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> No
     assert inserted["trace"]["liquidation"]["forced_order_side"] == "buy"
     assert inserted["trace"]["gate_policy_version"] == "news_liquidation_admission_v1"
     assert inserted["trace"]["liquidation"]["source_contract"]["complete"] is False
+    assert news.kwargs_of("resolve_unverified_source_contract")["reason"] is None
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -2416,7 +2540,8 @@ def test_liquidation_missing_typed_fact_fails_closed_without_a_model_call() -> N
     assert inserted["final_decision"] == "drop"
     assert inserted["override_rule"] == "liquidation_parse_failed"
     assert inserted["error_code"] == "liquidation_parse_failed"
-    assert inserted["trace"]["liquidation"]["failure_stage"] == "source_contract"
+    assert inserted["trace"]["liquidation"]["failure_stage"] == "source_contract_drift"
+    assert news.kwargs_of("resolve_unverified_source_contract")["reason"] == "source_contract_drift"
 
 
 def test_liquidation_redelivery_uses_its_independent_policy_identity() -> None:
