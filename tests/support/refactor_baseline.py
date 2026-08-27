@@ -133,6 +133,10 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_202_compiler_image_deleted",
         "e777fbc00a1f67bb2cbc7a3b349171beb2f10a2c3c33c8dd8c18ed3e2188e6cb",
     ),
+    "infrastructure_and_dependency_sha256.uv.lock": (
+        "issue_276_single_uv_dependency_lock",
+        "16abe63ea0bab001d098d51b0b59f3e5d2017b763bfbf81e0d516e3dc700af48",
+    ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
         "program_v7",

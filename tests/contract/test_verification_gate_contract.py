@@ -196,7 +196,6 @@ def test_evidence_manifest_is_generated_by_the_actual_pytest_session(tmp_path: P
     assert manifest["rerun"] == 0
     assert manifest["explicitly_deselected_markers"] == ["live"]
     assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["uv_lock_sha256"]))
-    assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["property_lock_sha256"]))
     assert re.fullmatch(r"[0-9a-f]{64}", str(manifest["package_lock_sha256"]))
 
 

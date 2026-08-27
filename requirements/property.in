@@ -1,3 +1,0 @@
-# Test-only dependency graph. Keep it outside uv.lock: the production Program
-# quality kernel deliberately binds the root lock byte-for-byte.
-hypothesis==6.165.10
