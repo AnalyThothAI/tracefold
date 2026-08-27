@@ -1198,6 +1198,11 @@ mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
 character. The quotes are read in a separate short database session over
 exactly the code-verified `reader_assets()` result, so the two lines cannot name different assets, and any
 price failure degrades to no line: delivery never depends on the price plane.
+That same read may produce an ephemeral typed `ReaderTradeTarget` only when a displayed ticker equals the
+Binance catalogue base and `venue_symbol == base_symbol + quote_asset`. The target is not part of the persisted
+`news_delivery_card_v10`: only the Telegram Adapter uses it to link exact ticker tokens to the matching Binance
+Futures or Spot page, while aliases, non-Binance venues and inconsistent metadata stay plain text and Feishu
+receives the card unchanged.
 Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or
 scope enum, no provider score, and no line labelled as AI: those internals stay

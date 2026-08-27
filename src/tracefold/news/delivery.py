@@ -30,9 +30,10 @@ import time
 from collections.abc import Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from math import isfinite
-from typing import Any
+from typing import Any, Literal
 
 from .market_review.pricing import parse_price
+from .models import ReaderTradeTarget
 from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
@@ -41,6 +42,8 @@ _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
 _MARKDOWN_RE = re.compile(r"[*_`#>\[\]()]")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SPACE_RE = re.compile(r"\s+")
+_BINANCE_PAIR_PART_RE = re.compile(r"^[A-Z0-9]{1,20}$")
+_LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 
 _DIRECTION_COLOR = {"bullish": "green", "bearish": "red", "neutral": "grey", "unclear": "grey"}
 _MAX_ASSETS = 4
@@ -130,6 +133,51 @@ def _format_change(value: object, basis: object) -> str:
     if not isfinite(pct):  # NaN / inf never reach a reader
         return ""
     return f"{label} {'+' if pct > 0 else ''}{pct:.2f}%"
+
+
+def reader_trade_targets(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderTradeTarget, ...]:
+    """Strict Binance contract identities for adapter-only reader actions.
+
+    The displayed ticker must be the catalogue base and the venue symbol must be exactly ``base + quote``.
+    Aliases and incomplete/inconsistent rows remain ordinary text because the destination cannot be proven here.
+    """
+
+    targets: list[ReaderTradeTarget] = []
+    for quote in quotes[:_MAX_ASSETS]:
+        if not isinstance(quote, Mapping):
+            continue
+        ticker = str(quote.get("requested_symbol") or "").strip()
+        symbol = str(quote.get("symbol") or "").strip()
+        base_symbol = str(quote.get("base_symbol") or "").strip()
+        venue = str(quote.get("venue") or "")
+        venue_symbol = str(quote.get("venue_symbol") or "").strip()
+        quote_asset = str(quote.get("quote_asset") or "").strip()
+        target_venue: Literal["binance.perp", "binance.spot"]
+        if venue == "binance.perp":
+            target_venue = "binance.perp"
+        elif venue == "binance.spot":
+            target_venue = "binance.spot"
+        else:
+            continue
+        if (
+            _LINKABLE_TICKER_RE.fullmatch(ticker) is None
+            or _BINANCE_PAIR_PART_RE.fullmatch(base_symbol) is None
+            or _BINANCE_PAIR_PART_RE.fullmatch(quote_asset) is None
+            or ticker != base_symbol
+            or symbol != base_symbol
+            or venue_symbol != f"{base_symbol}{quote_asset}"
+        ):
+            continue
+        targets.append(
+            ReaderTradeTarget(
+                ticker=ticker,
+                venue=target_venue,
+                venue_symbol=venue_symbol,
+                base_symbol=base_symbol,
+                quote_asset=quote_asset,
+            )
+        )
+    return tuple(targets)
 
 
 def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
@@ -331,4 +379,4 @@ def render_first_card(
     }
 
 
-__all__ = ["card_assets", "reader_assets", "render_first_card", "sanitize_ai_text"]
+__all__ = ["card_assets", "reader_assets", "reader_trade_targets", "render_first_card", "sanitize_ai_text"]

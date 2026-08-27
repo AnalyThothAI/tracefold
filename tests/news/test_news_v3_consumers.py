@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ from tracefold.news.bus import (
     PermanentError,
     TransientError,
 )
-from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION
+from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, ReaderTradeTarget
 from tracefold.news.oi_signals import DEFAULT_OI_POLICY, program_sha256
 from tracefold.news.pipeline import admission as admission_module
 from tracefold.news.pipeline import triage_audit as triage_audit_module
@@ -1001,16 +1002,23 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
 class RecordingSender:
     def __init__(self, order: list[str] | None = None) -> None:
         self.cards: list[dict[str, Any]] = []
+        self.trade_targets: list[tuple[ReaderTradeTarget, ...]] = []
         self.order = order
 
     def prepare(self) -> None:
         if self.order is not None:
             self.order.append("prepare")
 
-    def send_card(self, card: dict[str, Any]) -> dict[str, Any]:
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        trade_targets: Sequence[ReaderTradeTarget] = (),
+    ) -> dict[str, Any]:
         if self.order is not None:
             self.order.append("send")
-        self.cards.append(card)
+        self.cards.append(dict(card))
+        self.trade_targets.append(tuple(trade_targets))
         return {"status_code": 200, "code": 0}
 
     def close(self) -> None:
@@ -1164,7 +1172,12 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
     price = RecordingPrice(
         quotes=[
             {
+                "requested_symbol": "NVDA",
                 "symbol": "NVDA",
+                "base_symbol": "NVDA",
+                "venue": "binance.perp",
+                "venue_symbol": "NVDAUSDT",
+                "quote_asset": "USDT",
                 "price": "217.32",
                 "change_pct": 1.5,
                 "change_basis": "rolling_24h",
@@ -1194,6 +1207,17 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
 
     assert price.requested == [["NVDA"]]
     assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
+    assert sender.trade_targets == [
+        (
+            ReaderTradeTarget(
+                ticker="NVDA",
+                venue="binance.perp",
+                venue_symbol="NVDAUSDT",
+                base_symbol="NVDA",
+                quote_asset="USDT",
+            ),
+        )
+    ]
 
 
 def _oi_delivery_news() -> RecordingNews:

@@ -9,7 +9,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Protocol
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
-from ..delivery import reader_assets, render_first_card
+from ..delivery import reader_assets, reader_trade_targets, render_first_card
+from ..models import ReaderTradeTarget
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
@@ -27,7 +28,12 @@ class NewsPushSender(Protocol):
 
     def prepare(self) -> None: ...
 
-    def send_card(self, card: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        trade_targets: Sequence[ReaderTradeTarget] = (),
+    ) -> Mapping[str, Any]: ...
 
     def close(self) -> None: ...
 
@@ -114,6 +120,7 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
+        trade_targets = reader_trade_targets(quotes)
         state = await self.db.tx(
             "news_delivery_begin",
             lambda repos: repos.news.begin_delivery(event_id=event_id, kind=kind, card=card_payload, now_ms=stamp),
@@ -139,7 +146,11 @@ class DelivererConsumer:
         receipt: dict[str, Any] | None = None
         try:
             result = await self.finite.run(
-                "news_delivery_send", self.sender.send_card, card_payload, timeout_seconds=8.0
+                "news_delivery_send",
+                self.sender.send_card,
+                card_payload,
+                trade_targets=trade_targets,
+                timeout_seconds=8.0,
             )
             receipt = dict(result)
         except Exception as exc:

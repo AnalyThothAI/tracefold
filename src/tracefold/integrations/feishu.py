@@ -7,12 +7,14 @@ import hashlib
 import hmac
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+
+from tracefold.news import ReaderTradeTarget
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
@@ -176,7 +178,13 @@ class FeishuNewsPushSender:
     def prepare(self) -> None:
         """Feishu has no separate target preflight; keep the delivery lifecycle uniform."""
 
-    def send_card(self, card: Mapping[str, Any]) -> dict[str, Any]:
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        trade_targets: Sequence[ReaderTradeTarget] = (),
+    ) -> dict[str, Any]:
+        del trade_targets  # Feishu receives the stable reader card unchanged; trade links are Telegram-only.
         try:
             receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())
         except FeishuDeliveryError as exc:

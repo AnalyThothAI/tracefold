@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from tracefold.news import ReaderTradeTarget
+
 _TELEGRAM_API_ORIGIN = "https://api.telegram.org"
 _TELEGRAM_TIMEOUT_SECONDS = 6.5
 _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS = 7.0
@@ -26,6 +28,10 @@ _BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
 _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
 _TELEGRAM_TIME_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
 _REPORTING_ORIGIN_RE = re.compile(r"^(?P<origin>.+)（(?P<count>[1-9][0-9]*) 条报道）$")
+_LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
+_BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
+_BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
+_TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong)>|<a href="[^"]+">|</a>')
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
 _HEADER_ICON = {"green": "🟢", "red": "🔴", "grey": "⚪"}
@@ -138,10 +144,15 @@ class TelegramNewsPushSender:
         self._validate_target(deadline_at=deadline_at)
         self._target_validated = True
 
-    def send_card(self, card: Mapping[str, Any]) -> dict[str, Any]:
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        trade_targets: Sequence[ReaderTradeTarget] = (),
+    ) -> dict[str, Any]:
         if not self._target_validated:
             raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
-        text, source_button = _telegram_message(card)
+        text, source_button = _telegram_message(card, trade_targets=trade_targets)
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         payload: dict[str, Any] = {
             "chat_id": self._chat_id,
@@ -256,7 +267,11 @@ class TelegramNewsPushSender:
         self._client.close()
 
 
-def _telegram_message(card: Mapping[str, Any]) -> tuple[str, dict[str, str] | None]:
+def _telegram_message(
+    card: Mapping[str, Any],
+    *,
+    trade_targets: Sequence[ReaderTradeTarget] = (),
+) -> tuple[str, dict[str, str] | None]:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
     template = str(header.get("template") or "") if isinstance(header, Mapping) else ""
@@ -286,6 +301,7 @@ def _telegram_message(card: Mapping[str, Any]) -> tuple[str, dict[str, str] | No
     facts_line = content_lines.pop() if content_lines else ""
     explanation = "\n".join(content_lines)
     signal, source = _telegram_facts(facts_line)
+    ticker_links = _binance_ticker_links(trade_targets)
 
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
     if explanation:
@@ -294,11 +310,11 @@ def _telegram_message(card: Mapping[str, Any]) -> tuple[str, dict[str, str] | No
     metadata: list[str] = []
     if signal:
         signal_label = "判断" if signal.split(" · ", maxsplit=1)[0] in _DIRECTION_LABELS else "标的"
-        metadata.append(f"🧭 <b>{signal_label}</b>  {_escape_html(_clip(signal, 600))}")
+        metadata.append(f"🧭 <b>{signal_label}</b>  {_telegram_ticker_html(_clip(signal, 600), ticker_links)}")
     if market_line:
         market = market_line.removeprefix("行情 ").strip()
         if market:
-            metadata.append(f"📊 <b>行情</b>  {_escape_html(_clip(market, 800))}")
+            metadata.append(f"📊 <b>行情</b>  {_telegram_ticker_html(_clip(market, 800), ticker_links)}")
     if source:
         metadata.append(f"🕒 <b>来源</b>  {_escape_html(_clip(source, 300))}")
     if metadata:
@@ -337,8 +353,27 @@ def _escape_html(value: str) -> str:
     return html.escape(value, quote=False)
 
 
+def _telegram_ticker_html(value: str, ticker_links: Mapping[str, str]) -> str:
+    """Link exact ticker tokens from typed targets; every other character stays escaped text."""
+
+    if not ticker_links:
+        return _escape_html(value)
+    ticker_pattern = "|".join(re.escape(ticker) for ticker in sorted(ticker_links, key=len, reverse=True))
+    pattern = re.compile(rf"(?<![A-Z0-9.-])(?P<ticker>{ticker_pattern})(?![A-Z0-9.-])")
+    pieces: list[str] = []
+    cursor = 0
+    for match in pattern.finditer(value):
+        pieces.append(_escape_html(value[cursor : match.start()]))
+        ticker = match.group("ticker")
+        url = ticker_links[ticker]
+        pieces.append(f'<a href="{html.escape(url, quote=True)}">{_escape_html(ticker)}</a>')
+        cursor = match.end()
+    pieces.append(_escape_html(value[cursor:]))
+    return "".join(pieces)
+
+
 def _plain_html_text(value: str) -> str:
-    return html.unescape(re.sub(r"</?(?:b|strong)>", "", value))
+    return html.unescape(_TELEGRAM_HTML_TAG_RE.sub("", value))
 
 
 def _nested_text(value: object, key: str) -> str:
@@ -379,6 +414,55 @@ def _safe_https_url(value: str) -> bool:
         and parsed.username is None
         and parsed.password is None
     )
+
+
+def _safe_binance_trade_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname == "www.binance.com"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and (
+            _BINANCE_FUTURES_PATH_RE.fullmatch(parsed.path) is not None
+            or _BINANCE_SPOT_PATH_RE.fullmatch(parsed.path) is not None
+        )
+    )
+
+
+def _binance_ticker_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[str, str]:
+    links: dict[str, str] = {}
+    for target in trade_targets:
+        if not isinstance(target, ReaderTradeTarget):
+            continue
+        ticker = target.ticker
+        base_symbol = target.base_symbol
+        quote_asset = target.quote_asset
+        venue_symbol = target.venue_symbol
+        if (
+            _LINKABLE_TICKER_RE.fullmatch(ticker) is None
+            or _LINKABLE_TICKER_RE.fullmatch(base_symbol) is None
+            or _LINKABLE_TICKER_RE.fullmatch(quote_asset) is None
+            or ticker != base_symbol
+            or venue_symbol != f"{base_symbol}{quote_asset}"
+        ):
+            continue
+        if target.venue == "binance.perp":
+            url = f"https://www.binance.com/en/futures/{venue_symbol}"
+        elif target.venue == "binance.spot":
+            url = f"https://www.binance.com/en/trade/{base_symbol}_{quote_asset}"
+        else:
+            continue
+        if _safe_binance_trade_url(url):
+            links.setdefault(ticker, url)
+    return links
 
 
 __all__ = ["TelegramDeliveryError", "TelegramNewsPushSender"]

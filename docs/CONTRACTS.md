@@ -144,6 +144,10 @@ Telegram requires a secure bot-token file and one private channel Bot API ID
 beginning with `-100`. Provider conflicts, invalid targets, and missing or
 insecure credentials fail closed: Serve remains credential-free, while an
 explicitly enabled invalid provider configuration makes Workers fail startup.
+On Telegram, a reader ticker is clickable only when the same quote read proves an exact Binance contract;
+perpetuals open the matching Futures contract and spot instruments open the matching base/quote trade page.
+Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
+persisted reader card and Feishu payload are unchanged.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 

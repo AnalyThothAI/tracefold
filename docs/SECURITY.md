@@ -344,6 +344,13 @@ phase is capped at 1.25 seconds and later calls stop when the monotonic budget i
 exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
 guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out
 preflight thread still cannot progress into a later send.
+Binance trade links are a Telegram-only presentation capability, not stored card content. The delivery stage
+creates a typed target only when the displayed ticker, Binance base, quote asset and venue symbol agree exactly;
+the Telegram Adapter independently reconstructs and validates a credential-free `https://www.binance.com`
+destination with an allowlisted Futures or Spot path, no query, fragment, userinfo or non-default port. It wraps
+only an exact ticker token in HTML after escaping all other card text. A non-Binance, malformed, aliased or
+inconsistent target therefore degrades to plain text and cannot introduce an arbitrary link; Feishu ignores the
+ephemeral target and receives the persisted card unchanged.
 Persisted delivery rows store the
 rendered card (code facts plus sanitized AI copy) for audit but never provider
 credentials, timestamps, or signatures. There is exactly one provider attempt

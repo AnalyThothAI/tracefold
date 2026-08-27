@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +49,17 @@ EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
 Novelty = Literal["new_fact", "progression", "restatement"]
 ReaderReceiptState = Literal["received", "not_received", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderTradeTarget:
+    """One exact venue contract that a delivery adapter may expose as a reader action."""
+
+    ticker: str
+    venue: Literal["binance.perp", "binance.spot"]
+    venue_symbol: str
+    base_symbol: str
+    quote_asset: str
 
 
 class ExactNewsModel(BaseModel):
@@ -221,6 +233,7 @@ __all__ = [
     "Novelty",
     "ReaderReceipt",
     "ReaderReceiptState",
+    "ReaderTradeTarget",
     "TriageAsset",
     "TriageVerdict",
     "base_symbol",

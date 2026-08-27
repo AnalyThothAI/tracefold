@@ -26,6 +26,7 @@ PUBLIC_NEWS_INTERFACE = {
     "ProgramUsage",
     "ReaderCardSemanticView",
     "ReaderReceipt",
+    "ReaderTradeTarget",
     "ScoredJudgment",
     "SemanticJudge",
     "SemanticJudgeError",

@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
+from tracefold.news import ReaderTradeTarget
 
 CHANNEL_ID = -1001234567890
 BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
@@ -114,6 +115,115 @@ def test_sender_posts_plain_text_to_only_the_configured_channel() -> None:
     assert receipt["message_id"] == 42
     assert len(str(receipt["target_sha256"])) == 64
     assert str(CHANNEL_ID) not in json.dumps(receipt)
+
+
+def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
+    observed: dict[str, object] = {}
+    card = _card()
+    card["elements"][0]["content"] = (
+        "连续第三日净流入\n"
+        "利多 · 新进展 · 影响明显 · BTC-USDT BTC · CoinDesk（2 条报道） · 14:32\n"
+        "行情 BTC $74,553.10 24h +7.91%"
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        trade_targets=(
+            ReaderTradeTarget(
+                ticker="BTC",
+                venue="binance.perp",
+                venue_symbol="BTCUSDT",
+                base_symbol="BTC",
+                quote_asset="USDT",
+            ),
+        ),
+    )
+
+    ticker = '<a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>'
+    assert observed["text"] == (
+        "🟢 <b>BTC ETF 净流入</b>\n\n"
+        "连续第三日净流入\n\n"
+        f"🧭 <b>判断</b>  利多 · 新进展 · 影响明显 · BTC-USDT {ticker}\n"
+        f"📊 <b>行情</b>  {ticker} $74,553.10 24h +7.91%\n"
+        "🕒 <b>来源</b>  CoinDesk · 2 条报道 · 14:32"
+    )
+
+
+def test_sender_never_turns_untrusted_ticker_destinations_into_links() -> None:
+    observed: dict[str, object] = {}
+    card = _card()
+    card["elements"] = [
+        {
+            "tag": "markdown",
+            "content": (
+                "利多 · 影响明显 · BTC ETH SOL · Reuters · 14:32\n"
+                "行情 BTC $74,553.10 24h +7.91% · ETH $2,300.00 24h +1.00% · SOL $200 24h +1.00%"
+            ),
+        }
+    ]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        trade_targets=(
+            ReaderTradeTarget(
+                ticker="BTC",
+                venue="binance.perp",
+                venue_symbol="ETHUSDT",
+                base_symbol="ETH",
+                quote_asset="USDT",
+            ),
+            ReaderTradeTarget(
+                ticker="ETH",
+                venue="binance.perp",
+                venue_symbol="ETH/USDT",
+                base_symbol="ETH",
+                quote_asset="USDT",
+            ),
+            ReaderTradeTarget(
+                ticker="SOL",
+                venue="binance.spot",
+                venue_symbol="SOLUSDT",
+                base_symbol="SOL",
+                quote_asset="USDT",
+            ),
+        ),
+    )
+
+    assert ">BTC</a>" not in str(observed["text"])
+    assert ">ETH</a>" not in str(observed["text"])
+    assert '<a href="https://www.binance.com/en/trade/SOL_USDT">SOL</a>' in str(observed["text"])
 
 
 def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
