@@ -357,17 +357,18 @@ projections; there is no public alias.
   Later pages keep the stricter stability.
 
   Every Event carries `grounded_assets` (the raw provider coin tags the Gate
-  admitted on) and beside it `assets[]` — the same tags resolved against the
-  #75 instrument universe, one entry per *instrument named* (the provider ships
-  both `CL` and `XYZ-CL` for one contract, and those resolve to a single
-  entry), each `{symbol, base_symbol, venue, listed}`. Entries are keyed by the raw provider tag and `symbol` comes
-  back normalized, so `UNITREE` and `XYZ-UNITREE` resolve to the same listed
-  contract. `venue` is the preferred venue when a base trades on
+  admitted on) and beside it `assets[]` — the durable `news_event_assets`
+  ledger resolved against the #75 instrument universe. That ledger includes
+  Gate-grounded tags and deterministic-judge primaries, so an OI Event can have
+  `grounded_assets=[]` and a listed BTR entry in `assets[]`. Each entry is
+  `{symbol, base_symbol, venue, listed}`; duplicate spellings such as `CL` and
+  `XYZ-CL` resolve to one instrument. `symbol` is normalized, so `UNITREE` and
+  `XYZ-UNITREE` resolve to the same listed contract. `venue` is preferred when a base trades on
   several (deepest first, HIP-3 builder DEXs last) so a chip is stable across
   polls, and is `null` with `listed: false` when the tag names nothing on any
   venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
-  real listing. Resolution is the same two steps the Gate takes (alias, then
-  existence) and costs one batched query per response, never one per Event.
+  real listing. Each response reads all Event assets in one bounded batch and
+  resolves all symbols in one instrument batch, never one query per Event.
 - `GET /api/news/events/{event_id}` returns one Event, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw

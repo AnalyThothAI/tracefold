@@ -8,6 +8,7 @@ import {
   newsSymbolOiFrameFixture,
   newsOutcomeFixture,
   newsQuoteFixture,
+  newsReactionFixture,
   newsStatusFixture,
   newsSymbolFixture,
   newsTriageFixture,
@@ -178,6 +179,7 @@ function newsOiFeedData(oi: string | null) {
   const frames = [
     newsOiFrameFixture(),
     newsOiFrameFixture({
+      assets: [{ base_symbol: "DOGE", listed: true, symbol: "DOGE", venue: "binance.perp" }],
       event_id: "evt-oi-doge",
       leader_title:
         "DOGE OI Rise 2.08%, OI Value 892.31M, Whale Long Profit 63.00%, Whale/OI Ratio 54.20%",
@@ -197,6 +199,11 @@ function newsOiFeedData(oi: string | null) {
         reason_zh: "持仓异动按客观规则判断",
         text_zh: "未推送",
       }),
+      reaction: newsReactionFixture({
+        p0: "0.2180",
+        return_1h_bps: 84,
+        return_4h_bps: -31,
+      }),
       triage: newsTriageFixture({
         assets: [{ role: "primary", symbol: "DOGE" }],
         direction: "bullish",
@@ -209,6 +216,7 @@ function newsOiFeedData(oi: string | null) {
       }),
     }),
     newsOiFrameFixture({
+      assets: [],
       event_id: "evt-oi-pengu",
       leader_title:
         "PENGU OI Rise 3.4%, OI Value --, Whale Long Profit 55.10%, Whale/OI Ratio 71.00%",
@@ -309,11 +317,17 @@ function statusData() {
 /** One quote per requested symbol, exactly like the server: a symbol it cannot price says `unlisted`. */
 function newsQuotesData(url: URL) {
   const symbols = (url.searchParams.get("symbols") ?? "").split(",").filter(Boolean);
+  const prices: Record<string, string> = {
+    DOGE: "0.2191",
+    ETH: "3521.80",
+    WIF: "0.8431",
+  };
   return {
     measured_at_ms: NOW,
     quotes: symbols.map((symbol) =>
       newsQuoteFixture({
         base_symbol: symbol,
+        price: prices[symbol] ?? "68123.4",
         requested_symbol: symbol,
         symbol,
         venue_symbol: `${symbol}USDT`,

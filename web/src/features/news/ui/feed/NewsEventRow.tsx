@@ -115,7 +115,7 @@ export function NewsEventRow({
               <span aria-hidden className="news-event-divider">
                 ·
               </span>
-              <NewsAssetChips assets={assets} max={ROW_ASSET_CHIPS} quotes={quotes} />
+              <NewsAssetChips assets={assets} max={ROW_ASSET_CHIPS} quotes={quotes} withPrice />
             </>
           ) : null}
         </p>

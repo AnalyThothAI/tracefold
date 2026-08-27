@@ -59,6 +59,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=("event",),
         ),
         ReadQuerySpec(
+            name="news_event_asset_projection",
+            sql="SELECT event_id, array_agg(symbol ORDER BY symbol) AS symbols FROM news_event_assets"
+            " WHERE event_id = ANY(%s) GROUP BY event_id",
+            params=(["event"],),
+        ),
+        ReadQuerySpec(
             name="news_event_members",
             sql="""
                 SELECT m.item_id, m.match_kind, i.title FROM news_event_members m

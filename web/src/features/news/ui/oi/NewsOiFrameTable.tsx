@@ -17,7 +17,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { NewsFeedEvent, NewsOiTab, NewsOiTradeFloors } from "../../api/newsQueries";
+import type { NewsFeedEvent, NewsOiTab, NewsOiTradeFloors, NewsQuote } from "../../api/newsQueries";
 import { NEWS_OI_TABS } from "../../api/newsQueries";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import {
@@ -39,6 +39,7 @@ import {
 import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
+import { NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
 import "./newsOiFrameTable.css";
 
@@ -54,6 +55,7 @@ export function NewsOiFrameTable({
   onRetry,
   onTabChange,
   rows,
+  quotes,
   tab,
   trading,
   tradingError,
@@ -68,6 +70,7 @@ export function NewsOiFrameTable({
   onRetry: () => void;
   onTabChange: (tab: NewsOiTab) => void;
   rows: readonly NewsFeedEvent[];
+  quotes: Record<string, NewsQuote>;
   tab: NewsOiTab;
   trading: TradingOrders | undefined;
   tradingError: boolean;
@@ -97,7 +100,7 @@ export function NewsOiFrameTable({
             </button>
           ))}
         </div>
-        <small>红是利多、绿是利空；价格看 1H/4H 与交易列</small>
+        <small>红是利多、绿是利空；现价与帧时价分开，1H/4H 是事件后表现</small>
       </div>
 
       {error ? <PageState.Error error={error} onRetry={onRetry} /> : null}
@@ -110,7 +113,8 @@ export function NewsOiFrameTable({
           <div aria-hidden className="news-oi-head">
             <span>TIME</span>
             <span>SYMBOL</span>
-            <span className="news-oi-num">价格</span>
+            <span className="news-oi-num">现价</span>
+            <span className="news-oi-num">帧时价</span>
             <span className="news-oi-num">OI 变动</span>
             <span className="news-oi-num">持仓</span>
             <span className="news-oi-num">鲸鱼占比</span>
@@ -131,6 +135,7 @@ export function NewsOiFrameTable({
               key={event.event_id}
               ledgerEntry={ledger.get(event.event_id)}
               ledgerComplete={trading?.complete ?? false}
+              quotes={quotes}
               tradingError={tradingError}
               tradingLoaded={Boolean(trading)}
             />
@@ -158,6 +163,7 @@ function FrameRow({
   gateDecision,
   ledgerComplete,
   ledgerEntry,
+  quotes,
   tradingError,
   tradingLoaded,
 }: {
@@ -168,6 +174,7 @@ function FrameRow({
   gateDecision: TradingGateDecision | undefined;
   ledgerComplete: boolean;
   ledgerEntry: TradingOiLedgerEntry | undefined;
+  quotes: Record<string, NewsQuote>;
   tradingError: boolean;
   tradingLoaded: boolean;
 }) {
@@ -175,6 +182,7 @@ function FrameRow({
   const oi = event.oi ?? null;
   const triage = event.triage ?? null;
   const symbol = oi?.symbol ?? "";
+  const quoteSymbol = (event.assets ?? []).find((asset) => asset.listed)?.symbol;
   const buckets = oiBuckets(oi, floors);
   const withheld = event.outcome.group !== "pushed";
   const tradingLookup: TradingOiLookup = {
@@ -206,8 +214,17 @@ function FrameRow({
           <b>{symbol || "—"}</b>
           {triage ? <NewsDirectionChip triage={triage} withStrength={false} /> : null}
         </span>
-        <span className="news-oi-num news-oi-price" title="帧时标记价（p0），不是现价">
-          {formatPrice(event.reaction?.p0)}
+        <span
+          className="news-oi-num news-oi-current-price"
+          title="当前市场报价，独立于 Event Reaction"
+        >
+          <NewsQuotePrice quote={quoteSymbol ? quotes[quoteSymbol] : undefined} />
+        </span>
+        <span
+          className="news-oi-num news-oi-price"
+          title="Event anchor 的 5 分钟 K 线收盘价（p0），不是现价"
+        >
+          <AnchorPrice event={event} />
         </span>
         <span className="news-oi-num news-oi-change">{oiChangeLabel(oi)}</span>
         <span className="news-oi-num">{oiValueZh(oi?.oi_value_usd)}</span>
@@ -251,6 +268,13 @@ function FrameRow({
       {open ? <FrameDetail event={event} tradingLookup={tradingLookup} /> : null}
     </article>
   );
+}
+
+function AnchorPrice({ event }: { event: NewsFeedEvent }) {
+  if (event.reaction?.p0) return <>{formatPrice(event.reaction.p0)}</>;
+  const placeholder =
+    event.reaction?.state === "pending" ? "待 1H 回填" : reactionPlaceholder(event.reaction, "1h");
+  return <em>{placeholder}</em>;
 }
 
 function ReactionValue({ event, horizon }: { event: NewsFeedEvent; horizon: "1h" | "4h" }) {

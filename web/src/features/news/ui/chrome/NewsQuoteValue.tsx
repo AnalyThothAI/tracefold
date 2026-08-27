@@ -44,7 +44,8 @@ export function NewsQuoteChange({ quote }: { quote: NewsQuote | undefined }) {
 
 /** The price itself, for the detail page's quote table where the column has room for it. */
 export function NewsQuotePrice({ quote }: { quote: NewsQuote | undefined }) {
-  if (!quote || quote.state === "unlisted") {
+  if (!quote) return <span className="news-quote-state">—</span>;
+  if (quote.state === "unlisted") {
     return (
       <span className="news-quote-state" title="该符号没有可交易合约，本地没有行情源">
         {quote?.state_zh ?? "无可交易合约"}
@@ -61,6 +62,27 @@ export function NewsQuotePrice({ quote }: { quote: NewsQuote | undefined }) {
   return (
     <span className="news-quote-price" data-state={quote.state} title={quoteTitle(quote)}>
       {formatPrice(quote.price)}
+    </span>
+  );
+}
+
+/** Current price and rolling change for a compact Feed asset chip (#287). */
+export function NewsQuoteCompact({ quote }: { quote: NewsQuote | undefined }) {
+  if (!quote) return null;
+  if (quote.state === "unlisted" || quote.state === "unavailable" || !quote.price) {
+    return <NewsQuotePrice quote={quote} />;
+  }
+  return (
+    <span className="news-quote-compact">
+      <NewsQuotePrice quote={quote} />
+      {quote.change_pct == null ? null : (
+        <>
+          <span aria-hidden className="news-quote-separator">
+            ·
+          </span>
+          <NewsQuoteChange quote={quote} />
+        </>
+      )}
     </span>
   );
 }

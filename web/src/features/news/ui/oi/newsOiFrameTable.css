@@ -72,7 +72,8 @@
   }
 
   /*
-   * The artifact's twelve tracks (#280). Two things were wrong before and they compounded: `1H` and `4H`
+   * The artifact's tracks (#280), plus #287's separate current and Event-anchor prices. Two things were
+   * wrong before and they compounded: `1H` and `4H`
    * held a 66px column each where the artifact gives the pair one right-aligned cell, and the trade column
    * was a fixed 150px where the artifact lets it take the remainder. Together they pushed the one column
    * that carries a sentence — 拒 · 鲸盈利 80.2% < 95% — off the right edge of every row.
@@ -85,11 +86,11 @@
   .news-oi-row-main {
     display: grid;
     grid-template-columns:
-      46px 96px 64px 62px 64px 64px 62px 46px 118px 140px 100px
+      46px 96px 64px 64px 62px 64px 64px 62px 46px 118px 140px 100px
       minmax(170px, 1fr);
     gap: 0 10px;
     align-items: center;
-    min-width: 1170px;
+    min-width: 1244px;
     padding: 0 14px;
   }
 
@@ -103,7 +104,7 @@
   }
 
   .news-oi-row {
-    min-width: 1170px;
+    min-width: 1244px;
     border-bottom: 1px solid var(--border-faint);
   }
 
@@ -150,9 +151,15 @@
   }
 
   .news-oi-price,
+  .news-oi-current-price,
   .news-oi-change {
     color: var(--text-primary) !important;
     font-weight: 620 !important;
+  }
+
+  .news-oi-current-price .news-quote-price,
+  .news-oi-current-price .news-quote-state {
+    font: inherit;
   }
 
   .news-oi-ratio[data-gate],
@@ -311,7 +318,7 @@
     display: grid;
     grid-template-columns: minmax(0, 0.9fr) repeat(2, minmax(0, 1fr));
     gap: 10px;
-    min-width: 1170px;
+    min-width: 1244px;
     padding: 0 14px 12px;
     background: var(--surface-raised);
   }

@@ -9,6 +9,7 @@ import {
   newsFeedEventFixture,
   newsFeedFixture,
   newsOutcomeFixture,
+  newsQuoteFixture,
   newsStatusFixture,
   newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
@@ -29,6 +30,9 @@ describe("NewsPage", () => {
       ),
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({ ok: true, data: newsStatusFixture() }),
+      ),
+      http.get(/.*\/api\/news\/quotes$/, () =>
+        HttpResponse.json({ ok: true, data: { measured_at_ms: NEWS_NOW_MS, quotes: [] } }),
       ),
     );
   });
@@ -137,6 +141,60 @@ describe("NewsPage", () => {
     for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
+  });
+
+  it("shows a deterministic ledger asset with current price and 24H change in one quote batch", async () => {
+    const quoteRequests: string[] = [];
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                assets: [
+                  { base_symbol: "BTR", listed: true, symbol: "BTR", venue: "binance.perp" },
+                ],
+                event_id: "evt-oi-btr",
+                grounded_assets: [],
+                triage: {
+                  ...newsFeedEventFixture().triage!,
+                  headline_zh: "BTR 持仓异动",
+                },
+              }),
+            ],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/news\/quotes$/, ({ request }) => {
+        quoteRequests.push(new URL(request.url).searchParams.get("symbols") ?? "");
+        return HttpResponse.json({
+          ok: true,
+          data: {
+            measured_at_ms: NEWS_NOW_MS,
+            quotes: [
+              newsQuoteFixture({
+                base_symbol: "BTR",
+                change_pct: 39.38,
+                price: "0.16059",
+                requested_symbol: "BTR",
+                symbol: "BTR",
+                venue_symbol: "BTRUSDT",
+              }),
+            ],
+          },
+        });
+      }),
+    );
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const row = (await screen.findByRole("heading", { name: "BTR 持仓异动" })).closest("article");
+    expect(row).not.toBeNull();
+    await waitFor(() => expect(quoteRequests).toEqual(["BTR"]));
+    expect(within(row!).getByLabelText("关联资产")).toHaveTextContent(
+      "binance.perp:BTR0.16059·+39.38%",
+    );
   });
 
   it("keeps Event Reaction off the approved three-column feed", async () => {
@@ -667,6 +725,57 @@ describe("NewsPage", () => {
     expect(within(technical).getByText("triage_p95_ms")).toBeInTheDocument();
     expect(within(technical).getByText("学习证据保留")).toBeInTheDocument();
     expect(within(technical).getByText("deleted_last_turn")).toBeInTheDocument();
+  });
+
+  it("shows a deterministic ledger asset in the Event detail current-quote table", async () => {
+    const detail = newsEventDetailFixture();
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            ...detail,
+            event: {
+              ...detail.event,
+              assets: [{ base_symbol: "BTR", listed: true, symbol: "BTR", venue: "binance.perp" }],
+              grounded_assets: [],
+            },
+            normalization: [],
+            triage: {
+              ...detail.triage!,
+              assets: [{ role: "primary", symbol: "BTR" }],
+            },
+          },
+        }),
+      ),
+      http.get(/.*\/api\/news\/quotes$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            measured_at_ms: NEWS_NOW_MS,
+            quotes: [
+              newsQuoteFixture({
+                base_symbol: "BTR",
+                change_pct: 39.38,
+                price: "0.16059",
+                requested_symbol: "BTR",
+                symbol: "BTR",
+                venue_symbol: "BTRUSDT",
+              }),
+            ],
+          },
+        }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+
+    expect(await screen.findByText("ASSET · 1 个标的")).toBeInTheDocument();
+    expect(screen.getByText("BTRUSDT")).toBeInTheDocument();
+    expect(screen.getAllByText("0.16059").length).toBeGreaterThan(0);
   });
 
   // ------------------------------------------------------------------ detail

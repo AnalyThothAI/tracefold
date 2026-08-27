@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from ..models import ReaderReceipt, display_title
@@ -623,8 +623,25 @@ class FeedStorage:
             },
         }
 
+    def event_asset_symbols(self, event_ids: Sequence[str]) -> dict[str, list[str]]:
+        """Event id -> durable asset symbols for one bounded public response (#287)."""
+
+        wanted = list(dict.fromkeys(str(event_id) for event_id in event_ids if str(event_id)))
+        if not wanted:
+            return {}
+        rows = self.conn.execute(
+            """
+            SELECT event_id, array_agg(symbol ORDER BY symbol) AS symbols
+              FROM news_event_assets
+             WHERE event_id = ANY(%s)
+             GROUP BY event_id
+            """,
+            (wanted,),
+        ).fetchall()
+        return {str(row["event_id"]): [str(symbol) for symbol in row["symbols"] or []] for row in rows}
+
     def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
-        """event_id -> the coin tags the Gate grounded it on, for the last 24 h (#87).
+        """event_id -> durable Event-asset symbols for the last 24 h (#87/#267).
 
         The console's «符号落表» funnel segment and the «符号未落标的表» reason group both need to know which
         Events named something that exists on a venue. That answer spans two owners — this table and the #75
@@ -914,13 +931,11 @@ def _oi_summary(value: Any) -> dict[str, Any] | None:
     parser to keep in step with the judge. The two thresholds come from the trace's own `policy`, so a stored
     frame keeps saying what it ran under after an operator retunes `news.oi`.
 
-    `symbol` is here because this lane is the one place nothing else carries it. The Gate grounds
-    `news_event_assets` from the provider's coin tags at admission, and a strategy-1019 frame ships none —
-    the symbol exists only in the title, and `evaluate_oi` parses it into the verdict's `TriageAsset` at
-    Triage time, after the Gate has already written its rows. So on a live telemetry Event both
-    `grounded_assets` and `assets` are empty and `triage.assets` is absent from the feed's slim summary:
-    verified against production on 2026-08-25, where every row's symbol column read `—`. The judge's own
-    trace is the only place the feed can reach it. `direction` is not folded here — the slim triage summary
+    `symbol` is the judge's parsed subject, not something the browser may infer from the wire title. The Gate
+    grounds no provider tag for strategy 1019, so `grounded_assets` stays empty; after judgment the primary is
+    durably attached through `news_event_assets` and projected separately as public `assets`. The feed's slim
+    triage summary still omits its full `assets`, so this trace remains the authority for the OI subject and
+    measurements. `direction` is not folded here — the slim triage summary
     does carry that one.
 
     `strategy_id`, `provider` and `provider_source` stay behind: the console does not display provider

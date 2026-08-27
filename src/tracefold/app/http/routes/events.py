@@ -28,7 +28,7 @@ def get_news_event(request: Request, event_id: str) -> Response:
     with runtime.repositories() as repos:
         data = repos.news.event_detail(event_id)
         if data is not None:
-            _attach_asset_refs([data["event"]], repos.instruments)
+            _attach_asset_refs([data["event"]], repos.news, repos.instruments)
             data["normalization"] = _normalization(data["event"], repos.instruments)
             now_ms = int(time.time() * 1000)
             data["reactions"] = repos.price.event_reactions(event_id)
@@ -59,23 +59,24 @@ def get_news_quotes(
     return _etagged({"quotes": quotes, "measured_at_ms": now_ms}, request, envelope=_QuotesEnvelope)
 
 
-def _attach_asset_refs(events: list[dict[str, Any]], instruments: Any) -> None:
-    """Resolve every Event's provider coin tags against the instrument universe, in one batch (#87).
+def _attach_asset_refs(events: list[dict[str, Any]], news: Any, instruments: Any) -> None:
+    """Resolve every Event's durable asset ledger against the instrument universe, in two bounded batches.
 
-    Assembly lives in the route because the two halves have different owners: `NewsRepository` reads the tags off
-    `news_events`, `InstrumentsRepository` reads what they name. One round trip per response, not one per Event.
+    Assembly lives in the route because the two halves have different owners: `NewsRepository` reads which assets
+    concern each Event, `InstrumentsRepository` reads what they name. One round trip per owner and response, not
+    one per Event. `grounded_assets` remains the provider/Gate evidence and is deliberately untouched (#287).
     """
 
-    refs = instruments.asset_refs({symbol for event in events for symbol in (event.get("grounded_assets") or [])})
+    symbols_by_event = news.event_asset_symbols([str(event["event_id"]) for event in events])
+    refs = instruments.asset_refs({symbol for symbols in symbols_by_event.values() for symbol in symbols})
     for event in events:
-        # One entry per instrument named, not per tag: the provider ships both `CL` and `XYZ-CL` for the same
-        # contract, and once those resolve they are byte-identical. The browser happens to dedupe before
-        # rendering, but a payload that hands out the same chip twice is the API's fault, not the client's.
+        # One entry per instrument named. Old Gate rows may contain both `CL` and `XYZ-CL`; once those resolve
+        # they are byte-identical. The browser happens to dedupe before rendering, but a payload that hands out
+        # the same chip twice is the API's fault, not the client's.
         seen: set[str] = set()
         assets: list[dict[str, Any]] = []
-        for symbol in event.get("grounded_assets") or []:
-            # Keyed by the raw tag, exactly as `asset_refs` returns it — upper-casing here would miss a
-            # lower-case tag and silently render it as naming nothing.
+        for symbol in symbols_by_event.get(str(event["event_id"]), []):
+            # Keyed by the ledger symbol, exactly as `asset_refs` returns it.
             ref = refs.get(str(symbol)) or {
                 "symbol": str(symbol).upper(),
                 "base_symbol": str(symbol).upper(),

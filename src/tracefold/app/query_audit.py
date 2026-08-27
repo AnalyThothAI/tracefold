@@ -24,6 +24,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_feed_events",
         "news_feed_symbol_filter",
         "news_feed_search",
+        "news_event_asset_projection",
         "news_reaction_attach",
     ),
     "/api/news/quotes": ("news_quote_snapshot_read",),
@@ -35,6 +36,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_event_detail",
         "news_event_members",
         "news_event_verdicts",
+        "news_event_asset_projection",
         "news_reaction_attach",
     ),
     "/api/news/status": (

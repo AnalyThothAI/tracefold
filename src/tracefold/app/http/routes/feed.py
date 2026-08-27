@@ -101,7 +101,7 @@ def get_news_feed(
             # Only `list_feed` decodes the cursor. Anything that fails while resolving instruments is a
             # server fault and must not come back as a 400 naming a field the caller got right (#87 review).
             raise ApiBadRequest(str(exc), field="cursor") from exc
-        _attach_asset_refs(data["events"], repos.instruments)
+        _attach_asset_refs(data["events"], repos.news, repos.instruments)
         _attach_reactions(data["events"], repos.price, now_ms=int(time.time() * 1000))
     return _etagged(data, request, envelope=_FeedEnvelope)
 

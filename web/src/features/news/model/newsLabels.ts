@@ -240,22 +240,26 @@ export function displayAssets(grounded: readonly string[]): string[] {
 }
 
 /**
- * The same chips, but resolved: each provider tag paired with what it names on a venue (#87).
+ * Resolved chips from the durable Event-asset projection (#87/#287).
  *
- * The server sends `assets` alongside the raw `grounded_assets`; a response served before #87, or one whose
- * Event carried tags the resolver never saw, falls back to the bare symbol with `listed: false` — an unknown
- * tag reads as "we cannot place this", never as a confirmed listing.
+ * Server `assets` is authoritative and can exist when provider/Gate evidence is empty. Raw grounded tags
+ * absent from that projection are appended as `listed: false` fallbacks — unknown evidence reads as "we
+ * cannot place this", never as a confirmed listing.
  */
 export function displayAssetRefs(
   grounded: readonly string[],
   assets: readonly NewsAssetRef[] | undefined,
 ): NewsAssetRef[] {
-  const bySymbol = new Map(
-    (assets ?? []).map((asset) => [asset.symbol.replace(/^XYZ-/, "").toUpperCase(), asset]),
+  const resolved = [...(assets ?? [])];
+  const represented = new Set(
+    resolved.flatMap((asset) => displayAssets([asset.symbol, asset.base_symbol])),
   );
-  return displayAssets(grounded).map(
-    (symbol) => bySymbol.get(symbol) ?? { base_symbol: symbol, listed: false, symbol, venue: null },
-  );
+  for (const symbol of displayAssets(grounded)) {
+    if (represented.has(symbol)) continue;
+    resolved.push({ base_symbol: symbol, listed: false, symbol, venue: null });
+    represented.add(symbol);
+  }
+  return resolved;
 }
 
 export function percent(numerator: number, denominator: number): string {

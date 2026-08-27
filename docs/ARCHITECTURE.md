@@ -248,7 +248,10 @@ rows when its business payload is unchanged. `news_events` is rebuildable by
 replaying `news_items` through the Deduper (`tracefold news replay` performs
 the same computation in memory). OpenNews's raw `coins` annotation remains
 source evidence in `news_items.provider_metadata`; the Gate derives the bounded
-`grounded_assets` from it and the read API exposes both.
+`grounded_assets` from it. `news_event_assets` is the durable Event-market
+identity ledger: it contains those Gate-grounded symbols and the primary symbol
+a deterministic judge records when provider evidence is empty. The read API
+exposes the evidence and the resolved ledger projection as different fields.
 
 OpenNews connection state in `news_ingest_state`, explicit incident intervals
 in `news_opennews_incidents`,
@@ -588,14 +591,13 @@ the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
 any decision, and absent rather than approximated when no fresh value exists —
 68.7% of a week's cards carried one.
 
-OI telemetry has no provider coin tag and therefore no `news_event_assets` row.
-Its deterministic parser, `telemetry_deterministic` admission, matching
-`news_oi_signals(event_id, oi_signal_v1)` ledger row, and current OI Program
-version plus SHA (including reader contract, parser, eligible-rank semantics and
-OI policy) together form an
-equivalent code-grounded reader asset. Deliverer uses that one
-verified asset list for both facts and quotes, while the Quote planner unions
-symbols from recent live OI ledger rows into its existing bounded working set.
+OI telemetry has no provider coin tag, so `grounded_assets` remains empty. Its
+deterministic parser records the verified primary in `news_event_assets` in the
+same transaction as the Verdict (#267). That row is the shared Event-market
+identity consumed by Reaction planning, symbol filters, Feed/detail projection,
+reader history and delivery; `news_oi_signals(event_id, oi_signal_v1)` remains
+the separate rank ledger. The Quote planner unions recent live OI symbols into
+its existing bounded working set.
 The price remains display-only: it cannot change OI judgment, policy, rank, or
 delivery eligibility, and a stale or unavailable quote silently removes the
 行情 line.
@@ -1961,8 +1963,8 @@ later rows. Two consequences of judging these frames rather than
 suppressing them are deliberate and worth stating: every 1019 frame now carries
 a verdict, so `news.retention` keeps its Item for 365 days instead of purging at
 30 (~70k small rows a year), and the card may show the ledger-verified ticker
-plus a fresh Quote Snapshot without inventing a `news_event_assets` grounding
-row. A pre-reader-contract verdict, a mismatched Program SHA, or an unavailable
+plus a fresh Quote Snapshot without altering the empty provider/Gate
+`grounded_assets` evidence. A pre-reader-contract verdict, a mismatched Program SHA, or an unavailable
 quote leaves that ticker/行情 context absent. The decision itself lives in `news_verdicts` like every
 other decision, which is also where the lane's idempotency comes from — Triage
 already re-publishes an unpublished push on redelivery.

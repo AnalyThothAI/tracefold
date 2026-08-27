@@ -142,7 +142,8 @@ the route components into the eager shell chunk.
   unavailable or unlisted one says so in words. Market direction uses the
   mainland `--dir-bullish` / `--dir-bearish` tokens (red up, green down) for
   *actual* returns only, told apart from the model's judgment by weight — the
-  judgment is a filled chip, the outcome is plain figures. Pipeline outcome
+  judgment is a filled chip, the outcome is plain figures. Feed asset chips
+  show `现价 · 24H`; Event detail keeps the fuller current-quote table. Pipeline outcome
   colours stay blue/amber/grey and are never repurposed. A pending horizon says
   `未到期`; nothing missing is ever drawn as `0.00%`.
 
@@ -203,14 +204,15 @@ the route components into the eager shell chunk.
   to three asset chips with `+N` for the rest. Magnitude and the merged-report
   count are real facts but belong to the Event rather than to a scan; both are
   one click away in the drawer and on the Event's own page. A chip renders
-  `assets[]` — the same provider tags resolved against the #75 instrument
-  universe — as `venue:SYMBOL` plus its current change when `listed`, and
+  the durable, resolved Event projection in `assets[]` as `venue:SYMBOL` plus
+  current price and rolling 24H change when `listed`, and
   inside a dashed amber box with the ticker struck through when it is not
   (#87). That box is the only frame allowed in a meta line, precisely so it
   cannot be read as one more listing. Whether a tag names something real is the
   server's answer; the browser owns no symbol table. `grounded_assets` stays on
-  the payload as the raw tags, and a tag with no matching `assets[]` entry
-  falls back to unlisted, never to a confirmed listing.
+  the payload as raw provider/Gate evidence. Server `assets[]` entries render
+  even when that evidence is empty; only an unmatched grounded tag is appended
+  as an unlisted fallback.
 
   The 3px left rail is the *market call*, not the pipeline state: red for
   利多, green for 利空, and both at 45% on a held row. The pipeline's own state
@@ -409,10 +411,11 @@ the route components into the eager shell chunk.
 
   `/news/oi` is `OI 遥测审计` (#207, #137, #256): the deterministic open-interest lane,
   which is roughly a fifth of the day's volume and is judged by rule rather than
-  by the model. It reads three bounded endpoints — `/api/news/status` for
+  by the model. It reads bounded endpoints — `/api/news/status` for
   `oi.policy`, `oi.by_rule_24h` and `oi.trade_floors`,
   `/api/news/feed?admission=telemetry_deterministic&hours=24` for the frames,
-  and one `/api/trading/orders` batch for capital-lane cases and orders. It renders
+  one `/api/news/quotes` batch for the visible resolved assets, and one
+  `/api/trading/orders` batch for capital-lane cases and orders. It renders
   the 24 h telemetry band, two compact side-by-side policy panels, and the frame
   table; the old standalone rank-occupancy card and visible source footers are not part of this scan surface.
   The Trading panel reads `enabled`, `mode`, and `allow_short` from those floors so a disabled lane is
@@ -422,7 +425,9 @@ the route components into the eager shell chunk.
   server-side through `?oi=pushed|withheld|parse_failed` and take their counts
   from `oi.by_rule_24h`, never from the loaded page. Rows render the `oi` block
   the server folded out of the judge's own trace — the four measurements, the
-  eligible rank, and the gate that decided — plus the Event-anchored `p0` mark and fixed 1H/4H reaction; a row
+  eligible rank, and the gate that decided — plus separate current Quote and
+  Event-anchored `p0` columns and the fixed 1H/4H reaction. Before +1H matures,
+  p0 says `待 1H 回填` while current Quote can already render; a row
   whose `oi` block is absent says so and keeps its other columns rather than
   re-parsing `leader_title`, which would be `oi_signal_parser_v1` running a
   second time in the browser. The OI change itself is never tinted red or green:
@@ -434,8 +439,7 @@ the route components into the eager shell chunk.
   `未成案` only when that flag is true, otherwise it is `未确认`. Research buckets are annotations
   in the pipeline's own indigo/amber, measured against `oi.trade_floors`. The
   page draws no open-interest curve (the provider emits a frame only when its own
-  trigger fires, so a line between them is invented), puts no current quote on a
-  frame, and edits no threshold — `news.oi` is operator configuration and this
+  trigger fires, so a line between them is invented), and edits no threshold — `news.oi` is operator configuration and this
   page reports only what it currently is. The pre-frame 1 h move is absent: it
   needs the price one hour before the frame, and the News price plane stores only
   the Event-anchored `p0/p1/p4`. The quadrant is present as of #280, but as the
@@ -443,8 +447,8 @@ the route components into the eager shell chunk.
   already decided it and wrote it down, so showing it costs no price this page
   does not have.
 
-  The frame table's tracks are the artifact's twelve (#280): the 1H and 4H
-  reactions share one right-aligned cell, and the 交易 column takes the remainder
+  The frame table has thirteen tracks: #280's layout plus #287's separate current
+  and Event-anchor price columns. The 1H and 4H reactions share one right-aligned cell, and the 交易 column takes the remainder
   rather than a fixed width. `min-width` is the fixed tracks plus their gutters
   and the flexible column's own minimum — not the artifact's own figure, which
   bakes in a rendered width and forces a scrollbar at the width it is drawn at.

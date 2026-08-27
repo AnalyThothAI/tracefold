@@ -2,8 +2,10 @@ import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
+  NEWS_NOW_MS,
   newsFeedFixture,
   newsOiFrameFixture,
+  newsQuoteFixture,
   newsReactionFixture,
   newsStatusFixture,
 } from "@tests/fixtures/newsFixture";
@@ -30,6 +32,9 @@ describe("NewsOiPage", () => {
       ),
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({ ok: true, data: newsFeedFixture({ events: [newsOiFrameFixture()] }) }),
+      ),
+      http.get(/.*\/api\/news\/quotes$/, () =>
+        HttpResponse.json({ ok: true, data: { measured_at_ms: NEWS_NOW_MS, quotes: [] } }),
       ),
       http.get(/.*\/api\/trading\/orders$/, () =>
         HttpResponse.json({ ok: true, data: tradingOrdersFixture() }),
@@ -250,14 +255,11 @@ describe("NewsOiPage", () => {
     expect(screen.getByTestId("location").textContent).toBe("/news/oi?oi=parse_failed");
   });
 
-  it("reads the symbol from the judge's trace, the only place this lane carries it", async () => {
+  it("reads the row subject from the judge's trace rather than reparsing the title", async () => {
     /*
-     * The row's subject is on none of the three fields a reader would reach for first. `triage.assets` is
-     * the Event detail's `full=True` shape and the feed sends the slim one; `assets` and `grounded_assets`
-     * come from the Gate, which grounds provider coin tags at admission — and a strategy-1019 frame ships
-     * none, so on a live telemetry Event both are `[]`. Two successive fixes read those instead and the
-     * column stayed `—` on the deployed console both times, because the fixture filled what production
-     * leaves empty. This asserts the production shape: nothing but `oi.symbol`.
+     * `oi.symbol` is the structured parser result. Public `assets` normally carries the later durable market
+     * projection, but it is not the parser contract; even when that projection is absent the page must use the
+     * stored OI subject and must never infer a replacement from `leader_title`.
      */
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
@@ -331,6 +333,146 @@ describe("NewsOiPage", () => {
     expect(row).toHaveTextContent("0.8412");
     // The one batched trading read joins this row by its published Event identity.
     expect(row).toHaveTextContent("多 · OPEN");
+  });
+
+  it("shows one batched current quote beside the fixed Event anchor price", async () => {
+    const quoteRequests: string[] = [];
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                assets: [
+                  { base_symbol: "WIF", listed: true, symbol: "WIF", venue: "binance.perp" },
+                ],
+              }),
+              newsOiFrameFixture({
+                assets: [
+                  { base_symbol: "BTR", listed: true, symbol: "BTR", venue: "binance.perp" },
+                ],
+                event_id: "evt-oi-btr",
+                oi: { ...newsOiFrameFixture().oi!, symbol: "BTR" },
+                reaction: newsReactionFixture({ p0: "0.1600" }),
+              }),
+            ],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/news\/quotes$/, ({ request }) => {
+        quoteRequests.push(new URL(request.url).searchParams.get("symbols") ?? "");
+        return HttpResponse.json({
+          ok: true,
+          data: {
+            measured_at_ms: NEWS_NOW_MS,
+            quotes: [
+              newsQuoteFixture({
+                base_symbol: "BTR",
+                price: "0.1700",
+                requested_symbol: "BTR",
+                symbol: "BTR",
+                venue_symbol: "BTRUSDT",
+              }),
+              newsQuoteFixture({
+                base_symbol: "WIF",
+                price: "0.9245",
+                requested_symbol: "WIF",
+                symbol: "WIF",
+                venue_symbol: "WIFUSDT",
+              }),
+            ],
+          },
+        });
+      }),
+    );
+
+    renderOi();
+    const row = await screen.findByRole("button", { name: /WIF/ });
+    const btr = await screen.findByRole("button", { name: /BTR/ });
+    await waitFor(() => expect(quoteRequests).toEqual(["BTR,WIF"]));
+    expect(screen.getByText("现价")).toBeInTheDocument();
+    expect(screen.getByText("帧时价")).toBeInTheDocument();
+    expect(row).toHaveTextContent("0.9245");
+    expect(row).toHaveTextContent("0.8412");
+    expect(row.querySelector(".news-oi-price")).toHaveAttribute(
+      "title",
+      "Event anchor 的 5 分钟 K 线收盘价（p0），不是现价",
+    );
+    expect(btr).toHaveTextContent("0.17");
+    expect(btr).toHaveTextContent("0.16");
+  });
+
+  it("keeps current price visible while an immature p0 says it awaits the 1H fill", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                assets: [
+                  { base_symbol: "WIF", listed: true, symbol: "WIF", venue: "binance.perp" },
+                ],
+                reaction: newsReactionFixture({
+                  p0: null,
+                  priced_n: 0,
+                  return_1h_bps: null,
+                  return_4h_bps: null,
+                  state: "pending",
+                }),
+              }),
+            ],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/news\/quotes$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            measured_at_ms: NEWS_NOW_MS,
+            quotes: [
+              newsQuoteFixture({
+                base_symbol: "WIF",
+                price: "0.9245",
+                requested_symbol: "WIF",
+                symbol: "WIF",
+                venue_symbol: "WIFUSDT",
+              }),
+            ],
+          },
+        }),
+      ),
+    );
+
+    renderOi();
+    const row = await screen.findByRole("button", { name: /WIF/ });
+    expect(await within(row).findByText("0.9245")).toBeInTheDocument();
+    expect(row).toHaveTextContent("待 1H 回填");
+    expect(row).not.toHaveTextContent("0.00%");
+  });
+
+  it("keeps the stored Reaction visible when the independent current-quote read fails", async () => {
+    let quoteRequests = 0;
+    server.use(
+      http.get(/.*\/api\/news\/quotes$/, () => {
+        quoteRequests += 1;
+        return HttpResponse.json({ ok: false, error: "quote unavailable" }, { status: 503 });
+      }),
+    );
+
+    renderOi();
+    const row = await screen.findByRole("button", { name: /WIF/ });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("当前行情读取失败");
+    await waitFor(() =>
+      expect(document.querySelector(".news-oi-current-price")).toHaveTextContent("—"),
+    );
+    expect(row).toHaveTextContent("0.8412");
+    expect(row).toHaveTextContent("+2.03%");
+    expect(row).toHaveTextContent("+1.45%");
+    fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(quoteRequests).toBeGreaterThanOrEqual(2));
   });
 
   it("marks the research bucket a frame falls in against the capital lane's own floor", async () => {

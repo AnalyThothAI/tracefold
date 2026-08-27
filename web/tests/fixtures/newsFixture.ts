@@ -520,6 +520,7 @@ export function newsSymbolOiFrameFixture(symbol: string, openedAtMs?: number): N
   const template = newsOiFrameFixture();
   return {
     ...template,
+    assets: [{ base_symbol: symbol, listed: true, symbol, venue: "binance.perp" }],
     event_id: `evt-oi-${symbol.toLowerCase()}`,
     opened_at_ms: openedAtMs ?? template.opened_at_ms,
     leader_title: template.leader_title.replace("WIF", symbol),
@@ -531,12 +532,10 @@ export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): News
   return newsFeedEventFixture({
     admission: "telemetry_deterministic",
     /*
-     * Both empty, because that is what production sends. The Gate grounds `news_event_assets` from the
-     * provider's coin tags at admission and a strategy-1019 frame ships none; the symbol is parsed out of
-     * the title later, at Triage. A fixture that filled either of these is what let two successive
-     * "fixed the symbol column" changes ship while the column stayed `—` on the live console.
+     * The provider/Gate evidence stays empty, while the public projection carries the deterministic asset
+     * that Triage durably recorded in `news_event_assets` (#267/#287). They are intentionally different facts.
      */
-    assets: [],
+    assets: [{ base_symbol: "WIF", listed: true, symbol: "WIF", venue: "binance.perp" }],
     delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
     event_id: "evt-oi-wif",
     family: "market_telemetry",

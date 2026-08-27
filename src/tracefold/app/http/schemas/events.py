@@ -80,8 +80,8 @@ class NewsEventData(ExactApiSchema):
     engine_type: str
     asset_class: str
     grounded_assets: list[str] = Field(default_factory=list)
-    # #87: `grounded_assets` stays the raw provider tags; `assets` is the same list resolved against the
-    # instrument universe, so the browser never has to guess whether a tag names something real.
+    # `grounded_assets` stays the raw provider/Gate evidence. `assets` resolves the Event's durable
+    # `news_event_assets` ledger, which also carries deterministic-judge assets when that evidence is empty.
     assets: list[NewsAssetRefData] = Field(default_factory=list)
     watchlist_hits: list[str] = Field(default_factory=list)
     macro_lexicon: bool = False

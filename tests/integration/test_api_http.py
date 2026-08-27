@@ -11,8 +11,10 @@ from tests.postgres_test_utils import (
     postgres_settings_storage,
     prepare_postgres_database,
 )
+from tracefold.app import serve_database as serve_database_module
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import NewsSettings, Settings
@@ -210,6 +212,80 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert status_data["delivery"]["delivery_available"] is False
     assert "amqp" not in json.dumps(status_data)
     assert [response.status_code for response in retired] == [404, 404, 404, 404]
+
+
+def test_api_projects_deterministic_event_assets_from_postgres_to_feed_and_detail(tmp_path, monkeypatch):
+    """The public asset comes from `news_event_assets`, not the provider/Gate evidence (#287)."""
+
+    prepare_postgres_database()
+    settings = make_settings(tmp_path)
+    app = create_app(settings=settings)
+    now_ms = int(time.time() * 1000)
+    event_ids = _seed_news_v3_events(now_ms=now_ms)
+    assert event_ids
+    event_id = event_ids[0]
+
+    with write_repositories() as repos, repos.transaction():
+        repos.conn.execute("DELETE FROM news_event_assets WHERE event_id = %s", (event_id,))
+        repos.conn.execute(
+            "UPDATE news_events SET admission = 'telemetry_deterministic', grounded_assets = '[]'::jsonb"
+            " WHERE event_id = %s",
+            (event_id,),
+        )
+        for seeded_event_id in event_ids:
+            repos.news.record_event_assets(event_id=seeded_event_id, assets=[("BTR", "perp")])
+        repos.instruments.apply_snapshot(
+            [
+                Instrument(
+                    venue="binance.perp",
+                    venue_symbol="BTRUSDT",
+                    base_symbol="BTR",
+                    instrument_class="crypto",
+                    quote_asset="USDT",
+                )
+            ],
+            now_ms=now_ms,
+        )
+
+    statement_count = [0]
+    production_repositories_for_connection = serve_database_module.repositories_for_connection
+
+    class CountingConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, *args, **kwargs):
+            statement_count[0] += 1
+            return self._conn.execute(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    def counted_repositories(conn):
+        return production_repositories_for_connection(CountingConnection(conn))
+
+    monkeypatch.setattr(serve_database_module, "repositories_for_connection", counted_repositories)
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer secret"}
+        statement_count[0] = 0
+        one_event = client.get("/api/news/feed?limit=1", headers=headers)
+        one_event_statement_count = statement_count[0]
+        statement_count[0] = 0
+        many_events = client.get("/api/news/feed?limit=100", headers=headers)
+        many_events_statement_count = statement_count[0]
+        feed = client.get("/api/news/feed?symbol=BTR&limit=100", headers=headers)
+        detail = client.get(f"/api/news/events/{event_id}", headers=headers)
+
+    assert one_event.status_code == many_events.status_code == feed.status_code == detail.status_code == 200
+    assert len(one_event.json()["data"]["events"]) == 1
+    assert len(many_events.json()["data"]["events"]) > 1
+    assert many_events_statement_count == one_event_statement_count
+    feed_event = next(event for event in feed.json()["data"]["events"] if event["event_id"] == event_id)
+    detail_event = detail.json()["data"]["event"]
+    expected = [{"symbol": "BTR", "base_symbol": "BTR", "venue": "binance.perp", "listed": True}]
+    assert feed_event["grounded_assets"] == detail_event["grounded_assets"] == []
+    assert feed_event["assets"] == detail_event["assets"] == expected
 
 
 def test_api_notification_routes_are_not_registered(tmp_path):

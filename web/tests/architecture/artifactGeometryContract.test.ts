@@ -106,8 +106,8 @@ const geometry: Array<{
     file: "features/news/ui/oi/newsOiFrameTable.css",
     selector: ".news-oi-head, .news-oi-row-main",
     property: "grid-template-columns",
-    value: "46px 96px 64px 62px 64px 64px 62px 46px 118px 140px 100px minmax(170px, 1fr)",
-    why: "twelve tracks, one cell for the 1H/4H pair, and a trade column that takes the remainder",
+    value: "46px 96px 64px 64px 62px 64px 64px 62px 46px 118px 140px 100px minmax(170px, 1fr)",
+    why: "thirteen tracks with separate current/anchor prices and a trade column taking the remainder",
   },
   {
     file: "features/trading/ui/trading.css",
@@ -183,7 +183,7 @@ describe("v8 artifact geometry contract", () => {
     {
       file: "features/news/ui/oi/newsOiFrameTable.css",
       selector: ".news-oi-head, .news-oi-row-main",
-      fixedTracks: 11,
+      fixedTracks: 12,
       flexibleMin: 170,
     },
     {
