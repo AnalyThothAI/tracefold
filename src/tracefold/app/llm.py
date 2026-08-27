@@ -83,6 +83,11 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
         # Qwen3 on llama.cpp / vLLM thinks by default and spends the whole ``max_tokens`` budget on reasoning
         # before the tool call; ``chat_template_kwargs`` is the OpenAI-compatible switch both servers honour.
         return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    if leaf == "minimax-m3" and not thinking:
+        # MiniMax-M3 includes ``<think>`` reasoning in the response content by default.  The News Program expects
+        # the response body to contain only its strict structured output, so use MiniMax's OpenAI-compatible
+        # thinking switch for production prediction calls.
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
     return {}
 
 

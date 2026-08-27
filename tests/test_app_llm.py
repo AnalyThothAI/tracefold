@@ -65,6 +65,23 @@ def test_qwen_disables_thinking_via_chat_template_kwargs() -> None:
     assert endpoint.model_kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def test_minimax_m3_disables_thinking_for_structured_outputs() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M3")
+
+    assert endpoint.model_name == "openai/MiniMax-M3"
+    assert endpoint.model_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M3", thinking=True)
+
+    assert "extra_body" not in endpoint.model_kwargs
+
+
 def test_news_event_kimi_profile_uses_k3_low_and_drops_fixed_temperature() -> None:
     settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
 
