@@ -126,7 +126,7 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one canonical, content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version, `factory_id` `tracefold.news.program.factory_v6`, and
+holds a schema version, `factory_id` `tracefold.news.program.factory_v7`, and
 the two bounded advisory instructions; `program_sha256` is the canonical hash
 of exactly those four values. The loader re-verifies that hash, the schema and
 the factory, applies the advisory bounds — NFC, size, forbidden authority and
@@ -216,6 +216,10 @@ truth stays eligible. Every earlier
 review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v4,
 validation, holdout or promotion evidence for the current Program factory.
+`0315` then records #288's exact source route and factory-v7 cut without
+rewriting or appending the `program_v7` epoch row. Accepted review labels remain
+immutable truth, but prior-factory judgments are audit-only under the exact
+current-bundle filter and the factory-v7 eligible cohort starts at zero.
 The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
 

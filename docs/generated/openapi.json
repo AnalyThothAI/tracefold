@@ -976,6 +976,17 @@
             "title": "Event Id",
             "type": "string"
           },
+          "event_kind": {
+            "enum": [
+              "news",
+              "listing",
+              "oi",
+              "liquidation",
+              "unsupported_market"
+            ],
+            "title": "Event Kind",
+            "type": "string"
+          },
           "family": {
             "title": "Family",
             "type": "string"
@@ -1092,6 +1103,22 @@
             "title": "Reporting Origin",
             "type": "string"
           },
+          "source_contract_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source_contract_drift",
+                  "source_contract_unverified",
+                  "unsupported_market_contract"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Contract Reason"
+          },
           "storyline_key": {
             "default": "",
             "title": "Storyline Key",
@@ -1108,6 +1135,8 @@
         "required": [
           "event_id",
           "family",
+          "event_kind",
+          "source_contract_reason",
           "leader_title",
           "opened_at_ms",
           "last_member_at_ms",
@@ -1681,6 +1710,17 @@
             "title": "Event Id",
             "type": "string"
           },
+          "event_kind": {
+            "enum": [
+              "news",
+              "listing",
+              "oi",
+              "liquidation",
+              "unsupported_market"
+            ],
+            "title": "Event Kind",
+            "type": "string"
+          },
           "family": {
             "title": "Family",
             "type": "string"
@@ -1820,6 +1860,22 @@
             "title": "Reporting Origin",
             "type": "string"
           },
+          "source_contract_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source_contract_drift",
+                  "source_contract_unverified",
+                  "unsupported_market_contract"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Contract Reason"
+          },
           "storyline_key": {
             "default": "",
             "title": "Storyline Key",
@@ -1857,6 +1913,8 @@
         "required": [
           "event_id",
           "family",
+          "event_kind",
+          "source_contract_reason",
           "leader_title",
           "opened_at_ms",
           "last_member_at_ms",
@@ -2909,6 +2967,14 @@
             "title": "Reviewed Should Push 24H",
             "type": "integer"
           },
+          "source_classifier_version": {
+            "default": "",
+            "title": "Source Classifier Version",
+            "type": "string"
+          },
+          "source_contracts_24h": {
+            "$ref": "#/components/schemas/NewsSourceContracts24hData"
+          },
           "suppressed_by_reason": {
             "additionalProperties": {
               "type": "integer"
@@ -3512,6 +3578,60 @@
           "count"
         ],
         "title": "NewsReasonCountData",
+        "type": "object"
+      },
+      "NewsSourceContractStageCountsData": {
+        "additionalProperties": false,
+        "properties": {
+          "parse_failed": {
+            "default": 0,
+            "title": "Parse Failed",
+            "type": "integer"
+          },
+          "parsed": {
+            "default": 0,
+            "title": "Parsed",
+            "type": "integer"
+          },
+          "received": {
+            "default": 0,
+            "title": "Received",
+            "type": "integer"
+          },
+          "unsupported": {
+            "default": 0,
+            "title": "Unsupported",
+            "type": "integer"
+          },
+          "verdict": {
+            "default": 0,
+            "title": "Verdict",
+            "type": "integer"
+          }
+        },
+        "title": "NewsSourceContractStageCountsData",
+        "type": "object"
+      },
+      "NewsSourceContracts24hData": {
+        "additionalProperties": false,
+        "properties": {
+          "liquidation_v1": {
+            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
+          },
+          "listing_v1": {
+            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
+          },
+          "news_v1": {
+            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
+          },
+          "oi_v1": {
+            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
+          },
+          "unsupported_market": {
+            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
+          }
+        },
+        "title": "NewsSourceContracts24hData",
         "type": "object"
       },
       "NewsStatusData": {
@@ -6672,7 +6792,7 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 16,
+              "maxLength": 64,
               "title": "Channel",
               "type": "string"
             }

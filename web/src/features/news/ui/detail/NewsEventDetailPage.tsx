@@ -33,6 +33,7 @@ import {
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsEmptyNote, NewsPageShell, NewsTechnical } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
+import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
@@ -101,6 +102,7 @@ function EventDocument({
           {/* The conclusion and its one-line why, side by side: the chip is the verdict, the sentence is the
               server's reason for it. The chip does not repeat the reason inside itself. */}
           <span className="news-detail-hero-state">
+            <NewsKindBadge kind={event.event_kind} />
             <NewsOutcomeBadge outcome={outcome} size="lg" variant="chip" />
             {outcome.reason_zh ? <span>{outcome.reason_zh}</span> : null}
             {/*

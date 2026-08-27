@@ -65,6 +65,7 @@ ADMISSION_ZH: Final[dict[str, str]] = {
     "liquidation_deterministic": "强平遥测（规则解析，不过模型）",
     "suppressed_pr_template": "律所推广模板，规则直接拦截",
     "suppressed_low_signal": "低分社媒/盘口噪音，规则直接拦截",
+    "unsupported_market_contract": "市场/钱包数据合同未支持，安全落库但不送审",
     "recovery": "断线期间补抄的旧闻，仅用于去重与历史",
     # Retired Gate admissions (pre-#53) still present on historical Events.
     "suppressed_ungrounded": "无关联资产，旧规则拦截（已退役）",
@@ -348,15 +349,27 @@ def event_outcome(
     ``delivery`` needs ``state`` and ``error_code``. Missing rows are ``None``.
     """
 
+    state = str((delivery or {}).get("state") or "")
+    if state in {"sent", "terminal", "sending"}:
+        # The outbound ledger is a material fact and outranks a later routing hard cut. This also covers
+        # repaired/replayed data whose immutable verdict is absent.
+        final = str((triage or {}).get("final_decision") or "")
+        degraded = bool((triage or {}).get("degraded"))
+        error_zh = error_code_zh((triage or {}).get("error_code")) if degraded else ""
+        rule_zh = override_rule_zh((triage or {}).get("override_rule"))
+        if degraded:
+            rule_zh = "模型不可用，按规则兜底推送" + (f"：{error_zh}" if error_zh else "")
+        if state == "sent":
+            return _outcome("delivered", "已推送（重点）" if final == "escalate" else "已推送", rule_zh)
+        if state == "terminal":
+            return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
+        return _outcome("pending_delivery", "推送中", rule_zh)
+
     admission_text = str(admission or "")
     if admission_text == "recovery":
         return _outcome("held_recovery", "补抄件，不推送", ADMISSION_ZH["recovery"])
     if admission_text not in ADMITTED_ADMISSIONS:
         return _outcome("held_gate", "未送审", admission_zh(admission_text))
-    state = str((delivery or {}).get("state") or "")
-    if state == "sent" and triage is None:
-        # A sent card is a fact even when the verdict row is missing (replayed or repaired data): never call it queued.
-        return _outcome("delivered", "已推送", "")
     if triage is None:
         if published_at_ms is None:
             return _outcome("queued_publish", "待处理", "已入库，等待送审")
@@ -386,12 +399,6 @@ def event_outcome(
     rule_zh = override_rule_zh(triage.get("override_rule"))
     if degraded:
         rule_zh = "模型不可用，按规则兜底推送" + (f"：{error_zh}" if error_zh else "")
-    if state == "sent":
-        return _outcome("delivered", "已推送（重点）" if important else "已推送", rule_zh)
-    if state == "terminal":
-        return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
-    if state == "sending":
-        return _outcome("pending_delivery", "推送中", rule_zh)
     return _outcome("pending_delivery", "待推送（重点）" if important else "待推送", rule_zh)
 
 

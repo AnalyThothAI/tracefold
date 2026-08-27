@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from ..models import ADMITTED_ADMISSIONS
 from ..opennews import source_artifact_identity
+from ..source_contracts import EventKind, SourceContractReason
 from .sql_values import _ADMITTED_SQL, _dumps
 
 
@@ -44,6 +45,33 @@ class EventStorage:
               first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
+              provider_metadata = jsonb_set(
+                news_items.provider_metadata,
+                '{strategies}',
+                (
+                  SELECT COALESCE(
+                    jsonb_agg(value ORDER BY source_rank, existing_ordinal NULLS LAST, value),
+                    '[]'::jsonb
+                  )
+                    FROM (
+                      SELECT value, min(source_rank) AS source_rank,
+                             min(original_ordinal) FILTER (WHERE source_rank = 0) AS existing_ordinal
+                        FROM (
+                          SELECT value, 0::smallint AS source_rank, ordinality::bigint AS original_ordinal
+                            FROM jsonb_array_elements(
+                              COALESCE(news_items.provider_metadata -> 'strategies', '[]'::jsonb)
+                            ) WITH ORDINALITY AS existing(value, ordinality)
+                          UNION ALL
+                          SELECT value, 1::smallint, NULL::bigint
+                            FROM jsonb_array_elements(
+                              COALESCE(EXCLUDED.provider_metadata -> 'strategies', '[]'::jsonb)
+                            ) AS incoming(value)
+                        ) combined
+                       GROUP BY value
+                    ) deduplicated
+                ),
+                true
+              ),
               provenance = (
                 SELECT COALESCE(jsonb_agg(DISTINCT value ORDER BY value), '[]'::jsonb)
                   FROM jsonb_array_elements_text(news_items.provenance || EXCLUDED.provenance) AS t(value)
@@ -78,9 +106,11 @@ class EventStorage:
         *,
         source_artifact_id: str,
         family: str,
+        event_kind: EventKind,
         fingerprint: str,
         item_id: str,
         opened_after_ms: int,
+        source_contract_reason: SourceContractReason | None = None,
     ) -> dict[str, Any] | None:
         """The Event another Item built from this same source artifact and this same fact (#154).
 
@@ -105,12 +135,17 @@ class EventStorage:
         # represents.
         row = self.conn.execute(
             """
-            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
+            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms,
+                   e.source_contract_reason
               FROM news_items i
               JOIN news_event_members m ON m.item_id = i.item_id
               JOIN news_events e ON e.event_id = m.event_id
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
-               AND e.family = %s AND e.comparison_fingerprint = %s
+               AND e.family = %s AND e.event_kind = %s AND e.comparison_fingerprint = %s
+               AND (
+                 e.source_contract_reason IS NOT DISTINCT FROM %s
+                 OR e.source_contract_reason = 'source_contract_unverified'
+               )
                AND e.opened_at_ms >= %s
                AND EXISTS (
                  SELECT 1 FROM news_event_evidence_snapshots s
@@ -118,32 +153,59 @@ class EventStorage:
                     AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v2'
                )
                AND e.admission = ANY(%s)
-             ORDER BY e.opened_at_ms ASC LIMIT 1
+             ORDER BY (e.source_contract_reason IS NOT DISTINCT FROM %s) DESC,
+                      e.opened_at_ms ASC LIMIT 1
             """,
             (
                 source_artifact_id,
                 item_id,
                 family,
+                event_kind,
                 fingerprint,
+                source_contract_reason,
                 int(opened_after_ms),
                 sorted(ADMITTED_ADMISSIONS),
+                source_contract_reason,
             ),
         ).fetchone()
         return dict(row) if row else None
 
-    def find_exact_event(self, *, family: str, fingerprint: str, now_ms: int) -> dict[str, Any] | None:
+    def find_exact_event(
+        self,
+        *,
+        family: str,
+        event_kind: EventKind,
+        fingerprint: str,
+        now_ms: int,
+        source_contract_reason: SourceContractReason | None = None,
+    ) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT event_id, opened_at_ms, expires_at_ms, admission, published_at_ms
-              FROM news_events
-             WHERE family = %s AND comparison_fingerprint = %s AND expires_at_ms > %s
-             ORDER BY opened_at_ms ASC LIMIT 1
+            SELECT event_id, opened_at_ms, expires_at_ms, admission, published_at_ms,
+                   source_contract_reason
+             FROM news_events
+             WHERE family = %s AND event_kind = %s
+               AND (
+                 source_contract_reason IS NOT DISTINCT FROM %s
+                 OR source_contract_reason = 'source_contract_unverified'
+               )
+               AND comparison_fingerprint = %s AND expires_at_ms > %s
+             ORDER BY (source_contract_reason IS NOT DISTINCT FROM %s) DESC,
+                      opened_at_ms ASC LIMIT 1
             """,
-            (family, fingerprint, int(now_ms)),
+            (family, event_kind, source_contract_reason, fingerprint, int(now_ms), source_contract_reason),
         ).fetchone()
         return dict(row) if row else None
 
-    def find_band_candidates(self, *, family: str, band_keys: Sequence[str], now_ms: int) -> list[dict[str, Any]]:
+    def find_band_candidates(
+        self,
+        *,
+        family: str,
+        event_kind: EventKind,
+        band_keys: Sequence[str],
+        now_ms: int,
+        source_contract_reason: SourceContractReason | None = None,
+    ) -> list[dict[str, Any]]:
         pairs = [(index, key) for index, key in enumerate(band_keys)]
         if not pairs:
             return []
@@ -158,10 +220,19 @@ class EventStorage:
             )
             SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
               FROM news_events e JOIN hits ON hits.event_id = e.event_id
+             WHERE e.event_kind = %s
+               AND e.source_contract_reason IS NOT DISTINCT FROM %s
              ORDER BY e.opened_at_ms ASC
              LIMIT 25
             """,
-            ([p[0] for p in pairs], [p[1] for p in pairs], family, int(now_ms)),
+            (
+                [p[0] for p in pairs],
+                [p[1] for p in pairs],
+                family,
+                int(now_ms),
+                event_kind,
+                source_contract_reason,
+            ),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -171,6 +242,7 @@ class EventStorage:
         event_id: str,
         leader_item_id: str,
         family: str,
+        event_kind: EventKind,
         comparison_fingerprint: str,
         comparison_title: str,
         leader_title: str,
@@ -196,17 +268,19 @@ class EventStorage:
         trace_id: str,
         band_keys: Sequence[str],
         now_ms: int,
+        source_contract_reason: SourceContractReason | None = None,
     ) -> None:
         self.conn.execute(
             """
             INSERT INTO news_events (
-              event_id, leader_item_id, family, comparison_fingerprint, comparison_title, leader_title,
+              event_id, leader_item_id, family, event_kind, source_contract_reason,
+              comparison_fingerprint, comparison_title, leader_title,
               focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
               opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority,
               provider_score_max, engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon,
               storyline_key, context_line, ingest_mode, trace_id, created_at_ms, updated_at_ms
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
               %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
             )
             """,
@@ -214,6 +288,8 @@ class EventStorage:
                 event_id,
                 leader_item_id,
                 family,
+                event_kind,
+                source_contract_reason,
                 comparison_fingerprint,
                 comparison_title,
                 leader_title,
@@ -547,6 +623,8 @@ class EventStorage:
                 "event_id",
                 "leader_item_id",
                 "family",
+                "event_kind",
+                "source_contract_reason",
                 "comparison_fingerprint",
                 "comparison_title",
                 "opened_at_ms",
@@ -678,32 +756,58 @@ class EventStorage:
         )
         return card
 
-    def fact_membership(self, *, item_id: str, fact_id: str) -> Mapping[str, Any] | None:
-        """Return the first stable Event assignment for one admitted FactUnit."""
+    def fact_membership(
+        self,
+        *,
+        item_id: str,
+        fact_id: str,
+        event_kind: EventKind,
+    ) -> Mapping[str, Any] | None:
+        """Return the stable same-kind Event assignment for one admitted FactUnit."""
 
         return cast(
             Mapping[str, Any] | None,
             self.conn.execute(
                 """
                 SELECT m.event_id, m.match_kind
-                  FROM news_event_members m
+                 FROM news_event_members m
                   JOIN news_events e ON e.event_id = m.event_id
-                 WHERE m.item_id = %s AND m.fact_id = %s
+                 WHERE m.item_id = %s AND m.fact_id = %s AND e.event_kind = %s
                  ORDER BY e.opened_at_ms LIMIT 1
                 """,
-                (item_id, fact_id),
+                (item_id, fact_id, event_kind),
             ).fetchone(),
         )
 
     def event_admission(self, event_id: str) -> Mapping[str, Any] | None:
-        """Admission and storyline identity needed for idempotent FactUnit redelivery."""
+        """Material routing identity needed for idempotent FactUnit redelivery."""
 
         return cast(
             Mapping[str, Any] | None,
             self.conn.execute(
-                "SELECT admission, storyline_key FROM news_events WHERE event_id = %s",
+                "SELECT admission, event_kind, storyline_key FROM news_events WHERE event_id = %s",
                 (event_id,),
             ).fetchone(),
+        )
+
+    def resolve_unverified_source_contract(
+        self,
+        *,
+        event_id: str,
+        reason: SourceContractReason | None,
+        now_ms: int,
+    ) -> None:
+        """Settle a pre-cut deterministic Event after the current strict parser runs."""
+
+        if reason not in {None, "source_contract_drift"}:
+            raise ValueError("news_source_contract_resolution_invalid")
+        self.conn.execute(
+            """
+            UPDATE news_events
+               SET source_contract_reason = %s, updated_at_ms = %s
+             WHERE event_id = %s AND source_contract_reason = 'source_contract_unverified'
+            """,
+            (reason, int(now_ms), event_id),
         )
 
     def event_regate_context(self, event_id: str) -> Mapping[str, Any] | None:

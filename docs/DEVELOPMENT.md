@@ -114,10 +114,11 @@ evidence-gated identity migration.
 
 Issue #193 is one such explicit hard cut. The artifact becomes one canonical
 document holding `schema_version` `news_program_strategy_artifact_v1`,
-`factory_id` `tracefold.news.program.factory_v6` and the two instructions, with
-`program_sha256` over exactly those four values, so the sole stable v7 root is
-reissued as
-`e54c8d69b9606b7306e0e829a09994dd525743b5c12ec9e549a7f67ef6a2ea06`. Prompt
+`factory_id` and the two instructions, with `program_sha256` over exactly those
+four values. Issue #288 bumps the current factory to
+`tracefold.news.program.factory_v7` for the code-owned exact source route, so
+the sole stable v7 root is reissued as
+`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`. Prompt
 bytes move with it: the RulePack and advisory digests left the rendered
 instruction, and the empty demo section left with the DemoBank family.
 
@@ -326,7 +327,8 @@ from the HTTP e2e fixture.
 ### News V3 evaluation seams
 
 News V3 has three public evaluation seams: `tracefold.news.eval.replay` for
-deterministic Deduper+Gate regression, pure `triage_rules.decide()` unit tests,
+deterministic source-classifier/Deduper/Gate regression (including same-kind
+dedupe), pure `triage_rules.decide()` unit tests,
 and the #112/#129 `CandidateEvaluator` for a whole semantic Program candidate.
 The first two are code correctness tests; only the third can compare Program or
 policy behavior against accepted production evidence. Runtime model identity
@@ -426,19 +428,22 @@ v1-v4 and appends `program_v5` for candidate-conditioned ToldContext. `0301`
 preserves history and starts `program_v6` for
 factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
 protocol/receipt v3. `0303` preserves history and starts the current
-`program_v7` for factory/executable v5. Every earlier review, dataset, recording and release receipt
-remains immutable audit history but is not optimizer, validation,
-holdout or promotion evidence. New datasets require post-epoch reviews and
-acceptance receipts bound to the exact stable Program bundle, so quality
-evidence begins at zero. Issue #190 later reissues the sole bundle inside v7
-for canonical non-finite-number rejection, and Issue #193 reissues it again as
-the single-document strategy artifact under factory v6; `0304` trips open
-canaries and receipts that cut. `0305` admits the `compile_record` artifact
-kind, keeps `compile_receipt` readable as history, and trips open canaries a
-second time, because a candidate registered against the retired receipt chain
-can no longer be evaluated. No re-issue changes the epoch or makes an
-older bundle executable in the new image, and accepted `news_review_v4` truth
-stays eligible across all of them.
+`program_v7` for factory/executable v5. Every earlier review, dataset, recording
+and release receipt remains immutable audit history but is not optimizer,
+validation, holdout or promotion evidence. New datasets require post-epoch
+reviews and acceptance receipts bound to the exact stable Program bundle, so
+quality evidence begins at zero. Issue #190 later reissues the sole bundle
+inside v7 for canonical non-finite-number rejection, and Issue #193 reissues it
+again as the single-document strategy artifact under factory v6; `0304` trips
+open canaries and receipts that cut. `0305` admits the `compile_record`
+artifact kind, keeps `compile_receipt` readable as history, and trips open
+canaries a second time, because a candidate registered against the retired
+receipt chain can no longer be evaluated. Those reissues do not change the
+epoch or accepted `news_review_v4` truth. `0315` then records #288's exact
+source route and factory-v7 hard cut without rewriting or appending the
+`program_v7` epoch row. The append-only rows and prior bundles remain audit
+history, but exact current-bundle acceptance makes factory-v6 evidence
+audit-only and starts the factory-v7 eligible cohort at zero.
 
 Review v4 uses exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,

@@ -25,11 +25,14 @@ from .program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
+from .source_contracts import EVENT_KINDS, EventKind, SourceContractReason
 from .told_context import NEWS_RETRIEVAL_SHA256
 
 __all__ = [
+    "EVENT_KINDS",
     "NEWS_RETRIEVAL_SHA256",
     "EditorialEnvelope",
+    "EventKind",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
@@ -43,6 +46,7 @@ __all__ = [
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
+    "SourceContractReason",
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",

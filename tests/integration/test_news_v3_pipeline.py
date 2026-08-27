@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
-from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi
+from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_source_contract
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
@@ -133,9 +134,10 @@ def test_deduper_is_idempotent_and_merges_exact_and_near(conn) -> None:
     ).fetchone()
     assert counts["items"] == len(events) and counts["events"] == created and counts["members"] == len(events)
     cfx = conn.execute(
-        "SELECT member_count FROM news_events WHERE leader_title ILIKE '%Conflux Network (CFX)%'"
+        "SELECT event_kind, member_count FROM news_events WHERE leader_title ILIKE '%Conflux Network (CFX)%'"
     ).fetchall()
-    assert len(cfx) == 1 and cfx[0]["member_count"] >= 5
+    assert {row["event_kind"] for row in cfx} == {"news", "listing"}
+    assert all(row["member_count"] >= 4 for row in cfx)
     conn.commit()
 
 
@@ -482,8 +484,20 @@ def test_incidents_and_broker_snapshot(conn) -> None:
     conn.commit()
 
 
-def _hit(*, hit_id: int, text: str, engine: str, score: int, coins: list[dict], source: str, ts: str) -> dict:
-    return {
+def _hit(
+    *,
+    hit_id: int,
+    text: str,
+    engine: str,
+    score: int | None,
+    coins: list[dict],
+    source: str,
+    ts: str,
+    strategy_id: int = 1018,
+    strategy_name: str = "News Score > 70",
+    source_type: str = "news",
+) -> dict:
+    hit = {
         "id": hit_id,
         "text": text,
         "link": f"https://example.test/{hit_id}",
@@ -491,13 +505,15 @@ def _hit(*, hit_id: int, text: str, engine: str, score: int, coins: list[dict], 
         "newsType": "twitter" if engine == "meme" else "news",
         "engineType": engine,
         "ts": ts,
-        "aiRating": {"score": score, "signal": "long", "status": "done"},
         "coins": [
             {"expired": False, "grade": c.get("grade"), "market_type": "cex", "score": score, "symbol": c["symbol"]}
             for c in coins
         ],
-        "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": engine, "source_type": "news"},
+        "strategy": {"id": strategy_id, "name": strategy_name, "sourceType": source_type},
     }
+    if score is not None:
+        hit["aiRating"] = {"score": score, "signal": "long", "status": "done"}
+    return hit
 
 
 def _admit_test_events(conn, *, hit_base: int, titles: tuple[str, ...], hour: int) -> list[str]:
@@ -735,8 +751,7 @@ def test_strategy_1019_format_drift_reaches_triage_instead_of_near_duplicate_mer
         params["strategy"] = {
             "id": 1019,
             "name": "OI Event Monitor",
-            "engine_type": "market",
-            "source_type": "news",
+            "sourceType": "market",
         }
         event = parse_opennews_message({"method": "strategy.triggered", "params": params})
         assert event is not None
@@ -751,10 +766,128 @@ def test_strategy_1019_format_drift_reaches_triage_instead_of_near_duplicate_mer
                 watchlist_symbols=frozenset(),
                 now_ms=stamp,
             )
+        assert admitted.event_kind == "oi"
         assert admitted.admission == "telemetry_deterministic" and admitted.match_kind == "leader"
         event_ids.append(admitted.event_id)
 
     assert len(set(event_ids)) == 2
+
+
+@pytest.mark.parametrize(
+    ("hit_id", "symbol", "order"),
+    [
+        (2_881_001, "NFIRST", ("news", "oi", "drift")),
+        (2_881_002, "OFIRST", ("oi", "news", "drift")),
+    ],
+)
+def test_same_provider_fact_keeps_one_event_per_kind_in_either_strategy_order(
+    conn, hit_id: int, symbol: str, order: tuple[str, ...]
+) -> None:
+    repos = repositories_for_connection(conn)
+    title = f"{symbol} OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+    contracts = {
+        "news": (1018, "News Score > 70", "news", "news"),
+        "oi": (1019, "OI Event Monitor", "market", "market"),
+        "drift": (1019, "wrong OI monitor", "market", "market"),
+    }
+    frames = {}
+    for label, (strategy_id, strategy_name, source_type, engine) in contracts.items():
+        params = _hit(
+            hit_id=hit_id,
+            text=title,
+            engine=engine,
+            score=90,
+            coins=[],
+            source="binance",
+            ts=f"2026-08-{24 if symbol == 'NFIRST' else 25}T11:30:00+08:00",
+            strategy_id=strategy_id,
+            strategy_name=strategy_name,
+            source_type=source_type,
+        )
+        frames[label] = parse_opennews_message({"method": "strategy.triggered", "params": params})
+        assert frames[label] is not None
+
+    first_results = []
+    with repos.transaction():
+        for label in order:
+            event = frames[label]
+            assert event is not None
+            first_results.append(
+                admit_item(
+                    repos,
+                    event=event,
+                    ingest_mode="live",
+                    observed_at_ms=int(event.entry.published_at_ms or 0),
+                    trace_id=f"same-record-{label}",
+                    watchlist_symbols=frozenset(),
+                    now_ms=int(event.entry.published_at_ms or 0),
+                )
+            )
+    assert all(result.event_created for result in first_results)
+    item_id = first_results[0].item_id
+
+    with repos.transaction():
+        redelivered = [
+            admit_item(
+                repos,
+                event=frames[label],
+                ingest_mode="live",
+                observed_at_ms=int(frames[label].entry.published_at_ms or 0),
+                trace_id=f"same-record-{label}-redelivery",
+                watchlist_symbols=frozenset(),
+                now_ms=int(frames[label].entry.published_at_ms or 0),
+            )
+            for label in order
+        ]
+    assert all(not result.item_inserted and not result.event_created for result in redelivered)
+
+    rows = conn.execute(
+        """
+        SELECT e.event_id, e.event_kind, e.admission, e.source_contract_reason
+          FROM news_event_members m
+          JOIN news_events e ON e.event_id = m.event_id
+         WHERE m.item_id = %s
+         ORDER BY e.event_kind
+        """,
+        (item_id,),
+    ).fetchall()
+    assert {(row["event_kind"], row["admission"]) for row in rows} == {
+        ("news", "candidate"),
+        ("oi", "telemetry_deterministic"),
+        ("unsupported_market", "unsupported_market_contract"),
+    }
+    assert (
+        next(row for row in rows if row["event_kind"] == "unsupported_market")["source_contract_reason"]
+        == "source_contract_drift"
+    )
+    ids = {row["event_kind"]: row["event_id"] for row in rows}
+    assert ids["news"] == item_id
+    assert len(set(ids.values())) == 3
+    oi_card = repos.news.event_card(ids["oi"])
+    assert oi_card is not None
+    source = oi_source_contract(oi_card["provider_metadata"])
+    assert source is not None and (source.strategy_id, source.measurement_window_ms) == ("1019", 300_000)
+
+    # `news_items`, not the original provider frames, is material truth. Its
+    # first-seen Strategy union must therefore recreate the same Event kinds.
+    merged_metadata = conn.execute(
+        "SELECT provider_metadata FROM news_items WHERE item_id = %s", (item_id,)
+    ).fetchone()["provider_metadata"]
+    conn.execute("DELETE FROM news_events WHERE leader_item_id = %s", (item_id,))
+    rebuilt_event = replace(frames[order[0]], provider_metadata=dict(merged_metadata))
+    with repos.transaction():
+        rebuilt = admit_frame(
+            repos,
+            event=rebuilt_event,
+            ingest_mode="live",
+            observed_at_ms=int(rebuilt_event.entry.published_at_ms or 0),
+            trace_id="same-record-material-rebuild",
+            watchlist_symbols=frozenset(),
+            now_ms=int(rebuilt_event.entry.published_at_ms or 0),
+        )
+    assert not rebuilt.item_inserted
+    assert {result.event_kind for result in rebuilt.results} == {"news", "oi", "unsupported_market"}
+    assert {result.event_kind: result.event_id for result in rebuilt.results} == ids
 
 
 def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recovery(conn) -> None:
@@ -770,12 +903,7 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
             source=venue,
             ts="2026-08-24T12:00:00+08:00",
         )
-        params["strategy"] = {
-            "id": 2000,
-            "name": "Large Liquidations",
-            "engine_type": "market",
-            "source_type": "news",
-        }
+        params["strategy"] = {"id": 2000, "name": "实时清算", "sourceType": "market"}
         event = parse_opennews_message({"method": "strategy.triggered", "params": params})
         assert event is not None
         stamp = int(event.entry.published_at_ms or 0) + 1_000
@@ -789,7 +917,8 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
                 watchlist_symbols=frozenset(),
                 now_ms=stamp,
             )
-        assert result.admission == "liquidation_deterministic"
+        assert result.event_kind == "liquidation"
+        assert result.admission == ("recovery" if ingest_mode == "recovery" else "liquidation_deterministic")
 
     admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
     admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
@@ -845,6 +974,178 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
     assert retained["source_key"] in {row["source_key"] for row in projected}
     assert recovery_source_key not in {row["source_key"] for row in projected}
     assert all(row["ingest_mode"] == "live" for row in projected)
+
+
+@pytest.mark.parametrize(
+    ("hit_id", "strategy_id", "strategy_name", "text", "event_kind"),
+    [
+        (2_880_101, 1019, "OI Event Monitor", "BTC OI provider template changed", "oi"),
+        (2_880_200, 2000, "实时清算", "BTC liquidation provider fields changed", "liquidation"),
+    ],
+)
+def test_recovery_runs_the_same_strict_market_parser_and_persists_drift_without_live_facts(
+    conn,
+    hit_id: int,
+    strategy_id: int,
+    strategy_name: str,
+    text: str,
+    event_kind: str,
+) -> None:
+    repos = repositories_for_connection(conn)
+    params = _hit(
+        hit_id=hit_id,
+        text=text,
+        engine="market",
+        score=90,
+        coins=[],
+        source="binance",
+        ts="2026-08-24T12:20:00+08:00",
+        strategy_id=strategy_id,
+        strategy_name=strategy_name,
+        source_type="market",
+    )
+    event = parse_opennews_message({"method": "strategy.triggered", "params": params})
+    assert event is not None
+    stamp = int(event.entry.published_at_ms or 0)
+
+    with repos.transaction():
+        result = admit_item(
+            repos,
+            event=event,
+            ingest_mode="recovery",
+            observed_at_ms=stamp,
+            trace_id=f"recovery-drift-{event_kind}",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+
+    row = conn.execute(
+        "SELECT event_kind, admission, source_contract_reason FROM news_events WHERE event_id = %s",
+        (result.event_id,),
+    ).fetchone()
+    assert row == {
+        "event_kind": event_kind,
+        "admission": "recovery",
+        "source_contract_reason": "source_contract_drift",
+    }
+    downstream = conn.execute(
+        """
+        SELECT
+          (SELECT count(*) FROM news_verdicts WHERE event_id = %s) AS verdicts,
+          (SELECT count(*) FROM news_oi_signals WHERE event_id = %s) AS oi_signals,
+          (SELECT count(*) FROM news_market_liquidations WHERE item_id = %s) AS liquidations
+        """,
+        (result.event_id, result.event_id, result.item_id),
+    ).fetchone()
+    assert downstream == {"verdicts": 0, "oi_signals": 0, "liquidations": 0}
+
+
+@pytest.mark.parametrize(
+    ("hit_id", "strategy_id", "strategy_name", "source_type", "text"),
+    [
+        (2_026_001, 2026, "聪明钱监控", "wallet", "Wallet activity contract awaiting a typed schema"),
+        (
+            2_083_001,
+            2083,
+            "Large-scale liquidation",
+            "market",
+            "Aster liquidation contract awaiting venue semantics",
+        ),
+    ],
+)
+def test_unsupported_market_contracts_persist_once_without_downstream_facts(
+    conn,
+    hit_id: int,
+    strategy_id: int,
+    strategy_name: str,
+    source_type: str,
+    text: str,
+) -> None:
+    repos = repositories_for_connection(conn)
+    params = _hit(
+        hit_id=hit_id,
+        text=text,
+        engine="market",
+        score=None,
+        coins=[],
+        source="opennews",
+        ts="2026-08-24T12:30:00+08:00",
+        strategy_id=strategy_id,
+        strategy_name=strategy_name,
+        source_type=source_type,
+    )
+    event = parse_opennews_message({"method": "strategy.triggered", "params": params})
+    assert event is not None
+    stamp = int(event.entry.published_at_ms or 0)
+
+    with repos.transaction():
+        first = admit_item(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=stamp,
+            trace_id=f"unsupported-{strategy_id}",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+        redelivered = admit_item(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=stamp,
+            trace_id=f"unsupported-{strategy_id}-redelivery",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+
+    assert (first.event_kind, first.admission, first.event_created) == (
+        "unsupported_market",
+        "unsupported_market_contract",
+        True,
+    )
+    assert redelivered.event_id == first.event_id
+    assert redelivered.item_inserted is False and redelivered.event_created is False
+
+    row = conn.execute(
+        """
+        SELECT e.event_kind, e.admission, e.source_contract_reason, i.provider_metadata
+          FROM news_events e
+          JOIN news_items i ON i.item_id = e.leader_item_id
+         WHERE e.event_id = %s
+        """,
+        (first.event_id,),
+    ).fetchone()
+    assert row is not None
+    strategy = row["provider_metadata"]["strategies"][0]
+    assert (row["event_kind"], row["admission"]) == (
+        "unsupported_market",
+        "unsupported_market_contract",
+    )
+    assert row["source_contract_reason"] == "unsupported_market_contract"
+    assert (
+        strategy["id"],
+        strategy["name"],
+        strategy["source_type"],
+        strategy["engine_type"],
+    ) == (str(strategy_id), strategy_name, source_type, "market")
+    downstream = conn.execute(
+        """
+        SELECT
+          (SELECT count(*) FROM news_event_members WHERE event_id = %s) AS members,
+          (SELECT count(*) FROM news_verdicts WHERE event_id = %s) AS verdicts,
+          (SELECT count(*) FROM news_deliveries WHERE event_id = %s) AS deliveries,
+          (SELECT count(*) FROM news_oi_signals WHERE event_id = %s) AS oi_signals,
+          (SELECT count(*) FROM news_market_liquidations WHERE item_id = %s) AS liquidations
+        """,
+        (first.event_id, first.event_id, first.event_id, first.event_id, first.item_id),
+    ).fetchone()
+    assert downstream == {
+        "members": 1,
+        "verdicts": 0,
+        "deliveries": 0,
+        "oi_signals": 0,
+        "liquidations": 0,
+    }
 
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:
@@ -1390,7 +1691,7 @@ def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query
     assert bullish_id != bearish_oi_id
     with repos.transaction():
         conn.execute(
-            "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
+            "UPDATE news_events SET event_kind = 'oi' WHERE event_id = %s",
             (bearish_oi_id,),
         )
         for offset, (event_id, direction) in enumerate(((bullish_id, "bullish"), (bearish_oi_id, "bearish"))):

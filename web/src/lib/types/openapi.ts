@@ -586,6 +586,11 @@ export interface components {
             engine_type: string;
             /** Event Id */
             event_id: string;
+            /**
+             * Event Kind
+             * @enum {string}
+             */
+            event_kind: "news" | "listing" | "oi" | "liquidation" | "unsupported_market";
             /** Family */
             family: string;
             /**
@@ -653,6 +658,8 @@ export interface components {
              * @default
              */
             reporting_origin: string;
+            /** Source Contract Reason */
+            source_contract_reason: ("source_contract_drift" | "source_contract_unverified" | "unsupported_market_contract") | null;
             /**
              * Storyline Key
              * @default
@@ -859,6 +866,11 @@ export interface components {
             engine_type: string;
             /** Event Id */
             event_id: string;
+            /**
+             * Event Kind
+             * @enum {string}
+             */
+            event_kind: "news" | "listing" | "oi" | "liquidation" | "unsupported_market";
             /** Family */
             family: string;
             /**
@@ -929,6 +941,8 @@ export interface components {
              * @default
              */
             reporting_origin: string;
+            /** Source Contract Reason */
+            source_contract_reason: ("source_contract_drift" | "source_contract_unverified" | "unsupported_market_contract") | null;
             /**
              * Storyline Key
              * @default
@@ -1456,6 +1470,12 @@ export interface components {
              * @default 0
              */
             reviewed_should_push_24h: number;
+            /**
+             * Source Classifier Version
+             * @default
+             */
+            source_classifier_version: string;
+            source_contracts_24h?: components["schemas"]["NewsSourceContracts24hData"];
             /** Suppressed By Reason */
             suppressed_by_reason?: {
                 [key: string]: number;
@@ -1726,6 +1746,42 @@ export interface components {
              * @enum {string}
              */
             stage: "gate" | "drop" | "throttle" | "push" | "degraded" | "ungrounded";
+        };
+        /** NewsSourceContractStageCountsData */
+        NewsSourceContractStageCountsData: {
+            /**
+             * Parse Failed
+             * @default 0
+             */
+            parse_failed: number;
+            /**
+             * Parsed
+             * @default 0
+             */
+            parsed: number;
+            /**
+             * Received
+             * @default 0
+             */
+            received: number;
+            /**
+             * Unsupported
+             * @default 0
+             */
+            unsupported: number;
+            /**
+             * Verdict
+             * @default 0
+             */
+            verdict: number;
+        };
+        /** NewsSourceContracts24hData */
+        NewsSourceContracts24hData: {
+            liquidation_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
+            listing_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
+            news_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
+            oi_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
+            unsupported_market?: components["schemas"]["NewsSourceContractStageCountsData"];
         };
         /** NewsStatusData */
         NewsStatusData: {

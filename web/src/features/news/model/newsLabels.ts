@@ -1,5 +1,6 @@
 import type {
   NewsAssetRef,
+  NewsEventKind,
   NewsFeedOutcome,
   NewsHealthLevel,
   NewsOutcomeKind,
@@ -9,9 +10,9 @@ import type {
 import { formatNewsLocalTimestamp } from "./newsTime";
 
 /**
- * UI-only copy. Every business word (rules, admissions, error codes, event types, directions) arrives from the
- * API already in Chinese (`outcome.text_zh`, `*_zh`, `label_zh`); this file only names UI affordances and maps
- * server enums to visual tone.
+ * UI-only copy. Judgment words (rules, admissions, error codes, semantic event types, directions) arrive from
+ * the API already in Chinese (`outcome.text_zh`, `*_zh`, `label_zh`); this file names UI affordances, the
+ * closed Event-kind navigation vocabulary, and visual tones.
  */
 
 /**
@@ -24,6 +25,18 @@ import { formatNewsLocalTimestamp } from "./newsTime";
  */
 export type Tone = "done" | "info" | "caution" | "alert" | "neutral";
 export type Direction = "bullish" | "bearish" | "flat";
+
+const EVENT_KIND_LABELS: Record<NewsEventKind, string> = {
+  news: "新闻",
+  listing: "上币/下币",
+  oi: "OI 帧",
+  liquidation: "强平",
+  unsupported_market: "未支持市场",
+};
+
+export function eventKindLabel(kind: NewsEventKind): string {
+  return EVENT_KIND_LABELS[kind];
+}
 
 const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   delivered: "done",

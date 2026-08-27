@@ -152,22 +152,53 @@ describe("NewsSymbolPage", () => {
     expect(screen.getByText("仅参考")).toBeInTheDocument();
   });
 
-  it("mixes news and OI frames on one clock and filters them by channel", async () => {
+  it("filters every persisted Event kind on one clock", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({ event_id: "evt-news", event_kind: "news" }),
+              newsFeedEventFixture({ event_id: "evt-listing", event_kind: "listing" }),
+              newsFeedEventFixture({
+                admission: "candidate",
+                event_id: "evt-oi",
+                event_kind: "oi",
+              }),
+              newsFeedEventFixture({
+                admission: "telemetry_deterministic",
+                event_id: "evt-liquidation",
+                event_kind: "liquidation",
+              }),
+              newsFeedEventFixture({
+                event_id: "evt-unsupported",
+                event_kind: "unsupported_market",
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
     renderSymbol();
 
-    const table = await screen.findByLabelText("按通道筛选");
+    const table = await screen.findByLabelText("按事件类型筛选");
     expect(within(table).getByRole("tab", { name: /全部/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await waitFor(() => expect(document.querySelectorAll(".news-symbol-row")).toHaveLength(2));
+    await waitFor(() => expect(document.querySelectorAll(".news-symbol-row")).toHaveLength(5));
+    for (const label of ["新闻", "上币/下币", "OI 帧", "强平", "未支持市场"]) {
+      expect(within(table).getByRole("tab", { name: label })).toBeInTheDocument();
+    }
 
-    fireEvent.click(within(table).getByRole("tab", { name: /OI 帧/ }));
+    fireEvent.click(within(table).getByRole("tab", { name: "强平" }));
 
     await waitFor(() => expect(document.querySelectorAll(".news-symbol-row")).toHaveLength(1));
-    expect(screen.getByTestId("location")).toHaveTextContent("lane=oi");
-    // The lane is the server's admission, never a guess from the title.
-    expect(document.querySelector(".news-symbol-lane")).toHaveTextContent("OI 帧");
+    expect(screen.getByTestId("location")).toHaveTextContent("lane=liquidation");
+    const kind = document.querySelector(".news-symbol-row .news-kind");
+    expect(kind).toHaveAttribute("data-kind", "liquidation");
+    expect(kind).toHaveTextContent("强平");
   });
 
   it("shows a pending horizon as 未到期 rather than a zero return", async () => {

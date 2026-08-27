@@ -152,11 +152,12 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
 
     `program_factory_id` and `artifact_schema_version` record what opened the epoch, exactly like
     `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only ever
-    be history. #193 replaced `factory_v5` with `factory_v6` without re-opening the epoch, because a
-    serialization and identity change does not change which evidence is eligible. Asserting today's
-    runtime values against those columns would therefore fail a correctly migrated database; asserting the
-    historical ones still catches migration drift and a corrupted ledger row, which is what the check is
-    for.
+    be history. #193 replaced `factory_v5` with `factory_v6`, and #288 replaced it with `factory_v7`,
+    without rewriting or appending the epoch row: accepted review truth remains immutable, while the exact
+    current-bundle eligibility filter makes prior-factory judgments audit-only and starts the factory-v7 cohort
+    at zero. Asserting today's runtime values against those columns would therefore fail a correctly migrated
+    database; asserting the historical ones still catches migration drift and a corrupted ledger row, which is
+    what the check is for.
     """
 
     row = conn.execute(
@@ -183,7 +184,7 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
     assert (
         candidate_evaluator_module.LEARNING_PROGRAM_FACTORY_ID
         == PROGRAM_FACTORY_ID
-        == ("tracefold.news.program.factory_v6")
+        == ("tracefold.news.program.factory_v7")
     )
     evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
     assert evaluator._ledger.epoch_started_at_ms() > 0

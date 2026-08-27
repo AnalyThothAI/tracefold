@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -9,11 +8,11 @@ from tracefold.news.events.gate import GateInput, evaluate_gate
 from tracefold.news.liquidations import (
     ADMISSION_POLICY_VERSION,
     TRIAGE_POLICY_VERSION,
-    admission_verdict,
     parse_liquidation,
     program_sha256,
     verdict,
 )
+from tracefold.news.source_contracts import classify_source_contract, source_contract_admission
 
 
 def _parse(title: str, *, venue: str = "binance"):
@@ -116,7 +115,6 @@ def test_liquidation_admission_is_composed_after_unchanged_generic_gate_policy()
         GateInput(
             title="SOL Large Short Liquidation 10K at $150",
             engine_type="market",
-            strategy_ids=("2000",),
             provider_score=90,
             coins=(),
             ingest_mode="live",
@@ -124,7 +122,16 @@ def test_liquidation_admission_is_composed_after_unchanged_generic_gate_policy()
         )
     )
     assert generic.admission == "candidate"
-    assert admission_verdict(generic).admission == "liquidation_deterministic"
-
-    recovery = replace(generic, admission="recovery")
-    assert admission_verdict(recovery).admission == "recovery"
+    contract = classify_source_contract(
+        {
+            "score": 90,
+            "strategies": [{"id": "2000", "name": "实时清算", "source_type": "market", "engine_type": "market"}],
+        }
+    )
+    assert (
+        source_contract_admission(contract, generic_admission=generic.admission, ingest_mode="live")
+        == "liquidation_deterministic"
+    )
+    assert (
+        source_contract_admission(contract, generic_admission=generic.admission, ingest_mode="recovery") == "recovery"
+    )

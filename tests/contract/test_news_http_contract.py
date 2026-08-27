@@ -23,6 +23,8 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
     return {
         "event_id": event_id,
         "family": "general",
+        "event_kind": "news",
+        "source_contract_reason": None,
         "leader_title": "Copper surges toward record on LME",
         "leader_url": "https://example.test/copper",
         "leader_description": "",
@@ -394,6 +396,23 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         # #207: the deterministic OI judgment, read back from the trace it wrote; null on every other admission.
         "oi",
     }
+    assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {
+        "received",
+        "parsed",
+        "parse_failed",
+        "unsupported",
+        "verdict",
+    }
+    assert set(status_schemas.NewsSourceContracts24hData.model_fields) == {
+        "news_v1",
+        "listing_v1",
+        "oi_v1",
+        "liquidation_v1",
+        "unsupported_market",
+    }
+    assert {"source_classifier_version", "source_contracts_24h"} <= set(
+        status_schemas.NewsPipelineStatusData.model_fields
+    )
     assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
         "outcome",
@@ -536,16 +555,30 @@ def test_feed_forwards_canonical_direction_and_channel_filters(client) -> None:
 
     response = http.get(
         "/api/news/feed",
-        params={"token": TOKEN, "direction": "neutral,bullish", "channel": "oi,news"},
+        params={
+            "token": TOKEN,
+            "direction": "neutral,bullish",
+            "channel": "unsupported_market,liquidation,oi,listing,news",
+        },
     )
 
     assert response.status_code == 200
     forwarded = news.calls[0][1]
     assert forwarded["directions"] == ("bullish", "neutral")
-    assert forwarded["channels"] == ("news", "oi")
+    assert forwarded["channels"] == ("news", "listing", "oi", "liquidation", "unsupported_market")
     filters = response.json()["data"]["filters"]
     assert filters["direction"] == "bullish,neutral"
-    assert filters["channel"] == "news,oi"
+    assert filters["channel"] == "news,listing,oi,liquidation,unsupported_market"
+
+
+@pytest.mark.parametrize("admission", ["liquidation_deterministic", "unsupported_market_contract"])
+def test_feed_accepts_every_material_deterministic_admission(client, admission: str) -> None:
+    http, news = client
+
+    response = http.get("/api/news/feed", params={"token": TOKEN, "admission": admission})
+
+    assert response.status_code == 200
+    assert news.calls[0][1]["admission"] == admission
 
 
 def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:

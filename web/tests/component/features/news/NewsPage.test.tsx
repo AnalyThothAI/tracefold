@@ -116,7 +116,10 @@ describe("NewsPage", () => {
     ).toBeInTheDocument();
     expect(inRow.getByText("Reuters World")).toBeInTheDocument();
     expect(inRow.getByText("利空")).toBeInTheDocument();
-    expect(inRow.getByText("宏观")).toBeInTheDocument();
+    const kind = row!.querySelector(".news-kind");
+    expect(kind).toHaveAttribute("data-kind", "news");
+    expect(kind).toHaveTextContent("新闻");
+    expect(inRow.queryByText("宏观")).toBeNull();
     /*
      * The meta line is 来源 · 方向 · 类型 · 资产 and nothing else. Magnitude and the merged-report count are
      * real facts, but they belong to the Event, not to a scan: both are one click away in the drawer and on
@@ -141,6 +144,33 @@ describe("NewsPage", () => {
     for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
+  });
+
+  it("labels the drawer from the persisted Event kind", async () => {
+    const detail = newsEventDetailFixture();
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            ...detail,
+            event: {
+              ...detail.event,
+              admission: "telemetry_deterministic",
+              event_kind: "liquidation",
+            },
+          },
+        }),
+      ),
+    );
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
+
+    const drawer = await screen.findByRole("dialog");
+    const kind = (await within(drawer).findByText("强平")).closest(".news-kind");
+    expect(kind).toHaveAttribute("data-kind", "liquidation");
+    expect(kind).toHaveTextContent("强平");
   });
 
   it("shows a deterministic ledger asset with current price and 24H change in one quote batch", async () => {
@@ -415,13 +445,13 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&channel=news",
+      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&channel=liquidation,listing",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     await waitFor(() => expect(observed.direction).toBe("bullish,neutral"));
     expect(observed).toEqual({
-      channel: "news",
+      channel: "listing,liquidation",
       direction: "bullish,neutral",
       hours: "168",
       outcome: "held",
@@ -432,15 +462,22 @@ describe("NewsPage", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "筛选 · 3" }));
+    fireEvent.click(screen.getByRole("button", { name: "筛选 · 4" }));
     expect(screen.getByRole("button", { name: "▲ 利多" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "◆ 中性" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "新闻" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "上币/下币" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "强平" })).toHaveAttribute("aria-pressed", "true");
+    for (const label of ["新闻", "上币/下币", "OI 帧", "强平", "未支持市场"]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
 
     fireEvent.click(screen.getByRole("button", { name: "◆ 中性" }));
     await waitFor(() => expect(observed.direction).toBe("bullish"));
-    fireEvent.click(screen.getByRole("button", { name: "OI 帧" }));
-    await waitFor(() => expect(observed.channel).toBe("news,oi"));
+    fireEvent.click(screen.getByRole("button", { name: "未支持市场" }));
+    await waitFor(() => expect(observed.channel).toBe("listing,liquidation,unsupported_market"));
     fireEvent.click(screen.getByRole("button", { name: "清除" }));
     await waitFor(() => {
       expect(observed.direction).toBeNull();
@@ -794,6 +831,8 @@ describe("NewsPage", () => {
     // the sentence beside it is the server's reason for it.
     const heroState = region.querySelector(".news-detail-hero-state")!;
     expect(heroState.querySelector(".news-outcome")).toHaveTextContent("已推送");
+    expect(heroState.querySelector(".news-kind")).toHaveAttribute("data-kind", "news");
+    expect(heroState.querySelector(".news-kind")).toHaveTextContent("新闻");
     expect(heroState).toHaveTextContent("模型判断值得推送");
     expect(
       screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),

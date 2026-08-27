@@ -5,10 +5,19 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 type NewsSchemas = components["schemas"];
 
-export type NewsFeed = NewsSchemas["NewsFeedData"];
-export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
+export type NewsEventKind = NewsSchemas["NewsEventData"]["event_kind"];
+export const NEWS_EVENT_KINDS = [
+  "news",
+  "listing",
+  "oi",
+  "liquidation",
+  "unsupported_market",
+] as const satisfies readonly NewsEventKind[];
+
 export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
 export type NewsEvent = NewsSchemas["NewsEventData"];
+export type NewsFeed = NewsSchemas["NewsFeedData"];
+export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
 export type NewsAssetRef = NewsSchemas["NewsAssetRefData"];
 export type NewsSymbolNormalization = NewsSchemas["NewsSymbolNormalizationData"];
 export type NewsEventDetail = NewsSchemas["NewsEventDetailData"];
@@ -46,10 +55,10 @@ export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
 export type NewsFeedOutcome = NewsOutcomeGroup;
 export type NewsFeedDirection = "bullish" | "bearish" | "neutral";
-export type NewsFeedChannel = "news" | "oi";
+export type NewsFeedChannel = NewsEventKind;
 export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held", "pending"];
 export const NEWS_FEED_DIRECTIONS: readonly NewsFeedDirection[] = ["bullish", "bearish", "neutral"];
-export const NEWS_FEED_CHANNELS: readonly NewsFeedChannel[] = ["news", "oi"];
+export const NEWS_FEED_CHANNELS: readonly NewsFeedChannel[] = NEWS_EVENT_KINDS;
 /** The three windows in the approved Event-feed visual. */
 export const NEWS_FEED_HOURS: readonly number[] = [1, 24, 168];
 export const NEWS_FEED_DEFAULT_HOURS = 24;

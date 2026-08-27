@@ -330,7 +330,7 @@ def test_an_unparseable_frame_folds_to_its_failure_shape_and_no_measurements() -
     assert summary is not None
     assert summary["parsed"] is False
     assert summary["rule"] == "oi_parse_failed"
-    assert summary["failure_stage"] == "template_match"
+    assert summary["failure_stage"] == "source_contract_drift"
     assert summary["parser_version"] == "oi_signal_parser_v1"
     assert summary["title_sha256"]
     # Nothing was measured, so nothing is reported — including the symbol, which the template never

@@ -9,6 +9,7 @@ import { Link } from "react-router-dom";
 import { useNewsEventWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
 import { clockTime, displayAssetRefs, displayAssets } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
+import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 
 import { NewsEventDrawerTimeline } from "./NewsTimeline";
@@ -77,6 +78,7 @@ export function NewsEventDrawer({
             <span className="news-drawer-time">{clockTime(detail.event.opened_at_ms)}</span>
             <span aria-hidden>·</span>
             <span>{detail.event.reporting_origin || "未知来源"}</span>
+            <NewsKindBadge kind={detail.event.event_kind} />
             <NewsOutcomeBadge outcome={detail.outcome} />
           </>
         ) : null
