@@ -182,7 +182,16 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
          * the long tail; these two are the answer a reader arriving from a frame came for, and they were
          * both below a table that can run to a hundred rows.
          */}
-        <NewsSymbolPerspective perspective={perspective} />
+        <NewsSymbolPerspective
+          perspective={perspective}
+          read={
+            tradingQuery.isError && !tradingQuery.data
+              ? "failed"
+              : tradingQuery.data == null
+                ? "loading"
+                : "ready"
+          }
+        />
 
         <TradingSymbolSection base={normalized} token={token} />
 

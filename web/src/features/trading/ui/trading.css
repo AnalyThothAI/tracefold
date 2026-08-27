@@ -161,14 +161,24 @@
     font-weight: 600;
   }
 
+  /*
+   * The chip clips rather than overflowing, on every table that renders it. `oi_smart_money` is a live
+   * strategy id and it printed straight over the 订单状态 chip beside it in 当前暴露 — a grid item has no
+   * implicit maximum, so a name wider than its track just paints across its neighbour. Each of these
+   * tables gives the chip a `title` carrying the full `strategy_id`, so nothing is lost to the clip.
+   */
   .trading-kind {
     justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
     padding: 2px 6px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-xs);
     background: var(--surface-raised);
     color: var(--text-secondary);
     font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .trading-state {

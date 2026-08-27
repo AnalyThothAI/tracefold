@@ -129,8 +129,14 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="trading_console_orders",
+            # The two manifest slices are in the planned statement on purpose (#282): each is an
+            # independent detoast of a large JSONB per joined row, which is exactly the cost
+            # `db query-audit --analyze` exists to measure. A spec that kept the pre-#282 projection
+            # would certify a plan the route no longer executes.
             sql="""
-                SELECT o.order_id, o.state, c.trigger_kind, c.strategy_id
+                SELECT o.order_id, o.state, c.trigger_kind, c.strategy_id,
+                       (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
+                       c.manifest -> 'strategy_config' AS strategy_config
                   FROM trading_orders o
                   JOIN trading_cases c ON c.case_id = o.case_id
                  WHERE o.created_at_ms >= %s

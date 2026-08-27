@@ -55,7 +55,24 @@ const BAND_SENTENCE: Record<SymbolBandPlacement, string> = {
  * frame authored, frozen at the moment it was decided — including the measurement window in the band's own
  * caption, which is five minutes on today's strategy and was an hour when the artifact was drawn.
  */
-export function NewsSymbolPerspective({ perspective }: { perspective: SymbolPerspective | null }) {
+/**
+ * What the panel may say about a batch it has not got. `perspective == null` is only an answer once the
+ * read has answered: before that it is a question, and on a failure it is a question that failed.
+ */
+export type PerspectiveRead = "ready" | "loading" | "failed";
+
+const UNREAD_ZH: Record<Exclude<PerspectiveRead, "ready">, string> = {
+  failed: "资本通道的账本这次没读到——这不是「没有案例」，是没读到；下一轮轮询会再问一次。",
+  loading: "正在读资本通道的账本…",
+};
+
+export function NewsSymbolPerspective({
+  perspective,
+  read,
+}: {
+  perspective: SymbolPerspective | null;
+  read: PerspectiveRead;
+}) {
   return (
     <Card
       flush
@@ -64,9 +81,14 @@ export function NewsSymbolPerspective({ perspective }: { perspective: SymbolPers
     >
       {perspective == null ? (
         <NewsEmptyNote>
-          {/* Not four grey quadrants and an unmarked band: "the lane never read a frame for this token"
-              and "it read one and found nothing" are different answers, and only one of them is true. */}
-          资本通道在这个窗口里没有为这个代币开过案——三个问题都没有被问过，不是问了没有答案。
+          {/*
+           * Three answers, not one. "The lane never opened a case", "we have not asked yet" and "we asked
+           * and the read failed" were all rendering as the first — the strongest possible positive claim,
+           * made loudest exactly when the page knew least.
+           */}
+          {read === "ready"
+            ? "资本通道没有为这个代币开过案，也没有更早的单还在场——三个问题都没有被问过，不是问了没有答案。"
+            : UNREAD_ZH[read]}
         </NewsEmptyNote>
       ) : (
         <div className="news-symbol-perspective">
@@ -121,6 +143,7 @@ export function NewsSymbolPerspective({ perspective }: { perspective: SymbolPers
                   {perspective.band.ticks.map((tick) => (
                     <small
                       className="news-symbol-band-tick"
+                      data-anchor={tick.anchor}
                       key={tick.label}
                       style={{ left: `${tick.percent}%` }}
                     >
@@ -143,11 +166,18 @@ export function NewsSymbolPerspective({ perspective }: { perspective: SymbolPers
             <small>地板对照 · 最近一帧过了几条</small>
             <dl className="news-symbol-floors">
               {perspective.floors.map((floor) => (
+                /*
+                 * Four `dd`s, not a `dd` plus a `span` and a `small`: a `div` inside a `dl` may hold only
+                 * `dt`/`dd`, and the verdict and the threshold — the two facts this card exists to carry —
+                 * were reaching the accessibility tree as free-floating text bound to no term.
+                 */
                 <div key={floor.key}>
                   <dt>{floor.label}</dt>
-                  <dd>{floor.measured}</dd>
-                  <span data-verdict={floor.verdict}>{FLOOR_VERDICT_ZH[floor.verdict]}</span>
-                  <small>{floor.floor}</small>
+                  <dd className="news-symbol-floor-measured">{floor.measured}</dd>
+                  <dd className="news-symbol-floor-verdict" data-verdict={floor.verdict}>
+                    {FLOOR_VERDICT_ZH[floor.verdict]}
+                  </dd>
+                  <dd className="news-symbol-floor-threshold">{floor.floor}</dd>
                 </div>
               ))}
             </dl>
@@ -162,7 +192,12 @@ export function NewsSymbolPerspective({ perspective }: { perspective: SymbolPers
             ? undefined
             : `读的是 ${STRATEGY_ZH[perspective.strategyId] ?? perspective.strategyId} 冻结在案上的阈值，不是今天的配置${perspective.frameAtMs == null ? "" : `；帧于 ${displayTime(perspective.frameAtMs)}`}`
         }
-        path="GET /api/trading/orders?underlying={base} → regime · pre_move_bps · strategy_config"
+        /*
+         * Both endpoints, because the card reads both: the quadrant and the band come off the case, and
+         * every figure in 地板对照 comes off the frame. A line naming only the first pointed a reader
+         * auditing 鲸鱼盈利 at a response that does not carry it.
+         */
+        path="GET /api/trading/orders?underlying={base} → regime · pre_move_bps · strategy_config ＋ GET /api/news/feed?symbol={base} → events[].oi"
       />
     </Card>
   );

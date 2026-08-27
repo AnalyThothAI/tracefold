@@ -40,6 +40,18 @@ describe("NewsSymbolPage", () => {
           data: newsFeedFixture({ events: [newsOiFrameFixture(), newsFeedEventFixture()] }),
         }),
       ),
+      /*
+       * The page reads this on every render and `tests/setup.ts` runs MSW with
+       * `onUnhandledRequest: "error"`, so without it every test here asserted against a page whose capital
+       * read had failed — silently, because the failure surfaced only as `data === undefined` and both
+       * sections rendered their empty copy. A test that means to see that state now says so.
+       */
+      http.get(/.*\/api\/trading\/orders.*/, ({ request }) =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingOrdersForUnderlying(new URL(request.url).searchParams.get("underlying")),
+        }),
+      ),
     );
   });
 
@@ -199,8 +211,8 @@ describe("NewsSymbolPage", () => {
     expect(await screen.findByText("交易视角 · 最近一帧怎么读")).toBeInTheDocument();
     // The quadrant the case recorded, not one derived from the frame here.
     expect(await screen.findByText("buildup_up")).toBeInTheDocument();
-    // 大户占比 143.90% over the 50.00% *this case* froze — read, compared, named.
-    expect(screen.getByText("≥ 50.00%")).toBeInTheDocument();
+    // 大户占比 143.90% over the 50.00% *this case* froze, on the operator its strategy refuses with.
+    expect(screen.getByText("> 50.00%")).toBeInTheDocument();
     expect(screen.getAllByText("过地板").length).toBe(2);
     expect(screen.getByText("低于地板")).toBeInTheDocument();
     /*

@@ -7,12 +7,17 @@ import {
   CASE_STATE_ZH,
   ORDER_STATE_NOTE,
   REGIME_ZH,
+  STRATEGY_ZH,
   caseClock,
   preMoveLabel,
   realizedLabel,
   strategyCaseLabel,
 } from "../model/tradingLabels";
-import { policyRuleZh, tradingLedgerEntries } from "../model/tradingOiLedger";
+import {
+  policyRuleZh,
+  tradingLedgerEntries,
+  type TradingOiLedgerEntry,
+} from "../model/tradingOiLedger";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
@@ -54,15 +59,22 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
             ? (entry.value.case_observed_at_ms ?? entry.value.created_at_ms)
             : entry.value.observed_at_ms,
         order: order
-          ? `${order.mode} ${order.side === "buy" ? "买入" : "卖出"} ${order.notional_usd} @ ${order.average_price ?? order.entry_reference} · 止损 ${order.stop_price}`
+          ? `${order.state} · ${order.mode} ${order.side === "buy" ? "买入" : "卖出"} ${order.notional_usd} @ ${order.average_price ?? order.entry_reference} · 止损 ${order.stop_price}`
           : "未成单",
         note: order ? (order.state_reason ?? ORDER_STATE_NOTE[order.state] ?? "") : "",
         preMoveBps: value.pre_move_bps ?? null,
         realized: order?.realized_bps ?? null,
         regime: value.regime,
         rule: value.policy_reason,
-        state: order ? order.state : entry.value.state,
-        stateZh: order ? order.state : (CASE_STATE_ZH[entry.value.state] ?? entry.value.state),
+        /*
+         * The case's state under the 案例状态 heading, for both halves. An order row used to put its own
+         * ORDER state here — a disjoint vocabulary — so one column showed `CLOSED` (English, an order
+         * fact, and not a case state at all) beside 地板拒绝 (Chinese, a case fact). The endpoint has
+         * published `case_state` since #207 PR-W4 and nothing read it. The order's own state keeps its
+         * place in the 订单 column, which is where order facts belong.
+         */
+        state: caseState(entry),
+        stateZh: CASE_STATE_ZH[caseState(entry)] ?? caseState(entry),
         strategyId: value.strategy_id,
       };
     })
@@ -71,15 +83,20 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
   return (
     <Card
       flush
-      hint="冻结在 cutoff 的输入，判到哪一步、为什么停，都有名字"
+      hint={`过去 ${query.data?.window_hours ?? 24} 小时开的案，加上仍在场的旧单；冻结在 cutoff 的输入，判到哪一步、为什么停，都有名字`}
       title="交易复盘 · 这个代币的案例"
     >
       {rows.length === 0 ? (
         <TradingEmptyNote>
-          这个窗口里资本通道没有为这个代币开过案。
-          {query.data && !query.data.orders?.length && !query.data.cases_without_orders?.length
-            ? "（通道未启用时这里恒为空。）"
-            : null}
+          {/* An unanswered read is not an empty ledger; #282's review caught both saying the same thing. */}
+          {query.isError && !query.data
+            ? "资本通道的账本这次没读到——这不是「没有案例」，是没读到；下一轮轮询会再问一次。"
+            : query.data == null
+              ? "正在读资本通道的账本…"
+              : `过去 ${query.data.window_hours ?? 24} 小时资本通道没有为这个代币开过案，也没有更早的单还在场。` +
+                (!query.data.orders?.length && !query.data.cases_without_orders?.length
+                  ? "（通道未启用时这里恒为空。）"
+                  : "")}
         </TradingEmptyNote>
       ) : (
         <div className="trading-table">
@@ -104,7 +121,14 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
                   <ChevronRight aria-hidden />
                   {caseClock(row.observedAtMs)}
                 </span>
-                <span className="trading-kind">{strategyCaseLabel(row.strategyId)}</span>
+                {/* The chip is the artifact's compact code and the panel above names the same strategy in
+                    Chinese; the title carries both so one strategy is not two names on one screen. */}
+                <span
+                  className="trading-kind"
+                  title={`${STRATEGY_ZH[row.strategyId] ?? row.strategyId} · strategy_id: ${row.strategyId}`}
+                >
+                  {strategyCaseLabel(row.strategyId)}
+                </span>
                 <span className="trading-case-regime">
                   <b>{row.regime ? (REGIME_ZH[row.regime] ?? row.regime) : "象限未定"}</b>
                   <small>{preMoveLabel(row.preMoveBps, row.config)}</small>
@@ -116,15 +140,37 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
                   {row.rule ? <code>{policyRuleZh(row.rule)}</code> : <span>—</span>}
                 </span>
                 <span className="trading-num trading-case-order">{row.order}</span>
-                <b className="trading-num" data-realized={realizedTone(row.realized)}>
-                  {realizedLabel(row.realized)}
-                </b>
+                <span className="trading-num">
+                  {/* The lane's shared `.trading-num b[data-tone]`, not a second contract beside it: the
+                      fork dropped the shared weight and disagreed with 今日已了结 about zero. */}
+                  {row.realized == null ? (
+                    <span className="trading-unmeasured" title="出场未被测量，不进入已实现口径">
+                      —
+                    </span>
+                  ) : (
+                    <b data-tone={row.realized >= 0 ? "up" : "down"}>
+                      {realizedLabel(row.realized)}
+                    </b>
+                  )}
+                </span>
               </button>
               {open === row.id ? (
                 <div className="trading-case-detail">
                   <div>
                     <small>停在哪条规则 · NAMED RULE</small>
-                    <p>{row.rule ? policyRuleZh(row.rule) : "账本没有记录停在哪条规则上。"}</p>
+                    {/*
+                     * `policy_reason` is written only by `settle_case`, and only from PENDING/RUNNING, so
+                     * a null one means the case has not stopped yet — not that the ledger holds no record
+                     * of where it stopped. Backlogged turns and a worker that died mid-decision both
+                     * leave rows in exactly that state, and they render here.
+                     */}
+                    <p>
+                      {row.rule
+                        ? policyRuleZh(row.rule)
+                        : row.state === "PENDING" || row.state === "RUNNING"
+                          ? "这条案例还没有判完——停在哪条规则要等它终结时才写入账本。"
+                          : "账本没有记录停在哪条规则上。"}
+                    </p>
                     {row.note ? <p>{row.note}</p> : null}
                   </div>
                   <div>
@@ -154,7 +200,7 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
 }
 
 /** Red is 利多 on this console, so a gain is red and a loss is green — the mainland reading. */
-function realizedTone(bps: number | null): "up" | "down" | undefined {
-  if (bps == null || bps === 0) return undefined;
-  return bps > 0 ? "up" : "down";
+/** The case's own state, whichever half of the batch the row came from. */
+function caseState(entry: TradingOiLedgerEntry): string {
+  return entry.kind === "order" ? entry.value.case_state : entry.value.state;
 }

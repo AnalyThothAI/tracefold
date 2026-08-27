@@ -18,19 +18,19 @@
     grid-template-columns: 104px 118px 158px 128px 132px minmax(220px, 1fr) 96px;
     gap: 10px;
     align-items: center;
-    min-width: 1020px;
+    /* 736 fixed + 220 flexible minimum + 60 gutters + 28 padding, per `docs/FRONTEND.md`. At the
+       artifact's own 1020 the last column's right edge landed 10px outside the row's border box. */
+    min-width: 1044px;
     padding: 0 14px;
   }
 
-  /* And it clips rather than overflowing, for the strategy this map has not learned a short name for. */
-  .trading-case-row .trading-kind {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
+  /*
+   * The wrapper carries the floor as well as the border. A block-level box inside `overflow-x: auto` is
+   * laid out at the scroller's visible width, not its scroll width, so a border here with no `min-width`
+   * stopped at the viewport edge while the row beneath it painted the full 1044.
+   */
   .trading-case {
+    min-width: 1044px;
     border-bottom: 1px solid var(--border-faint);
   }
 
@@ -95,15 +95,6 @@
     white-space: nowrap;
   }
 
-  /* Red is 利多 on this console, so a realised gain is red and a loss is green. */
-  .trading-case-row b[data-realized="up"] {
-    color: var(--dir-bullish);
-  }
-
-  .trading-case-row b[data-realized="down"] {
-    color: var(--dir-bearish);
-  }
-
   /*
    * The rule in Chinese beside the thresholds this case was frozen against. The artifact draws a
    * `thesis_zh` and an `invalidation_zh` here; this lane is a pure rule and writes neither, so the
@@ -113,7 +104,8 @@
     display: grid;
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
     gap: 12px;
-    min-width: 1020px;
+    /* In lockstep with the row above it, or the expansion leaves an unpainted strip beside every row. */
+    min-width: 1044px;
     padding: 11px 14px 14px;
     border-top: 1px solid var(--border-faint);
     background: var(--surface-raised);

@@ -172,34 +172,47 @@ describe("v8 artifact geometry contract", () => {
     expect(declaration(file, selector, property)).toBe(value);
   });
 
-  it("keeps the OI frame table's floor at its fixed tracks and no wider", () => {
-    /*
-     * The artifact bakes its trade column's *rendered* width into `min-width`, which forces a horizontal
-     * scrollbar at the width the artifact itself is drawn at. The floor here is the fixed tracks plus
-     * their gutters plus the row padding, so the flexible column is what absorbs a wider frame — the
-     * artifact's intent, without the artifact's own arithmetic error.
-     */
-    const css = read("features/news/ui/oi/newsOiFrameTable.css");
-    const tracks = declaration(
-      "features/news/ui/oi/newsOiFrameTable.css",
-      ".news-oi-head, .news-oi-row-main",
-      "grid-template-columns",
-    );
-    const fixed = [...tracks.replace(/minmax\([^)]*\)/g, "").matchAll(/(\d+)px/g)].map((match) =>
-      Number(match[1]),
-    );
-    // The flexible track absorbs the remainder above its own minimum, and that minimum is part of the floor.
-    const flexible = Number(/minmax\((\d+)px/.exec(tracks)?.[1] ?? 0);
-    const gutters = fixed.length * 10;
-    const padding = 28;
-    const floor = fixed.reduce((total, width) => total + width, 0) + flexible + gutters + padding;
+  /*
+   * The artifact bakes each table's *rendered* width into `min-width`, which forces a horizontal
+   * scrollbar at the width the artifact itself is drawn at. The floor is the fixed tracks plus their
+   * gutters plus the row padding, so the flexible column is what absorbs a wider frame — the artifact's
+   * intent, without the artifact's own arithmetic error. Both scrolling tables answer to it: 交易复盘
+   * shipped the artifact's 1020 against its own 1044, which put its last column outside the row's box.
+   */
+  it.each([
+    {
+      file: "features/news/ui/oi/newsOiFrameTable.css",
+      selector: ".news-oi-head, .news-oi-row-main",
+      fixedTracks: 11,
+      flexibleMin: 170,
+    },
+    {
+      file: "features/trading/ui/tradingSymbolSection.css",
+      selector: ".trading-case-head, .trading-case-row",
+      fixedTracks: 6,
+      flexibleMin: 220,
+    },
+  ])(
+    "keeps $file's floor at its fixed tracks and no wider",
+    ({ file, selector, fixedTracks, flexibleMin }) => {
+      const css = read(file);
+      const tracks = declaration(file, selector, "grid-template-columns");
+      const fixed = [...tracks.replace(/minmax\([^)]*\)/g, "").matchAll(/(\d+)px/g)].map((match) =>
+        Number(match[1]),
+      );
+      // The flexible track absorbs the remainder above its own minimum, and that minimum is part of the floor.
+      const flexible = Number(/minmax\((\d+)px/.exec(tracks)?.[1] ?? 0);
+      const gutters = fixed.length * 10;
+      const padding = 28;
+      const floor = fixed.reduce((total, width) => total + width, 0) + flexible + gutters + padding;
 
-    expect(fixed).toHaveLength(11);
-    expect(flexible).toBe(170);
-    for (const declared of css.matchAll(/min-width:\s*(\d+)px;/g)) {
-      expect(Number(declared[1])).toBe(floor);
-    }
-  });
+      expect(fixed).toHaveLength(fixedTracks);
+      expect(flexible).toBe(flexibleMin);
+      for (const declared of css.matchAll(/min-width:\s*(\d+)px;/g)) {
+        expect(Number(declared[1])).toBe(floor);
+      }
+    },
+  );
 });
 
 /** The stylesheet with comments removed: a `/* … *\/` between two declarations is not a rule boundary. */

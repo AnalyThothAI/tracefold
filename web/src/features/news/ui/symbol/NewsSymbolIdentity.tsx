@@ -119,7 +119,7 @@ export function NewsSymbolIdentity({
 
       <NewsSourceLine
         note="报价与合约是两个来源：合约来自标的表快照，报价来自 /api/news/quotes，陈旧就说陈旧，永不显示 0。"
-        path="GET /api/news/symbols/{base} → contracts · tradeable · normalization"
+        path="GET /api/news/symbols/{base} → contracts · tradeable · normalization ＋ GET /api/news/feed?symbol={base} → counts.total · counts.pushed ＋ GET /api/news/status → oi.window_occupancy"
       />
     </Card>
   );

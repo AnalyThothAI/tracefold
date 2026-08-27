@@ -506,17 +506,53 @@ the route components into the eager shell chunk.
   of the strategy running when it was drawn, and today's are 0–10% over five
   minutes, so the band's edges, its caption and the floor rows all come out of
   `strategy_config`. A case that froze none says so rather than borrowing
-  today's configuration. A floor row has four answers, not three: 过地板 and
-  低于地板 are comparisons, 未冻结 is the case having frozen no such floor, and
-  未测量 is a frozen floor over a frame carrying nothing to compare it with —
-  the common case, since a case can be older than the page of Events loaded
-  beneath it. Collapsing the last two printed 未冻结 in the same row as the
-  `≥ 95.00%` the case had frozen. The sentence under the table is counted off
-  those rows for the same reason: 「一条都没过」 is itself a measurement, and it
-  was being asserted over rows that had never been read. The artifact's 研究分桶
-  card becomes 地板对照 on the same principle: the buckets it names by hand
-  belong to a strategy that no longer runs, where the
-  measurements-against-frozen-floors reading stays true.
+  today's configuration.
+
+  The floor table is keyed by `strategy_id`, and each row carries the operator
+  its own strategy refuses on. `/api/trading/orders?underlying=` filters on the
+  name alone, so this token's newest case can belong to any lane, and the three
+  freeze disjoint `strategy_config` key sets — one lane's rows over another
+  lane's case label every row 未冻结 and explain nothing. Inclusivity is per key
+  as well: `oi_smart_money_momentum` refuses `whale_oi_ratio_bps <= floor` and
+  `whale_long_profit_bps <= floor`, its own docstring calls that non-negotiable,
+  and its shipped profit floor is 0 — so a table reading `>=` everywhere stamped
+  过地板 on exactly the frames the ledger refused. A row prints `>` or `≥` as
+  the strategy wrote it.
+
+  A floor row has four answers, not three: 过地板 and 低于地板 are comparisons,
+  未冻结 is the case having frozen no such floor, and 未测量 is a frozen floor
+  over a frame carrying nothing to compare it with — the common case, since most
+  cases publish no joinable `event_id` at all. Collapsing the last two printed
+  未冻结 in the same row as the `≥ 95.00%` the case had frozen. The sentence
+  under the table is counted off those rows for the same reason: 「一条都没过」 is
+  itself a measurement, and it was being asserted over rows that had never been
+  read. That sentence names the reader gate only when the frame's own `delivery`
+  says it was sent — the capital lane deliberately consumes frames the reader
+  withheld, so 「这一帧推送了」 over one of those states the opposite of the
+  ledger. The artifact's 研究分桶 card becomes 地板对照 on the same principle:
+  the buckets it names by hand belong to a strategy that no longer runs, where
+  the measurements-against-frozen-floors reading stays true.
+
+  An unanswered read is never an answer. `perspective == null` and an empty case
+  table each carry three states — the lane opened no case, the batch has not
+  come back yet, the batch failed — because rendering all three as the first
+  makes the strongest possible positive claim exactly when the page knows least.
+  The two halves of that batch also have different windows: cases are bounded at
+  `window_hours`, active orders are unbounded in time by design, so neither
+  section calls the batch 「这个窗口」 without naming both.
+
+  Both sections name every endpoint they read in their `NewsSourceLine`. 交易视角
+  joins the case to its frame, so it declares `/api/trading/orders` *and*
+  `/api/news/feed → events[].oi`; the identity band declares the two endpoints
+  its three tiles come from beside the one its contracts do. A card that names
+  one of two sources points an auditing reader at a response that does not carry
+  the figure.
+
+  The 案例状态 column carries `case_state` for both halves of the batch. Case
+  states and order states are disjoint vocabularies, so an order row putting its
+  own `CLOSED` there rendered an order fact, in English, under a case heading —
+  and `CLOSED` is not a case state at all. The order's own state stays in the
+  订单 column, where order facts belong.
 
   Two things the artifact draws that this lane cannot answer. `thesis_zh` and
   `invalidation_zh` are not written by a pure rule — the same finding #256

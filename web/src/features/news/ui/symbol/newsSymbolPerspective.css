@@ -148,6 +148,8 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* The anchor is the tick's own, not its position in the list — `spaced()` returns two to four of them
+     and the first is often a threshold rather than the domain's start. */
   .news-symbol-band-tick {
     position: absolute;
     top: 0;
@@ -155,11 +157,11 @@
     white-space: nowrap;
   }
 
-  .news-symbol-band-tick:first-child {
+  .news-symbol-band-tick[data-anchor="start"] {
     transform: none;
   }
 
-  .news-symbol-band-tick:last-child {
+  .news-symbol-band-tick[data-anchor="end"] {
     transform: translateX(-100%);
   }
 
@@ -190,29 +192,33 @@
     font-weight: 560;
   }
 
+  /* All three are `dd`s of the same term, so the row is named per cell rather than per element type. */
   .news-symbol-floors dd {
     margin: 0;
+  }
+
+  .news-symbol-floors .news-symbol-floor-measured {
     color: var(--text-primary);
     font: 620 var(--font-size-meta)/1.3 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
-  .news-symbol-floors span {
+  .news-symbol-floors .news-symbol-floor-verdict {
     color: var(--text-subtle);
     font: var(--type-mono-meta);
     font-weight: 620;
   }
 
-  .news-symbol-floors span[data-verdict="pass"] {
+  .news-symbol-floors .news-symbol-floor-verdict[data-verdict="pass"] {
     color: var(--signal-done);
   }
 
-  .news-symbol-floors span[data-verdict="fail"] {
+  .news-symbol-floors .news-symbol-floor-verdict[data-verdict="fail"] {
     color: var(--signal-caution);
   }
 
   /* The threshold itself, under the measurement it is compared with. */
-  .news-symbol-floors small {
+  .news-symbol-floors .news-symbol-floor-threshold {
     grid-column: 2 / 4;
     color: var(--text-faint);
     font: 500 var(--font-size-eyebrow)/1.4 var(--font-mono);

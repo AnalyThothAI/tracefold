@@ -240,14 +240,16 @@ export function tradingOrderFixture(overrides: Partial<TradingOrder> = {}): Trad
     // The two frozen case facts an order row now carries too (#282). Present by default for the same
     // reason the case fixture carries them: every surface that explains a case reads them.
     pre_move_bps: 187,
+    /*
+     * `news_oi_alignment_v1`'s own four keys, per `root.py`'s `_exact_keys`. Each strategy freezes a
+     * disjoint set, so a fixture pairing one lane's id with another's config describes a case the loader
+     * would refuse — and every console surface that explains a case reads this map.
+     */
     strategy_config: {
       allow_short: "False",
-      max_price_move_bps: "1000",
-      measurement_window_ms: "300000",
-      min_oi_change_bps: "500",
-      min_price_move_bps: "0",
+      live_max_price_in: "1",
+      live_min_surprise: "2",
       min_whale_long_profit_bps: "9500",
-      min_whale_oi_ratio_bps: "5000",
     },
     provider_attempt_count: 1,
     provider_symbol: "WIFUSDT",
@@ -270,8 +272,8 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     base_symbol: "HYPE",
     case_id: "case-hype",
     event_id: "evt-oi-hype",
-    strategy_id: "oi_momentum_v1",
-    strategy_version: "oi_momentum_v1",
+    strategy_id: "oi_smart_money_momentum_v1",
+    strategy_version: "oi_smart_money_momentum_v1",
     trigger_kind: "oi",
     created_at_ms: TRADING_NOW_MS - 500_000,
     decided_at_ms: TRADING_NOW_MS - 499_000,
@@ -283,6 +285,10 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
      * The frozen pre-move and the thresholds it was measured against (#273, #282). Present by default
      * because every surface that explains a case reads them, and a fixture without them exercises only
      * the 未冻结 path — which is what the token page's 交易视角 baseline froze on its first run.
+     *
+     * Seven keys, matching `oi_smart_money_momentum_v1` exactly: `root.py`'s `_exact_keys` gives each
+     * strategy a disjoint set, and a case carrying one lane's id over another's config is a row the
+     * loader would refuse.
      */
     pre_move_bps: 187,
     strategy_config: {
@@ -395,7 +401,25 @@ export function tradingOrdersFixture(overrides: Partial<TradingOrders> = {}): Tr
     complete: true,
     measured_at_ms: TRADING_NOW_MS,
     orders: [
-      tradingOrderFixture(),
+      /*
+       * The token page reads this one (`crypto:WIF`), and 交易视角 explains the deterministic OI lane —
+       * the only lane whose frozen config carries a price band. The shared default above stays on the
+       * News trigger because the 杠杆异动 funnel counts on it.
+       */
+      tradingOrderFixture({
+        strategy_id: "oi_smart_money_momentum_v1",
+        strategy_version: "oi_smart_money_momentum_v1",
+        trigger_kind: "oi",
+        strategy_config: {
+          allow_short: "False",
+          max_price_move_bps: "1000",
+          measurement_window_ms: "300000",
+          min_oi_change_bps: "500",
+          min_price_move_bps: "0",
+          min_whale_long_profit_bps: "9500",
+          min_whale_oi_ratio_bps: "5000",
+        },
+      }),
       tradingOrderFixture({
         average_price: null,
         base_symbol: "HYPE",

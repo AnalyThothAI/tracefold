@@ -252,10 +252,12 @@ class QueryStorage:
         """Orders with the case that authored them, for a read-only operator surface (#207 PR-W4).
 
         Deliberately a named projection rather than `SELECT *`. `trading_orders.payload` is the frozen
-        provider request body and `trading_cases.manifest` is the frozen decision input; neither belongs in
-        a browser, and a `SELECT *` here would put both there the next time a column is added. `account_ref`
-        and `remote_order_id` stay behind for the same reason — they name things outside this system and add
-        nothing the page renders.
+        provider request body and does not leave the store at all. `trading_cases.manifest` is the frozen
+        decision input and leaves only as the two named slices below — `contexts.market.pre_move_bps` and
+        `strategy_config` (#282) — because a case's own frozen thresholds are the only honest way for a
+        console to explain the decision; the whole document still does not, and a `SELECT *` here would put
+        both documents there the next time a column is added. `account_ref` and `remote_order_id` stay
+        behind for the same reason — they name things outside this system and add nothing the page renders.
 
         `state` is returned verbatim. `ACKNOWLEDGED` is the venue answering, not a fill; `OPEN` is the only
         state that has proven both a position and a native stop covering it (#185). A caller that collapses
