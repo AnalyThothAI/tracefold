@@ -1229,13 +1229,9 @@ def test_restart_adopts_reconciled_position_and_stop_when_the_db_projection_lags
         reduce_only=True,
         client_order_id=ClientOrderId(stop_id),
     )
-    stop.apply(
-        TestEventStubs.order_submitted(
-            stop,
-            account_id=AccountId("BINANCE-001"),
-            ts_event=(NOW_MS + 11) * 1_000_000,
-        )
-    )
+    # Startup reconciliation rebuilds an external accepted order without the original
+    # OrderSubmitted event, so ``order.account_id`` is absent even though the accepted
+    # venue event proves the account.
     stop.apply(
         TestEventStubs.order_accepted(
             stop,
@@ -1244,6 +1240,8 @@ def test_restart_adopts_reconciled_position_and_stop_when_the_db_projection_lags
             ts_event=(NOW_MS + 12) * 1_000_000,
         )
     )
+    assert stop.account_id is None
+    assert stop.last_event.account_id == AccountId("BINANCE-001")
     strategy.cache.add_order(entry, position_id=position_id, client_id=ClientId("BINANCE"))
     strategy.cache.add_order(stop, position_id=position_id, client_id=ClientId("BINANCE"))
     strategy.cache.add_position(position, OmsType.NETTING)

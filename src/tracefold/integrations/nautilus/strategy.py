@@ -1131,11 +1131,16 @@ class TracefoldNautilusStrategy(Strategy):
         account = self.portfolio.account(venue=SOLUSDT_PERP.venue)
         quantity = self._position_quantity if expected_quantity is None else expected_quantity
         trigger_price = self._stop_trigger_price
+        # Reconciled external orders jump from INITIALIZED to ACCEPTED, so Nautilus leaves
+        # ``order.account_id`` empty even though the accepted venue event carries it.
+        observed_account_id = stop.account_id if stop is not None else None
+        if stop is not None and observed_account_id is None:
+            observed_account_id = getattr(stop.last_event, "account_id", None)
         return bool(
             stop is not None
             and stop.client_order_id == client_order_id
             and account is not None
-            and stop.account_id == account.id
+            and observed_account_id == account.id
             and stop.venue_order_id is not None
             and stop.instrument_id == SOLUSDT_PERP
             and stop.order_type == OrderType.STOP_MARKET
