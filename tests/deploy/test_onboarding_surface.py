@@ -170,65 +170,60 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     }.isdisjoint(targets)
 
 
-def test_github_preflight_requires_the_cli(tmp_path: Path) -> None:
+@pytest.mark.parametrize("auth_state", ["missing-cli", "unauthenticated", "authenticated"])
+def test_verify_main_ci_preflights_the_active_github_dot_com_account(tmp_path: Path, auth_state: str) -> None:
     make = shutil.which("make")
     assert make is not None
-
-    result = subprocess.run(
-        [make, "--no-print-directory", "github-preflight"],
-        cwd=ROOT,
-        env={**os.environ, "PATH": str(tmp_path)},
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "GitHub CLI is not installed or not on PATH" in result.stderr
-
-
-@pytest.mark.parametrize("auth_exit", [0, 1])
-def test_github_preflight_checks_only_the_active_github_dot_com_account(tmp_path: Path, auth_exit: int) -> None:
-    make = shutil.which("make")
-    assert make is not None
-    fake_gh = tmp_path / "gh"
-    fake_gh.write_text(
-        "#!/bin/sh\n"
-        "command=$1\n"
-        "subcommand=$2\n"
-        "shift 2\n"
-        "active=0\n"
-        "host=''\n"
-        'while [ "$#" -gt 0 ]; do\n'
-        '  case "$1" in\n'
-        "    --active) active=1; shift ;;\n"
-        "    --hostname) host=$2; shift 2 ;;\n"
-        "    *) exit 64 ;;\n"
-        "  esac\n"
-        "done\n"
-        '[ "$command $subcommand" = "auth status" ] || exit 64\n'
-        '[ "$active" = 1 ] || exit 64\n'
-        '[ "$host" = github.com ] || exit 64\n'
-        'exit "$TRACEFOLD_TEST_GH_AUTH_EXIT"\n',
+    verifier_called = tmp_path / "verifier-called"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        '#!/bin/sh\n: > "$TRACEFOLD_TEST_VERIFY_MAIN_CI_CALLED"\n',
         encoding="utf-8",
     )
-    fake_gh.chmod(0o700)
+    fake_uv.chmod(0o700)
+    if auth_state != "missing-cli":
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text(
+            "#!/bin/sh\n"
+            "command=$1\n"
+            "subcommand=$2\n"
+            "shift 2\n"
+            "active=0\n"
+            "host=''\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  case "$1" in\n'
+            "    --active) active=1; shift ;;\n"
+            "    --hostname) host=$2; shift 2 ;;\n"
+            "    *) exit 64 ;;\n"
+            "  esac\n"
+            "done\n"
+            '[ "$command $subcommand" = "auth status" ] || exit 64\n'
+            '[ "$active" = 1 ] || exit 64\n'
+            '[ "$host" = github.com ] || exit 64\n'
+            'exit "$TRACEFOLD_TEST_GH_AUTH_EXIT"\n',
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o700)
 
     result = subprocess.run(
-        [make, "--no-print-directory", "github-preflight"],
+        [make, "--no-print-directory", "verify-main-ci"],
         cwd=ROOT,
         env={
             **os.environ,
             "PATH": str(tmp_path),
-            "TRACEFOLD_TEST_GH_AUTH_EXIT": str(auth_exit),
+            "TRACEFOLD_TEST_GH_AUTH_EXIT": "1" if auth_state == "unauthenticated" else "0",
+            "TRACEFOLD_TEST_VERIFY_MAIN_CI_CALLED": str(verifier_called),
         },
         capture_output=True,
         check=False,
         text=True,
     )
 
-    assert (result.returncode == 0) is (auth_exit == 0)
-    if auth_exit:
+    assert (result.returncode == 0) is (auth_state == "authenticated")
+    assert verifier_called.exists() is (auth_state == "authenticated")
+    if auth_state == "missing-cli":
+        assert "GitHub CLI is not installed or not on PATH" in result.stderr
+    elif auth_state == "unauthenticated":
         assert "GitHub CLI is not authenticated for github.com" in result.stderr
 
 

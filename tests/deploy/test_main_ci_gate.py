@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,10 +54,32 @@ def _check(*, conclusion: str = "success", app_id: int = 15_368) -> dict[str, ob
     }
 
 
-def test_check_runs_ignores_an_ambient_github_enterprise_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from scripts.require_main_ci import _check_runs
+def test_verifier_cli_ignores_an_ambient_github_enterprise_host(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    scripts = root / "scripts"
+    scripts.mkdir()
+    verifier = scripts / "require_main_ci.py"
+    shutil.copy2(ROOT / "scripts" / "require_main_ci.py", verifier)
+    subprocess.run(["git", "add", "scripts/require_main_ci.py"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Tracefold Test",
+            "-c",
+            "user.email=tests@tracefold.invalid",
+            "commit",
+            "-qm",
+            "add verifier",
+        ],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=root, check=True)
 
-    fake_gh = tmp_path / "gh"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         "#!/bin/sh\n"
         "host=''\n"
@@ -66,14 +90,24 @@ def test_check_runs_ignores_an_ambient_github_enterprise_host(tmp_path: Path, mo
         "  esac\n"
         "done\n"
         '[ "$host" = github.com ] || exit 64\n'
-        "printf '{\"check_runs\": []}\\n'\n",
+        "printf '%s\\n' "
+        '\'{"check_runs":[{"id":1,"name":"ci-gate","status":"completed",'
+        '"conclusion":"success","app":{"id":15368}}]}\'\n',
         encoding="utf-8",
     )
     fake_gh.chmod(0o700)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    monkeypatch.setenv("GH_HOST", "github.invalid")
 
-    assert _check_runs("a" * 40) == {"check_runs": []}
+    result = subprocess.run(
+        [sys.executable, str(verifier)],
+        cwd=root,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_HOST": "github.invalid"},
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "deployment source verified:" in result.stdout
 
 
 def test_exact_main_sha_with_actions_ci_gate_can_deploy(tmp_path: Path) -> None:
