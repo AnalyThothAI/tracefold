@@ -88,7 +88,7 @@ def build_node_config(
     )
     return TradingNodeConfig(
         trader_id=TraderId("TRACEFOLD-001"),
-        logging=LoggingConfig(log_level="INFO", log_colors=False, use_pyo3=True),
+        logging=LoggingConfig(log_level="WARNING", log_colors=False, use_pyo3=True),
         cache=CacheConfig(database=None, flush_on_start=False),
         data_engine=LiveDataEngineConfig(external_clients=[ClientId(BINANCE)]),
         exec_engine=LiveExecEngineConfig(

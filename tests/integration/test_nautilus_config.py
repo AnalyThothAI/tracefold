@@ -35,6 +35,7 @@ def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() 
         "e536d7c925b3c475bef4f3f8e75196944f6b8758710e41da1109b8b837001690",
     )
     assert config.cache is not None
+    assert config.logging.log_level == "WARNING"
     assert config.cache.database is None
     assert config.cache.flush_on_start is False
     assert config.exec_engine.reconciliation is True

@@ -129,6 +129,7 @@ class PositionQuantityChanged:
     intent_id: str
     position_id: str
     actual_quantity: Decimal
+    avg_entry_price: Decimal
     changed_at_ms: int
 
 

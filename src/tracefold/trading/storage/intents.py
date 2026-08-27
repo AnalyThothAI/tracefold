@@ -332,6 +332,7 @@ class IntentStorage:
         *,
         position_id: str,
         actual_quantity: Decimal,
+        avg_entry_price: Decimal,
         now_ms: int,
     ) -> IntentOutcome | None:
         return self._outcome_update(
@@ -340,6 +341,7 @@ class IntentStorage:
                SET execution_state = 'IN_FLIGHT',
                    reason_code = NULL,
                    actual_quantity = %(quantity)s,
+                   avg_entry_price = %(avg_entry_price)s,
                    updated_at_ms = %(now)s
              WHERE intent_id = %(intent_id)s
                AND execution_state IN ('IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
@@ -353,6 +355,7 @@ class IntentStorage:
                 "intent_id": intent_id,
                 "position_id": position_id,
                 "quantity": actual_quantity,
+                "avg_entry_price": avg_entry_price,
                 "now": int(now_ms),
             },
         )

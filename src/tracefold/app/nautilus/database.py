@@ -311,6 +311,7 @@ class NautilusDatabaseBridge:
                 event.intent_id,
                 position_id=event.position_id,
                 actual_quantity=event.actual_quantity,
+                avg_entry_price=event.avg_entry_price,
                 now_ms=event.changed_at_ms,
             )
         elif isinstance(event, CloseSubmitted):

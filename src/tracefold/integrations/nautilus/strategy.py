@@ -91,6 +91,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._stop_generation: int | None = None
         self._stop_cancel_pending = False
         self._pending_stop_quantity: Decimal | None = None
+        self._pending_stop_avg_entry_price: Decimal | None = None
         self._last_readiness: ReadinessChanged | None = None
         self._failed_stop_ids: set[str] = set()
         self._terminal_stop_ids: set[str] = set()
@@ -580,18 +581,21 @@ class TracefoldNautilusStrategy(Strategy):
         ):
             return
         quantity = event.quantity.as_decimal()
+        avg_entry_price = Decimal(str(event.avg_px_open))
         self._position_quantity = quantity
         self._emit(
             PositionQuantityChanged(
                 intent_id=intent.intent_id,
                 position_id=event.position_id.value,
                 actual_quantity=quantity,
+                avg_entry_price=avg_entry_price,
                 changed_at_ms=self._event_ms(event),
             )
         )
         if self._stop_order is None or self._stop_order.quantity.as_decimal() == quantity:
             return
         self._pending_stop_quantity = quantity
+        self._pending_stop_avg_entry_price = avg_entry_price
         if self._stop_cancel_pending:
             return
         self._stop_cancel_pending = True
@@ -639,6 +643,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._position_quantity = local_quantity
         self._opened_at_ms = None
         self._pending_stop_quantity = None
+        self._pending_stop_avg_entry_price = None
         self._stop_cancel_pending = False
         observation = PositionClosedObserved(
             intent_id=intent.intent_id,
@@ -793,6 +798,7 @@ class TracefoldNautilusStrategy(Strategy):
             self._cancel_stop_for_flat = False
             self._stop_cancel_pending = False
             self._pending_stop_quantity = None
+            self._pending_stop_avg_entry_price = None
             self._stop_order = None
             self._retire_orders_after_flat()
             return
@@ -808,16 +814,17 @@ class TracefoldNautilusStrategy(Strategy):
             )
             return
         quantity = self._pending_stop_quantity
+        avg_entry_price = self._pending_stop_avg_entry_price
         previous_id = self._stop_order.client_order_id.value
         generation = (self._stop_generation or 0) + 1
-        trigger_price = self._stop_trigger_price
         self._stop_cancel_pending = False
         self._pending_stop_quantity = None
-        if quantity is None or quantity <= 0 or trigger_price is None:
+        self._pending_stop_avg_entry_price = None
+        if quantity is None or quantity <= 0 or avg_entry_price is None:
             return
         self._submit_stop(
             quantity=quantity,
-            trigger_price=trigger_price,
+            avg_entry_price=avg_entry_price,
             previous_client_order_id=previous_id,
             generation=generation,
             submitted_at_ms=self._event_ms(event),
@@ -1082,6 +1089,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._stop_generation = None
         self._stop_cancel_pending = False
         self._pending_stop_quantity = None
+        self._pending_stop_avg_entry_price = None
         self._failed_stop_ids.clear()
         self._terminal_stop_ids.clear()
         self._close_order = None
@@ -1209,6 +1217,7 @@ class TracefoldNautilusStrategy(Strategy):
             return
         self._stop_cancel_pending = False
         self._pending_stop_quantity = None
+        self._pending_stop_avg_entry_price = None
         self._submit_close()
 
     def _submit_stop(

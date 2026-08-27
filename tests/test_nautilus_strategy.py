@@ -508,6 +508,7 @@ def test_position_changed_waits_for_cancel_confirmation_then_replaces_with_a_new
             instrument_id=SOLUSDT_PERP,
             position_id=position_id,
             quantity=instrument.make_qty(Decimal("0.002")),
+            avg_px_open=10100.0,
             ts_event=(NOW_MS + 20) * 1_000_000,
         )
     )
@@ -517,6 +518,7 @@ def test_position_changed_waits_for_cancel_confirmation_then_replaces_with_a_new
         intent_id=intent.intent_id,
         position_id=position_id.value,
         actual_quantity=Decimal("0.002"),
+        avg_entry_price=Decimal("10100.0"),
         changed_at_ms=NOW_MS + 20,
     )
     assert strategy.canceled == [first_stop]
@@ -541,6 +543,7 @@ def test_position_changed_waits_for_cancel_confirmation_then_replaces_with_a_new
     assert replacement.quantity == Decimal("0.002")
     replacement_order = strategy.submitted[-1][0]
     assert replacement_order.quantity.as_decimal() == Decimal("0.002")
+    assert replacement_order.trigger_price.as_decimal() == Decimal("9898.0")
     assert replacement_order.client_order_id.value == replacement.client_order_id
 
 
@@ -557,6 +560,7 @@ def test_stop_cancel_rejection_closes_instead_of_submitting_an_unconfirmed_repla
             instrument_id=SOLUSDT_PERP,
             position_id=position_id,
             quantity=instrument.make_qty(Decimal("0.002")),
+            avg_px_open=10100.0,
             ts_event=(NOW_MS + 20) * 1_000_000,
         )
     )
@@ -801,6 +805,7 @@ def test_stale_stop_acceptance_fails_the_owned_stop_contract_and_closes() -> Non
             instrument_id=SOLUSDT_PERP,
             position_id=position_id,
             quantity=instrument.make_qty(Decimal("0.002")),
+            avg_px_open=10100.0,
             ts_event=(NOW_MS + 20) * 1_000_000,
         )
     )

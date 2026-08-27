@@ -833,19 +833,23 @@ def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> 
         intent.intent_id,
         position_id="position-1",
         actual_quantity=Decimal("80"),
+        avg_entry_price=Decimal("0.101"),
         now_ms=NOW + 1_400,
     )
     assert changed is not None
     assert (changed.execution_state, changed.execution_phase) == ("IN_FLIGHT", "PROTECTION")
     assert changed.protected_quantity == Decimal("100")
+    assert changed.avg_entry_price == Decimal("0.101")
     latest = repos.trading.record_position_changed(
         intent.intent_id,
         position_id="position-1",
         actual_quantity=Decimal("60"),
+        avg_entry_price=Decimal("0.102"),
         now_ms=NOW + 1_450,
     )
     assert latest is not None
     assert latest.actual_quantity == Decimal("60")
+    assert latest.avg_entry_price == Decimal("0.102")
 
     replacement = repos.trading.prepare_stop_replacement(
         intent.intent_id,
@@ -902,6 +906,7 @@ def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> 
         intent.intent_id,
         position_id="position-1",
         actual_quantity=Decimal("40"),
+        avg_entry_price=Decimal("0.102"),
         now_ms=NOW + 1_800,
     )
     assert exit_changed is not None

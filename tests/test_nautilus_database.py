@@ -21,6 +21,7 @@ from tracefold.integrations.nautilus.messages import (
     OrderOutcomeUnknown,
     PositionClosedObserved,
     PositionFlatConfirmed,
+    PositionQuantityChanged,
     ReadinessChanged,
     StopAccepted,
     StopSubmitted,
@@ -221,6 +222,24 @@ def test_execution_events_write_only_authoritative_identifiers_and_quantities() 
         stop_price=Decimal("9800"),
         protected_at_ms=NOW_MS + 20,
         now_ms=NOW_MS + 20,
+    )
+
+    bridge._handle_event(
+        repos,
+        PositionQuantityChanged(
+            intent_id=intent.intent_id,
+            position_id="position-1",
+            actual_quantity=Decimal("0.002"),
+            avg_entry_price=Decimal("10100"),
+            changed_at_ms=NOW_MS + 25,
+        ),
+    )
+    repos.trading.record_position_changed.assert_called_once_with(
+        intent.intent_id,
+        position_id="position-1",
+        actual_quantity=Decimal("0.002"),
+        avg_entry_price=Decimal("10100"),
+        now_ms=NOW_MS + 25,
     )
 
     bridge._handle_event(
