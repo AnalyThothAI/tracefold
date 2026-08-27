@@ -1204,7 +1204,7 @@ class CandidateEvaluator:
         candidate_observed_n = 0
         candidate_bad_n = 0
         candidate_schema_errors = 0
-        provider_cost_observation_incomplete = False
+        provider_cost_incomplete_arms: set[str] = set()
         program_call_provenance_incomplete = False
         stability: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
         for item in observations:
@@ -1234,8 +1234,9 @@ class CandidateEvaluator:
                 candidate_only_errors += 1
             elif stable_out.get("error_code"):
                 stable_only_errors += 1
-            for output, tokens, calls, trace_entries, costs, latencies in (
+            for arm, output, tokens, calls, trace_entries, costs, latencies in (
                 (
+                    "stable",
                     stable_out,
                     stable_tokens,
                     stable_calls,
@@ -1244,6 +1245,7 @@ class CandidateEvaluator:
                     stable_latencies,
                 ),
                 (
+                    "candidate",
                     candidate_out,
                     candidate_tokens,
                     candidate_calls,
@@ -1255,7 +1257,7 @@ class CandidateEvaluator:
                 for program_obs in output.get("program") or []:
                     metric = _program_metric(program_obs)
                     if request.stage in {"offline", "holdout"} and not _provider_cost_observation_complete(program_obs):
-                        provider_cost_observation_incomplete = True
+                        provider_cost_incomplete_arms.add(arm)
                     if request.stage in {"offline", "holdout"} and not _program_call_provenance_complete(program_obs):
                         program_call_provenance_incomplete = True
                     if metric["total_tokens"] is not None:
@@ -1282,13 +1284,22 @@ class CandidateEvaluator:
             failures.append("must_push_regression")
         if candidate_only_errors and request.stage in {"offline", "holdout"}:
             failures.append("candidate_schema_or_provider_regression")
-        # A stable-arm or common provider failure makes the comparison
-        # unavailable.  It must never become a vacuous PASS just because both
-        # arms failed in the same way.  Candidate-only failures are complete
-        # regression evidence and remain FAIL above.
-        if (stable_only_errors or common_errors) and request.stage in {"offline", "holdout"}:
+        # A stable-arm or common provider failure makes the comparison unavailable for that case, and a
+        # mass failure must never become a vacuous PASS just because both arms failed the same way. But a
+        # handful of transient failures cannot veto a live corpus-scale comparison either: the affected
+        # cases already sit outside every comparison denominator, so the same rate cap that bounds
+        # candidate degradation bounds this gap (#294). Candidate-only failures are complete regression
+        # evidence and remain FAIL above.
+        unavailable_execution_n = stable_only_errors + common_errors
+        unavailable_execution_rate = unavailable_execution_n / len(observations) if observations else 0.0
+        if request.stage in {"offline", "holdout"} and stable_or_common_execution_blocked(
+            unavailable_execution_n, len(observations)
+        ):
             blockers.append("stable_or_common_execution_unavailable")
-        if provider_cost_observation_incomplete:
+        # Neither endpoint this deployment runs on reports a resolvable price, and the gate is a delta:
+        # two equally blind arms lose no comparative information, and the token guardrail above bounds the
+        # same spend concern. Only asymmetric observability is an evidence gap (#292).
+        if len(provider_cost_incomplete_arms) == 1:
             blockers.append("provider_cost_observation_incomplete")
         if program_call_provenance_incomplete:
             blockers.append("program_call_provenance_incomplete")
@@ -1405,16 +1416,17 @@ class CandidateEvaluator:
             "common_error_n": common_errors,
             "candidate_only_error_n": candidate_only_errors,
             "stable_only_error_n": stable_only_errors,
+            "stable_or_common_error_rate": unavailable_execution_rate,
             "execution_incomplete": bool(
                 request.stage in {"offline", "holdout"}
                 and (
-                    stable_only_errors
-                    or common_errors
-                    or provider_cost_observation_incomplete
+                    "stable_or_common_execution_unavailable" in blockers
+                    or len(provider_cost_incomplete_arms) == 1
                     or program_call_provenance_incomplete
                 )
             ),
-            "provider_cost_observation_complete": not provider_cost_observation_incomplete,
+            "provider_cost_observation_complete": not provider_cost_incomplete_arms,
+            "provider_cost_observation_incomplete_arms": sorted(provider_cost_incomplete_arms),
             "program_call_provenance_complete": not program_call_provenance_incomplete,
             "stable_mean_total_tokens": statistics.mean(stable_tokens) if stable_tokens else None,
             "candidate_mean_total_tokens": statistics.mean(candidate_tokens) if candidate_tokens else None,
@@ -1802,6 +1814,23 @@ _DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
     ("negative_cluster_n", "negative_clusters_min"),
     ("stratum_n", "strata_min"),
 )
+
+
+def stable_or_common_execution_blocked(unavailable_n: int, observation_n: int) -> bool:
+    """#294: unavailable-comparison cases block only past the shared degradation rate cap.
+
+    A stable-arm or common failure removes its case from every comparison denominator, so a handful of
+    transient ones cannot bias the verdict — but a mass failure is still an evidence gap, never a vacuous
+    PASS. The cap is the same `candidate_degraded_or_error_rate_max` that bounds candidate degradation;
+    a second knob would let the two drift apart while guarding one concern.
+    """
+
+    if not unavailable_n:
+        return False
+    if not observation_n:
+        return True
+    rate = unavailable_n / observation_n
+    return rate > float(_PROFILE["guardrails"]["candidate_degraded_or_error_rate_max"])
 
 
 def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:

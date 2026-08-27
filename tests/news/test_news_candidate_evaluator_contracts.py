@@ -533,3 +533,25 @@ def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "mode
         "editorial": editorial.model_dump(mode="json"),
         "scored_judgment_sha256": scored.scored_judgment_sha256,
     }
+
+
+def test_stable_or_common_execution_blocks_only_past_the_shared_rate_cap() -> None:
+    """#294: a handful of transient stable/common failures cannot veto a corpus-scale live comparison.
+
+    The affected cases already sit outside every comparison denominator; what must keep blocking is a
+    mass failure, which would otherwise turn into a vacuous PASS. The cap is deliberately the same
+    `candidate_degraded_or_error_rate_max` that bounds candidate degradation — one knob, one concern.
+    """
+
+    blocked = candidate_evaluator_module.stable_or_common_execution_blocked
+    cap = float(_PROFILE["guardrails"]["candidate_degraded_or_error_rate_max"])
+    assert cap == 0.05  # the assertions below are calibrated against the sealed profile value
+
+    assert not blocked(0, 477)
+    # the first live evaluation's actual reading: 1 stable-only + 3 common over 477 observations
+    assert not blocked(4, 477)
+    assert not blocked(23, 477)  # 4.8% — just under the cap
+    assert blocked(25, 477)  # 5.2% — just over
+    assert blocked(1, 8)  # a tiny corpus cannot absorb even one unavailable comparison
+    assert blocked(3, 3)  # every case failing is the vacuous-PASS shape the blocker exists for
+    assert blocked(1, 0)  # no observations at all is an evidence gap, never a pass

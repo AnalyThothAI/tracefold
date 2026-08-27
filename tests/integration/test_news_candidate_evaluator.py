@@ -2729,6 +2729,63 @@ def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
     assert report.run_state == "incomplete"
     assert report.evidence["provider_cost_observation_complete"] is False
     assert "provider_cost_observation_incomplete" in report.evidence["blockers"]
+    assert report.evidence["provider_cost_observation_incomplete_arms"] == ["candidate"]
+
+
+def test_symmetric_provider_cost_blindness_is_not_a_release_blocker(conn) -> None:
+    """#292: neither endpoint this deployment runs on reports a resolvable price.
+
+    The gate is a delta, so two equally blind arms lose no comparative information and the token
+    guardrail bounds the same spend concern. What stays a blocker is asymmetry — one priced arm and one
+    blind arm cannot be compared honestly, and the test above pins that half.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    judges = {
+        ("stable", stable.bundle_sha): _MissingProviderCostJudge(stable),
+        ("candidate", candidate.candidate_arm.bundle_sha): _MissingProviderCostJudge(
+            candidate.candidate_arm,
+            candidate=True,
+        ),
+    }
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(candidate,),
+    )
+
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    assert "provider_cost_observation_incomplete" not in report.evidence["blockers"]
+    assert report.evidence["provider_cost_observation_complete"] is False
+    assert report.evidence["provider_cost_observation_incomplete_arms"] == ["candidate", "stable"]
+    assert report.evidence["stable_mean_provider_cost_microusd"] is None
+    assert report.evidence["candidate_mean_provider_cost_microusd"] is None
 
 
 def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(conn) -> None:
