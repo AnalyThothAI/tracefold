@@ -31,6 +31,9 @@ describe("TradingPage", () => {
       http.get(/.*\/api\/trading\/orders$/, () =>
         HttpResponse.json({ ok: true, data: tradingOrdersFixture() }),
       ),
+      http.get(/.*\/api\/trading\/gate$/, () =>
+        HttpResponse.json({ ok: true, data: tradingGateFixture() }),
+      ),
     );
   });
 

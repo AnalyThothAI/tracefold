@@ -1,10 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { allowBrowserFailure, expect, test } from "@tests/e2e/fixtures";
 import { expectNoDocumentHorizontalOverflow } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
 test.setTimeout(60_000);
 
 test("Event feed controls preserve the approved disclosure and URL contract", async ({ page }) => {
+  allowBrowserFailure(page, {
+    kind: "requestfailed",
+    match: "GET /api/news/feed (net::ERR_ABORTED)",
+    reason:
+      "Changing filters intentionally supersedes an in-flight feed read; the final URL and rendered state are asserted below.",
+  });
   await installMockApi(page);
   await page.goto("/news");
 

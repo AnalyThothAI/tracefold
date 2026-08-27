@@ -103,9 +103,10 @@ or historical file inventories into permanent architecture contracts.
 **Program identity.** The two advisory instructions and `program_sha256`, the
 `factory_id` that versions code-owned prompt/RulePack/route/budget behavior,
 the policy version and the metric identity are release evidence, not
-implementation details. A structural change must leave every one
-of them byte-identical, and the Issue #162 refactor baseline
-(`python -m tests.support.refactor_baseline --check`) is what proves it. A
+implementation details. A structural change must leave every one of them
+byte-identical; `tests/contract/test_program_release_identity.py` protects the
+exact artifact bytes, rendered prompt identity, factory, Program, epoch, policy,
+review and metric versions directly. A
 change to code-owned behavior — a RulePack body, the renderer, the normalizer
 or assembler, the route or the call budget — is a factory bump you declare, not
 a component hash that cascades on its own; both belong to an explicit,
@@ -129,9 +130,14 @@ instruction, and the empty demo section left with the DemoBank family.
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
 | `make trading-smoke` | the #209 paper exit acceptance contract | the `test_paper_exit_acceptance_*` cases on real PostgreSQL | everything else; it is a subset of `make test-integration`, never merge evidence on its own |
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | default loop |
-| `make test-e2e` | cross-process system evidence | real service topology and end-to-end paths | default loop |
+| `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
+| `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
+| `make test-browser-smoke` | required browser/backend seam | production FastAPI static mount, bootstrap bearer, real API envelope and one Chromium `/news` fact | visual matrix and screenshot baselines |
+| `make test-slow` | explicit process/meta-test diagnostics | shortened injected deadlines and nested fail-closed harness F2P | `make check`, `make test-fast`, live/provider truth |
+| `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the default developer loop |
+| `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD or fail-closed evidence claims |
-| `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python lanes, PostgreSQL, RabbitMQ, deploy/e2e/golden/slow/external codegen, frontend typecheck/architecture/tests/build | `live`; missing declared resources; skip/xfail/xpass/rerun/maxfail |
+| `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python/resource lanes, frontend typecheck/architecture/behavior/build, required Chromium smoke | `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -155,13 +161,15 @@ Every bug or refactor PR records four pieces of evidence:
 3. the targeted P2P regressions for affected public or persisted boundaries;
 4. the integration, deploy, e2e, or release lane still required.
 
-### Verification Evidence Contract v1
+### Verification Evidence Contract v2
 
 `make test-evidence` is the only complete merge/release evidence entry. It
-runs with `TRACEFOLD_TEST_EVIDENCE=1`, explicitly deselects only the `live`
-marker, and writes `artifacts/test-evidence/manifest.json` plus JUnit and
-duration evidence. CI uploads those files; they are evidence for one run, not
-a second business or release database.
+runs Python with `TRACEFOLD_TEST_EVIDENCE=1` and explicitly deselects only the
+`live` and `scheduled` markers, then runs the required frontend and Chromium lanes. Every lane
+writes a small manifest under `artifacts/test-evidence/lanes/`; only a final
+fail-closed aggregation writes `artifacts/test-evidence/manifest.json`. CI
+uploads those files; they are evidence for one run, not a second business or
+release database.
 
 1. **Exact HEAD.** A result belongs only to the full commit SHA it actually
    tested. Any later commit invalidates it and must run the required gate
@@ -185,7 +193,7 @@ a second business or release database.
    rerun, `--maxfail`, rerun plugins, and catch-and-continue behavior. Golden
    or snapshot outputs are checked for drift; a required run may not silently
    update them and continue green. The only allowed deselection is the entry's
-   explicit `not live` expression, recorded in the manifest.
+   explicit `not live and not scheduled` expression, recorded in the manifest.
 7. **Acceptance-test changes.** When the same PR changes an existing
    acceptance test, its verification section classifies the change as a
    product-contract change, a test defect, or a fixture repair and links the
@@ -197,25 +205,38 @@ a second business or release database.
    the responsibility of frozen corpora, golden evidence,
    `CandidateEvaluator`, shadow/canary runs, and durable production evidence.
 
-The evidence manifest is generated by the actual pytest session. The
-`make test-evidence` entry checks the complete tracked and non-ignored
-worktree before Python starts and again after frontend build, so a test cannot
-silently update or add a golden/snapshot while claiming the prior HEAD. Its
-`commit_sha` must equal CI's `GITHUB_SHA`; it also records the Python and Node
-versions; hashes for `uv.lock` and `package-lock.json`; migration head;
-selected and passed counts; all
-non-passing outcome counts; and the explicit `live` deselection. A successful
-evidence run has zero failed, skipped, xfailed, xpassed, and rerun outcomes.
+The Python lane manifest is generated by the actual pytest session. Evidence
+mode fixes collection at the repository `tests/` root, rejects
+`PYTEST_ADDOPTS`, positional subsets and collection-changing options, and
+requires every tracked `test_*.py` module to participate. The entry checks the
+complete tracked and non-ignored worktree before and after the run, so a test
+cannot silently update a golden/snapshot while claiming the prior HEAD. Each
+lane records the same `commit_sha` and `git_tree_sha`, its actual selected and
+outcome counts, tool versions and unhandled errors. The aggregate requires
+non-empty Python, frontend architecture, frontend behavior, typecheck, build
+and real-browser manifests. A successful aggregate has zero failed, skipped,
+xfailed, xpassed, rerun, flaky or unhandled outcomes.
 Hypothesis is a test-only dependency in the uv `dev` group and is resolved by
 `uv.lock` with the other development tools. Production images install with
-`uv sync --frozen --no-dev`, so test tools never enter the runtime environment.
+`uv sync --locked --no-dev`, so lock/source drift fails and test tools never
+enter the runtime environment.
 
 Required CI has four jobs: hermetic `quality` (`make check`), hermetic `fast`
 (`make test-fast`), resource-backed `deterministic-full` (`make
 test-evidence`), and the stable `ci-gate` aggregate. `ci-gate` uses
 `needs` with `if: always()` and fails when any input job failed, was cancelled,
-or was skipped. The `main` ruleset requires only this stable context, requires
-the branch to be current, and allows neither force push nor deletion.
+or was skipped. The `main` ruleset requires only this stable context, binds it
+to the GitHub Actions integration, requires the branch to be current, and
+allows neither force push nor deletion. Verification trust-root changes are
+guarded by the same exact-HEAD CI contract: required `ci-gate` is bound to GitHub
+Actions and every Action is SHA-pinned. The repository deliberately adds no
+special non-author approval requirement for these paths.
+
+The pull-request run proves the exact PR-head commit and tree. A squash merge
+creates a different `main` commit, so the post-merge push run is the first
+evidence for that main SHA. Deployment, cutover and release work must wait for
+that exact main SHA's `ci-gate`; a green PR-head run is not pre-merge proof of a
+future squash SHA. This repository does not claim merge-queue evidence.
 
 Every PR uses the repository template and completes these fields:
 
@@ -276,8 +297,9 @@ uv run pytest -q \
 `make test` aliases `make test-fast` and never starts an external resource.
 Tests that need PostgreSQL declare the explicit `postgres_dsn` fixture; their
 directory is not a resource trigger. `make test-integration`, `make
-test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, and `make
-test-external-codegen` expose the larger lanes; `make trading-smoke` is a named
+test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
+test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
+diagnostics are reported separately and never feed the merge gate. `make trading-smoke` is a named
 subset of the integration lane and never evidence on its own. `make test-all` remains a local
 complete-suite convenience. `make test-evidence` is the canonical
 merge/release entry, runs every deterministic lane with fail-closed resource
@@ -291,11 +313,13 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
 `20260824_0302`; schema tests also run against that migrated head. The e2e lane
-(`tests/e2e/test_golden_path.py`) starts one
+(`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
-and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
-that the retired GMGN-lane and Macro routes answer `404`; it runs no Workers
-subprocess. ReviewDesk and CandidateEvaluator have their own integration lanes;
+and asserts `/readyz`, `/api/status` and `/api/news/status`; it runs no Workers
+subprocess and makes no broker claim. Retired route absence belongs to the
+OpenAPI/public-route contract. The golden lane separately starts the public
+Workers root, publishes through RabbitMQ, persists the deterministic OI path in
+PostgreSQL and reads it through HTTP. ReviewDesk and CandidateEvaluator have their own integration lanes;
 production shadow/canary evidence is sealed in PostgreSQL rather than inferred
 from the HTTP e2e fixture.
 
@@ -593,24 +617,24 @@ and a missing or tampered policy raises rather than scoring — a corpus that
 cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
-The metric-v4 recorded calibration lives in
-`tests/fixtures/news_baseline_calibration_v2.json`, not in the operator's
+The metric-v4 audit/replay corpus lives in
+`tests/fixtures/news_audit_replay_corpus_v2.json`, not in the operator's
 database; the v1 fixture remains frozen metric-v3 history. A check that moves
-with live data cannot prove the *wiring* is unchanged. The current expected values live only in
-`tests/news/test_news_baseline_calibration.py` — one place to read, one place to
+with live data cannot prove the *wiring* is unchanged. The recorded pins live only in
+`tests/news/test_news_audit_replay_corpus.py` — one place to read, one place to
 update when the fixture is regenerated.
 Every string in the fixture outside an explicit structural allowlist is redacted
-through an equality-preserving map (`tests/support/baseline_calibration.py`),
+through an equality-preserving map (`tests/support/audit_replay_corpus.py`),
 which keeps every comparison the recorded metric makes — all equality — while
 publishing no provider or reviewer prose. The allowlist direction matters: the
 first version listed the *text* keys instead and shipped 60 reader-facing
 Chinese cards under `title_zh`, guarded by a test that re-ran the redactor and
 compared, which is a tautology for a key-based redactor. The guard now scans the
-shipped bytes for the shape of human language. The fixture is it is therefore valid for `--mode recorded` only, because `decide()`'s
-character-bigram duplicate check would read different neighbours out of redacted
-headlines. Regenerate it with
-`uv run python -m tests.support.baseline_calibration <path>` and update the
-pinned numbers in `tests/news/test_news_baseline_calibration.py` in the same
+shipped bytes for the shape of human language. The fixture is valid for
+`--mode recorded` only, because `decide()`'s character-bigram duplicate check
+would read different neighbours out of redacted headlines. Regenerate it with
+`uv run python -m tests.support.audit_replay_corpus <path>` and update the
+pinned numbers in `tests/news/test_news_audit_replay_corpus.py` in the same
 commit.
 
 The tariff is not optional bookkeeping. Neither the local llama.cpp endpoint nor
@@ -737,9 +761,8 @@ recovery seam.
 
 `docs/generated/` contains only reproducible outputs: `README.md`,
 `cli-help.md` (`scripts/regen_cli_help.py`), `db-schema.md`
-(`scripts/regen_db_schema.py`, needs PostgreSQL), `openapi.json`
-(`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`), and the
-Issue #162 refactor baseline (`python -m tests.support.refactor_baseline`).
+(`scripts/regen_db_schema.py`, needs PostgreSQL), and `openapi.json`
+(`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`).
 
 ```bash
 make docs-generated   # db-schema.md + cli-help.md
@@ -752,18 +775,17 @@ make regen-contract   # openapi.json + web/src/lib/types/openapi.ts
 Each generated artifact has one source of truth and one update command:
 
 - CLI help: the production parser rendered by `scripts/regen_cli_help.py`;
-- refactor baseline: `python -m tests.support.refactor_baseline`;
 - agent routers: `docs/agents/shared-router.md`, updated with
   `scripts/sync_agent_router.py --write`;
 - OpenAPI and TypeScript: the Python app schema, updated with
   `make regen-contract`.
 
-`make check` executes the database-free CLI-help, refactor-baseline, and
-agent-router canonical checker exactly once each. Its Python OpenAPI check is
+`make check` executes the database-free CLI-help and agent-router canonical
+checker exactly once each. Its Python OpenAPI check is
 hermetic; Node-backed TypeScript codegen runs in the external-codegen/full
 lane. Generated outputs change in the same commit as their source. Regenerate
-the refactor baseline only as an explicit contract change and inspect its JSON
-diff before committing.
+the owning output only through its generator and inspect its diff before
+committing.
 
 ## Completion
 

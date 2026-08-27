@@ -80,6 +80,51 @@ def test_endpoint_override_targets_the_fallback_gateway() -> None:
     assert "api_base" not in repr(endpoint)
 
 
+def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None:
+    """Deterministic News routes must boot even when the semantic Program is unavailable."""
+
+    settings = Settings()
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+    arm = learning_runtime.active_arm_manifest(settings, runtime_composition=composition)
+
+    assert composition.program_configured is False
+    assert composition.semantic_judge(load_stable_program_artifact()) is None
+    assert composition.secret_free_slot_identities() == {
+        "event_semantics.primary": None,
+        "reader_card.primary": None,
+        "event_semantics.fallback": None,
+        "reader_card.fallback": None,
+    }
+    assert composition.slot_aliases() == {}
+    assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
+
+
+def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:
+    pristine = learning_runtime.compose_news_program_runtime(Settings())
+    invalid_reader = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+                "news_reader_card": {
+                    "api_key": "reader-key",
+                    "base_url": "ftp://reader.test/v1",
+                    "model": "reader-model",
+                },
+            }
+        }
+    )
+
+    partial = learning_runtime.compose_news_program_runtime(invalid_reader)
+
+    assert partial.program_configured is False
+    assert partial.secret_free_slot_identities() == pristine.secret_free_slot_identities()
+    assert partial.slot_aliases() == pristine.slot_aliases() == {}
+    assert partial.runtime_model_bindings_sha256 == pristine.runtime_model_bindings_sha256
+
+
 def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
     settings = Settings.model_validate(
         {

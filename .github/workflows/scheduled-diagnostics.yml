@@ -1,0 +1,66 @@
+name: Scheduled diagnostics
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-diagnostics-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13"
+  UV_VERSION: "0.11.7"
+
+jobs:
+  production-duration:
+    name: production-duration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_DB: tracefold_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tracefold_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked Python dependencies
+        run: uv sync --locked
+      - name: Run production-duration diagnostics
+        env:
+          PYTEST_ADDOPTS: --junitxml=artifacts/scheduled/junit.xml
+          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+        run: |
+          mkdir -p artifacts/scheduled
+          set -o pipefail
+          make test-scheduled 2>&1 | tee artifacts/scheduled/run.log
+      - name: Upload scheduled evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: scheduled-${{ github.sha }}
+          path: artifacts/scheduled
+          if-no-files-found: warn

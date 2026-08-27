@@ -53,13 +53,13 @@ def rabbitmq_url() -> str:
 @pytest.fixture(scope="session")
 def postgres_dsn() -> Iterator[str]:
     """Yield a migrated PostgreSQL DSN only to tests that declare this resource."""
-    existing = os.environ.get("GMGN_TEST_POSTGRES_DSN", DEFAULT_DSN)
+    existing = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
 
     if _dsn_reachable(existing):
         from tests.postgres_test_utils import ensure_migrated_postgres_resource
 
         ensure_migrated_postgres_resource(existing, resource_name="PostgreSQL integration resource")
-        os.environ["GMGN_TEST_POSTGRES_DSN"] = existing
+        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = existing
         yield existing
         return
 
@@ -75,7 +75,7 @@ def postgres_dsn() -> Iterator[str]:
         pytest.fail(
             "Integration tests require a reachable Postgres but none was found. Fix options:\n"
             f"  1. Start your local test DB at {existing} (e.g. `docker compose up -d postgres`).\n"
-            "  2. Provide an alternate DSN: GMGN_TEST_POSTGRES_DSN=postgresql://...\n"
+            "  2. Provide an alternate DSN: TRACEFOLD_TEST_POSTGRES_DSN=postgresql://...\n"
             "  3. Start Docker Desktop / colima / OrbStack and rerun (testcontainers will auto-spin).\n"
             "  4. If you intentionally cannot run integration, set SKIP_INTEGRATION=1 -- but then\n"
             "     this run cannot count as a verification artefact (DoD: see docs/DEVELOPMENT.md).",
@@ -91,5 +91,5 @@ def postgres_dsn() -> Iterator[str]:
     with tracefold_postgres_container(PostgresContainer) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
         ensure_migrated_postgres_resource(dsn, resource_name="testcontainers PostgreSQL integration resource")
-        os.environ["GMGN_TEST_POSTGRES_DSN"] = dsn
+        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
         yield dsn

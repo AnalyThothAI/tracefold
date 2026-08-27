@@ -5,9 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const repoRoot = join(webRoot, "..");
 const srcRoot = join(webRoot, "src");
-const frontendDoc = readFileSync(join(repoRoot, "docs/FRONTEND.md"), "utf8");
 const sourceExtensions = new Set([".ts", ".tsx"]);
 const forbiddenServerStatePatterns = [
   /\buseQuery\b/,
@@ -19,10 +17,6 @@ const forbiddenServerStatePatterns = [
 ];
 
 describe("frontend data ownership", () => {
-  it("documents the executable data ownership harness", () => {
-    expect(frontendDoc).toContain("`frontendDataOwnership.test.ts`");
-  });
-
   it("keeps route modules and presentational UI out of direct server-state ownership", () => {
     const offenders = dataOwnershipFiles().flatMap((path) => {
       const source = readFileSync(path, "utf8");

@@ -37,6 +37,7 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dsn", required=True)
     parser.add_argument("--port", required=True, type=int)
+    parser.add_argument("--graceful-timeout-seconds", type=float)
     parser.add_argument(
         "--mode",
         required=True,
@@ -139,6 +140,8 @@ async def _main() -> None:
 
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
+    if arguments.graceful_timeout_seconds is not None:
+        workers.GRACEFUL_DRAIN_TIMEOUT_SECONDS = arguments.graceful_timeout_seconds
 
     if arguments.mode == "finite_never_returns_failed_transition_once":
         from psycopg import OperationalError

@@ -1,28 +1,30 @@
 # .pre-commit-config.yaml
 # Hooks run on every commit. They are gate-1 only; `make check` is the canonical
-# hermetic static/drift entry and release evidence additionally uses `make test-all`.
+# hermetic static/drift entry and `make test-evidence` is the release evidence entry.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.2
-    hooks:
-      - id: ruff
-        args: [--fix]
-      - id: ruff-format
-
   - repo: local
     hooks:
-      - id: eslint-web
-        name: eslint (web/src)
-        entry: bash -c 'cd web && npm run lint'
+      - id: ruff
+        name: ruff (uv lock)
+        entry: uv run --locked ruff check --fix
         language: system
-        types_or: [ts, tsx]
-        files: ^web/src/.*\.(ts|tsx)$
-        pass_filenames: false
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format (uv lock)
+        entry: uv run --locked ruff format
+        language: system
+        types_or: [python, pyi]
+
+      - id: eslint-web
+        name: eslint (staged web files)
+        entry: uv run --locked python scripts/run_web_hook.py eslint
+        language: system
+        types_or: [javascript, ts, tsx]
+        files: ^web/(?:src|tests)/.*\.(?:ts|tsx)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/eslint\.config\.js$
 
       - id: prettier-web
-        name: prettier (web/src)
-        entry: bash -c 'cd web && npm run format:check'
+        name: prettier (staged web files)
+        entry: uv run --locked python scripts/run_web_hook.py prettier
         language: system
-        types_or: [ts, tsx, css, json]
-        files: ^web/.*\.(ts|tsx|css|json)$
-        pass_filenames: false
+        files: ^web/(?:src|tests)/.*\.(?:ts|tsx|css|json)$|^web/(?:vite|playwright(?:\.full-stack)?)\.config\.ts$|^web/(?:package(?:-lock)?|tsconfig|components)\.json$|^web/(?:eslint\.config\.js|\.prettierrc\.json|\.prettierignore)$

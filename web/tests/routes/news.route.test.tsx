@@ -2,6 +2,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 import { newsEventDetailFixture, newsStatusFixture } from "@tests/fixtures/newsFixture";
 import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
+import { axe } from "jest-axe";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { apiMock, setupAppRouteTest } from "./routeTestSetup";
@@ -41,6 +42,15 @@ describe("news route", () => {
     });
   });
 
+  it("has no automated accessibility violations on the complete successful route", async () => {
+    const { container } = renderAppRoute("/news");
+
+    await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ });
+    await screen.findByRole("button", { name: /流水线健康/ });
+    expect(screen.queryByText("正在读取新闻事件")).not.toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
     ["/news/oi", "OI 遥测审计", "/api/news/status"],
@@ -57,9 +67,9 @@ describe("news route", () => {
   });
 
   it("lights the topbar lamp with the failing item's own sentence when health degrades", async () => {
-    // What the route level owns is the mapping: server `health` -> the frame's structural prop. That `ok`
-    // draws nothing at all is the lamp's own rule and is pinned on the component in
-    // `CockpitTopbarHealth.test.tsx`, so it is not rendered a second time here.
+    // What the route level owns is the mapping: server `health` -> the frame's structural prop. The lamp
+    // remains the status-page door while healthy; this case verifies that degradation also carries the
+    // failing stage's sentence rather than merely changing colour.
     setupAppRouteTest((mock) => {
       mockAppRoutes(mock);
       const base = mock.getApiImpl;

@@ -6,6 +6,25 @@ from psycopg import OperationalError
 from tests import postgres_test_utils
 
 
+class _DatabaseIdentityConnection:
+    def __init__(self, database_name: str) -> None:
+        self.database_name = database_name
+
+    def execute(self, _query: str) -> _DatabaseIdentityConnection:
+        return self
+
+    def fetchone(self) -> tuple[str]:
+        return (self.database_name,)
+
+
+def test_destructive_test_database_helpers_require_the_exact_test_identity() -> None:
+    postgres_test_utils.assert_dedicated_test_database(_DatabaseIdentityConnection("tracefold_test"))
+
+    for unsafe_name in ("tracefold", "postgres", "test", "tracefold_test_backup"):
+        with pytest.raises(RuntimeError, match="postgres_test_database_identity_invalid"):
+            postgres_test_utils.assert_dedicated_test_database(_DatabaseIdentityConnection(unsafe_name))
+
+
 def test_postgres_connection_failure_fails_in_evidence_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRACEFOLD_TEST_EVIDENCE", "1")
     monkeypatch.setattr(

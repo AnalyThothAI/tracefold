@@ -21,10 +21,11 @@ def test_make_check_runs_each_canonical_drift_checker_once_without_external_reso
 
     for checker in (
         "scripts/regen_cli_help.py --check",
-        "tests.support.refactor_baseline --check",
         "scripts/sync_agent_router.py --check",
     ):
         assert commands.count(checker) == 1, checker
+    assert "not slow" in commands
+    assert "not scheduled" in commands
     assert commands.count("python -m pytest") == 1
     assert all(tool not in commands for tool in ("docker", "npx", "npm "))
 
@@ -40,12 +41,21 @@ def test_default_test_target_selects_only_hermetic_lanes() -> None:
     commands = result.stdout
 
     assert commands.count("python -m pytest") == 1
-    for excluded in ("integration", "deploy", "e2e", "golden", "slow", "external_codegen"):
+    for excluded in (
+        "integration",
+        "deploy",
+        "e2e",
+        "golden",
+        "live",
+        "slow",
+        "scheduled",
+        "external_codegen",
+    ):
         assert f"not {excluded}" in commands
     assert all(tool not in commands for tool in ("docker", "testcontainers", "uvicorn", "npx", "npm "))
 
 
-def test_evidence_target_selects_every_deterministic_lane_and_excludes_live_explicitly() -> None:
+def test_evidence_target_selects_every_deterministic_lane_and_excludes_opt_in_diagnostics() -> None:
     result = subprocess.run(
         ["make", "--dry-run", "test-evidence"],
         cwd=ROOT,
@@ -57,14 +67,22 @@ def test_evidence_target_selects_every_deterministic_lane_and_excludes_live_expl
 
     assert "TRACEFOLD_TEST_EVIDENCE=1" in commands
     assert "-p tests.support.evidence" in commands
-    assert '-m "not live"' in commands
+    assert '-m "not live and not scheduled"' in commands
     assert "--evidence-manifest=" in commands
+    assert "--resource-evidence-manifest=" in commands
     assert "--junitxml=" in commands
-    assert "npm run typecheck" in commands
-    assert "npm run lint" in commands
-    assert "npm run test:unit" in commands
-    assert "npm run format:check" in commands
-    assert "npm run build" in commands
+    for lane in (
+        "python",
+        "resource",
+        "frontend-typecheck",
+        "frontend-lint",
+        "frontend-architecture",
+        "frontend-unit",
+        "frontend-format",
+        "frontend-build",
+        "browser",
+    ):
+        assert f"--required-lane {lane}" in commands
 
 
 def test_current_documentation_links_resolve() -> None:

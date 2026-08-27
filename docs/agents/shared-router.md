@@ -76,10 +76,9 @@ diagnostic command results.
 ## Frontend guardrails
 
 Frontend CSS is harness-constrained, not convention-only. Before changing
-`web/src` UI code, read `docs/FRONTEND.md`. Do not recreate retired CSS buckets
-such as `cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, or
-`signalLab.css`; owner CSS must live beside the component or route that imports
-it. Feature CSS must use the owning feature namespace and must not restyle
+`web/src` UI code, read `docs/FRONTEND.md`. Global side-effect CSS belongs only
+under `web/src/styles`; owner CSS must live beside the component or route that
+imports it. Feature CSS must use the owning feature namespace and must not restyle
 shared UI internals or Obsidian `.ods-*` selectors. `npm run lint` runs ESLint
 plus the frontend architecture harness; do not bypass it after CSS, responsive,
 route shell, or shared UI changes.

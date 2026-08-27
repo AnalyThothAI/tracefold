@@ -122,8 +122,10 @@ def test_workers_root_owns_lifecycle_but_not_capability_construction() -> None:
 # #202 §12. The online plane may observe, review and monitor a canary; it may not optimize. This is the
 # only test here that measures what a *process* loads rather than what a file names, because that is the
 # claim: an import three hops down a wiring chain reaches the optimizer exactly as surely as a direct one.
-FORBIDDEN_IN_WORKERS = (
+WORKER_FORBIDDEN_AUTHORITY_MODULES = (
     "tracefold.news.learning.dataset",
+    "tracefold.news.learning.evaluation_history",
+    "tracefold.news.learning.ledger",
     "tracefold.news.release.candidate",
     "tracefold.news.learning.optimizer",
     "tracefold.news.learning.baseline",
@@ -131,8 +133,20 @@ FORBIDDEN_IN_WORKERS = (
     "tracefold.news.learning.judge",
     "tracefold.news.learning.replay",
     "tracefold.news.review.drafter",
+    "tracefold.news.review.desk",
     "tracefold.news.learning.experiment",
 )
+
+
+def _forbidden_worker_authorities(modules: set[str]) -> list[str]:
+    return sorted(
+        module
+        for module in modules
+        if any(
+            module == authority or module.startswith(f"{authority}.")
+            for authority in WORKER_FORBIDDEN_AUTHORITY_MODULES
+        )
+    )
 
 
 def _module_file(module: str) -> Path | None:
@@ -188,7 +202,7 @@ def _worker_import_closure() -> set[str]:
     return seen
 
 
-def test_the_online_worker_can_never_reach_the_offline_learning_plane() -> None:
+def test_online_worker_cannot_reach_offline_learning_or_release_authorities() -> None:
     """Two measurements of one claim, because each catches what the other cannot.
 
     The static half follows every import at any depth, transitively — a lazy import inside
@@ -204,22 +218,10 @@ def test_the_online_worker_can_never_reach_the_offline_learning_plane() -> None:
     """
 
     reachable = _worker_import_closure()
-    learning = {
-        m
-        for m in reachable
-        if m.startswith(("tracefold.news.learning", "tracefold.news.review", "tracefold.news.release"))
-    }
-
-    assert not (learning & set(FORBIDDEN_IN_WORKERS)), sorted(learning & set(FORBIDDEN_IN_WORKERS))
-    # Named, not merely bounded: a new learning module reaching the online graph is a decision someone
-    # makes here rather than one that arrives with an unrelated import.
-    assert learning == {
-        "tracefold.news.release.canary",
-        "tracefold.news.learning.contracts",
-    }, sorted(learning)
+    assert _forbidden_worker_authorities(reachable) == []
 
 
-def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> None:
+def test_online_worker_process_does_not_load_offline_learning_or_release_authorities() -> None:
     """The dynamic half: a fresh interpreter, because a test session has already loaded half the repo.
 
     Weaker than the static walk above — it sees only module-level imports — and kept beside it because it
@@ -237,7 +239,7 @@ def test_the_online_worker_process_never_loads_the_offline_learning_plane() -> N
     assert completed.returncode == 0, completed.stderr[-2000:]
     loaded = set(json.loads(completed.stdout.strip().splitlines()[-1]))
 
-    assert not (loaded & set(FORBIDDEN_IN_WORKERS)), sorted(loaded & set(FORBIDDEN_IN_WORKERS))
+    assert _forbidden_worker_authorities(loaded) == []
 
 
 BUSINESS_WRITE_SQL_RE = re.compile(

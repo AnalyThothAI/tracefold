@@ -188,7 +188,7 @@ class OrderStorage:
                    )
             """
         elif kind == "exit":
-            sql = """
+            sql = f"""
                 UPDATE trading_orders
                    SET state = 'SAFETY_CLOSING',
                        exit_attempt_count = exit_attempt_count + 1,
@@ -196,7 +196,7 @@ class OrderStorage:
                        updated_at_ms = %s
                  WHERE order_id = %s
                    AND exit_attempt_count = 0
-                   AND exit_attempt_total < 3
+                   AND exit_attempt_total < {_MAX_EXIT_ATTEMPTS}
                    AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL', 'UNPROTECTED')
             """
         else:  # pragma: no cover - the caller passes a literal

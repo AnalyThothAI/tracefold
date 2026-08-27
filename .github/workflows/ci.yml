@@ -16,12 +16,13 @@ concurrency:
 env:
   PYTHON_VERSION: "3.13"
   NODE_VERSION: "22"
+  UV_VERSION: "0.11.7"
   TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   quality:
     name: quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -32,10 +33,11 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Install locked Python dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
       - name: Run quality checks
         env:
           PYTEST_ADDOPTS: --junitxml=artifacts/quality/junit.xml --durations=50
@@ -53,7 +55,7 @@ jobs:
 
   fast:
     name: fast
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -64,10 +66,11 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Install locked Python dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
       - name: Run hermetic fast tests
         env:
           PYTEST_ADDOPTS: --junitxml=artifacts/fast/junit.xml --durations=50
@@ -85,11 +88,11 @@ jobs:
 
   deterministic-full:
     name: deterministic-full
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
         env:
           POSTGRES_DB: tracefold_test
           POSTGRES_PASSWORD: postgres
@@ -102,7 +105,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       rabbitmq:
-        image: rabbitmq:4.1-management-alpine
+        image: rabbitmq:4.1-management-alpine@sha256:5ae1b436f98ed304168a55a90280dadfb0f1bfe5736d6e2e970e69f7f8fdf5e4
         env:
           RABBITMQ_DEFAULT_PASS: tracefold
           RABBITMQ_DEFAULT_USER: tracefold
@@ -129,15 +132,17 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Install locked dependencies
         run: |
-          uv sync --frozen
+          uv sync --locked
           npm ci --prefix web
+          (cd web && npx playwright install --with-deps chromium)
       - name: Run deterministic evidence
         env:
-          GMGN_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
           TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
           TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
         run: |
@@ -156,7 +161,7 @@ jobs:
     name: ci-gate
     needs: [quality, fast, deterministic-full]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every verification job

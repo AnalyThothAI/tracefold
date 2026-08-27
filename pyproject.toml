@@ -67,7 +67,8 @@ markers = [
   "external_codegen: release-only code generation requiring Node dependencies",
   "golden: deterministic corpus checks against real Postgres (lives in tests/golden/)",
   "live: opt-in tests that call external provider APIs",
-  "slow: real-process runtime tests bounded by wall-clock deadlines (excluded from make test)",
+  "scheduled: opt-in production-duration diagnostics excluded from merge evidence",
+  "slow: deterministic process/meta tests using shortened injected deadlines (excluded from make test)",
   "property: bounded Hypothesis properties over pure state and typed boundaries",
 ]
 

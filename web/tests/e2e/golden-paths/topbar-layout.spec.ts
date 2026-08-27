@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@tests/e2e/fixtures";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 import { newsFeedEventFixture, newsFeedFixture } from "@tests/fixtures/newsFixture";
 

@@ -68,7 +68,7 @@ services:
           cpus: "5.0"
 
   rabbitmq:
-    image: rabbitmq:4-management
+    image: rabbitmq:4-management@sha256:06fb591136a49e861e01aaaf9ce45085839ca23c35913d45a1e83519bb9778ca
     restart: unless-stopped
     hostname: tracefold-rabbitmq
     environment:
