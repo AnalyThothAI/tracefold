@@ -470,6 +470,19 @@ class _FirstCaseMissingProviderCostJudge(_StaticJudge):
         )
 
 
+class _MixedCallPricingJudge(_StaticJudge):
+    async def judge(self, context: TriageContext) -> SemanticJudgment:
+        judgment = await super().judge(context)
+        first, second = judgment.trace.calls
+        calls = (first.model_copy(update={"provider_cost_microusd": None}), second)
+        return judgment.model_copy(
+            update={
+                "trace": judgment.trace.model_copy(update={"calls": calls}),
+                "usage": judgment.usage.model_copy(update={"provider_cost_microusd": None}),
+            }
+        )
+
+
 class _SyntheticFallbackJudge(_StaticJudge):
     async def judge(self, context: TriageContext) -> SemanticJudgment:
         judgment = await super().judge(context)
@@ -2831,6 +2844,61 @@ def test_partial_provider_cost_blindness_on_both_arms_still_blocks(conn) -> None
     judges = {
         ("stable", stable.bundle_sha): _FirstCaseMissingProviderCostJudge(stable),
         ("candidate", candidate.candidate_arm.bundle_sha): _FirstCaseMissingProviderCostJudge(
+            candidate.candidate_arm,
+            candidate=True,
+        ),
+    }
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(candidate,),
+    )
+
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    assert "provider_cost_observation_incomplete" in report.evidence["blockers"]
+    assert report.evidence["provider_cost_observation_incomplete_arms"] == ["candidate", "stable"]
+    assert report.evidence["provider_cost_symmetrically_unobservable"] is False
+
+
+def test_mixed_call_pricing_inside_every_observation_still_blocks(conn) -> None:
+    """#292 total blindness is a call-level fact, not an aggregate one.
+
+    Here every observation on both arms is incomplete (an unpriced primary beside a priced fallback), so
+    observation-level accounting alone would read the arms as symmetrically blind. Real prices exist, so
+    the honest verdict is partial observability — the operator should finish pricing the endpoint, not
+    receive an exemption.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    judges = {
+        ("stable", stable.bundle_sha): _MixedCallPricingJudge(stable),
+        ("candidate", candidate.candidate_arm.bundle_sha): _MixedCallPricingJudge(
             candidate.candidate_arm,
             candidate=True,
         ),

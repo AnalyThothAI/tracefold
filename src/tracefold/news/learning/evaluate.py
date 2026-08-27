@@ -1204,8 +1204,11 @@ class CandidateEvaluator:
         candidate_observed_n = 0
         candidate_bad_n = 0
         candidate_schema_errors = 0
-        # [incomplete_n, total_n] per arm; the #292 exemption needs to tell total blindness from partial.
+        # [incomplete_n, total_n] per arm; the #292 exemption needs to tell total blindness from partial,
+        # and total blindness is a call-level fact — one priced fallback inside an otherwise unpriced
+        # observation is still partial pricing.
         provider_cost_obs: dict[str, list[int]] = {"stable": [0, 0], "candidate": [0, 0]}
+        provider_cost_any_priced: dict[str, bool] = {"stable": False, "candidate": False}
         program_call_provenance_incomplete = False
         stability: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
         for item in observations:
@@ -1273,6 +1276,8 @@ class CandidateEvaluator:
                         provider_cost_obs[arm][1] += 1
                         if not _provider_cost_observation_complete(program_obs):
                             provider_cost_obs[arm][0] += 1
+                        if _any_priced_physical_call(program_obs):
+                            provider_cost_any_priced[arm] = True
                     if request.stage in {"offline", "holdout"} and not _program_call_provenance_complete(program_obs):
                         program_call_provenance_incomplete = True
                     if metric["total_tokens"] is not None:
@@ -1318,7 +1323,7 @@ class CandidateEvaluator:
         provider_cost_incomplete_arms = sorted(arm for arm, (inc, _total) in provider_cost_obs.items() if inc)
         provider_cost_symmetrically_unobservable = all(
             total > 0 and inc == total for inc, total in provider_cost_obs.values()
-        )
+        ) and not any(provider_cost_any_priced.values())
         provider_cost_blocked = bool(provider_cost_incomplete_arms) and not provider_cost_symmetrically_unobservable
         if provider_cost_blocked:
             blockers.append("provider_cost_observation_incomplete")
@@ -1766,6 +1771,22 @@ def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "provider_cost_microusd": sum(costs) if len(costs) == len(physical_calls) else None,
     }
+
+
+def _any_priced_physical_call(observation: Mapping[str, Any]) -> bool:
+    """Whether one Program observation carries any priced physical call at all.
+
+    The #292 exemption is for *total* blindness, and observation-level completeness cannot see it: an
+    unpriced primary attempt followed by a priced fallback marks the whole observation incomplete while
+    real prices exist. Total blindness is a property of the calls, not of the aggregates.
+    """
+
+    trace = observation.get("trace") or {}
+    calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
+    return any(
+        isinstance(call, Mapping) and call.get("physical_provider_call") and _call_cost_microusd(dict(call)) is not None
+        for call in calls
+    )
 
 
 def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
