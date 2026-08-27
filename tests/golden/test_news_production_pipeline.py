@@ -31,13 +31,7 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     )
 
     event = _wait_for_event(golden_runtime, title=title)
-    detail = httpx.get(
-        f"{golden_runtime.base_url}/api/news/events/{event['event_id']}",
-        headers=golden_runtime.headers,
-        timeout=5.0,
-    )
-    assert detail.status_code == 200, detail.text
-    data = detail.json()["data"]
+    data = _wait_for_complete_detail(golden_runtime, event_id=event["event_id"])
 
     assert data["event"]["admission"] == "telemetry_deterministic"
     assert data["event"]["published_at_ms"] is not None
@@ -79,3 +73,24 @@ def _wait_for_event(golden_runtime: Any, *, title: str) -> dict[str, Any]:
                     return dict(event)
         time.sleep(0.1)
     raise AssertionError(f"golden Event never reached the HTTP feed: {last_body}")
+
+
+def _wait_for_complete_detail(golden_runtime: Any, *, event_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 30.0
+    last_body = ""
+    while time.monotonic() < deadline:
+        response = httpx.get(
+            f"{golden_runtime.base_url}/api/news/events/{event_id}",
+            headers=golden_runtime.headers,
+            timeout=5.0,
+        )
+        last_body = response.text
+        if response.status_code == 200:
+            data = response.json()["data"]
+            deliveries = data["deliveries"]
+            if data["verdicts"] and deliveries:
+                state = deliveries[0]["state"]
+                if state == "terminal" or (state == "sent" and data.get("reader_receipt") is not None):
+                    return dict(data)
+        time.sleep(0.1)
+    raise AssertionError(f"golden Event detail never reached a terminal delivery: {last_body}")
