@@ -548,6 +548,15 @@ the route components into the eager shell chunk.
   one of two sources points an auditing reader at a response that does not carry
   the figure.
 
+  When the quadrant is 象限不明, the panel names the case's own frozen
+  `contexts.regime.reason`, published beside `pre_move_bps` and
+  `strategy_config` as the projection's third named manifest slice. Not
+  `policy_reason`: that is the strategy's later answer and is null on a Case the
+  strategy went on to trade — which is exactly the traded-with-unclear-quadrant
+  population the smart-money lane creates whenever a move sits between the
+  shared 600 bps ceiling and its own 1000. Reading it there told an operator the
+  ledger had recorded no reason, over a manifest that had recorded one.
+
   The 案例状态 column carries `case_state` for both halves of the batch. Case
   states and order states are disjoint vocabularies, so an order row putting its
   own `CLOSED` there rendered an order fact, in English, under a case heading —

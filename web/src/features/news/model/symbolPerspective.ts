@@ -133,18 +133,10 @@ export function symbolPerspective(
       key: cell.code,
       label: REGIME_ZH[cell.code] ?? cell.label,
     })),
-    quadrantNote: quadrantNote(facts.regime, facts.policyReason),
+    quadrantNote: quadrantNote(facts.regime, facts.regimeReason),
     strategyId: facts.strategyId,
   };
 }
-
-/** The four reasons `regime.assess()` reaches 象限不明 by, keyed exactly as the ledger writes them. */
-const REGIME_UNCLEAR_REASONS = new Set([
-  "move_above_band_chasing",
-  "move_below_band",
-  "no_price_fail_closed",
-  "oi_direction_unknown",
-]);
 
 /**
  * What to say when the lane's regime is not one of the four cells above.
@@ -153,23 +145,29 @@ const REGIME_UNCLEAR_REASONS = new Set([
  * missing price, a move short of the band, a move past it, and an unreadable OI direction. Naming the
  * alignment one for all four contradicted the band card beside it — the smart-money lane leaves the shared
  * band at 600 and still goes long, so `unclear/move_above_band_chasing` sits next to 「落在带内」 routinely.
+ *
+ * The reason is the case's own frozen `contexts.regime.reason`, not `policy_reason`. `policy_reason` is
+ * the *strategy's* later answer and is null on a Case the strategy went on to trade — which is exactly the
+ * traded-with-unclear-quadrant population above — so reading it there said the ledger had recorded no
+ * reason over a manifest that had recorded one.
  */
-function quadrantNote(regime: string | null, policyReason: string | null): string | null {
+function quadrantNote(regime: string | null, regimeReason: string | null): string | null {
   if (regime == null) return "这条案例没有记录象限——判定停在更早的一步。";
   if (QUADRANTS.some((cell) => cell.code === regime)) return null;
   const label = REGIME_ZH[regime] ?? regime;
-  return policyReason != null && REGIME_UNCLEAR_REASONS.has(policyReason)
-    ? `这一帧被判为「${label}」，停在「${policyRuleZh(policyReason)}」——四个象限都不成立。`
-    : `这一帧被判为「${label}」，四个象限都不成立；账本没有记下是哪一条判成这样的。`;
+  // `quadrant` is what `assess()` writes when the regime *is* one of the four, so it explains nothing here.
+  return regimeReason == null || regimeReason === "quadrant"
+    ? `这一帧被判为「${label}」，账本没有发布它的象限原因——四个象限都不成立。`
+    : `这一帧被判为「${label}」，停在「${policyRuleZh(regimeReason)}」——四个象限都不成立。`;
 }
 
 type PerspectiveFacts = {
   config: Record<string, string>;
   /** The frame the ledger published for this case, or `null` when it published none it could join. */
   eventId: string | null;
-  /** The named rule the case stopped on — `null` while it is still PENDING or RUNNING. */
-  policyReason: string | null;
   preMoveBps: number | null;
+  /** Why `assess()` landed on this quadrant, frozen at the cutoff. Never `policy_reason`. */
+  regimeReason: string | null;
   regime: string | null;
   strategyId: string;
 };
@@ -179,9 +177,9 @@ function perspectiveFacts(entry: TradingOiLedgerEntry): PerspectiveFacts {
   return {
     config: value.strategy_config ?? {},
     eventId: value.event_id ?? null,
-    policyReason: value.policy_reason ?? null,
     preMoveBps: value.pre_move_bps ?? null,
     regime: value.regime ?? null,
+    regimeReason: value.regime_reason ?? null,
     strategyId: value.strategy_id,
   };
 }

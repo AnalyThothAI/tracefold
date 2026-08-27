@@ -136,7 +136,8 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="""
                 SELECT o.order_id, o.state, c.trigger_kind, c.strategy_id,
                        (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
-                       c.manifest -> 'strategy_config' AS strategy_config
+                       c.manifest -> 'strategy_config' AS strategy_config,
+                       (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason
                   FROM trading_orders o
                   JOIN trading_cases c ON c.case_id = o.case_id
                  WHERE o.created_at_ms >= %s

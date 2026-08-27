@@ -256,6 +256,9 @@ export function tradingOrderFixture(overrides: Partial<TradingOrder> = {}): Trad
     quantity: "237.6",
     realized_bps: null,
     regime: "buildup_up",
+    // `assess()` writes this when the regime *is* one of the four; the unclear reasons are the ones a
+    // console has to name, and `policy_reason` is null on a Case the strategy went on to trade (#282).
+    regime_reason: "quadrant",
     side: "buy",
     state: "OPEN",
     state_reason: null,
@@ -301,6 +304,7 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
       min_whale_oi_ratio_bps: "5000",
     },
     regime: "buildup_up",
+    regime_reason: "quadrant",
     state: "POLICY_REJECTED",
     underlying_key: "crypto:HYPE",
     ...overrides,

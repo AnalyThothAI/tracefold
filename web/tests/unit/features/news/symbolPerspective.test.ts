@@ -105,6 +105,24 @@ describe("symbolPerspective", () => {
     expect(perspective?.quadrantNote).toContain("四个象限都不成立");
   });
 
+  it("names the frozen regime reason, never the strategy's later answer", () => {
+    /*
+     * The population the smart-money lane creates routinely: it accepts a move between the shared 600 bps
+     * ceiling and its own 1000, so the Case is *traded* — `regime` is `unclear` and `policy_reason` is
+     * null — while `contexts.regime.reason` durably holds `move_above_band_chasing`. Reading
+     * `policy_reason` here told an operator the ledger had recorded no reason, over a manifest that had.
+     */
+    const traded = build({
+      policy_decision: "long",
+      policy_reason: null,
+      regime: "unclear",
+      regime_reason: "move_above_band_chasing",
+    });
+
+    expect(traded.quadrantNote).toContain("追高（走势带外）");
+    expect(traded.quadrantNote).not.toContain("账本没有发布");
+  });
+
   it("measures the frame against the floors the case froze, and calls an absent floor unfrozen", () => {
     const frame = newsOiFrameFixture();
     const perspective = build({}, { ...frame, oi: { ...frame.oi!, whale_oi_ratio_bps: 3869 } });

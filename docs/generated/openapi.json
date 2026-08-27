@@ -4498,6 +4498,17 @@
             ],
             "title": "Regime"
           },
+          "regime_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Reason"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -5873,6 +5884,17 @@
               }
             ],
             "title": "Regime"
+          },
+          "regime_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Reason"
           },
           "side": {
             "enum": [

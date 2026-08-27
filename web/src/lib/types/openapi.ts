@@ -2069,6 +2069,8 @@ export interface components {
             pre_move_bps?: number | null;
             /** Regime */
             regime?: string | null;
+            /** Regime Reason */
+            regime_reason?: string | null;
             /** State */
             state: string;
             /** Strategy Config */
@@ -2564,6 +2566,8 @@ export interface components {
             realized_bps?: number | null;
             /** Regime */
             regime?: string | null;
+            /** Regime Reason */
+            regime_reason?: string | null;
             /**
              * Side
              * @enum {string}
