@@ -1204,7 +1204,11 @@ class CandidateEvaluator:
         candidate_observed_n = 0
         candidate_bad_n = 0
         candidate_schema_errors = 0
-        provider_cost_observation_incomplete = False
+        # [incomplete_n, total_n] per arm; the #292 exemption needs to tell total blindness from partial,
+        # and total blindness is a call-level fact — one priced fallback inside an otherwise unpriced
+        # observation is still partial pricing.
+        provider_cost_obs: dict[str, list[int]] = {"stable": [0, 0], "candidate": [0, 0]}
+        provider_cost_any_priced: dict[str, bool] = {"stable": False, "candidate": False}
         program_call_provenance_incomplete = False
         stability: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
         for item in observations:
@@ -1224,38 +1228,56 @@ class CandidateEvaluator:
                 candidate_observed_n += 1
                 candidate_bad_n += int(bool(candidate_out.get("error_code")) or bool(candidate_out.get("degraded")))
                 candidate_schema_errors += int(str(candidate_out.get("error_code") or "").startswith("schema_invalid"))
-            if stable_out.get("error_code"):
+            stable_errored = bool(stable_out.get("error_code"))
+            candidate_errored = bool(candidate_out.get("error_code"))
+            if stable_errored:
                 stable_errors += 1
-            if candidate_out.get("error_code"):
+            if candidate_errored:
                 candidate_errors += 1
-            if stable_out.get("error_code") and candidate_out.get("error_code"):
-                common_errors += 1
-            elif candidate_out.get("error_code"):
-                candidate_only_errors += 1
-            elif stable_out.get("error_code"):
-                stable_only_errors += 1
-            for output, tokens, calls, trace_entries, costs, latencies in (
-                (
-                    stable_out,
-                    stable_tokens,
-                    stable_calls,
-                    stable_trace_entries,
-                    stable_costs,
-                    stable_latencies,
-                ),
-                (
-                    candidate_out,
-                    candidate_tokens,
-                    candidate_calls,
-                    candidate_trace_entries,
-                    candidate_costs,
-                    candidate_latencies,
-                ),
-            ):
+            # The only/common partition is comparison language, so it speaks for assigned pairs only;
+            # the raw per-arm counts above stay unscoped.
+            if not candidate_out.get("not_assigned"):
+                if stable_errored and candidate_errored:
+                    common_errors += 1
+                elif candidate_errored:
+                    candidate_only_errors += 1
+                elif stable_errored:
+                    stable_only_errors += 1
+            # An errored arm renders no resource evidence, so counting the healthy side alone would
+            # compare a truncated mean against a full one across every resource guardrail below.
+            metric_sources: tuple[
+                tuple[str, Mapping[str, Any], list[int], list[int], list[int], list[int], list[int]], ...
+            ] = ()
+            if not (request.stage in {"offline", "holdout"} and (stable_errored or candidate_errored)):
+                metric_sources = (
+                    (
+                        "stable",
+                        stable_out,
+                        stable_tokens,
+                        stable_calls,
+                        stable_trace_entries,
+                        stable_costs,
+                        stable_latencies,
+                    ),
+                    (
+                        "candidate",
+                        candidate_out,
+                        candidate_tokens,
+                        candidate_calls,
+                        candidate_trace_entries,
+                        candidate_costs,
+                        candidate_latencies,
+                    ),
+                )
+            for arm, output, tokens, calls, trace_entries, costs, latencies in metric_sources:
                 for program_obs in output.get("program") or []:
                     metric = _program_metric(program_obs)
-                    if request.stage in {"offline", "holdout"} and not _provider_cost_observation_complete(program_obs):
-                        provider_cost_observation_incomplete = True
+                    if request.stage in {"offline", "holdout"}:
+                        provider_cost_obs[arm][1] += 1
+                        if not _provider_cost_observation_complete(program_obs):
+                            provider_cost_obs[arm][0] += 1
+                        if _any_priced_physical_call(program_obs):
+                            provider_cost_any_priced[arm] = True
                     if request.stage in {"offline", "holdout"} and not _program_call_provenance_complete(program_obs):
                         program_call_provenance_incomplete = True
                     if metric["total_tokens"] is not None:
@@ -1268,7 +1290,7 @@ class CandidateEvaluator:
                         costs.append(int(metric["provider_cost_microusd"]))
                     if metric["latency_ms"] is not None:
                         latencies.append(int(metric["latency_ms"]))
-            if expected is not None:
+            if expected is not None and not stable_errored:
                 correctness["scored"] += 1
                 correctness["stable"] += bool(stable_out.get("delivered")) == expected
                 correctness["candidate"] += bool(candidate_out.get("delivered")) == expected
@@ -1282,13 +1304,28 @@ class CandidateEvaluator:
             failures.append("must_push_regression")
         if candidate_only_errors and request.stage in {"offline", "holdout"}:
             failures.append("candidate_schema_or_provider_regression")
-        # A stable-arm or common provider failure makes the comparison
-        # unavailable.  It must never become a vacuous PASS just because both
-        # arms failed in the same way.  Candidate-only failures are complete
-        # regression evidence and remain FAIL above.
-        if (stable_only_errors or common_errors) and request.stage in {"offline", "holdout"}:
+        # A stable-arm or common provider failure makes the comparison unavailable for that pair, and a
+        # mass failure must never become a vacuous PASS just because both arms failed the same way. But a
+        # handful of transient failures cannot veto a live corpus-scale comparison either: an errored pair
+        # is excluded from correctness, from every resource-mean guardrail above and from the pairwise
+        # primary below, so the same rate cap that bounds candidate degradation bounds this gap (#294).
+        # Candidate-only failures are complete regression evidence and remain FAIL above.
+        unavailable_execution_rate, execution_unavailability_blocked = stable_or_common_execution_unavailability(
+            stable_only_errors + common_errors, candidate_observed_n
+        )
+        if request.stage in {"offline", "holdout"} and execution_unavailability_blocked:
             blockers.append("stable_or_common_execution_unavailable")
-        if provider_cost_observation_incomplete:
+        # Neither endpoint this deployment runs on reports a resolvable price, and the gate is a delta:
+        # two *totally* blind arms lose no comparative information, and the token guardrail above bounds
+        # the same spend concern (#292). Any partial observability is different — the cost-mean guardrail
+        # would then compare arms over silently different call subsets — so only total symmetric
+        # blindness is exempt.
+        provider_cost_incomplete_arms = sorted(arm for arm, (inc, _total) in provider_cost_obs.items() if inc)
+        provider_cost_symmetrically_unobservable = all(
+            total > 0 and inc == total for inc, total in provider_cost_obs.values()
+        ) and not any(provider_cost_any_priced.values())
+        provider_cost_blocked = bool(provider_cost_incomplete_arms) and not provider_cost_symmetrically_unobservable
+        if provider_cost_blocked:
             blockers.append("provider_cost_observation_incomplete")
         if program_call_provenance_incomplete:
             blockers.append("program_call_provenance_incomplete")
@@ -1405,16 +1442,14 @@ class CandidateEvaluator:
             "common_error_n": common_errors,
             "candidate_only_error_n": candidate_only_errors,
             "stable_only_error_n": stable_only_errors,
+            "stable_or_common_error_rate": unavailable_execution_rate,
             "execution_incomplete": bool(
                 request.stage in {"offline", "holdout"}
-                and (
-                    stable_only_errors
-                    or common_errors
-                    or provider_cost_observation_incomplete
-                    or program_call_provenance_incomplete
-                )
+                and (execution_unavailability_blocked or provider_cost_blocked or program_call_provenance_incomplete)
             ),
-            "provider_cost_observation_complete": not provider_cost_observation_incomplete,
+            "provider_cost_observation_complete": not provider_cost_incomplete_arms,
+            "provider_cost_observation_incomplete_arms": provider_cost_incomplete_arms,
+            "provider_cost_symmetrically_unobservable": provider_cost_symmetrically_unobservable,
             "program_call_provenance_complete": not program_call_provenance_incomplete,
             "stable_mean_total_tokens": statistics.mean(stable_tokens) if stable_tokens else None,
             "candidate_mean_total_tokens": statistics.mean(candidate_tokens) if candidate_tokens else None,
@@ -1455,10 +1490,19 @@ class CandidateEvaluator:
         self, run_sha: str, candidate: CandidateManifest, observations: Sequence[Mapping[str, Any]]
     ) -> dict[str, Any]:
         cluster_values: dict[str, list[int]] = {}
+        # A pair with an errored arm renders a card against an absence: a blind reviewer preferring the
+        # card is reporting the execution failure, not a preference (#294). Such pairs neither count nor
+        # stay planned — a cluster whose only eligible cases errored must not hold resolution hostage.
+        errored_case_ids = {
+            str(item["case_ref"]["case_id"])
+            for item in observations
+            if item["stable"].get("error_code") or item["candidate"].get("error_code")
+        }
         planned_cluster_ids = {
             str(item["case_ref"].get("cluster_id") or item["case_ref"]["case_id"])
             for item in observations
             if bool((item.get("comparison") or {}).get("review_eligible"))
+            and str(item["case_ref"]["case_id"]) not in errored_case_ids
         }
         candidate_critical: dict[str, set[str]] = {}
         stable_critical: dict[str, set[str]] = {}
@@ -1468,7 +1512,7 @@ class CandidateEvaluator:
         for row in pairwise:
             case_id = str(row["pairwise_case_id"]).split(":", 1)[-1]
             pair_item = by_id.get(case_id)
-            if pair_item is None:
+            if pair_item is None or case_id in errored_case_ids:
                 continue
             preference = str((row["payload"] or {}).get("preference") or "uncertain")
             order = pair_item["comparison"]["pair_order"]
@@ -1729,6 +1773,22 @@ def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _any_priced_physical_call(observation: Mapping[str, Any]) -> bool:
+    """Whether one Program observation carries any priced physical call at all.
+
+    The #292 exemption is for *total* blindness, and observation-level completeness cannot see it: an
+    unpriced primary attempt followed by a priced fallback marks the whole observation incomplete while
+    real prices exist. Total blindness is a property of the calls, not of the aggregates.
+    """
+
+    trace = observation.get("trace") or {}
+    calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
+    return any(
+        isinstance(call, Mapping) and call.get("physical_provider_call") and _call_cost_microusd(dict(call)) is not None
+        for call in calls
+    )
+
+
 def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
     usage = dict(observation.get("usage") or {})
     trace = observation.get("trace") or {}
@@ -1802,6 +1862,25 @@ _DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
     ("negative_cluster_n", "negative_clusters_min"),
     ("stratum_n", "strata_min"),
 )
+
+
+def stable_or_common_execution_unavailability(unavailable_n: int, assigned_pair_n: int) -> tuple[float, bool]:
+    """#294: the unavailable-comparison rate and its verdict, from one derivation.
+
+    A stable-arm or common failure removes its pair from every comparison denominator, so a handful of
+    transient ones cannot bias the verdict — but a mass failure is still an evidence gap, never a vacuous
+    PASS. The cap is the same `candidate_degraded_or_error_rate_max` that bounds candidate degradation;
+    a second knob would let the two drift apart while guarding one concern. The denominator is assigned
+    pairs, not raw observations: only an assigned pair can produce the numerator, and shadow-shaped
+    corpora carry unassigned rows that would otherwise dilute the reported rate.
+    """
+
+    if not unavailable_n:
+        return 0.0, False
+    if not assigned_pair_n:
+        return 1.0, True
+    rate = unavailable_n / assigned_pair_n
+    return rate, rate > float(_PROFILE["guardrails"]["candidate_degraded_or_error_rate_max"])
 
 
 def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:

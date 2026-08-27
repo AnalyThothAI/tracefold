@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import pytest
 
@@ -533,3 +534,29 @@ def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "mode
         "editorial": editorial.model_dump(mode="json"),
         "scored_judgment_sha256": scored.scored_judgment_sha256,
     }
+
+
+def test_stable_or_common_execution_blocks_only_past_the_shared_rate_cap() -> None:
+    """#294: a handful of transient stable/common failures cannot veto a corpus-scale live comparison.
+
+    The affected pairs are excluded from every comparison denominator; what must keep blocking is a
+    mass failure, which would otherwise turn into a vacuous PASS. The cap is deliberately the same
+    `candidate_degraded_or_error_rate_max` that bounds candidate degradation — one knob, one concern —
+    so the boundary cases below are derived from the sealed profile value rather than pinned to it.
+    """
+
+    unavailability = candidate_evaluator_module.stable_or_common_execution_unavailability
+    cap = float(_PROFILE["guardrails"]["candidate_degraded_or_error_rate_max"])
+    pair_n = 477
+    at_cap = math.floor(cap * pair_n)  # the largest count whose rate does not exceed the cap
+
+    rate, blocked = unavailability(0, pair_n)
+    assert (rate, blocked) == (0.0, False)
+    rate, blocked = unavailability(at_cap, pair_n)
+    assert not blocked and rate == at_cap / pair_n
+    rate, blocked = unavailability(at_cap + 1, pair_n)
+    assert blocked and rate == (at_cap + 1) / pair_n
+    # every pair failing is exactly the vacuous-PASS shape the blocker exists for
+    assert unavailability(pair_n, pair_n) == (1.0, True)
+    # no assigned pairs at all is an evidence gap, never a pass
+    assert unavailability(1, 0) == (1.0, True)
