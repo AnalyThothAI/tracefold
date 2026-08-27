@@ -16,6 +16,7 @@ browser_data
 data
 logs
 docs
+notebooks
 .worktrees
 **/node_modules
 web/dist

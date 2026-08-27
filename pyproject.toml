@@ -31,6 +31,17 @@ dev = [
     "types-defusedxml>=0.7.0",
     "types-regex>=2024.11.6",
 ]
+# The `notebooks/` research workspace (#274). Not a default group: `uv run`, `make test` and the
+# Docker image never install it, so a Jupyter stack cannot reach a worker, a release path, or the
+# service dependency set. `uv sync --group research` is the one way in.
+research = [
+    "ipykernel>=6.29",
+    "jupyterlab>=4.6",
+    "matplotlib>=3.10",
+    "nbclient>=0.10",
+    "nbconvert>=7.16",
+    "pandas>=2.2",
+]
 
 [project.scripts]
 tracefold = "tracefold.cli:main"
@@ -63,7 +74,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-extend-exclude = ["docs/research/*.ipynb"]
+extend-exclude = ["notebooks/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF", "PERF", "PL"]

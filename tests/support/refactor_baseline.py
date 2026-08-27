@@ -133,9 +133,15 @@ INTENTIONAL_DRIFT: dict[str, tuple[str, Any]] = {
         "issue_202_compiler_image_deleted",
         "e777fbc00a1f67bb2cbc7a3b349171beb2f10a2c3c33c8dd8c18ed3e2188e6cb",
     ),
+    # A dict has one key, so the latest intentional lock change owns it. Two have landed: #276 folded
+    # Hypothesis into the dev group and deleted `requirements/property.lock`, and #274 added the
+    # non-default `research` group behind the `notebooks/` workspace. Both are the lock file only —
+    # no runtime dependency, no Docker layer, no import reachable from `src/`. `uv sync` and `uv run`
+    # install the default groups, so a service, a worker and the image resolve exactly what they
+    # resolved before; `research` has to be asked for by name.
     "infrastructure_and_dependency_sha256.uv.lock": (
-        "issue_276_single_uv_dependency_lock",
-        "16abe63ea0bab001d098d51b0b59f3e5d2017b763bfbf81e0d516e3dc700af48",
+        "issue_276_single_uv_dependency_lock+issue_274_research_dependency_group",
+        "1f69b61696862f1d8c6b9a560a0e8b3fbfb84a9de4f1a66ac2f54bd9ad17e7fc",
     ),
     "news_to_trading.point_in_time_reads.news.generation.learning_epoch": (
         "issue_162_pr8b_program_learning_identity_migration",
