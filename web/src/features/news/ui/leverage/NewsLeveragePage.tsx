@@ -5,7 +5,6 @@ import {
 } from "@features/trading";
 import { newsOiPath, newsSymbolPath, tradingPath } from "@shared/routing/paths";
 import { ActionButton } from "@shared/ui/ActionButton";
-import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -14,7 +13,9 @@ import { useNewsOiFeedWithToken, useNewsQuotesWithToken } from "../../api/newsQu
 import {
   LEVERAGE_TABS,
   leverageCases,
+  leverageFigures,
   leverageFunnel,
+  leverageHorizon,
   leverageListRows,
   leverageTabCount,
   leverageTopReasons,
@@ -106,6 +107,9 @@ export function NewsLeveragePage({ token }: { token: string }) {
   const rows = leverageListRows(visible);
   const funnel = leverageFunnel(statusQuery.data?.counts, cases);
   const reasons = leverageTopReasons(statusQuery.data?.counts);
+  /* The frames, not the cases, answer 数据新鲜: the newest thing the lane was given is what says whether
+     this page is describing now, and a case can outlive the frame that authored it by hours. */
+  const figures = leverageFigures(cases, feedQuery.data?.events ?? [], Date.now());
   // Which collapsed groups the reader opened. Local because it is a disclosure, not a destination: a
   // URL that carried it would make a shared link open someone else's reading of the same list.
   const [expanded, setExpanded] = useState<readonly string[]>([]);
@@ -144,12 +148,21 @@ export function NewsLeveragePage({ token }: { token: string }) {
         subtitle="少而强的案例：方向、依据、失效条件与资本闭环；帧与闸门在 OI 遥测审计"
         title="市场杠杆结构"
       >
-        <MetricRow className="news-leverage-stats" columns={4} label="资本通道当前负载">
-          <Metric eyebrow="活跃案例" value={count(cases, "live")} />
-          <Metric eyebrow="有方向" tone="accent" value={count(cases, "directional")} />
-          <Metric eyebrow="不交易" value={count(cases, "no_trade")} />
-          <Metric eyebrow="已结束" value={count(cases, "done")} />
-        </MetricRow>
+        {/*
+         * The artifact's five title-row figures, as `标签 数字` pairs on the heading's baseline (#280).
+         * A bordered `MetricRow` sat here before and opened the page with a panel that out-weighed the
+         * `h1` beside it; these say the same things at the weight of a caption.
+         */}
+        {/* A `dl`, not a labelled `div`: the artifact draws five bare spans, and a bare span pair is a
+            figure with no accessible relationship to the word beside it. */}
+        <dl aria-label="资本通道当前负载" className="news-leverage-figures">
+          {figures.map((figure) => (
+            <div className="news-leverage-figure" key={figure.key}>
+              <dt>{figure.label}</dt>
+              <dd data-tone={figure.tone === "plain" ? undefined : figure.tone}>{figure.value}</dd>
+            </div>
+          ))}
+        </dl>
       </NewsPageHeader>
 
       <div className="news-leverage-toolbar">
@@ -174,18 +187,15 @@ export function NewsLeveragePage({ token }: { token: string }) {
       </div>
 
       {/*
-       * The lane's own 24 h funnel, and it stays on the page whether or not anything came of it (#269).
-       * On a normal day every tab above reads zero — about 110 frames and one case — and a page that
-       * answered that with a blank panel taught its reader that the console was broken.
+       * The cold load in the shape of the page that is coming (#280): a column of card-height bones beside
+       * a document-height one, on the same two-column track the answer will land on. A single full-width
+       * list skeleton sat here before and promised a page this has never been.
        */}
-      <NewsLeverageFunnel
-        reasons={reasons}
-        steps={funnel}
-        unavailable={statusQuery.isError && !statusQuery.data}
-      />
-
       {loading && !cases.length ? (
-        <PageState.Loading label="正在读取杠杆案例" layout="panel" rows={4} />
+        <div className="news-leverage-body">
+          <PageState.Loading label="正在读取杠杆案例" layout="panel" rows={3} />
+          <PageState.Loading label="正在读取案例明细" layout="panel" rows={7} />
+        </div>
       ) : null}
       {failed ? (
         <PageState.Error
@@ -211,7 +221,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
           hint={
             cases.length
               ? "换一个标签看看：这一格没有案例，不代表通道没有在跑。"
-              : "上面的漏斗是同一段 24 小时：闸门看到了多少帧、卡在哪条规则。0 成案是当前规则的正常输出。"
+              : "下面的漏斗是同一段 24 小时：闸门看到了多少帧、卡在哪条规则。0 成案是当前规则的正常输出。"
           }
           title={cases.length ? `${LEVERAGE_TABS[tab].label}里没有案例` : "24 小时内没有成案"}
         />
@@ -251,12 +261,43 @@ export function NewsLeveragePage({ token }: { token: string }) {
           </section>
           {selected ? (
             <NewsLeverageDetail
+              /* Both from the capital lane's own status read, which this page already makes: the
+                 forced-close window is the mandate's and the permission is the strategy's own. */
+              horizon={leverageHorizon(statusQuery.data?.budget?.max_hold_ms)}
               item={selected}
+              permission={
+                thresholds.strategies.find(
+                  (strategy) => strategy.strategy_id === selected.strategyId,
+                )?.permission ?? null
+              }
               quote={quote?.requested_symbol === selected.base ? quote : undefined}
               symbolHref={newsSymbolPath(selected.base)}
             />
           ) : null}
         </PageState.Stale>
+      ) : null}
+
+      {/*
+       * The lane's own 24 h funnel (#269), and now under the cases rather than over them (#280).
+       *
+       * It exists to answer the day nothing came of it — about a hundred frames and one case is a normal
+       * production day, and a page that met that with a blank panel taught its reader the console was
+       * broken. But it is a description of the *input*, and above the case list it pushed the artifact's
+       * first block off the fold on every other day, which is most of them. Below, it is where a reader
+       * who has finished the list goes to ask "and what about everything that never got here"; on an empty
+       * day it lands directly under the empty state that points at it.
+       *
+       * Present whenever the status read has *answered*, including when it answered with a failure:
+       * 「读取失败」 and 「0 帧」 are different days and only a panel that is present can say which one
+       * this is. Absent until then, because its zeroes would otherwise print 「闸门还没有见过任何来源」
+       * over a request still in flight — which is the same lie in the other direction.
+       */}
+      {statusQuery.data || statusQuery.isError ? (
+        <NewsLeverageFunnel
+          reasons={reasons}
+          steps={funnel}
+          unavailable={statusQuery.isError && !statusQuery.data}
+        />
       ) : null}
 
       <p className="news-leverage-source">

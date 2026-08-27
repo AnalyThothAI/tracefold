@@ -1,21 +1,67 @@
 @layer app.features {
   /*
-   * 杠杆异动 (#256). A list of cases beside one case in full.
+   * 杠杆异动 (#256, geometry re-cut to the v8 artifact in #280). A list of cases beside one case in full.
    *
-   * The measure is deliberately lopsided — the pane is wider than the list — because the list is a set
-   * of five-line summaries and the pane is a document. Colour follows the console's two axes: 做多 red
-   * and 做空 green, everything the pipeline decided on indigo / amber / grey, and no third hue.
+   * The measure is deliberately lopsided — the pane is far wider than the list — because the list is a set
+   * of five-line summaries and the pane is a document. It was `1fr / 1.22fr` until #280 measured the
+   * artifact and found `336px / 856px`: two nearly equal columns read as a comparison of two things, which
+   * is not what this page is. Colour follows the console's two axes: 做多 red and 做空 green, everything
+   * the pipeline decided on indigo / amber / grey, and no third hue.
    *
    * The card and the pane own their own sheets beside their own components; this one owns the page.
    */
-  .news-leverage-shell {
+  .news-panel.news-leverage-shell {
     display: grid;
     gap: 12px;
     align-content: start;
+    /* The artifact gives this page and the OI audit 1360px, twenty more than the reading surfaces: both
+       carry a wide right-hand region that a narrower measure starts truncating first. */
+    max-width: 1360px;
   }
 
-  .news-leverage-stats {
-    min-width: 320px;
+  /* The artifact's title-row figures: `标签 数字` pairs on the heading's own baseline, not a bordered
+     tile band. A panel here would out-weigh the `h1` beside it and open the page with furniture. */
+  .news-leverage-figures {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 14px;
+    align-items: baseline;
+    margin: 0;
+  }
+
+  .news-leverage-figure {
+    display: flex;
+    gap: 5px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+
+  .news-leverage-figure dt {
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .news-leverage-figure dd {
+    margin: 0;
+    color: var(--text-primary);
+    font: 640 var(--font-size-meta)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-leverage-figure dd[data-tone="accent"] {
+    color: var(--accent-primary);
+  }
+
+  .news-leverage-figure dd[data-tone="caution"] {
+    color: var(--signal-caution);
+  }
+
+  .news-leverage-figure dd[data-tone="alert"] {
+    color: var(--signal-alert);
+  }
+
+  .news-leverage-figure dd[data-tone="quiet"] {
+    color: var(--text-subtle);
   }
 
   .news-leverage-toolbar {
@@ -33,27 +79,47 @@
 
   .news-leverage-body {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.22fr);
+    grid-template-columns: minmax(288px, 336px) minmax(0, 1fr);
     gap: 12px;
     align-items: start;
   }
 
+  /*
+   * The list scrolls inside itself and the pane scrolls the page, as the artifact draws it. Twelve pixels
+   * below the frame's own topbar, which is where the route's scrollport begins — this is not the
+   * artifact's `top:66px` because that measures from the window and this measures from the scrollport, and
+   * 66 − 54 is the same twelve.
+   */
   .news-leverage-list {
+    position: sticky;
+    top: 12px;
     display: grid;
-    gap: 10px;
+    gap: 8px;
     align-content: start;
     min-width: 0;
+    max-height: calc(100dvh - var(--shell-topbar-height) - 28px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-bottom: 2px;
   }
 
   /* The pane cannot hold a document beside a list below this; the list becomes the page and the pane
-     follows it, which is also what a tablet in portrait wants. */
+     follows it, which is also what a tablet in portrait wants. A sticky, self-scrolling column would then
+     be a second scrollport stacked on the page's own, so it stops being one. */
   @media (max-width: 1279px) {
     .news-leverage-body {
       grid-template-columns: minmax(0, 1fr);
     }
 
+    .news-leverage-list {
+      position: static;
+      max-height: none;
+      overflow-y: visible;
+    }
+
     .news-leverage-thesis,
-    .news-leverage-columns {
+    .news-leverage-columns,
+    .news-leverage-detail .news-technical > div {
       grid-template-columns: minmax(0, 1fr);
     }
   }

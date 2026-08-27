@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
-export type AppNavigationCounts = { events?: number; oiFrames?: number };
+export type AppNavigationCounts = { cases?: number; events?: number; oiFrames?: number };
 /**
  * The words a destination can carry instead of a number (#207 PR-W4). `tradingMode` is the capital
  * lane's ledger mode — `PAPER` today — because "is anything on that page real money" is the question a
@@ -127,7 +127,7 @@ function AppSidebarItem({
        * announced properly by the feed's labelled 24 h funnel and by the OI monitor's own telemetry band.
        */}
       {count == null ? null : (
-        <span aria-hidden className="cockpit-app-sidebar-count" title="过去 24 小时收到">
+        <span aria-hidden className="cockpit-app-sidebar-count" title={item.countTitle}>
           {compactCount(count)}
         </span>
       )}

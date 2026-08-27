@@ -89,6 +89,13 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
           ? Boolean(token)
           : false,
       navCounts: {
+        /*
+         * The capital lane's own 24 h cases, from the same `/api/trading/status` this shell already reads
+         * for the `PAPER` badge. Every state counts: `POLICY_REJECTED` is a case the lane authored and
+         * refused, and it is most of a normal day — a slot that counted only the ones that reached an order
+         * would read `0` on a lane that decided ninety-seven times.
+         */
+        cases: sumCounts(tradingStatusQuery.data?.counts?.cases_by_state),
         events: newsStatusQuery.data?.funnel_24h?.received,
         // #207: the deterministic OI lane's own 24 h intake, the same figure the monitor's telemetry band
         // leads with. Received, not pushed — the destination is the whole lane, not its output.
@@ -212,6 +219,17 @@ function oiDailyFigure(
         }
       : {}),
   };
+}
+
+/**
+ * A grouped count collapsed to one figure, or `undefined` when the read has not answered.
+ *
+ * `undefined` rather than `0`: the sidebar hides an absent count and would otherwise print a zero that
+ * means "not loaded yet" beside a lane that is running.
+ */
+function sumCounts(counts: Record<string, number> | undefined): number | undefined {
+  if (!counts) return undefined;
+  return Object.values(counts).reduce((total, value) => total + value, 0);
 }
 
 function loadedDuration(value: number | null | undefined): string | undefined {

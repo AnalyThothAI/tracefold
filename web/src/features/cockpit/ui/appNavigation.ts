@@ -12,7 +12,9 @@ export type AppNavigationItem = {
   badge?: "tradingMode";
   children?: AppNavigationItem[];
   /** Which count from `AppNavigationCounts` this destination shows, if any. */
-  count?: "events" | "oiFrames";
+  count?: "cases" | "events" | "oiFrames";
+  /** What the count is counting, as the link's own tooltip. Every destination counts a different thing. */
+  countTitle?: string;
   icon: LucideIcon;
   /** Whether the current path belongs to this destination. Event detail belongs to the feed, not to itself. */
   isActive: (pathname: string) => boolean;
@@ -54,6 +56,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
     items: [
       {
         count: "events",
+        countTitle: "过去 24 小时收到",
         icon: EventStreamIcon,
         isActive: (pathname) => pathname === "/news" || pathname.startsWith("/news/events"),
         label: "事件流",
@@ -61,10 +64,16 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       },
       {
         /*
-         * No count. The artifact shows one, and the honest figure behind it — how many cases are live right
-         * now — is not in any read the frame already makes; adding a fourth poll to decorate a link is the
-         * wrong trade. The page leads with the same four figures in a labelled row.
+         * The capital lane's own 24 h case count, from `counts.cases_by_state` on the `/api/trading/status`
+         * the frame is already reading for the `PAPER` badge. It was left blank when the slot landed on the
+         * theory that the honest figure needed a fourth poll; it does not, and an empty right edge beside
+         * three numbered siblings reads as "nothing came through here" rather than as "not counted".
+         *
+         * Cases, not frames: the destination is what the lane decided, and the frame population is the OI
+         * audit's own count one group below.
          */
+        count: "cases",
+        countTitle: "过去 24 小时成案",
         icon: LeverageGaugeIcon,
         isActive: (pathname) => pathname === "/news/leverage",
         label: "杠杆异动",
@@ -84,6 +93,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
     items: [
       {
         count: "oiFrames",
+        countTitle: "过去 24 小时收到",
         icon: TelemetryPulseIcon,
         isActive: (pathname) => pathname === "/news/oi",
         label: "OI 遥测审计",

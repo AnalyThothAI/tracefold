@@ -269,11 +269,25 @@ export function policyRuleZh(value: string | null | undefined): string {
       strategy_permission: "策略权限不允许",
       move_below_band: "帧前走势未达带",
       no_price_fail_closed: "帧前价格缺失",
+      not_oi_rise: "持仓不是上升",
       oi_context_missing: "OI 上下文缺失",
       oi_direction_unknown: "OI 方向未知",
       oi_value_below_floor: "OI 规模未达地板",
+      price_direction_not_confirmed: "价格方向未确认",
       regime_no_side: "市场状态无方向",
       short_disabled_long_only: "方向非只多",
+      /*
+       * The smart-money family (#264/#265/#273). It reached this map late and until then every compact
+       * cell on the console printed `smart_money_ratio_below_or_equal_floor` verbatim — which is most of
+       * a production day's rows, so the two surfaces that use short labels were effectively untranslated.
+       * `tradingReadout` writes the long sentence with the measurement in it; this is the same rule at
+       * label length, and it is the only other place the vocabulary is allowed to live.
+       */
+      smart_money_momentum_long: "四项条件全过",
+      smart_money_oi_change_below_floor: "持仓增幅未达地板",
+      smart_money_profit_not_positive: "大户盈利不为正",
+      smart_money_ratio_below_or_equal_floor: "大户占比未过地板",
+      source_window_mismatch: "窗口口径不符",
       strategy_permission_shadow_or_paper: "策略权限不允许",
       whale_long_profit_below_floor: "鲸盈利未达地板",
       // Older fixtures/ledgers used the shorter spelling; keep its meaning without changing the raw trace.

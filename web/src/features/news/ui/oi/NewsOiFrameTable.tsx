@@ -118,7 +118,7 @@ export function NewsOiFrameTable({
             <span className="news-oi-num">窗口</span>
             <span>研究分桶</span>
             <span>判定</span>
-            <span className="news-oi-num news-oi-reaction-head">1H / 4H</span>
+            <span className="news-oi-num">1H / 4H</span>
             <span className="news-oi-trading-head">交易 · OI_ONLY</span>
           </div>
           {rows.map((event) => (
@@ -237,10 +237,13 @@ function FrameRow({
           <NewsOutcomeBadge outcome={event.outcome} />
           {oi?.rule ? <code title={oiRuleLabel(oi.rule)}>{oi.rule}</code> : null}
         </span>
+        {/* One cell, both horizons. They are one reading of the same frame at two distances, and a column
+            each let the row spend 132px saying so. */}
         <span className="news-oi-num news-oi-reaction">
           <ReactionValue event={event} horizon="1h" />
-        </span>
-        <span className="news-oi-num news-oi-reaction">
+          <span aria-hidden className="news-oi-reaction-slash">
+            /
+          </span>
           <ReactionValue event={event} horizon="4h" />
         </span>
         <TradingCell lookup={tradingLookup} />
@@ -260,7 +263,9 @@ function TradingCell({ lookup }: { lookup: TradingOiLookup }) {
   const copy = tradingOiCellCopy(lookup);
   return (
     <span className="news-oi-trading-cell" title={copy.title}>
-      {copy.secondary ? <small>{copy.secondary}</small> : null}
+      {/* The lane's own quadrant, from `regime` on the case — not a pre-frame price this page does not
+          have. It leads the cell because it is the first gate the decision beside it went through. */}
+      {copy.secondary ? <span className="news-oi-quadrant">{copy.secondary}</span> : null}
       <b>{copy.primary}</b>
     </span>
   );

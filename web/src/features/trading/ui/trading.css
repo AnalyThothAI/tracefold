@@ -83,23 +83,28 @@
     overflow-x: auto;
   }
 
+  /*
+   * The artifact's tracks (#280). Both tables were cut narrower than it draws them, on the theory that a
+   * narrower table scrolls less; what they actually did was ellipsise the two columns that carry the
+   * page's whole claim — the order state and the sentence beside it — while leaving the scroll in place.
+   */
   .trading-exposure-head,
   .trading-exposure-row {
     display: grid;
-    grid-template-columns: 86px 66px 130px 130px 100px 82px minmax(170px, 1fr) 76px;
+    grid-template-columns: 96px 74px 150px 168px 128px 118px minmax(180px, 1fr) 96px;
     gap: 10px;
     align-items: center;
-    min-width: 930px;
+    min-width: 1080px;
     padding: 0 14px;
   }
 
   .trading-closed-head,
   .trading-closed-row {
     display: grid;
-    grid-template-columns: 60px 62px 104px minmax(90px, 1fr) 58px 68px;
-    gap: 8px;
+    grid-template-columns: 96px 74px 140px minmax(150px, 1fr) 118px 84px;
+    gap: 10px;
     align-items: center;
-    min-width: 520px;
+    min-width: 700px;
     padding: 0 14px;
   }
 
