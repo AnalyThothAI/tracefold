@@ -1,7 +1,7 @@
 """Regenerate the sole packaged stable Program strategy artifact.
 
-The binary has exactly one executable factory. Cross-generation rollback images are deployment artifacts
-built outside this registry; this tool never creates a second runtime-loadable profile.
+The binary has exactly one executable factory and no second runtime-loadable
+profile.
 """
 
 from __future__ import annotations
