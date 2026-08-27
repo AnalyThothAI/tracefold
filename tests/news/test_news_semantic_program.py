@@ -45,6 +45,7 @@ from tracefold.news.program.contracts import (
 )
 from tracefold.news.program.dspy_adapter import (
     DspyPredictorAdapter,
+    DspyStrictJSONAdapter,
     PredictorAdapterError,
     PredictorRequest,
     PredictorResponse,
@@ -63,6 +64,38 @@ from tracefold.news.program.signatures import (
     ReaderCard,
 )
 from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+
+
+class _ReaderCardAdapterSignature(dspy.Signature):  # type: ignore[misc]
+    evidence_json: str = dspy.InputField()
+    card: ReaderCard = dspy.OutputField()
+
+
+def test_strict_json_adapter_accepts_exact_bare_single_model_output() -> None:
+    parsed = DspyStrictJSONAdapter(use_native_function_calling=False).parse(
+        _ReaderCardAdapterSignature,
+        '{"headline_zh":"纽交所出现卖盘失衡","why_zh":"卖单超过买单，开盘撮合价格承压。"}',
+    )
+
+    assert parsed == {"card": ReaderCard(headline_zh="纽交所出现卖盘失衡", why_zh="卖单超过买单，开盘撮合价格承压。")}
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        '{"why_zh":"卖单超过买单。"}',
+        '{"headline_zh":"纽交所出现卖盘失衡","why_zh":"卖单超过买单。","extra":"forbidden"}',
+        'commentary {"headline_zh":"纽交所出现卖盘失衡","why_zh":"卖单超过买单。"}',
+    ],
+)
+def test_strict_json_adapter_rejects_incomplete_extra_or_prose_bare_output(completion: str) -> None:
+    from dspy.utils.exceptions import AdapterParseError
+
+    with pytest.raises(AdapterParseError):
+        DspyStrictJSONAdapter(use_native_function_calling=False).parse(
+            _ReaderCardAdapterSignature,
+            completion,
+        )
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:

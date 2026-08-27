@@ -12,6 +12,7 @@ in `tracefold.news.program` is a failure, not a style preference.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -306,6 +307,34 @@ class PredictorAdapter(Protocol):
 
 class DspyStrictJSONAdapter(dspy.JSONAdapter):  # type: ignore[misc]
     """DSPy JSON Adapter with one format and no implicit format fallback."""
+
+    def parse(self, signature: type[dspy.Signature], completion: str) -> dict[str, Any]:
+        try:
+            return cast(dict[str, Any], super().parse(signature, completion))
+        except AdapterParseError as original:
+            # Some OpenAI-compatible providers intermittently follow the nested Pydantic schema itself and
+            # omit DSPy's synthetic single-output envelope.  Accept only that exact, unambiguous shape: one
+            # output field, a Pydantic model annotation, pure JSON, and full model validation (including the
+            # model's extra-field prohibition).  Wrapped-but-invalid, multi-output and prose responses remain
+            # failures so this does not weaken the Program's structured-output trust boundary.
+            output_fields = signature.output_fields
+            if len(output_fields) != 1:
+                raise original
+            output_name, output_field = next(iter(output_fields.items()))
+            annotation = output_field.annotation
+            if not isinstance(annotation, type) or not issubclass(annotation, BaseModel):
+                raise original
+            try:
+                bare = json.loads(completion)
+            except (TypeError, ValueError):
+                raise original from None
+            if not isinstance(bare, dict) or output_name in bare:
+                raise original
+            try:
+                value = annotation.model_validate(bare)
+            except ValidationError:
+                raise original from None
+            return {output_name: value}
 
     def __call__(
         self,
