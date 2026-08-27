@@ -121,6 +121,13 @@ describe("symbolPerspective", () => {
     expect(unmeasured().floorsNote).toContain("地板比不了");
     // And a case whose frame is not on this page is a third answer again — not an unmeasured frame.
     expect(symbolPerspective(undefined, entryOf())?.floorsNote).toContain("不在下面这段窗口里");
+    /*
+     * A case the deterministic OI trigger did not author publishes no joinable `event_id` at all — the
+     * common shape, per `tradingLedgerEntries`. Naming a frame that is "not on this page" would invent one.
+     */
+    expect(symbolPerspective(undefined, entryOf({ event_id: null }))?.floorsNote).toContain(
+      "没有发布可连的 event_id",
+    );
   });
 
   it("has no band when the case froze no price thresholds", () => {

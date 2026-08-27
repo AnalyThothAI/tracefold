@@ -60,8 +60,15 @@ export type SymbolFloorRow = {
   verdict: "pass" | "fail" | "unmeasured" | "unset";
 };
 
-/** Why the floor table has nothing to compare, when it has nothing. */
-type FloorSource = "read" | "not-a-frame" | "unloaded";
+/**
+ * Why the floor table has nothing to compare, when it has nothing.
+ *
+ * Four reasons, and they are not interchangeable. `no-join` is the common one: the server recovers a case's
+ * `event_id` only when its source key round-trips as the deterministic OI contract, so a news- or
+ * liquidation-triggered case publishes none by design. Saying 「那一帧不在这页里」 over one of those invents
+ * a frame that was never named.
+ */
+type FloorSource = "read" | "not-a-frame" | "no-join" | "unloaded";
 
 export type SymbolPerspective = {
   band: SymbolBand | null;
@@ -106,10 +113,7 @@ export function symbolPerspective(
   return {
     band: bandOf(facts.config, facts.preMoveBps),
     floors,
-    floorsNote: floorsNote(
-      floors,
-      frame == null ? "unloaded" : oi == null ? "not-a-frame" : "read",
-    ),
+    floorsNote: floorsNote(floors, floorSource(frame, facts.eventId)),
     frameAtMs: frame?.opened_at_ms ?? null,
     quadrants: QUADRANTS.map((cell) => ({
       active: cell.code === facts.regime,
@@ -132,6 +136,8 @@ function quadrantNote(regime: string | null): string | null {
 
 type PerspectiveFacts = {
   config: Record<string, string>;
+  /** The frame the ledger published for this case, or `null` when it published none it could join. */
+  eventId: string | null;
   preMoveBps: number | null;
   regime: string | null;
   strategyId: string;
@@ -141,6 +147,7 @@ function perspectiveFacts(entry: TradingOiLedgerEntry): PerspectiveFacts {
   const value = entry.value;
   return {
     config: value.strategy_config ?? {},
+    eventId: value.event_id ?? null,
     preMoveBps: value.pre_move_bps ?? null,
     regime: value.regime ?? null,
     strategyId: value.strategy_id,
@@ -267,13 +274,19 @@ function floorRows(
   ];
 }
 
+/** Which of the four reasons applies, from the two facts that decide it. */
+function floorSource(frame: NewsFeedEvent | undefined, eventId: string | null): FloorSource {
+  if (frame != null) return frame.oi == null ? "not-a-frame" : "read";
+  return eventId == null ? "no-join" : "unloaded";
+}
+
 /**
  * What the floor table adds up to.
  *
  * Derived rather than written down, because 「一条都不过」 is itself a measurement. The card printed that
  * sentence under four rows whose measurements had never been read, which announces a verdict the frame
- * never received — and it is the state the console lands in most often, since a case can be older than
- * the page of Events loaded beneath it.
+ * never received — and having nothing to compare is the state the console lands in most often, since most
+ * cases publish no joinable `event_id` at all.
  */
 function floorsNote(rows: SymbolFloorRow[], source: FloorSource): string {
   const compared = rows.filter((row) => row.verdict === "pass" || row.verdict === "fail");
@@ -289,6 +302,8 @@ function floorsNote(rows: SymbolFloorRow[], source: FloorSource): string {
 }
 
 const UNCOMPARED_ZH: Record<FloorSource, string> = {
+  "no-join":
+    "这条案例不是确定性 OI 帧开出的，账本没有发布可连的 event_id——测量值无从取，地板比不了。",
   "not-a-frame": "开出这条案例的不是一条 OI 帧，这三项测量值它没有——地板比不了，不是没过。",
   read: "这一帧没有留下这三项测量值——地板比不了，不是没过。",
   unloaded: "开出这条案例的那一帧不在下面这段窗口里，测量值取不到——地板是案上冻结的，比不了。",

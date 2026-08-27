@@ -113,10 +113,13 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   const newestCase = [...ledger.values()].sort(
     (a, b) => caseObservedAtMs(b) - caseObservedAtMs(a),
   )[0];
+  /*
+   * Only when the case named a frame. `event_id` is null by design for a case the deterministic OI trigger
+   * did not author, and `=== ""` would have matched any row that carried an empty id rather than none.
+   */
+  const caseEventId = newestCase?.value.event_id ?? null;
   const perspective = symbolPerspective(
-    newestCase == null
-      ? undefined
-      : rows.find((row) => row.event_id === (newestCase.value.event_id ?? "")),
+    caseEventId == null ? undefined : rows.find((row) => row.event_id === caseEventId),
     newestCase,
   );
 

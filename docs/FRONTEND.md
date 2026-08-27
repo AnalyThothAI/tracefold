@@ -493,11 +493,13 @@ the route components into the eager shell chunk.
   attached by the `event_id` the ledger itself published — never by symbol and
   time, the join the OI audit refuses to guess at.
 
-  Each of the window's three numbers is printed once, in the identity band the
-  artifact puts them in: 24H 事件 and 已推送 have no second copy in the page
-  header, and the OI window figure has none in the rank card below, which is
-  left carrying the consequence — a full window withholds this name's next
-  qualifying frame — because that is what no tile can hold.
+  Each of the band's three figures is printed once, where the artifact puts
+  them: 24H 事件 and 已推送 have no second copy in the page header, and the OI
+  window figure has none in the rank card below, which is left carrying the
+  consequence — a full window withholds this name's next qualifying frame —
+  because that is what no tile can hold. The 结果 column keeps the ledger's bps
+  rather than the artifact's percent, so one field reads the same on this page
+  and on the Trading workbench.
 
   Every threshold in both sections is the case's own frozen one. The artifact
   hard-codes a 1–6% band and calls the window 「帧前 1H」; those were the numbers

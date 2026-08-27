@@ -222,7 +222,11 @@ export function caseClock(value: number | null | undefined): string {
   return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
-/** `+2.12%` / `−34 bps` — a realised result in the unit the ledger measured it in. */
+/*
+ * `+212 bps` / `−34 bps` — a realised result in the unit the ledger measured it in, which is also the unit
+ * 今日已了结 prints on the Trading workbench. The artifact draws this column as `+2.12%`; one console-wide
+ * unit for the same field is worth more here than following the drawing.
+ */
 export function realizedLabel(bps: number | null | undefined): string {
   if (bps == null) return "—";
   const sign = bps > 0 ? "+" : bps < 0 ? "−" : "";
