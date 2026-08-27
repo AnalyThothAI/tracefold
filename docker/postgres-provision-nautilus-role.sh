@@ -38,8 +38,9 @@ esac
 
 # This is deliberately one role, not a general administrator surface. The command must run with
 # PostgreSQL stopped and under the image's OS `postgres` user. Single-user mode supplies the local
-# bootstrap authority without creating a network-login superuser or putting the password in argv.
-if ! postgres --single -D "$pgdata_path" "$database_name" >/dev/null 2>&1 <<-EOSQL
+# bootstrap authority without creating a network-login superuser or putting the password in argv;
+# `-j` keeps the multiline SQL batch as one input unit.
+if ! postgres --single -j -D "$pgdata_path" "$database_name" >/dev/null 2>&1 <<-EOSQL
 	DO \$role\$
 	BEGIN
 	  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_nautilus') THEN
