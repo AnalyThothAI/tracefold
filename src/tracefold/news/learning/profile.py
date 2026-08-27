@@ -27,7 +27,7 @@ from typing import Any
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID
 
-EVALUATOR_VERSION = "news_candidate_evaluator_v1"
+EVALUATOR_VERSION = "news_candidate_evaluator_v2"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
