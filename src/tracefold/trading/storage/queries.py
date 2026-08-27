@@ -338,6 +338,9 @@ class QueryStorage:
             SELECT c.case_id, c.underlying_key, c.primary_source_key,
                    c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.mode, c.state, c.regime,
+                   -- Same column, same reason, both projections: `_case()` is shared, so a field
+                   -- present on one route and structurally null on the other is a half-truth (#273).
+                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms,
                    o.order_id, o.state AS order_state, o.state_reason AS order_state_reason,
                    o.side, o.notional_usd, o.entry_reference, o.stop_price, o.exit_price,
@@ -371,6 +374,11 @@ class QueryStorage:
             SELECT c.case_id, c.underlying_key, c.primary_source_key,
                    c.trigger_kind, c.strategy_id, c.strategy_version,
                    c.mode, c.state, c.regime,
+                   -- The one frozen number the two price rules are about (#273). Read out of the
+                   -- manifest rather than recomputed: a console that rebuilds a pre-move from
+                   -- today's candles is describing a different measurement from the one the case
+                   -- was decided by. Every writer stores it as a JSON integer, so the cast is total.
+                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
                    c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms
               FROM trading_cases c
              WHERE {" AND ".join(where)}

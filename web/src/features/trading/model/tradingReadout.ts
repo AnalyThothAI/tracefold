@@ -97,6 +97,13 @@ export function refusalOf(
     preMoveBps?: number | null;
   },
 ): Refusal {
+  if (reason == null || reason === "") {
+    // A case still `PENDING`/`RUNNING` is inserted with no policy columns at all, and the shared
+    // `policyRuleZh` answers a null with the literal 交易地板. Printing that under 离下一单还差什么
+    // would state a floor as *the* reason a case has no order, for a case no strategy has looked at
+    // yet — an invented refusal, which is worse than an absent one.
+    return { measured: null, sentence: "尚未判定", threshold: null };
+  }
   const window = windowLabel(numbers.measurementWindowMs);
   const oiChange = evidence?.oi_change_bps ?? null;
   const ratio = evidence?.whale_oi_ratio_bps ?? null;
@@ -195,11 +202,18 @@ export type LaneCounts = {
  * on when the *frame* was observed, a case on when it was *created* — and mixing them drew 策略放行 as
  * a larger number than the 建成案例 above it, a funnel disproving itself on screen.
  *
- * One seam remains and it closes itself: `seen` counts the OI lane, because the gate ledger's read
- * model is OI by construction, while the case levels count every trigger kind. Since #273 a News
- * trigger no longer freezes a case at all, so the two populations are the same one — but for the
- * first window after that deploy, cases created under the old behaviour are still inside 24 h and
- * `建成案例` reads high by however many of them there were.
+ * What that buys is that the *same quantity* is never counted two ways. What it does not buy is a
+ * guaranteed subset relation, and this is deliberately not claimed anywhere the reader can see: the
+ * three ledgers are each bounded on their own timestamp, so an order created just inside the window
+ * from a case created just outside it lands in `submitted` without its case in `allowed`. At a
+ * 24-hour boundary a lower level can therefore read higher than the one above it. Clamping would be
+ * the console inventing a number to protect a shape; the counts stay exact.
+ *
+ * A second seam closes itself: `seen` counts the OI lane, because the gate ledger's read model is OI
+ * by construction, while the case levels count every trigger kind. Since #273 a News trigger no
+ * longer freezes a case at all, so the two populations are the same one — but for the first window
+ * after that deploy, cases created under the old behaviour are still inside 24 h and `建成案例`
+ * reads high by however many of them there were.
  */
 export function laneCounts(counts: TradingCounts): LaneCounts {
   const admission = counts.candidate_counts_24h ?? {};

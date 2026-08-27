@@ -1360,6 +1360,29 @@ def test_an_oi_fact_a_news_trigger_took_as_context_still_gets_its_own_admission_
     assert decision["retryable"] is True
 
 
+def test_the_console_reads_the_frozen_pre_move_out_of_a_real_manifest(conn) -> None:
+    """#273: the two price rules can only state their own number if the projection carries it.
+
+    Against the real SELECT, not a hand-built row. The column is a JSON path plus an `::int` cast, and
+    a fake repository returning a dict would prove nothing about either — a manifest shape that made
+    the cast fail, or a key that was never there, both look like a passing test and a 500 in
+    production. The console contract test above uses a fake on purpose; this is its counterweight.
+    """
+
+    _seed_oi_event(conn, event_id="oi-ctx", symbol="DOGE", observed_at_ms=NOW - 2 * MINUTE, venue="binance")
+    _seed_oi_event(conn, event_id="news-win", symbol="DOGE", observed_at_ms=NOW - MINUTE, venue="binance")
+    _promote_to_model_projection(conn, event_id="news-win", symbol="DOGE")
+
+    assert asyncio.run(_runner(conn, adapter=PaperAdapter(), now=NOW).turn())["created"] == 1
+    frozen = _repos(conn).trading.cases()[0]["manifest"]["contexts"]["market"]["pre_move_bps"]
+
+    rows = _repos(conn).trading.console_cases_without_orders(since_ms=NOW - 60 * MINUTE)
+    assert len(rows) == 1
+    # The same number the strategy was handed, not one recomputed from today's candles.
+    assert rows[0]["pre_move_bps"] == frozen
+    assert isinstance(rows[0]["pre_move_bps"], int)
+
+
 def test_a_news_trigger_cannot_ground_a_case_on_a_frame_the_liquidity_floor_excludes(conn) -> None:
     """#264 gave the floor one owner; it still has to bind the frames a News trigger attaches.
 

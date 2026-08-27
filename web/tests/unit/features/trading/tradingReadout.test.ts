@@ -112,7 +112,9 @@ describe("refusalOf", () => {
 
   it("falls back to the shared vocabulary for a rule it has not learned, and never throws", () => {
     expect(refusalOf("some_future_rule", { numbers: NUMBERS }).sentence).toBe("some_future_rule");
-    expect(refusalOf(null, { numbers: NUMBERS }).sentence).toBe("交易地板");
+    expect(refusalOf("regime_no_entry:deleveraging", { numbers: NUMBERS }).sentence).toBe(
+      "减仓无可跟",
+    );
     expect(refusalOf("oi_context_missing", { numbers: NUMBERS }).sentence).toBe(
       "新闻旁没有同标的的持仓数据",
     );
@@ -197,15 +199,34 @@ describe("funnelLevels", () => {
     expect(levels[2].note).toBeNull();
   });
 
-  it("never draws a level larger than the one above it", () => {
-    // The defect this guards: 建成案例 came off the gate ledger's `CASE_CREATED` while 策略放行 came
-    // off the case table, so the funnel rendered 1 above 3 — a shape that disproves itself and is
-    // exactly the kind of thing a reader concludes the whole page is wrong from.
-    const levels = funnelLevels(tradingStatusFixture().counts as TradingCounts);
-    const values = levels.map((level) => level.value);
-    expect(values).toEqual([...values].sort((left, right) => right - left));
+  it("counts 建成案例 off the case table, the same ledger 策略放行 comes from", () => {
+    /*
+     * The defect this guards: 建成案例 came off the gate ledger's `CASE_CREATED` while 策略放行 came
+     * off the case table — the same quantity counted two ways, on two clocks — so the funnel rendered
+     * 1 above 3, a shape that disproves itself.
+     *
+     * Note what is *not* asserted: monotonicity. The three ledgers are each bounded on their own
+     * timestamp, so at a window boundary an order can be inside while its case is outside. The fix is
+     * one derivation per quantity, not a clamp — a clamp would make this test pass by making the page
+     * lie.
+     */
+    const counts = {
+      ...tradingStatusFixture().counts,
+      candidate_counts_24h: { CASE_CREATED: 1, REJECTED: 90 },
+      cases_by_state: { ORDER_PREPARED: 3, POLICY_REJECTED: 6 },
+      policy_allowed_24h: 3,
+    } as TradingCounts;
+    const levels = funnelLevels(counts);
+    expect([levels[1].value, levels[2].value]).toEqual([9, 3]);
     // And both panels derive from one place, so the headline cannot disagree with the ladder.
-    expect(laneCounts(tradingStatusFixture().counts as TradingCounts).cased).toBe(values[1]);
+    expect(laneCounts(counts).cased).toBe(levels[1].value);
+  });
+
+  it("says a case nobody has judged yet is unjudged, rather than naming a floor", () => {
+    // `PENDING`/`RUNNING` cases carry no policy columns; the shared vocabulary answers a null with
+    // 交易地板, which under 离下一单还差什么 reads as the reason this case has no order.
+    expect(refusalOf(null, { numbers: NUMBERS }).sentence).toBe("尚未判定");
+    expect(refusalOf("", { numbers: NUMBERS }).sentence).toBe("尚未判定");
   });
 });
 
