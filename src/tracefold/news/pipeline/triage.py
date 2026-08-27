@@ -331,7 +331,7 @@ class TriageConsumer:
         facts: GateFacts,
         stamp: int,
         queue_lag_ms: int,
-    ) -> _RouteInputs | None:
+    ) -> _RouteInputs:
         """The Event as the Program will see it, plus the hashes the persist step compares against.
 
         The told context is the <= TOLD_MAX cards the selector ranked against *this* candidate out of bounded
@@ -623,7 +623,7 @@ class TriageConsumer:
         stale_reason: str | None,
         queue_lag_ms: int,
         trace: dict[str, Any],
-    ) -> _RouteInputs:
+    ) -> _RouteInputs | None:
         """Re-read the Event and the ledger under a fresh stamp so the second ask sees one consistent input."""
 
         attempts.reasked = True
