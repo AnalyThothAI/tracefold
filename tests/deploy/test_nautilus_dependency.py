@@ -62,7 +62,10 @@ def test_unknown_linux_architecture_has_no_release_identity() -> None:
 def test_python313_image_imports_the_public_trading_node_during_build() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "FROM python:3.13-slim-bookworm AS python-deps" in dockerfile
+    assert any(
+        line.startswith("FROM python:3.13-slim-bookworm") and line.endswith(" AS python-deps")
+        for line in dockerfile.splitlines()
+    )
     assert "from nautilus_trader.live.node import TradingNode" in dockerfile
     assert "assert sys.version_info[:2] == (3, 13)" in dockerfile
     assert 'assert version("nautilus-trader") == NAUTILUS_RELEASE.version' in dockerfile
