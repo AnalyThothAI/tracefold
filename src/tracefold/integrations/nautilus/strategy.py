@@ -1475,11 +1475,12 @@ class TracefoldNautilusStrategy(Strategy):
 
     def _flush_events(self) -> None:
         while self._pending_events:
+            event = self._pending_events.popleft()
             try:
-                self._queues.events.put_nowait(self._pending_events[0])
+                self._queues.events.put_nowait(event)
             except Full:
+                self._pending_events.appendleft(event)
                 return
-            self._pending_events.popleft()
         self._projection_overflow = False
 
 

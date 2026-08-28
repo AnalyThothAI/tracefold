@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from queue import Full
+from queue import Full, Queue
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +51,7 @@ from tracefold.integrations.nautilus.messages import (
     StartupAccountReconciliationUnproven,
     StopAccepted,
     StopSubmitted,
+    StrategyEvent,
     StrategyQueues,
     VenueFlatConfirmed,
     VenueFlatProofRequested,
@@ -162,8 +164,12 @@ def _registered_strategy(
     queue_maxsize: int = 64,
     with_quote: bool = True,
     startup_reconciled: bool = True,
+    events: Queue[StrategyEvent] | None = None,
 ) -> tuple[RecordingStrategy, StrategyQueues]:
-    queues = strategy_queues(maxsize=queue_maxsize)
+    queues = StrategyQueues(
+        commands=Queue(maxsize=queue_maxsize),
+        events=events or Queue(maxsize=queue_maxsize),
+    )
     clock = TestClock()
     clock.set_time(NOW_MS * 1_000_000)
     msgbus = MessageBus(TraderId("TRACEFOLD-001"), clock)
@@ -272,6 +278,45 @@ def test_strategy_queues_are_bounded_and_never_silently_drop_messages() -> None:
     assert queues.events.get_nowait() == ready
     assert queues.commands.get_nowait() == adopt
     assert queues.commands.maxsize == queues.events.maxsize == 1
+
+
+def test_timer_cannot_duplicate_or_break_startup_readiness_delivery() -> None:
+    class PausedAfterDeliveryQueue(Queue[StrategyEvent]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.delivered = Event()
+            self.resume = Event()
+            self.pause_once = True
+
+        def put_nowait(self, item: StrategyEvent) -> None:
+            super().put_nowait(item)
+            if self.pause_once:
+                self.pause_once = False
+                self.delivered.set()
+                assert self.resume.wait(timeout=1)
+
+    events = PausedAfterDeliveryQueue()
+    strategy, _queues = _registered_strategy(events=events)
+    errors: list[BaseException] = []
+
+    def start() -> None:
+        try:
+            strategy.on_start()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = Thread(target=start)
+    thread.start()
+    assert events.delivered.wait(timeout=1)
+
+    strategy.on_timer(None)
+    events.resume.set()
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert events.get_nowait() == ReadinessChanged(True, "ready", False)
+    assert events.empty()
 
 
 def test_strategy_config_claims_exact_snapshot_netting_instruments() -> None:
