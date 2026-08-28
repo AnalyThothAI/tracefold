@@ -77,7 +77,7 @@ export const NEWS_EVENT_REFETCH_MS = 15_000;
 /**
  * Quotes have their own query key and their own rhythm (#88): a price that changed must not make the feed
  * and its counts query return a new body, and polling faster than the collector writes is pure noise. The
- * server refreshes每 20 s, so 15 s keeps the reader within one cycle of the truth without asking three times
+ * server refreshes every 20 s, so 15 s keeps the reader within one cycle of the truth without asking three times
  * for the same bytes.
  */
 export const NEWS_QUOTES_REFETCH_MS = 15_000;
@@ -256,13 +256,6 @@ export const useNewsStatusWithToken = (token: string) =>
   });
 
 /**
- * Current quotes for one deduplicated symbol batch (#88).
- *
- * The batch is sorted and deduplicated before it becomes a query key, so two surfaces asking for the same
- * symbols share one cache entry and one request. The server deduplicates again — a client cannot multiply
- * repository or provider work by repeating a symbol.
- */
-/**
  * What one `base_symbol` is (#207 PR-W1). Identity, and nothing that moves.
  *
  * No `refetchInterval`: the universe snapshot lands on a schedule measured in hours, and the three things
@@ -285,10 +278,18 @@ export const useNewsSymbolWithToken = (token: string, base: string) => {
   });
 };
 
+/**
+ * Current quotes for the first 100 distinct symbols in Feed order (#304).
+ *
+ * Selection happens before sorting so old alphabetical symbols cannot displace the newest Events. Only the
+ * selected batch is sorted for a stable query/ETag key shared by surfaces asking for the same symbols.
+ */
 export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]) => {
-  const batch = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
-    .sort()
-    .slice(0, NEWS_QUOTES_SYMBOL_MAX);
+  const selected = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))].slice(
+    0,
+    NEWS_QUOTES_SYMBOL_MAX,
+  );
+  const batch = selected.sort();
   return useQuery({
     enabled: Boolean(token && batch.length),
     queryKey: queryKeys.newsQuotes(batch),
@@ -301,6 +302,7 @@ export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]
         })
       ).data,
     refetchInterval: NEWS_QUOTES_REFETCH_MS,
+    refetchOnWindowFocus: true,
     staleTime: 2_000,
   });
 };

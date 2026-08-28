@@ -235,15 +235,15 @@ tracefold workers
      workers-control
 ```
 
-The four cold loops (#75 instruments, #88 quotes and Event Reactions, and
-#104's CandidateRunner) admit their database work through the one-slot
-heavy-business lane, never the four News hot-path slots, so neither a price
-backlog nor a Trading backlog can starve a live Event. Their
-provider calls are bounded (quotes: one batch per source per turn — the #109 day
-read replaces that turn's price read rather than adding a call — concurrency 4, a 10 s
-turn deadline, 20 s cadence, never overlapping; reactions: at most 32 merged
-candle requests per 60 s turn, concurrency 4) and none of them holds a database
-connection while calling out.
+Quote plan/store uses an existing ordinary business permit. Event Reaction,
+Janitor and #104's CandidateRunner keep the one-slot heavy-business gate over
+the same pool, so heavy work is serialized without blocking display quote
+progress or consuming the four News hot-path slots. Quote provider calls are
+bounded to 12 mandatory current source groups (concurrency 4, 10 s deadline)
+plus at most two post-store Binance day reads; its 20 s cadence is start-based,
+non-overlapping, and does not catch up. Reactions remain bounded to 32 merged
+candle requests per 60 s turn with concurrency 4. None of these loops holds a
+database connection while calling out.
 
 Every News consumer turn is one short idempotent transaction; provider and
 model work happens with no database connection held. There is no generic
@@ -746,14 +746,16 @@ describes cannot silently be about different thresholds.
 
 `/api/news/status.price` is the first place to look:
 
-- `sources[]` — one row per provider source with `age_ms` and `state`. A source
+- `sources[]` — one row per provider source with `received_age_ms`, optional
+  `source_age_ms`, their maximum `effective_age_ms`, `freshness_basis`, raw
+  timestamps and the worst `state` across that source's quotes. A source
   whose state has been `stale` for minutes is either rate-limited or blocked;
   the loop's last error names which (`venue_rate_limited`, `venue_blocked`,
   `venue_timeout`). One failing venue never clears another and never blanks a
-  price: the previous row stays and simply ages. A Binance source reads the wider
-  `ticker/24hr` on one turn in fifteen (#109); a failure there fails that whole
-  turn for that source, which is why `state` and `age_ms` remain the one thing to
-  read — there is no separate freshness for the percentage.
+  price: the previous row stays and simply ages. Current is stale above 45 s or
+  when an applicable raw timestamp is more than 5 s in the future. Binance day
+  reference is an independent post-store read: it is valid through 360 s and a
+  failure or expiry removes only the percentage, never the current price.
 - `reaction_partial_7d` / `reaction_complete_7d` / `reaction_unavailable_7d` —
   the Reaction backlog. A rising `partial` count with a flat `complete` count
   means the 4H leg is not landing; a rising `unavailable` count is a data

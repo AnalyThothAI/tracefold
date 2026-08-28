@@ -11,6 +11,7 @@ import { clockTime, displayAssetRefs, displayAssets } from "../../model/newsLabe
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
+import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsEventDrawerTimeline } from "./NewsTimeline";
 
@@ -99,26 +100,28 @@ export function NewsEventDrawer({
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
       {detail && event ? (
-        <div className="news-drawer-body">
-          <h2 className="news-drawer-headline">{headline}</h2>
-          <p className="news-drawer-original">{event.leader_title}</p>
-          {assets.length ? <NewsAssetChips assets={assets} quotes={quotesBySymbol} /> : null}
-          {triage?.why_zh ? <p className="news-drawer-why">{triage.why_zh}</p> : null}
-          <h3 className="news-drawer-section-title">判定链路</h3>
-          <NewsEventDrawerTimeline steps={detail.timeline ?? []} />
-          <footer className="news-drawer-footer">
-            <Link state={{ feedSearch }} to={newsEventPath(event.event_id)}>
-              打开事件详情
-              <ChevronRight aria-hidden />
-            </Link>
-            {primarySymbol ? (
-              <Link state={referrer} to={newsSymbolPath(primarySymbol)}>
-                代币页 {primarySymbol}
+        <NewsQuoteReadState query={quotesQuery}>
+          <div className="news-drawer-body">
+            <h2 className="news-drawer-headline">{headline}</h2>
+            <p className="news-drawer-original">{event.leader_title}</p>
+            {assets.length ? <NewsAssetChips assets={assets} quotes={quotesBySymbol} /> : null}
+            {triage?.why_zh ? <p className="news-drawer-why">{triage.why_zh}</p> : null}
+            <h3 className="news-drawer-section-title">判定链路</h3>
+            <NewsEventDrawerTimeline steps={detail.timeline ?? []} />
+            <footer className="news-drawer-footer">
+              <Link state={{ feedSearch }} to={newsEventPath(event.event_id)}>
+                打开事件详情
                 <ChevronRight aria-hidden />
               </Link>
-            ) : null}
-          </footer>
-        </div>
+              {primarySymbol ? (
+                <Link state={referrer} to={newsSymbolPath(primarySymbol)}>
+                  代币页 {primarySymbol}
+                  <ChevronRight aria-hidden />
+                </Link>
+              ) : null}
+            </footer>
+          </div>
+        </NewsQuoteReadState>
       ) : null}
     </Drawer>
   );

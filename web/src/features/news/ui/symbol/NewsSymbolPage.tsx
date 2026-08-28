@@ -23,6 +23,7 @@ import {
 import { parseSymbolLane } from "../../model/symbolLanes";
 import { symbolPerspective } from "../../model/symbolPerspective";
 import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
+import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsSymbolEvents } from "./NewsSymbolEvents";
 import { NewsSymbolIdentity } from "./NewsSymbolIdentity";
@@ -149,27 +150,29 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
       ) : null}
 
       <div className="news-symbol-body">
-        <NewsSymbolIdentity
-          quote={quotesQuery.data?.quotes?.[0]}
-          symbol={symbolQuery.data}
-          tiles={[
-            { key: "events", label: "24H 事件", value: count(firstPage?.counts?.total) },
-            {
-              key: "pushed",
-              label: "已推送",
-              tone: "accent",
-              value: count(firstPage?.counts?.pushed),
-            },
-            {
-              key: "window",
-              label: "OI 窗口",
-              // Caution only when the window is full, which is the one state with a consequence: the
-              // next qualifying frame for this name will be withheld by `beyond_window_rank`.
-              tone: occupancy?.full ? "caution" : undefined,
-              value: occupancy ? `${occupancy.used} / ${occupancy.max_rank_in_window}` : "—",
-            },
-          ]}
-        />
+        <NewsQuoteReadState query={quotesQuery}>
+          <NewsSymbolIdentity
+            quote={quotesQuery.data?.quotes?.[0]}
+            symbol={symbolQuery.data}
+            tiles={[
+              { key: "events", label: "24H 事件", value: count(firstPage?.counts?.total) },
+              {
+                key: "pushed",
+                label: "已推送",
+                tone: "accent",
+                value: count(firstPage?.counts?.pushed),
+              },
+              {
+                key: "window",
+                label: "OI 窗口",
+                // Caution only when the window is full, which is the one state with a consequence: the
+                // next qualifying frame for this name will be withheld by `beyond_window_rank`.
+                tone: occupancy?.full ? "caution" : undefined,
+                value: occupancy ? `${occupancy.used} / ${occupancy.max_rank_in_window}` : "—",
+              },
+            ]}
+          />
+        </NewsQuoteReadState>
 
         <NewsSymbolWindow
           occupancy={occupancy}

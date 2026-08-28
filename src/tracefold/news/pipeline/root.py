@@ -26,7 +26,7 @@ class NewsPipeline:
     deliverer: DelivererConsumer
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
-    # #88: two cold Price Review loops. They are not consumers — no queue, no delivery, no hot-path lane —
+    # #88/#304: two bounded Price Review loops. They are not consumers — no queue or delivery —
     # and every one of them may be absent without the pipeline changing shape.
     quotes: QuoteSnapshotLoop | None = None
     reactions: EventReactionLoop | None = None

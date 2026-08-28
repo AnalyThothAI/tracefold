@@ -236,7 +236,12 @@ class NewsQuoteData(ExactApiSchema):
     change_basis_zh: str = ""
     source_at_ms: int | None = None
     received_at_ms: int | None = None
-    age_ms: int | None = None
+    received_age_ms: int | None = None
+    source_age_ms: int | None = None
+    effective_age_ms: int | None = None
+    freshness_basis: Literal["source_and_received", "received_only"] | None = None
+    reference_at_ms: int | None = None
+    reference_age_ms: int | None = None
     state: Literal["fresh", "stale", "unavailable", "unlisted"]
     state_zh: str = ""
 

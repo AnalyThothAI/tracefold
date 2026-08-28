@@ -11,6 +11,24 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .news-quote-value {
+    display: inline-flex;
+    gap: 4px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+
+  .news-quote-stale {
+    color: var(--signal-caution);
+    font: 600 var(--font-size-mono-meta)/1 var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .news-quote-read-failed .news-quote-change,
+  .news-quote-read-failed .news-quote-price {
+    opacity: 0.55;
+  }
+
   .news-quote-state {
     color: var(--text-faint);
     font: 500 var(--font-size-mono-meta)/1 var(--font-mono);

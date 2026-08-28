@@ -18,8 +18,9 @@ from .pricing import (
     change_basis_zh,
     price_kind_zh,
     quote_asset_rank_sql,
-    quote_state,
+    quote_freshness,
     quote_state_zh,
+    reference_freshness,
     source_rank_sql,
 )
 from .projections import (
@@ -243,8 +244,17 @@ class QuoteStorage:
                 out.append(_unavailable_quote(symbol, instrument))
                 continue
             received_at_ms = int(snapshot["received_at_ms"])
-            age_ms = max(0, int(now_ms) - received_at_ms)
-            state = quote_state(age_ms)
+            source_at_ms = _optional_int(entry.get("source_at_ms"))
+            freshness = quote_freshness(
+                measured_at_ms=now_ms,
+                received_at_ms=received_at_ms,
+                source_at_ms=source_at_ms,
+            )
+            reference_at_ms = _optional_int(entry.get("reference_at_ms"))
+            reference_age_ms, reference_is_fresh = reference_freshness(
+                measured_at_ms=now_ms,
+                reference_at_ms=reference_at_ms,
+            )
             out.append(
                 {
                     "requested_symbol": symbol,
@@ -257,14 +267,19 @@ class QuoteStorage:
                     "price": str(entry.get("price")),
                     "price_kind": str(entry.get("price_kind") or instrument.price_kind),
                     "price_kind_zh": price_kind_zh(entry.get("price_kind") or instrument.price_kind),
-                    "change_pct": _optional_float(entry.get("change_pct")),
+                    "change_pct": _optional_float(entry.get("change_pct")) if reference_is_fresh else None,
                     "change_basis": entry.get("change_basis"),
                     "change_basis_zh": change_basis_zh(entry.get("change_basis")),
-                    "source_at_ms": _optional_int(entry.get("source_at_ms")),
+                    "source_at_ms": source_at_ms,
                     "received_at_ms": received_at_ms,
-                    "age_ms": age_ms,
-                    "state": state,
-                    "state_zh": quote_state_zh(state),
+                    "received_age_ms": freshness.received_age_ms,
+                    "source_age_ms": freshness.source_age_ms,
+                    "effective_age_ms": freshness.effective_age_ms,
+                    "freshness_basis": freshness.freshness_basis,
+                    "reference_at_ms": reference_at_ms,
+                    "reference_age_ms": reference_age_ms,
+                    "state": freshness.state,
+                    "state_zh": quote_state_zh(freshness.state),
                 }
             )
         return out
