@@ -70,6 +70,9 @@ class DatasetManifest(BaseModel):
     cases: tuple[DatasetCaseRef, ...]
     seed_receipts: tuple[dict[str, Any], ...] = ()
     counts: dict[str, Any]
+    # Present exactly on a dataset sealed by `freeze_migrated_dataset` (#300): the lineage that says which
+    # stale-cohort corpus it carried forward and under which replay receipt. Absent on a direct freeze.
+    migration: dict[str, Any] | None = None
     hashes: dict[str, str]
 
 
@@ -103,6 +106,12 @@ def _fact_cluster(text: str) -> str:
 
 def _text_sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+# The two named extraction seals a dataset may carry: the freeze query and the migration carry (#300).
+_EXTRACTION_LINEAGE_SHAS = frozenset(
+    (_text_sha("news_learning_freeze_query_v1"), _text_sha("news_learning_migration_freeze_v1"))
+)
 
 
 @dataclass(frozen=True)
@@ -206,17 +215,26 @@ class DevelopmentDatasetStore:
         artifact_sha = self._ledger.persist_artifact("dataset", payload)
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
 
-    def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
-        """Seal the sole read-only development export for the cold compiler."""
+    def development_migration_export(self, dataset_sha: str) -> DevelopmentCompileExport:
+        """The one reader allowed to open a stale-cohort dataset, and only to test the current arm against it.
 
+        Every other export refuses `agent_cohort` mismatch because a stale dataset's recorded-behavior
+        statements are unverified for the current arm. This export exists to *run* that verification
+        (#300): its episodes feed a replay of the current stable, and only cases the replay proves
+        equivalent are re-frozen — by `freeze_migrated_dataset`, under the current cohort, through every
+        ordinary check. Using it for anything else recreates the ghost-cohort comparison the assert stops.
+        """
+
+        return self._development_export(dataset_sha, enforce_active_cohort=False)
+
+    def _development_export(self, dataset_sha: str, *, enforce_active_cohort: bool) -> DevelopmentCompileExport:
         self._ledger.assert_active_stable()
         dataset_payload = self._load_dataset_payload(dataset_sha)
         dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
         if dataset.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
-        if dataset.agent_cohort != self._ledger.agent_cohort():
+        if enforce_active_cohort and dataset.agent_cohort != self._ledger.agent_cohort():
             raise ValueError("news_learning_dataset_agent_cohort_mismatch")
-
         episodes = self._project_episodes(
             sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)),
             dataset.seed_receipts,
@@ -229,6 +247,95 @@ class DevelopmentDatasetStore:
             episode_projection_root_sha256=_sha(list(frozen_episodes)),
             learning_epoch_started_at_ms=self._ledger.epoch_started_at_ms(),
         )
+
+    def freeze_migrated_dataset(self, *, from_dataset_sha: str, receipt: Mapping[str, Any]) -> DatasetManifest:
+        """Seal the carried subset of a stale-cohort dataset under the current cohort (#300).
+
+        Admission is the migration receipt: a case enters exactly when the replay proved the current arm's
+        behavior equivalent, so every recorded-behavior statement the dataset carries is true of the arm
+        this seal names. Divergent and errored cases are excluded here and named in the payload — their
+        reviews stay accepted truth awaiting a re-review, not corpus.
+        """
+
+        self._ledger.assert_active_stable()
+        if str(receipt.get("schema")) != "tracefold.news.corpus_migration_receipt.v1":
+            raise ValueError("news_learning_migration_receipt_schema_invalid")
+        if str(receipt.get("from_dataset_sha")) != from_dataset_sha:
+            raise ValueError("news_learning_migration_receipt_dataset_mismatch")
+        # The receipt must be the one its hash names, and the replay it describes must be of *this* arm —
+        # a receipt proven against a previous stable is exactly the ghost-cohort evidence this seal exists
+        # to prevent.
+        recomputed = _sha({key: receipt[key] for key in receipt if key != "receipt_sha256"})
+        if str(receipt.get("receipt_sha256")) != recomputed:
+            raise ValueError("news_learning_migration_receipt_sha_mismatch")
+        replay_identity = dict(receipt.get("replay_identity") or {})
+        # The whole bundle, not just the Program artifact: a routing, binding or policy deployment that
+        # kept the same prompt bytes is still a different arm, and a receipt proven before it is exactly
+        # the ghost-cohort evidence this seal exists to refuse.
+        if str(replay_identity.get("bundle_sha")) != self._stable.bundle_sha:
+            raise ValueError("news_learning_migration_receipt_arm_mismatch")
+        old_payload = self._load_dataset_payload(from_dataset_sha)
+        old = self._validate_dataset_payload(from_dataset_sha, old_payload)
+        if old.role != "development":
+            raise ValueError("news_learning_compile_requires_development_dataset")
+        per_case = {str(row.get("case_id")): str(row.get("verdict")) for row in receipt.get("per_case") or ()}
+        missing = [case.case_id for case in old.cases if case.case_id not in per_case]
+        if missing:
+            raise ValueError("news_learning_migration_receipt_incomplete")
+        carried = tuple(case for case in old.cases if per_case[case.case_id] == "equivalent")
+        excluded = sorted(case.case_id for case in old.cases if per_case[case.case_id] != "equivalent")
+        if not carried:
+            raise ValueError("news_learning_migration_carries_no_cases")
+        spec = DatasetSpec(role="development", window=ClosedWindow(**dict(old_payload["window"])))
+        counts = self._dataset_counts(spec, carried)
+        # Eligibility is a fact about the window's *production* arm — the one that lived it. Recomputing it
+        # under the current arm over that window reads zero by construction and would publish a false
+        # lineage into every coverage block downstream.
+        old_counts = dict(old_payload.get("counts") or {})
+        counts["eligible_event_n"] = old_counts.get("eligible_event_n")
+        counts["eligibility"] = old_counts.get("eligibility")
+        freeze_as_of_ms = self._ledger.now_ms()
+        payload = {
+            "dataset_version": DATASET_VERSION,
+            "role": "development",
+            "profile_id": spec.profile_id,
+            "learning_epoch": spec.learning_epoch,
+            "learning_epoch_started_at_ms": self._ledger.epoch_started_at_ms(),
+            "window": spec.window.model_dump(mode="json"),
+            "freeze_as_of_ms": freeze_as_of_ms,
+            "settlement_grace_ms": SETTLEMENT_GRACE_MS,
+            "reader_contract_version": READER_CONTRACT_VERSION,
+            "agent_cohort": self._ledger.agent_cohort(),
+            "observation_ref": None,
+            "cases": [case.model_dump(mode="json") for case in carried],
+            "seed_receipts": list(old_payload.get("seed_receipts") or ()),
+            "counts": counts,
+            "migration": {
+                "from_dataset_sha": from_dataset_sha,
+                "receipt_sha256": str(receipt.get("receipt_sha256") or ""),
+                "replay_scope": str(receipt.get("replay_scope") or ""),
+                "carried_case_n": len(carried),
+                "excluded_case_ids": excluded,
+                "replay_identity": replay_identity,
+            },
+            "hashes": {
+                "trusted_root_sha": self._trusted_root_sha,
+                "learning_epoch_sha": _sha(
+                    {"epoch": LEARNING_EPOCH, "started_at_ms": self._ledger.epoch_started_at_ms()}
+                ),
+                "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
+                "reader_contract_sha": READER_CONTRACT_SHA256,
+                "agent_bundle_sha": self._stable.bundle_sha,
+                "extraction_sha": _text_sha("news_learning_migration_freeze_v1"),
+            },
+        }
+        artifact_sha = self._ledger.persist_artifact("dataset", payload)
+        return DatasetManifest(artifact_sha=artifact_sha, **payload)
+
+    def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
+        """Seal the sole read-only development export for the cold compiler."""
+
+        return self._development_export(dataset_sha, enforce_active_cohort=True)
 
     def baseline_episodes(
         self,
@@ -759,6 +866,15 @@ class DevelopmentDatasetStore:
         return payload
 
     def _validate_dataset_payload(self, artifact_sha: str, payload: Mapping[str, Any]) -> DatasetManifest:
+        """Integrity and contract of one sealed dataset — deliberately not authorization.
+
+        Whether the *reader* may use this corpus against the active arm is each reader's own check with
+        its own honest error — the compile export and the evaluator compare `agent_cohort`, candidate
+        admission compares the parent chain, and the migration readers (#300) accept a stale seal on
+        purpose. Folding the active arm into this validator made every stale dataset die here as
+        `contract_hash_mismatch` before the real refusal could name itself.
+        """
+
         exact_payload = dict(payload)
         if exact_payload.get("learning_epoch") != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
@@ -776,10 +892,16 @@ class DevelopmentDatasetStore:
             "learning_epoch_sha": expected_epoch_sha,
             "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
             "reader_contract_sha": READER_CONTRACT_SHA256,
-            "agent_bundle_sha": self._stable.bundle_sha,
-            "extraction_sha": _text_sha("news_learning_freeze_query_v1"),
+            # The seal names the arm that made it and must agree with itself; which arm is *acceptable*
+            # is the reader's question, not the payload's.
+            "agent_bundle_sha": str((dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha") or ""),
         }
-        if hashes != expected_hashes:
+        if {name: hashes.get(name) for name in expected_hashes} != expected_hashes:
+            raise ValueError("news_learning_dataset_contract_hash_mismatch")
+        # Two named seals exist: the freeze query and the migration carry (#300). Lineage, not freedom.
+        if hashes.get("extraction_sha") not in _EXTRACTION_LINEAGE_SHAS:
+            raise ValueError("news_learning_dataset_contract_hash_mismatch")
+        if set(hashes) != {*expected_hashes, "extraction_sha"}:
             raise ValueError("news_learning_dataset_contract_hash_mismatch")
         if exact_payload.get("reader_contract_version") != READER_CONTRACT_VERSION:
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
