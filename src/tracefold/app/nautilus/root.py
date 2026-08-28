@@ -55,14 +55,26 @@ _COMMAND_ENQUEUE_TIMEOUT_SECONDS = 5.0
 _BOOTSTRAP_CAPABILITY_IDENTITY = "bootstrap-zero-claims-v1"
 
 
-def run_nautilus(settings: Settings) -> None:
+def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> None:
     """Build and run the capability-governed Binance Demo node until shutdown."""
 
     api_key, api_secret = _read_credentials(settings)
     with repositories(settings, role="nautilus") as repos:
         capability_snapshot = repos.trading.active_execution_capability_snapshot()
+        if bootstrap_zero_claims:
+            runtime = repos.trading.nautilus_runtime_state()
+            if runtime is None or runtime.get("control") != "PAUSED":
+                raise RuntimeError("nautilus_bootstrap_requires_paused")
+            if repos.trading.active_intent() is not None:
+                raise RuntimeError("nautilus_bootstrap_requires_no_active_intent")
     capability_snapshot_sha256 = None if capability_snapshot is None else capability_snapshot.snapshot_sha256
-    capabilities = {} if capability_snapshot is None else capability_snapshot.included
+    bootstrap_mode = capability_snapshot is None or bootstrap_zero_claims
+    if capability_snapshot is not None and not bootstrap_zero_claims:
+        capabilities = capability_snapshot.included
+        capability_identity = capability_snapshot.snapshot_sha256
+    else:
+        capabilities = {}
+        capability_identity = _BOOTSTRAP_CAPABILITY_IDENTITY
     instrument_ids = [InstrumentId.from_str(value) for value in sorted(capabilities)]
     loop = asyncio.new_event_loop()
     node: TradingNode | None = None
@@ -84,7 +96,7 @@ def run_nautilus(settings: Settings) -> None:
         strategy = TracefoldNautilusStrategy(
             engine_identity=_engine_identity(
                 settings,
-                capability_snapshot_sha256 or _BOOTSTRAP_CAPABILITY_IDENTITY,
+                capability_identity,
             ),
             instrument_ids=instrument_ids,
             capabilities=capabilities,
@@ -100,7 +112,7 @@ def run_nautilus(settings: Settings) -> None:
                     node=node,
                     queues=queues,
                     loop=loop,
-                    bootstrap_account_zero=capability_snapshot is None,
+                    bootstrap_account_zero=bootstrap_mode,
                 )
             ),
         )

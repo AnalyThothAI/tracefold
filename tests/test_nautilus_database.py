@@ -85,6 +85,7 @@ def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness()
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
+    repos.trading.set_nautilus_bootstrap_account_zero.return_value = True
 
     assert bridge._handle_event(
         repos,
@@ -97,8 +98,37 @@ def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness()
     repos.trading.set_nautilus_bootstrap_account_zero.assert_called_once_with(
         verified_at_ms=NOW_MS - 1,
         now_ms=NOW_MS,
+        expected_capability_snapshot_sha256=None,
     )
     assert bridge.readiness()["engine_ready"] is False
+
+
+def test_failed_bootstrap_clears_the_proof_before_projecting_unexpected_exposure() -> None:
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(
+        _settings(),
+        queues,
+        capability_snapshot_sha256="c" * 64,
+        now_ms=lambda: NOW_MS,
+    )
+    repos = _Repositories()
+    repos.trading.set_nautilus_bootstrap_account_zero.return_value = True
+
+    assert bridge._handle_event(
+        repos,
+        BootstrapAccountZeroChanged(verified_at_ms=None, observed_at_ms=NOW_MS),
+    )
+    assert bridge._handle_event(
+        repos,
+        ReadinessChanged(ready=False, reason="external_exposure", unexpected_exposure=True),
+    )
+
+    repos.trading.set_nautilus_bootstrap_account_zero.assert_called_once_with(
+        verified_at_ms=None,
+        now_ms=NOW_MS,
+        expected_capability_snapshot_sha256="c" * 64,
+    )
+    assert bridge.readiness()["unexpected_exposure"] is True
 
 
 def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_entry() -> None:

@@ -508,6 +508,60 @@ def test_capability_replacement_requires_a_fresh_zero_proof_and_no_nonterminal_i
     _reset_authority(conn)
 
 
+def test_capability_replacement_accepts_a_fresh_zero_claim_recovery_proof(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "recovered-revision"})
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL, "
+        "nautilus_bootstrap_account_zero_at_ms = NULL WHERE id = 1"
+    )
+    assert not repos.trading.set_nautilus_bootstrap_account_zero(
+        verified_at_ms=NOW,
+        now_ms=NOW,
+        expected_capability_snapshot_sha256="f" * 64,
+    )
+    assert repos.trading.runtime_state()["nautilus_bootstrap_account_zero_at_ms"] is None
+
+    assert repos.trading.insert_intent(_intent())
+    assert not repos.trading.set_nautilus_bootstrap_account_zero(
+        verified_at_ms=NOW,
+        now_ms=NOW,
+        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
+    )
+    conn.execute("DELETE FROM trading_intents")
+
+    assert repos.trading.set_nautilus_bootstrap_account_zero(
+        verified_at_ms=NOW,
+        now_ms=NOW,
+        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
+    )
+
+    conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+    assert repos.trading.insert_intent(_intent())
+    assert repos.trading.set_nautilus_bootstrap_account_zero(
+        verified_at_ms=None,
+        now_ms=NOW + 1,
+        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
+    )
+    assert repos.trading.runtime_state()["nautilus_bootstrap_account_zero_at_ms"] is None
+    conn.execute("DELETE FROM trading_intents")
+    conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+    assert repos.trading.set_nautilus_bootstrap_account_zero(
+        verified_at_ms=NOW + 2,
+        now_ms=NOW + 2,
+        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
+    )
+
+    assert repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW + 2)
+    runtime = repos.trading.runtime_state()
+    assert runtime is not None
+    assert runtime["active_capability_snapshot_sha256"] == replacement.snapshot_sha256
+    assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
+    _reset_authority(conn)
+
+
 def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: Any) -> None:
     repos = repositories_for_connection(conn)
     initial = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "initial-revision"})
@@ -1005,6 +1059,7 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
     repos.trading.set_nautilus_bootstrap_account_zero(
         verified_at_ms=None,
         now_ms=NOW + 1_000,
+        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
     )
     assert repos.trading.nautilus_runtime_state(for_update=True) is not None
     conn.commit()

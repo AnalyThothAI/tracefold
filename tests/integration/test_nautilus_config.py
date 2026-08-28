@@ -46,6 +46,8 @@ def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() 
     assert config.exec_engine.open_check_open_only is False
     assert config.exec_engine.position_check_interval_secs == 30.0
     execution = config.exec_clients[BINANCE]
+    assert config.data_clients[BINANCE].instrument_provider.query_commission_rates is False
+    assert execution.instrument_provider.query_commission_rates is False
     assert execution.account_type == BinanceAccountType.USDT_FUTURES
     assert execution.environment == BinanceEnvironment.DEMO
     assert execution.use_reduce_only is True
