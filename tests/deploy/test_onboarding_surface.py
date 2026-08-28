@@ -52,6 +52,9 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
   if [ -n "${TRACEFOLD_TEST_ROLE_PROVISION:-}" ]; then printf '%s\\n' "$*" > "$TRACEFOLD_TEST_ROLE_PROVISION"; fi
   case "$*" in
+    *"nautilus tracefold nautilus run --bootstrap-zero-claims"*)
+      printf '%s\\n' "$*" > "$TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"
+      ;;
     *"workers trading refresh-capabilities"*) : > "$TRACEFOLD_TEST_CAPABILITY_REFRESH" ;;
     *"--entrypoint tracefold migrate config"*)
       printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
@@ -211,6 +214,7 @@ esac
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
         "TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA": "a" * 64,
@@ -255,6 +259,27 @@ def test_up_bootstraps_a_missing_capability_before_final_nautilus_recreation(tmp
     )
 
     assert result.returncode == 0, result.stderr
+    assert "--bootstrap-zero-claims" in Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).read_text()
+    assert Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+
+
+def test_up_refreshes_an_existing_capability_from_a_zero_claim_proof(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--bootstrap-zero-claims" in Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).read_text()
     assert Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
     assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 

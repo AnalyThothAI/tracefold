@@ -112,15 +112,42 @@ class ControlStorage:
             },
         )
 
-    def set_nautilus_bootstrap_account_zero(self, *, verified_at_ms: int | None, now_ms: int) -> None:
-        """Project a bootstrap proof only while no capability snapshot is active."""
+    def set_nautilus_bootstrap_account_zero(
+        self,
+        *,
+        verified_at_ms: int | None,
+        now_ms: int,
+        expected_capability_snapshot_sha256: str | None,
+    ) -> bool:
+        """Project a zero-claim proof only for the unchanged paused authority."""
 
-        self.conn.execute(
-            "UPDATE trading_runtime_state "
-            "SET nautilus_bootstrap_account_zero_at_ms = %s, updated_at_ms = %s "
-            "WHERE id = 1 AND active_capability_snapshot_sha256 IS NULL",
-            (None if verified_at_ms is None else int(verified_at_ms), int(now_ms)),
-        )
+        row = self.conn.execute(
+            """
+            UPDATE trading_runtime_state
+               SET nautilus_bootstrap_account_zero_at_ms = %(verified)s,
+                   updated_at_ms = %(now)s
+             WHERE id = 1
+               AND active_capability_snapshot_sha256 IS NOT DISTINCT FROM %(expected)s
+               AND (
+                 %(clear)s
+                 OR (
+                   control = 'PAUSED'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM trading_intents
+                      WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
+                   )
+                 )
+               )
+         RETURNING id
+            """,
+            {
+                "verified": None if verified_at_ms is None else int(verified_at_ms),
+                "clear": verified_at_ms is None,
+                "now": int(now_ms),
+                "expected": expected_capability_snapshot_sha256,
+            },
+        ).fetchone()
+        return row is not None
 
     def bump_dspy_calls(self, *, day_key: str, now_ms: int) -> int:
         """Increment today's model-call budget. The day roll clears **every** per-day field.

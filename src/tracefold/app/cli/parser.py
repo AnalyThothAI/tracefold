@@ -25,7 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("workers", help="run the News ingestion, triage, and delivery runtime")
     nautilus = subcommands.add_parser("nautilus", help="run the Binance USD-M Demo execution authority")
     nautilus_subcommands = nautilus.add_subparsers(dest="nautilus_command", required=True)
-    nautilus_subcommands.add_parser("run", help="run the single Nautilus TradingNode process")
+    nautilus_run = nautilus_subcommands.add_parser("run", help="run the single Nautilus TradingNode process")
+    nautilus_run.add_argument(
+        "--bootstrap-zero-claims",
+        action="store_true",
+        help="prove a paused Demo account is empty before rotating the capability snapshot",
+    )
 
     init = subcommands.add_parser("init", help="create ~/.tracefold/config.yaml")
     init.add_argument("--force", action="store_true", help="overwrite existing config.yaml")

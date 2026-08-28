@@ -20,6 +20,7 @@ CapabilityExclusionReason = Literal[
     "not_crypto",
     "not_linear_perpetual",
     "inverse_or_delivery",
+    "unsupported_quote",
     "provider_parse_failed",
     "provider_load_failed",
     "native_stop_unsupported",
@@ -206,6 +207,8 @@ def _exclusion_reason(
         return "not_linear_perpetual"
     if provider.inverse or not provider.linear:
         return "inverse_or_delivery"
+    if provider.quote_currency not in {"USDT", "USDC"}:
+        return "unsupported_quote"
     if (
         provider.native_symbol != str(news.get("venue_symbol"))
         or provider.base_currency != str(news.get("base_symbol"))

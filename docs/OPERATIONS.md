@@ -69,24 +69,28 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    Intent; there is no `accept_intents` flag or per-order approval.
 
 For the V2 capability cut, keep Trading `PAUSED` and require zero nonterminal
-Intents. On an existing active snapshot, require a fresh green Nautilus
-readiness heartbeat with account-wide zero exposure and zero open orders. On a
-fresh database, `make up` starts a zero-claim Nautilus process, waits for its
-separate fresh `nautilus_bootstrap_account_zero_at_ms` proof while `/readyz`
-correctly remains red with `capability_snapshot_missing`, activates the first
-snapshot, and recreates Nautilus. Deploy/migrate the exact reviewed image to
-`20260828_0320`, then run:
+Intents. `make up` starts a bounded zero-claim Nautilus process, waits for its
+fresh account-wide `nautilus_bootstrap_account_zero_at_ms` proof while
+`/readyz` correctly remains red, refreshes/activates the snapshot, stops that
+process, and recreates the normal capability-governed Nautilus service. This
+same sequence handles both first activation and replacement, including recovery
+from an old snapshot that the provider can no longer load. The proof remains
+valid for the bounded provider load (at most five minutes) and activation clears
+it. Deploy/migrate the
+exact reviewed image to `20260828_0320`, then run:
 
 ```text
 uv run tracefold trading refresh-capabilities
 uv run tracefold trading status
 ```
 
-Record the active snapshot digest/count and blacklist revision. Restart
-Nautilus and require readiness to return green only after it loads and
-revalidates every included instrument. Then set control to `RUNNING`. A later
-refresh follows the same cold sequence; a failed load or activation leaves the
-old active snapshot unchanged and Trading paused.
+Record the active snapshot digest/count and blacklist revision. Require
+readiness to return green only after the recreated Nautilus loads and
+revalidates every included instrument. Then set control to `RUNNING`. A failed
+load or activation leaves the old active snapshot unchanged and Trading paused.
+`tracefold nautilus run --bootstrap-zero-claims` is deployment-only: it refuses
+anything except `PAUSED` with zero active Intent and never claims readiness or
+consumes an Intent.
 
 Do not seed a production Case or Intent to make the console non-empty. A normal
 source must produce the Case, and only a frozen long/non-shadow Case admitted by

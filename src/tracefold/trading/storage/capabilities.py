@@ -9,6 +9,7 @@ from ..capabilities import ExecutionCapabilitySnapshotV1
 from .sql_values import _dumps
 
 _NAUTILUS_ZERO_PROOF_MAX_AGE_MS = 15_000
+_NAUTILUS_BOOTSTRAP_ZERO_PROOF_MAX_AGE_MS = 5 * 60_000
 
 
 class CapabilityStorage:
@@ -112,13 +113,14 @@ class CapabilityStorage:
         current = runtime["active_capability_snapshot_sha256"]
         if current == digest:
             return True
-        if current is None:
-            proof_at_ms = runtime["nautilus_bootstrap_account_zero_at_ms"]
-            proof_is_fresh = proof_at_ms is not None and int(proof_at_ms) >= (
-                int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS
-            )
-            runtime_proved_flat = proof_is_fresh and not runtime["nautilus_unexpected_exposure"]
-        else:
+        bootstrap_at_ms = runtime["nautilus_bootstrap_account_zero_at_ms"]
+        bootstrap_proved_flat = (
+            bootstrap_at_ms is not None
+            and int(bootstrap_at_ms) >= int(created_at_ms) - _NAUTILUS_BOOTSTRAP_ZERO_PROOF_MAX_AGE_MS
+            and not runtime["nautilus_unexpected_exposure"]
+        )
+        runtime_proved_flat = bootstrap_proved_flat
+        if current is not None and not runtime_proved_flat:
             heartbeat_at_ms = runtime["nautilus_heartbeat_at_ms"]
             proof_is_fresh = heartbeat_at_ms is not None and int(heartbeat_at_ms) >= (
                 int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS

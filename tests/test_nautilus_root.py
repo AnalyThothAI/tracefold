@@ -17,11 +17,15 @@ def _secure_secret(path: Path, value: str) -> None:
     path.chmod(0o600)
 
 
-@pytest.mark.parametrize("bootstrap", [False, True])
+@pytest.mark.parametrize(
+    ("snapshot_missing", "forced_bootstrap"),
+    [(False, False), (True, False), (False, True)],
+)
 def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    bootstrap: bool,
+    snapshot_missing: bool,
+    forced_bootstrap: bool,
 ) -> None:
     from tracefold.app.nautilus import root
 
@@ -138,11 +142,17 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         included={"SOLUSDT-PERP.BINANCE": object(), "BTCUSDT-PERP.BINANCE": object()},
         snapshot_sha256="c" * 64,
     )
-    capability_snapshot = None if bootstrap else frozen_snapshot
+    capability_snapshot = None if snapshot_missing else frozen_snapshot
 
     @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):
-        yield SimpleNamespace(trading=SimpleNamespace(active_execution_capability_snapshot=lambda: capability_snapshot))
+        yield SimpleNamespace(
+            trading=SimpleNamespace(
+                active_execution_capability_snapshot=lambda: capability_snapshot,
+                nautilus_runtime_state=lambda: {"control": "PAUSED"},
+                active_intent=lambda: None,
+            )
+        )
 
     monkeypatch.setattr(root, "repositories", fake_repositories)
     monkeypatch.setattr(
@@ -151,11 +161,11 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         lambda: SimpleNamespace(runtime_revision="rev-1", image_digest="image-1"),
     )
 
-    root.run_nautilus(settings)
+    root.run_nautilus(settings, bootstrap_zero_claims=forced_bootstrap)
 
     expected_instruments = (
         []
-        if bootstrap
+        if snapshot_missing or forced_bootstrap
         else [
             root.InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
             root.InstrumentId.from_str("SOLUSDT-PERP.BINANCE"),
@@ -167,14 +177,14 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         "instrument_ids": expected_instruments,
     }
     assert captured["bridge_settings"] is settings
-    assert captured["bridge_capability_snapshot_sha256"] == (None if bootstrap else "c" * 64)
+    assert captured["bridge_capability_snapshot_sha256"] == (None if snapshot_missing else "c" * 64)
     assert captured["data_factory"] == (root.BINANCE, root.BinanceLiveDataClientFactory)
     assert captured["exec_factory"] == (root.BINANCE, root.BinanceLiveExecClientFactory)
     strategy_args = captured["strategy_args"]
     assert isinstance(strategy_args, dict)
     assert strategy_args["queues"] is captured["queues"]
     assert strategy_args["instrument_ids"] == captured["node_config_args"]["instrument_ids"]
-    assert strategy_args["capabilities"] == ({} if bootstrap else frozen_snapshot.included)
+    assert strategy_args["capabilities"] == ({} if snapshot_missing or forced_bootstrap else frozen_snapshot.included)
     assert callable(strategy_args["request_venue_flat"])
     assert callable(strategy_args["request_startup_account_reconciliation"])
     assert captured["readiness"].__self__.__class__ is FakeBridge  # type: ignore[union-attr]
@@ -210,6 +220,44 @@ def test_nautilus_root_rejects_missing_credentials_before_constructing_the_node(
 
     with pytest.raises(ValueError, match=r"^nautilus_api_key_file_missing$"):
         root.run_nautilus(settings)
+
+
+@pytest.mark.parametrize(
+    ("runtime", "active_intent", "error"),
+    [
+        ({"control": "RUNNING"}, None, "nautilus_bootstrap_requires_paused"),
+        ({"control": "PAUSED"}, object(), "nautilus_bootstrap_requires_no_active_intent"),
+    ],
+)
+def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: dict[str, str],
+    active_intent: object | None,
+    error: str,
+) -> None:
+    from tracefold.app.nautilus import root
+
+    settings = Settings()
+    settings.set_config_dir(tmp_path)
+    _secure_secret(tmp_path / "binance_demo_api_key", "demo-key")
+    _secure_secret(tmp_path / "binance_demo_api_secret", "demo-secret")
+
+    @contextmanager
+    def fake_repositories(*_args: object, **_kwargs: object):
+        yield SimpleNamespace(
+            trading=SimpleNamespace(
+                active_execution_capability_snapshot=lambda: SimpleNamespace(snapshot_sha256="c" * 64),
+                nautilus_runtime_state=lambda: runtime,
+                active_intent=lambda: active_intent,
+            )
+        )
+
+    monkeypatch.setattr(root, "repositories", fake_repositories)
+    monkeypatch.setattr(root, "TradingNode", lambda *args, **kwargs: pytest.fail("node constructed"))
+
+    with pytest.raises(RuntimeError, match=rf"^{error}$"):
+        root.run_nautilus(settings, bootstrap_zero_claims=True)
 
 
 def test_account_wide_positions_and_orders_are_reconciled_before_flat_confirmation(
