@@ -290,6 +290,7 @@ def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtim
     second = WorkerDatabase.create(settings)
     steady_lock = first.acquire_steady_runtime_lock()
     try:
+        assert first.worker_pool.get_stats()["pool_available"] >= 1
         first.prewarm_control_connection()
 
         def control_query() -> int:

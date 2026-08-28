@@ -167,9 +167,10 @@ def _refresh_capabilities(settings: Any, *, now_ms: int) -> tuple[int, dict[str,
         return 1, {"ok": False, "error": "execution_capability_snapshot_invalid"}
     try:
         with repositories(settings, role="workers") as repos, repos.transaction():
+            activation_at_ms = _now_ms()
             activated = repos.trading.append_and_activate_execution_capability_snapshot(
                 snapshot,
-                created_at_ms=now_ms,
+                created_at_ms=activation_at_ms,
             )
             if not activated:
                 raise RuntimeError("execution_capability_activation_blocked")

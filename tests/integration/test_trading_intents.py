@@ -13,9 +13,10 @@ from typing import Any
 import pytest
 from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.platform.config.models import Settings
 from tracefold.trading import (
     BlacklistSnapshotV1,
     ExecutionCapabilitySnapshotV1,
@@ -541,6 +542,51 @@ def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: An
     assert runtime["active_capability_snapshot_sha256"] == initial.snapshot_sha256
     assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
     _reset_authority(conn)
+
+
+def test_capability_refresh_uses_post_provider_activation_time_for_freshness(
+    conn: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import ModuleType
+
+    from tracefold.app.cli.commands import trading as trading_cli
+    from tracefold.app.workers.wiring import news_to_trading
+
+    _case(conn)
+    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "provider-delayed-replacement"})
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    conn.commit()
+
+    async def provider_rows() -> list[object]:
+        return []
+
+    nautilus_module = ModuleType("tracefold.integrations.nautilus")
+    nautilus_module.load_binance_usdm_demo_capabilities = provider_rows  # type: ignore[attr-defined]
+    nautilus_module.installed_nautilus_wheel_identity = lambda: "test-wheel"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tracefold.integrations.nautilus", nautilus_module)
+    monkeypatch.setattr(news_to_trading, "news_execution_instruments", lambda _repos: [])
+    monkeypatch.setattr(trading_cli, "build_execution_capability_snapshot", lambda **_kwargs: replacement)
+    monkeypatch.setattr(trading_cli, "_now_ms", lambda: NOW + 15_001)
+
+    code, payload = trading_cli._refresh_capabilities(
+        Settings(storage=postgres_settings_storage()),
+        now_ms=NOW,
+    )
+
+    assert code == 1
+    assert payload == {"ok": False, "error": "execution_capability_activation_blocked"}
+    assert (
+        repositories_for_connection(conn).trading.runtime_state()["active_capability_snapshot_sha256"]
+        == CAPABILITY_SNAPSHOT.snapshot_sha256
+    )
+    _reset_authority(conn)
+    conn.commit()
 
 
 def test_capability_activation_cannot_be_overwritten_by_old_engine_readiness(conn: Any) -> None:

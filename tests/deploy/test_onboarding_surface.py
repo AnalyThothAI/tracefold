@@ -259,6 +259,27 @@ def test_up_bootstraps_a_missing_capability_before_final_nautilus_recreation(tmp
     assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
+def test_up_bounds_bootstrap_proof_wait_with_the_compose_budget(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"] = ""
+    env["TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO"] = ""
+
+    result = subprocess.run(
+        ["make", "up", "TRACEFOLD_COMPOSE_WAIT_SECONDS=1"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "did not establish a fresh bootstrap account-zero proof" in result.stderr
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+
+
 @pytest.mark.parametrize("auth_state", ["missing-cli", "unauthenticated", "authenticated"])
 def test_verify_main_ci_preflights_the_active_github_dot_com_account(tmp_path: Path, auth_state: str) -> None:
     make = shutil.which("make")

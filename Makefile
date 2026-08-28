@@ -379,7 +379,7 @@ _trading-capability-bootstrap-if-needed:
 			echo "Bootstrapping the first Trading execution capability snapshot."; \
 			docker compose up -d --no-build --force-recreate nautilus; \
 			bootstrap_ready=; attempt=0; \
-			while [ "$$attempt" -lt 60 ]; do \
+			while [ "$$attempt" -lt $(TRACEFOLD_COMPOSE_WAIT_SECONDS) ]; do \
 				bootstrap_ready=$$(docker compose exec -T postgres sh -eu -c \
 					'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
 					PGOPTIONS="-c default_transaction_read_only=on"; \
