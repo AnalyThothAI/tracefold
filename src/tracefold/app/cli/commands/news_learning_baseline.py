@@ -632,6 +632,11 @@ def _handle_learning_migrate_corpus(args: Namespace, settings: Any, stable: Any)
         with postgres_connection(settings, role="workers") as conn:
             export = _store(conn).development_migration_export(str(args.from_dataset))
         episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
+        delivered = {
+            str(case.get("case_id")): str(case.get("event_id") or case.get("case_id"))
+            for case in export.dataset_payload.get("cases") or ()
+            if str(case.get("delivery_truth")) == "observed_sent"
+        }
         receipt = run_corpus_migration(
             episodes,
             program=compile_program_factory(artifact),
@@ -639,7 +644,12 @@ def _handle_learning_migrate_corpus(args: Namespace, settings: Any, stable: Any)
             judge=judge,
             max_model_cases=int(args.max_model_cases),
             from_dataset_sha=str(args.from_dataset),
-            replay_identity={"program_sha256": stable.program_sha256, **runtime_identity},
+            replay_identity={
+                "bundle_sha": stable.bundle_sha,
+                "program_sha256": stable.program_sha256,
+                **runtime_identity,
+            },
+            delivered_event_ids_by_case=delivered,
         )
         _write_json(str(out_dir / "migration-receipt.json"), receipt)
 

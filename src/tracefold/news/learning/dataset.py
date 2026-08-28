@@ -269,7 +269,10 @@ class DevelopmentDatasetStore:
         if str(receipt.get("receipt_sha256")) != recomputed:
             raise ValueError("news_learning_migration_receipt_sha_mismatch")
         replay_identity = dict(receipt.get("replay_identity") or {})
-        if str(replay_identity.get("program_sha256")) != self._stable.program_sha256:
+        # The whole bundle, not just the Program artifact: a routing, binding or policy deployment that
+        # kept the same prompt bytes is still a different arm, and a receipt proven before it is exactly
+        # the ghost-cohort evidence this seal exists to refuse.
+        if str(replay_identity.get("bundle_sha")) != self._stable.bundle_sha:
             raise ValueError("news_learning_migration_receipt_arm_mismatch")
         old_payload = self._load_dataset_payload(from_dataset_sha)
         old = self._validate_dataset_payload(from_dataset_sha, old_payload)
@@ -310,9 +313,10 @@ class DevelopmentDatasetStore:
             "migration": {
                 "from_dataset_sha": from_dataset_sha,
                 "receipt_sha256": str(receipt.get("receipt_sha256") or ""),
+                "replay_scope": str(receipt.get("replay_scope") or ""),
                 "carried_case_n": len(carried),
                 "excluded_case_ids": excluded,
-                "replay_identity": dict(receipt.get("replay_identity") or {}),
+                "replay_identity": replay_identity,
             },
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,

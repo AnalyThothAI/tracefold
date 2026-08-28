@@ -7,7 +7,12 @@ from typing import Any
 import pytest
 
 from tracefold.news.learning.judge import CardEquivalence, CardEquivalenceAssessment
-from tracefold.news.learning.migration import assess_replayed_case, verdict_field_diffs
+from tracefold.news.learning.migration import (
+    assess_replayed_case,
+    contaminated_case_ids,
+    editorial_diffs,
+    verdict_field_diffs,
+)
 
 _VERDICT: dict[str, Any] = {
     "event_type": "earnings",
@@ -96,3 +101,39 @@ def test_text_divergence_is_divergent_and_equivalence_carries() -> None:
     )
     assert assess_replayed_case(_VERDICT, dict(_VERDICT), _StubJudge(non_equivalent))["verdict"] == "divergent"  # type: ignore[arg-type]
     assert assess_replayed_case(_VERDICT, dict(_VERDICT), _StubJudge(_equivalent()))["verdict"] == "equivalent"  # type: ignore[arg-type]
+
+
+def test_editorial_projection_gates_the_carry() -> None:
+    recorded = {"editorial_origin": "model", "relevance": {"tradability": "direct", "surprise": "unscheduled"}}
+    assert editorial_diffs(recorded, dict(recorded)) == ()
+    assert editorial_diffs(recorded, {**recorded, "relevance": {**recorded["relevance"], "tradability": "none"}}) == (
+        "relevance",
+    )
+    assert editorial_diffs(recorded, {"editorial_origin": "degraded_unavailable", "relevance": None}) == (
+        "editorial_origin",
+        "relevance",
+    )
+
+
+def test_history_contamination_downgrades_only_downstream_citers() -> None:
+    # Case A diverged and was delivered by the stale arm; case B's told ledger cites A, case C's does not.
+    per_case = [
+        {"case_id": "A", "verdict": "divergent"},
+        {"case_id": "B", "verdict": "equivalent"},
+        {"case_id": "C", "verdict": "equivalent"},
+    ]
+    contaminated = contaminated_case_ids(
+        per_case,
+        told_event_ids_by_case={"A": [], "B": ["event-A"], "C": ["event-Z"]},
+        delivered_event_ids_by_case={"A": "event-A"},
+    )
+    assert contaminated == {"B": "event-A"}
+    # A diverged case the stale arm never delivered leaves no counterfeit history behind.
+    assert (
+        contaminated_case_ids(
+            per_case,
+            told_event_ids_by_case={"A": [], "B": ["event-A"], "C": []},
+            delivered_event_ids_by_case={},
+        )
+        == {}
+    )

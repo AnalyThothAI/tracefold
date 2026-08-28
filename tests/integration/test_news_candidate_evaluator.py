@@ -3047,7 +3047,7 @@ def test_corpus_migration_carries_only_replay_equivalent_cases_under_the_new_arm
         body: dict[str, object] = {
             "schema": "tracefold.news.corpus_migration_receipt.v1",
             "from_dataset_sha": development.artifact_sha,
-            "replay_identity": {"program_sha256": arm_b.program_sha256},
+            "replay_identity": {"bundle_sha": arm_b.bundle_sha, "program_sha256": arm_b.program_sha256},
             "counts": {
                 "equivalent": len(development.cases) - 1,
                 "divergent": 1,
@@ -3077,7 +3077,9 @@ def test_corpus_migration_carries_only_replay_equivalent_cases_under_the_new_arm
     with pytest.raises(ValueError, match="news_learning_migration_receipt_arm_mismatch"):
         store_b.freeze_migrated_dataset(
             from_dataset_sha=development.artifact_sha,
-            receipt=_sealed_receipt(replay_identity={"program_sha256": arm_a.program_sha256}),
+            receipt=_sealed_receipt(
+                replay_identity={"bundle_sha": arm_a.bundle_sha, "program_sha256": arm_a.program_sha256}
+            ),
         )
 
     migrated = store_b.freeze_migrated_dataset(from_dataset_sha=development.artifact_sha, receipt=receipt)
