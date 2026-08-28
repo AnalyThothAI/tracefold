@@ -34,6 +34,8 @@ def _deploy_image_sandbox(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, s
 
     external_activity = tmp_path / "external-activity"
     services_stopped = tmp_path / "services-stopped"
+    trading_control = tmp_path / "trading-control"
+    trading_control.write_text("PAUSED\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_docker = bin_dir / "docker"
@@ -52,10 +54,20 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
   if [ -n "${TRACEFOLD_TEST_ROLE_PROVISION:-}" ]; then printf '%s\\n' "$*" > "$TRACEFOLD_TEST_ROLE_PROVISION"; fi
   case "$*" in
+    *"--entrypoint tracefold serve trading status"*)
+      printf '{"ok":true,"data":{"active_capability_snapshot_sha256":"%s"}}\\n' "$TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"
+      ;;
     *"nautilus tracefold nautilus run --bootstrap-zero-claims"*)
       printf '%s\\n' "$*" > "$TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"
+      if [ "$(cat "$TRACEFOLD_TEST_TRADING_CONTROL")" != "PAUSED" ]; then
+        printf '%s\\n' nautilus_bootstrap_requires_paused >&2
+        exit 1
+      fi
       ;;
-    *"workers trading refresh-capabilities"*) : > "$TRACEFOLD_TEST_CAPABILITY_REFRESH" ;;
+    *"workers trading refresh-capabilities"*)
+      : > "$TRACEFOLD_TEST_CAPABILITY_REFRESH"
+      printf '%s\\n' PAUSED > "$TRACEFOLD_TEST_TRADING_CONTROL"
+      ;;
     *"--entrypoint tracefold migrate config"*)
       printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
       printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
@@ -70,7 +82,6 @@ if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
     *nautilus_bootstrap_account_zero_at_ms*) printf '%s\\n' "$TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO" ;;
-    *active_capability_snapshot_sha256*) printf '%s\\n' "$TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA" ;;
     *to_regclass*) printf '%s\\n' "$TRACEFOLD_TEST_SCHEMA_STATE" ;;
     *alembic_version*trading_cases_state_check*) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATION_STATE" ;;
     *) printf '%s\\n' "$TRACEFOLD_TEST_DB_HEAD" ;;
@@ -162,7 +173,7 @@ if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
-    *credentials_configured*|*trading*enabled*) shift 2; exec python3 "$@" ;;
+    *credentials_configured*|*trading*enabled*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
   esac
 fi
 case "$*" in
@@ -213,6 +224,7 @@ esac
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
+        "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
         "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
@@ -264,13 +276,19 @@ def test_up_bootstraps_a_missing_capability_before_final_nautilus_recreation(tmp
     assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
-def test_up_refreshes_an_existing_capability_from_a_zero_claim_proof(tmp_path: Path) -> None:
+@pytest.mark.parametrize("target", ("up", "deploy-image"), ids=("make-up", "deploy-image"))
+def test_deploy_reuses_an_existing_capability_without_refresh(tmp_path: Path, target: str) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    control = Path(env["TRACEFOLD_TEST_TRADING_CONTROL"])
+    control.write_text("RUNNING\n", encoding="utf-8")
 
+    command = ["make", target]
+    if target == "deploy-image":
+        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
     result = subprocess.run(
-        ["make", "up"],
+        command,
         cwd=repo,
         env=env,
         capture_output=True,
@@ -279,9 +297,10 @@ def test_up_refreshes_an_existing_capability_from_a_zero_claim_proof(tmp_path: P
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--bootstrap-zero-claims" in Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).read_text()
-    assert Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
     assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert control.read_text(encoding="utf-8").strip() == "RUNNING"
 
 
 def test_up_bounds_bootstrap_proof_wait_with_the_compose_budget(tmp_path: Path) -> None:

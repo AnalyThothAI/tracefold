@@ -829,15 +829,16 @@ reader/writer.
   `tracefold.trading.contracts`, and a News route must not assert it.
 - `tracefold trading refresh-capabilities` is a cold command. It loads the full
   public News/provider candidate union without credentials, appends its stable
-  partition, and moves the active pointer only while `PAUSED`, no nonterminal
-  Intent exists, and the account-wide zero proof is fresh. A replacement uses
-  current green Nautilus readiness or the separate account-wide proof from
-  `nautilus run --bootstrap-zero-claims`; initial activation uses that same
-  zero-claim proof while the process remains formally unready. The deployment
-  lifecycle uses the explicit zero-claim form so a mechanically invalid old
-  snapshot cannot prevent its own safe replacement. The proof is valid for the
-  bounded provider load, up to five minutes; activation clears it and invalidates
-  readiness.
+  partition, and moves the active pointer only while already `PAUSED`, no
+  nonterminal Intent exists, and the account-wide zero proof is fresh. It never
+  changes Trading control. A replacement uses current green Nautilus readiness
+  or the separate account-wide proof from `nautilus run
+  --bootstrap-zero-claims`; initial activation uses that same zero-claim proof
+  while the process remains formally unready. Deployment invokes that bootstrap
+  only when no active pointer exists. Otherwise it reuses the active snapshot
+  and recreates normal Nautilus without refreshing capability or changing
+  control. The proof is valid for the bounded provider load, up to five minutes;
+  activation clears it and invalidates readiness.
 - `tracefold trading replay-oi --days 7 --strategy
   oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
