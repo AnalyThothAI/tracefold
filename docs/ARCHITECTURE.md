@@ -26,9 +26,11 @@ plane (#88): two polling loops in Workers read their own work from PostgreSQL,
 call public venue REST with no database connection held, and write two derived
 read models — latest-only current quotes and versioned Event Reactions. It is
 not a market lane: no tick history, no socket, no OI, no order book, and no
-price reaches the Gate, Triage, `decide()` or a delivery card. Its failure is
-local by construction; News ingestion, judgment, delivery and readiness do not
-depend on it.
+price reaches the Gate, Triage or `decide()`. Delivery may make bounded,
+ephemeral public-history reads solely to render the already-approved card; a
+price failure never changes whether the card is sent. The plane's failure is
+local by construction; News ingestion, judgment and readiness do not depend on
+it.
 
 Beside both runs the Trading core (#104), disabled by default. Two more cold
 polling loops in the same Workers root read persisted Triage verdicts through
@@ -144,10 +146,14 @@ evidence rather than executable configuration.
 | Binance spot quote/day quote | News Market Review | `latest_state` | Binance public spot REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
 | Binance perpetual quote/day quote | News Market Review | `latest_state` | Binance public USD-M REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
 | Hyperliquid quote | News Market Review | `latest_state` | Hyperliquid public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
+| OKX quote | News Market Review | `latest_state` | OKX public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
+| Delivery price anchors | News Delivery | `derived_work` | Binance aggregate trades, then Hyperliquid/OKX recent trades; closed 1 m candles as fallback | bounded public REST on one approved delivery | `news-deliverer`; verdict message | ephemeral `ReaderDeliveryPresentation` only; no persisted tick history |
 | Binance candles | News Market Review / Trading adapter | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
 | Hyperliquid candles | News Market Review / Trading adapter | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
+| OKX candles | News Market Review | `derived_work` | OKX public closed bars | REST on planned demand | `news-reactions` or delivery fallback | versioned `news_event_reactions` or ephemeral delivery presentation |
 | Binance instruments | News Market Review | `latest_state` | Binance spot and USD-M catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
 | Hyperliquid instruments | News Market Review | `latest_state` | main perp, spot and bounded HIP-3 catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
+| OKX instruments | News Market Review | `latest_state` | OKX live USDT swaps and USDT/USDC spot catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate and price-source resolution |
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
 | Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
@@ -171,10 +177,14 @@ does not apply.
 | Binance spot quote/day quote | 20 s price; 300 s day reference | fresh through 60 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 groups; 100 requested symbols where supported | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
 | Binance perpetual quote/day quote | 20 s price; 300 s day reference | fresh through 60 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 groups; 100 requested symbols where supported | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
 | Hyperliquid quote | 20 s | fresh through 60 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 groups; one group request | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| OKX quote | 20 s | fresh through 60 s | `okx.spot` / `okx.perp` source group | shared cap 256 symbols | shared cap 12 groups; one whole-market request/group | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| Delivery price anchors | one approved delivery | event/push-time | one venue symbol + news/push-1h/push anchors | displayed assets only | at most two Binance contracts, then one Hyperliquid and one OKX contract; 2 s/contract | displayed assets parallel; anchors parallel where supported | bounded by the per-contract deadline | no / duplicate anchors coalesced / no | use the last trade at/before each anchor only within 60 s, then the last closed 1 m candle within 90 s; venue failure tries the next whole calculation and never changes delivery policy |
 | Binance candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
 | Hyperliquid candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
+| OKX candles | planned Event/delivery demand | useful while provider history exists | venue symbol + bounded time range | shared Reaction cap 100 due rows; delivery displayed assets only | shared Reaction cap 32; delivery one request/missing anchor | shared Reaction cap 4; delivery displayed assets parallel | 8 s provider; delivery 2 s/contract outer deadline | yes for Reaction / duplicate delivery anchors coalesced / no | same local failure semantics as the other price venues |
 | Binance instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | one catalogue snapshot | one family fetch; adapter owns spot/perp subrequests | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
 | Hyperliquid instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family / DEX | main perp, spot and at most 32 builder DEXes | one bounded family fetch | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
+| OKX instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | live USDT swaps and USDT/USDC spot | one bounded family fetch | venue families serial | 8 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
@@ -596,7 +606,8 @@ recent live Events + watchlist -> exact-symbol-first resolution (alias only as f
   (venue, venue_symbol, price_kind) -> grouped by provider source
   -> one batch REST request per source (Hyperliquid metaAndAssetCtxs /
      spotMetaAndAssetCtxs / one per HIP-3 dex; Binance ticker/price, or
-     ticker/24hr on the one turn in 15 that refreshes its day reference, #109)
+     ticker/24hr on the one turn in 15 that refreshes its day reference, #109;
+     OKX tickers for its spot or swap family)
   -> one latest-only row per source in news_quote_snapshots
   -> GET /api/news/quotes (<=100 symbols, resolved server-side, fresh|stale|unavailable|unlisted)
 
@@ -605,6 +616,15 @@ due Event-assets (live Events, pushed and held alike) -> pinned or resolved inst
   -> p0 = last closed candle at or before opened_at_ms; p1/p4 the same at +1H/+4H
   -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v1)
   -> Feed/Detail attachment + `news review queue --view market`
+
+one approved delivery -> the same exact-symbol-first contract candidates
+  -> Binance first, then Hyperliquid, then OKX
+  -> for news time, push-minus-1H and push time: last trade at/before the
+     millisecond anchor when no more than 60 s old
+  -> otherwise the last closed 1 m candle at/before that anchor within 90 s
+  -> accept one venue/contract for the complete calculation; never mix endpoints
+     from different venues in one return
+  -> ephemeral Telegram presentation only; no tick table and no continuous collector
 ```
 
 Work is `O(source groups)`, never `O(Events x assets)`: a hundred Events naming
@@ -1181,41 +1201,50 @@ publication time in the reader's zone (UTC+8). Ordinary News derives this list
 from model-primary ∩ Gate-grounded assets; deterministic OI derives one symbol
 from its matching rank-ledger row only when the current Event kind and full OI Program
 identity also match. The third body line is the market's own number for those
-same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`
-— and it exists only when `PriceRepository.quotes_for_symbols` answered `fresh`:
-a `stale`, `unavailable` or `unlisted` quote leaves no line, no placeholder and
-no zero. The change window is named from `change_basis` rather than assumed
+same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`. At delivery, an
+on-demand trade/candle point becomes the current number; if no contract
+produces one, an existing `fresh` Quote Snapshot may still provide the display
+price. A stale, unavailable or unlisted result leaves no line, no placeholder
+and no zero. The change window is named from `change_basis` rather than assumed
 (`rolling_24h` -> `24h`, `provider_day` -> `日内`, unknown -> the price without a
 percentage), `（永续）` marks each asset whose number comes from a proxy
 market rather than its own — an equity/commodity/index on a Binance TradFi perp
-or a Hyperliquid builder-DEX, 51.9% of a week's card assets. It is keyed on
+or a Hyperliquid/OKX TradFi perp, 51.9% of a week's card assets. It is keyed on
 `instrument_class`, not on the contract type: BTC also prices on a perpetual,
 but for a crypto asset that *is* its own market, so it carries no mark. The mark
 is repeated per asset rather than said once for the line, because a trailing
 mark on a mixed line cannot say whether it covers the last asset or all of them.
 The price/percentage formatting
 mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
-character. The quotes are read in a separate short database session over
-exactly the code-verified `reader_assets()` result, so the two lines cannot name different assets, and any
-price failure degrades to no line: delivery never depends on the price plane.
+character. Source candidates and the existing quote snapshot are read in one
+separate short database session over exactly the code-verified
+`reader_assets()` result. Provider I/O begins only after that connection is
+returned, so the facts and market lines cannot name different assets and no
+database transaction is held across public REST calls. Any price failure
+degrades to the existing fresh display quote or no line: delivery eligibility
+never depends on the price plane.
 That same read may produce an ephemeral typed `ReaderTradeTarget` only when a displayed ticker equals the
 Binance catalogue base and `venue_symbol == base_symbol + quote_asset`. The target is not part of the persisted
 `news_delivery_card_v10`: only the Telegram Adapter uses it to link exact ticker tokens to the matching Binance
 Futures or Spot page, while aliases, non-Binance venues and inconsistent metadata stay plain text and Feishu
 receives the card unchanged.
-The same ephemeral `ReaderDeliveryPresentation` carries one ordered market row per displayed asset. `新闻后`
-is current fresh price versus the Event anchor price, `1h` is the immutable `reaction_v1` fixed-horizon return,
-and `24h` is present only for a quote that explicitly declares `rolling_24h`. Delivery reads only
-`reaction_v1`, then joins a Reaction to a quote only when ticker, venue and venue symbol all agree; the
-Reaction's own anchor controls whether 1 h is due, while the original-source timestamp is display-only.
-Missing or immature evidence is named as `待计算` / `待到期` / `计算中` / `暂无` instead of borrowing another
-window's number. Telegram renders each asset on its own row as
+The same ephemeral `ReaderDeliveryPresentation` carries one ordered market row
+per displayed asset. `新闻后` is the delivery-time point versus the provider
+publication-time point; `1h` is that same delivery-time point versus the point
+exactly one hour before delivery. These are request-time presentation returns,
+not `reaction_v1`: they do not wait for a future horizon and are never persisted
+as review evidence. For every anchor the adapter first selects the latest trade
+at or before the millisecond timestamp when it is at most 60 seconds old, then
+falls back to the last closed one-minute candle within 90 seconds. Binance is
+tried first, Hyperliquid second and OKX third; one row always retains the same
+venue and contract for all its anchors. `24h` is retained only from a fresh
+same-contract quote that explicitly declares `rolling_24h`. A missing value is
+shown as `暂无`, never borrowed from another window. Telegram renders each asset on its own row as
 `BTC 新闻后 +1.10%，1h +0.80%，24h +3.20%`, then renders direction and impact on two independent rows. It turns
 the normalized reporting-origin
 text itself into the original-source HTTPS link (X/Twitter handles become `<handle> 的推特`; known wire brands
 use their reader names), so it has no separate source button. A final time row shows the original artifact or
-provider publication time, local processing duration from first observation to send start, and send-start time,
-all in the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
+provider publication time and send-start time, both in the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
 remain visible. This presentation context is not persisted and Feishu still receives the stable card unchanged.
 The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or

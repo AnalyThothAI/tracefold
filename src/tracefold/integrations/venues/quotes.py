@@ -26,6 +26,7 @@ from .http import get_json, post_json, price_client
 BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
 BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
 HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
+OKX_BASE_URL: Final = "https://www.okx.com"
 
 # `ticker/24hr` charges by response breadth: an explicit `symbols=[...]` list is weight 2-40, the whole
 # market is weight 80 (spot) / 42 (USD-M, measured). Past this many symbols the list form stops being the
@@ -145,6 +146,55 @@ async def fetch_hyperliquid_quotes(
     if spot:
         return _parse_hyperliquid_spot(contexts, wanted=wanted, venue=venue)
     return _parse_hyperliquid_perp(meta, contexts, wanted=wanted, venue=venue)
+
+
+async def fetch_okx_quotes(
+    symbols: Sequence[str],
+    *,
+    venue: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = OKX_BASE_URL,
+) -> tuple[ProviderQuote, ...]:
+    """OKX includes last price and its 24-hour open in the same public ticker response."""
+
+    wanted = _wanted(symbols)
+    if not wanted:
+        return ()
+    inst_type = "SPOT" if venue == "okx.spot" else "SWAP"
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v5/market/tickers",
+            venue=venue,
+            params={"instType": inst_type},
+        )
+    if not isinstance(payload, Mapping) or str(payload.get("code") or "") != "0":
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    rows = payload.get("data")
+    if isinstance(rows, str | bytes) or not isinstance(rows, Sequence):
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    out: list[ProviderQuote] = []
+    for entry in rows:
+        if not isinstance(entry, Mapping):
+            continue
+        venue_symbol = str(entry.get("instId") or "").upper()
+        if venue_symbol not in wanted:
+            continue
+        price = parse_price(entry.get("last"))
+        if price is None:
+            continue
+        reference = parse_price(entry.get("open24h"))
+        out.append(
+            ProviderQuote(
+                venue_symbol=venue_symbol,
+                price=price,
+                change_pct=parse_change_pct(price, reference),
+                change_basis=_ROLLING_24H,
+                reference_price=reference,
+                source_at_ms=_optional_int(entry.get("ts")),
+            )
+        )
+    return tuple(out)
 
 
 def _wanted(symbols: Sequence[str]) -> set[str]:
@@ -293,9 +343,11 @@ __all__ = [
     "BINANCE_FUTURES_BASE_URL",
     "BINANCE_SPOT_BASE_URL",
     "HYPERLIQUID_BASE_URL",
+    "OKX_BASE_URL",
     "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",
     "fetch_binance_spot_day_quotes",
     "fetch_binance_spot_quotes",
     "fetch_hyperliquid_quotes",
+    "fetch_okx_quotes",
 ]

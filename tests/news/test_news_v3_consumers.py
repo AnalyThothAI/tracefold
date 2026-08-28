@@ -24,7 +24,7 @@ from tracefold.news.bus import (
     PermanentError,
     TransientError,
 )
-from tracefold.news.market_review.pricing import Candle
+from tracefold.news.market_review.pricing import Candle, PriceInstrument, PricePoint
 from tracefold.news.models import (
     OUTBOX_MAX_AGE_MS,
     TRIAGE_POLICY_VERSION,
@@ -143,10 +143,12 @@ class RecordingPrice:
         *,
         quotes: list[dict[str, Any]] | None = None,
         reactions: list[dict[str, Any]] | None = None,
+        instruments: dict[str, tuple[PriceInstrument, ...]] | None = None,
         error: Exception | None = None,
     ) -> None:
         self.quotes = quotes or []
         self.reactions = reactions or []
+        self.instruments = instruments or {}
         self.error = error
         self.requested: list[list[str]] = []
         self.requested_reaction_versions: list[str | None] = []
@@ -164,6 +166,9 @@ class RecordingPrice:
         if self.error is not None:
             raise self.error
         return list(self.reactions)
+
+    def instruments_for_symbols(self, symbols: Any) -> dict[str, tuple[PriceInstrument, ...]]:
+        return {symbol: self.instruments[symbol] for symbol in symbols if symbol in self.instruments}
 
 
 class FakeWorkerDatabase:
@@ -1054,6 +1059,7 @@ def _deliverer(
     price: RecordingPrice | None = None,
     sender: RecordingSender | None = None,
     candle_fetcher_for: Any | None = None,
+    price_fetcher_for: Any | None = None,
 ) -> DelivererConsumer:
     return DelivererConsumer(
         bus=bus,
@@ -1062,6 +1068,7 @@ def _deliverer(
         finite_operations=InlineFinite(),
         min_interval_seconds=0.0,
         candle_fetcher_for=candle_fetcher_for,
+        price_fetcher_for=price_fetcher_for,
     )
 
 
@@ -1348,6 +1355,86 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
         ("binance.perp", "BTCUSDT", NOW_MS - 3_690_000, NOW_MS),
         ("binance.spot", "ETHUSDT", NOW_MS - 3_690_000, NOW_MS),
     ]
+
+
+def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calculation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+    price = RecordingPrice(
+        quotes=[
+            {
+                "requested_symbol": "MSFT",
+                "symbol": "MSFT",
+                "base_symbol": "MSFT",
+                "venue": "binance.perp",
+                "venue_symbol": "MSFTUSDT",
+                "quote_asset": "USDT",
+                "instrument_class": "equity",
+                "price": "500",
+                "state": "fresh",
+                "change_pct": 2.0,
+            }
+        ],
+        instruments={
+            "MSFT": (
+                PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),
+                # Same ticker text, wrong asset class: never a Microsoft fallback.
+                PriceInstrument("hl.spot", "@289", "MSFT", "crypto", "USDC"),
+                PriceInstrument("hl.xyz", "xyz:MSFT", "MSFT", "equity"),
+                PriceInstrument("okx.perp", "MSFT-USDT-SWAP", "MSFT", "equity", "USDT"),
+            )
+        },
+    )
+    news_at = NOW_MS - 20_000
+    news = _delivery_news(
+        event_card=_card(grounded_assets=["MSFT"], leader_published_at_ms=news_at),
+        event_delivery_timing={"news_at_ms": news_at, "observed_at_ms": news_at + 1_000},
+        latest_verdict=lambda **_kwargs: {
+            "final_decision": "push",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "微软事件",
+                "assets": [{"symbol": "MSFT", "role": "primary"}],
+            },
+        },
+    )
+    sender = RecordingSender()
+    calls: list[tuple[str, str]] = []
+
+    def price_fetcher_for(venue: str) -> Any:
+        async def fetch(venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
+            calls.append((venue, venue_symbol))
+            current, hour, event = targets
+            if venue == "binance.perp":
+                return {
+                    current: PricePoint(current - 50, Decimal("101"), "trade"),
+                    hour: PricePoint(hour - 50, Decimal("100"), "trade"),
+                }
+            if venue == "hl.xyz":
+                return {
+                    current: PricePoint(current - 40, Decimal("101"), "trade"),
+                    hour: PricePoint(hour, Decimal("100"), "candle_1m"),
+                    event: PricePoint(event - 10, Decimal("99"), "trade"),
+                }
+            return {}
+
+        return fetch
+
+    asyncio.run(
+        _deliverer(
+            news,
+            FakeBus(),
+            price=price,
+            sender=sender,
+            price_fetcher_for=price_fetcher_for,
+        ).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+    )
+
+    assert calls == [("binance.perp", "MSFTUSDT"), ("hl.xyz", "xyz:MSFT")]
+    assert sender.presentations[0].market_movements == (ReaderMarketMovement("MSFT", 202, 100, None, "available"),)
+    assert sender.presentations[0].trade_targets == ()
 
 
 def _oi_delivery_news() -> RecordingNews:

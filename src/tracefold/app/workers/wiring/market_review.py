@@ -11,9 +11,13 @@ from tracefold.integrations.venues import (
     fetch_binance_instruments,
     fetch_binance_spot_day_quotes,
     fetch_binance_spot_quotes,
+    fetch_delivery_price_points,
     fetch_hyperliquid_candles,
     fetch_hyperliquid_instruments,
     fetch_hyperliquid_quotes,
+    fetch_okx_candles,
+    fetch_okx_instruments,
+    fetch_okx_quotes,
     fetch_us_reference_instruments,
 )
 from tracefold.news.market_review.loops import EventReactionLoop, MarketReviewDatabasePort, QuoteSnapshotLoop
@@ -32,6 +36,8 @@ def _price_venue_enabled(settings: Any, source_key: str) -> bool:
         return bool(venues.binance)
     if source_key.startswith("hl."):
         return bool(venues.hyperliquid)
+    if source_key.startswith("okx."):
+        return bool(venues.okx)
     return False
 
 
@@ -53,6 +59,8 @@ def _quote_snapshot_loop(
             return fetch_binance_futures_quotes
         if source_key.startswith("hl."):
             return functools.partial(fetch_hyperliquid_quotes, venue=source_key)
+        if source_key.startswith("okx."):
+            return functools.partial(fetch_okx_quotes, venue=source_key)
         return None
 
     def day_fetcher_for(source_key: str) -> Any | None:
@@ -71,7 +79,7 @@ def _quote_snapshot_loop(
         return None
 
     venues = settings.news.venues
-    if not venues.enabled or not (venues.binance or venues.hyperliquid):
+    if not venues.enabled or not (venues.binance or venues.hyperliquid or venues.okx):
         return None
     return QuoteSnapshotLoop(
         db=db,
@@ -89,7 +97,7 @@ def _event_reaction_loop(
     telemetry: TelemetryRegistry | None = None,
 ) -> EventReactionLoop | None:
     venues = settings.news.venues
-    if not venues.enabled or not (venues.binance or venues.hyperliquid):
+    if not venues.enabled or not (venues.binance or venues.hyperliquid or venues.okx):
         return None
     return EventReactionLoop(
         db=db,
@@ -125,7 +133,31 @@ def _candle_fetcher_for(settings: Any, venue: str, *, interval: str) -> Any | No
             )
 
         return hyperliquid
+    if venue.startswith("okx."):
+
+        async def okx(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
+            return await fetch_okx_candles(
+                venue_symbol,
+                venue=venue,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                interval=interval,
+            )
+
+        return okx
     return None
+
+
+def _delivery_price_fetcher_for(settings: Any, venue: str) -> Any | None:
+    if not _price_venue_enabled(settings, venue):
+        return None
+    if not venue.startswith(("binance.", "hl.", "okx.")):
+        return None
+
+    async def fetch(venue_symbol: str, targets_ms: Sequence[int]) -> Any:
+        return await fetch_delivery_price_points(venue_symbol, venue=venue, targets_ms=targets_ms)
+
+    return fetch
 
 
 def _instrument_snapshot_loop(
@@ -144,6 +176,8 @@ def _instrument_snapshot_loop(
         fetchers.append(("binance", fetch_binance_instruments))
     if venues.hyperliquid:
         fetchers.append(("hyperliquid", fetch_hyperliquid_instruments))
+    if venues.okx:
+        fetchers.append(("okx", fetch_okx_instruments))
     if venues.us_reference:
         fetchers.append(("us_reference", fetch_us_reference_instruments))
     if not fetchers:

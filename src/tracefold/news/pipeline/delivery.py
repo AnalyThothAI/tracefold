@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Protocol
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
-from ..market_review.pricing import Candle, select_candle
+from ..market_review.pricing import Candle, PriceInstrument, PricePoint, select_candle
 from ..models import ReaderDeliveryPresentation
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
@@ -23,11 +23,14 @@ from .runtime import NewsDatabasePort
 # market line while the card proceeds normally (#113).
 _QUOTE_READ_TIMEOUT_SECONDS = 1.5
 _DELIVERY_CANDLE_TIMEOUT_SECONDS = 2.0
+_DELIVERY_PRICE_SOURCE_TIMEOUT_SECONDS = 2.0
 _DELIVERY_CANDLE_GAP_MS = 90_000
 _ONE_HOUR_MS = 3_600_000
 
 DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 DeliveryCandleFetcherFor = Callable[[str], DeliveryCandleFetcher | None]
+DeliveryPriceFetcher = Callable[[str, Sequence[int]], Awaitable[Mapping[int, PricePoint]]]
+DeliveryPriceFetcherFor = Callable[[str], DeliveryPriceFetcher | None]
 
 
 class NewsPushSender(Protocol):
@@ -60,6 +63,7 @@ class DelivererConsumer:
         min_interval_seconds: float,
         oi_policy: OiPolicy = DEFAULT_OI_POLICY,
         candle_fetcher_for: DeliveryCandleFetcherFor | None = None,
+        price_fetcher_for: DeliveryPriceFetcherFor | None = None,
     ) -> None:
         self.bus = bus
         self.db = db
@@ -68,6 +72,7 @@ class DelivererConsumer:
         self.min_interval = float(min_interval_seconds)
         self._oi_program_sha256 = program_sha256(oi_policy)
         self._candle_fetcher_for = candle_fetcher_for
+        self._price_fetcher_for = price_fetcher_for
         self._last_send_at = 0.0
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -217,6 +222,8 @@ class DelivererConsumer:
 
         if not shown:
             return []
+        if self._price_fetcher_for is not None:
+            return await self._point_market_data(shown, stamp, news_at_ms=news_at_ms)
         try:
             rows = await self.db.read(
                 "news_delivery_quotes",
@@ -262,6 +269,177 @@ class DelivererConsumer:
                 if news is not None:
                     quotes[index]["price_at_news"] = str(news.close)
         return quotes
+
+    async def _point_market_data(
+        self,
+        shown: Sequence[str],
+        stamp: int,
+        *,
+        news_at_ms: int | None,
+    ) -> list[dict[str, Any]]:
+        """Trade-first anchors with whole-calculation venue failover.
+
+        A candidate is accepted only as one unit: current, news and one-hour prices all retain the same
+        ``(venue, venue_symbol)``. Partial values are kept only if no later venue can provide the complete set.
+        """
+
+        try:
+            rows, candidates = await self.db.read(
+                "news_delivery_price_sources",
+                lambda repos: (
+                    repos.price.quotes_for_symbols(shown, now_ms=stamp),
+                    repos.price.instruments_for_symbols(shown),
+                ),
+                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return []
+        originals = {
+            str(row.get("requested_symbol") or ""): dict(row) for row in rows or [] if isinstance(row, Mapping)
+        }
+        news_target = (
+            news_at_ms
+            if isinstance(news_at_ms, int) and not isinstance(news_at_ms, bool) and 0 < news_at_ms <= stamp
+            else None
+        )
+        tasks = [
+            self._point_quote(
+                symbol,
+                originals.get(symbol, {}),
+                tuple(candidates.get(symbol, ())),
+                stamp=stamp,
+                news_target_ms=news_target,
+            )
+            for symbol in shown
+        ]
+        resolved = await asyncio.gather(*tasks, return_exceptions=True)
+        out: list[dict[str, Any]] = []
+        for symbol, result in zip(shown, resolved, strict=True):
+            if isinstance(result, BaseException):
+                fallback = originals.get(symbol)
+                if fallback:
+                    out.append(dict(fallback))
+            elif result:
+                out.append(result)
+        return out
+
+    async def _point_quote(
+        self,
+        symbol: str,
+        original: Mapping[str, Any],
+        instruments: Sequence[PriceInstrument],
+        *,
+        stamp: int,
+        news_target_ms: int | None,
+    ) -> dict[str, Any]:
+        targets = [stamp, stamp - _ONE_HOUR_MS]
+        if news_target_ms is not None:
+            targets.append(news_target_ms)
+        expected_class = str(instruments[0].instrument_class) if instruments else ""
+        candidates = [
+            instrument
+            for instrument in instruments
+            if not expected_class
+            or expected_class == "unknown"
+            or instrument.instrument_class in {expected_class, "unknown"}
+        ] or list(instruments)
+        candidates = self._bounded_price_candidates(candidates)
+        first_partial: dict[str, Any] | None = None
+        seen_contracts: set[tuple[str, str]] = set()
+        for instrument in candidates:
+            contract = (instrument.venue, instrument.venue_symbol)
+            if contract in seen_contracts:
+                continue
+            seen_contracts.add(contract)
+            fetcher = self._price_fetcher_for(instrument.venue) if self._price_fetcher_for else None
+            if fetcher is None:
+                continue
+            try:
+                points = await asyncio.wait_for(
+                    fetcher(instrument.venue_symbol, targets),
+                    timeout=_DELIVERY_PRICE_SOURCE_TIMEOUT_SECONDS,
+                )
+            except Exception:  # noqa: S112 - one provider failure is the signal to try the next venue
+                continue
+            current = points.get(stamp)
+            if current is None:
+                continue
+            quote = self._quote_from_points(
+                symbol,
+                original,
+                instrument,
+                points,
+                stamp=stamp,
+                news_target_ms=news_target_ms,
+            )
+            if first_partial is None:
+                first_partial = quote
+            if all(target in points for target in targets):
+                return quote
+        return first_partial or dict(original)
+
+    @staticmethod
+    def _bounded_price_candidates(instruments: Sequence[PriceInstrument]) -> list[PriceInstrument]:
+        """At most two Binance contracts, then one Hyperliquid and one OKX contract."""
+
+        limits = {"binance": 2, "hl": 1, "okx": 1}
+        counts = {family: 0 for family in limits}
+        out: list[PriceInstrument] = []
+        for instrument in instruments:
+            family = instrument.venue.split(".", 1)[0]
+            if family not in limits or counts[family] >= limits[family]:
+                continue
+            counts[family] += 1
+            out.append(instrument)
+        return out
+
+    @staticmethod
+    def _quote_from_points(
+        symbol: str,
+        original: Mapping[str, Any],
+        instrument: PriceInstrument,
+        points: Mapping[int, PricePoint],
+        *,
+        stamp: int,
+        news_target_ms: int | None,
+    ) -> dict[str, Any]:
+        current = points[stamp]
+        same_snapshot = (
+            str(original.get("venue") or "") == instrument.venue
+            and str(original.get("venue_symbol") or "") == instrument.venue_symbol
+            and original.get("state") == "fresh"
+        )
+        quote: dict[str, Any] = {
+            "requested_symbol": symbol,
+            "symbol": instrument.base_symbol,
+            "base_symbol": instrument.base_symbol,
+            "venue": instrument.venue,
+            "venue_symbol": instrument.venue_symbol,
+            "instrument_class": instrument.instrument_class,
+            "quote_asset": instrument.quote_asset,
+            "price": str(current.price),
+            "price_kind": "last",
+            "price_kind_zh": "成交价",
+            "source_at_ms": current.at_ms,
+            "received_at_ms": stamp,
+            "age_ms": max(0, stamp - current.at_ms),
+            "state": "fresh",
+            "state_zh": "实时",
+            "delivery_price_basis": current.basis,
+            "change_pct": original.get("change_pct") if same_snapshot else None,
+            "change_basis": original.get("change_basis") if same_snapshot else None,
+            "change_basis_zh": original.get("change_basis_zh") if same_snapshot else None,
+        }
+        hour = points.get(stamp - _ONE_HOUR_MS)
+        if hour is not None:
+            quote["price_one_hour_before_push"] = str(hour.price)
+            quote["price_one_hour_before_push_basis"] = hour.basis
+        if news_target_ms is not None:
+            news = points.get(news_target_ms)
+            if news is not None:
+                quote["price_at_news"] = str(news.price)
+                quote["price_at_news_basis"] = news.basis
+        return quote
 
     async def _delivery_candles(
         self,

@@ -149,6 +149,8 @@ def _instrument_source(venue: str) -> NewsExternalDataSource:
         return "binance"
     if venue == "hyperliquid":
         return "hyperliquid"
+    if venue == "okx":
+        return "okx"
     if venue == "us_reference":
         return "us_reference"
     return "other"

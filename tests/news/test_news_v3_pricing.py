@@ -14,7 +14,8 @@ from typing import Any
 import httpx
 import pytest
 
-from tracefold.integrations.venues.candles import fetch_binance_candles, fetch_hyperliquid_candles
+from tracefold.integrations.venues.candles import fetch_binance_candles, fetch_hyperliquid_candles, fetch_okx_candles
+from tracefold.integrations.venues.delivery_prices import fetch_delivery_price_points
 from tracefold.integrations.venues.errors import VenueExpectedError
 from tracefold.integrations.venues.hyperliquid import fetch_hyperliquid_instruments
 from tracefold.integrations.venues.quotes import (
@@ -23,6 +24,12 @@ from tracefold.integrations.venues.quotes import (
     fetch_binance_spot_day_quotes,
     fetch_binance_spot_quotes,
     fetch_hyperliquid_quotes,
+    fetch_okx_quotes,
+)
+from tracefold.integrations.venues.trades import (
+    fetch_binance_trade_before,
+    fetch_hyperliquid_recent_trades,
+    fetch_okx_recent_trades,
 )
 from tracefold.news.market_review.pricing import (
     CANDLE_INTERVAL_MS,
@@ -32,6 +39,7 @@ from tracefold.news.market_review.pricing import (
     REACTION_METRIC_VERSION,
     Candle,
     PriceInstrument,
+    Trade,
     coverage_pct,
     hit_pct,
     median_bps,
@@ -43,6 +51,7 @@ from tracefold.news.market_review.pricing import (
     quote_state,
     return_bps,
     select_candle,
+    select_trade,
     source_rank,
     source_rank_sql,
 )
@@ -71,6 +80,7 @@ def _candles(start_ms: int, closes: list[str]) -> list[Candle]:
 def test_source_order_is_code_owned_and_deterministic() -> None:
     assert source_rank("binance.perp") < source_rank("binance.spot") < source_rank("hl.perp")
     assert source_rank("hl.spot") < source_rank("hl.xyz") < source_rank("hl.brandnewdex")
+    assert source_rank("hl.xyz") < source_rank("okx.perp") < source_rank("okx.spot")
     assert quote_asset_rank("USDT") < quote_asset_rank("USDC") < quote_asset_rank("FDUSD")
     assert quote_asset_rank(None) == quote_asset_rank("DAI")
 
@@ -79,14 +89,17 @@ def test_rank_sql_is_generated_from_the_same_order_so_the_two_cannot_drift() -> 
     """#88 §2: the chip, the Quote planner and the Reaction planner share one precedence, not three copies."""
 
     sql = source_rank_sql()
-    assert "WHEN 'binance.perp' THEN 0" in sql and "WHEN 'hl.xyz' THEN 4" in sql
-    assert sql.endswith("ELSE 5 END")
+    assert "WHEN i.venue = 'binance.perp' THEN 0" in sql and "WHEN i.venue = 'hl.xyz' THEN 4" in sql
+    assert "WHEN i.venue LIKE 'hl.%' THEN 5" in sql
+    assert "WHEN i.venue = 'okx.perp' THEN 6" in sql
+    assert sql.endswith("ELSE 8 END")
     assert "upper(i.quote_asset)" in quote_asset_rank_sql()
 
 
 def test_price_kind_declares_what_the_number_actually_is() -> None:
     assert price_kind_for("binance.spot") == "last"
     assert price_kind_for("hl.perp") == "mid"
+    assert price_kind_for("okx.perp") == "last"
     assert PriceInstrument(venue="hl.spot", venue_symbol="@107", base_symbol="HYPE").quote_key == (
         "@107",
         "mid",
@@ -161,6 +174,12 @@ def test_a_candle_inside_the_tolerance_still_counts() -> None:
     target = _floor(ANCHOR)
     bars = _candles(target - 2 * CANDLE_INTERVAL_MS, ["10"])  # closes exactly one interval early
     assert select_candle(bars, target_ms=target) is not None
+
+
+def test_trade_selection_is_millisecond_precise_and_one_minute_bounded() -> None:
+    trades = [Trade(ANCHOR - 61_000, Decimal("9")), Trade(ANCHOR - 321, Decimal("10"))]
+    assert select_trade(trades, target_ms=ANCHOR) == trades[1]
+    assert select_trade(trades[:1], target_ms=ANCHOR) is None
 
 
 # ---------------------------------------------------------------------------- returns
@@ -416,6 +435,122 @@ def test_delivery_candle_reads_support_one_minute_price_anchors() -> None:
     )
     assert binance_request["interval"] == "1m"
     assert bars[0].close_at_ms == bars[0].open_at_ms + 60_000
+
+
+def test_trade_adapters_keep_provider_millisecond_timestamps() -> None:
+    seen: list[httpx.Request] = []
+
+    def binance(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[{"p": "504.65", "T": ANCHOR - 321}])
+
+    trades = asyncio.run(
+        fetch_binance_trade_before(
+            "MSFTUSDT",
+            venue="binance.perp",
+            target_ms=ANCHOR,
+            transport=httpx.MockTransport(binance),
+        )
+    )
+    assert trades == (Trade(ANCHOR - 321, Decimal("504.65")),)
+    assert seen[0].url.params["endTime"] == str(ANCHOR)
+    assert seen[0].url.params["limit"] == "1"
+
+    hl = asyncio.run(
+        fetch_hyperliquid_recent_trades(
+            "xyz:MSFT",
+            venue="hl.xyz",
+            transport=_json_transport({"/info": [{"px": "504.70", "time": ANCHOR - 20}]}),
+        )
+    )
+    assert hl == (Trade(ANCHOR - 20, Decimal("504.70")),)
+
+    okx = asyncio.run(
+        fetch_okx_recent_trades(
+            "MSFT-USDT-SWAP",
+            venue="okx.perp",
+            transport=_json_transport(
+                {"/history-trades": {"code": "0", "data": [{"px": "504.71", "ts": str(ANCHOR - 10)}]}}
+            ),
+        )
+    )
+    assert okx == (Trade(ANCHOR - 10, Decimal("504.71")),)
+
+
+def test_delivery_points_use_trade_first_and_one_minute_candle_after_a_sixty_second_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current, old = ANCHOR, ANCHOR - 3_600_000
+
+    async def trades(_symbol: str, *, venue: str, target_ms: int) -> tuple[Trade, ...]:
+        del venue
+        gap = 500 if target_ms == current else 60_001
+        return (Trade(target_ms - gap, Decimal("101" if target_ms == current else "9")),)
+
+    candle_calls: list[int] = []
+
+    async def candles(
+        _symbol: str,
+        *,
+        venue: str,
+        start_ms: int,
+        end_ms: int,
+        interval: str,
+    ) -> tuple[Candle, ...]:
+        del venue, start_ms
+        candle_calls.append(end_ms)
+        assert interval == "1m"
+        return (Candle(end_ms - 60_000, end_ms, Decimal("100")),)
+
+    monkeypatch.setattr("tracefold.integrations.venues.delivery_prices.fetch_binance_trade_before", trades)
+    monkeypatch.setattr("tracefold.integrations.venues.delivery_prices.fetch_binance_candles", candles)
+
+    points = asyncio.run(fetch_delivery_price_points("MSFTUSDT", venue="binance.perp", targets_ms=[current, old]))
+
+    assert points[current].basis == "trade" and points[current].price == Decimal("101")
+    assert points[old].basis == "candle_1m" and points[old].price == Decimal("100")
+    assert candle_calls == [old]
+
+
+def test_okx_quote_and_closed_candle_adapters() -> None:
+    quote = asyncio.run(
+        fetch_okx_quotes(
+            ["MSFT-USDT-SWAP"],
+            venue="okx.perp",
+            transport=_json_transport(
+                {
+                    "/market/tickers": {
+                        "code": "0",
+                        "data": [
+                            {
+                                "instId": "MSFT-USDT-SWAP",
+                                "last": "505",
+                                "open24h": "500",
+                                "ts": str(ANCHOR),
+                            }
+                        ],
+                    }
+                }
+            ),
+        )
+    )[0]
+    assert quote.price == Decimal("505") and quote.change_pct == pytest.approx(1.0)
+
+    rows = [
+        [str(ANCHOR - 120_000), "1", "2", "0.5", "1.5", "1", "1", "1", "1"],
+        [str(ANCHOR - 60_000), "1", "2", "0.5", "1.6", "1", "1", "1", "0"],
+    ]
+    bars = asyncio.run(
+        fetch_okx_candles(
+            "MSFT-USDT-SWAP",
+            venue="okx.perp",
+            start_ms=ANCHOR - 180_000,
+            end_ms=ANCHOR,
+            interval="1m",
+            transport=_json_transport({"/history-candles": {"code": "0", "data": rows}}),
+        )
+    )
+    assert len(bars) == 1 and bars[0].close == Decimal("1.5")
 
     hyperliquid_request: dict[str, Any] = {}
 

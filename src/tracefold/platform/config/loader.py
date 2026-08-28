@@ -111,6 +111,7 @@ news:
     enabled: true
     binance: true
     hyperliquid: true
+    okx: true
     us_reference: true
     snapshot_period_hours: 6.0
   watchlist: []

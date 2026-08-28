@@ -22,6 +22,7 @@ from .http import get_json, post_json, price_client
 BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
 BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
 HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
+OKX_BASE_URL: Final = "https://www.okx.com"
 
 # Binance caps a klines page at 1000 (spot) / 1500 (USD-M); one merged 4 h window is 49 five-minute bars, so
 # the cap is only reached by a backfill range and the request is truncated rather than paged.
@@ -103,6 +104,50 @@ async def fetch_hyperliquid_candles(
     return tuple(out)
 
 
+async def fetch_okx_candles(
+    venue_symbol: str,
+    *,
+    venue: str,
+    start_ms: int,
+    end_ms: int,
+    interval: str = CANDLE_INTERVAL,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = OKX_BASE_URL,
+) -> tuple[Candle, ...]:
+    interval_ms = _interval_ms(interval)
+    bar = "1m" if interval == "1m" else "5m"
+    params = {
+        "instId": str(venue_symbol).upper(),
+        "bar": bar,
+        # OKX names this cursor `after`: it returns candles older than the supplied timestamp.
+        "after": int(end_ms),
+        "limit": min(300, _limit_for(start_ms, end_ms, interval_ms=interval_ms)),
+    }
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v5/market/history-candles",
+            venue=venue,
+            params=params,
+        )
+    if not isinstance(payload, Mapping) or str(payload.get("code") or "") != "0":
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    rows = payload.get("data")
+    if isinstance(rows, str | bytes) or not isinstance(rows, Sequence):
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    out: list[Candle] = []
+    for entry in rows:
+        if not isinstance(entry, Sequence) or isinstance(entry, str | bytes) or len(entry) < 9:
+            continue
+        open_at_ms, close = _optional_int(entry[0]), parse_price(entry[4])
+        if open_at_ms is None or close is None or str(entry[8]) != "1":
+            continue
+        if open_at_ms + interval_ms < int(start_ms) or open_at_ms > int(end_ms):
+            continue
+        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
+    return tuple(out)
+
+
 def _limit_for(start_ms: int, end_ms: int, *, interval_ms: int) -> int:
     span = max(0, int(end_ms) - int(start_ms))
     return max(1, min(_BINANCE_LIMIT_MAX, span // int(interval_ms) + 2))
@@ -130,4 +175,5 @@ __all__ = [
     "HYPERLIQUID_BASE_URL",
     "fetch_binance_candles",
     "fetch_hyperliquid_candles",
+    "fetch_okx_candles",
 ]

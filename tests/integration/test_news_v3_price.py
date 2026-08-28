@@ -196,6 +196,32 @@ def test_an_alias_still_resolves_a_tag_that_names_nothing_on_its_own(conn) -> No
     assert resolved["XAU"].venue_symbol == "GOLDUSDT"
 
 
+def test_delivery_resolution_exposes_ordered_venue_fallbacks_without_crossing_an_exact_alias(conn) -> None:
+    _universe(
+        conn,
+        Instrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),
+        Instrument("hl.xyz", "xyz:MSFT", "MSFT", "equity"),
+        Instrument("okx.perp", "MSFT-USDT-SWAP", "MSFT", "equity", "USDT"),
+        Instrument("hl.xyz", "xyz:SKHX", "SKHX", "equity"),
+        Instrument("binance.perp", "SKHYUSDT", "SKHY", "equity", "USDT"),
+    )
+    conn.execute(
+        "INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)"
+        " VALUES ('SKHX', 'SKHY', 'venue', %s)",
+        (NOW,),
+    )
+    conn.commit()
+
+    resolved = repositories_for_connection(conn).price.instruments_for_symbols(["MSFT", "SKHX"])
+
+    assert [(row.venue, row.venue_symbol) for row in resolved["MSFT"]] == [
+        ("binance.perp", "MSFTUSDT"),
+        ("hl.xyz", "xyz:MSFT"),
+        ("okx.perp", "MSFT-USDT-SWAP"),
+    ]
+    assert [row.venue_symbol for row in resolved["SKHX"]] == ["xyz:SKHX"]
+
+
 def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
     _universe(conn, _instrument("binance.perp", "DOGEUSDT", "DOGE"))
     # The ordinary grounded lane also names DOGE; the UNION must still return one symbol and obey the

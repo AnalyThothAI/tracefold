@@ -131,6 +131,8 @@ run; `news.broker.name_prefix` prefixes every exchange and queue name and
 optional `feishu_signing_secret`, or Telegram fields
 `telegram_bot_token_file` and `telegram_chat_id`, plus
 `min_interval_seconds`), and
+`news.venues.*` (`enabled`, public-data switches `binance`, `hyperliquid`,
+`okx`, reference-only `us_reference`, and `snapshot_period_hours`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
 Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
@@ -149,12 +151,15 @@ perpetuals open the matching Futures contract and spot instruments open the matc
 Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
 Telegram projection lists one asset per line as
 `BTC 新闻后 +1.10%，1h +0.80%，24h +3.20%`. Current-vs-anchor and fixed 1 h returns come only from the
-`reaction_v1` Event Reaction row whose venue and venue symbol exactly equal the current quote contract; 24 h
-appears only from that asset's fresh `rolling_24h` quote. Reaction maturity follows its persisted anchor, never
-the potentially earlier original-source timestamp. An unavailable or immature value is labelled rather than
-replaced with another window. Direction and impact are two independent lines. The normalized source words carry
+same request-time venue and contract: Binance is tried first, Hyperliquid second and OKX third. At each news,
+push-minus-1H and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
+at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
+The calculation never mixes venues or contracts, needs no continuously collected tick history, and does not
+write these presentation returns into `reaction_v1`. The 24 h value appears only from that asset's fresh,
+same-contract `rolling_24h` quote. An unavailable value is labelled rather than replaced with another window.
+Direction and impact are two independent lines. The normalized source words carry
 the original HTTPS link; there is no separate source button. The time line names news publication,
-observation-to-send-start processing duration, and send start at whole-second precision in UTC+8; any missing
+send start at whole-second precision in UTC+8; any missing
 input is displayed as `暂无` without hiding known timestamps. The persisted reader card and Feishu payload are
 unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a

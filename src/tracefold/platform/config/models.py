@@ -348,6 +348,7 @@ class NewsVenuesSettings(BaseModel):
     enabled: bool = True
     binance: bool = True
     hyperliquid: bool = True
+    okx: bool = True
     # #91: the US listed-symbol directory. Not a venue — a reference tier that only tells the Gate a ticker is a
     # stock, and never overrides a symbol a real venue lists.
     us_reference: bool = True

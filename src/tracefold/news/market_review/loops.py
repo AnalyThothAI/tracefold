@@ -606,6 +606,8 @@ def _external_data_source(source: str) -> NewsExternalDataSource:
         return "binance_perp"
     if source.startswith("hl."):
         return "hyperliquid"
+    if source.startswith("okx."):
+        return "okx"
     return "other"
 
 
