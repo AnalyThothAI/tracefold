@@ -388,11 +388,6 @@ def test_the_write_set_is_two_instructions_and_the_safety_bounds_are_not_restate
             reader_card_instruction="Name the mechanism.",
             policy={"suppress_low_signal": False},  # type: ignore[call-arg]
         )
-    with pytest.raises(ValidationError, match="instruction_unsafe"):
-        PromptPatchV1(
-            event_semantics_instruction="Read https://example.test/policy first.",
-            reader_card_instruction="Name the mechanism.",
-        )
     with pytest.raises(ValidationError, match="instruction_too_large"):
         PromptPatchV1(event_semantics_instruction="x" * 200_000, reader_card_instruction="Name the mechanism.")
     with pytest.raises(ValidationError, match="instruction_empty"):

@@ -38,7 +38,11 @@ def test_proposer_reasks_when_the_instruction_bounds_reject_its_text() -> None:
 
     lm = _ScriptedReflectionLM(
         [
-            "```\nAlways consult https://example.invalid/rules first.\n```",  # rejected: URL
+            # Rejected for exceeding the instruction budget. #319 removed the marker blacklist that used
+            # to trigger this path; the budget is a surviving bound and the re-ask behaviour it proves —
+            # deliver the error code while the model that wrote the text is still in the loop — is the
+            # business correctness this test is actually about.
+            f"```\n{'Restate the rule at length. ' * 1400}\n```",
             "```\nTreat a named production-capacity commitment as magnitude 2.\n```",  # accepted
         ]
     )
@@ -49,16 +53,16 @@ def test_proposer_reasks_when_the_instruction_bounds_reject_its_text() -> None:
         components_to_update=["event_semantics"],
     )
 
-    assert proposer.rejections == ["news_program_instruction_unsafe"]
+    assert proposer.rejections == ["news_program_instruction_too_large"]
     assert len(lm.prompts) == 2, "the proposer did not ask again after the rejection"
-    assert "news_program_instruction_unsafe" in lm.prompts[1]
+    assert "news_program_instruction_too_large" in lm.prompts[1]
     assert updated["event_semantics"].startswith("Treat a named production-capacity commitment")
 
 
 def test_proposer_drops_a_component_it_cannot_make_safe() -> None:
     """Leaving the component unchanged beats handing GEPA text the applier will refuse."""
 
-    lm = _ScriptedReflectionLM([unsafe := "```\nSee https://example.invalid/x\n```", unsafe])
+    lm = _ScriptedReflectionLM([oversized := f"```\n{'Restate the rule at length. ' * 1400}\n```", oversized])
     proposer = InstructionProposer(reflection_lm=lm)
     updated = proposer(
         candidate={"reader_card": _CURRENT["reader_card"]},
@@ -66,7 +70,7 @@ def test_proposer_drops_a_component_it_cannot_make_safe() -> None:
         components_to_update=["reader_card"],
     )
     assert updated == {}
-    assert proposer.rejections == ["news_program_instruction_unsafe"]
+    assert proposer.rejections == ["news_program_instruction_too_large"]
 
 
 def test_proposer_passes_a_safe_proposal_through_without_a_second_call() -> None:

@@ -271,8 +271,7 @@ class InstructionProposer:
                         "current_instruction_doc": (
                             f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n"
                             f"Code-owned instruction safety rejected it: {rejection}.\n"
-                            "Rewrite it without URLs, template braces, credential-shaped text or a "
-                            "prompt-injection opener, keep it valid NFC, and keep it under 32768 bytes."
+                            "Keep it valid NFC, non-empty, and under 32768 bytes."
                         ),
                         "dataset_with_feedback": examples,
                         "prompt_template": None,
@@ -316,10 +315,11 @@ _REFLECTION_TEMPERATURE = 1.0
 _TASK_TEMPERATURE = 0
 
 
+# The bounds a proposal can still fail (#319 removed the marker and credential codes with the checks that
+# raised them). Each one is a fact about the optimization loop rather than about a hostile text: a hash
+# needs one encoding, every call pays for these bytes, and a Predictor with no prompt is not a Predictor.
 _INSTRUCTION_REJECTIONS = (
     "news_program_instruction_too_large",
-    "news_program_instruction_unsafe",
-    "news_program_instruction_secret",
     "news_program_instruction_unicode_noncanonical",
     "news_program_instruction_empty",
 )

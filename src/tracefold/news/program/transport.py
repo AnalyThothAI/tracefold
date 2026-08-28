@@ -30,6 +30,7 @@ handed cannot drift.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -44,7 +45,25 @@ from ...integrations.chat_completions import (
     post_chat_completion,
 )
 from ..artifact_identity import canonical_json, canonical_sha
-from .runtime import _HIGH_CONFIDENCE_SECRET_PATTERNS, _ExactModel
+from .runtime import _ExactModel
+
+# Kept by explicit operator decision when #319 removed every other secret scan, and worth recording why,
+# because the reason is not the one the name suggests. What these catch here is not an attacker: it is a
+# provider handing our own credential back in its error body — `Invalid API key: sk-…` is ordinary provider
+# behaviour — which would then land in `news_verdicts.trace`, a table that is backed up, pasted into
+# issues and loaded into notebooks under a 365-day retention. That is an accident class, not an attack
+# class, so "single operator, no adversary" does not dispose of it. It lives here rather than in
+# `runtime.py` because `provider_error_detail` is now its only consumer, and a module that scans nothing
+# should not own a scanner.
+_HIGH_CONFIDENCE_SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{16,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b", re.IGNORECASE),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
 
 _RETRYABLE_MARKERS: Final[tuple[str, ...]] = (
     "timeout",
@@ -624,12 +643,21 @@ def choice_content(payload: Mapping[str, Any]) -> str | None:
 
 
 def provider_error_detail(payload: Mapping[str, Any] | None) -> str | None:
-    """A bounded, secret-scrubbed summary of one provider error body.
+    """A bounded, scrubbed summary of one provider error body.
 
-    Provider-authored text, so it is scrubbed with the same high-confidence secret patterns the artifact
-    loader applies and capped, then carried on the failed attempt's trace — the difference between reading
-    "This response_format type is unavailable now" in the audit row and reproducing the request offline to
-    learn the same thing (#310).
+    Three behaviours with three different justifications, separated here because #319 nearly took all of
+    them out under one name:
+
+    - the `code: message` extraction is why the field exists — the difference between reading "This
+      response_format type is unavailable now" in an audit row and reproducing the request offline (#310);
+    - the 200-byte cap is a *resource* control, not a security one. A provider may answer with a whole
+      HTML page or a stack trace, once per failed attempt, into a JSONB column retained for a year. It
+      survives every threat model because it was never about a threat;
+    - the substitution is ledger hygiene, kept by operator decision (#319): providers echo credentials
+      into 401/403 bodies, which is an accident rather than an attack and so is not disposed of by
+      removing the adversary from the model.
+
+    Excluded from `_recording_verification_projection` either way, so none of this reaches a replay hash.
     """
 
     if not isinstance(payload, Mapping):
