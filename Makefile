@@ -4,6 +4,7 @@ export UV_CACHE_DIR
 TRACEFOLD := uv run tracefold
 READ_NAUTILUS_CREDENTIALS_CONFIGURED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["nautilus"]["credentials_configured"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid credentials_configured")'
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
+READ_TRADING_ACTIVE_CAPABILITY := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["active_capability_snapshot_sha256"]; print(value or "") if value is None or isinstance(value, str) else sys.exit("invalid active capability")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -19,7 +20,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-refresh verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-bootstrap-if-needed verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -362,39 +363,45 @@ _up-locked:
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		if [ "$$trading_enabled" = true ]; then \
-			make --no-print-directory _trading-capability-refresh || fail; \
+			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
 		fi; \
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
-_trading-capability-refresh:
+_trading-capability-bootstrap-if-needed:
 	@set -eu; \
-		echo "Refreshing the Trading execution capability snapshot from a fresh account-zero proof."; \
-		bootstrap_name="tracefold-nautilus-capability-bootstrap-$$$$"; \
-		bootstrap_started_at_ms=$$(python3 -c 'import time; print(time.time_ns() // 1000000)'); \
-		cleanup_bootstrap() { docker stop -t 40 "$$bootstrap_name" >/dev/null 2>&1 || true; }; \
-		trap cleanup_bootstrap EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; \
-		docker compose run -d --rm --no-deps --name "$$bootstrap_name" \
-			nautilus tracefold nautilus run --bootstrap-zero-claims >/dev/null; \
-		bootstrap_ready=; attempt=0; \
-		while [ "$$attempt" -lt $(TRACEFOLD_COMPOSE_WAIT_SECONDS) ]; do \
-			bootstrap_ready=$$(docker compose exec -T postgres sh -eu -c \
-				'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
-				PGOPTIONS="-c default_transaction_read_only=on"; \
-				export PGPASSWORD PGOPTIONS; \
-				exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
-				"SELECT CASE WHEN nautilus_bootstrap_account_zero_at_ms >= $$bootstrap_started_at_ms \
-				AND NOT nautilus_unexpected_exposure THEN 'ready' ELSE '' END \
-				FROM trading_runtime_state WHERE id = 1"); \
-			[ "$$bootstrap_ready" = ready ] && break; \
-			attempt=$$((attempt + 1)); sleep 1; \
-		done; \
-		if [ "$$bootstrap_ready" != ready ]; then \
-			echo "Nautilus did not establish a fresh bootstrap account-zero proof." >&2; \
-			exit 1; \
+		runtime_status=$$(docker compose run --rm --no-deps --entrypoint tracefold serve trading status); \
+		active_capability=$$(printf '%s\n' "$$runtime_status" | $(READ_TRADING_ACTIVE_CAPABILITY)); \
+		if [ -n "$$active_capability" ]; then \
+			echo "Reusing the active Trading execution capability snapshot."; \
+		else \
+			echo "Bootstrapping the first Trading execution capability snapshot."; \
+			bootstrap_name="tracefold-nautilus-capability-bootstrap-$$$$"; \
+			bootstrap_started_at_ms=$$(python3 -c 'import time; print(time.time_ns() // 1000000)'); \
+			cleanup_bootstrap() { docker stop -t 40 "$$bootstrap_name" >/dev/null 2>&1 || true; }; \
+			trap cleanup_bootstrap EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; \
+			docker compose run -d --rm --no-deps --name "$$bootstrap_name" \
+				nautilus tracefold nautilus run --bootstrap-zero-claims >/dev/null; \
+			bootstrap_ready=; attempt=0; \
+			while [ "$$attempt" -lt $(TRACEFOLD_COMPOSE_WAIT_SECONDS) ]; do \
+				bootstrap_ready=$$(docker compose exec -T postgres sh -eu -c \
+					'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+					PGOPTIONS="-c default_transaction_read_only=on"; \
+					export PGPASSWORD PGOPTIONS; \
+					exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
+					"SELECT CASE WHEN nautilus_bootstrap_account_zero_at_ms >= $$bootstrap_started_at_ms \
+					AND NOT nautilus_unexpected_exposure THEN 'ready' ELSE '' END \
+					FROM trading_runtime_state WHERE id = 1"); \
+				[ "$$bootstrap_ready" = ready ] && break; \
+				attempt=$$((attempt + 1)); sleep 1; \
+			done; \
+			if [ "$$bootstrap_ready" != ready ]; then \
+				echo "Nautilus did not establish a fresh bootstrap account-zero proof." >&2; \
+				exit 1; \
+			fi; \
+			cleanup_bootstrap; trap - EXIT INT TERM; \
+			docker compose run --rm --no-deps --entrypoint tracefold workers trading refresh-capabilities; \
 		fi; \
-		cleanup_bootstrap; trap - EXIT INT TERM; \
-		docker compose run --rm --no-deps --entrypoint tracefold workers trading refresh-capabilities; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus
 
@@ -519,7 +526,7 @@ _deploy-image-locked:
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
 		if [ "$$trading_enabled" = true ]; then \
-			make --no-print-directory _trading-capability-refresh || fail; \
+			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
 		fi; \
 		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
