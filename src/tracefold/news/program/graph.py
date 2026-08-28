@@ -136,9 +136,7 @@ def _assemble(
     *,
     told_count: int,
 ) -> tuple[TriageVerdict, EditorialEnvelope]:
-    error = restatement_index_error(
-        novelty=semantics.novelty, restates=semantics.restates, told_count=told_count
-    )
+    error = restatement_index_error(novelty=semantics.novelty, restates=semantics.restates, told_count=told_count)
     if error is not None:
         raise ValueError(error)
     relevance = semantics.relevance
@@ -170,9 +168,7 @@ def _assemble(
 
 
 def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) -> None:
-    error = restatement_index_error(
-        novelty=semantics.novelty, restates=semantics.restates, told_count=told_count
-    )
+    error = restatement_index_error(novelty=semantics.novelty, restates=semantics.restates, told_count=told_count)
     if error is not None:
         raise ValueError(error)
 
