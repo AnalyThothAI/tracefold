@@ -257,7 +257,7 @@ def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
     assert "reply_markup" not in observed
 
 
-def test_sender_shows_second_level_news_processing_and_push_times() -> None:
+def test_sender_shows_second_level_news_and_push_times() -> None:
     observed: dict[str, object] = {}
     card = _card(source_url="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin")
     card["elements"][0]["content"] = (
@@ -292,10 +292,10 @@ def test_sender_shows_second_level_news_processing_and_push_times() -> None:
     assert str(observed["text"]).endswith(
         '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>\n\n'
         "⏱ <b>时间</b>\n"
-        "新闻时间  2026-08-28 14:32:05\n"
-        "处理时长  8 秒\n"
-        "推送时间  2026-08-28 14:32:13"
+        "新闻时间  14:32:05\n"
+        "推送时间  14:32:13"
     )
+    assert "处理时长" not in str(observed["text"])
 
 
 def test_sender_keeps_known_push_time_when_news_time_is_missing() -> None:
@@ -320,9 +320,7 @@ def test_sender_keeps_known_push_time_when_news_time_is_missing() -> None:
     sender.prepare()
     sender.send_card(_card(), presentation=ReaderDeliveryPresentation())
 
-    assert str(observed["text"]).endswith(
-        "⏱ <b>时间</b>\n新闻时间  暂无\n处理时长  暂无\n推送时间  2026-08-28 14:32:13"
-    )
+    assert str(observed["text"]).endswith("⏱ <b>时间</b>\n新闻时间  暂无\n推送时间  14:32:13")
 
 
 def test_sender_uses_source_url_host_when_card_origin_is_missing() -> None:

@@ -185,7 +185,6 @@ class TelegramNewsPushSender:
             trade_targets=view.trade_targets,
             market_movements=view.market_movements,
             news_at_ms=view.news_at_ms,
-            observed_at_ms=view.observed_at_ms,
             pushed_at_ms=pushed_at_ms,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
@@ -306,7 +305,6 @@ def _telegram_message(
     trade_targets: Sequence[ReaderTradeTarget] = (),
     market_movements: Sequence[ReaderMarketMovement] = (),
     news_at_ms: int | None = None,
-    observed_at_ms: int | None = None,
     pushed_at_ms: int | None = None,
 ) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
@@ -370,7 +368,7 @@ def _telegram_message(
         source = _telegram_source_html(facts.origin, source_url)
         count = f" · {facts.report_count} 条报道" if facts.report_count is not None else ""
         metadata_groups.append(f"🔗 <b>来源</b>  {source}{count}")
-    timing = _telegram_timing_html(news_at_ms=news_at_ms, observed_at_ms=observed_at_ms, pushed_at_ms=pushed_at_ms)
+    timing = _telegram_timing_html(news_at_ms=news_at_ms, pushed_at_ms=pushed_at_ms)
     if timing:
         metadata_groups.append(f"⏱ <b>时间</b>\n{timing}")
     if metadata_groups:
@@ -459,7 +457,6 @@ def _format_bps(value: int) -> str:
 def _telegram_timing_html(
     *,
     news_at_ms: int | None,
-    observed_at_ms: int | None,
     pushed_at_ms: int | None,
 ) -> str:
     if not _positive_timestamp(pushed_at_ms):
@@ -468,12 +465,7 @@ def _telegram_timing_html(
     pushed_text = _format_reader_time(int(pushed_at_ms))
     if not pushed_text:
         return ""
-    if _positive_timestamp(observed_at_ms):
-        processing_seconds = max(0, int(pushed_at_ms) - int(observed_at_ms)) // 1000
-        processing = f"{processing_seconds} 秒"
-    else:
-        processing = "暂无"
-    return f"新闻时间  {news_text or '暂无'}\n处理时长  {processing}\n推送时间  {pushed_text}"
+    return f"新闻时间  {news_text or '暂无'}\n推送时间  {pushed_text}"
 
 
 def _positive_timestamp(value: object) -> bool:
@@ -482,7 +474,7 @@ def _positive_timestamp(value: object) -> bool:
 
 def _format_reader_time(value_ms: int) -> str:
     try:
-        return datetime.fromtimestamp(value_ms / 1000, tz=_READER_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(value_ms / 1000, tz=_READER_TIMEZONE).strftime("%H:%M:%S")
     except (OSError, OverflowError, ValueError):
         return ""
 
