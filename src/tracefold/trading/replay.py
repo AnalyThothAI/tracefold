@@ -24,7 +24,7 @@ from .contracts import (
     canonical_sha256,
     underlying_key,
 )
-from .decision.regime import DEFAULT_REGIME_POLICY, assess, pre_move_bps, select_bar
+from .decision.regime import RegimePolicy, assess, pre_move_bps, select_bar
 from .execution_policy import EXECUTION_POLICY_SHA256
 from .research.oi_replay import PENDING_MARKET_CONTEXT, OiReplayOutcome
 from .strategy.root import TradingStrategy
@@ -252,6 +252,7 @@ class BarEpisodeRunner(Protocol):
         capability: ReplayScenarioCapabilityV1,
         bars: list[ReplayBarV1],
         reference_price: Decimal,
+        target_notional: Decimal,
     ) -> BarEpisodeResult: ...
 
 
@@ -327,6 +328,8 @@ def evaluate_replay_market_slices(
     snapshot: ExecutionCapabilitySnapshotV1,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
+    regime_policy: RegimePolicy,
+    target_notional: Decimal,
 ) -> list[ReplayTerminalOutcomeV1]:
     return [
         _market_outcome(
@@ -335,6 +338,8 @@ def evaluate_replay_market_slices(
             snapshot=snapshot,
             blacklist=blacklist,
             run_episode=run_episode,
+            regime_policy=regime_policy,
+            target_notional=target_notional,
         )
         for item in slices
     ]
@@ -347,6 +352,8 @@ def _market_outcome(
     snapshot: ExecutionCapabilitySnapshotV1,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
+    regime_policy: RegimePolicy,
+    target_notional: Decimal,
 ) -> ReplayTerminalOutcomeV1:
     plan = item.plan
     strategy_identity = replay_strategy_identity(strategy)
@@ -356,12 +363,12 @@ def _market_outcome(
     anchor = select_bar(
         close_bars,
         target_ms=plan.source.observed_at_ms,
-        gap_tolerance_ms=DEFAULT_REGIME_POLICY.bar_gap_tolerance_ms,
+        gap_tolerance_ms=regime_policy.bar_gap_tolerance_ms,
     )
-    move = pre_move_bps(close_bars, anchor_at_ms=plan.source.observed_at_ms, policy=DEFAULT_REGIME_POLICY)
+    move = pre_move_bps(close_bars, anchor_at_ms=plan.source.observed_at_ms, policy=regime_policy)
     if anchor is None or move is None:
         return _market_missing(plan, strategy_identity, "outside_bar_coverage")
-    regime = assess(oi_direction=plan.source.oi_direction, move=move, policy=DEFAULT_REGIME_POLICY)
+    regime = assess(oi_direction=plan.source.oi_direction, move=move, policy=regime_policy)
     decision = strategy.evaluate(
         FrozenStrategyContext(
             mode="paper",
@@ -371,7 +378,7 @@ def _market_outcome(
                 mark_price=anchor.close,
                 observed_at_ms=plan.source.observed_at_ms,
                 pre_move_bps=move,
-                pre_move_lookback_ms=DEFAULT_REGIME_POLICY.lookback_ms,
+                pre_move_lookback_ms=regime_policy.lookback_ms,
             ),
         )
     )
@@ -414,6 +421,7 @@ def _market_outcome(
             capability=capability,
             bars=item.bars,
             reference_price=anchor.close,
+            target_notional=target_notional,
         )
     except (RuntimeError, ValueError):
         episode = BarEpisodeResult("REJECTED", "market_unacceptable")

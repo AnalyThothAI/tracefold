@@ -16,6 +16,7 @@ from tracefold.trading import (
 )
 from tracefold.trading.candidate.blacklist import CanonicalBlacklistEntryV1
 from tracefold.trading.contracts import Bar, OiTradeCandidate, RegimeAssessment
+from tracefold.trading.decision.regime import RegimePolicy
 from tracefold.trading.replay import BarEpisodeResult, DirectionalReplayPlan, ReplayMarketSlice
 
 NOW = 1_900_000_000_000
@@ -93,7 +94,10 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
         instrument_id=INSTRUMENT_ID,
     )
 
-    async def fetched(*_args, **_kwargs):
+    requests = []
+
+    async def fetched(*_args, **kwargs):
+        requests.append(kwargs)
         return (
             VenueBar(NOW - 300_000, NOW, *(Decimal("1") for _ in range(5))),
             VenueBar(NOW, NOW + 300_000, *(Decimal("2") for _ in range(5))),
@@ -101,10 +105,12 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
 
     monkeypatch.setattr(trading_replay_command, "fetch_binance_bars", fetched)
 
-    market_slice = asyncio.run(trading_replay_command._fetch_market_slices([plan], now_ms=NOW))[0]
+    regime = RegimePolicy(lookback_ms=7_200_000)
+    market_slice = asyncio.run(trading_replay_command._fetch_market_slices([plan], now_ms=NOW, regime_policy=regime))[0]
 
     assert market_slice.end_ms > NOW
     assert [bar.close_at_ms for bar in market_slice.bars] == [NOW]
+    assert requests[0]["start_ms"] == NOW - regime.lookback_ms - regime.bar_gap_tolerance_ms
 
 
 def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatch) -> None:
@@ -147,26 +153,33 @@ def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatc
             model_dump=lambda **_kwargs: {"decision": "long", "rule": "smart_money_momentum_long"},
         ),
     )
-    episode_calls: list[str] = []
+    configured_regime = RegimePolicy(lookback_ms=7_200_000, min_price_move_bps=75, max_price_move_bps=800)
+    observed_policies: list[RegimePolicy] = []
+    episode_notionals: list[Decimal] = []
+
+    def pre_move(*_args, **kwargs):
+        observed_policies.append(kwargs["policy"])
+        return 100
+
+    def assessed(**kwargs):
+        observed_policies.append(kwargs["policy"])
+        return RegimeAssessment(
+            regime="buildup_up",
+            reason="confirmed",
+            pre_move_bps=100,
+            oi_direction="rise",
+        )
+
     monkeypatch.setattr(
         replay,
         "select_bar",
         lambda *_args, **_kwargs: Bar(open_at_ms=NOW - 300_000, close_at_ms=NOW, close="0.1000"),
     )
-    monkeypatch.setattr(replay, "pre_move_bps", lambda *_args, **_kwargs: 100)
-    monkeypatch.setattr(
-        replay,
-        "assess",
-        lambda **_kwargs: RegimeAssessment(
-            regime="buildup_up",
-            reason="confirmed",
-            pre_move_bps=100,
-            oi_direction="rise",
-        ),
-    )
+    monkeypatch.setattr(replay, "pre_move_bps", pre_move)
+    monkeypatch.setattr(replay, "assess", assessed)
 
-    def run_episode(**_kwargs) -> BarEpisodeResult:
-        episode_calls.append("ran")
+    def run_episode(**kwargs) -> BarEpisodeResult:
+        episode_notionals.append(kwargs["target_notional"])
         return BarEpisodeResult("CLOSED", "max_holding")
 
     blacklist = BlacklistSnapshotV1(
@@ -186,9 +199,12 @@ def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatc
         snapshot=_snapshot(),
         blacklist=blacklist,
         run_episode=run_episode,
+        regime_policy=configured_regime,
+        target_notional=Decimal("7.5"),
     )[0]
 
-    assert episode_calls == ["ran"]
+    assert observed_policies == [configured_regime, configured_regime]
+    assert episode_notionals == [Decimal("7.5")]
     assert (outcome.decision, outcome.execution) == ("DIRECTIONAL", "CLOSED")
     assert (outcome.capital_admission, outcome.capital_reason) == ("DENIED", "blacklisted")
     assert outcome.replay_intent is not None

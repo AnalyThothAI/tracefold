@@ -78,15 +78,18 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.contracts",
         "tracefold.news.storage.root",
         "tracefold.trading.storage.root",
-        # #269. Three surfaces have to describe the *same* capital rules — the Workers wiring that
+        # #269/#286. Three surfaces have to describe the *same* capital rules — the Workers wiring that
         # executes them, the CLI replay that reports what they did, and the HTTP status the console
         # reads — so `app/trading_config.py` assembles them from settings once and every reader gets
-        # the same digest. Each of these is a pure code-owned value: the gate's config and version, the
-        # eligibility policy it is built from, and the strategy map with its per-strategy thresholds.
-        # Composition is App's, which is why this belongs here and not in `app.http`; a route that
-        # imported them directly would be a second assembly free to drift from the scanner's.
+        # the same digest. #286 extends that assembly to the runtime's regime, trade and notional config
+        # so replay cannot silently use defaults. These are pure code-owned values; composition is App's,
+        # which is why this belongs here rather than in `app.http` or either business package.
         "tracefold.trading.candidate.eligibility",
         "tracefold.trading.candidate.gate",
+        "tracefold.trading.contracts",
+        "tracefold.trading.decision.policy",
+        "tracefold.trading.decision.regime",
+        "tracefold.trading.pipeline.runtime",
         "tracefold.trading.strategy.root",
     ),
     "app.http": (

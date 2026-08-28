@@ -8,7 +8,11 @@ from typing import Any, cast
 
 from tracefold.app.cli.replay_artifacts import publish_replay_artifact, verify_replay_artifact
 from tracefold.app.repository_session import repositories
-from tracefold.app.trading_config import trading_settings_gate, trading_settings_strategies
+from tracefold.app.trading_config import (
+    trading_config_from_settings,
+    trading_settings_gate,
+    trading_settings_strategies,
+)
 from tracefold.integrations.nautilus.config import installed_nautilus_wheel_identity
 from tracefold.integrations.nautilus.replay import run_bar_episode
 from tracefold.integrations.venues import (
@@ -23,7 +27,7 @@ from tracefold.trading.candidate.blacklist import Blacklist
 from tracefold.trading.candidate.eligibility import oi_candidate
 from tracefold.trading.candidate.routing import resolve_instrument
 from tracefold.trading.contracts import OiTradeCandidate, canonical_sha256
-from tracefold.trading.decision.regime import DEFAULT_REGIME_POLICY
+from tracefold.trading.decision.regime import RegimePolicy
 from tracefold.trading.execution_policy import EXECUTION_POLICY_SHA256
 from tracefold.trading.intent import INTENT_POLICY_SHA256, capability_instrument_id
 from tracefold.trading.replay import (
@@ -72,6 +76,7 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
         return 2, {"ok": False, "error": "replay_strategy_invalid"}
 
     gate = trading_settings_gate(settings)
+    runtime_config = trading_config_from_settings(settings)
     try:
         with repositories(settings, role="serve") as repos, repos.transaction():
             repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -103,13 +108,15 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
     except RuntimeError as exc:
         return 1, {"ok": False, "error": str(exc)}
 
-    market_slices = asyncio.run(_fetch_market_slices(plans, now_ms=now_ms))
+    market_slices = asyncio.run(_fetch_market_slices(plans, now_ms=now_ms, regime_policy=runtime_config.regime))
     outcomes = immediate + evaluate_replay_market_slices(
         market_slices,
         strategy=strategy,
         snapshot=snapshot,
         blacklist=blacklist,
         run_episode=run_bar_episode,
+        regime_policy=runtime_config.regime,
+        target_notional=runtime_config.fixed_notional_usd,
     )
     outcomes.sort(key=lambda row: (row.source_identity, row.strategy_identity, row.scenario_venue or ""))
     if len(outcomes) != len(facts) or len({row.source_identity for row in outcomes}) != len(facts):
@@ -156,6 +163,10 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
                 "strategy_version": strategy.strategy_version,
                 "strategy_config_sha256": strategy.config_digest,
                 "strategy_identity": strategy_identity,
+                "regime_lookback_ms": str(runtime_config.regime.lookback_ms),
+                "regime_min_price_move_bps": str(runtime_config.regime.min_price_move_bps),
+                "regime_max_price_move_bps": str(runtime_config.regime.max_price_move_bps),
+                "regime_bar_gap_tolerance_ms": str(runtime_config.regime.bar_gap_tolerance_ms),
             }
         ],
         intent_policy_sha256=INTENT_POLICY_SHA256,
@@ -173,6 +184,7 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
             "stop_touch": "bar_low_then_engine_market_fill",
             "gap": "engine_bar_execution",
             "holding": "first_bar_at_or_after_180s_then_engine_market_fill",
+            "target_notional_usd": str(runtime_config.fixed_notional_usd),
         },
         slippage_model={"version": "engine_bar_execution_v1", "configured_bps": "0"},
         latency_model={"version": "bar_observation_v1", "configured_ms": "0"},
@@ -289,11 +301,16 @@ def _plans(
     return plans, immediate, research_rows
 
 
-async def _fetch_market_slices(plans: list[DirectionalReplayPlan], *, now_ms: int) -> list[ReplayMarketSlice]:
+async def _fetch_market_slices(
+    plans: list[DirectionalReplayPlan],
+    *,
+    now_ms: int,
+    regime_policy: RegimePolicy,
+) -> list[ReplayMarketSlice]:
     semaphore = asyncio.Semaphore(8)
 
     async def fetch(plan: DirectionalReplayPlan) -> ReplayMarketSlice:
-        start_ms = plan.source.observed_at_ms - DEFAULT_REGIME_POLICY.lookback_ms - 330_000
+        start_ms = plan.source.observed_at_ms - regime_policy.lookback_ms - regime_policy.bar_gap_tolerance_ms
         end_ms = max(plan.source.observed_at_ms, plan.source.verdict_created_at_ms) + 1_200_000
         try:
             async with semaphore:
