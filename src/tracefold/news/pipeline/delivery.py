@@ -144,6 +144,19 @@ def _progression_review_candidates(
     return tuple(candidates)
 
 
+def _progression_parent_age_minutes(
+    candidates: Sequence[Mapping[str, Any]],
+    review: ProgressionReview | None,
+) -> int | None:
+    if review is None or review.state != "confirmed" or review.candidate_i is None:
+        return None
+    candidate = next((item for item in candidates if item.get("i") == review.candidate_i), None)
+    if candidate is None:
+        return None
+    value = candidate.get("ago_min")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 class NewsPushSender(Protocol):
     """Synchronous provider boundary executed by the finite-operation runner."""
 
@@ -518,6 +531,10 @@ class DelivererConsumer:
                     progression_review.reason_zh
                     if progression_review is not None
                     else context.presentation.progression_review_reason
+                ),
+                progression_review_parent_age_minutes=_progression_parent_age_minutes(
+                    context.progression_candidates,
+                    progression_review,
                 ),
             )
             async with self._edit_lock:

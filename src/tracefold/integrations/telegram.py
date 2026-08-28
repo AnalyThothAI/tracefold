@@ -40,7 +40,7 @@ _REPORTING_ORIGIN_RE = re.compile(r"^(?P<origin>.+)（(?P<count>[1-9][0-9]*) 条
 _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 _BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
 _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
-_TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong)>|<a href="[^"]+">|</a>')
+_TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
 _NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
@@ -197,6 +197,7 @@ class TelegramNewsPushSender:
             progression_from_headline=view.progression_from_headline,
             progression_review_state=view.progression_review_state,
             progression_review_reason=view.progression_review_reason,
+            progression_review_parent_age_minutes=view.progression_review_parent_age_minutes,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         try:
@@ -249,6 +250,7 @@ class TelegramNewsPushSender:
             progression_from_headline=view.progression_from_headline,
             progression_review_state=view.progression_review_state,
             progression_review_reason=view.progression_review_reason,
+            progression_review_parent_age_minutes=view.progression_review_parent_age_minutes,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         result = self._call_api(
@@ -442,6 +444,7 @@ def _telegram_message(
     progression_from_headline: str | None = None,
     progression_review_state: str | None = None,
     progression_review_reason: str | None = None,
+    progression_review_parent_age_minutes: int | None = None,
 ) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
@@ -477,15 +480,18 @@ def _telegram_message(
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
     novelty_line = _telegram_novelty_html(
         novelty or facts.novelty,
-        progression_from_headline=progression_from_headline,
+        progression_from_headline=(None if progression_review_state else progression_from_headline),
     )
-    if novelty_line:
-        sections.append(novelty_line)
     progression_review_line = _telegram_progression_review_html(
         progression_review_state,
         reason=progression_review_reason,
+        parent_age_minutes=progression_review_parent_age_minutes,
     )
-    if progression_review_line:
+    if novelty_line and progression_review_line:
+        sections.append(f"{novelty_line}\n{progression_review_line}")
+    elif novelty_line:
+        sections.append(novelty_line)
+    elif progression_review_line:
         sections.append(progression_review_line)
     if explanation:
         sections.append(_escape_html(_clip(explanation, 1800)))
@@ -540,20 +546,38 @@ def _telegram_novelty_html(value: str, *, progression_from_headline: str | None)
     return ""
 
 
-def _telegram_progression_review_html(value: str | None, *, reason: str | None) -> str:
-    bounded_reason = _escape_html(_clip(str(reason or "").strip(), 160))
+def _telegram_progression_review_html(
+    value: str | None,
+    *,
+    reason: str | None,
+    parent_age_minutes: int | None,
+) -> str:
+    bounded_reason = _escape_html(_clip(str(reason or "").strip(), 88))
     if value == "pending":
-        return "⏳ <b>关联复核</b>  分析中"
+        return "<blockquote>⏳ <b>关联确认中</b></blockquote>"
     if value == "confirmed":
-        suffix = f" · {bounded_reason}" if bounded_reason else ""
-        return f"✅ <b>关联复核</b>  已确认{suffix}"
+        age = _telegram_parent_age(parent_age_minutes)
+        suffix = f" ({age} 前)" if age else ""
+        detail = bounded_reason or "同一事件链出现了新的状态变化。"
+        return f"<blockquote>✅ <b>已确认关联:</b> {detail}{suffix}</blockquote>"
     if value == "rejected":
-        suffix = f" · {bounded_reason}" if bounded_reason else ""
-        return f"✏️ <b>关联修正</b>  未确认承接关系{suffix}"
+        detail = bounded_reason or "未找到同一事件链的充分证据。"
+        return f"<blockquote>↩️ <b>未确认关联:</b> {detail}</blockquote>"
     if value == "unavailable":
-        suffix = f" · {bounded_reason}" if bounded_reason else ""
-        return f"⚠️ <b>关联复核</b>  未完成{suffix}"
+        detail = bounded_reason or "后台复核暂未完成。"
+        return f"<blockquote>⚠️ <b>关联待确认:</b> {detail}</blockquote>"
     return ""
+
+
+def _telegram_parent_age(value: int | None) -> str:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return ""
+    hours, minutes = divmod(value, 60)
+    if hours and minutes:
+        return f"{hours}h {minutes}mins"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}mins"
 
 
 def _telegram_scope_html(value: str) -> str:

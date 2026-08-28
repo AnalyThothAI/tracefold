@@ -162,9 +162,10 @@ Telegram projection gives every asset its own block: the first line is `🎯 标
 line between them. The novelty badge sits directly below the title: `🆕 新事实`, or `🔄 新进展` with the prior
 headline immediately only when no post-delivery verifier is configured and an exact-fact retrieval or stored
 title-similarity score of at least `0.50` supports it. With the verifier configured, an initial progression shows
-`关联复核 分析中` and never waits for another model call. The same message is later edited to `关联复核 已确认`
-with the stored parent headline and a bounded reason, `关联修正 未确认承接关系` with a reason and no parent, or an
-explicit unavailable state. The verifier considers at most eight already-delivered told-ledger candidates and its
+an indented one-line `关联确认中` child block and never waits for another model call. The same message is later
+edited to a compact child block: `✅ 已确认关联: <reason> (<parent age> 前)`, `↩️ 未确认关联: <reason>`, or an
+explicit unavailable state. Confirmed display reasons are clipped to one line; the model is instructed to avoid
+repeating the headline. The verifier considers at most eight already-delivered told-ledger candidates and its
 structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector
 verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
 or inventing a trade. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a

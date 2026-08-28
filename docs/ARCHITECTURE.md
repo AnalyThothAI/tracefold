@@ -1256,13 +1256,13 @@ a blank line between them. Impact and polarity share one direction row, such as 
 novelty is a badge immediately below the title (`🆕 新事实` or `🔄 新进展`). A progression names the previous
 headline immediately only when the optional post-delivery verifier is unavailable and an exact-fact retrieval or
 a stored title-similarity score of at least `0.50` supports it. With the verifier configured, the first message
-shows `关联复核 分析中` without naming a parent. After the send receipt is durable, one bounded structured LLM
+shows a one-line indented `关联确认中` child block without naming a parent. After the send receipt is durable, one bounded structured LLM
 call compares the current Event with at most eight selected told-ledger candidates. It confirms only the same
 concrete subject and event chain with a material new action, result, number, confirmation, reversal, or state
 change; a shared topic, sector, ticker, country, or storyline bucket is insufficient. Price reads and this review
-run concurrently and settle through one edit of the original Telegram message. A confirmation names the stored
-candidate headline and gives the model's bounded Chinese reason; a rejection removes the parent headline and
-shows `关联修正` with its reason; timeout or invalid output shows an explicit unavailable state. The exact
+run concurrently and settle through one edit of the original Telegram message. A confirmation replaces the
+pending child block with `✅ 已确认关联: <concise reason> (<parent age> 前)`; a rejection shows
+`↩️ 未确认关联: <concise reason>`; timeout or invalid output shows an explicit unavailable child block. The exact
 verifier result and its content-addressed verifier identity are stored inside the desired durable card before the
 edit intent. Broad zero-similarity storyline buckets therefore never become an unaudited “上一条”. If a macro or sector verdict has no
 code-verified ticker, Telegram explicitly renders its scope and `暂无直接标的`. It turns

@@ -1509,6 +1509,7 @@ def test_telegram_sends_a_progression_before_llm_association_review_then_edits_w
     assert updated.progression_from_headline == "美光工会此前启动劳资协商"
     assert updated.progression_review_state == "confirmed"
     assert updated.progression_review_reason == "同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
+    assert updated.progression_review_parent_age_minutes == 90
     assert sender.edited_cards[0]["progression_review"]["state"] == "confirmed"
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 

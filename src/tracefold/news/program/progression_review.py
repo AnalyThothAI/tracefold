@@ -27,8 +27,9 @@ official confirmation, reversal, or state change. A shared broad topic, sector, 
 storyline bucket is not enough. Similar wording alone is not enough.
 
 When related is true, candidate_i must be the supplied i of the single best parent story. When no candidate
-meets the rule, related must be false and candidate_i must be -1. reason_zh must be one short Chinese sentence
-that names the concrete evidence for confirmation or rejection. Return only the structured review."""
+meets the rule, related must be false and candidate_i must be -1. reason_zh must be one compact Chinese sentence,
+at most 60 Chinese characters, that names the concrete evidence without repeating the headline. Return only the
+structured review."""
 
 
 class _ExactModel(BaseModel):

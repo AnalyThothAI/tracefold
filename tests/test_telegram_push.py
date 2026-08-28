@@ -188,14 +188,16 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
             progression_from_headline="美光工会此前启动劳资协商",
             progression_review_state="confirmed",
             progression_review_reason="同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。",
+            progression_review_parent_age_minutes=61,
         ),
     )
 
     ticker = '<a href="https://www.binance.com/en/futures/MUUSDT">MU</a>'
     assert observed["text"] == (
         "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
-        "🔄 <b>新进展</b> · 接续「美光工会此前启动劳资协商」\n\n"
-        "✅ <b>关联复核</b>  已确认 · 同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。\n\n"
+        "🔄 <b>新进展</b>\n"
+        "<blockquote>✅ <b>已确认关联:</b> 同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
+        " (1h 1mins 前)</blockquote>\n\n"
         "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
         "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
         "压低美光产能利用率与现金流。\n\n"
@@ -309,11 +311,13 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
 
     assert [method for method, _payload in observed] == ["sendMessage", "editMessageText"]
     assert "新闻后 计算中\n1h 计算中，\n24h 计算中" in str(observed[0][1]["text"])
-    assert "⏳ <b>关联复核</b>  分析中" in str(observed[0][1]["text"])
+    assert "🔄 <b>新进展</b>\n<blockquote>⏳ <b>关联确认中</b></blockquote>" in str(observed[0][1]["text"])
     assert observed[1][1]["chat_id"] == CHANNEL_ID
     assert observed[1][1]["message_id"] == 42
     assert "新闻后 0.00%\n1h -0.25%，\n24h -5.11%" in str(observed[1][1]["text"])
-    assert "✏️ <b>关联修正</b>  未确认承接关系 · 候选报道的主体和事件链不同。" in str(observed[1][1]["text"])
+    assert "🔄 <b>新进展</b>\n<blockquote>↩️ <b>未确认关联:</b> 候选报道的主体和事件链不同。</blockquote>" in str(
+        observed[1][1]["text"]
+    )
     assert "接续「" not in str(observed[1][1]["text"])
     assert "推送时间  10:48:33" in str(observed[1][1]["text"])
     assert initial["pushed_at_ms"] == 1_787_885_313_000

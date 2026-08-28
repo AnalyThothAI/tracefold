@@ -105,6 +105,7 @@ class ReaderDeliveryPresentation:
     progression_from_headline: str | None = None
     progression_review_state: ProgressionReviewState | None = None
     progression_review_reason: str | None = None
+    progression_review_parent_age_minutes: int | None = None
 
 
 class ExactNewsModel(BaseModel):
