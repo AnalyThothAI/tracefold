@@ -56,7 +56,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260828_0323`
+5. Deploy the exact reviewed image at the current Alembic head (`20260828_0324`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
@@ -974,16 +974,9 @@ re-pinned line in `tests/contract/test_program_release_identity.py`.
 index; it performs no provider call and requires no new credential or runtime
 role. `0323` adds the receipt-bound deletion lifecycle and its stale-intent
 index for authoritative five-venue single-name absence.
-
-One private Telegram branch previously used the upstream `0317`/`0318`
-identifiers for those two delivery changes. Before Alembic advances a database
-reporting that colliding `0318`, `tracefold db migrate` fingerprints all eleven
-delivery columns, four constraints and two indexes and also checks that the
-upstream Trading authority cut and `program_v8` epoch are absent. Only that
-exact shape is reconciled: the upstream `0317`/`0318` effects are applied in one
-transaction, the existing Telegram state is retained, and normal `0319` through
-`0323` migration resumes. A partial, mixed or unknown shape fails with
-`legacy_migration_lineage_unrecognized`; never stamp past it manually.
+`0324` replaces both lifecycle shape constraints with two-valued predicates so
+PostgreSQL `NULL` semantics cannot admit partial edit or delete intent. It fails
+closed if an existing row violates either lifecycle before replacing the constraints.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

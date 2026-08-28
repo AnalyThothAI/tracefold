@@ -6,8 +6,6 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from tracefold.platform.postgres.legacy_reconciliation import reconcile_colliding_telegram_lineage
-
 
 def alembic_config() -> Config:
     root = Path(__file__).resolve().parents[4]
@@ -15,8 +13,6 @@ def alembic_config() -> Config:
 
 
 def upgrade_head(database_url: str | None = None) -> None:
-    if database_url is not None:
-        reconcile_colliding_telegram_lineage(database_url)
     config = alembic_config()
     if database_url is not None:
         config.attributes["database_url"] = database_url

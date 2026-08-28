@@ -353,7 +353,8 @@ from the canonical receipt. The
 Adapter rejects a receipt with a different provider, target digest, invalid message ID, or missing original send
 timestamp. It independently verifies the edit response still names the configured channel and same message ID.
 The typed receipt has an exact allowlist (`provider`, `message_id`, `pushed_at_ms`, `target_sha256`, and optional
-`edited_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds `pushed_at_ms` as well as
+`edited_at_ms` / `deleted_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds
+`pushed_at_ms` as well as
 message and target identity before accepting either edit intent or settlement.
 The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`,
 `editMessageText`, and `deleteMessage`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP

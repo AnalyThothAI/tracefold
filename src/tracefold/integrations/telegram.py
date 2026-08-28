@@ -488,16 +488,34 @@ def _telegram_message(
     ticker_links = _trade_target_links(trade_targets)
 
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
+    displayed_novelty = novelty or facts.novelty
+    displayed_review_state = progression_review_state
+    displayed_review_reason = progression_review_reason
+    displayed_parent_headline = progression_from_headline
+    displayed_parent_age = progression_review_parent_age_minutes
+    displayed_parent_url = progression_review_parent_url
+    if displayed_review_state in {"rejected", "unavailable"}:
+        displayed_novelty = "new_fact"
+        displayed_parent_headline = None
+        displayed_parent_age = None
+        displayed_parent_url = None
+    elif displayed_review_state == "confirmed" and not displayed_parent_url:
+        displayed_novelty = "new_fact"
+        displayed_review_state = "unavailable"
+        displayed_review_reason = "未找到可引用的历史推送。"
+        displayed_parent_headline = None
+        displayed_parent_age = None
+
     novelty_line = _telegram_novelty_html(
-        novelty or facts.novelty,
-        progression_from_headline=(None if progression_review_state else progression_from_headline),
+        displayed_novelty,
+        progression_from_headline=(None if displayed_review_state else displayed_parent_headline),
     )
     progression_review_line = _telegram_progression_review_html(
-        progression_review_state,
-        parent_headline=progression_from_headline,
-        reason=progression_review_reason,
-        parent_age_minutes=progression_review_parent_age_minutes,
-        parent_url=progression_review_parent_url,
+        displayed_review_state,
+        parent_headline=displayed_parent_headline,
+        reason=displayed_review_reason,
+        parent_age_minutes=displayed_parent_age,
+        parent_url=displayed_parent_url,
     )
     if novelty_line and progression_review_line:
         sections.append(f"{novelty_line}\n{progression_review_line}")

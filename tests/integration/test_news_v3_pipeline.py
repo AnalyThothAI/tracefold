@@ -572,6 +572,17 @@ def test_delivery_delete_requires_durable_five_venue_evidence_and_exact_receipt(
     assert delivery["delete_evidence"] == evidence
     assert delivery["delete_reason"] == reason
     assert delivery["receipt"] == deleted_receipt
+    with pytest.raises(CheckViolation), repos.transaction():
+        conn.execute(
+            """
+            UPDATE news_deliveries
+               SET delete_state = NULL, delete_evidence = '{}'::jsonb,
+                   delete_reason = NULL, delete_error_code = NULL,
+                   delete_attempted_at_ms = NULL, delete_settled_at_ms = NULL
+             WHERE event_id = %s AND kind = 'first'
+            """,
+            (event_id,),
+        )
 
 
 def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(conn) -> None:

@@ -1581,10 +1581,61 @@ def test_telegram_removes_an_unverified_previous_headline_and_marks_the_reason()
 
     assert order == ["prepare", "send", "review", "edit"]
     updated = sender.edited_presentations[0]
+    assert updated.novelty == "new_fact"
     assert updated.progression_from_headline is None
     assert updated.progression_review_state == "rejected"
     assert updated.progression_review_reason == "两条新闻的主体、事件和影响链路均不同，只是被归入了宽泛主题。"
     assert sender.edited_cards[0]["progression_review"]["state"] == "rejected"
+
+
+def test_telegram_downgrades_a_confirmed_progression_without_a_receipted_parent_to_new_fact() -> None:
+    async def scenario() -> RecordingEditableSender:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "progression",
+                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
+                    "assets": [],
+                },
+                "trace": {
+                    "told": [
+                        {
+                            "i": 0,
+                            "event_id": "ev-parent-without-delivery",
+                            "tier": "storyline",
+                            "similarity": 0.63,
+                            "headline_zh": "美光工会此前启动劳资协商",
+                            "at_ms": NOW_MS - 60_000,
+                        }
+                    ]
+                },
+            },
+            delivery=lambda **_kwargs: None,
+        )
+        sender = RecordingEditableSender(order)
+        verifier = BlockingProgressionVerifier(order)
+        verifier.release.set()
+        consumer = _deliverer(news, FakeBus(), sender=sender, progression_verifier=verifier)
+
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return sender
+
+    sender = asyncio.run(scenario())
+
+    updated = sender.edited_presentations[0]
+    assert updated.novelty == "new_fact"
+    assert updated.progression_from_headline is None
+    assert updated.progression_review_state == "unavailable"
+    assert updated.progression_review_reason == "未找到可引用的历史推送。"
+    assert updated.progression_review_parent_age_minutes is None
+    assert updated.progression_review_parent_message_id is None
 
 
 def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract() -> None:

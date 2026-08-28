@@ -317,9 +317,10 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
     assert observed[1][1]["chat_id"] == CHANNEL_ID
     assert observed[1][1]["message_id"] == 42
     assert "新闻后 0.00%\n1h -0.25%，\n24h -5.11%" in str(observed[1][1]["text"])
-    assert "🔄 <b>新进展</b>\n<blockquote>↩️ <b>未确认关联:</b> 候选报道的主体和事件链不同。</blockquote>" in str(
+    assert "🆕 <b>新事实</b>\n<blockquote>↩️ <b>未确认关联:</b> 候选报道的主体和事件链不同。</blockquote>" in str(
         observed[1][1]["text"]
     )
+    assert "🔄 <b>新进展</b>" not in str(observed[1][1]["text"])
     assert "接续「" not in str(observed[1][1]["text"])
     assert "推送时间  10:48:33" in str(observed[1][1]["text"])
     assert initial["pushed_at_ms"] == 1_787_885_313_000
@@ -356,8 +357,9 @@ def test_sender_keeps_an_unavailable_progression_reason_to_one_nested_line() -> 
     )
 
     assert (
-        "🔄 <b>新进展</b>\n<blockquote>⚠️ <b>关联待确认:</b> 上游复核服务暂时不可用， 请稍后确认。</blockquote>"
+        "🆕 <b>新事实</b>\n<blockquote>⚠️ <b>关联待确认:</b> 上游复核服务暂时不可用， 请稍后确认。</blockquote>"
     ) in str(observed["text"])
+    assert "🔄 <b>新进展</b>" not in str(observed["text"])
 
 
 def test_sender_deletes_only_the_exact_receipted_message() -> None:

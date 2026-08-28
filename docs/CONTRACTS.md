@@ -855,10 +855,8 @@ update without changing the initial `sent` state.
 `20260828_0323` adds the receipt-bound deletion intent, five-venue evidence,
 reason, settlement timestamps, and stale-intent index used only after
 authoritative single-name tradeability absence.
-The migration entrypoint recognizes the one private branch whose Telegram
-schema used the colliding `20260828_0317`/`20260828_0318` identifiers. It may
-bridge that lineage only after an exact schema-and-epoch fingerprint; unknown or
-mixed `0318` state is a hard error, not an Alembic stamp or best-effort guess.
+`20260828_0324` makes the edit and delete lifecycle shape checks two-valued and
+refuses to advance if any existing delivery row has a partial lifecycle shape.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -1005,7 +1003,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260828_0323`). Since
+append without rewrite access (current at migration `20260828_0324`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

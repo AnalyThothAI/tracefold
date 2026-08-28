@@ -499,6 +499,17 @@ class DelivererConsumer:
                 quotes_task, review_task, tradability_task
             )
             parent_reference = await self._progression_parent_reference(context, progression_review)
+            displayed_progression_review = progression_review
+            if (
+                progression_review is not None
+                and progression_review.state == "confirmed"
+                and parent_reference.message_id is None
+            ):
+                displayed_progression_review = ProgressionReview(
+                    state="unavailable",
+                    reason_zh="未找到可引用的历史推送。",
+                    verifier_id=progression_review.verifier_id,
+                )
             resolved_shown = tuple(context.shown)
             if (
                 tradability_review is not None
@@ -525,8 +536,10 @@ class DelivererConsumer:
                 degraded=context.degraded,
                 quotes=quotes,
             )
-            if progression_review is not None:
-                card_payload["progression_review"] = progression_review.model_dump(mode="json", exclude_none=True)
+            if displayed_progression_review is not None:
+                card_payload["progression_review"] = displayed_progression_review.model_dump(
+                    mode="json", exclude_none=True
+                )
             if tradability_review is not None:
                 card_payload["tradability_review"] = tradability_review.model_dump(mode="json", exclude_none=True)
             if (
@@ -542,19 +555,24 @@ class DelivererConsumer:
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
                 market_movements=reader_market_movements(resolved_shown, quotes),
+                novelty=(
+                    "new_fact"
+                    if displayed_progression_review is not None and displayed_progression_review.state != "confirmed"
+                    else context.presentation.novelty
+                ),
                 progression_from_headline=(
-                    progression_review.candidate_headline_zh
-                    if progression_review is not None and progression_review.state == "confirmed"
+                    displayed_progression_review.candidate_headline_zh
+                    if displayed_progression_review is not None and displayed_progression_review.state == "confirmed"
                     else context.presentation.progression_from_headline
                 ),
                 progression_review_state=(
-                    progression_review.state
-                    if progression_review is not None
+                    displayed_progression_review.state
+                    if displayed_progression_review is not None
                     else context.presentation.progression_review_state
                 ),
                 progression_review_reason=(
-                    progression_review.reason_zh
-                    if progression_review is not None
+                    displayed_progression_review.reason_zh
+                    if displayed_progression_review is not None
                     else context.presentation.progression_review_reason
                 ),
                 progression_review_parent_age_minutes=parent_reference.age_minutes,
@@ -763,13 +781,9 @@ class DelivererConsumer:
         )
         if candidate is None:
             return _ProgressionParentReference()
-        fallback_age = _progression_candidate_age_minutes(
-            candidate,
-            current_pushed_at_ms=context.receipt.pushed_at_ms,
-        )
         parent_event_id = str(candidate.get("event_id") or "").strip()
         if not parent_event_id:
-            return _ProgressionParentReference(age_minutes=fallback_age)
+            return _ProgressionParentReference()
         try:
             row = await self.db.read(
                 "news_delivery_progression_parent",
@@ -782,14 +796,14 @@ class DelivererConsumer:
                 or row.get("delete_state") is not None
                 or not isinstance(row.get("receipt"), Mapping)
             ):
-                return _ProgressionParentReference(age_minutes=fallback_age)
+                return _ProgressionParentReference()
             parent_receipt = TelegramDeliveryReceipt.model_validate(row["receipt"])
             if (
                 parent_receipt.target_sha256 != context.receipt.target_sha256
                 or parent_receipt.deleted_at_ms is not None
                 or parent_receipt.pushed_at_ms > context.receipt.pushed_at_ms
             ):
-                return _ProgressionParentReference(age_minutes=fallback_age)
+                return _ProgressionParentReference()
             return _ProgressionParentReference(
                 message_id=parent_receipt.message_id,
                 age_minutes=(context.receipt.pushed_at_ms - parent_receipt.pushed_at_ms) // 60_000,
@@ -797,7 +811,7 @@ class DelivererConsumer:
         except asyncio.CancelledError:
             raise
         except Exception:
-            return _ProgressionParentReference(age_minutes=fallback_age)
+            return _ProgressionParentReference()
 
     async def _mark_edit_ambiguous(self, context: _EnrichmentEditContext, error_code: str) -> None:
         try:
