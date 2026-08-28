@@ -66,7 +66,7 @@ _VERDICT: dict[str, Any] = {
     "scope": "single_name",
     "decision": "push",
     "confidence": 0.9,
-    "headline_zh": "特斯拉承诺新增产线",
+    "headline_zh": "特斯拉承诺在得州新增一条电池产线",
     "why_zh": "新增产能直接改变该名字的交付预期",
     "title_zh": "",
 }
@@ -254,7 +254,9 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
             BaselineCase(
                 episode=changed_case.episode.model_copy(
                     update={
-                        "production_judgment": scored_judgment({**_VERDICT, "magnitude": 0, "headline_zh": "别的说法"})
+                        "production_judgment": scored_judgment(
+                            {**_VERDICT, "magnitude": 0, "headline_zh": "另一种说法同样描述这条产线的落地"}
+                        )
                     }
                 ),
                 recorded_decision_result=recorded_decision("push"),
@@ -445,7 +447,7 @@ def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
 
     from tracefold.news.learning.metric import METRIC_ID
 
-    assert METRIC_ID.endswith("_v4")
+    assert METRIC_ID.endswith("_v5")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
 
 

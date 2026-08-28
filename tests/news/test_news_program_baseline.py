@@ -52,7 +52,7 @@ _VERDICT: dict[str, Any] = {
     "restates": -1,
     "decision": "push",
     "confidence": 0.9,
-    "headline_zh": "特斯拉发布 Cybercab",
+    "headline_zh": "特斯拉发布 Cybercab 无人驾驶出租车",
     "why_zh": "新车型进入量产排程，直接改变该名字的交付预期",
     "title_zh": "",
 }
@@ -271,17 +271,21 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
         "trade_relevance": 0.0,
         "semantics_novelty": 0.0,
         "reader_card": 0.0,
+        "reader_card_lint": 0.0,
     }
     assert case.component_denominators == {
         "final_action": 1,
         "trade_relevance": 7,
         "semantics_novelty": 4,
         "reader_card": 4,
+        # Six of the seven deterministic card checks; number retention does not apply because this
+        # episode's source headline carries no standalone number to preserve.
+        "reader_card_lint": 6,
     }
-    assert case.effective_weight_mass == 1.0
+    assert case.effective_weight_mass == 1.1
     assert case.gold_scored_n == 1 and case.labelled_n == 15
     assert report.scores["component_denominators"] == case.component_denominators
-    assert report.scores["effective_weight_mass_mean"] == 1.0
+    assert report.scores["effective_weight_mass_mean"] == 1.1
 
 
 def test_build_baseline_cases_drops_loader_only_keys() -> None:

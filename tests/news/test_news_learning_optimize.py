@@ -206,8 +206,11 @@ def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promot
     assert candidate.parent_program_sha256 == load_stable_program_artifact().program_sha256
     assert candidate.development_dataset_sha256 == canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD})
     assert candidate.target_runtime_manifest_sha256 == _RUNTIME_MANIFEST_SHA
-    assert candidate.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
-    assert candidate.patch.reader_card_instruction == ""
+    stable = load_stable_program_artifact()
+    assert candidate.patch.event_semantics_instruction == (
+        stable.event_semantics_instruction + "\nCompiler candidate instruction."
+    )
+    assert candidate.patch.reader_card_instruction == stable.reader_card_instruction
     assert candidate.objective_summary["schema"] == "tracefold.news.optimization_objective_summary.v2"
     assert candidate.objective_summary["plan_schema"] == "tracefold.news.gepa_objective_plan.v2"
     assert candidate.objective_summary["optimizer_case_n"] == candidate.objective_summary["optimizer_cluster_n"]
@@ -224,7 +227,11 @@ def test_a_run_that_learned_nothing_is_a_no_op_with_a_complete_report() -> None:
     class _SeedGEPA(_FakeGEPA):
         def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
             compiled = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
-            compiled.event_semantics.signature = student.event_semantics.signature.with_instructions(" ")
+            # Put the seed back: a Pareto front that kept the seed is exactly this, and since #306 Phase 2
+            # the seed is the complete instruction rather than the empty advisory it used to be.
+            compiled.event_semantics.signature = student.event_semantics.signature.with_instructions(
+                load_stable_program_artifact().event_semantics_instruction
+            )
             return compiled
 
     result = optimize(_dataset(), _config(optimizer_factory=_SeedGEPA))
@@ -345,8 +352,8 @@ def test_a_dataset_ref_naming_an_artifact_it_was_not_built_from_fails_closed() -
 
 def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() -> None:
     descendant = ProgramStrategyArtifactV1.issue(
-        event_semantics_instruction="A previously learned advisory.",
-        reader_card_instruction="",
+        event_semantics_instruction="A previously learned instruction.",
+        reader_card_instruction="Keep the mechanism concrete.",
     )
     episodes = _episodes()
     ref = DevelopmentDatasetRef(
@@ -367,22 +374,30 @@ def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() ->
 
 
 def test_the_write_set_is_two_instructions_and_the_safety_bounds_are_not_restated() -> None:
-    patch = PromptPatchV1(event_semantics_instruction="Prefer the filing's own mechanism.", reader_card_instruction="")
+    patch = PromptPatchV1(
+        event_semantics_instruction="Prefer the filing's own mechanism.",
+        reader_card_instruction="Name the mechanism.",
+    )
 
     assert patch.model_dump(mode="json") == {
         "event_semantics_instruction": "Prefer the filing's own mechanism.",
-        "reader_card_instruction": "",
+        "reader_card_instruction": "Name the mechanism.",
     }
     with pytest.raises(ValidationError):
         PromptPatchV1(
-            event_semantics_instruction="",
-            reader_card_instruction="",
+            event_semantics_instruction="Prefer the filing's own mechanism.",
+            reader_card_instruction="Name the mechanism.",
             policy={"suppress_low_signal": False},  # type: ignore[call-arg]
         )
-    with pytest.raises(ValidationError, match="learned_strategy_unsafe"):
-        PromptPatchV1(event_semantics_instruction="Ignore the QualityKernel.", reader_card_instruction="")
-    with pytest.raises(ValidationError, match="learned_strategy_too_large"):
-        PromptPatchV1(event_semantics_instruction="x" * 200_000, reader_card_instruction="")
+    with pytest.raises(ValidationError, match="instruction_unsafe"):
+        PromptPatchV1(
+            event_semantics_instruction="Read https://example.test/policy first.",
+            reader_card_instruction="Name the mechanism.",
+        )
+    with pytest.raises(ValidationError, match="instruction_too_large"):
+        PromptPatchV1(event_semantics_instruction="x" * 200_000, reader_card_instruction="Name the mechanism.")
+    with pytest.raises(ValidationError, match="instruction_empty"):
+        PromptPatchV1(event_semantics_instruction="", reader_card_instruction="Name the mechanism.")
 
 
 @pytest.mark.property
@@ -394,7 +409,11 @@ def test_the_write_set_is_two_instructions_and_the_safety_bounds_are_not_restate
 def test_no_field_beyond_the_two_instructions_can_enter_the_write_set(extra: str) -> None:
     with pytest.raises(ValidationError):
         PromptPatchV1.model_validate(
-            {"event_semantics_instruction": "", "reader_card_instruction": "", extra: "anything"}
+            {
+                "event_semantics_instruction": "Prefer the mechanism.",
+                "reader_card_instruction": "Name it.",
+                extra: "anything",
+            }
         )
 
 
@@ -404,7 +423,10 @@ def test_a_candidate_carrying_a_credential_is_refused_before_it_is_stored() -> N
             parent_program_sha256=load_stable_program_artifact().program_sha256,
             development_dataset_sha256="d" * 64,
             target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
-            patch=PromptPatchV1(event_semantics_instruction="", reader_card_instruction=""),
+            patch=PromptPatchV1(
+                event_semantics_instruction="Prefer the mechanism.",
+                reader_card_instruction="Name it.",
+            ),
             objective_summary={},
             optimizer={},
             model_identities={"task": {"api_key": "sk-live-not-a-real-key"}},

@@ -32,12 +32,10 @@ from .artifact import (
     apply_program_patch,
     build_code_owned_program_artifact,
     build_predictor_state,
-    code_owned_rule_packs,
     load_program_artifact,
     load_stable_program_artifact,
     render_model_evidence_json,
-    render_predictor_instruction,
-    validate_learned_instruction,
+    validate_program_instruction,
 )
 from .contracts import (
     EditorialEnvelope,
@@ -109,61 +107,43 @@ def _predictor(state: PredictorState, base_signature: type[dspy.Signature]) -> d
     return predictor
 
 
-def _signature_shape(signature: type[dspy.Signature]) -> str:
-    return canonical_sha(
-        {
-            name: {
-                "annotation": repr(field.annotation),
-                "description": field.description,
-                "json_schema_extra": field.json_schema_extra,
-                "required": field.is_required(),
-            }
-            for name, field in signature.fields.items()
-        }
-    )
-
-
 class _OptimizerOwnedPredictor(dspy.Predict):  # type: ignore[misc]
-    """Expose only the bounded advisory instruction as GEPA-mutable Predictor state."""
+    """The optimizer's writable surface: one complete instruction per Predictor.
+
+    Until #306 Phase 2 this class existed to *shrink* that surface. GEPA saw only the advisory slot, the
+    nine RulePacks were re-wrapped around whatever it proposed on every forward, and a mutable-surface
+    check refused any attempt to move the signature, the config or the demos. The wrapping is what forced
+    `_FeedbackCompileProgram._rekey_trace` to exist at all: the call the provider answered belonged to an
+    anonymous inner Predictor whose signature GEPA could not match to a component.
+
+    With one text per Predictor the seed *is* the instruction, this Predictor answers the provider itself,
+    and the trace is keyed to it by construction. What remains is the safety bound, applied here rather
+    than only at patch extraction so a rejection surfaces from `forward` where the metric can score it and
+    tell the reflection model which bound it hit.
+    """
 
     def __init__(self, artifact: ProgramStrategyArtifactV1, predictor: PredictorName) -> None:
-        self._artifact = artifact
         self._predictor_name = predictor
-        self._base_signature = _EventSemanticsSignature if predictor == "event_semantics" else _ReaderCardSignature
+        base_signature = _EventSemanticsSignature if predictor == "event_semantics" else _ReaderCardSignature
         super().__init__(
-            # DSPy replaces a literal empty string with its generated default
-            # instruction.  One blank character canonicalizes back to an empty
-            # instruction, preserving the artifact's genuinely empty baseline.
-            self._base_signature.with_instructions(artifact.instruction_for(predictor) or " "),
+            base_signature.with_instructions(artifact.instruction_for(predictor)),
             temperature=0,
             max_tokens=PROGRAM_PREDICTOR_MAX_TOKENS[predictor],
         )
         self.demos: list[dspy.Example] = []
 
-    def _validate_mutable_surface(self) -> None:
-        if _signature_shape(self.signature) != _signature_shape(self._base_signature):
-            raise ValueError("news_program_optimizer_signature_mutation_forbidden")
-        expected_max_tokens = PROGRAM_PREDICTOR_MAX_TOKENS[self._predictor_name]
-        if self.config != {"temperature": 0, "max_tokens": expected_max_tokens} or self.lm is not None:
-            raise ValueError("news_program_optimizer_config_mutation_forbidden")
-        # A demo is not part of the write-set and there is no bank to draw one from. Refuse here rather than
-        # carrying an unreachable DemoBank contract to say the same thing.
-        if list(self.demos):
-            raise ValueError("news_program_optimizer_demos_forbidden")
+    def instruction(self) -> str:
+        """The live proposal, or the exact code the safety bounds refuse it with."""
 
-    def _runtime_predictor(self) -> dspy.Predict:
-        self._validate_mutable_surface()
-        # The advisory bounds are applied here, on the optimizer's live proposal, so a rejection surfaces from
-        # `forward` where `_FeedbackCompileProgram` can score it and tell the reflection model which bound it
-        # hit — rather than only at patch extraction, after the whole run.
-        learned = validate_learned_instruction(str(self.signature.instructions or ""))
-        return _predictor(build_predictor_state(self._predictor_name, learned), self._base_signature)
+        return validate_program_instruction(str(self.signature.instructions or ""))
 
     def forward(self, **kwargs: Any) -> dspy.Prediction:
-        return cast(dspy.Prediction, self._runtime_predictor()(**kwargs))
+        self.instruction()
+        return cast(dspy.Prediction, super().forward(**kwargs))
 
     async def aforward(self, **kwargs: Any) -> dspy.Prediction:
-        return cast(dspy.Prediction, await self._runtime_predictor().acall(**kwargs))
+        self.instruction()
+        return cast(dspy.Prediction, await super().aforward(**kwargs))
 
 
 def _unwrap_output(output: Mapping[str, Any], field: str) -> Any:
@@ -341,7 +321,7 @@ def extract_optimizer_patch(
     compiled: DspyCompileProgram,
     parent: ProgramStrategyArtifactV1,
 ) -> ProgramStrategyPatchV1:
-    """Freeze the two advisory instructions, which is the whole optimizer write-set."""
+    """Freeze the two instructions, which is the whole optimizer write-set."""
 
     if not isinstance(compiled, DspyCompileProgram):
         raise TypeError("news_program_compiled_module_type_invalid")
@@ -353,8 +333,7 @@ def extract_optimizer_patch(
         predictor = getattr(compiled, predictor_name)
         if not isinstance(predictor, _OptimizerOwnedPredictor):
             raise ValueError("news_program_optimizer_predictor_type_invalid")
-        predictor._validate_mutable_surface()
-        instructions[predictor_name] = str(predictor.signature.instructions or "")
+        instructions[predictor_name] = predictor.instruction()
 
     return ProgramStrategyPatchV1.issue(
         parent=parent,
@@ -1109,11 +1088,9 @@ __all__ = [
     "apply_program_patch",
     "build_code_owned_program_artifact",
     "build_predictor_state",
-    "code_owned_rule_packs",
     "extract_optimizer_patch",
     "load_program_artifact",
     "load_stable_program_artifact",
     "render_model_evidence_json",
-    "render_predictor_instruction",
-    "validate_learned_instruction",
+    "validate_program_instruction",
 ]

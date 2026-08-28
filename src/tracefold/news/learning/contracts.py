@@ -18,7 +18,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_json, reject_secret_material
-from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_learned_instruction
+from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_program_instruction
 from ..triage_rules import DecidePolicy
 
 # v2 (#259): the development gate dropped `natural_days_min`. The profile is inside `TRUSTED_ROOT_SHA`,
@@ -45,7 +45,7 @@ COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_e
 )
 OptimizerRole = Literal["task", "reflection", "metric_judge"]
 # The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,
-# which capped a proposed instruction at 1,200 tokens — below what the advisory slot itself accepts — and
+# which capped a proposed instruction at 1,200 tokens — below what the instruction bound itself accepts — and
 # gave a reflection call the 20 s route deadline. These live here, not beside the optimizer, because the
 # metric judge is built by the baseline harness too and must not pull DSPy's GEPA in to learn its ceiling.
 REFLECTION_MAX_TOKENS = 32_000
@@ -360,12 +360,12 @@ class OptimizationBudget(BaseModel):
 
 
 class PromptPatchV1(BaseModel):
-    """The entire legal write-set of News learning: two advisory instructions.
+    """The entire legal write-set of News learning: two complete Predictor instructions.
 
     `ProgramStrategyPatchV1` says the same two things bound to a parent, because applying a patch to a
     Program is the Program package's business and needs the parent to refuse a mismatch. This one is the
     *candidate's* write-set, which is why it carries nothing else — a field here is a field an optimizer
-    could learn to write. The safety bounds are not restated: `validate_learned_instruction` is the one
+    could learn to write. The safety bounds are not restated: `validate_program_instruction` is the one
     implementation, so a candidate cannot be admitted under looser rules than the artifact it becomes.
     """
 
@@ -376,8 +376,8 @@ class PromptPatchV1(BaseModel):
 
     @model_validator(mode="after")
     def _write_set_is_safe(self) -> PromptPatchV1:
-        validate_learned_instruction(self.event_semantics_instruction)
-        validate_learned_instruction(self.reader_card_instruction)
+        validate_program_instruction(self.event_semantics_instruction)
+        validate_program_instruction(self.reader_card_instruction)
         return self
 
     @classmethod

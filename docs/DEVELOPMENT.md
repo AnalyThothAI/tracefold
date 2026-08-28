@@ -115,12 +115,13 @@ evidence-gated identity migration.
 Issue #193 is one such explicit hard cut. The artifact becomes one canonical
 document holding `schema_version` `news_program_strategy_artifact_v1`,
 `factory_id` and the two instructions, with `program_sha256` over exactly those
-four values. Issue #288 bumps the current factory to
-`tracefold.news.program.factory_v7` for the code-owned exact source route, so
-the sole stable v7 root is reissued as
-`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`. Prompt
-bytes move with it: the RulePack and advisory digests left the rendered
-instruction, and the empty demo section left with the DemoBank family.
+four values. Issue #306 is the current one. It bumps the factory to
+`tracefold.news.program.factory_v8` and the epoch to `program_v8`, and the sole
+stable root is `c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
+Prompt bytes move twice inside that one migration, deliberately paid once: the
+kernel/RulePack/advisory/seal layering collapses into one seed text per
+Predictor (`program/seed.py`), and the self-owned chat transport composes the
+field envelope that DSPy's JSON adapter used to compose.
 
 ## Tests
 
@@ -663,10 +664,13 @@ reader would see.
 Hard gates come first and are not averaged with anything: `must_push` miss,
 `must_hold` send, background sent realtime (objective guards separated), schema
 invalidity, ungrounded primary, factual contradiction, relevance inconsistency,
-or known duplicate leak scores the example zero. What survives is metric v4:
-45% final production action, 35% exact TradeRelevance dimensions, 10%
-semantics/novelty and 10% ReaderCard. Every failed scored dimension needs exact
-expected gold; without it the field is not scored. Reports publish per-component
+a card carrying a URL or describing its writer as a model, or known duplicate
+leak scores the example zero. What survives is metric v5: 45% final production
+action, 35% exact TradeRelevance dimensions, 10% semantics/novelty, 10%
+ReaderCard reviewer anchors and 10% the deterministic ReaderCard copy lint.
+Every failed scored dimension needs exact expected gold; without it the field is
+not scored — the lint is the one component that needs no reviewer label at all,
+which is why it is the only card evidence an unlabelled case carries. Reports publish per-component
 denominators, effective weight mass, gold coverage and field n. `pred_name`
 never changes the score; it only routes owned feedback. Listing/telemetry are
 excluded from relevance scoring, and watchlist-guard action feedback cannot ask

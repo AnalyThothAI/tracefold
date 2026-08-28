@@ -563,8 +563,8 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, factory
-`tracefold.news.program.factory_v7`, source classifier
-`opennews_source_classifier_v1`, and epoch `program_v7`.
+`tracefold.news.program.factory_v8`, source classifier
+`opennews_source_classifier_v1`, and epoch `program_v8`.
 The exact Program identity is its content SHA, not the display version alone.
 
 The normalized tuple `2000 / 实时清算 / market / market` is a separate
@@ -580,11 +580,13 @@ Its current `complete=false` is a material fact.
 
 `ProgramStrategyArtifactV1` is the only executable semantic configuration, and
 it is one canonical JSON document — `schema_version`, `factory_id`, the
-`event_semantics_instruction` and `reader_card_instruction` advisories, and the
+`event_semantics_instruction` and `reader_card_instruction` texts, and the
 `program_sha256` over exactly those four values — carried in the application
-image as `<program_sha256>.json` and selected by the code-owned registry. The
-stable root is
-`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`.
+image as `<program_sha256>.json` and selected by the code-owned registry. Since
+#306 Phase 2 each instruction is the complete prompt for its Predictor rather
+than an advisory appended to a rendered stack, and the reviewed seed text lives
+in `tracefold/news/program/seed.py`. The stable root is
+`c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
@@ -743,7 +745,7 @@ eligibility makes prior-factory judgments audit-only and starts the factory-v7
 cohort at zero.
 `20260828_0316` then adds the #283 immutable `trading_intents` handoff and its
 least-privilege Workers, Serve, and Nautilus grants.
-`20260828_0317` performs the atomic authority cut: it refuses unresolved legacy
+`20260828_0318` performs the atomic authority cut: it refuses unresolved legacy
 Cases, nonterminal Intents, or active/unknown legacy Orders, admits
 `INTENT_EMITTED`, and revokes legacy execution mutations from Workers. It has no
 downgrade because restoring a second writer is not a safe rollback.
@@ -1010,12 +1012,18 @@ availability — and `action_confusion` splits agreement by `must_push`,
 gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `background_realtime_send`, `factual_contradiction_unchanged`,
 `ungrounded_primary_asset`, `schema_invalid`, `relevance_inconsistent`,
-`known_duplicate_leak`, `advisory_rejected`). A gated case keeps its resolved action and its per-dimension
+`known_duplicate_leak`, `advisory_rejected`, `card_lint_url`,
+`card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v4` weights 45% exact
+Metric `tracefold.news.production_action_trade_relevance_v5` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
-semantics/novelty and 10% ReaderCard. Reports expose each component's effective
+semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
+ReaderCard copy lint, normalized over the components a case carries. The lint
+publishes seven scored checks (`headline_language`, `headline_length`,
+`headline_number_retention`, `banned_filler`, `meta_opening`,
+`why_single_sentence`, `no_emoji`) and its two gates in the metric receipt under
+`card_lint`, tables included. Reports expose each component's effective
 denominator, effective weight mass, gold coverage and field count. The score is
 identical with or without DSPy's `pred_name`; that argument filters feedback
 only. EventSemantics receives relevance, semantics, novelty and its owned action
@@ -1096,7 +1104,7 @@ Reviews whose `evidence_version` has been superseded are not replayable and are
 excluded, the same rule `_load_case` already enforced.
 
 The recorded metric audit/replay is pinned to a checked-in corpus
-(`tests/fixtures/news_audit_replay_corpus_v2.json` for metric v4), not to the live
+(`tests/fixtures/news_audit_replay_corpus_v2.json` for metric v5), not to the live
 database, so it proves metric wiring rather than tracking corpus growth. The v1
 fixture remains frozen metric-v3 audit evidence. The
 expected values are held only by `tests/news/test_news_audit_replay_corpus.py`;

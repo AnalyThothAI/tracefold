@@ -91,7 +91,7 @@ def _metric_verdict(**overrides: Any) -> dict[str, Any]:
         "actionable": True,
         "confidence": 0.8,
         "audience": "us_equity",
-        "headline_zh": "发行人提交重大更新",
+        "headline_zh": "发行人提交重大更新，交付时间表整体推迟一个季度",
         "title_zh": "",
         "why_zh": "时间表发生变化。",
     }
@@ -408,9 +408,14 @@ def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
-    # The whole write-set: one bounded advisory per Predictor, carrying exactly what the optimizer wrote.
-    assert result.patch.event_semantics_instruction.strip() == "Compiler candidate instruction."
-    assert result.patch.reader_card_instruction == ""
+    # The whole write-set: one complete instruction per Predictor, carrying exactly what the optimizer
+    # wrote. The fake optimizer appends to the seed, so the patch is the seed plus its line — an untouched
+    # Predictor keeps the seed rather than the empty string it used to keep.
+    stable = load_stable_program_artifact()
+    assert result.patch.event_semantics_instruction == (
+        stable.event_semantics_instruction + "\nCompiler candidate instruction."
+    )
+    assert result.patch.reader_card_instruction == stable.reader_card_instruction
     assert result.metric_calls == 2
     assert result.failure_cluster_ids == ("cluster-1-target", "cluster-2-target", "cluster-3-target")
     assert result.target_dimensions == ("direction",)
@@ -592,7 +597,13 @@ def test_metric_scores_the_production_action_not_the_models_intent() -> None:
     model asked for, so a metric reading `decision` would reward a card the reader never receives."""
 
     told = [
-        {"i": 0, "event_id": "prior", "dir": "bullish", "headline_zh": "发行人提交重大更新", "grounded_assets": ["ABC"]}
+        {
+            "i": 0,
+            "event_id": "prior",
+            "dir": "bullish",
+            "headline_zh": "发行人提交重大更新，交付时间表整体推迟一个季度",
+            "grounded_assets": ["ABC"],
+        }
     ]
     gold = _metric_gold(
         accepted_review={"should_push": "should_hold"},
@@ -659,7 +670,7 @@ def test_factual_failure_must_be_repaired_against_evidence_not_merely_reworded()
         },
         production_judgment=_judgment(),
     ).copy(card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>")
-    changed = _metric_verdict(headline_zh="发行人已提交重大更新")
+    changed = _metric_verdict(headline_zh="发行人已提交重大更新，交付时间表整体推迟一个季度")
     prediction = dspy.Prediction(
         verdict=changed,
         editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
@@ -685,7 +696,7 @@ def test_factual_failure_fails_closed_without_an_evidence_judge() -> None:
         },
         production_judgment=_judgment(),
     ).copy(card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>")
-    changed = _metric_verdict(headline_zh="任意改写不能证明事实已经修复")
+    changed = _metric_verdict(headline_zh="任意改写不能证明事实已经修复，仍需对照原始证据核验")
 
     outcome = _score(gold, changed)
 
@@ -702,8 +713,13 @@ def test_metric_does_not_guess_a_failed_dimension_without_exact_gold() -> None:
     )
     changed = _score(labelled, _metric_verdict(direction="bullish"))
     unchanged = _score(labelled, _metric_verdict(direction="neutral"))
-    assert changed.score == unchanged.score == 0.0
-    assert changed.dimension_outcomes == (("direction", "not_scored_no_gold"),)
+    # Identical, and identically unearned: the reviewer's rejection carries no correct value, so neither
+    # answer enters the `semantics_novelty` denominator. The two cards are byte-identical apart from
+    # `direction`, so whatever `reader_card_lint` says about them it says about both.
+    assert changed.score == unchanged.score
+    assert changed.component_scores["semantics_novelty"] is None
+    assert changed.component_denominators["semantics_novelty"] == 0
+    assert changed.dimension_outcomes[0] == ("direction", "not_scored_no_gold")
 
 
 def test_metric_feedback_never_asks_a_predictor_to_repair_what_it_cannot_cause() -> None:
@@ -743,7 +759,7 @@ def test_reader_card_gets_action_feedback_for_an_exact_seen_headline_duplicate()
             "seen": [
                 {
                     "event_id": "prior",
-                    "headline_zh": "发行人提交重大更新",
+                    "headline_zh": "发行人提交重大更新，交付时间表整体推迟一个季度",
                     "direction": "bullish",
                     "grounded_assets": ["ABC"],
                     "assets": [{"symbol": "ABC", "role": "primary"}],
@@ -799,6 +815,7 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
         "trade_relevance": 0.35,
         "semantics_novelty": 0.10,
         "reader_card": 0.10,
+        "reader_card_lint": 0.10,
     }
     assert receipt["action_source"]["policy"] == "tracefold.news.triage_rules.decide"
     assert receipt["action_source"]["operational_controls"].startswith("none_")
@@ -813,6 +830,9 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
         # the production action — lives beside the Objective Plan now. The ruler commits to both files or
         # half of its definition can change without the receipt noticing.
         "tracefold.news.learning.objective",
+        # #306 Phase 1: the deterministic card contract is a scored component and a hard gate, so its
+        # bytes are part of what "better" means.
+        "tracefold.news.learning.card_lint",
         "tracefold.news.models.base_symbol",
         "tracefold.news.events.storyline",
         "tracefold.news.triage_rules",

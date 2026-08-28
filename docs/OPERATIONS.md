@@ -55,7 +55,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at Alembic head `20260828_0317`. Both
+5. Deploy the exact reviewed image at Alembic head `20260828_0318`. Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
    repeats the three database drain predicates in its transaction before
@@ -634,9 +634,9 @@ Diagnose News in this order:
    Deduper+Gate on a saved provider payload without broker or model.
 
 The current evidence eligibility window starts at the deployment timestamp
-stored in `news_learning_epochs(program_v7)`. Only accepted `news_review_v4`
+stored in `news_learning_epochs(program_v8)`. Only accepted `news_review_v4`
 rows from this epoch that are bound to the exact current factory/Program bundle
-enter metric v4, GEPA or release evidence. Every earlier Prompt/Program
+enter metric v5, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
@@ -945,7 +945,7 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v7` reset changes eligibility, not retention: all earlier evidence
+  `program_v8` reset changes eligibility, not retention: all earlier evidence
   remains auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;

@@ -25,10 +25,9 @@ from tracefold.news.learning.contracts import (
 )
 from tracefold.news.learning.judge import CardEquivalenceJudge
 from tracefold.news.learning.objective import DevelopmentEpisode
-from tracefold.news.learning.optimizer import RulePackAwareProposer, _FeedbackCompileProgram, build_optimizer_lm
+from tracefold.news.learning.optimizer import InstructionProposer, _FeedbackCompileProgram, build_optimizer_lm
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import (
-    code_owned_rule_packs,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import TriageContext
@@ -385,14 +384,11 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
     assert 0 < result.report.usage["metric_calls"] <= 40 + val_n + minibatch
     assert result.report.usage["reflection_model_calls"] > 0, "the reflection endpoint was never used"
 
-    # `dspy.GEPA` only rewrites instructions — `build_program` never touches `predictor.demos`. That the
-    # compile returned at all is the proof: `extract_optimizer_patch` runs `_validate_mutable_surface`, which
-    # refuses `news_program_optimizer_demos_forbidden` for any Predictor carrying one.
     assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
     assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     receipt = result.report.optimizer
-    assert receipt["instruction_proposer"]["implementation"].endswith("RulePackAwareProposer")
+    assert receipt["instruction_proposer"]["implementation"].endswith("InstructionProposer")
     assert receipt["omitted_unset_arguments"] == ["wandb_api_key"]
     assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
@@ -401,37 +397,36 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
     assert split["train"]["case_n"] > 0 and split["development_selection"]["case_n"] > 0
 
 
-def test_reflection_prompt_carries_every_rulepack() -> None:
-    """The whole point of the custom proposer: the model can see what it is amending."""
+def test_the_reflection_brief_names_the_whole_instruction_as_the_write_set() -> None:
+    """#306 Phase 2: the proposer's job changed from "do not touch this" to "you own all of it"."""
 
-    proposer = RulePackAwareProposer(load_stable_program_artifact())
+    proposer = InstructionProposer(load_stable_program_artifact())
     brief = proposer.context_for("event_semantics")
-    packs = [pack for pack in code_owned_rule_packs() if pack.target in {"event_semantics", "both"}]
-    assert packs, "no code-owned RulePack targets event_semantics"
-    for pack in packs:
-        assert f"{pack.rule_id}@{pack.revision}" in brief
-        assert pack.body in brief
-    assert "LEARNEDSTRATEGY" in brief
-    assert "You may NOT change any of it except" in brief
+
+    assert "COMPLETE instruction" in brief
+    assert "replaces the whole instruction" in brief
+    # The RulePack stack it used to paste in is the component text now, so the brief must not duplicate it.
+    assert "RULEPACK" not in brief
+    assert "LEARNEDSTRATEGY" not in brief
 
 
-def test_advisory_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:
+def test_instruction_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:
     """An LM told only "you scored zero" proposes the same rejected text again."""
 
     from tracefold.news.learning.metric import accepted_review_metric
 
     artifact = load_stable_program_artifact()
     program = _FeedbackCompileProgram(artifact)
-    # A URL is one of the code-owned advisory bounds; the text is otherwise unremarkable.
+    # A URL is one of the code-owned instruction bounds; the text is otherwise unremarkable.
     program.event_semantics.signature = program.event_semantics.signature.with_instructions(
         "Consult https://example.invalid/rules before judging."
     )
     prediction = program(evidence_json="{}", card_evidence_json="{}", told_count=0)
-    assert prediction.advisory_rejected == "news_program_learned_strategy_unsafe"
+    assert prediction.instruction_rejected == "news_program_instruction_unsafe"
 
     scored = accepted_review_metric(dspy.Example(accepted_review={}), prediction, None, None, None)
     assert scored.score == 0.0
-    assert "news_program_learned_strategy_unsafe" in scored.feedback
+    assert "news_program_instruction_unsafe" in scored.feedback
     assert "Rewrite it without URLs" in scored.feedback
 
 
@@ -444,7 +439,7 @@ def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
     )
     assert task.kwargs["temperature"] == 0 and task.kwargs["max_tokens"] == 1200
     # A reflection call has to emit an entire replacement instruction; the task route's ceiling is below what
-    # `LearnedStrategy` itself accepts, so deriving one from the other truncated every proposal.
+    # the instruction bound itself accepts, so deriving one from the other truncated every proposal.
     assert reflection.kwargs["temperature"] == 1.0
     assert reflection.kwargs["max_tokens"] == REFLECTION_MAX_TOKENS
     assert reflection.kwargs["timeout"] >= 300.0
@@ -482,64 +477,14 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
     assert meter.imputed_cost_calls == (1 if cost is None else 0)
 
 
-def test_empty_advisory_survives_a_gepa_round_trip() -> None:
-    """A run that learned nothing must not emit DSPy boilerplate as a learned strategy.
-
-    `Signature.with_instructions("")` does not store an empty instruction — DSPy substitutes a generated one.
-    The Artifact's baseline advisory is empty, so GEPA's seed candidate is `""` and its first `build_program`
-    put "Given the fields ... produce the fields ..." into the advisory slot. When the Pareto front then kept
-    the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
-    """
-
-    from tracefold.news.learning.optimizer import generated_default_instruction, restore_empty_advisories
-
-    artifact = load_stable_program_artifact()
-    program = _FeedbackCompileProgram(artifact)
-    seed = {name: pred.signature.instructions for name, pred in program.named_predictors()}
-    assert seed == {"event_semantics": "", "reader_card": ""}, "the baseline advisory is not empty"
-
-    # Exactly what GEPA's `build_program` does with its own seed candidate.
-    for name, pred in program.named_predictors():
-        pred.signature = pred.signature.with_instructions(seed[name])
-    polluted = {name: pred.signature.instructions for name, pred in program.named_predictors()}
-    assert polluted["event_semantics"] == generated_default_instruction(program.event_semantics)
-    assert "produce the fields" in polluted["event_semantics"]
-
-    restore_empty_advisories(program)
-    assert {name: pred.signature.instructions for name, pred in program.named_predictors()} == seed
-
-
-def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() -> None:
-    """The compile receipt must describe what shipped, for the untouched Predictor as much as the changed one.
-
-    GEPA's `build_program` calls `with_instructions` for *every* component of its candidate, including the ones
-    it never rewrote, so a Predictor whose advisory stayed empty is holding DSPy's generated default by the time
-    the run ends. `_restore_empty_advisories` maps that back to `""` — but the checkpoint receipt used to be
-    taken one line before the restore, so `compile_checkpoint_receipt.v2` recorded "Given the fields ..., produce
-    the fields ..." as the produced instruction while the patch and the shipped artifact carried `""`. A receipt
-    that disagrees with the artifact it attests to is not evidence.
-    """
-
-    from tracefold.news.learning.optimizer import generated_default_instruction
-
-    result = _optimize_real(_ScriptedLM("scripted/task"), _ScriptedLM("scripted/reflection", reflection=True))
-
-    shipped = {name: result.candidate.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    recorded = {name: state["instruction"] for name, state in result.report.checkpoint["predictors"].items()}
-    assert recorded == shipped
-
-    untouched = [name for name, text in shipped.items() if text == ""]
-    assert untouched, "this run rewrote both advisories, so it cannot exercise the untouched Predictor"
-    program = _FeedbackCompileProgram(load_stable_program_artifact())
-    for name in untouched:
-        boilerplate = generated_default_instruction(getattr(program, name))
-        # The exact text the receipt must not carry, so this test cannot pass vacuously.
-        assert "produce the fields" in boilerplate
-        assert recorded[name] == ""
-
-
 def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
-    """The guard only works once the empty advisory round-trips; before the fix it never fired."""
+    """A complete run whose Pareto front keeps the seed is `NO_OP`, not a candidate.
+
+    #306 Phase 2 deleted the two tests that used to sit above this one. Both were about DSPy substituting a
+    generated instruction for the empty advisory the baseline carried — the seed came back out of the round
+    trip as a *learned* strategy and this guard did not fire. A seed is a complete instruction now, so
+    `with_instructions` has nothing to substitute and the failure mode cannot occur.
+    """
 
     class _SeedOnlyGEPA:
         """Stands in for a GEPA run whose Pareto front keeps the seed program."""

@@ -122,11 +122,13 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one canonical, content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version, `factory_id` `tracefold.news.program.factory_v7`, and
-the two bounded advisory instructions; `program_sha256` is the canonical hash
+holds a schema version, `factory_id` `tracefold.news.program.factory_v8`, and
+the two complete Predictor instructions; `program_sha256` is the canonical hash
 of exactly those four values. The loader re-verifies that hash, the schema and
-the factory, applies the advisory bounds — NFC, size, forbidden authority and
-template markers, secret patterns — and rejects non-canonical or duplicate-keyed
+the factory, applies the instruction bounds — NFC, byte and estimated-token
+size, template/script/URL/credential-header/injection markers, secret patterns
+(#306 Phase 2 retired the authority patterns with the layering they policed) —
+and rejects non-canonical or duplicate-keyed
 JSON, non-finite numbers, unsafe or secret-bearing keys, a symlinked or
 traversing path, and a file whose name is not its own root.
 Everything the loader used to re-verify component by component — RulePacks, the

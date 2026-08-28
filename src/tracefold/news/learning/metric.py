@@ -4,7 +4,7 @@
 `program_compiler`, which the architecture boundary lets exactly one module
 import (`program_compiler_runner`).  A baseline harness that re-implemented the
 same score would defeat the purpose of having one: the number the optimizer
-maximizes and the number an operator reads before and after a RulePack edit
+maximizes and the number an operator reads before and after a prompt edit
 have to come from the same bytes.  Moving them here keeps that literal identity
 while leaving the optimizer itself sandboxed.
 
@@ -29,6 +29,7 @@ from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
 from ..program.artifact import render_model_evidence_json
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..triage_rules import DecisionResult, decide
+from .card_lint import GATE_CHECKS, SCORED_CHECKS, CardLintResult, card_lint_receipt, lint_reader_card
 from .objective import (
     _CARD_DIMENSIONS,
     _DELIVERY_DIMENSIONS,
@@ -46,21 +47,27 @@ from .objective import (
 # `DEFAULT_POLICY` to the exact frozen values carried by each example, and the metric now returns typed
 # per-dimension outcomes. The receipt embeds the function source, so two rulers already produce two report
 # addresses — but a version label that stays put while the definition moves is a label that lies.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v4"
+# v5 (#306 Phase 1): the deterministic ReaderCard copy contract became a scored component and a hard gate,
+# so the card side of this ruler no longer depends on a reviewer having labelled anything.
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v5"
 
 
-# The four components of the candidate-selection score. Code-owned and content-addressed: they are hashed into
-# the metric receipt, so an optimizer run cannot silently reweight what "better" means.
+# The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
+# into the metric receipt, so an optimizer run cannot silently reweight what "better" means. The score
+# divides by the weight mass actually present, so `reader_card_lint` does not take mass away from the four
+# reviewer-labelled components — it adds a fifth opinion that is available on every case.
 _ACTION_WEIGHT = 0.45
 _RELEVANCE_WEIGHT = 0.35
 _SEMANTICS_WEIGHT = 0.10
 _CARD_WEIGHT = 0.10
+_CARD_LINT_WEIGHT = 0.10
 
 COMPONENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "final_action": ("should_push",),
     "trade_relevance": _RELEVANCE_DIMENSIONS,
     "semantics_novelty": (*_SEMANTICS_DIMENSIONS, "novelty"),
     "reader_card": _CARD_DIMENSIONS,
+    "reader_card_lint": SCORED_CHECKS,
 }
 # Which stage of the pipeline a rubric label describes. Deliberately *not* named "owner":
 # `review._OWNER_BY_DIMENSION` already owns that word for a different question — who is to blame (`gate`,
@@ -78,6 +85,7 @@ LABEL_GROUP: dict[str, str] = {
 # The catch-all for a rubric dimension nobody has placed yet. A hand-written list of "the others" would have
 # dropped the next new one silently.
 UNGROUPED_LABEL = "not_scored"
+_CARD_LINT_GATES: Final[frozenset[str]] = frozenset(GATE_CHECKS)
 _DIMENSION_FIELD = {
     "asset_grounding": "assets",
     "direction": "direction",
@@ -179,6 +187,7 @@ def _component_diagnostics(
     semantics_anchors: Sequence[tuple[str, str, Any]],
     card_anchors: Sequence[tuple[str, str, Any]],
     expected_novelty: str,
+    lint: CardLintResult | None,
 ) -> dict[str, dict[str, Any]]:
     """Describe exactly how much accepted truth supports each weighted component."""
 
@@ -196,7 +205,13 @@ def _component_diagnostics(
         "trade_relevance": _RELEVANCE_WEIGHT,
         "semantics_novelty": _SEMANTICS_WEIGHT,
         "reader_card": _CARD_WEIGHT,
+        "reader_card_lint": _CARD_LINT_WEIGHT,
     }
+    # The lint component's truth is code, not a reviewer label, so its `labelled_n` and `gold_scored_n` are
+    # the applicable check count itself. Reporting `gold_coverage = 1.0` there is not flattery: every
+    # applicable check has an exact code-owned correct answer, which is precisely what the other components
+    # publish this number to say they mostly lack.
+    lint_applicable = len(lint.applicable) if lint is not None else 0
     diagnostics: dict[str, dict[str, Any]] = {}
     for component, fields in COMPONENT_FIELDS.items():
         component_anchors = anchors.get(component, ())
@@ -208,6 +223,11 @@ def _component_diagnostics(
             labelled_n = action_n
             gold_scored_n = action_n
             denominator = action_n
+        elif component == "reader_card_lint":
+            outcomes = dict(lint.outcomes) if lint is not None else {}
+            for field in fields:
+                field_n[field] = int(outcomes.get(field, "lint_not_applicable") != "lint_not_applicable")
+            labelled_n = gold_scored_n = denominator = lint_applicable
         else:
             labelled_n = len(component_anchors) + (novelty_n if component == "semantics_novelty" else 0)
             gold_scored_n = sum(wanted is not _NO_GOLD for _field, _label, wanted in component_anchors)
@@ -282,6 +302,32 @@ def _component(
     return (hits / scored_n if scored_n else None, gold_scored, scored_n, len(anchors))
 
 
+def _parse_prediction(pred: Any) -> tuple[TriageVerdict, EditorialEnvelope, ScoredJudgment, dict[str, Any]] | None:
+    """The candidate's schema-valid judgment, or ``None`` when it did not produce one.
+
+    Returns the raw verdict mapping beside the typed one because the scored dimensions compare the values
+    the candidate actually emitted; re-serializing the typed model would quietly canonicalize them.
+    """
+
+    try:
+        verdict_value = pred.get("verdict")
+        verdict = (
+            verdict_value.model_dump(mode="json") if isinstance(verdict_value, BaseModel) else dict(verdict_value or {})
+        )
+        if not verdict:
+            raise ValueError("verdict_missing")
+        typed = TriageVerdict.model_validate(verdict)
+        editorial_value = pred.get("editorial")
+        editorial = (
+            editorial_value
+            if isinstance(editorial_value, EditorialEnvelope)
+            else EditorialEnvelope.model_validate(editorial_value)
+        )
+        return typed, editorial, ScoredJudgment.issue(verdict=typed, editorial=editorial), verdict
+    except Exception:
+        return None
+
+
 def accepted_review_metric(
     gold: dspy.Example,
     pred: dspy.Prediction,
@@ -344,7 +390,7 @@ def accepted_review_metric(
         if grounded_values & watchlist_values
         else "none"
     )
-    # Early schema/advisory gates have no exact DecisionResult to attribute. ReaderCard action feedback starts
+    # Early schema/instruction gates have no exact DecisionResult to attribute. ReaderCard action feedback starts
     # disabled and is enabled below only when the live decision proves its own headline caused a seen throttle.
     action_feedback_allowed = pred_name != "reader_card"
     relevance_anchors = (
@@ -356,6 +402,19 @@ def accepted_review_metric(
     card_anchors = _scoring_anchors(dimensions, _CARD_DIMENSIONS, expected)
     expected_novelty = str((review.get("novelty") or {}).get("judgment") or "uncertain")
     novelty_denominator = int(expected_novelty != "uncertain")
+    # Parsed before the diagnostics, not after the gates: `reader_card_lint` is a scored component, so the
+    # ruler cannot state its own denominator until it knows whether this prediction carries a card at all.
+    rejected = str(pred.get("instruction_rejected") or "")
+    parsed = None if rejected else _parse_prediction(pred)
+    lint = (
+        None
+        if parsed is None
+        else lint_reader_card(
+            headline_zh=parsed[0].headline_zh,
+            why_zh=parsed[0].why_zh,
+            source_title=str(gold.get("source_title") or ""),
+        )
+    )
     component_diagnostics = _component_diagnostics(
         should_push=should_push,
         objective_guard=objective_guard,
@@ -363,6 +422,7 @@ def accepted_review_metric(
         semantics_anchors=semantics_anchors,
         card_anchors=card_anchors,
         expected_novelty=expected_novelty,
+        lint=lint,
     )
     component_denominators = {
         name: int(diagnostic["denominator"]) for name, diagnostic in component_diagnostics.items()
@@ -400,7 +460,11 @@ def accepted_review_metric(
             "relevance_inconsistent",
             "known_duplicate_leak",
         }
-        if pred_name is not None and objective_guard != "none" and gate in action_gates:
+        if pred_name == "event_semantics" and gate in _CARD_LINT_GATES:
+            # ReaderCard writes the copy; EventSemantics cannot repair a URL or a self-description in it,
+            # and telling it to would spend a reflection round on an instruction that changes nothing.
+            routed_feedback = "No EventSemantics-owned correction applies; the ReaderCard copy contract was violated."
+        elif pred_name is not None and objective_guard != "none" and gate in action_gates:
             routed_feedback = (
                 "No Predictor-owned correction applies; the code-owned objective guard action is reported "
                 "as policy evidence only."
@@ -430,33 +494,18 @@ def accepted_review_metric(
             else tuple((name, "unscored") for name in scored_names),
         )
 
-    rejected = str(pred.get("advisory_rejected") or "")
     if rejected:
         # Name the wall. Without this the candidate scored zero and the reflection model was told nothing, so
         # it proposed text that tripped the same bound again on the next round.
         return _zero(
-            f"The proposed advisory was rejected by the code-owned safety bounds ({rejected}). "
-            "Rewrite it without URLs, template braces, credential-shaped text, or any claim of authority "
-            "over the QualityKernel, the RulePacks or the schema, and keep it under 8192 bytes.",
-            gate="advisory_rejected",
+            f"The proposed instruction was rejected by the code-owned safety bounds ({rejected}). "
+            "Rewrite it without URLs, template braces, credential-shaped text or a prompt-injection "
+            "opener, keep it valid NFC, and keep it under 32768 bytes.",
+            gate="instruction_rejected",
         )
-    try:
-        verdict_value = pred.get("verdict")
-        verdict = (
-            verdict_value.model_dump(mode="json") if isinstance(verdict_value, BaseModel) else dict(verdict_value or {})
-        )
-        if not verdict:
-            raise ValueError("verdict_missing")
-        typed = TriageVerdict.model_validate(verdict)
-        editorial_value = pred.get("editorial")
-        editorial = (
-            editorial_value
-            if isinstance(editorial_value, EditorialEnvelope)
-            else EditorialEnvelope.model_validate(editorial_value)
-        )
-        judgment = ScoredJudgment.issue(verdict=typed, editorial=editorial)
-    except Exception:
+    if parsed is None or lint is None:
         return _zero("Return one complete, schema-valid semantic judgment and card.", gate="schema_invalid")
+    typed, editorial, judgment, verdict = parsed
 
     feedback: list[str] = []
     decision = production_decision(judgment, projection)
@@ -482,6 +531,9 @@ def accepted_review_metric(
     )
     semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, observed, production, expected, judge, outcomes)
     card = _component(dimensions, _CARD_DIMENSIONS, observed, production, expected, judge, outcomes)
+    # The deterministic card checks report beside the reviewer-labelled dimensions, in the same vocabulary,
+    # so one `dimension_outcomes` list answers "what did this candidate do" for both kinds of truth.
+    outcomes.extend(lint.outcomes)
 
     # ---- hard gates: a dangerous miss cannot be averaged away ----
     if should_push == "must_push" and not reaches_reader:
@@ -517,6 +569,16 @@ def accepted_review_metric(
                 outcomes=outcomes,
                 **decision_metadata,
             )
+    if lint.gate:
+        # Not averaged with copy quality: a card carrying a URL, describing itself as a model, or written in
+        # a language the reader cannot read is not a worse card, it is not a reader card.
+        return _zero(
+            lint.feedback[0],
+            gate=lint.gate,
+            action=action,
+            outcomes=outcomes,
+            **decision_metadata,
+        )
     # Symbol sets, canonicalized on both sides. Gate grounding carries the provider's raw tag (`XYZ-CL`), and
     # a raw `.upper()` comparison would zero a candidate that correctly named `CL`.
     ungrounded = sorted(
@@ -581,11 +643,15 @@ def accepted_review_metric(
     card_score = card[0] if card else None
     if novelty_score is not None:
         semantics_score = novelty_score if semantics_score is None else (semantics_score + novelty_score) / 2
+    # Always present unless the card tripped a gate above or no check applied: this is the whole point of
+    # #306 Phase 1 — the ReaderCard side of the ruler no longer needs a reviewer to have labelled anything.
+    card_lint_score = lint.score
     components = [
         (_ACTION_WEIGHT, action_score),
         (_RELEVANCE_WEIGHT, relevance_score),
         (_SEMANTICS_WEIGHT, semantics_score),
         (_CARD_WEIGHT, card_score),
+        (_CARD_LINT_WEIGHT, card_lint_score),
     ]
     present = [(weight, value) for weight, value in components if value is not None]
     score = sum(weight * value for weight, value in present) / sum(weight for weight, _ in present) if present else 0.0
@@ -618,6 +684,11 @@ def accepted_review_metric(
         and owned != _CARD_DIMENSIONS
     ):
         feedback.append(f"Accepted novelty is {expected_novelty}.")
+    # The lint's own repair instructions, routed to the Predictor that writes the copy. They are the only
+    # feedback in this metric that needs no reviewer label at all, which is why they survive `pred_name`
+    # filtering that drops everything else on an unlabelled case.
+    if lint.feedback and owned != _RELEVANCE_DIMENSIONS + _SEMANTICS_DIMENSIONS:
+        feedback.extend(lint.feedback)
     correction = str(review.get("expected_correction") or "").strip()
     if correction and (pred_name is None or bool(failed)):
         feedback.append(f"Reviewer correction: {correction}")
@@ -641,6 +712,7 @@ def accepted_review_metric(
             "trade_relevance": relevance_score,
             "semantics_novelty": semantics_score,
             "reader_card": card_score,
+            "reader_card_lint": card_lint_score,
         },
         component_denominators=component_denominators,
         component_diagnostics=component_diagnostics,
@@ -673,6 +745,9 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             # also decides which cases are in scope. The receipt follows it: a ruler whose definition lives
             # in two files has to commit to both, or half of it can change unobserved.
             "tracefold.news.learning.objective": inspect.getmodule(production_decision),
+            # #306 Phase 1. The deterministic card contract is now part of what "better" means, so the ruler
+            # commits to its bytes the same way it commits to the scoring function's.
+            "tracefold.news.learning.card_lint": inspect.getmodule(lint_reader_card),
             "tracefold.news.models.base_symbol": base_symbol,
             "tracefold.news.events.storyline": inspect.getmodule(final_storyline_key),
             "tracefold.news.triage_rules": inspect.getmodule(decide),
@@ -708,17 +783,24 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "trade_relevance": _RELEVANCE_WEIGHT,
             "semantics_novelty": _SEMANTICS_WEIGHT,
             "reader_card": _CARD_WEIGHT,
+            "reader_card_lint": _CARD_LINT_WEIGHT,
         },
         "dimensions": {
             "trade_relevance": list(_RELEVANCE_DIMENSIONS),
             "semantics_novelty": [*_SEMANTICS_DIMENSIONS, "novelty(accepted_field)"],
             "reader_card": list(_CARD_DIMENSIONS),
+            "reader_card_lint": list(SCORED_CHECKS),
         },
+        # The deterministic card contract, gate split included. Published rather than implied: which checks
+        # zero a case and which merely cost a point is the one thing about this component an operator has to
+        # be able to read without opening the source.
+        "card_lint": card_lint_receipt(),
         "hard_gates": [
             "must_push_miss",
             "must_hold_send",
             "schema_invalid",
             "factual_contradiction",
+            *GATE_CHECKS,
             "ungrounded_primary_asset",
             "background_realtime_send",
             "relevance_inconsistent",
@@ -762,6 +844,10 @@ def _compile_example(episode: DevelopmentEpisode) -> dspy.Example:
         ),
         card_evidence_json=render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card"),
         told_count=len(episode.context.told.entries),
+        # The immutable Event headline the card was written from. Carried as its own field rather than
+        # re-parsed out of `card_evidence_json`: the delimited envelope is the model's input, and a ruler
+        # that reached back into it would be reading a rendering decision instead of the evidence.
+        source_title=episode.context.evidence.title,
         case_id=episode.case_id,
         cluster_id=episode.cluster_id,
         accepted_review=episode.accepted_review,

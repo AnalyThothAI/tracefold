@@ -38,8 +38,7 @@ from ..program.artifact import (
     ProgramStrategyArtifactV1,
     ProgramStrategyPatchV1,
     load_stable_program_artifact,
-    render_predictor_instruction,
-    validate_learned_instruction,
+    validate_program_instruction,
 )
 from ..program.dspy_adapter import (
     DspyStrictJSONAdapter,
@@ -50,7 +49,6 @@ from ..program.dspy_adapter import (
     _is_retryable_exception,
 )
 from ..program.graph import DspyCompileProgram, extract_optimizer_patch
-from ..program.runtime import PredictorName
 from .contracts import (
     METRIC_JUDGE_MAX_TOKENS,
     METRIC_JUDGE_TIMEOUT_SECONDS,
@@ -167,49 +165,44 @@ class GepaRunResult(_ExactModel):
 
 # --- the reflective proposer (was `proposer.py`) --------------------------------------------------
 
-_BRIEF = """You are amending ONE bounded advisory block inside a larger, code-owned prompt.
-
-Below is the COMPLETE prompt that is actually sent for the `{component}` Predictor, exactly as the runtime
-renders it. You may NOT change any of it except the single section marked `# LEARNEDSTRATEGY`.
-
-===== BEGIN RENDERED PROMPT (READ-ONLY EXCEPT THE LEARNEDSTRATEGY SECTION) =====
-{rendered}
-===== END RENDERED PROMPT =====
+_BRIEF = """You are rewriting the COMPLETE instruction sent to the `{component}` Predictor of a news
+judgment program. What you write replaces the whole instruction; nothing else is prepended or appended,
+so anything you drop is gone from the prompt.
 
 Rules for what you write:
-- Write ONLY the replacement body of the LEARNEDSTRATEGY section. Do not repeat the QualityKernel, the
-  RulePacks, the authority seal, or the schema. They are already in the prompt and re-stating them wastes the
-  budget and can only introduce contradictions.
-- The RulePacks above are authoritative and you cannot weaken, reinterpret or override them. Write guidance
-  that resolves cases the RulePacks leave genuinely ambiguous, or that names concrete recurring evidence
-  patterns the feedback below shows the model is getting wrong.
-- Be specific to this domain and this failure set. Prefer stated correct values, named instruments, and
-  concrete decision boundaries over general advice about being careful.
-- Do not include URLs, template braces, credentials, or any instruction to ignore or outrank other sections;
-  such text is rejected outright and the candidate scores zero.
+- Keep every rule, calibration and worked example the current instruction carries unless the feedback below
+  shows one is wrong. This text is the accumulated result of human review; a shorter instruction that lost a
+  calibration is a regression, not a simplification.
+- Repair what the feedback names. Prefer stated correct values, named instruments and concrete decision
+  boundaries over general advice about being careful.
+- Keep the output contract exactly as the current instruction states it, including the untrusted-input
+  boundary and the delimiters around the event JSON.
+- Do not include URLs, template braces, credential-shaped text, or a prompt-injection opener; such text is
+  rejected outright and the candidate scores zero.
 """
 
 
-class RulePackAwareProposer:
-    """A `ProposalFn` that prefixes GEPA's own proposal prompt with the rendered, read-only context."""
+class InstructionProposer:
+    """A `ProposalFn` that asks for a complete replacement instruction and applies the code-owned bounds.
+
+    Until #306 Phase 2 this was `RulePackAwareProposer`, and its whole job was to show the reflection model
+    the read-only prompt around the one slot it was allowed to write. There is no surrounding prompt any
+    more: the component text GEPA already carries *is* the instruction, so the brief says what the writer
+    is responsible for instead of what it may not touch.
+    """
 
     def __init__(self, artifact: ProgramStrategyArtifactV1) -> None:
         self._artifact = artifact
-        predictor_names: tuple[PredictorName, ...] = ("event_semantics", "reader_card")
-        self._rendered: dict[str, str] = {
-            name: render_predictor_instruction(name, artifact.instruction_for(name)) for name in predictor_names
-        }
         self.calls = 0
         self.components_seen: list[str] = []
         self.rejections: list[str] = []
 
     def context_for(self, component: str) -> str:
-        """The read-only brief for one component. Exposed so a test can assert the RulePacks reach the model."""
+        """The brief for one component. Exposed so a test can assert what the reflection model is told."""
 
-        rendered = self._rendered.get(component)
-        if rendered is None:
+        if component not in ("event_semantics", "reader_card"):
             raise ValueError(f"news_program_proposer_unknown_component:{component}")
-        return _BRIEF.format(component=component, rendered=rendered)
+        return _BRIEF.format(component=component)
 
     def __call__(
         self,
@@ -227,13 +220,11 @@ class RulePackAwareProposer:
             self.calls += 1
             self.components_seen.append(component)
             current = str(candidate.get(component) or "").strip()
-            # The advisory slot's own content is what GEPA is editing; the brief above is the surrounding
-            # prompt it must not duplicate.
             doc = (
                 f"{self.context_for(component)}\n"
-                "===== CURRENT LEARNEDSTRATEGY BODY (this is what you are replacing) =====\n"
-                f"{current or '(empty — no advisory has been learned yet)'}\n"
-                "===== END CURRENT LEARNEDSTRATEGY BODY ====="
+                "===== CURRENT INSTRUCTION (this is what you are replacing, in full) =====\n"
+                f"{current}\n"
+                "===== END CURRENT INSTRUCTION ====="
             )
             proposal = InstructionProposalSignature.run(
                 lm=_reflect,
@@ -244,11 +235,11 @@ class RulePackAwareProposer:
                 },
             )
             text = str(proposal.get("new_instruction") or "").strip()
-            rejection = _advisory_rejection(component, text)
+            rejection = _instruction_rejection(text)
             if rejection is not None:
                 # Validate here, where the model that wrote the text is still in the loop.
                 #
-                # A rejected advisory is rejected *before* any provider call, so nothing reaches
+                # A rejected instruction is rejected *before* any provider call, so nothing reaches
                 # `dspy.settings.trace`; GEPA's `make_reflective_dataset` finds no instances for the component
                 # and the whole iteration is silently skipped. The metric's repair instruction is real but
                 # unreachable in that path — it can only be delivered by asking again, here, with the code.
@@ -258,41 +249,35 @@ class RulePackAwareProposer:
                     input_dict={
                         "current_instruction_doc": (
                             f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n"
-                            f"Code-owned advisory safety rejected it: {rejection}.\n"
-                            "Rewrite it without URLs, template braces, credential-shaped text, or any claim of "
-                            "authority over the QualityKernel, the RulePacks or the schema, and keep it under "
-                            "8192 bytes."
+                            f"Code-owned instruction safety rejected it: {rejection}.\n"
+                            "Rewrite it without URLs, template braces, credential-shaped text or a "
+                            "prompt-injection opener, keep it valid NFC, and keep it under 32768 bytes."
                         ),
                         "dataset_with_feedback": examples,
                         "prompt_template": None,
                     },
                 )
                 text = str(retry.get("new_instruction") or "").strip()
-                if _advisory_rejection(component, text) is not None:
+                if _instruction_rejection(text) is not None:
                     continue
             if text:
                 updated[component] = text
         return updated
 
 
-def _advisory_rejection(component: str, text: str) -> str | None:
-    """The exact code the advisory bounds would refuse this text with, or `None` if it is acceptable."""
+def _instruction_rejection(text: str) -> str | None:
+    """The exact code the instruction bounds would refuse this text with, or `None` if it is acceptable."""
 
     if not text:
         return None
     try:
-        validate_learned_instruction(text)
+        validate_program_instruction(text)
     except ValueError as exc:
         message = str(exc)
-        for marker in (
-            "news_program_learned_strategy_too_large",
-            "news_program_learned_strategy_unsafe",
-            "news_program_learned_strategy_secret",
-            "news_program_learned_strategy_unicode_noncanonical",
-        ):
+        for marker in _INSTRUCTION_REJECTIONS:
             if marker in message:
                 return marker
-        return "news_program_learned_strategy_rejected"
+        return "news_program_instruction_rejected"
     return None
 
 
@@ -325,28 +310,29 @@ _OWNED_LM_KWARGS = frozenset(
 # 0 and the route's own token ceiling. The reflection LM does something else entirely — it reads a minibatch of
 # failures and writes a whole new instruction — and DSPy's guidance for it is the opposite on every axis. Until
 # #143 both were built from the task route's numbers, which capped a proposed instruction at 1,200 tokens (below
-# what the advisory slot itself accepts) and gave a reflection call the 20 s route deadline.
+# what the instruction bound itself accepts) and gave a reflection call the 20 s route deadline.
 _REFLECTION_TEMPERATURE = 1.0
 _TASK_TEMPERATURE = 0
 
 
-_ADVISORY_REJECTIONS = (
-    "news_program_learned_strategy_too_large",
-    "news_program_learned_strategy_unsafe",
-    "news_program_learned_strategy_secret",
-    "news_program_learned_strategy_unicode_noncanonical",
+_INSTRUCTION_REJECTIONS = (
+    "news_program_instruction_too_large",
+    "news_program_instruction_unsafe",
+    "news_program_instruction_secret",
+    "news_program_instruction_unicode_noncanonical",
+    "news_program_instruction_empty",
 )
 
 
-def _advisory_rejection_code(exc: BaseException) -> str | None:
-    """Whether this failure is the advisory safety bound refusing a proposal, and which bound it was."""
+def _instruction_rejection_code(exc: BaseException) -> str | None:
+    """Whether this failure is the instruction safety bound refusing a proposal, and which bound it was."""
 
     text = str(exc)
-    return next((marker for marker in _ADVISORY_REJECTIONS if marker in text), None)
+    return next((marker for marker in _INSTRUCTION_REJECTIONS if marker in text), None)
 
 
 class _FeedbackCompileProgram(DspyCompileProgram):
-    """The optimizer's student, with advisory rejections turned into scorable predictions.
+    """The optimizer's student, with instruction rejections turned into scorable predictions.
 
     The bounds themselves are unchanged and still absolute — this subclass cannot widen them. What changes is
     where a rejection lands: raised out of `forward`, DSPy's evaluator caught it and recorded `failure_score`
@@ -354,55 +340,23 @@ class _FeedbackCompileProgram(DspyCompileProgram):
     about why. It then proposed text that tripped the same bound again. Returned as a prediction, the code
     reaches the metric and comes back as a repair instruction.
 
-    It lives in the shared core, not beside the trusted compiler: `_rekey_trace` below is what makes GEPA
-    able to propose anything at all, so a plane that ran `run_gepa` with the plain student would burn its
-    whole budget on the seed and end in `no_program_change` while reporting the same algorithm. It is still
-    optimizer-only — nothing in the production graph may learn to answer with `advisory_rejected`, and the
-    module boundary is what keeps that true.
-    (Until #193 the stated reason was that the Program package's source was hashed into the shipped
-    Artifact, so editing it re-issued `program_sha256`. That is no longer so — the root commits to the
-    factory id and the two instructions — but the placement is still right for the reason above.)
+    It is optimizer-only: nothing in the production graph may learn to answer with `instruction_rejected`,
+    and the module boundary is what keeps that true.
+
+    Until #306 Phase 2 this class also carried `_rekey_trace`, which re-attributed each recorded call from
+    the anonymous inner Predictor that actually answered to the named component GEPA was optimizing. That
+    indirection is gone with the rendering step: `_OptimizerOwnedPredictor` now answers the provider itself,
+    so the trace is keyed to the component by construction.
     """
 
     def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> dspy.Prediction:
-        trace = dspy.settings.trace
-        before = len(trace) if isinstance(trace, list) else None
         try:
             return cast(dspy.Prediction, super().forward(evidence_json, card_evidence_json, told_count))
         except (ValidationError, ValueError) as exc:
-            code = _advisory_rejection_code(exc)
+            code = _instruction_rejection_code(exc)
             if code is None:
                 raise
-            return dspy.Prediction(semantics=None, card=None, verdict=None, advisory_rejected=code)
-        finally:
-            # In `finally`, not on the success path only. A schema rejection of the model's own output is the
-            # most informative failure there is — it is exactly what `add_format_failure_as_feedback` exists to
-            # surface — and leaving those entries keyed to the anonymous inner predictor drops them from the
-            # reflective dataset, so the reflection model never sees the outputs it most needs to fix.
-            if before is not None:
-                self._rekey_trace(trace, before)
-
-    def _rekey_trace(self, trace: list[Any], before: int) -> None:
-        """Attribute the recorded calls to the two named Predictors GEPA is optimizing.
-
-        `_OptimizerOwnedPredictor` does not answer the provider itself: it renders RulePacks plus the advisory
-        into a fresh `dspy.Predict` and delegates. So the trace records that anonymous inner predictor, whose
-        signature carries the full rendered instruction.
-
-        GEPA matches traces to components with `t[0].signature.equals(module.signature)`, and the outer
-        signature carries only the advisory. The two are never equal, so `make_reflective_dataset` found no
-        instances, raised "No valid predictions found for any module", and the reflective loop could not
-        propose anything at all — no matter how good the metric or the feedback was.
-
-        The graph is exactly two serial calls in a fixed order, which is what makes positional re-keying exact
-        rather than a guess.
-        """
-
-        named = [self.event_semantics, self.reader_card]
-        for offset, entry in enumerate(trace[before:]):
-            if offset >= len(named) or not isinstance(entry, tuple) or len(entry) != 3:
-                continue
-            trace[before + offset] = (named[offset], entry[1], entry[2])
+            return dspy.Prediction(semantics=None, card=None, verdict=None, instruction_rejected=code)
 
 
 class GepaNoProgramChange(ValueError):
@@ -446,7 +400,7 @@ def run_gepa(
     optimizer_factory: OptimizerFactory = dspy.GEPA,
     student_factory: Callable[[ProgramStrategyArtifactV1], DspyCompileProgram] = _FeedbackCompileProgram,
 ) -> GepaRunResult:
-    """Optimize the two advisory instructions against accepted-review truth."""
+    """Optimize the two Predictor instructions against accepted-review truth."""
 
     if judge is None:
         raise ValueError("news_program_compile_metric_judge_required")
@@ -481,7 +435,7 @@ def run_gepa(
         max_metric_calls=max_metric_calls,
         seed=seed,
         train_count=len(train_examples),
-        proposer=RulePackAwareProposer(base_program),
+        proposer=InstructionProposer(base_program),
     )
     config_receipt = optimizer_config_receipt(
         constructor=constructor,
@@ -517,10 +471,6 @@ def run_gepa(
             f"observed={metric_calls},requested={max_metric_calls},ceiling={ceiling}"
         )
     trajectory = trajectory_receipt(details)
-    # Canonicalize before reading the checkpoint. Until `restore_empty_advisories` runs, a Predictor GEPA
-    # left alone still holds DSPy's generated default rather than the empty advisory it stands for, and the
-    # receipt would disagree with the patch and the shipped artifact for exactly that case.
-    restore_empty_advisories(compiled)
     checkpoint = checkpoint_receipt(compiled)
     patch = extract_optimizer_patch(compiled, base_program)
     result = GepaRunResult(
@@ -550,7 +500,7 @@ def optimizer_constructor(
     max_metric_calls: int,
     seed: int,
     train_count: int,
-    proposer: RulePackAwareProposer,
+    proposer: InstructionProposer,
 ) -> dict[str, Any]:
     """The one GEPA configuration both planes construct."""
 
@@ -559,7 +509,7 @@ def optimizer_constructor(
         "max_full_evals": None,
         "max_metric_calls": max_metric_calls,
         # DSPy's default is 3, and 3 is too few for this metric. In the first real run every proposal was
-        # skipped on an *exact* tie — 1.729166 vs 1.729166, 1.597917 vs 1.597917 — because a good advisory
+        # skipped on an *exact* tie — 1.729166 vs 1.729166, 1.597917 vs 1.597917 — because a good instruction
         # here names recurring evidence patterns (a sentiment index, a comparison base, a crypto-linked
         # equity) that a 3-example sample almost never contains. The metric is also coarse, moving in steps
         # like 0 / 0.675 / 0.825 / 1.0, so ties are easy to hit and GEPA skips on a tie by rule. A wider
@@ -568,9 +518,9 @@ def optimizer_constructor(
         "candidate_selection_strategy": "pareto",
         "skip_perfect_score": True,
         "add_format_failure_as_feedback": True,
-        # #143. The default proposer shows the reflection model only the mutable component, which for this
-        # Program is an advisory slot whose code-owned baseline is empty. It was being asked to write a
-        # whole instruction while blind to the nine RulePacks already in the prompt.
+        # #143/#306. GEPA's default proposer serializes only the reflective dataset; this one adds the
+        # brief that says the proposal replaces the whole instruction and must not shed the calibrations
+        # a human review put there.
         "instruction_proposer": proposer,
         "component_selector": "round_robin",
         "use_merge": True,
@@ -621,8 +571,8 @@ def optimizer_config_receipt(
             f"{type(constructor['instruction_proposer']).__qualname__}"
             if constructor.get("instruction_proposer") is not None
             else None,
-            "reads": "full rendered predictor instruction (sealed kernel + ordered RulePacks + authority seal)",
-            "writes": "one advisory instruction body only",
+            "reads": "the current complete predictor instruction plus the reflective dataset",
+            "writes": "one complete replacement predictor instruction",
         },
         "model_identities": {
             "task": require_model_identity(task_lm, role="task").model_dump(mode="json"),
@@ -707,35 +657,6 @@ def require_model_identity(lm: dspy.LM, *, role: str) -> ModelExecutionIdentity:
     return identity
 
 
-def generated_default_instruction(predictor: dspy.Predict) -> str:
-    """What DSPy writes into a signature when it is handed an empty instruction."""
-
-    return str(predictor.signature.with_instructions("").instructions or "")
-
-
-def restore_empty_advisories(compiled: DspyCompileProgram) -> None:
-    """Map DSPy's auto-generated default instruction back to the empty advisory it stands for.
-
-    The empty advisory cannot survive a GEPA round trip on its own. `Signature.with_instructions("")` does
-    not store an empty instruction — DSPy substitutes ``"Given the fields `evidence_json`, produce the
-    fields `semantics`."`` The baseline is empty, so GEPA's seed candidate is `""`, and the very first
-    `build_program(seed)` rebuilt the student with that boilerplate in the advisory slot.
-
-    Two things went wrong from there. The optimizer never evaluated the true baseline, and when the Pareto
-    front kept the seed, `extract_optimizer_patch` read the boilerplate back out as a *learned* strategy —
-    `news_program_compile_no_program_change` did not fire, because the text genuinely differs from the
-    parent's empty string. A run that learned nothing produced a patch that looked like it had.
-
-    One blank character is the canonical empty instruction (`with_instructions(" ")` stores `""`), which is
-    how the factory builds the baseline in the first place.
-    """
-
-    for name in ("event_semantics", "reader_card"):
-        predictor = getattr(compiled, name)
-        if str(predictor.signature.instructions or "") == generated_default_instruction(predictor):
-            predictor.signature = predictor.signature.with_instructions(" ")
-
-
 def trajectory_receipt(details: Any) -> dict[str, Any]:
     if details is None:
         raise ValueError("news_program_compile_trajectory_missing")
@@ -758,8 +679,8 @@ def checkpoint_receipt(program: DspyCompileProgram) -> dict[str, Any]:
     return {
         "schema": "tracefold.news.compile_checkpoint_receipt.v2",
         "factory": program.artifact.factory_id,
-        # The advisory text itself, not a digest of it: this receipt is the record of what the run produced,
-        # and the winner's two instructions are already carried by the patch beside it.
+        # The instruction text itself, not a digest of it: this receipt is the record of what the run
+        # produced, and the winner's two instructions are already carried by the patch beside it.
         "predictors": {
             name: {"instruction": str(predictor.signature.instructions or "")}
             for name, predictor in program.named_predictors()
@@ -792,7 +713,7 @@ _REJECTION_PREFIXES = (
     "news_program_compile_metric_budget_unverifiable",
     "news_program_compile_trajectory_missing",
     "news_program_compile_nonfinite_receipt_value",
-    "news_program_learned_strategy_",
+    "news_program_instruction_",
 )
 _NO_OP_CODE = "news_program_compile_no_program_change"
 
@@ -1439,16 +1360,15 @@ __all__ = [
     "FrozenDevelopmentDataset",
     "GepaNoProgramChange",
     "GepaRunResult",
+    "InstructionProposer",
     "ModelExecutionIdentity",
     "OptimizationBudgetExceeded",
     "OptimizationConfig",
     "OptimizerFactory",
     "OptimizerRole",
-    "RulePackAwareProposer",
     "_FeedbackCompileProgram",
     "build_optimizer_lm",
     "checkpoint_receipt",
-    "generated_default_instruction",
     "gepa_metric_call_ceiling",
     "objective_summary",
     "optimize",
@@ -1456,7 +1376,6 @@ __all__ = [
     "optimizer_constructor",
     "plan_blockers",
     "require_model_identity",
-    "restore_empty_advisories",
     "run_gepa",
     "trajectory_receipt",
 ]
