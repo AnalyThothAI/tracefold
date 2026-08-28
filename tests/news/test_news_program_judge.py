@@ -28,6 +28,7 @@ from tracefold.news.learning.metric import (
     bind_metric,
     metric_receipt,
 )
+from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.transport import ProviderCallMetrics
 
 _ACCEPTED = {
@@ -334,8 +335,11 @@ def test_metric_receipt_pins_the_judge_identity() -> None:
     assert judged["semantic_judge"]["factual_evidence_signature_sha256"]
     assert judged["semantic_judge"]["factual_evidence_output_schema_sha256"]
     assert judged["semantic_judge"]["implementation_source_sha256"]
+    # The shared envelope is named *and* identified (#315). Naming the function alone let a change to what
+    # the judge is sent leave every receipt identical, which is the defect #314 removed from the Program.
     assert judged["semantic_judge"]["adapter"] == {
         "implementation": "tracefold.news.program.transport.chat_request_body",
+        "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
         "native_function_calling": False,
         "format_fallback": False,
     }

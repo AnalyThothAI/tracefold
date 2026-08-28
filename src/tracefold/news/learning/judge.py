@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...integrations.chat_completions import chat_completions_url, post_chat_completion_sync
 from ..artifact_identity import canonical_json, canonical_sha
+from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.transport import (
     ProviderCallMetrics,
     chat_request_body,
@@ -328,6 +329,13 @@ class CardEquivalenceJudge:
             ),
             "adapter": {
                 "implementation": "tracefold.news.program.transport.chat_request_body",
+                # The computed identity of that shared envelope (#315). Naming the function was not enough:
+                # the judge is sent whatever `chat_request_body` composes, so a change to the output
+                # contract or the request shape moved what the judge reads while every field above — and
+                # therefore every metric receipt — stayed identical. That is the same "behavior moved,
+                # identity did not" defect #314 removed from the Program, and the judge is where it
+                # survived. It rides the same computed value rather than a second declaration.
+                "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
                 "native_function_calling": False,
                 "format_fallback": False,
             },
