@@ -328,10 +328,10 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,freeze} ...
+                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,migrate-corpus,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,freeze}
+  {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,migrate-corpus,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
@@ -346,6 +346,8 @@ positional arguments:
                         development dataset; ADVANCE is not a release
     run                 the recommended path: readiness -> standalone baseline
                         -> optimize -> run_summary.json
+    migrate-corpus      carry a stale-cohort development dataset forward by
+                        replaying the current arm (#300)
     freeze              freeze accepted reviews into a dataset
 
 options:
@@ -543,6 +545,31 @@ options:
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
   --seed SEED
+
+```
+
+## `news learning migrate-corpus`
+
+```
+usage: tracefold news learning migrate-corpus [-h] --from-dataset FROM_DATASET
+                                              --semantic-judge SEMANTIC_JUDGE
+                                              --max-model-cases MAX_MODEL_CASES
+                                              [--from-receipt FROM_RECEIPT]
+                                              --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --from-dataset FROM_DATASET
+                        development dataset artifact SHA to carry
+  --semantic-judge SEMANTIC_JUDGE
+                        card-equivalence judge model
+  --max-model-cases MAX_MODEL_CASES
+                        hard bound on replayed cases; must cover the whole
+                        dataset
+  --from-receipt FROM_RECEIPT
+                        freeze from an already-written migration receipt
+                        instead of replaying again
+  --out OUT             directory for the receipt and dataset manifest
 
 ```
 

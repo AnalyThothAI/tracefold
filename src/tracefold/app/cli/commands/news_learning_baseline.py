@@ -587,3 +587,111 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "note": "proposals only - a human must accept each one through `tracefold news review submit`",
         },
     }
+
+
+def _handle_learning_migrate_corpus(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Carry a stale-cohort development dataset forward by replaying the current arm (#300).
+
+    The database is held only at the edges: one read to export the episodes, one short write transaction
+    to seal the carried subset. The replay itself — hours on the single-slot task endpoint — runs with no
+    connection open, and `--from-receipt` freezes from an already-written receipt so a failure after the
+    replay never re-pays it; the seal re-verifies the receipt's hash and the arm it was proven against.
+    """
+
+    import json as _json
+    from pathlib import Path as _Path
+
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news.learning.dataset import DevelopmentDatasetStore
+    from tracefold.news.learning.ledger import LearningLedger
+    from tracefold.news.learning.migration import run_corpus_migration
+    from tracefold.news.learning.objective import DevelopmentEpisode
+    from tracefold.news.program.artifact import load_program_artifact
+
+    out_dir = _Path(str(args.out))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    from_receipt = str(getattr(args, "from_receipt", "") or "")
+
+    def _store(conn: Any) -> DevelopmentDatasetStore:
+        return DevelopmentDatasetStore(
+            conn,
+            stable=stable,
+            ledger=LearningLedger(conn, stable=stable, principal="operator"),
+        )
+
+    if from_receipt:
+        receipt = _json.loads(_Path(from_receipt).read_text(encoding="utf-8"))
+    else:
+        artifact = load_program_artifact(stable.program_sha256)
+        lm, _semantic_judge, runtime_identity = _baseline_model_route(
+            "compile_live", settings=settings, artifact=artifact
+        )
+        judge = _migration_judge(args, settings)
+        from tracefold.news.learning.baseline import compile_program_factory
+
+        with postgres_connection(settings, role="workers") as conn:
+            export = _store(conn).development_migration_export(str(args.from_dataset))
+        episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
+        delivered = {
+            str(case.get("case_id")): str(case.get("event_id") or case.get("case_id"))
+            for case in export.dataset_payload.get("cases") or ()
+            if str(case.get("delivery_truth")) == "observed_sent"
+        }
+        receipt = run_corpus_migration(
+            episodes,
+            program=compile_program_factory(artifact),
+            lm=lm,
+            judge=judge,
+            max_model_cases=int(args.max_model_cases),
+            from_dataset_sha=str(args.from_dataset),
+            replay_identity={
+                "bundle_sha": stable.bundle_sha,
+                "program_sha256": stable.program_sha256,
+                **runtime_identity,
+            },
+            delivered_event_ids_by_case=delivered,
+        )
+        _write_json(str(out_dir / "migration-receipt.json"), receipt)
+
+    if not receipt["counts"]["equivalent"]:
+        # The store refuses an empty carry loudly; a zero-exit here would convert that refusal into a
+        # success an operator's `&&` chain sails past.
+        return 1, {
+            "ok": False,
+            "error": "news_learning_migration_carries_no_cases",
+            "data": {"counts": receipt["counts"], "out": str(out_dir)},
+        }
+    with postgres_connection(settings, role="workers") as conn, conn.transaction():
+        manifest = _store(conn).freeze_migrated_dataset(from_dataset_sha=str(args.from_dataset), receipt=receipt)
+    _write_json(str(out_dir / "migrated-dataset.json"), manifest.model_dump(mode="json"))
+    return 0, {
+        "ok": True,
+        "data": {
+            "receipt_sha256": receipt["receipt_sha256"],
+            "counts": receipt["counts"],
+            "migrated_dataset_sha": manifest.artifact_sha,
+            "excluded_case_ids": (manifest.migration or {}).get("excluded_case_ids"),
+            "out": str(out_dir),
+        },
+    }
+
+
+def _migration_judge(args: Namespace, settings: Any) -> Any:
+    """The card-equivalence judge on the compiler reflection route — the same restriction a dataset-bound
+    baseline carries, because a migration seal is release evidence."""
+
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.news.learning.baseline import build_judge
+
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    if reflection is None or not reflection.configured:
+        raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+    endpoint = configured_lm_endpoint(
+        settings, model_name=str(args.semantic_judge).strip(), api_key=reflection.api_key, base_url=reflection.base_url
+    )
+    return build_judge(
+        model_name=endpoint.model_name,
+        api_key=endpoint.api_key,
+        api_base=endpoint.api_base,
+        model_kwargs=endpoint.model_kwargs,
+    )

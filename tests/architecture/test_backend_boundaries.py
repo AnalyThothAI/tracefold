@@ -34,6 +34,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # then does the freeze get to refuse the window.
         "tracefold.news.learning.dataset",
         "tracefold.news.learning.ledger",
+        # #300: the corpus carry-forward. The CLI composes the replay (task LM + equivalence judge) with
+        # the dataset store's migration seal; the module itself can reach neither review acceptance nor
+        # the release plane, which the capability tests keep true.
+        "tracefold.news.learning.migration",
         "tracefold.news.release.candidate",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
