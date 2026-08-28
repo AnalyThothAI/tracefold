@@ -11,7 +11,7 @@ from tracefold.trading import BlacklistSnapshotV1, ReplayArtifactV1, ReplaySpecV
 from tracefold.trading.contracts import canonical_sha256
 
 
-def _spec(*, gate_digest: str = "3" * 64, regime_lookback_ms: str = "3600000", notional: str = "10") -> ReplaySpecV1:
+def _spec(*, gate_digest: str = "3" * 64, regime_lookback_ms: int = 3_600_000, notional: str = "10") -> ReplaySpecV1:
     return ReplaySpecV1(
         start_ms=1,
         end_ms=2,
@@ -22,15 +22,14 @@ def _spec(*, gate_digest: str = "3" * 64, regime_lookback_ms: str = "3600000", n
         execution_capability_snapshot_sha256="5" * 64,
         replay_scenarios_sha256="6" * 64,
         blacklist_snapshot_sha256=BlacklistSnapshotV1(revision=0, active_rows=()).snapshot_sha256,
-        strategy_identities=[
-            {
-                "strategy_id": "oi",
-                "strategy_identity": "7" * 64,
-                "candidate_gate_version": CANDIDATE_GATE_VERSION,
-                "candidate_gate_config_sha256": gate_digest,
-                "regime_lookback_ms": regime_lookback_ms,
-            }
-        ],
+        candidate_gate_version=CANDIDATE_GATE_VERSION,
+        candidate_gate_config_sha256=gate_digest,
+        regime_lookback_ms=regime_lookback_ms,
+        regime_min_price_move_bps=100,
+        regime_max_price_move_bps=600,
+        regime_bar_gap_tolerance_ms=330_000,
+        target_notional_usd=notional,
+        strategy_identities=[{"strategy_id": "oi", "strategy_identity": "7" * 64}],
         intent_policy_sha256="8" * 64,
         execution_policy_sha256="9" * 64,
         app_revision="revision-1",
@@ -39,7 +38,7 @@ def _spec(*, gate_digest: str = "3" * 64, regime_lookback_ms: str = "3600000", n
         venue_scenarios=[{"venue": "binance.perp", "mode": "source_native"}],
         fee_model={"version": "fee-v1"},
         funding_model={"version": "unavailable-v1"},
-        fill_model={"version": "bar-v1", "target_notional_usd": notional},
+        fill_model={"version": "bar-v1"},
         slippage_model={"version": "bar-v1"},
         latency_model={"version": "bar-v1"},
     )
@@ -70,7 +69,7 @@ def test_gate_regime_and_notional_are_replay_policy_identity() -> None:
     baseline = _spec().run_id
 
     assert _spec(gate_digest="a" * 64).run_id != baseline
-    assert _spec(regime_lookback_ms="7200000").run_id != baseline
+    assert _spec(regime_lookback_ms=7_200_000).run_id != baseline
     assert _spec(notional="7.5").run_id != baseline
 
 

@@ -25,7 +25,7 @@ from .contracts import (
     underlying_key,
 )
 from .decision.regime import RegimePolicy, assess, pre_move_bps, select_bar
-from .execution_policy import EXECUTION_POLICY_SHA256
+from .execution_policy import EXECUTION_POLICY_SHA256, TARGET_NOTIONAL_CEILING_USD
 from .research.oi_replay import PENDING_MARKET_CONTEXT, OiReplayOutcome
 from .strategy.root import TradingStrategy
 
@@ -135,6 +135,13 @@ class ReplaySpecV1(_Frozen):
     execution_capability_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     replay_scenarios_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     blacklist_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_gate_version: str
+    candidate_gate_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    regime_lookback_ms: int = Field(gt=0)
+    regime_min_price_move_bps: int = Field(ge=0)
+    regime_max_price_move_bps: int = Field(gt=0)
+    regime_bar_gap_tolerance_ms: int = Field(ge=0)
+    target_notional_usd: Decimal = Field(gt=0, le=TARGET_NOTIONAL_CEILING_USD)
     strategy_identities: list[dict[str, str]]
     intent_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -149,6 +156,12 @@ class ReplaySpecV1(_Frozen):
     fill_model: dict[str, str]
     slippage_model: dict[str, str]
     latency_model: dict[str, str]
+
+    @model_validator(mode="after")
+    def validate_regime_band(self) -> Self:
+        if self.regime_max_price_move_bps <= self.regime_min_price_move_bps:
+            raise ValueError("replay_regime_band_invalid")
+        return self
 
     @property
     def run_id(self) -> str:
