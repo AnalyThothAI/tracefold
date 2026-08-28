@@ -32,8 +32,8 @@ from .news_learning_runtime import (
 
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
+    from tracefold.news.learning.contracts import epoch_id_for_bundle
     from tracefold.news.learning.evaluate import (
-        LEARNING_EPOCH,
         CandidateEvaluator,
         CandidateManifest,
         ClosedWindow,
@@ -153,7 +153,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     "SELECT artifact_sha FROM news_learning_artifacts "
                     "WHERE artifact_sha = %s AND kind = 'dataset' "
                     "AND payload->>'role' = 'development' AND payload->>'learning_epoch' = %s",
-                    (str(args.development), LEARNING_EPOCH),
+                    (str(args.development), epoch_id_for_bundle(stable.bundle_sha)),
                 ).fetchone()
                 if development is None:
                     raise ValueError("news_learning_development_dataset_not_found")
@@ -171,7 +171,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     registered_at_ms=registered_at_ms,
                     declared_target_dimensions=plan.target_dimensions,
                     guardrails=(
-                        "fixed_factory_v7",
+                        "fixed_execution_envelope",
                         "development_only",
                         "holdout_unseen",
                         "no_dynamic_code",
@@ -185,7 +185,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     parent_stable_sha=stable.bundle_sha,
                     candidate_arm=candidate_arm,
                     hypothesis=str(args.hypothesis)
-                    or "Repair the accepted program_v9 failure clusters with the registered Prompt patch.",
+                    or "Repair the accepted failure clusters with the registered Prompt patch.",
                     target_dimensions=plan.target_dimensions,
                     development_dataset_sha=str(args.development),
                     proposal_receipt=receipt,

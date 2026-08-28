@@ -7,8 +7,9 @@ which is why a change to any objective, dataset, metric or release boundary edit
 
 It holds no SQL. `docs/DEVELOPMENT.md` puts business SQL in the owning package's storage module behind a
 named repository method, and `NewsRepository` is that module; what lives here is the part storage should
-not know — that an epoch row has to match what the epoch was *opened* with, that an evaluation may only
-proceed against the stable arm the last deployment appointed, and what identity a cohort is described by.
+not know — that an epoch row has to describe the bundle this process is actually running, that an
+evaluation may only proceed against the stable arm the last deployment appointed, and what identity a
+cohort is described by.
 
 Notably it holds no judge, no Program and no DSPy: an artifact write is not a model call, and a caller
 that only needs to read the epoch should not pay four seconds of import to do it.
@@ -19,14 +20,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..program.runtime import PROGRAM_SCHEMA_VERSION
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION
 from ..storage.root import NewsRepository
-from .contracts import LEARNING_EPOCH, LEARNING_PROGRAM_VERSION, ArmManifest
-from .epoch import (
-    LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
-    LEARNING_EPOCH_OPENED_FACTORY_ID,
-    LEARNING_EPOCH_RESET_REASON,
-)
+from .contracts import LEARNING_PROGRAM_VERSION, ArmManifest, epoch_id_for_bundle
 
 
 class LearningLedger:
@@ -68,19 +65,28 @@ class LearningLedger:
     def reviews_by_id(self, review_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         return self._repository.reviews_by_id(review_ids)
 
+    def epoch_id(self) -> str:
+        return epoch_id_for_bundle(self._stable.bundle_sha)
+
     def epoch_started_at_ms(self) -> int:
-        row = self._repository.learning_epoch_row(LEARNING_EPOCH)
+        """When this bundle's epoch opened, refusing a row that describes a different bundle.
+
+        Every field is compared against today's runtime values, which is new (#314) and is the point: the
+        row is written by the deployment it describes, so there is no longer an "opened with" that may
+        legitimately differ from "running now". A re-issued Program, a changed envelope or a re-slotted
+        model is a different bundle and therefore a different epoch, not a re-issue inside this one.
+        """
+
+        row = self._repository.learning_epoch_row_for_bundle(self._stable.bundle_sha)
         if row is None:
             raise ValueError("news_learning_epoch_not_deployed")
-        # Compared against what the epoch was opened with, not against today's runtime constants. Both
-        # still prove the persisted epoch identity before its evidence is treated as eligible, which is
-        # what catches migration drift or a corrupted ledger row.
         if (
-            str(row["program_factory_id"]) != LEARNING_EPOCH_OPENED_FACTORY_ID
-            or str(row["artifact_schema_version"]) != LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION
+            str(row["epoch_id"]) != self.epoch_id()
+            or str(row["envelope_sha256"] or "") != self._stable.envelope_sha256
+            or str(row["artifact_schema_version"]) != PROGRAM_SCHEMA_VERSION
             or str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
+            or str(row["baseline_program_sha256"]) != self._stable.program_sha256
             or str(row["prior_evidence_disposition"]) != "audit_only"
-            or str(row["reset_reason"]) != LEARNING_EPOCH_RESET_REASON
         ):
             raise ValueError("news_learning_epoch_contract_mismatch")
         return int(row["starts_at_ms"])
@@ -88,9 +94,10 @@ class LearningLedger:
     def agent_cohort(self) -> dict[str, str]:
         return {
             "bundle_sha": self._stable.bundle_sha,
-            "learning_epoch": LEARNING_EPOCH,
+            "learning_epoch": self.epoch_id(),
             "program_version": self._stable.program_version,
             "program_sha256": self._stable.program_sha256,
+            "envelope_sha256": self._stable.envelope_sha256,
             "runtime_model_bindings_sha256": self._stable.runtime_model_bindings_sha256,
             "retrieval_sha256": self._stable.retrieval_sha256,
             "policy_sha256": self._stable.policy_sha256,

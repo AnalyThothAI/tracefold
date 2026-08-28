@@ -272,13 +272,14 @@ def _optimize_real(
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
 
     episodes = compiler_development_corpus()
-    dataset_payload = {"role": "development", "learning_epoch": "program_v9", "cases": []}
+    dataset_payload = {"role": "development", "learning_epoch": "bundle_00000000", "cases": []}
     dataset = FrozenDevelopmentDataset.bind(
         dataset_payload=dataset_payload,
         ref=DevelopmentDatasetRef(
             development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": dataset_payload}),
             episode_projection_root_sha256=canonical_sha([e.model_dump(mode="json") for e in episodes]),
             episode_count=len(episodes),
+            learning_epoch="bundle_00000000",
             learning_epoch_started_at_ms=1,
             review_rubric_version="news_review_v4",
         ),
@@ -352,7 +353,7 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() ->
     assert 0 < result.report.usage["metric_calls"] <= 40 + val_n + minibatch
     assert result.report.usage["reflection_model_calls"] > 0, "the reflection endpoint was never used"
 
-    assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v3"
     assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     receipt = result.report.optimizer

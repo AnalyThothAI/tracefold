@@ -1,13 +1,15 @@
 """The content-addressed `ProgramStrategyArtifactV1`, its codec and its registry.
 
-An artifact is one complete instruction per Predictor, under a named factory. `program_sha256` is the
-canonical hash of those four values and nothing else, which is why two compiles that arrive at the same
-two instructions are the same running Program however much they cost, whoever launched them, and whatever
+An artifact is one complete instruction per Predictor. `program_sha256` is the canonical hash of those two
+texts and the schema version, and nothing else, which is why two compiles that arrive at the same two
+instructions are the same running Program however much they cost, whoever launched them, and whatever
 trajectory they took.
 
 Everything else the Program needs — the graph, the schemas, the normalizer, the assembler, the model route
-and the execution budget — is code, versioned by `factory_id`. Copying it into the artifact and hashing it
-there proved nothing this package did not already own.
+and the execution budget — is code, and `identity.compute_execution_identity` hashes what that code
+renders (#314). It used to be declared here instead, as a `factory_id` literal somebody had to remember to
+bump; the artifact carried the literal and hashed it, which made a forgotten bump indistinguishable from
+no change at all.
 
 Since #306 Phase 2 the instruction *is* the whole prompt rather than an advisory appended to one. There is
 no renderer left: `seed.py` holds the reviewed baseline text, an artifact carries whatever text is current,
@@ -37,7 +39,6 @@ from .runtime import (
     _UNTRUSTED_EVENT_CLOSE,
     _UNTRUSTED_EVENT_OPEN,
     _VISIBLE_INPUT,
-    PROGRAM_FACTORY_ID,
     PROGRAM_INSTRUCTION_MAX_BYTES,
     PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS,
     PROGRAM_PREDICTOR_MAX_TOKENS,
@@ -126,15 +127,16 @@ class PredictorState(_ExactModel):
 
 
 class ProgramStrategyArtifactV1(_ExactModel):
-    """The complete write-set, and the whole of Program behavior identity.
+    """The complete write-set, and the whole of the *learnable* part of Program identity.
 
     Two texts, and since #306 Phase 2 each one is the whole prompt for its Predictor rather than an
-    addendum to a rendered stack. Nothing else about the shape changed: the same two fields, the same
-    canonical hash over them and the factory, the same closed patch crossing the compiler boundary.
+    addendum to a rendered stack. #314 removed the third value: a `factory_id` literal naming the code
+    around them. Code identity is computed from the code (`identity.EXECUTION_ENVELOPE_SHA256`), so
+    carrying a declaration of it here only meant an artifact could claim a factory it was not running
+    under. What is left is exactly what a human or an optimizer can write.
     """
 
     schema_version: Literal["news_program_strategy_artifact_v1"] = "news_program_strategy_artifact_v1"
-    factory_id: Literal["tracefold.news.program.factory_v9"] = "tracefold.news.program.factory_v9"
     event_semantics_instruction: str
     reader_card_instruction: str
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -143,7 +145,6 @@ class ProgramStrategyArtifactV1(_ExactModel):
     def issue(cls, *, event_semantics_instruction: str, reader_card_instruction: str) -> ProgramStrategyArtifactV1:
         payload = {
             "schema_version": PROGRAM_SCHEMA_VERSION,
-            "factory_id": PROGRAM_FACTORY_ID,
             "event_semantics_instruction": event_semantics_instruction,
             "reader_card_instruction": reader_card_instruction,
         }

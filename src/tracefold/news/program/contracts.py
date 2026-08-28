@@ -497,7 +497,7 @@ class ProgramCallTrace(_ExactContractModel):
     finish_reason: str | None = None
     error_code: str | None = None
     # Bounded, secret-scrubbed provider error body for a refused request (#310). Absent on every
-    # pre-factory_v9 trace and on any attempt the provider answered.
+    # trace written before that epoch, and on any attempt the provider answered.
     error_detail: str | None = None
 
     @model_validator(mode="after")
@@ -530,7 +530,11 @@ class ProgramTrace(_ExactContractModel):
     program_version: str
     program_sha256: str
     context_sha256: str
-    factory_id: str
+    # The computed identity of everything the code decided about this call — request envelope, output
+    # contract and schema, visible input shape, route budget and breaker (#314). It replaced a declared
+    # `factory_id` the graph copied off the artifact: the stamp is now derived from the behavior it
+    # names, so a deployment cannot move what the model sees while leaving this field still.
+    envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     event_semantics_sha256: str | None = None
     reader_card_sha256: str | None = None
     verdict_sha256: str | None = None

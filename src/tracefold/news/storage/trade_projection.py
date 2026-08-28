@@ -17,7 +17,6 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any, TypedDict
 
-from ..learning.contracts import LEARNING_EPOCH
 from ..opennews import source_artifact_identity
 
 # Bump when a key is added, removed or retyped below — and when what a key *means* changes without the
@@ -50,6 +49,18 @@ NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v8"
 # roughly twenty times the volume it has to carry. It is still a ceiling, not a promise: a lane that
 # comes back with exactly this many rows was truncated, and the funnel's `oi_rows` / `news_rows`
 # counters are where that shows.
+# The epoch a projection row belongs to is the epoch of the deployment that produced it (#314). Joining
+# through the active agent keeps that true after a rollback, where "the newest epoch row" would name a
+# bundle this process is not running.
+_CURRENT_EPOCH_JOIN = """
+              JOIN news_learning_epochs epoch
+                ON epoch.bundle_sha = (
+                  SELECT stable_sha FROM news_review_active_agent_v1
+                   ORDER BY created_at_ms DESC LIMIT 1
+                )
+               AND e.opened_at_ms >= epoch.starts_at_ms
+               AND v.created_at_ms >= epoch.starts_at_ms"""
+
 TRADE_PROJECTION_ROW_LIMIT = 256
 
 
@@ -208,7 +219,7 @@ class TradeProjectionStorage:
         """
 
         rows = self.conn.execute(
-            """
+            f"""
             SELECT v.event_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
@@ -238,19 +249,15 @@ class TradeProjectionStorage:
               FROM news_verdicts v
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
-              JOIN news_events e ON e.event_id = v.event_id
-              JOIN news_learning_epochs epoch
-                ON epoch.epoch_id = %s
-               AND e.opened_at_ms >= epoch.starts_at_ms
-               AND v.created_at_ms >= epoch.starts_at_ms
+              JOIN news_events e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.program_version = 'news_oi_signal_v1'
                AND v.policy_version = 'news_triage_policy_v10'
                AND v.editorial ->> 'editorial_origin' = 'telemetry_deterministic'
                AND jsonb_typeof(v.editorial -> 'relevance') = 'null'
-               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
-               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
+               AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
+               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{{64}}$'
                AND v.scored_judgment_sha256 IS NOT NULL
                AND v.runtime_manifest_sha IS NOT NULL
                AND v.degraded = false
@@ -262,7 +269,6 @@ class TradeProjectionStorage:
             """,
             (
                 metric_version,
-                LEARNING_EPOCH,
                 int(after_created_at_ms),
                 int(until_created_at_ms),
                 int(limit),
@@ -287,7 +293,7 @@ class TradeProjectionStorage:
         """
 
         rows = self.conn.execute(
-            """
+            f"""
             SELECT v.event_id,
                    v.created_at_ms  AS verdict_created_at_ms,
                    v.final_decision,
@@ -311,19 +317,15 @@ class TradeProjectionStorage:
                    i.source_artifact_id,
                    i.canonical_url
               FROM news_verdicts v
-              JOIN news_events e ON e.event_id = v.event_id
-              JOIN news_learning_epochs epoch
-                ON epoch.epoch_id = %s
-               AND e.opened_at_ms >= epoch.starts_at_ms
-               AND v.created_at_ms >= epoch.starts_at_ms
+              JOIN news_events e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.program_version = 'news_semantic_program_v5'
                AND v.policy_version = 'news_triage_policy_v10'
                AND v.editorial ->> 'editorial_origin' = 'model'
                AND jsonb_typeof(v.editorial -> 'relevance') = 'object'
-               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
-               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
+               AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
+               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{{64}}$'
                AND v.scored_judgment_sha256 IS NOT NULL
                AND v.runtime_manifest_sha IS NOT NULL
                AND v.final_decision IN ('push', 'escalate')
@@ -335,7 +337,7 @@ class TradeProjectionStorage:
              ORDER BY v.created_at_ms DESC, v.event_id DESC
              LIMIT %s
             """,
-            (LEARNING_EPOCH, int(after_created_at_ms), int(until_created_at_ms), int(limit)),
+            (int(after_created_at_ms), int(until_created_at_ms), int(limit)),
         ).fetchall()
         return [_news_projection_row(row) for row in rows]
 

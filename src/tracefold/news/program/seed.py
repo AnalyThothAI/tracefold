@@ -28,9 +28,10 @@ the byte budget, and the `<tracefold-untrusted-event-json-v1>` delimiters around
 Those are in `artifact.validate_program_instruction`, and they apply to a human's edit exactly as they
 apply to an optimizer's proposal.
 
-Editing this file changes Program bytes, which changes `program_sha256`, which is a release event: bump
-`PROGRAM_FACTORY_ID` only when the *code* around the text changes, re-issue the stable artifact resource,
-and follow the identity migration in `docs/OPERATIONS.md`.
+Editing this file changes Program bytes, which changes `program_sha256`, which is a release event:
+re-issue the stable artifact resource and follow the identity migration in `docs/OPERATIONS.md`. Changing
+the *code* around the text needs nothing done here — `identity.compute_execution_identity` already moves
+on its own, and the contract test that pins it is where that change gets signed.
 """
 
 from __future__ import annotations

@@ -39,6 +39,7 @@ def build_pipeline(
     bars: BarFetcherFactory,
     candidate_projection: CandidateProjectionReader,
     instrument_projection: InstrumentProjectionReader,
+    news_generation: str,
     program: TradingDecisionProgram | None = None,
     telemetry: TradingExternalDataTelemetryPort | None = None,
 ) -> TradingPipeline:
@@ -51,6 +52,7 @@ def build_pipeline(
             bars=bars,
             candidate_projection=candidate_projection,
             instrument_projection=instrument_projection,
+            news_generation=news_generation,
             program=program,
             telemetry=telemetry,
         ),

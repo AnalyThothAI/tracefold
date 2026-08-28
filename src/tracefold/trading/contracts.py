@@ -31,9 +31,10 @@ TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
-# Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
-# a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
-NewsLearningEpoch = Literal["program_v9"]
+# No `NewsLearningEpoch` literal (#314). Trading pins the two upstream contracts it actually reasons
+# about — `program_version` and `policy_version` — and a News epoch label is neither: it names *when* a
+# cohort opened, which News owns and re-derives per deployment. Pinning it here made every News identity
+# move edit this file to restate a fact the two version pins already carried.
 
 # ---------------------------------------------------------------------------- upstream input rows
 # What the composition root must hand this context to produce candidates. Trading owns these because
@@ -308,7 +309,7 @@ class OiTradeCandidate(_Frozen):
     source_strategy_id: str | None = None
     source_contract_version: str | None = None
     measurement_window_ms: int | None = None
-    learning_epoch: NewsLearningEpoch
+    learning_epoch: str = Field(min_length=1, max_length=64)
     program_version: Literal["news_oi_signal_v1"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: Literal["news_triage_policy_v10"]
@@ -353,7 +354,7 @@ class NewsTradeCandidate(_Frozen):
     headline_zh: str
     why_zh: str
 
-    learning_epoch: NewsLearningEpoch
+    learning_epoch: str = Field(min_length=1, max_length=64)
     program_version: Literal["news_semantic_program_v5"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: Literal["news_triage_policy_v10"]

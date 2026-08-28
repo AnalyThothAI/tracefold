@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
 from alembic import command
-from psycopg.errors import CheckViolation
+from psycopg.errors import CheckViolation, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import (
     connect_postgres_test,
@@ -21,6 +22,26 @@ from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.platform.postgres.migrations import alembic_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+
+
+def _assert_prior_epochs_immutable(
+    prior: Mapping[str, Mapping[str, Any]], current: Mapping[str, Mapping[str, Any]]
+) -> None:
+    """Every epoch row that already existed still holds exactly the values it held.
+
+    Column-wise, not row-wise (#314). `news_learning_epochs` is append-only by trigger, and what that
+    forbids is a *value* changing; a later migration adding a nullable column to the table does not rewrite
+    history, but whole-row equality would report it as though it had. Comparing only the columns the prior
+    row carried says the thing the trigger actually guarantees, and keeps saying it after the next column.
+
+    It also replaces four copies of "equal once you exclude the epochs a later migration appended", which
+    named the epochs of the day and therefore had to be edited on every identity bump.
+    """
+
+    for epoch_id, before in prior.items():
+        after = current.get(epoch_id)
+        assert after is not None, f"epoch row disappeared: {epoch_id}"
+        assert {name: after[name] for name in before} == dict(before)
 
 
 def _upgrade(revision: str) -> None:
@@ -72,7 +93,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260828_0320"
+        assert revision["version_num"] == "20260828_0321"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -176,7 +197,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
     finally:
         if conn is not None:
             conn.close()
@@ -218,7 +239,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -257,14 +278,20 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
               has_table_privilege('tracefold_serve', 'news_learning_epochs', 'SELECT') AS serve_select,
               has_table_privilege('tracefold_serve', 'news_learning_epochs', 'INSERT') AS serve_insert,
               has_table_privilege('tracefold_workers', 'news_learning_epochs', 'SELECT') AS workers_select,
-              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'INSERT') AS workers_insert
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'INSERT') AS workers_insert,
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'UPDATE') AS workers_update,
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'DELETE') AS workers_delete
             """
         ).fetchone()
+        # #314's 0321 grants Workers the INSERT it needs to open its own epoch, and nothing more: the
+        # deployment may add history and still cannot rewrite it. Serve stays read-only.
         assert privileges == {
             "serve_select": True,
             "serve_insert": False,
             "workers_select": True,
-            "workers_insert": False,
+            "workers_insert": True,
+            "workers_update": False,
+            "workers_delete": False,
         }
     finally:
         if conn is not None:
@@ -401,8 +428,7 @@ def test_0297_to_0298_appends_program_v5_epoch_without_rewriting_prior_epochs() 
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0298"
         epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         assert len(epochs) == 5
-        for epoch_id, prior in prior_epochs.items():
-            assert dict(next(row for row in epochs if row["epoch_id"] == epoch_id)) == prior
+        _assert_prior_epochs_immutable(prior_epochs, {row["epoch_id"]: dict(row) for row in epochs})
         program_v5 = next(row for row in epochs if row["epoch_id"] == "program_v5")
         assert deployed_after_ms <= program_v5["starts_at_ms"] <= deployed_before_ms
         assert program_v5["created_at_ms"] == program_v5["starts_at_ms"]
@@ -541,7 +567,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -576,8 +602,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         # migration between 0300 and head
         # that opened an epoch appended one, and none of them rewrote an earlier row.
         assert len(epochs) == 9
-        for epoch_id, prior in prior_epochs.items():
-            assert dict(next(row for row in epochs if row["epoch_id"] == epoch_id)) == prior
+        _assert_prior_epochs_immutable(prior_epochs, {row["epoch_id"]: dict(row) for row in epochs})
         program_v6 = next(row for row in epochs if row["epoch_id"] == "program_v6")
         assert deployed_after_ms <= program_v6["starts_at_ms"] <= deployed_before_ms
         assert program_v6["starts_at_ms"] > prior_epochs["program_v5"]["starts_at_ms"]
@@ -788,17 +813,16 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
 
         epochs = {
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        # Every epoch that existed before this migration survives byte for byte. `program_v8` is appended
-        # by a *later* migration on the way to head (#306's 0318; #310's 0319 appends `program_v9`
-        # after it), and its presence is not this migration
-        # re-opening anything: what this test pins is that `program_v7` is untouched.
-        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
+        # Every epoch that existed before this migration survives unchanged. Later migrations on the way
+        # to head append their own rows, and their presence is not this migration re-opening anything:
+        # what this test pins is that `program_v7` is untouched.
+        _assert_prior_epochs_immutable(prior_epochs, epochs)
         assert epochs["program_v7"]["program_factory_id"] == "tracefold.news.program.factory_v5"
         assert epochs["program_v7"]["artifact_schema_version"] == "news_semantic_program_artifact_v2"
         assert epochs["program_v7"]["baseline_program_sha256"] == (
@@ -946,13 +970,13 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
 
         epochs = {
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
+        _assert_prior_epochs_immutable(prior_epochs, epochs)
         assert epochs["program_v7"]["baseline_program_sha256"] == (
             "7a460f8d3812c64c6ee38158871eb9f060811e5ffe87f399f7bc2e506b4e28ad"
         )
@@ -1071,7 +1095,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
 
         activation = dict(
             conn.execute(
@@ -1092,7 +1116,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
+        _assert_prior_epochs_immutable(prior_epochs, epochs)
     finally:
         if conn is not None:
             conn.close()
@@ -1140,7 +1164,7 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0321"
 
         activation = dict(
             conn.execute(
@@ -1174,7 +1198,96 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
+        _assert_prior_epochs_immutable(prior_epochs, epochs)
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+def test_0320_to_0321_opens_the_table_to_the_runtime_without_letting_it_rewrite_history() -> None:
+    """#314: a deployment may append its own epoch; nothing may edit one, and no row moves."""
+
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260828_0320")
+        conn = connect_postgres_test(read_only=False)
+        prior_epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        assert set(prior_epochs) == {f"program_v{n}" for n in range(1, 10)}
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("20260828_0321")
+        conn = connect_postgres_test(read_only=False)
+        epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        _assert_prior_epochs_immutable(prior_epochs, epochs)
+        assert len(epochs) == 9, "0321 opens no epoch of its own; the running deployment does"
+        # The two columns identity moved to, empty on every historical row rather than back-filled with a
+        # bundle those migrations never knew.
+        assert all(row["bundle_sha"] is None and row["envelope_sha256"] is None for row in epochs.values())
+
+        privileges = conn.execute(
+            """
+            SELECT
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'INSERT') AS insert_,
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'UPDATE') AS update_,
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'DELETE') AS delete_,
+              has_table_privilege('tracefold_serve', 'news_learning_epochs', 'INSERT') AS serve_insert
+            """
+        ).fetchone()
+        assert privileges == {"insert_": True, "update_": False, "delete_": False, "serve_insert": False}
+
+        # The append-only trigger still refuses an UPDATE even to the owner that granted the INSERT.
+        with pytest.raises(RaiseException):
+            conn.execute("UPDATE news_learning_epochs SET starts_at_ms = starts_at_ms + 1")
+        conn.rollback()
+
+        now_ms = int(time.time() * 1000)
+        insert = (
+            "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, bundle_sha, "
+            "envelope_sha256, artifact_schema_version, baseline_program_version, baseline_program_sha256, "
+            "prior_evidence_disposition, reset_reason, created_at_ms) "
+            "VALUES (%s, %s, 'https://github.com/AnalyThothAI/tracefold/issues/314', %s, %s, "
+            "'news_program_strategy_artifact_v1', 'news_semantic_program_v5', %s, 'audit_only', "
+            "'runtime_bundle_identity_change', %s)"
+        )
+        # The label abbreviates its own bundle or the row does not exist. This is what makes the eight-hex
+        # id safe to look up by: it cannot drift from the identity it names, so "same bundle under another
+        # label" is unrepresentable rather than merely unexpected.
+        with pytest.raises(CheckViolation, match="news_learning_epoch_id_derives_from_bundle"):
+            conn.execute(insert, ("bundle_bbbbbbbb", now_ms, "a" * 64, "b" * 64, "c" * 64, now_ms))
+        conn.rollback()
+
+        # And one bundle gets one epoch. With the derivation constraint above, a repeated open resolves to
+        # the same label and loses on the primary key; the partial-unique index on `bundle_sha` sits behind
+        # that as defence for a future migration that changes how the label is derived.
+        conn.execute(insert, ("bundle_aaaaaaaa", now_ms, "a" * 64, "b" * 64, "c" * 64, now_ms))
+        with pytest.raises(UniqueViolation):
+            conn.execute(insert, ("bundle_aaaaaaaa", now_ms + 1, "a" * 64, "b" * 64, "c" * 64, now_ms + 1))
+        conn.rollback()
+
+        # A runtime row must carry both halves of its identity or neither.
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, bundle_sha, "
+                "artifact_schema_version, baseline_program_version, baseline_program_sha256, "
+                "prior_evidence_disposition, reset_reason, created_at_ms) "
+                "VALUES ('bundle_cccccccc', %s, 'issue', %s, 'news_program_strategy_artifact_v1', "
+                "'news_semantic_program_v5', %s, 'audit_only', 'runtime_bundle_identity_change', %s)",
+                (now_ms + 2, "d" * 64, "e" * 64, now_ms + 2),
+            )
+        conn.rollback()
     finally:
         if conn is not None:
             conn.close()

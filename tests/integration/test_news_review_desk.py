@@ -9,11 +9,13 @@ from psycopg.errors import InsufficientPrivilege, RaiseException
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.learning.evaluate import LEARNING_EPOCH
+from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.review.desk import (
     BlindPairwiseSubmission,
     DeskQuery,
@@ -30,6 +32,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 NOW = 1_787_287_000_000
 PRINCIPAL = Principal(subject="operator")
 ACTIVE_BUNDLE = "1" * 64
+# The epoch the fixture deployment opens (#314): derived from the bundle it appoints, never declared.
+ACTIVE_EPOCH = epoch_id_for_bundle(ACTIVE_BUNDLE)
+# A superseded epoch is a superseded bundle (#314): the label is derived from the bundle, so a
+# corpus sealed in an earlier epoch necessarily names the earlier bundle beside it.
+SUPERSEDED_BUNDLE = "9" * 64
+SUPERSEDED_EPOCH = epoch_id_for_bundle(SUPERSEDED_BUNDLE)
 
 
 @pytest.fixture()
@@ -40,6 +48,10 @@ def conn():
         repositories_for_connection(connection).news.register_agent_runtime_manifest(
             manifest_sha="a" * 64,
             stable_bundle_sha=ACTIVE_BUNDLE,
+            envelope_sha256=EXECUTION_ENVELOPE_SHA256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=PROGRAM_VERSION,
+            program_sha256="b" * 64,
             candidate_shas=(),
             image_digest="sha256:review-test",
             runtime_revision="review-test",
@@ -215,7 +227,7 @@ def _insert_learning_dataset(
     conn,
     dataset_sha: str,
     *,
-    learning_epoch: str = LEARNING_EPOCH,
+    learning_epoch: str = ACTIVE_EPOCH,
     bundle_sha: str = ACTIVE_BUNDLE,
 ) -> None:
     conn.execute(
@@ -312,7 +324,7 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
     epoch_start = int(
         conn.execute(
             "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-            (LEARNING_EPOCH,),
+            (ACTIVE_EPOCH,),
         ).fetchone()["starts_at_ms"]
     )
     review_now = epoch_start + 3_600_000
@@ -380,7 +392,7 @@ def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) 
     epoch_start = int(
         conn.execute(
             "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-            (LEARNING_EPOCH,),
+            (ACTIVE_EPOCH,),
         ).fetchone()["starts_at_ms"]
     )
     review_now = epoch_start + 3_600_000
@@ -728,7 +740,7 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
     epoch_start = int(
         conn.execute(
             "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-            (LEARNING_EPOCH,),
+            (ACTIVE_EPOCH,),
         ).fetchone()["starts_at_ms"]
     )
     queue_now = epoch_start + 3_600_000
@@ -872,7 +884,7 @@ def test_external_miss_appends_snapshot_and_accepted_judgment_atomically(conn) -
     epoch_start = int(
         conn.execute(
             "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-            (LEARNING_EPOCH,),
+            (ACTIVE_EPOCH,),
         ).fetchone()["starts_at_ms"]
     )
     db_now = int(
@@ -1065,10 +1077,10 @@ def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn)
         """,
         (
             old_dataset_sha,
-            json.dumps({"learning_epoch": "program_v1", "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
+            json.dumps({"learning_epoch": SUPERSEDED_EPOCH, "agent_cohort": {"bundle_sha": SUPERSEDED_BUNDLE}}),
             NOW - 8,
             current_dataset_sha,
-            json.dumps({"learning_epoch": LEARNING_EPOCH, "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
+            json.dumps({"learning_epoch": ACTIVE_EPOCH, "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
             NOW - 7,
             "7" * 64,
             json.dumps(
@@ -1135,14 +1147,14 @@ def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn)
     by_candidate = {item["candidate_sha"]: item for item in proposals}
 
     historical = by_candidate[old_candidate_sha]
-    assert historical["learning_epoch"] == "program_v1"
+    assert historical["learning_epoch"] == SUPERSEDED_EPOCH
     assert historical["evidence_disposition"] == "audit_only"
     assert historical["status"] == "audit_only"
     assert historical["timeline"][0]["outcome"] == "pass"
     assert historical["timeline"][0]["evidence_disposition"] == "audit_only"
 
     current = by_candidate[current_candidate_sha]
-    assert current["learning_epoch"] == LEARNING_EPOCH
+    assert current["learning_epoch"] == ACTIVE_EPOCH
     assert current["evidence_disposition"] == "current"
     assert current["status"] == "promotion_ready"
     assert current["timeline"][0]["evidence_disposition"] == "current"
@@ -1174,7 +1186,7 @@ def test_current_epoch_proposal_from_inactive_parent_is_audit_only(conn) -> None
 
     proposal = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"][0]
 
-    assert proposal["learning_epoch"] == LEARNING_EPOCH
+    assert proposal["learning_epoch"] == ACTIVE_EPOCH
     assert proposal["evidence_disposition"] == "audit_only"
     assert proposal["status"] == "audit_only"
 
@@ -1205,7 +1217,7 @@ def test_current_epoch_proposal_from_inactive_dataset_bundle_is_audit_only(conn)
 
     proposal = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"][0]
 
-    assert proposal["learning_epoch"] == LEARNING_EPOCH
+    assert proposal["learning_epoch"] == ACTIVE_EPOCH
     assert proposal["evidence_disposition"] == "audit_only"
     assert proposal["status"] == "audit_only"
 
@@ -1222,10 +1234,10 @@ def test_coverage_holdout_denominator_excludes_superseded_epoch_cases(conn) -> N
         """,
         (
             old_dataset_sha,
-            json.dumps({"learning_epoch": "program_v1", "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
+            json.dumps({"learning_epoch": SUPERSEDED_EPOCH, "agent_cohort": {"bundle_sha": SUPERSEDED_BUNDLE}}),
             NOW - 2,
             current_dataset_sha,
-            json.dumps({"learning_epoch": LEARNING_EPOCH, "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
+            json.dumps({"learning_epoch": ACTIVE_EPOCH, "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
             NOW - 1,
         ),
     )
@@ -1278,7 +1290,7 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
     old_dataset_sha, current_dataset_sha = "1" * 64, "2" * 64
     old_run_sha, current_run_sha = "3" * 64, "4" * 64
     old_case_id, current_case_id = "5" * 64, "6" * 64
-    _insert_learning_dataset(conn, old_dataset_sha, learning_epoch="program_v1")
+    _insert_learning_dataset(conn, old_dataset_sha, learning_epoch=SUPERSEDED_EPOCH, bundle_sha=SUPERSEDED_BUNDLE)
     _insert_learning_dataset(conn, current_dataset_sha)
     conn.execute(
         """
@@ -1324,15 +1336,15 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
 
     all_tasks = desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"]
     by_id = {task["task_id"]: task for task in all_tasks}
-    assert by_id[old_task_id]["learning_epoch"] == "program_v1"
+    assert by_id[old_task_id]["learning_epoch"] == SUPERSEDED_EPOCH
     assert by_id[old_task_id]["evidence_disposition"] == "audit_only"
     assert by_id[old_task_id]["review_status"] == "audit_only"
-    assert by_id[current_task_id]["learning_epoch"] == LEARNING_EPOCH
+    assert by_id[current_task_id]["learning_epoch"] == ACTIVE_EPOCH
     assert by_id[current_task_id]["evidence_disposition"] == "current"
     assert by_id[current_task_id]["review_status"] == "pending"
 
     direct = desk.open(DeskQuery(task=old_task_id), principal=PRINCIPAL)["tasks"][0]
-    assert direct["learning_epoch"] == "program_v1"
+    assert direct["learning_epoch"] == SUPERSEDED_EPOCH
     assert direct["evidence_disposition"] == "audit_only"
     assert direct["review_status"] == "audit_only"
 
@@ -1430,7 +1442,7 @@ def test_inactive_bundle_pairwise_task_is_audit_only_inside_current_epoch(conn) 
     assert desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"] == []
     audit_task = desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"][0]
     assert audit_task["task_id"] == task_id
-    assert audit_task["learning_epoch"] == LEARNING_EPOCH
+    assert audit_task["learning_epoch"] == ACTIVE_EPOCH
     assert audit_task["evidence_disposition"] == "audit_only"
     with (
         pytest.raises(ValueError, match="news_review_pairwise_task_audit_only"),

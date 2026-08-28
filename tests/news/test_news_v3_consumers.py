@@ -638,7 +638,7 @@ def _program_trace(
         program_version=PROGRAM_VERSION,
         program_sha256=PROGRAM_SHA256,
         context_sha256=context_sha256,
-        factory_id="news_semantic_program_v1",
+        envelope_sha256="0" * 64,
         event_semantics_sha256="5" * 64,
         reader_card_sha256="6" * 64,
         verdict_sha256=verdict_sha256,
