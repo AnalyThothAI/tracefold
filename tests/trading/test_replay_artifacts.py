@@ -6,11 +6,12 @@ from pathlib import Path
 import pytest
 
 from tracefold.app.cli.replay_artifacts import publish_replay_artifact, verify_replay_artifact
+from tracefold.app.trading_config import CANDIDATE_GATE_VERSION
 from tracefold.trading import BlacklistSnapshotV1, ReplayArtifactV1, ReplaySpecV1
 from tracefold.trading.contracts import canonical_sha256
 
 
-def _spec() -> ReplaySpecV1:
+def _spec(*, gate_digest: str = "3" * 64, regime_lookback_ms: str = "3600000", notional: str = "10") -> ReplaySpecV1:
     return ReplaySpecV1(
         start_ms=1,
         end_ms=2,
@@ -21,7 +22,15 @@ def _spec() -> ReplaySpecV1:
         execution_capability_snapshot_sha256="5" * 64,
         replay_scenarios_sha256="6" * 64,
         blacklist_snapshot_sha256=BlacklistSnapshotV1(revision=0, active_rows=()).snapshot_sha256,
-        strategy_identities=[{"strategy_id": "oi", "strategy_identity": "7" * 64}],
+        strategy_identities=[
+            {
+                "strategy_id": "oi",
+                "strategy_identity": "7" * 64,
+                "candidate_gate_version": CANDIDATE_GATE_VERSION,
+                "candidate_gate_config_sha256": gate_digest,
+                "regime_lookback_ms": regime_lookback_ms,
+            }
+        ],
         intent_policy_sha256="8" * 64,
         execution_policy_sha256="9" * 64,
         app_revision="revision-1",
@@ -30,7 +39,7 @@ def _spec() -> ReplaySpecV1:
         venue_scenarios=[{"venue": "binance.perp", "mode": "source_native"}],
         fee_model={"version": "fee-v1"},
         funding_model={"version": "unavailable-v1"},
-        fill_model={"version": "bar-v1"},
+        fill_model={"version": "bar-v1", "target_notional_usd": notional},
         slippage_model={"version": "bar-v1"},
         latency_model={"version": "bar-v1"},
     )
@@ -55,6 +64,14 @@ def test_replay_identity_contains_no_run_clock_and_is_reproducible() -> None:
 
     assert "created_at_ms" not in first.model_dump()
     assert first.run_id == second.run_id
+
+
+def test_gate_regime_and_notional_are_replay_policy_identity() -> None:
+    baseline = _spec().run_id
+
+    assert _spec(gate_digest="a" * 64).run_id != baseline
+    assert _spec(regime_lookback_ms="7200000").run_id != baseline
+    assert _spec(notional="7.5").run_id != baseline
 
 
 def test_artifact_publish_is_atomic_idempotent_and_detects_corruption(tmp_path: Path) -> None:

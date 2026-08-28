@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
-from types import SimpleNamespace
 
 from tracefold.app.cli.commands import trading_replay as trading_replay_command
+from tracefold.app.trading_config import trading_config_from_settings, trading_settings_strategies
+from tracefold.integrations.nautilus.replay import run_bar_episode
 from tracefold.integrations.venues import VenueBar
+from tracefold.platform.config.models import Settings
 from tracefold.trading import (
     BlacklistSnapshotV1,
     ExecutionCapabilitySnapshotV1,
@@ -15,9 +17,9 @@ from tracefold.trading import (
     replay,
 )
 from tracefold.trading.candidate.blacklist import CanonicalBlacklistEntryV1
-from tracefold.trading.contracts import Bar, OiTradeCandidate, RegimeAssessment
+from tracefold.trading.contracts import OiTradeCandidate
 from tracefold.trading.decision.regime import RegimePolicy
-from tracefold.trading.replay import BarEpisodeResult, DirectionalReplayPlan, ReplayMarketSlice
+from tracefold.trading.replay import DirectionalReplayPlan, ReplayMarketSlice
 
 NOW = 1_900_000_000_000
 INSTRUMENT_ID = "TUTUSDT-PERP.BINANCE"
@@ -94,10 +96,7 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
         instrument_id=INSTRUMENT_ID,
     )
 
-    requests = []
-
-    async def fetched(*_args, **kwargs):
-        requests.append(kwargs)
+    async def fetched(*_args, **_kwargs):
         return (
             VenueBar(NOW - 300_000, NOW, *(Decimal("1") for _ in range(5))),
             VenueBar(NOW, NOW + 300_000, *(Decimal("2") for _ in range(5))),
@@ -110,10 +109,10 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
 
     assert market_slice.end_ms > NOW
     assert [bar.close_at_ms for bar in market_slice.bars] == [NOW]
-    assert requests[0]["start_ms"] == NOW - regime.lookback_ms - regime.bar_gap_tolerance_ms
+    assert market_slice.start_ms == NOW - regime.lookback_ms - regime.bar_gap_tolerance_ms
 
 
-def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatch) -> None:
+def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() -> None:
     source = _source()
     plan = DirectionalReplayPlan(
         source=source,
@@ -129,58 +128,56 @@ def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatc
         venue="binance.perp",
         instrument_id=INSTRUMENT_ID,
     )
+    historic_prices = [
+        Decimal("0.0950") - Decimal(index) * Decimal("0.0005")
+        if index <= 12
+        else Decimal("0.0890") + Decimal(index - 12) * (Decimal("0.0110") / Decimal(12))
+        for index in range(25)
+    ]
     bars = [
         ReplayBarV1(
             venue="binance.perp",
             instrument_id=INSTRUMENT_ID,
-            open_at_ms=NOW - 300_000,
-            close_at_ms=NOW,
+            open_at_ms=NOW - (25 - index) * 300_000,
+            close_at_ms=NOW - (24 - index) * 300_000,
+            open=price,
+            high=price,
+            low=price,
+            close=price,
+            volume="10000",
+        )
+        for index, price in enumerate(historic_prices)
+    ]
+    bars.extend(
+        ReplayBarV1(
+            venue="binance.perp",
+            instrument_id=INSTRUMENT_ID,
+            open_at_ms=NOW + (index - 1) * 300_000,
+            close_at_ms=NOW + index * 300_000,
             open="0.1000",
             high="0.1010",
             low="0.0990",
             close="0.1000",
             volume="10000",
         )
-    ]
-    market_slice = ReplayMarketSlice(plan, bars, None, NOW - 300_000, NOW + 1_200_000)
-    strategy = SimpleNamespace(
-        strategy_id="oi_smart_money_momentum_v1",
-        strategy_version="oi_smart_money_momentum_v1",
-        config_digest="3" * 64,
-        evaluate=lambda _context: SimpleNamespace(
-            decision="long",
-            rule="smart_money_momentum_long",
-            model_dump=lambda **_kwargs: {"decision": "long", "rule": "smart_money_momentum_long"},
-        ),
+        for index in range(1, 6)
     )
-    configured_regime = RegimePolicy(lookback_ms=7_200_000, min_price_move_bps=75, max_price_move_bps=800)
-    observed_policies: list[RegimePolicy] = []
-    episode_notionals: list[Decimal] = []
-
-    def pre_move(*_args, **kwargs):
-        observed_policies.append(kwargs["policy"])
-        return 100
-
-    def assessed(**kwargs):
-        observed_policies.append(kwargs["policy"])
-        return RegimeAssessment(
-            regime="buildup_up",
-            reason="confirmed",
-            pre_move_bps=100,
-            oi_direction="rise",
-        )
-
-    monkeypatch.setattr(
-        replay,
-        "select_bar",
-        lambda *_args, **_kwargs: Bar(open_at_ms=NOW - 300_000, close_at_ms=NOW, close="0.1000"),
+    market_slice = ReplayMarketSlice(plan, bars, None, NOW - 7_530_000, NOW + 1_500_000)
+    configured_settings = Settings.model_validate(
+        {
+            "trading": {
+                "regime": {"lookback_seconds": 7_200, "min_price_move_bps": 75, "max_price_move_bps": 800},
+                "order": {"fixed_notional_usd": "7.5"},
+            }
+        }
     )
-    monkeypatch.setattr(replay, "pre_move_bps", pre_move)
-    monkeypatch.setattr(replay, "assess", assessed)
-
-    def run_episode(**kwargs) -> BarEpisodeResult:
-        episode_notionals.append(kwargs["target_notional"])
-        return BarEpisodeResult("CLOSED", "max_holding")
+    configured = trading_config_from_settings(configured_settings)
+    default = trading_config_from_settings(Settings())
+    strategy = next(
+        item
+        for item in trading_settings_strategies(configured_settings)
+        if item.strategy_id == "oi_smart_money_momentum_v1"
+    )
 
     blacklist = BlacklistSnapshotV1(
         revision=1,
@@ -193,18 +190,27 @@ def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatc
         ),
     )
 
-    outcome = replay.evaluate_replay_market_slices(
+    configured_outcome = replay.evaluate_replay_market_slices(
         [market_slice],
         strategy=strategy,
         snapshot=_snapshot(),
         blacklist=blacklist,
-        run_episode=run_episode,
-        regime_policy=configured_regime,
-        target_notional=Decimal("7.5"),
+        run_episode=run_bar_episode,
+        regime_policy=configured.regime,
+        target_notional=configured.fixed_notional_usd,
+    )[0]
+    default_outcome = replay.evaluate_replay_market_slices(
+        [market_slice],
+        strategy=strategy,
+        snapshot=_snapshot(),
+        blacklist=blacklist,
+        run_episode=run_bar_episode,
+        regime_policy=default.regime,
+        target_notional=default.fixed_notional_usd,
     )[0]
 
-    assert observed_policies == [configured_regime, configured_regime]
-    assert episode_notionals == [Decimal("7.5")]
-    assert (outcome.decision, outcome.execution) == ("DIRECTIONAL", "CLOSED")
-    assert (outcome.capital_admission, outcome.capital_reason) == ("DENIED", "blacklisted")
-    assert outcome.replay_intent is not None
+    assert (configured_outcome.decision, configured_outcome.execution) == ("DIRECTIONAL", "CLOSED")
+    assert configured_outcome.quantity == Decimal("75")
+    assert (configured_outcome.capital_admission, configured_outcome.capital_reason) == ("DENIED", "blacklisted")
+    assert configured_outcome.replay_intent is not None
+    assert (default_outcome.decision, default_outcome.decision_reason) == ("NO_TRADE", "move_above_band_chasing")

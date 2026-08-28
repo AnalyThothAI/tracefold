@@ -9,6 +9,7 @@ from typing import Any, cast
 from tracefold.app.cli.replay_artifacts import publish_replay_artifact, verify_replay_artifact
 from tracefold.app.repository_session import repositories
 from tracefold.app.trading_config import (
+    CANDIDATE_GATE_VERSION,
     trading_config_from_settings,
     trading_settings_gate,
     trading_settings_strategies,
@@ -163,6 +164,8 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
                 "strategy_version": strategy.strategy_version,
                 "strategy_config_sha256": strategy.config_digest,
                 "strategy_identity": strategy_identity,
+                "candidate_gate_version": CANDIDATE_GATE_VERSION,
+                "candidate_gate_config_sha256": gate.digest,
                 "regime_lookback_ms": str(runtime_config.regime.lookback_ms),
                 "regime_min_price_move_bps": str(runtime_config.regime.min_price_move_bps),
                 "regime_max_price_move_bps": str(runtime_config.regime.max_price_move_bps),
