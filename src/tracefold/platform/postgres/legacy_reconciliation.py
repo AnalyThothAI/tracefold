@@ -102,6 +102,10 @@ def reconcile_colliding_telegram_lineage(database_url: str) -> bool:
 
     dsn = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
     with psycopg.connect(dsn) as conn:
+        # The production migrate role is deliberately NOINHERIT and has no direct table grants.
+        # Assume the owner role before inspecting even Alembic's version table; doing this later
+        # makes the private-lineage bridge unusable against the exact deployment role it is for.
+        _set_owner_role_if_available(conn)
         if not _table_exists(conn, "alembic_version"):
             return False
         version = _scalar(conn, "SELECT version_num FROM alembic_version LIMIT 1")
@@ -109,7 +113,6 @@ def reconcile_colliding_telegram_lineage(database_url: str) -> bool:
             return False
 
         conn.execute("SELECT pg_advisory_xact_lock(hashtext('tracefold:legacy-telegram-lineage'))")
-        _set_owner_role_if_available(conn)
         lineage = _lineage_fingerprint(conn)
         if lineage == "remote":
             return False

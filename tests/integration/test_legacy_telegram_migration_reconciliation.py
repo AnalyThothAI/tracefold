@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from alembic import command
+from psycopg import conninfo
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
@@ -12,6 +13,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 REMOTE_COMMON_PARENT = "20260828_0316"
 COLLIDING_LOCAL_HEAD = "20260828_0318"
 CURRENT_HEAD = "20260828_0323"
+MIGRATE_ROLE_PASSWORD = "M" * 43
 
 
 def _fresh_schema_at(revision: str) -> None:
@@ -108,11 +110,24 @@ def _install_colliding_local_delivery_migrations() -> None:
         conn.close()
 
 
+def _migrate_role_dsn() -> str:
+    parts = conninfo.conninfo_to_dict(postgres_test_dsn())
+    parts["user"] = "tracefold_migrate"
+    parts["password"] = MIGRATE_ROLE_PASSWORD
+    return conninfo.make_conninfo(**parts)
+
+
 def test_colliding_local_0318_is_reconciled_without_dropping_telegram_state() -> None:
     _fresh_schema_at(REMOTE_COMMON_PARENT)
     _install_colliding_local_delivery_migrations()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("ALTER ROLE tracefold_migrate PASSWORD %s", (MIGRATE_ROLE_PASSWORD,))
+        conn.commit()
+    finally:
+        conn.close()
 
-    upgrade_head(postgres_test_dsn())
+    upgrade_head(_migrate_role_dsn())
 
     conn = connect_postgres_test(read_only=False)
     try:
