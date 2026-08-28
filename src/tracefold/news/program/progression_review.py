@@ -16,7 +16,7 @@ from ..progression_review import (
 )
 from .transport import PredictorAdapter, PredictorRequest, PredictorSpec
 
-PROGRESSION_REVIEW_VERSION = "news_progression_review_v1"
+PROGRESSION_REVIEW_VERSION = "news_progression_review_v2"
 PROGRESSION_REVIEW_MODEL_BINDING = "progression_review.primary"
 PROGRESSION_REVIEW_MAX_CANDIDATES = 8
 PROGRESSION_REVIEW_MAX_TOKENS = 512
@@ -66,7 +66,7 @@ PROGRESSION_REVIEW_SHA256 = canonical_sha(
         "max_tokens": PROGRESSION_REVIEW_MAX_TOKENS,
     }
 )
-PROGRESSION_VERIFIER_ID = f"tracefold.news.progression_review_v1:{PROGRESSION_REVIEW_SHA256[:16]}"
+PROGRESSION_VERIFIER_ID = f"tracefold.news.progression_review_v2:{PROGRESSION_REVIEW_SHA256[:16]}"
 _PROGRESSION_REVIEW_SPEC = PredictorSpec(
     name="progression_review",
     instruction=_INSTRUCTION,

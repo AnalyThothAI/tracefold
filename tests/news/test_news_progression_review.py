@@ -46,6 +46,7 @@ def test_progression_verifier_confirms_only_a_named_candidate_and_uses_its_store
     assert review.candidate_i == 3
     assert review.candidate_headline_zh == "美光工会此前启动劳资协商"
     assert review.reason_zh == "同一工会行动从协商进入罢工投票，新增了明确比例。"
+    assert review.verifier_id.startswith("tracefold.news.progression_review_v2:")
     request = adapter.requests[0]
     assert request.predictor == "progression_review"
     assert request.model_binding == "progression_review.primary"
