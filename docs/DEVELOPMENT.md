@@ -129,7 +129,7 @@ instruction, and the empty demo section left with the DemoBank family.
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
 | `make test` / `make test-fast` | default AI/developer loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
-| `make trading-smoke` | the #209 paper exit acceptance contract | the `test_paper_exit_acceptance_*` cases on real PostgreSQL | everything else; it is a subset of `make test-integration`, never merge evidence on its own |
+| `make trading-smoke` | the #283 native Intent acceptance contract | atomic Case → Intent handoff and Nautilus projection/fence behavior on real PostgreSQL | Binance/provider truth and everything outside `test_trading_intents.py`; it is a subset of `make test-integration`, never merge evidence on its own |
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | default loop |
 | `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |

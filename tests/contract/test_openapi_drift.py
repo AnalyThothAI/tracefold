@@ -65,7 +65,7 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/bootstrap",
         "/api/status",
         "/api/trading/status",
-        "/api/trading/orders",
+        "/api/trading/intents",
         "/api/trading/events/{event_id}",
         # #269: the admission ledger for a window of frames at once. The per-Event endpoint above answers
         # the same question one row at a time, which is a hundred round trips to render one table.
@@ -76,7 +76,7 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
     # internet-facing role cannot reach them.
     for path in (
         "/api/trading/status",
-        "/api/trading/orders",
+        "/api/trading/intents",
         "/api/trading/events/{event_id}",
         "/api/trading/gate",
     ):
@@ -214,7 +214,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     }
     assert set(components["NewsOiTradeFloorsData"]["properties"]) == {
         "enabled",
-        "mode",
+        "execution_environment",
         "allow_short",
         "min_whale_long_profit_bps",
         "min_oi_value_usd",

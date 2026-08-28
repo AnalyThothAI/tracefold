@@ -3,7 +3,7 @@ import {
   REGIME_ZH,
   STRATEGY_ZH,
   gateReasonLabel,
-  isActiveOrder,
+  isActiveIntent,
   policyRuleZh,
   strategyCaseLabel,
   type TradingCounts,
@@ -27,7 +27,7 @@ import { oiPercent, oiValueZh } from "./oiSignals";
  * and are read at different times.
  *
  * Everything here is a projection of two already-served reads: the deterministic frames from
- * `/api/news/feed` and the capital ledger from `/api/trading/orders`, joined only on the `event_id` the
+ * `/api/news/feed` and the capital ledger from `/api/trading/intents`, joined only on the `event_id` the
  * ledger itself published. Nothing is inferred from a symbol and a timestamp — the join the OI table refuses
  * to guess at is not guessed at here either.
  */
@@ -90,15 +90,8 @@ export type LeverageCase = {
   entry: TradingOiLedgerEntry;
   /** The frame, when the loaded frame page holds it. `undefined` is a page boundary, not a missing case. */
   event: NewsFeedEvent | undefined;
-  /**
-   * What *this* case was allowed to do, frozen on the ledger row — `paper`, `live_reviewed`.
-   *
-   * Read from the case, never from the strategy's current published `permission`. Promoting a strategy
-   * from paper to live would otherwise relabel every case still inside the window, including ones that
-   * only ever ran on paper — on a chip whose entire reason for existing is that 「LONG」 and 「LONG, on
-   * paper」 are different claims.
-   */
-  mode: string;
+  /** The sole execution environment: from the Intent, or the code-owned Demo contract before emission. */
+  executionEnvironment: string;
   /**
    * The Event id the ledger published, independent of whether the frame is loaded. Non-null only for the
    * deterministic OI trigger; it is not the row's identity, only a legacy link target and a frame key.
@@ -130,7 +123,7 @@ type CaseFacts = {
   caseState: string;
   createdAtMs: number;
   decidedAtMs: number | null;
-  mode: string;
+  executionEnvironment: string;
   observedAtMs: number;
   policyDecision: string | null;
   policyReason: string | null;
@@ -140,22 +133,20 @@ type CaseFacts = {
 };
 
 function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
-  if (entry.kind === "order") {
-    const order = entry.value;
+  if (entry.kind === "intent") {
+    const intent = entry.value;
     return {
-      caseId: order.case_id,
-      caseState: order.case_state,
-      createdAtMs: order.created_at_ms,
-      // An order row carries no `decided_at_ms`: the decision that authored it is the case's, and the
-      // order's own clock starts later. Naming it here would date the decision to the write that followed.
+      caseId: intent.case_id,
+      caseState: intent.case_state,
+      createdAtMs: intent.created_at_ms,
       decidedAtMs: null,
-      mode: order.mode,
-      observedAtMs: order.case_observed_at_ms ?? order.created_at_ms,
-      policyDecision: order.policy_decision ?? null,
-      policyReason: order.policy_reason ?? null,
-      regime: order.regime ?? null,
-      strategyId: order.strategy_id,
-      triggerKind: order.trigger_kind,
+      executionEnvironment: intent.execution_environment,
+      observedAtMs: intent.case_observed_at_ms ?? intent.created_at_ms,
+      policyDecision: intent.policy_decision ?? null,
+      policyReason: intent.policy_reason ?? null,
+      regime: intent.regime ?? null,
+      strategyId: intent.strategy_id,
+      triggerKind: intent.trigger_kind,
     };
   }
   const record = entry.value;
@@ -164,7 +155,7 @@ function caseFacts(entry: TradingOiLedgerEntry): CaseFacts {
     caseState: record.state,
     createdAtMs: record.created_at_ms,
     decidedAtMs: record.decided_at_ms ?? null,
-    mode: record.mode,
+    executionEnvironment: "BINANCE_USDM_DEMO",
     observedAtMs: record.observed_at_ms,
     policyDecision: record.policy_decision ?? null,
     policyReason: record.policy_reason ?? null,
@@ -219,7 +210,7 @@ function buildCase(
   return {
     age: relativeTime(facts.observedAtMs),
     base: entry.value.base_symbol || event?.oi?.symbol || "—",
-    capital: entry.kind === "order" ? entry.value.state : null,
+    capital: entry.kind === "intent" ? entry.value.execution_state : null,
     caseId: facts.caseId,
     caseState: facts.caseState,
     createdAtMs: facts.createdAtMs,
@@ -230,7 +221,7 @@ function buildCase(
     eventId: entry.value.event_id ?? null,
     evidence: evidenceRows(event?.oi, facts.strategyId, facts.triggerKind, thresholds),
     id: facts.caseId,
-    mode: facts.mode,
+    executionEnvironment: facts.executionEnvironment,
     numbers: frameNumbers(event?.oi, facts.triggerKind),
     observedAtMs: facts.observedAtMs,
     phase: phaseOf(entry, decision),
@@ -260,8 +251,8 @@ function buildCase(
 const TERMINAL_CASE_STATES = new Set(["BLOCKED", "NO_TRADE", "POLICY_REJECTED"]);
 
 function phaseOf(entry: TradingOiLedgerEntry, decision: LeverageDecision): LeveragePhase {
-  if (entry.kind === "order") {
-    return isActiveOrder(entry.value) ? "active" : "resolved";
+  if (entry.kind === "intent") {
+    return isActiveIntent(entry.value) ? "active" : "resolved";
   }
   if (decision === "no_trade" || TERMINAL_CASE_STATES.has(entry.value.state)) return "no_trade";
   return "forming";
@@ -307,7 +298,7 @@ function whySentence(
   }
   if (decision === "no_trade") return `不交易：${policyRuleZh(facts.policyReason)}。`;
   const state = CASE_STATE_ZH[facts.caseState] ?? facts.caseState;
-  if (entry.kind === "order") {
+  if (entry.kind === "intent") {
     // A `policy_reason` on an allowed case names the rule it *passed*; most allowed cases carry none, and
     // "交易地板——已下单" would read as the floors having stopped something. Say the step instead.
     return facts.policyReason
@@ -502,7 +493,7 @@ export function leveragePlanes(
   quotePrice: string | null,
   nowMs: number,
 ): Record<"t0" | "now" | "out", LeveragePlaneItem[]> {
-  const order = item.entry.kind === "order" ? item.entry.value : null;
+  const intent = item.entry.kind === "intent" ? item.entry.value : null;
   const oi = item.event?.oi;
   return {
     t0: [
@@ -510,14 +501,14 @@ export function leveragePlanes(
       {
         key: "entry",
         label: "冻结入场参考",
-        note: order ? "不随现价变" : "未成单",
-        value: order?.entry_reference ?? "—",
+        note: intent ? "不随现价变" : "未形成 Intent",
+        value: intent?.reference_price ?? "—",
       },
       {
         key: "stop",
         label: "冻结止损",
-        note: order ? "随单提交" : "—",
-        value: order?.stop_price ?? "—",
+        note: intent ? "由 Nautilus 执行" : "—",
+        value: intent?.stop_price ?? "—",
       },
       {
         key: "oi",
@@ -542,54 +533,55 @@ export function leveragePlanes(
     now: [
       { key: "quote", label: "当前报价", note: "独立轮询 · 不回写案例", value: quotePrice ?? "—" },
       { key: "age", label: "案例年龄", note: "", value: item.age },
-      { key: "state", label: "订单状态", note: order ? "" : "未成单", value: order?.state ?? "—" },
+      {
+        key: "state",
+        label: "Intent 状态",
+        note: intent ? "" : "未形成 Intent",
+        value: intent?.execution_state ?? "—",
+      },
       {
         key: "hold",
         label: "持有窗口",
-        note: order?.position_opened_at_ms == null ? "从首笔成交起算" : "",
-        value: holdWindow(
-          order?.must_close_at_ms ?? null,
-          order?.position_opened_at_ms ?? null,
-          nowMs,
-        ),
+        note: intent?.opened_at_ms == null ? "从首笔成交起算" : "",
+        value: holdWindow(intent?.opened_at_ms ?? null, nowMs),
       },
     ],
     out: [
-      { key: "exit", label: "出场价", note: "", value: order?.exit_price ?? "—" },
-      { key: "reason", label: "了结方式", note: "", value: order?.exit_reason ?? "—" },
+      { key: "exit", label: "出场价", note: "", value: intent?.avg_exit_price ?? "—" },
+      {
+        key: "reason",
+        label: "Outcome",
+        note: intent?.reason_code ?? "",
+        value: intent?.terminal_outcome ?? "—",
+      },
       {
         key: "realized",
         label: "已实现",
-        note: order?.realized_bps == null ? "出场未测量" : "",
-        value: order?.realized_bps == null ? "—" : signedBps(order.realized_bps),
+        note: intent?.realized_pnl_amount == null ? "出场未测量" : "",
+        value:
+          intent?.realized_pnl_amount == null
+            ? "—"
+            : `${intent.realized_pnl_amount} ${intent.realized_pnl_currency ?? ""}`.trim(),
       },
       {
         key: "closed",
         label: "平仓时间",
         note: "",
-        value: order?.position_closed_at_ms == null ? "—" : clockTime(order.position_closed_at_ms),
+        value: intent?.closed_at_ms == null ? "—" : clockTime(intent.closed_at_ms),
       },
     ],
   };
 }
 
-function holdWindow(
-  mustCloseAtMs: number | null,
-  openedAtMs: number | null,
-  nowMs: number,
-): string {
-  if (mustCloseAtMs == null || openedAtMs == null) return "未起算";
-  const left = mustCloseAtMs - nowMs;
+function holdWindow(openedAtMs: number | null, nowMs: number): string {
+  if (openedAtMs == null) return "未起算";
+  const left = openedAtMs + 180_000 - nowMs;
   if (left <= 0) return "已到期";
   const minutes = Math.floor(left / 60_000);
   return `剩 ${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-function signedBps(value: number): string {
-  return `${value < 0 ? "−" : value > 0 ? "+" : ""}${Math.abs(value)}bps`;
-}
-
-/** TRIGGER → STRATEGY → CASE → ORDER, from the timestamps the ledger actually recorded. */
+/** TRIGGER → STRATEGY → CASE → INTENT → OUTCOME, from durable timestamps. */
 export function leverageTimeline(item: LeverageCase): LeverageTimelineStep[] {
   const steps: Array<LeverageTimelineStep & { atMs: number }> = [
     {
@@ -622,15 +614,15 @@ export function leverageTimeline(item: LeverageCase): LeverageTimelineStep[] {
       tone: "decision",
     });
   }
-  if (item.entry.kind === "order") {
-    const order = item.entry.value;
+  if (item.entry.kind === "intent") {
+    const intent = item.entry.value;
     steps.push({
-      atMs: order.updated_at_ms,
-      at: clockTime(order.updated_at_ms),
-      key: "order",
-      label: "Order",
-      note: `${order.state}${order.state_reason ? ` · ${order.state_reason}` : ""}`,
-      tone: order.state === "AMBIGUOUS" || order.state === "UNPROTECTED" ? "caution" : "capital",
+      atMs: intent.updated_at_ms,
+      at: clockTime(intent.updated_at_ms),
+      key: "intent",
+      label: intent.execution_state === "TERMINAL" ? "Outcome" : "Intent",
+      note: `${intent.execution_state}${intent.terminal_outcome ? ` · ${intent.terminal_outcome}` : ""}${intent.reason_code ? ` · ${intent.reason_code}` : ""}`,
+      tone: intent.execution_state === "MANUAL_REVIEW" ? "caution" : "capital",
     });
   }
   /*
@@ -690,12 +682,7 @@ export function leverageTabCount(cases: readonly LeverageCase[], tab: LeverageTa
  * against the row it moved; a weighted score would be unarguable, which on a page about money is worse than
  * being crude.
  */
-const RISK_STATES = new Set([
-  "AMBIGUOUS",
-  "UNPROTECTED",
-  "MANUAL_REVIEW_REQUIRED",
-  "SAFETY_CLOSING",
-]);
+const RISK_STATES = new Set(["MANUAL_REVIEW"]);
 
 export function leverageOrder(a: LeverageCase, b: LeverageCase): number {
   const risk = rank(b) - rank(a);
@@ -818,22 +805,8 @@ function elapsedShort(elapsedMs: number): string {
  * budget publishes the window in milliseconds and the console prints that. A mandate that has not been
  * read says `—`, never a plausible default.
  */
-export function leverageHorizon(item: LeverageCase, maxHoldMs: number | null | undefined): string {
-  const order = item.entry.kind === "order" ? item.entry.value : null;
-  if (order?.must_close_at_ms != null && order.position_opened_at_ms != null) {
-    return holdSpan(order.must_close_at_ms - order.position_opened_at_ms);
-  }
-  const mandate = holdSpan(maxHoldMs);
-  return mandate === "—" ? mandate : `${mandate} · 当前预算`;
-}
-
-function holdSpan(spanMs: number | null | undefined): string {
-  if (spanMs == null || spanMs <= 0) return "—";
-  const minutes = Math.floor(spanMs / 60_000);
-  if (minutes < 60) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} 小时` : `${hours}h ${String(rest).padStart(2, "0")}m`;
+export function leverageHorizon(item: LeverageCase): string {
+  return item.entry.kind === "intent" ? "3 分钟 · Intent 冻结策略" : "3 分钟 · 代码策略";
 }
 
 /**
@@ -845,7 +818,7 @@ function holdSpan(spanMs: number | null | undefined): string {
  */
 export function leverageTrace(item: LeverageCase): Array<[string, string]> {
   const facts = caseFacts(item.entry);
-  const order = item.entry.kind === "order" ? item.entry.value : null;
+  const intent = item.entry.kind === "intent" ? item.entry.value : null;
   return [
     ["case_id", facts.caseId],
     ["case_state", facts.caseState],
@@ -854,36 +827,31 @@ export function leverageTrace(item: LeverageCase): Array<[string, string]> {
     ["regime", facts.regime ?? "—"],
     ["policy_decision", facts.policyDecision ?? "—"],
     ["policy_reason", facts.policyReason ?? "—"],
-    ...(order
+    ...(intent
       ? ([
-          ["order_id", order.order_id],
-          ["order_state", order.state],
-          ["mode", order.mode],
+          ["intent_id", intent.intent_id],
+          ["execution_state", intent.execution_state],
+          ["execution_phase", intent.execution_phase ?? "—"],
+          ["execution_environment", intent.execution_environment],
+          ["terminal_outcome", intent.terminal_outcome ?? "—"],
+          ["reason_code", intent.reason_code ?? "—"],
         ] as Array<[string, string]>)
-      : ([["order", "未成单"]] as Array<[string, string]>)),
+      : ([["intent", "未形成"]] as Array<[string, string]>)),
   ];
 }
 
 /**
  * What is left of this case's own clock, for the card's foot.
  *
- * Phase is asked *before* the order, and that order is the whole correctness of this function. The ledger
- * never clears `must_close_at_ms` on close — `orders.py` writes `coalesce(%s, must_close_at_ms)` — so a
- * position that exited on its native stop at t+68 min under a four-hour window still carries a deadline
- * two and a half hours out. Reading the order first printed 剩 2h 52m against a position that no longer
- * existed, and 已到期 after the deadline passed, which claims a forced close that never happened.
- *
- * Only an order holding a live position has a clock at all: `must_close_at_ms` is measured from the first
- * fill, so a prepared or acknowledged intent has not started counting and `holdWindow` says 未起算. The
- * artifact also draws a `TTL 42s` on an awaiting-approval row; this ledger publishes no approval expiry,
- * so that row reports the state it is in rather than a countdown nobody wrote down.
+ * A terminal Outcome wins before any clock. An active Intent starts the code-owned 180-second hold clock
+ * only after Nautilus records the first fill; a fresh or in-flight Intent therefore says 未起算.
  */
 export function leverageRemaining(item: LeverageCase, nowMs: number): string {
   if (item.phase === "resolved") return "已了结";
   if (item.phase === "forming") return "评估中";
-  const order = item.entry.kind === "order" ? item.entry.value : null;
-  if (order) {
-    return holdWindow(order.must_close_at_ms ?? null, order.position_opened_at_ms ?? null, nowMs);
+  const intent = item.entry.kind === "intent" ? item.entry.value : null;
+  if (intent) {
+    return holdWindow(intent.opened_at_ms ?? null, nowMs);
   }
   /* A refused case has no clock to run down, and beside the `资本 —` at the other end of the same row a
      second dash reads as two missing values rather than as one answer. */

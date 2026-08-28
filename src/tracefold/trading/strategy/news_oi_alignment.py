@@ -74,22 +74,13 @@ class NewsOiAlignmentStrategy:
         side = regime_side(context.regime.regime)
         if decision.decision != side:
             return _no_trade("model_contradicts_regime")
-        if context.mode == "live_reviewed":
-            if decision.directness != "direct":
-                return _no_trade(f"live_requires_direct:{decision.directness}")
-            if decision.surprise < self.config.live_min_surprise:
-                return _no_trade("live_requires_surprise")
-            if decision.price_in > self.config.live_max_price_in:
-                return _no_trade("live_already_priced_in")
-            if decision.alignment != "aligned":
-                return _no_trade(f"live_requires_alignment:{decision.alignment}")
         return StrategyOutcome(
             decision=decision.decision,
             rule="news_oi_aligned",
             setup=decision.thesis_zh,
             invalidation=decision.invalidation_zh,
             expected_horizon=decision.horizon,
-            permission="live_reviewed" if context.mode == "live_reviewed" else "paper",
+            permission="paper",
         )
 
 

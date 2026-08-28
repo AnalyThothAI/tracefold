@@ -1,167 +1,27 @@
 @layer app.features {
-  /*
-   * 交易复盘 — the capital lane's case table on the token page (#282, artifact v8).
-   *
-   * Its own sheet beside its own component rather than another block in `trading.css`: the artifact's
-   * seven columns and the row expansion push that file past the 500-line side-effect budget, and this
-   * block has exactly one owner. The shared chrome — the head band, the horizontal scroller, the state
-   * chips — stays in `trading.css`, which every table on the lane renders.
-   */
-  /*
-   * The artifact's seven tracks, with 36px moved from the rule column into the strategy chip. The artifact
-   * writes `oi_only` there — a `case_kind`, seven characters — where this console names the strategy, and
-   * `oi_smart_money` at 82px printed straight over the quadrant beside it.
-   */
   .trading-case-head,
   .trading-case-row {
     display: grid;
-    grid-template-columns: 104px 118px 158px 128px 132px minmax(220px, 1fr) 96px;
+    grid-template-columns: 104px 118px 158px 128px 132px minmax(220px, 1fr) 160px;
     gap: 10px;
     align-items: center;
-    /* 736 fixed + 220 flexible minimum + 60 gutters + 28 padding, per `docs/FRONTEND.md`. At the
-       artifact's own 1020 the last column's right edge landed 10px outside the row's border box. */
-    min-width: 1044px;
+    min-width: 1108px;
     padding: 0 14px;
   }
 
-  /*
-   * The wrapper carries the floor as well as the border. A block-level box inside `overflow-x: auto` is
-   * laid out at the scroller's visible width, not its scroll width, so a border here with no `min-width`
-   * stopped at the viewport edge while the row beneath it painted the full 1044.
-   */
-  .trading-case {
-    min-width: 1044px;
-    border-bottom: 1px solid var(--border-faint);
+  .trading-case-head {
+    min-height: 30px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: 700 var(--font-size-eyebrow)/1.35 var(--font-mono);
+    letter-spacing: 0.06em;
   }
 
   .trading-case-row {
-    width: 100%;
     min-height: 46px;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    font: inherit;
-    text-align: left;
-  }
-
-  .trading-case-row:hover,
-  .trading-case[data-open] .trading-case-row {
-    background: var(--surface-raised);
-  }
-
-  .trading-case-time {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1.4 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .trading-case-time svg {
-    width: 12px;
-    height: 12px;
-    flex: 0 0 auto;
-    color: var(--text-faint);
-    transition: transform 0.15s ease;
-  }
-
-  .trading-case[data-open] .trading-case-time svg {
-    transform: rotate(90deg);
-  }
-
-  .trading-case-regime {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .trading-case-regime b {
-    color: var(--text-primary);
-    font-size: var(--font-size-mono-meta);
-    font-weight: 620;
-  }
-
-  .trading-case-regime small {
-    color: var(--text-subtle);
-    font: 500 var(--font-size-eyebrow)/1.4 var(--font-mono);
-  }
-
-  .trading-case-order {
-    overflow: hidden;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /*
-   * The rule in Chinese beside the thresholds this case was frozen against. The artifact draws a
-   * `thesis_zh` and an `invalidation_zh` here; this lane is a pure rule and writes neither, so the
-   * expansion names the rule rather than paraphrasing a sentence nobody wrote.
-   */
-  .trading-case-detail {
-    display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    gap: 12px;
-    /* In lockstep with the row above it, or the expansion leaves an unpainted strip beside every row. */
-    min-width: 1044px;
-    padding: 11px 14px 14px;
-    border-top: 1px solid var(--border-faint);
-    background: var(--surface-raised);
-  }
-
-  .trading-case-detail > div {
-    display: grid;
-    gap: 5px;
-    align-content: start;
-    min-width: 0;
-  }
-
-  .trading-case-detail small {
-    color: var(--text-subtle);
-    font: var(--type-eyebrow);
-    letter-spacing: 0.08em;
-  }
-
-  .trading-case-detail p {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: var(--font-size-meta);
-    line-height: 1.55;
-  }
-
-  .trading-case-manifest {
-    display: grid;
-    gap: 3px;
-    margin: 0;
-  }
-
-  .trading-case-manifest > div {
-    display: grid;
-    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
-    gap: 8px;
-    padding: 3px 0;
     border-bottom: 1px solid var(--border-faint);
-  }
-
-  .trading-case-manifest dt {
-    overflow-wrap: anywhere;
-    color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
-  }
-
-  .trading-case-manifest dd {
-    margin: 0;
-    color: var(--text-primary);
-    font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
-    text-align: right;
-    word-break: break-all;
-  }
-
-  @media (max-width: 767px) {
-    .trading-case-detail {
-      grid-template-columns: minmax(0, 1fr);
-    }
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
   }
 }

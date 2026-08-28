@@ -32,8 +32,7 @@ export function newsSymbolPath(base: string): string {
 }
 
 /**
- * 交易 · 模拟仓 (#207 PR-W4). A real ledger against a fake exchange; the page carries no live switch and the
- * surface behind it has no write endpoint to offer one.
+ * The Binance USD-M Demo execution workbench. It is read-only and has no runtime switch.
  */
 export function tradingPath(): string {
   return "/trading";

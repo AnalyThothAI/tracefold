@@ -236,7 +236,7 @@ def upgrade() -> None:
     op.execute(
         """
         INSERT INTO trading_runtime_state (id, control, day_key, orders_today, dspy_calls_today, funnel, updated_at_ms)
-        VALUES (1, 'RUNNING', '', 0, 0, '{}'::jsonb, (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT)
+        VALUES (1, 'PAUSED', '', 0, 0, '{}'::jsonb, (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT)
         """
     )
     # #104 seeds the deny-list with the two benchmarks the policy is not trying to trade and the one

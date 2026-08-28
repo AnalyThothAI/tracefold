@@ -73,14 +73,6 @@ class CliTests(unittest.TestCase):
         nautilus = parser.parse_args(["nautilus", "run"])
         assert (nautilus.command, nautilus.nautilus_command) == ("nautilus", "run")
 
-    def test_manual_open_recovery_accepts_the_exact_provider_entry_identity(self):
-        args = build_parser().parse_args(
-            ["trading", "resolve", "order-1", "open", "--remote-order-id", "provider-entry-1"]
-        )
-
-        self.assertEqual(args.trading_command, "resolve")
-        self.assertEqual(args.remote_order_id, "provider-entry-1")
-
     def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()
 
@@ -244,18 +236,13 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("brief", news)
         self.assertNotIn("title_presentation", news)
         trading = payload["data"]["trading"]
-        self.assertEqual(trading["mode"], "paper")
         self.assertFalse(trading["enabled"])
-        self.assertIsNone(trading["live_symbol"])
-        self.assertEqual(trading["nominal_daily_stop_loss_usd"], "4")
-        self.assertNotIn("worst_case_daily_loss_usd", trading)
-        self.assertFalse(trading["opentrade"]["base_url_configured"])
-        self.assertFalse(trading["opentrade"]["token_file_configured"])
+        self.assertEqual(trading["execution_environment"], "BINANCE_USDM_DEMO")
+        self.assertEqual(trading["instrument_id"], "SOLUSDT-PERP.BINANCE")
+        self.assertEqual(trading["target_notional_usd"], "10")
         self.assertEqual(
             trading["nautilus"],
             {
-                "accept_intents": False,
-                "instrument_id": "SOLUSDT-PERP.BINANCE",
                 "api_key_file": str(home / ".tracefold" / "binance_demo_api_key"),
                 "api_secret_file": str(home / ".tracefold" / "binance_demo_api_secret"),
                 "credentials_configured": False,
@@ -296,7 +283,18 @@ class CliTests(unittest.TestCase):
         self.assertFalse(settings.news.push.enabled)
         self.assertNotIn("providers", payload)
         self.assertNotIn("macro_document_analysis_enabled", payload["llm"])
-        self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "news"})
+        self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "news", "trading"})
+        self.assertEqual(
+            payload["trading"],
+            {
+                "enabled": False,
+                "order": {"fixed_notional_usd": 10},
+                "nautilus": {
+                    "api_key_file": "binance_demo_api_key",
+                    "api_secret_file": "binance_demo_api_secret",
+                },
+            },
+        )
 
     def test_config_reports_nautilus_credentials_without_disclosing_them(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -353,9 +351,13 @@ class CliTests(unittest.TestCase):
         for field, value in (
             ("instrument_id", "SOLUSDT-PERP.BINANCE"),
             ("poll_seconds", 1.0),
+            ("accept_intents", True),
         ):
             with self.subTest(field=field), self.assertRaises(ValidationError):
                 Settings.model_validate({"trading": {"nautilus": {field: value}}})
+
+        with self.assertRaises(ValidationError):
+            Settings.model_validate({"trading": {"poll_seconds": 1.0}})
 
     def test_news_replay_reports_offline_gate_counts_from_a_hits_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

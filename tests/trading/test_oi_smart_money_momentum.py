@@ -69,9 +69,9 @@ def _oi(**kwargs: Any) -> OiTradeCandidate:
     return OiTradeCandidate(**fields)
 
 
-def _context(*, pre_move_bps: int | None = 210, mode: str = "paper", **kwargs: Any) -> FrozenStrategyContext:
+def _context(*, pre_move_bps: int | None = 210, **kwargs: Any) -> FrozenStrategyContext:
     return FrozenStrategyContext(
-        mode=mode,  # type: ignore[arg-type]
+        mode="paper",
         oi=_oi(**kwargs),
         regime=RegimeAssessment(
             # Deliberately `UNCLEAR` on some inputs: this strategy reads the pre-move itself and does
@@ -190,12 +190,6 @@ def test_a_fall_frame_can_never_produce_a_long_and_no_input_produces_a_short() -
             assert permissive.evaluate(context).decision == strict_outcome.decision
             if direction == "fall":
                 assert strict_outcome.rule == "not_oi_rise"
-
-
-def test_a_live_lane_reaches_a_named_refusal_rather_than_a_permission_check() -> None:
-    outcome = STRATEGY.evaluate(_context(mode="live_reviewed"))
-    assert (outcome.decision, outcome.rule) == ("no_trade", "strategy_permission_paper_only")
-    assert STRATEGY.permission == "paper"
 
 
 def test_the_liquidity_floor_is_not_this_strategys_and_never_was() -> None:

@@ -1,7 +1,7 @@
 import { symbolPerspective } from "@features/news/model/symbolPerspective";
 import { tradingLedgerEntries } from "@features/trading";
 import { newsOiFrameFixture } from "@tests/fixtures/newsFixture";
-import { tradingCaseFixture, tradingOrdersFixture } from "@tests/fixtures/tradingFixture";
+import { tradingCaseFixture, tradingIntentsFixture } from "@tests/fixtures/tradingFixture";
 import { describe, expect, it } from "vitest";
 
 const FROZEN = {
@@ -16,8 +16,8 @@ const FROZEN = {
 
 function entryOf(caseOverrides = {}) {
   const ledger = tradingLedgerEntries(
-    tradingOrdersFixture({
-      cases_without_orders: [
+    tradingIntentsFixture({
+      cases_without_intents: [
         tradingCaseFixture({
           // The lane whose seven frozen keys `FROZEN` is; `_exact_keys` gives each strategy its own set.
           strategy_id: "oi_smart_money_momentum_v1",
@@ -25,7 +25,7 @@ function entryOf(caseOverrides = {}) {
           ...caseOverrides,
         }),
       ],
-      orders: [],
+      intents: [],
     }),
   );
   return [...ledger.values()][0];
@@ -209,7 +209,7 @@ describe("symbolPerspective", () => {
   });
 
   it("shows the floors of the case's own strategy, and none when it knows none", () => {
-    // `/api/trading/orders?underlying=` filters on the name alone, so the newest case can be any lane's.
+    // `/api/trading/intents?underlying=` filters on the name alone, so the newest case can be any lane's.
     const momentum = build({
       strategy_id: "oi_momentum_v1",
       strategy_config: { allow_short: "False", min_whale_long_profit_bps: "9500" },

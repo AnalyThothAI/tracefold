@@ -40,7 +40,7 @@ for (const state of states) {
       allowBrowserFailure(page, {
         kind: "requestfailed",
         match:
-          /^GET \/api\/(?:status|news\/(?:feed|status|quotes)|trading\/(?:status|orders|gate)) \(net::ERR_FAILED\)$/,
+          /^GET \/api\/(?:status|news\/(?:feed|status|quotes)|trading\/(?:status|intents|gate)) \(net::ERR_FAILED\)$/,
         reason:
           "This case intentionally aborts the known post-bootstrap reads to prove network failure UI.",
       });

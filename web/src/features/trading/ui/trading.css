@@ -1,21 +1,9 @@
 @layer app.features {
-  /*
-   * 模拟仓 (#207 PR-W4). One column: the mandate, what is exposed, then what closed beside where cases went.
-   *
-   * The lane's own hue is indigo like the rest of the console. Red and green appear only on a realised
-   * return, which is the one figure here that states a market outcome — an order state is a pipeline fact
-   * and never earns a market colour, which is why `AMBIGUOUS` is brick-amber rather than red.
-   */
   .trading-body {
     display: grid;
     gap: 12px;
   }
 
-  /*
-   * The News shell's header shape, owned here rather than borrowed. `features/trading` reaching for
-   * `news-page-header` would be one feature styling another's internals — the thing `docs/FRONTEND.md`
-   * forbids — and it is nine lines to keep the two consoles looking like one product honestly.
-   */
   .trading-page-header {
     display: flex;
     flex-wrap: wrap;
@@ -61,336 +49,36 @@
     font-size: inherit;
   }
 
-  .trading-mobile-safety {
-    display: none;
-  }
-
   .trading-mandate {
-    overflow: hidden;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
     border-radius: var(--radius-lg);
     box-shadow: var(--ring-panel);
   }
 
-  .trading-columns {
-    display: grid;
-    grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
-    gap: 12px;
-    align-items: start;
-  }
-
-  /* ------------------------------------------------------------------ tables */
   .trading-table {
     overflow-x: auto;
   }
 
-  /*
-   * The artifact's tracks (#280). Both tables were cut narrower than it draws them, on the theory that a
-   * narrower table scrolls less; what they actually did was ellipsise the two columns that carry the
-   * page's whole claim — the order state and the sentence beside it — while leaving the scroll in place.
-   */
-  .trading-exposure-head,
   .trading-exposure-row {
     display: grid;
-    grid-template-columns: 96px 74px 150px 168px 128px 118px minmax(180px, 1fr) 96px;
+    grid-template-columns: 84px 220px 128px 156px minmax(220px, 1fr) 120px;
     gap: 10px;
     align-items: center;
-    min-width: 1080px;
-    padding: 0 14px;
-  }
-
-  .trading-closed-head,
-  .trading-closed-row {
-    display: grid;
-    grid-template-columns: 96px 74px 140px minmax(150px, 1fr) 118px 84px;
-    gap: 10px;
-    align-items: center;
-    min-width: 700px;
-    padding: 0 14px;
-  }
-
-  /* 交易复盘's own tracks and its row expansion live in `tradingSymbolSection.css`, beside the one
-     component that renders them; what stays here is the chrome every table on the lane shares. */
-
-  .trading-exposure-head,
-  .trading-closed-head,
-  .trading-case-head {
-    min-height: 30px;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--surface-raised);
-    color: var(--text-subtle);
-    font: 700 var(--font-size-eyebrow)/1.35 var(--font-mono);
-    letter-spacing: 0.06em;
-  }
-
-  .trading-exposure-row {
+    min-width: 1020px;
     min-height: 50px;
+    padding: 0 14px;
     border-bottom: 1px solid var(--border-faint);
-  }
-
-  .trading-closed-row {
-    min-height: 50px;
-    border-bottom: 1px solid var(--border-faint);
-  }
-
-  /* An unresolved provider write is the row that most needs an operator's eye; it gets the only tinted row. */
-  .trading-exposure-row[data-ambiguous] {
-    background: var(--signal-alert-soft);
-  }
-
-  .trading-symbol {
-    display: flex;
-    gap: 7px;
-    align-items: baseline;
-    min-width: 0;
-  }
-
-  .trading-symbol a {
-    color: var(--text-primary);
-    font: 620 var(--font-size-meta)/1 var(--font-mono);
-  }
-
-  .trading-symbol small[data-side="buy"] {
-    color: var(--dir-bullish);
-    font-size: var(--font-size-mono-meta);
-    font-weight: 600;
-  }
-
-  .trading-symbol small[data-side="sell"] {
-    color: var(--dir-bearish);
-    font-size: var(--font-size-mono-meta);
-    font-weight: 600;
-  }
-
-  /*
-   * The chip clips rather than overflowing, on every table that renders it. `oi_smart_money` is a live
-   * strategy id and it printed straight over the 订单状态 chip beside it in 当前暴露 — a grid item has no
-   * implicit maximum, so a name wider than its track just paints across its neighbour. Each of these
-   * tables gives the chip a `title` carrying the full `strategy_id`, so nothing is lost to the clip.
-   */
-  .trading-kind {
-    justify-self: start;
-    max-width: 100%;
-    overflow: hidden;
-    padding: 2px 6px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xs);
-    background: var(--surface-raised);
     color: var(--text-secondary);
-    font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .trading-state {
-    justify-self: start;
-    padding: 2px 8px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xs);
-    background: var(--surface-raised);
-    color: var(--text-secondary);
-    font: 600 var(--font-size-mono-meta)/1.6 var(--font-mono);
-    white-space: nowrap;
-  }
-
-  .trading-state[data-state="OPEN"] {
-    border-color: var(--accent-border);
-    background: var(--accent-soft);
-    color: var(--accent-primary);
-  }
-
-  .trading-state[data-state="AWAITING_APPROVAL"],
-  .trading-state[data-state="POLICY_REJECTED"] {
-    border-color: var(--signal-caution-border);
-    background: var(--signal-caution-soft);
-    color: var(--signal-caution);
-  }
-
-  .trading-state[data-state="AMBIGUOUS"],
-  .trading-state[data-state="UNPROTECTED"],
-  .trading-state[data-state="MANUAL_REVIEW_REQUIRED"] {
-    border-color: var(--signal-alert-border);
-    background: var(--signal-alert-soft);
-    color: var(--signal-alert);
-  }
-
-  .trading-num {
-    color: var(--text-secondary);
-    font: 500 var(--font-size-mono-meta)/1.4 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .trading-num b[data-tone="up"] {
-    color: var(--dir-bullish);
-    font-weight: 620;
-  }
-
-  .trading-num b[data-tone="down"] {
-    color: var(--dir-bearish);
-    font-weight: 620;
-  }
-
-  .trading-unmeasured {
-    color: var(--text-faint);
-  }
-
-  .trading-stop {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-
-  .trading-stop svg {
-    width: 11px;
-    height: 11px;
-    color: var(--accent-primary);
-    stroke-width: 2.4;
-  }
-
-  .trading-note {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px 8px;
-    align-items: baseline;
-    overflow: hidden;
-    color: var(--text-subtle);
     font-size: var(--font-size-mono-meta);
-    line-height: 1.45;
   }
 
-  .trading-note code {
+  .trading-exposure-row code,
+  .trading-case-row code {
     font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
     overflow-wrap: anywhere;
   }
 
-  /* ------------------------------------------------------------------ funnel */
-  .trading-funnel {
-    display: grid;
-    gap: 10px;
-    padding: 12px 14px;
-  }
-
-  .trading-funnel-row {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr) 24px;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .trading-funnel-row small {
-    display: flex;
-    gap: 5px;
-    align-items: baseline;
-    color: var(--text-secondary);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  /* The clock each row is counted on. Two intervals drawn as one bar chart is two intervals
-     impersonating one, so every row names its own rather than the card naming an average. */
-  .trading-funnel-row small em {
-    color: var(--text-subtle);
-    font-style: normal;
-    font-size: var(--font-size-eyebrow, var(--font-size-mono-meta));
-  }
-
-  /* ------------------------------------------------------------------ admission */
-  .trading-admission {
-    display: grid;
-    gap: 8px;
-    padding: 12px 14px 0;
-  }
-
-  .trading-admission-row {
-    display: grid;
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr) 32px;
-    gap: 10px;
-    align-items: baseline;
-    color: var(--text-secondary);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .trading-admission-row code {
-    color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
-    overflow-wrap: anywhere;
-  }
-
-  .trading-admission-row b {
-    color: var(--text-primary);
-    font: 620 var(--font-size-mono-meta)/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-
-  .trading-evidence {
-    overflow: hidden;
-    border-radius: var(--radius-lg);
-    background: var(--surface-panel);
-    box-shadow: var(--ring-panel);
-    color: var(--text-secondary);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .trading-evidence summary {
-    padding: 9px 14px;
-    cursor: pointer;
-    color: var(--text-subtle);
-  }
-
-  .trading-evidence-body {
-    padding-top: 12px;
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  .trading-funnel-track {
-    position: relative;
-    height: 8px;
-    border-radius: var(--radius-xs);
-    background: var(--surface-raised);
-    overflow: hidden;
-  }
-
-  .trading-funnel-track span {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: var(--radius-xs);
-    background: var(--accent-primary);
-  }
-
-  .trading-funnel-row b {
-    color: var(--text-primary);
-    font: 620 var(--font-size-mono-meta)/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-
-  .trading-funnel-note {
-    margin: 2px 0 0;
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.55;
-  }
-
-  .trading-funnel-note code {
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
-  }
-
-  .trading-floors {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    align-items: baseline;
-    padding: 0 14px 12px;
-    color: var(--text-secondary);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .trading-floors small {
-    color: var(--text-subtle);
-    font: 700 var(--font-size-eyebrow)/1 var(--font-mono);
-    letter-spacing: 0.08em;
-  }
-
-  /* ------------------------------------------------------------------ shared chrome */
   .trading-source-line {
     display: flex;
     flex-wrap: wrap;
@@ -428,38 +116,9 @@
     font-size: var(--font-size-meta);
   }
 
-  @media (max-width: 1023px) {
-    .trading-columns {
-      grid-template-columns: minmax(0, 1fr);
-    }
-  }
-
   @media (max-width: 767px) {
     .trading-heading-aside {
       width: 100%;
-    }
-
-    .trading-mobile-safety {
-      display: flex;
-      justify-content: space-between;
-      width: 100%;
-      padding-top: 3px;
-    }
-
-    .trading-mobile-safety > span {
-      display: grid;
-      gap: 1px;
-    }
-
-    .trading-mobile-safety small {
-      color: var(--text-subtle);
-      font: var(--type-eyebrow);
-      letter-spacing: 0.08em;
-    }
-
-    .trading-mobile-safety b {
-      color: var(--text-primary);
-      font: 640 var(--font-size-meta)/1.25 var(--font-mono);
     }
   }
 }

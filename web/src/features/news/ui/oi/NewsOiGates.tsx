@@ -70,8 +70,8 @@ export function NewsOiGates({
          */
         hint={
           gateUnread
-            ? `${floors.mode.toUpperCase()} · 准入规则未读到`
-            : `${floors.mode.toUpperCase()} · ${floors.enabled ? "已启用" : "资本通道关闭"}${
+            ? `${floors.execution_environment} · 准入规则未读到`
+            : `${floors.execution_environment} · ${floors.enabled ? "已启用" : "资本通道关闭"}${
                 strategies.length ? ` · Alpha 地板在 ${strategies.length} 条策略各自` : ""
               }`
         }

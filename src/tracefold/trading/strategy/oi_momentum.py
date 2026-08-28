@@ -78,8 +78,6 @@ def oi_gate(
     oi = context.oi
     if oi is None:
         return _no_trade("oi_context_missing", permission)
-    if context.mode != "paper" and permission != "live_reviewed":
-        return _no_trade("strategy_permission_shadow_or_paper", permission)
     if not permits_entry(context.regime.regime):
         return _no_trade(f"regime_no_entry:{context.regime.regime.value}", permission)
     side = regime_side(context.regime.regime)

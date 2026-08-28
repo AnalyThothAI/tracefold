@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from alembic import command
 from psycopg.errors import CheckViolation
+from sqlalchemy.exc import DBAPIError
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import (
@@ -27,6 +28,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 NOW = 1_900_000_000_000
 BEFORE_SNAPSHOT = "20260825_0307"
 BEFORE_STRATEGY_KERNEL = "20260825_0309"
+BEFORE_INTENT_HARD_CUT = "20260828_0316"
 
 
 def _upgrade(revision: str) -> None:
@@ -134,7 +136,7 @@ def test_0308_backfills_the_exit_policy_only_where_the_ledger_can_prove_it() -> 
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade(BEFORE_INTENT_HARD_CUT)
 
         conn = connect_postgres_test(read_only=False)
         rows = {
@@ -196,7 +198,7 @@ def test_0309_coalesces_undecided_cases_before_the_index_and_never_disowns_an_or
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade(BEFORE_INTENT_HARD_CUT)
 
         conn = connect_postgres_test(read_only=False)
         rows = {
@@ -263,7 +265,7 @@ def test_0310_hard_cuts_case_kind_and_adds_immutable_strategy_ledgers() -> None:
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade(BEFORE_INTENT_HARD_CUT)
 
         conn = connect_postgres_test(read_only=False)
         columns = {
@@ -328,6 +330,126 @@ def test_0310_hard_cuts_case_kind_and_adds_immutable_strategy_ledgers() -> None:
             "AND constraint_type = 'FOREIGN KEY'"
         ).fetchall()
         assert liquidation_fks == []
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _seed_pre_hard_cut_case(conn: Any, *, case_id: str, state: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO trading_cases (
+          case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
+          strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
+          manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+        ) VALUES (%s, 'crypto:SOL', 'oi', 'oi_smart_money_momentum_v1',
+                  'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
+                  '{}'::jsonb, %s, %s, %s, %s, %s)
+        """,
+        (case_id, "0" * 64, f"source-{case_id}", "3" * 64, state, NOW, NOW, NOW),
+    )
+
+
+def _seed_pre_hard_cut_intent(conn: Any) -> None:
+    _seed_pre_hard_cut_case(conn, case_id="intent-case", state="ORDER_PREPARED")
+    conn.execute(
+        """
+        INSERT INTO trading_intents (
+          intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
+          execution_environment, instrument_id, side, created_at_ms, valid_until_ms,
+          reference_price, target_notional_usd, stop_loss_bps, max_holding_ms,
+          max_entry_drift_bps, max_spread_bps
+        ) VALUES (%s, 'trade_intent_v1', 'intent-case', %s, %s,
+                  'BINANCE_USDM_DEMO', 'SOLUSDT-PERP.BINANCE', 'long', %s, %s,
+                  100, 10, 200, 180000, 25, 30)
+        """,
+        (
+            "1" * 64,
+            "3" * 64,
+            "45702e47bf093ba7c5996eae2186e9e2d1dfee0d9c0a434ced7afa4377286243",
+            NOW,
+            NOW + 60_000,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("blocker", "error"),
+    [
+        ("control", "trading_hard_cut_not_paused"),
+        ("case", "trading_hard_cut_pending_case"),
+        ("intent", "trading_hard_cut_nonterminal_intent"),
+        ("order", "trading_hard_cut_active_legacy_order"),
+    ],
+)
+def test_0317_refuses_every_durable_legacy_or_nonterminal_owner(blocker: str, error: str) -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_INTENT_HARD_CUT)
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            "UPDATE trading_runtime_state SET control = %s WHERE id = 1",
+            ("RUNNING" if blocker == "control" else "PAUSED",),
+        )
+        if blocker == "case":
+            _seed_pre_hard_cut_case(conn, case_id="pending-case", state="PENDING")
+        elif blocker == "intent":
+            _seed_pre_hard_cut_intent(conn)
+        elif blocker == "order":
+            _seed_pre_snapshot_order(
+                conn,
+                order_id="active-order",
+                state="OPEN",
+                position_opened_at_ms=NOW,
+                must_close_at_ms=NOW + 180_000,
+            )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match=error):
+            _upgrade("20260828_0317")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0317_admits_intent_emitted_and_removes_legacy_worker_writes() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_INTENT_HARD_CUT)
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
+        _upgrade("20260828_0317")
+        conn = connect_postgres_test(read_only=False)
+        _seed_pre_hard_cut_case(conn, case_id="emitted-case", state="INTENT_EMITTED")
+        conn.commit()
+
+        for table in ("trading_orders", "trading_order_observations"):
+            for privilege in ("INSERT", "UPDATE", "DELETE"):
+                assert (
+                    conn.execute(
+                        "SELECT has_table_privilege('tracefold_workers', %s, %s)",
+                        (table, privilege),
+                    ).fetchone()["has_table_privilege"]
+                    is False
+                )
+        assert (
+            conn.execute(
+                "SELECT has_column_privilege('tracefold_workers', 'trading_runtime_state', "
+                "'dspy_calls_today', 'UPDATE')"
+            ).fetchone()["has_column_privilege"]
+            is True
+        )
+        assert (
+            conn.execute(
+                "SELECT has_column_privilege('tracefold_workers', 'trading_runtime_state', 'orders_today', 'UPDATE')"
+            ).fetchone()["has_column_privilege"]
+            is False
+        )
     finally:
         if conn is not None:
             conn.close()

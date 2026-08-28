@@ -50,7 +50,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # #207 PR-W4. `trading_runtime_state` is a single row and needs no spec of its own; the two that scan
     # do, and both are bounded by a 24 h window plus a hard limit.
     "/api/trading/status": ("trading_status_counts",),
-    "/api/trading/orders": ("trading_console_orders", "trading_console_cases"),
+    "/api/trading/intents": ("trading_console_intents", "trading_console_cases"),
     "/api/trading/events/{event_id}": ("trading_case_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
     # by 24 h and a hard row limit, like the two beside it.
@@ -126,24 +126,23 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     return (
         ReadQuerySpec(
             name="trading_status_counts",
-            sql="SELECT state, count(*) AS n FROM trading_orders WHERE created_at_ms >= %s GROUP BY state",
+            sql=(
+                "SELECT execution_state, count(*) AS n FROM trading_intents "
+                "WHERE created_at_ms >= %s GROUP BY execution_state"
+            ),
             params=(since_ms,),
         ),
         ReadQuerySpec(
-            name="trading_console_orders",
-            # The two manifest slices are in the planned statement on purpose (#282): each is an
-            # independent detoast of a large JSONB per joined row, which is exactly the cost
-            # `db query-audit --analyze` exists to measure. A spec that kept the pre-#282 projection
-            # would certify a plan the route no longer executes.
+            name="trading_console_intents",
             sql="""
-                SELECT o.order_id, o.state, c.trigger_kind, c.strategy_id,
+                SELECT i.intent_id, i.execution_state, c.trigger_kind, c.strategy_id,
                        (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
                        c.manifest -> 'strategy_config' AS strategy_config,
                        (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason
-                  FROM trading_orders o
-                  JOIN trading_cases c ON c.case_id = o.case_id
-                 WHERE o.created_at_ms >= %s
-                 ORDER BY o.created_at_ms DESC
+                  FROM trading_intents i
+                  JOIN trading_cases c ON c.case_id = i.case_id
+                 WHERE i.created_at_ms >= %s
+                 ORDER BY i.created_at_ms DESC
                  LIMIT 100
             """,
             params=(since_ms,),
@@ -151,9 +150,9 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_case_for_source_key",
             sql="""
-                SELECT c.case_id, o.order_id
+                SELECT c.case_id, i.intent_id
                   FROM trading_cases c
-                  LEFT JOIN trading_orders o ON o.case_id = c.case_id
+                  LEFT JOIN trading_intents i ON i.case_id = c.case_id
                  WHERE c.primary_source_key = %s
             """,
             params=("oi:not-a-real-event:oi_signal_v1",),
@@ -188,7 +187,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 SELECT c.case_id, c.state
                   FROM trading_cases c
                  WHERE c.created_at_ms >= %s
-                   AND NOT EXISTS (SELECT 1 FROM trading_orders o WHERE o.case_id = c.case_id)
+                   AND NOT EXISTS (SELECT 1 FROM trading_intents i WHERE i.case_id = c.case_id)
                  ORDER BY c.created_at_ms DESC
                  LIMIT 100
             """,

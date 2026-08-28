@@ -7,7 +7,7 @@ import {
   type TradingGateDecision,
   type TradingOiLedgerEntry,
   type TradingOiLookup,
-  type TradingOrders,
+  type TradingIntents,
 } from "@features/trading";
 import { newsEventPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
@@ -72,7 +72,7 @@ export function NewsOiFrameTable({
   rows: readonly NewsFeedEvent[];
   quotes: Record<string, NewsQuote>;
   tab: NewsOiTab;
-  trading: TradingOrders | undefined;
+  trading: TradingIntents | undefined;
   tradingError: boolean;
 }) {
   const ledger = tradingOiLedgerByEventId(trading);

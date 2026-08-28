@@ -415,13 +415,13 @@
         "title": "ApiEnvelope[TradingGateData]",
         "type": "object"
       },
-      "ApiEnvelope_TradingOrdersData_": {
+      "ApiEnvelope_TradingIntentsData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/TradingOrdersData"
+                "$ref": "#/components/schemas/TradingIntentsData"
               },
               {
                 "type": "null"
@@ -458,7 +458,7 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[TradingOrdersData]",
+        "title": "ApiEnvelope[TradingIntentsData]",
         "type": "object"
       },
       "ApiEnvelope_TradingStatusData_": {
@@ -2698,6 +2698,12 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "execution_environment": {
+            "const": "BINANCE_USDM_DEMO",
+            "default": "BINANCE_USDM_DEMO",
+            "title": "Execution Environment",
+            "type": "string"
+          },
           "max_price_move_bps": {
             "default": 0,
             "title": "Max Price Move Bps",
@@ -2717,11 +2723,6 @@
             "default": 0,
             "title": "Min Whale Long Profit Bps",
             "type": "integer"
-          },
-          "mode": {
-            "default": "paper",
-            "title": "Mode",
-            "type": "string"
           },
           "pre_move_lookback_ms": {
             "default": 0,
@@ -4490,47 +4491,26 @@
       },
       "TradingBudgetData": {
         "additionalProperties": false,
-        "description": "The mandate, as configured. Fixed size, fixed stop, fixed maximum hold \u2014 there is no sizing model.",
         "properties": {
-          "max_hold_ms": {
-            "title": "Max Hold Ms",
+          "max_entries_per_utc_day": {
+            "const": 1,
+            "default": 1,
+            "title": "Max Entries Per Utc Day",
             "type": "integer"
           },
-          "max_orders_per_day": {
-            "title": "Max Orders Per Day",
-            "type": "integer"
-          },
-          "nominal_daily_stop_loss_usd": {
-            "title": "Nominal Daily Stop Loss Usd",
+          "target_notional_usd": {
+            "title": "Target Notional Usd",
             "type": "string"
-          },
-          "notional_usd": {
-            "title": "Notional Usd",
-            "type": "string"
-          },
-          "orders_today": {
-            "title": "Orders Today",
-            "type": "integer"
-          },
-          "stop_loss_bps": {
-            "title": "Stop Loss Bps",
-            "type": "integer"
           }
         },
         "required": [
-          "notional_usd",
-          "stop_loss_bps",
-          "max_hold_ms",
-          "nominal_daily_stop_loss_usd",
-          "max_orders_per_day",
-          "orders_today"
+          "target_notional_usd"
         ],
         "title": "TradingBudgetData",
         "type": "object"
       },
       "TradingCaseData": {
         "additionalProperties": false,
-        "description": "A case that stopped before authoring an intent, and the rule it stopped on.",
         "properties": {
           "base_symbol": {
             "title": "Base Symbol",
@@ -4565,10 +4545,6 @@
               }
             ],
             "title": "Event Id"
-          },
-          "mode": {
-            "title": "Mode",
-            "type": "string"
           },
           "observed_at_ms": {
             "title": "Observed At Ms",
@@ -4664,7 +4640,6 @@
           "trigger_kind",
           "strategy_id",
           "strategy_version",
-          "mode",
           "state",
           "observed_at_ms",
           "created_at_ms"
@@ -4674,11 +4649,10 @@
       },
       "TradingCountsData": {
         "additionalProperties": false,
-        "description": "The 24 h funnel by the ledger's own grouping keys, plus the realised measure.\n\n`closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a\nposition but nobody computed a return for it, and counting it turned one +150 bps winner beside three\nresolutions into a reported mean of 37.5.\n\nRolling groupings retain their 24 h window. The `*_today` fields, `policy_allowed_today`, and\n`funnel_today` bind to the UTC `funnel_day_key`; an upper bound keeps a stale Workers day from silently\nbecoming a multi-day count. `active_orders` is intentionally unbounded because unresolved exposure does\nnot stop mattering after 24 h.",
         "properties": {
-          "active_orders": {
+          "active_intents": {
             "default": 0,
-            "title": "Active Orders",
+            "title": "Active Intents",
             "type": "integer"
           },
           "candidate_counts_24h": {
@@ -4737,19 +4711,14 @@
             "title": "Cases Today By State",
             "type": "object"
           },
-          "closed_orders": {
+          "closed_intents_today": {
             "default": 0,
-            "title": "Closed Orders",
+            "title": "Closed Intents Today",
             "type": "integer"
           },
-          "closed_orders_today": {
+          "entries_today": {
             "default": 0,
-            "title": "Closed Orders Today",
-            "type": "integer"
-          },
-          "closed_realized_bps": {
-            "default": 0,
-            "title": "Closed Realized Bps",
+            "title": "Entries Today",
             "type": "integer"
           },
           "event_study_cohorts": {
@@ -4771,6 +4740,13 @@
             "title": "Funnel Today",
             "type": "object"
           },
+          "intents_by_state": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Intents By State",
+            "type": "object"
+          },
           "latest_case_created_at_ms": {
             "anyOf": [
               {
@@ -4781,6 +4757,17 @@
               }
             ],
             "title": "Latest Case Created At Ms"
+          },
+          "latest_entry_fenced_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Entry Fenced At Ms"
           },
           "latest_gate_eligible_at_ms": {
             "anyOf": [
@@ -4793,7 +4780,7 @@
             ],
             "title": "Latest Gate Eligible At Ms"
           },
-          "latest_order_prepared_at_ms": {
+          "latest_intent_emitted_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -4802,7 +4789,7 @@
                 "type": "null"
               }
             ],
-            "title": "Latest Order Prepared At Ms"
+            "title": "Latest Intent Emitted At Ms"
           },
           "latest_position_closed_at_ms": {
             "anyOf": [
@@ -4847,11 +4834,11 @@
             "title": "Liquidation Promotion Reason",
             "type": "string"
           },
-          "orders_by_state": {
+          "outcomes_by_state": {
             "additionalProperties": {
               "type": "integer"
             },
-            "title": "Orders By State",
+            "title": "Outcomes By State",
             "type": "object"
           },
           "policy_allowed_24h": {
@@ -4891,7 +4878,6 @@
       },
       "TradingEventCaseData": {
         "additionalProperties": false,
-        "description": "Whether one News Event became a case, for the Event detail's \u6210\u6848 badge (#207 PR-W4).\n\n`joinable` is the field that keeps this honest. Only the deterministic OI lane's source key is\nreconstructible from an `event_id` (`oi:{event_id}:{metric_version}`); the model lane's is a content hash\nof an artifact and a fingerprint (#154), which no Event id rebuilds. For a model-lane Event the answer is\n`joinable: false` \u2014 \"this cannot be asked\", which is a different fact from `case: null`, \"it was asked\nand the answer is no\". Rendering them the same would tell a reader the lane declined an Event it never\nsaw.",
         "properties": {
           "case": {
             "anyOf": [
@@ -4903,42 +4889,9 @@
               }
             ]
           },
-          "entry_reference": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entry Reference"
-          },
           "event_id": {
             "title": "Event Id",
             "type": "string"
-          },
-          "exit_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exit Price"
-          },
-          "exit_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exit Reason"
           },
           "gate_attempt_count": {
             "anyOf": [
@@ -5062,112 +5015,19 @@
             ],
             "title": "Gate Version"
           },
+          "intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingIntentData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "joinable": {
             "title": "Joinable",
             "type": "boolean"
-          },
-          "notional_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Notional Usd"
-          },
-          "order_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Order Id"
-          },
-          "order_state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Order State"
-          },
-          "order_state_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Order State Reason"
-          },
-          "position_closed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Position Closed At Ms"
-          },
-          "position_opened_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Position Opened At Ms"
-          },
-          "realized_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Realized Bps"
-          },
-          "side": {
-            "anyOf": [
-              {
-                "enum": [
-                  "buy",
-                  "sell"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Side"
-          },
-          "stop_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Stop Price"
           }
         },
         "required": [
@@ -5331,7 +5191,6 @@
       },
       "TradingFloorsData": {
         "additionalProperties": false,
-        "description": "The capital lane's own thresholds \u2014 a different set from the News gates, never merged with them.",
         "properties": {
           "lookback_ms": {
             "title": "Lookback Ms",
@@ -5366,7 +5225,6 @@
       },
       "TradingGateConfigData": {
         "additionalProperties": false,
-        "description": "The Candidate Gate as the scanner holds it (#269).\n\n`floors` is the operator's settings document. This is the rule set that actually admits an OI fact,\nand its `config_digest` is the second half of the key every row in the admission ledger is filed\nunder \u2014 so a console can say which configuration decided the frame it is showing, rather than\ncomparing it against whichever number happens to be in settings now.",
         "properties": {
           "config_digest": {
             "title": "Config Digest",
@@ -5444,7 +5302,6 @@
       },
       "TradingGateDecisionData": {
         "additionalProperties": false,
-        "description": "One durable admission answer, for a page showing a whole window of frames at once (#269).\n\n`event_id` is null for a source whose key is not the deterministic OI contract. The row is still\nlisted: the distributions in `/trading/status` count it, and omitting it here would make a page's\nown total disagree with the number printed above it.",
         "properties": {
           "base_symbol": {
             "default": "",
@@ -5629,7 +5486,6 @@
       },
       "TradingGateEvidenceData": {
         "additionalProperties": false,
-        "description": "What one admission decision was taken on. Every key is code-owned and named here on purpose.\n\nPassing the stored document straight through would put the next evidence key in a browser without\nanyone deciding that it should, which is the same rule the order and case projections follow. The\nfour measurements are always present past the source stage; the rest are the threshold or the\nprovider detail that the specific rule failed on.",
         "properties": {
           "age_ms": {
             "anyOf": [
@@ -5793,11 +5649,10 @@
         "title": "TradingHorizonData",
         "type": "object"
       },
-      "TradingOrderData": {
+      "TradingIntentData": {
         "additionalProperties": false,
-        "description": "One economic intent and the case that authored it. Money is an exact decimal string, never a float.",
         "properties": {
-          "average_price": {
+          "actual_quantity": {
             "anyOf": [
               {
                 "type": "string"
@@ -5806,7 +5661,29 @@
                 "type": "null"
               }
             ],
-            "title": "Average Price"
+            "title": "Actual Quantity"
+          },
+          "avg_entry_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Entry Price"
+          },
+          "avg_exit_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Exit Price"
           },
           "base_symbol": {
             "title": "Base Symbol",
@@ -5831,13 +5708,34 @@
             "title": "Case State",
             "type": "string"
           },
+          "closed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At Ms"
+          },
+          "commissions_by_currency": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commissions By Currency"
+          },
           "created_at_ms": {
             "title": "Created At Ms",
             "type": "integer"
-          },
-          "entry_reference": {
-            "title": "Entry Reference",
-            "type": "string"
           },
           "event_id": {
             "anyOf": [
@@ -5850,53 +5748,39 @@
             ],
             "title": "Event Id"
           },
-          "exchange_id": {
-            "title": "Exchange Id",
+          "execution_environment": {
+            "const": "BINANCE_USDM_DEMO",
+            "title": "Execution Environment",
             "type": "string"
           },
-          "exit_attempt_total": {
-            "default": 0,
-            "title": "Exit Attempt Total",
-            "type": "integer"
-          },
-          "exit_price": {
+          "execution_phase": {
             "anyOf": [
               {
+                "enum": [
+                  "ENTRY",
+                  "PROTECTION",
+                  "EXIT"
+                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Exit Price"
+            "title": "Execution Phase"
           },
-          "exit_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+          "execution_state": {
+            "enum": [
+              "PENDING",
+              "IN_FLIGHT",
+              "OPEN_PROTECTED",
+              "MANUAL_REVIEW",
+              "TERMINAL"
             ],
-            "title": "Exit Reason"
-          },
-          "filled_quantity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filled Quantity"
-          },
-          "mode": {
-            "title": "Mode",
+            "title": "Execution State",
             "type": "string"
           },
-          "must_close_at_ms": {
+          "flat_verified_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -5905,15 +5789,27 @@
                 "type": "null"
               }
             ],
-            "title": "Must Close At Ms"
+            "title": "Flat Verified At Ms"
           },
-          "notional_usd": {
-            "title": "Notional Usd",
+          "instrument_id": {
+            "const": "SOLUSDT-PERP.BINANCE",
+            "title": "Instrument Id",
             "type": "string"
           },
-          "order_id": {
-            "title": "Order Id",
+          "intent_id": {
+            "title": "Intent Id",
             "type": "string"
+          },
+          "opened_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opened At Ms"
           },
           "policy_decision": {
             "anyOf": [
@@ -5937,28 +5833,6 @@
             ],
             "title": "Policy Reason"
           },
-          "position_closed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Position Closed At Ms"
-          },
-          "position_opened_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Position Opened At Ms"
-          },
           "pre_move_bps": {
             "anyOf": [
               {
@@ -5970,20 +5844,7 @@
             ],
             "title": "Pre Move Bps"
           },
-          "provider_attempt_count": {
-            "default": 0,
-            "title": "Provider Attempt Count",
-            "type": "integer"
-          },
-          "provider_symbol": {
-            "title": "Provider Symbol",
-            "type": "string"
-          },
-          "quantity": {
-            "title": "Quantity",
-            "type": "string"
-          },
-          "realized_bps": {
+          "protected_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -5992,7 +5853,55 @@
                 "type": "null"
               }
             ],
-            "title": "Realized Bps"
+            "title": "Protected At Ms"
+          },
+          "protected_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protected Quantity"
+          },
+          "realized_pnl_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl Amount"
+          },
+          "realized_pnl_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl Currency"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "reference_price": {
+            "title": "Reference Price",
+            "type": "string"
           },
           "regime": {
             "anyOf": [
@@ -6017,18 +5926,11 @@
             "title": "Regime Reason"
           },
           "side": {
-            "enum": [
-              "buy",
-              "sell"
-            ],
+            "const": "long",
             "title": "Side",
             "type": "string"
           },
-          "state": {
-            "title": "State",
-            "type": "string"
-          },
-          "state_reason": {
+          "stop_price": {
             "anyOf": [
               {
                 "type": "string"
@@ -6037,11 +5939,7 @@
                 "type": "null"
               }
             ],
-            "title": "State Reason"
-          },
-          "stop_price": {
-            "title": "Stop Price",
-            "type": "string"
+            "title": "Stop Price"
           },
           "strategy_config": {
             "additionalProperties": {
@@ -6058,16 +5956,25 @@
             "title": "Strategy Version",
             "type": "string"
           },
-          "take_profit_price": {
+          "target_notional_usd": {
+            "title": "Target Notional Usd",
+            "type": "string"
+          },
+          "terminal_outcome": {
             "anyOf": [
               {
+                "enum": [
+                  "EXPIRED",
+                  "REJECTED",
+                  "CLOSED_FLAT"
+                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Take Profit Price"
+            "title": "Terminal Outcome"
           },
           "trigger_kind": {
             "title": "Trigger Kind",
@@ -6080,22 +5987,24 @@
           "updated_at_ms": {
             "title": "Updated At Ms",
             "type": "integer"
+          },
+          "valid_until_ms": {
+            "title": "Valid Until Ms",
+            "type": "integer"
           }
         },
         "required": [
-          "order_id",
+          "intent_id",
           "case_id",
           "underlying_key",
           "base_symbol",
-          "exchange_id",
-          "provider_symbol",
-          "mode",
+          "execution_environment",
+          "instrument_id",
           "side",
-          "notional_usd",
-          "quantity",
-          "entry_reference",
-          "stop_price",
-          "state",
+          "target_notional_usd",
+          "reference_price",
+          "valid_until_ms",
+          "execution_state",
           "created_at_ms",
           "updated_at_ms",
           "trigger_kind",
@@ -6103,33 +6012,33 @@
           "strategy_version",
           "case_state"
         ],
-        "title": "TradingOrderData",
+        "title": "TradingIntentData",
         "type": "object"
       },
-      "TradingOrdersData": {
+      "TradingIntentsData": {
         "additionalProperties": false,
         "properties": {
-          "cases_without_orders": {
+          "cases_without_intents": {
             "items": {
               "$ref": "#/components/schemas/TradingCaseData"
             },
-            "title": "Cases Without Orders",
+            "title": "Cases Without Intents",
             "type": "array"
           },
           "complete": {
             "title": "Complete",
             "type": "boolean"
           },
+          "intents": {
+            "items": {
+              "$ref": "#/components/schemas/TradingIntentData"
+            },
+            "title": "Intents",
+            "type": "array"
+          },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
-          },
-          "orders": {
-            "items": {
-              "$ref": "#/components/schemas/TradingOrderData"
-            },
-            "title": "Orders",
-            "type": "array"
           },
           "window_hours": {
             "title": "Window Hours",
@@ -6141,67 +6050,84 @@
           "window_hours",
           "measured_at_ms"
         ],
-        "title": "TradingOrdersData",
+        "title": "TradingIntentsData",
         "type": "object"
       },
       "TradingReadinessData": {
         "additionalProperties": false,
-        "description": "Whether this deployment could trade for real, and how far that is from proven.\n\n`live_ready` is never `true` from a read: a serve process cannot observe another process's startup and\ncanary result, so it reports `not_proven` rather than guessing. The console renders the word.",
         "properties": {
           "control": {
+            "enum": [
+              "RUNNING",
+              "CLOSE_ONLY",
+              "PAUSED"
+            ],
             "title": "Control",
             "type": "string"
+          },
+          "credentials_configured": {
+            "title": "Credentials Configured",
+            "type": "boolean"
           },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
           },
-          "execution_backend": {
-            "title": "Execution Backend",
-            "type": "string"
-          },
-          "execution_configured": {
-            "title": "Execution Configured",
-            "type": "boolean"
-          },
-          "live_mode_supported": {
-            "title": "Live Mode Supported",
-            "type": "boolean"
-          },
-          "live_readiness": {
-            "title": "Live Readiness",
-            "type": "string"
-          },
-          "live_ready": {
-            "title": "Live Ready",
-            "type": "boolean"
-          },
-          "mode": {
-            "enum": [
-              "paper",
-              "live_reviewed",
-              "live_bounded"
+          "engine_readiness_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Mode",
+            "title": "Engine Readiness Reason"
+          },
+          "engine_ready": {
+            "title": "Engine Ready",
+            "type": "boolean"
+          },
+          "execution_authority": {
+            "const": "nautilus",
+            "default": "nautilus",
+            "title": "Execution Authority",
             "type": "string"
           },
-          "venues": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Venues",
-            "type": "array"
+          "execution_environment": {
+            "const": "BINANCE_USDM_DEMO",
+            "default": "BINANCE_USDM_DEMO",
+            "title": "Execution Environment",
+            "type": "string"
+          },
+          "heartbeat_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ms"
+          },
+          "instrument_id": {
+            "const": "SOLUSDT-PERP.BINANCE",
+            "default": "SOLUSDT-PERP.BINANCE",
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "unexpected_exposure": {
+            "title": "Unexpected Exposure",
+            "type": "boolean"
           }
         },
         "required": [
           "enabled",
-          "mode",
           "control",
-          "execution_backend",
-          "execution_configured",
-          "live_mode_supported",
-          "live_ready",
-          "live_readiness"
+          "credentials_configured",
+          "engine_ready",
+          "unexpected_exposure"
         ],
         "title": "TradingReadinessData",
         "type": "object"
@@ -6386,7 +6312,6 @@
       },
       "TradingStrategyConfigData": {
         "additionalProperties": false,
-        "description": "One versioned strategy and the numbers it executes.\n\n`config` is rendered as text per key on purpose: each strategy owns its own keys, mixing booleans,\nbasis points and millisecond windows, and this surface reports them rather than interpreting them.",
         "properties": {
           "config": {
             "additionalProperties": {
@@ -6958,7 +6883,6 @@
     },
     "/api/trading/events/{event_id}": {
       "get": {
-        "description": "Whether one News Event became a case \u2014 the Event detail's \u6210\u6848 badge (#207 PR-W4).\n\nAnswers `joinable: false` for a model-lane Event rather than pretending the lane declined it. The\ndeterministic OI lane's source key is `oi:{event_id}:{metric_version}` and can be rebuilt here; the model\nlane's is a content hash of an artifact and a fingerprint (#154), which no Event id reconstructs. Joining\nby symbol and time instead would be the console recording a link the ledger does not have.",
         "operationId": "get_trading_event_case_api_trading_events__event_id__get",
         "parameters": [
           {
@@ -7001,7 +6925,6 @@
     },
     "/api/trading/gate": {
       "get": {
-        "description": "Every OI source the lane admitted or refused in the window, one answer each (#269).\n\n`/trading/events/{id}` answers this for one Event, which is the Event detail's question. A frame\n*table* asks it for a page of frames at once, and asking it one row at a time would be a hundred\nround trips to render a screen \u2014 so the console read this column as \"\u672a\u6210\u6848\" for every row and the\ndurable reason the ledger holds never reached anyone.\n\nKeyed on `event_id` for the deterministic lane, recovered from the source key the same way the\norder and case projections recover theirs. A source whose key does not round-trip is still listed,\nwith `event_id: null`: the counts above the table include it, and dropping it here would make the\npage's own total disagree with them.",
         "operationId": "get_trading_gate_api_trading_gate_get",
         "responses": {
           "200": {
@@ -7021,10 +6944,10 @@
         ]
       }
     },
-    "/api/trading/orders": {
+    "/api/trading/intents": {
       "get": {
-        "description": "Orders with the case that authored them, plus the cases that never got that far.\n\nBoth halves are needed to describe the lane honestly. A `POLICY_REJECTED` case is where the capital\nfloors actually bite and it has no order to join through, so listing orders alone would make the whole\nrejected population invisible \u2014 the funnel would count them and nothing would be able to name them.\n\n`underlying` accepts either the base symbol (`WIF`) or the full key (`crypto:WIF`); the response carries\nboth so a caller never has to build the key itself.",
-        "operationId": "get_trading_orders_api_trading_orders_get",
+        "description": "Intent outcomes plus cases that did not emit an intent; legacy orders are excluded.",
+        "operationId": "get_trading_intents_api_trading_intents_get",
         "parameters": [
           {
             "in": "query",
@@ -7065,7 +6988,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingOrdersData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingIntentsData_"
                 }
               }
             },
@@ -7082,7 +7005,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Trading Orders",
+        "summary": "Get Trading Intents",
         "tags": [
           "api"
         ]
@@ -7090,7 +7013,6 @@
     },
     "/api/trading/status": {
       "get": {
-        "description": "The capital lane's mandate, readiness and 24 h funnel \u2014 the same facts as CLI `trading status`.\n\nRead-only and configuration-derived. `live_ready` is reported and never offered: a serve process cannot\nobserve the Workers process's startup and canary result, so it says `not_proven` rather than guessing,\nand there is no field here a page could render as a switch (#185 P1-2).",
         "operationId": "get_trading_status_api_trading_status_get",
         "responses": {
           "200": {

@@ -3,8 +3,7 @@
 Provide a migrated, empty, isolated PostgreSQL database named
 ``tracefold_283_live`` plus one *stopped* container whose exact clean-HEAD
 image runs ``tracefold nautilus run`` against it. Mount a test-owned config at
-``/root/.tracefold/config.yaml`` with
-``trading.nautilus.accept_intents: true``, and mount the operator-configured
+``/root/.tracefold/config.yaml`` and mount the operator-configured
 0600 Binance Demo key/secret and Nautilus-role password files at their exact
 container paths, read-only. The container must set
 ``TRACEFOLD_IMAGE_DIGEST`` to that immutable image ID. Then run::
@@ -137,13 +136,6 @@ def _mounted(
     return False
 
 
-def _set_dark(config_path: Path) -> None:
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    config["trading"]["nautilus"]["accept_intents"] = False
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    config_path.chmod(0o600)
-
-
 def _block_projection(conn: Any) -> None:
     conn.execute(
         f"""
@@ -191,7 +183,7 @@ def _create_intent(conn: Any, reference_price: Decimal) -> TradeIntent:
               manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
             ) VALUES (%s, 'crypto:SOL', 'oi', 'oi_smart_money_momentum_v1',
                       'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
-                      '{}'::jsonb, %s, 'ORDER_PREPARED', %s, %s, %s)
+                      '{}'::jsonb, %s, 'INTENT_EMITTED', %s, %s, %s)
             """,
             (intent.case_id, "0" * 64, intent.intent_id, manifest_sha, now_ms, now_ms, now_ms),
         )
@@ -255,7 +247,6 @@ def _preconditions(
         and not inspected["State"]["Running"]
         and inspected["HostConfig"]["RestartPolicy"]["Name"] in {"", "no"}
         and inspected["Config"]["Cmd"] == ["tracefold", "nautilus", "run"]
-        and nautilus_config["accept_intents"] is True
         and config_bound
         and _mounted(inspected, config_path, "/root/.tracefold/config.yaml", read_only=True)
         and _mounted(inspected, key_path, "/root/.tracefold/binance_demo_api_key", read_only=True)
@@ -411,12 +402,11 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         _docker("kill", "--signal", "KILL", container)
         _wait("killed_process", 15, lambda: _running(container), lambda value: not value)
         assert len([row for row in venue.orders(start_ms) if row["clientOrderId"] == entry_id]) == 1
-        _set_dark(config_path)
         _unblock_projection(conn)
         blocked = False
         _docker("start", container)
         protected = _wait(
-            "dark_restart_open_protected",
+            "restart_open_protected",
             90,
             lambda: _outcome(conn, intent.intent_id),
             lambda row: bool(row and row.execution_state == "OPEN_PROTECTED"),
@@ -475,8 +465,6 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
     except BaseException as exc:
         with suppress(Exception):
             conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
-        with suppress(Exception):
-            _set_dark(config_path)
         if blocked:
             with suppress(Exception):
                 _unblock_projection(conn)

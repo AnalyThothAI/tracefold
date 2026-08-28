@@ -8,7 +8,7 @@ import {
 } from "@features/news/api/newsQueries";
 import {
   TRADING_REFETCH_MS,
-  useTradingOrdersWithToken,
+  useTradingIntentsWithToken,
   useTradingStatusWithToken,
 } from "@features/trading/api/tradingQueries";
 import { queryKeys } from "@shared/query/queryKeys";
@@ -80,9 +80,9 @@ describe("query hook category contracts", () => {
       useObservedQuery: () => useNewsEventWithToken("token", null),
     },
     {
-      key: queryKeys.tradingOrders("", ""),
+      key: queryKeys.tradingIntents("", ""),
       name: "missing Trading budget day",
-      useObservedQuery: () => useTradingOrdersWithToken("token", undefined, null),
+      useObservedQuery: () => useTradingIntentsWithToken("token", undefined, null),
     },
   ])("disables conditional queries for $name", ({ useObservedQuery, key }) => {
     expect(captureQueryOptions(useObservedQuery, key).enabled).toBe(false);

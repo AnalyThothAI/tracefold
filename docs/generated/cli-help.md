@@ -17,7 +17,7 @@ positional arguments:
     config              print effective runtime configuration
     db                  database lifecycle commands
     news                News V3 broker, ReviewDesk, and learning commands
-    trading             Trading cases, orders, deny-list, and control (#104)
+    trading             Trading Case -> Intent -> Outcome and safety controls
     ops                 maintenance commands
 
 options:
@@ -835,21 +835,18 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,replay-oi,show,blacklist,approve,reject,resolve,control} ...
+                         {status,cases,replay-oi,show,blacklist,control} ...
 
 positional arguments:
-  {status,cases,replay-oi,show,blacklist,approve,reject,resolve,control}
-    status              mode, control, daily counters, and the 24 h funnel
+  {status,cases,replay-oi,show,blacklist,control}
+    status              Nautilus readiness, intent outcomes, and the daily
+                        funnel
     cases               list Trading cases newest first
     replay-oi           read-only: every parsed OI fact in a window, and the
                         rule each one stopped on (#265)
-    show                one case with its order and remote observations
+    show                one case with its intent and current outcome
     blacklist           the canonical deny-list; one row blocks every provider
                         spelling of that underlying
-    approve             approve one order by its exact payload digest
-    reject              reject one order by its exact payload digest
-    resolve             drain one MANUAL_REVIEW_REQUIRED order after checking
-                        the venue yourself
     control             set the runtime control state
 
 options:
@@ -871,12 +868,12 @@ options:
 
 ```
 usage: tracefold trading cases [-h]
-                               [--state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,ORDER_PREPARED,BLOCKED}]
+                               [--state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,INTENT_EMITTED,BLOCKED}]
                                [--limit LIMIT]
 
 options:
   -h, --help            show this help message and exit
-  --state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,ORDER_PREPARED,BLOCKED}
+  --state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,INTENT_EMITTED,BLOCKED}
   --limit LIMIT
 
 ```
@@ -919,56 +916,6 @@ positional arguments:
 options:
   -h, --help         show this help message and exit
   --reason REASON
-
-```
-
-## `trading approve`
-
-```
-usage: tracefold trading approve [-h] --digest DIGEST order_id
-
-positional arguments:
-  order_id
-
-options:
-  -h, --help       show this help message and exit
-  --digest DIGEST
-
-```
-
-## `trading reject`
-
-```
-usage: tracefold trading reject [-h] --digest DIGEST [--reason REASON]
-                                order_id
-
-positional arguments:
-  order_id
-
-options:
-  -h, --help       show this help message and exit
-  --digest DIGEST
-  --reason REASON
-
-```
-
-## `trading resolve`
-
-```
-usage: tracefold trading resolve [-h] [--reason REASON]
-                                 [--remote-order-id REMOTE_ORDER_ID]
-                                 order_id {closed,open}
-
-positional arguments:
-  order_id
-  {closed,open}
-
-options:
-  -h, --help            show this help message and exit
-  --reason REASON
-  --remote-order-id REMOTE_ORDER_ID
-                        provider entry order identity; required for open
-                        recovery when the ledger has none
 
 ```
 

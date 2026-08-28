@@ -7,7 +7,6 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from decimal import Decimal
 from typing import Any, ClassVar
 
 from pydantic import ValidationError
@@ -18,7 +17,6 @@ from ..candidate.eligibility import (
     Funnel,
     Rejected,
     _uses_current_news_generation,
-    blacklist_rule,
     news_candidate,
     oi_candidate,
 )
@@ -37,38 +35,27 @@ from ..candidate.gate import (
 )
 from ..candidate.routing import resolve_instrument, signal_exchange_id
 from ..contracts import (
-    TRADING_LIVE_PREFLIGHT_MAX_AGE_MS,
     Bar,
     CaseState,
-    ExecutionAdapter,
     FrozenMarketContext,
     FrozenStrategyContext,
     InstrumentRef,
-    LiveExecutionAdapter,
-    MarketContext,
     NewsMarketTrigger,
     NewsTradeCandidate,
     OiMarketTrigger,
     OiTradeCandidate,
-    OrderState,
-    PreparedOrder,
-    RiskRejection,
     TradeDecision,
     TradingCaseManifest,
-    TradingMode,
     TriggerKind,
-    canonical_sha256,
     oi_source_key,
     underlying_key,
 )
 from ..contracts import (
     utc_day_key as _day_key,
 )
-from ..decision.policy import side_to_order_side
 from ..decision.program import TradingDecisionProgram
 from ..decision.regime import assess, pre_move_bps, select_bar
-from ..execution.order import build_payload, size_order
-from ..execution.submission import commit_order
+from ..intent import TradeIntent, is_executable_instrument
 from ..storage.root import TradingRepository
 from ..strategy.root import capital_strategy_id, strategies, strategy_from_manifest
 from ..telemetry import (
@@ -117,14 +104,13 @@ _MAX_CASES_PER_TURN = 4
 # How long a frozen case may wait to be decided. Its own budget, separate from the freshness the
 # candidate rules already spent, so queueing behind another case's model call cannot discard a signal.
 _CASE_DECISION_TTL_MS = 300_000
-_LIVE_PREFLIGHT_MAX_AGE_MS = TRADING_LIVE_PREFLIGHT_MAX_AGE_MS
 # How long an admission decision is kept. The lane persists about 90 OI facts a day, so this is a few
 # thousand rows — small enough that the question "why was there no case last Tuesday" stays answerable.
 _GATE_RETENTION_MS = 90 * 86_400_000
 
 
 class CandidateRunner:
-    """Scan, freeze, decide, prepare, commit. One case at a time; provider concurrency is one."""
+    """Scan, freeze, decide, and atomically publish one immutable Intent."""
 
     work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("derived_work", "capital_truth")
 
@@ -134,7 +120,6 @@ class CandidateRunner:
         db: TradingDatabasePort,
         config: TradingConfig,
         bars: BarFetcherFactory,
-        adapter: ExecutionAdapter,
         candidate_projection: _CandidateProjectionReader,
         instrument_projection: _InstrumentProjectionReader,
         program: TradingDecisionProgram | None = None,
@@ -144,17 +129,10 @@ class CandidateRunner:
         self._db = db
         self._config = config
         self._bars = bars
-        self._adapter = adapter
-        self._live_adapter = adapter if isinstance(adapter, LiveExecutionAdapter) else None
         self._candidate_projection = candidate_projection
         self._instrument_projection = instrument_projection
         self._program = program
-        self._strategies = strategies(
-            allow_short=config.trade.allow_short,
-            min_whale_long_profit_bps=config.trade.min_whale_long_profit_bps,
-            live_min_surprise=config.trade.live_min_surprise,
-            live_max_price_in=config.trade.live_max_price_in,
-        )
+        self._strategies = strategies(min_whale_long_profit_bps=config.trade.min_whale_long_profit_bps)
         # One object holding every number this lane executes on the way in, and its digest is half the
         # durable decision's key: editing a threshold starts a new record rather than rewriting what the
         # previous threshold decided.
@@ -171,7 +149,6 @@ class CandidateRunner:
             clock=clock,
         )
         self._run_id = uuid.uuid4().hex
-        self._live_startup_complete = False
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -214,10 +191,6 @@ class CandidateRunner:
                 "shadow_evaluated": shadow_evaluated,
                 "funnel": funnel.as_dict(),
             }
-        if self._config.mode != "paper" and not await self._ensure_live_startup(funnel=funnel):
-            await self._merge_funnel(funnel, now)
-            return {"skipped": "live_startup_not_ready", "funnel": funnel.as_dict()}
-
         # Every OI source this turn looked at gets exactly one entry here, and the whole map is written
         # once at the end of the turn. `CASE_CREATED` is the exception: it is committed inside the case
         # insert's own transaction, because a case with no admission row — or an admission row naming a
@@ -319,53 +292,6 @@ class CandidateRunner:
         except Exception:
             log.exception("trading candidate gate maintenance failed")
 
-    async def _ensure_live_startup(self, *, funnel: Funnel) -> bool:
-        if self._live_startup_complete:
-            return True
-        live_adapter = self._live_adapter
-        if live_adapter is None:
-            funnel.count("startup_reject:read_capability_unavailable")
-            return False
-        # The canary enables exactly one venue, and source-aligned routing (#211) drops every frame
-        # tagged at a venue the operator has not enabled — so the venue proved flat here is the only
-        # venue a live case can execute at. Enabling a second venue for a live mode would break that
-        # correspondence, which is why `live_reviewed` requires the single-venue configuration.
-        venue = self._config.venue_priority[0]
-        live_symbol = self._config.live_symbol or ""
-        instrument = InstrumentRef(
-            exchange_id=venue,
-            venue="binance.perp" if venue == "binance" else "hl.perp",
-            provider_symbol=live_symbol,
-            base_symbol=live_symbol,
-            instrument_class="crypto",
-            # Startup asks metadata to resolve the unique active swap. Presuming USDT here would
-            # reject a valid non-USDT venue before the provider could return exact instrument truth.
-            quote_asset=None,
-            observed_at_ms=self._clock(),
-        )
-        try:
-            inventory = await observe_provider_call(
-                self._telemetry,
-                name="trading_candidate",
-                source="other",
-                call=live_adapter.startup(instrument=instrument, account_ref=self._config.account_ref),
-            )
-        except Exception:
-            log.warning("trading live startup reconciliation failed")
-            funnel.count("startup_reject:provider_unavailable")
-            return False
-        if inventory.exposures:
-            # The initial canary allows one account-wide position. Unknown/manual exposure is never
-            # adopted or auto-closed, so any remote inventory makes readiness explicitly false.
-            funnel.count("startup_reject:external_exposure")
-            return False
-        if inventory.preflight.observed_account_ref != self._config.account_ref:
-            funnel.count("startup_reject:account_identity_unproven")
-            return False
-        self._live_startup_complete = True
-        funnel.count("startup_ready")
-        return True
-
     async def _merge_funnel(self, funnel: Funnel, now: int) -> None:
         counts = funnel.as_dict()
         if not counts:
@@ -386,15 +312,15 @@ class CandidateRunner:
 
         def _read(repos: Any) -> dict[str, Any]:
             trading: TradingRepository = repos.trading
-            runtime = trading.runtime_state() or {"control": "RUNNING", "day_key": "", "orders_today": 0}
+            runtime = trading.runtime_state() or {"control": "RUNNING", "day_key": ""}
             try:
                 blacklist = Blacklist.from_rows(trading.blacklist_rows())
             except Exception:
                 log.exception("trading blacklist read failed")
                 blacklist = Blacklist.unavailable()
-            orders_today = trading.orders_today(day_key=_day_key(now))
+            entries_today = trading.entry_fences_today(day_key=_day_key(now))
             dspy_calls_today = trading.dspy_calls_today(day_key=_day_key(now))
-            active = set(trading.active_underlyings())
+            active = set(trading.active_intent_underlyings())
             in_flight = set(trading.underlyings_in_flight())
             cased = set(trading.source_keys_since(observed_at_ms=now - window))
             evaluated_liquidations = set(trading.strategy_evaluation_identities_since(cutoff_ms=now - window))
@@ -406,7 +332,7 @@ class CandidateRunner:
             )
             return {
                 "control": runtime.get("control", "RUNNING"),
-                "orders_today": orders_today,
+                "entries_today": entries_today,
                 "dspy_calls_today": dspy_calls_today,
                 "blacklist": blacklist,
                 "active": active,
@@ -554,12 +480,12 @@ class CandidateRunner:
         #
         # Order matters: a News trigger with no OI context is refused above on its own rule. Being
         # told the lane was full would be a different, and wrong, explanation.
-        orders_today = int(state["orders_today"])
-        capped = orders_today >= self._config.order.max_orders_per_day
+        entries_today = int(state["entries_today"])
+        capped = entries_today >= 1
         if capped:
-            funnel.count("scan_skipped:daily_order_cap")
-        elif len(state["active"]) >= self._config.order.max_open_underlyings:
-            funnel.count("scan_skipped:max_open_underlyings")
+            funnel.count("scan_skipped:daily_entry_fence")
+        elif state["active"]:
+            funnel.count("scan_skipped:active_intent")
             capped = True
         if capped:
             # The lane is full, not the source unusable. Every admitted frame still gets its row, or a
@@ -598,7 +524,7 @@ class CandidateRunner:
             "trading_case_seen",
             lambda repos: (
                 repos.trading.has_source_key(primary_source_key=plan.source_key),
-                repos.trading.last_close_at_ms(underlying_key=underlying_key(plan.base_symbol)),
+                repos.trading.last_intent_close_at_ms(underlying_key=underlying_key(plan.base_symbol)),
                 self._instrument_projection(repos, plan.base_symbol, ("binance.perp", "hl.perp")),
             ),
             timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
@@ -710,7 +636,9 @@ class CandidateRunner:
             )
         )
         contexts = FrozenStrategyContext(
-            mode=self._config.mode,
+            # Strategy permission remains the frozen decision-plane vocabulary. Execution is always
+            # Binance USD-M Demo and no longer depends on an operator-selected backend mode.
+            mode="paper",
             oi=plan.oi,
             news=plan.news,
             regime=regime,
@@ -742,7 +670,7 @@ class CandidateRunner:
                     strategy_id=strategy.strategy_id,
                     strategy_version=strategy.strategy_version,
                     strategy_config_digest=strategy.config_digest,
-                    mode=self._config.mode,
+                    mode="paper",
                     primary_source_key=plan.source_key,
                     supplemental_source_keys=plan.supplemental,
                     manifest=manifest.model_dump(mode="json"),
@@ -829,8 +757,8 @@ class CandidateRunner:
         raw_manifest = claimed.get("manifest")
         # #160 is a generation hard cut.  Do this check before Pydantic parsing because the old v1
         # manifest cannot satisfy v2's required upstream identities; letting validation raise would
-        # strand the claimed row in RUNNING until every lease expired.  Only undecided cases reach
-        # this path. Prepared orders are reconciled from their immutable payload and remain untouched.
+        # strand the claimed row in RUNNING until every lease expired. Only undecided Cases reach
+        # this path; emitted Intents are already outside CandidateRunner's ownership.
         if not _uses_current_news_generation(raw_manifest):
             funnel.count("advance_reject:news_generation_retired")
             await self._settle(
@@ -865,23 +793,6 @@ class CandidateRunner:
             funnel.count("advance_reject:case_stale")
             await self._settle(case_id, CaseState.BLOCKED, "no_trade", "case_stale")
             return "case_stale"
-
-        # #21: the mode frozen into the case, not today's configuration. An operator who edits
-        # `mode` while cases are pending must not have a manifest frozen under paper submitted live.
-        case_mode: TradingMode = str(claimed["mode"])  # type: ignore[assignment]
-        if case_mode != self._config.mode:
-            funnel.count("advance_reject:mode_changed")
-            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "mode_changed_since_freeze")
-            return "mode_changed"
-        if case_mode != "paper" and manifest.instrument.base_symbol != self._config.live_symbol:
-            funnel.count("advance_reject:live_symbol_not_allowed")
-            await self._settle(
-                case_id,
-                CaseState.BLOCKED,
-                "no_trade",
-                "live_symbol_not_allowed",
-            )
-            return "live_symbol_not_allowed"
 
         decision: TradeDecision | None = None
         program_version: str | None = None
@@ -941,7 +852,7 @@ class CandidateRunner:
             )
             return outcome.rule
 
-        if outcome.permission == "shadow" or (case_mode == "live_reviewed" and outcome.permission != "live_reviewed"):
+        if outcome.permission == "shadow":
             funnel.count("advance_reject:strategy_permission")
             await self._settle(
                 case_id,
@@ -954,25 +865,51 @@ class CandidateRunner:
             )
             return "strategy_permission"
 
-        # A fresh sample, not the claim instant: `trading_orders.created_at_ms` is the reported
-        # `order_prepared` stage and the model call sits between the two (#211).
-        placed = await self._place(
+        if outcome.decision != "long":
+            funnel.count("advance_reject:intent_side_not_allowed")
+            await self._settle(
+                case_id,
+                CaseState.POLICY_REJECTED,
+                "no_trade",
+                "intent_side_not_allowed",
+                program_version=program_version,
+                program_sha256=program_sha256,
+                program_output=program_output,
+            )
+            return "intent_side_not_allowed"
+        if not is_executable_instrument(manifest.instrument):
+            funnel.count("advance_reject:intent_instrument_not_allowed")
+            await self._settle(
+                case_id,
+                CaseState.POLICY_REJECTED,
+                "no_trade",
+                "intent_instrument_not_allowed",
+                program_version=program_version,
+                program_sha256=program_sha256,
+                program_output=program_output,
+            )
+            return "intent_instrument_not_allowed"
+
+        emitted = await self._emit_intent(
             case_id=case_id,
             manifest=manifest,
-            decision_side=outcome.decision,
-            mode=case_mode,
-            funnel=funnel,
-            now=self._clock(),
-        )
-        await self._settle(
-            case_id,
-            CaseState.ORDER_PREPARED if placed else CaseState.BLOCKED,
-            outcome.decision,
-            outcome.rule if placed else "order_blocked",
+            policy_reason=outcome.rule,
             program_version=program_version,
             program_sha256=program_sha256,
             program_output=program_output,
         )
+        funnel.count("intent_emitted" if emitted else "advance_reject:intent_admission")
+        if not emitted:
+            await self._settle(
+                case_id,
+                CaseState.BLOCKED,
+                "no_trade",
+                "intent_admission_blocked",
+                program_version=program_version,
+                program_sha256=program_sha256,
+                program_output=program_output,
+            )
+            return "intent_admission_blocked"
         return outcome.rule
 
     async def _settle(
@@ -1011,234 +948,55 @@ class CandidateRunner:
             timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
         )
 
-    # ------------------------------------------------------------------ place
-    async def _place(
+    async def _emit_intent(
         self,
         *,
         case_id: str,
         manifest: TradingCaseManifest,
-        decision_side: str,
-        mode: TradingMode,
-        funnel: Funnel,
-        now: int,
+        policy_reason: str,
+        program_version: str | None,
+        program_sha256: str | None,
+        program_output: dict[str, Any] | None,
     ) -> bool:
-        side = side_to_order_side(decision_side)
-        if side is None:
-            return False
-
-        preflight_audit: dict[str, Any] | None = None
-        execution_contract_sha256: str | None = None
-        price_tick: Decimal | None = None
-        hedged = False
-        instrument = manifest.instrument
-        if mode == "paper":
-            market = MarketContext(
-                instrument=instrument,
-                mark_price=manifest.mark_price,
-                observed_at_ms=manifest.cutoff_ms,
-                pre_move_bps=manifest.pre_move_bps,
-                pre_move_lookback_ms=self._config.regime.lookback_ms,
-                spread_bps=None,
-                spread_available=False,
-            )
-        else:
-            if instrument.base_symbol != self._config.live_symbol:
-                funnel.count("risk_reject:live_symbol_not_allowed")
-                return False
-            live_adapter = self._live_adapter
-            if live_adapter is None:
-                funnel.count("risk_reject:live_read_capability_unavailable")
-                return False
-            try:
-                preflight = await observe_provider_call(
-                    self._telemetry,
-                    name="trading_candidate",
-                    source=external_data_source(instrument.exchange_id),
-                    call=live_adapter.preflight(instrument=instrument, account_ref=self._config.account_ref),
-                )
-            except Exception:
-                log.warning("trading live preflight failed")
-                funnel.count("risk_reject:live_preflight_failed")
-                return False
-            if not preflight.venue_healthy:
-                funnel.count("risk_reject:venue_unhealthy")
-                return False
-            preflight_now = self._clock()
-            if preflight.observed_at_ms > preflight_now + _LIVE_PREFLIGHT_MAX_AGE_MS or (
-                preflight_now - preflight.observed_at_ms > _LIVE_PREFLIGHT_MAX_AGE_MS
-            ):
-                funnel.count("risk_reject:live_preflight_stale")
-                return False
-            if (
-                preflight.requested_account_ref != self._config.account_ref
-                or preflight.observed_account_ref != self._config.account_ref
-            ):
-                funnel.count("risk_reject:account_mismatch")
-                return False
-            if preflight.positions or preflight.open_orders:
-                funnel.count("risk_reject:remote_exposure")
-                return False
-            if preflight.leverage != 1:
-                funnel.count("risk_reject:leverage_not_one")
-                return False
-            if not preflight.margin_mode:
-                funnel.count("risk_reject:margin_mode_unknown")
-                return False
-            if preflight.available_balance is None:
-                funnel.count("risk_reject:balance_unknown")
-                return False
-            if preflight.available_balance < self._config.order.fixed_notional_usd:
-                funnel.count("risk_reject:balance_insufficient")
-                return False
-            if preflight.price_tick is None:
-                funnel.count("risk_reject:price_tick_unknown")
-                return False
-            instrument = preflight.instrument
-            hedged = preflight.hedged
-            execution_contract_sha256 = preflight.execution_contract_sha256
-            price_tick = preflight.price_tick
-            preflight_audit = preflight.audit_payload()
-            market = MarketContext(
-                instrument=instrument,
-                mark_price=preflight.mark_price,
-                observed_at_ms=preflight.observed_at_ms,
-                pre_move_bps=manifest.pre_move_bps,
-                pre_move_lookback_ms=self._config.regime.lookback_ms,
-                spread_bps=preflight.spread_bps,
-                spread_available=True,
-                quantity_step=preflight.quantity_step,
-                price_tick=preflight.price_tick,
-                min_quantity=preflight.min_quantity,
-                min_notional=preflight.min_notional,
-                contract_size=preflight.contract_size,
-            )
-        sized = size_order(side=side, market=market, mode=mode, policy=self._config.order)
-        if isinstance(sized, RiskRejection):
-            funnel.count(f"risk_reject:{sized.rule}")
-            return False
-
-        order_id = uuid.uuid4().hex
-        payload = build_payload(
-            instrument_exchange_id=instrument.exchange_id,
-            provider_symbol=instrument.provider_symbol,
-            side=side,
-            quantity=sized.quantity,
-            stop_price=sized.stop_price,
-            take_profit_price=sized.take_profit_price,
-            hedged=hedged,
-            execution_contract_sha256=execution_contract_sha256,
-            price_tick=price_tick,
+        now = self._clock()
+        intent = TradeIntent.create(
+            case_id=case_id,
+            case_manifest_sha256=manifest.digest(),
+            created_at_ms=now,
+            reference_price=manifest.mark_price,
+            target_notional_usd=self._config.fixed_notional_usd,
         )
-        state = OrderState.AWAITING_APPROVAL if mode == "live_reviewed" else OrderState.PREPARED
 
         def _insert(repos: Any) -> bool:
-            repos.trading.lock_account(self._config.account_ref)
-            # The deny-list is re-read here, not only at the top of the turn. `trading blacklist add`
-            # landing a second after a case was frozen used to have no effect on that in-flight case:
-            # the only per-symbol operator lever could not stop work already planned.
-            try:
-                deny = Blacklist.from_rows(repos.trading.blacklist_rows())
-            except Exception:
-                log.exception("trading blacklist re-read failed")
-                deny = Blacklist.unavailable()
-            blocked = deny.blocked(manifest.base_symbol, now_ms=now)
-            if blocked is not None:
-                funnel.count(f"risk_reject:{blacklist_rule(blocked.reason)}")
+            if not repos.trading.insert_intent(intent):
                 return False
-            # Re-check the two count caps *here*, under the account lock and inside the transaction
-            # that inserts. `_plan` reads them once at the top of a turn, which bounds how many cases
-            # are created but not how many orders a single turn places: four cases claimed in one turn
-            # could each place an order past a daily cap of one. The partial unique index only
-            # enforces one order per underlying, so a count cap has to be counted where it is spent.
-            if repos.trading.orders_today(day_key=_day_key(now)) >= self._config.order.max_orders_per_day:
-                funnel.count("risk_reject:daily_order_cap")
-                return False
-            if len(repos.trading.active_underlyings()) >= self._config.order.max_open_underlyings:
-                funnel.count("risk_reject:max_open_underlyings")
-                return False
-            inserted = bool(
-                repos.trading.insert_prepared_order(
-                    order_id=order_id,
-                    case_id=case_id,
-                    underlying_key=manifest.underlying_key,
-                    # The venue is part of the frozen intent, so the row records the one that was
-                    # chosen even in paper. `mode` is what says whether the write was real; storing
-                    # "paper" here would erase which venue the case actually routed to.
-                    exchange_id=instrument.exchange_id,
-                    provider_symbol=instrument.provider_symbol,
-                    account_ref=self._config.account_ref,
-                    mode=mode,
-                    side=side,
-                    notional_usd=str(sized.notional_usd),
-                    quantity=str(sized.quantity),
-                    entry_reference=str(sized.entry_reference),
-                    stop_price=str(sized.stop_price),
-                    take_profit_price=None if sized.take_profit_price is None else str(sized.take_profit_price),
-                    # #209: the two exits that are not prices are frozen here too, so a later config
-                    # edit or redeploy changes the next order and never this one.
-                    max_holding_ms=self._config.order.max_holding_ms,
-                    taker_fee_bps=self._config.order.taker_fee_bps,
-                    payload=payload,
-                    payload_sha256=canonical_sha256(payload),
-                    state=state.value,
-                    must_close_at_ms=None,
-                    now_ms=now,
-                )
+            settled = repos.trading.settle_case(
+                case_id=case_id,
+                run_id=self._run_id,
+                state=CaseState.INTENT_EMITTED.value,
+                policy_decision="long",
+                policy_reason=policy_reason,
+                program_version=program_version,
+                program_sha256=program_sha256,
+                program_output=program_output,
+                now_ms=now,
             )
-            if inserted and preflight_audit is not None:
-                repos.trading.record_observation(
-                    order_id=order_id,
-                    observation_kind="live_preflight",
-                    content_sha256=canonical_sha256(preflight_audit),
-                    content=preflight_audit,
-                    now_ms=now,
-                )
-            return inserted
-
-        try:
-            inserted = await self._db.tx("trading_order_prepare", _insert, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
-        except Exception:
-            log.info("trading order prepare rejected underlying=%s", manifest.underlying_key)
-            funnel.count("risk_reject:active_underlying_index")
-            return False
-        if not inserted:
-            funnel.count("risk_reject:case_already_ordered")
-            return False
-
-        if state is OrderState.AWAITING_APPROVAL:
-            funnel.count("order_awaiting_approval")
+            if not settled:
+                # The caller owns the transaction; raising here rolls the Intent insert back too.
+                raise RuntimeError("trading_intent_case_transition_failed")
             return True
 
-        prepared = PreparedOrder(
-            order_id=order_id,
-            case_id=case_id,
-            underlying_key=manifest.underlying_key,
-            account_ref=self._config.account_ref,
-            instrument=instrument,
-            mode=mode,
-            side=side,
-            notional_usd=sized.notional_usd,
-            quantity=sized.quantity,
-            entry_reference=sized.entry_reference,
-            stop_price=sized.stop_price,
-            take_profit_price=sized.take_profit_price,
-            max_holding_ms=self._config.order.max_holding_ms,
-            taker_fee_bps=self._config.order.taker_fee_bps,
-            payload=payload,
-        )
-        return await commit_order(
-            db=self._db,
-            adapter=self._adapter,
-            order=prepared,
-            count=funnel.count,
-            now=now,
-            observe_call=lambda call: observe_provider_call(
-                self._telemetry,
-                name="trading_candidate",
-                source=external_data_source(prepared.instrument.exchange_id),
-                call=call,
-            ),
-        )
+        try:
+            return bool(
+                await self._db.tx(
+                    "trading_intent_emit",
+                    _insert,
+                    timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+                )
+            )
+        except Exception:
+            log.info("trading intent emission rejected case_id=%s", case_id)
+            return False
 
 
 def scan_horizon_ms(policy: EligibilityPolicy) -> int:

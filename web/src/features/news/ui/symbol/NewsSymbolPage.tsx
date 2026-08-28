@@ -1,7 +1,7 @@
 import {
   TradingSymbolSection,
   tradingLedgerEntries,
-  useTradingOrdersWithToken,
+  useTradingIntentsWithToken,
   type TradingOiLedgerEntry,
 } from "@features/trading";
 import { newsOiPath } from "@shared/routing/paths";
@@ -74,7 +74,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   const feedQuery = useNewsFeedWithToken(token, filters);
   const statusQuery = useNewsStatusWithToken(token);
   /* One batch for both capital sections: `交易视角` reads its newest case and `交易复盘` lists them all. */
-  const tradingQuery = useTradingOrdersWithToken(token, normalized);
+  const tradingQuery = useTradingIntentsWithToken(token, normalized);
   const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
 
   /*
@@ -226,10 +226,10 @@ function count(value: number | undefined): string {
 
 /**
  * When the case observed its source fact. Both halves of the ledger batch answer it, under different names:
- * an order carries the case's own `case_observed_at_ms`, a case row carries `observed_at_ms`.
+ * an intent carries the case's own `case_observed_at_ms`, a case row carries `observed_at_ms`.
  */
 function caseObservedAtMs(entry: TradingOiLedgerEntry): number {
-  return entry.kind === "order"
+  return entry.kind === "intent"
     ? (entry.value.case_observed_at_ms ?? entry.value.created_at_ms)
     : entry.value.observed_at_ms;
 }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from threading import Barrier
@@ -14,6 +16,19 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading.candidate.eligibility import Funnel
+from tracefold.trading.contracts import (
+    FrozenMarketContext,
+    FrozenStrategyContext,
+    InstrumentRef,
+    OiMarketTrigger,
+    OiTradeCandidate,
+    RegimeAssessment,
+    TradingCaseManifest,
+)
+from tracefold.trading.pipeline.candidate import CandidateRunner
+from tracefold.trading.pipeline.runtime import TradingConfig
+from tracefold.trading.strategy.root import strategies
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
@@ -69,6 +84,154 @@ def _allow_entry(connection: Any) -> None:
     )
 
 
+class _RunnerDb:
+    def __init__(self, connection: Any, *, fail_intent_settle: bool = False) -> None:
+        self.connection = connection
+        self.fail_intent_settle = fail_intent_settle
+
+    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
+        del timeout_seconds
+        repos = repositories_for_connection(self.connection)
+        target: Any = repos
+        if name == "trading_intent_emit" and self.fail_intent_settle:
+            trading = repos.trading
+
+            class _TradingProxy:
+                def __getattr__(self, attr: str) -> Any:
+                    return getattr(trading, attr)
+
+                def settle_case(self, **_kwargs: Any) -> bool:
+                    return False
+
+            class _ReposProxy:
+                conn = repos.conn
+                trading = _TradingProxy()
+
+            target = _ReposProxy()
+        with self.connection.transaction():
+            return fn(target)
+
+    async def read(self, _name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
+        del timeout_seconds
+        return fn(repositories_for_connection(self.connection))
+
+
+def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingCaseManifest:
+    strategy = strategies()["oi_smart_money_momentum_v1"]
+    oi = OiTradeCandidate(
+        event_id="event-sol",
+        observed_at_ms=NOW,
+        verdict_created_at_ms=NOW,
+        base_symbol="SOL",
+        venue="binance",
+        oi_direction="rise",
+        oi_change_bps=1_548,
+        oi_value_usd=250_000_000,
+        whale_long_profit_bps=1,
+        whale_oi_ratio_bps=6_000,
+        rank_in_window=1,
+        final_decision="push",
+        source_rule="opening_move_with_whale_concentration",
+        source_strategy_id="oi_5m",
+        source_contract_version="oi_source_v1",
+        measurement_window_ms=300_000,
+        learning_epoch="program_v7",
+        program_version="news_oi_signal_v1",
+        program_sha256="a" * 64,
+        policy_version="news_triage_policy_v10",
+        editorial_origin="telemetry_deterministic",
+        editorial_sha256="b" * 64,
+        scored_judgment_sha256="c" * 64,
+        runtime_manifest_sha="d" * 64,
+        metric_version="oi_signal_v1",
+    )
+    return TradingCaseManifest(
+        primary_trigger=OiMarketTrigger(
+            source_key=oi.source_key,
+            observed_at_ms=NOW,
+            persisted_at_ms=NOW,
+            venue="binance",
+        ),
+        contexts=FrozenStrategyContext(
+            mode="paper",
+            oi=oi,
+            regime=RegimeAssessment(
+                regime="buildup_up",
+                reason="buildup_up",
+                pre_move_bps=200,
+                oi_direction="rise",
+            ),
+            market=FrozenMarketContext(
+                mark_price=Decimal("100"),
+                observed_at_ms=NOW,
+                pre_move_bps=200,
+                pre_move_lookback_ms=3_600_000,
+            ),
+        ),
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_config=strategy.config_snapshot,
+        strategy_config_digest=strategy.config_digest,
+        underlying_key="crypto:SOL",
+        base_symbol="SOL",
+        cutoff_ms=NOW,
+        instrument=instrument
+        or InstrumentRef(
+            exchange_id="binance",
+            venue="binance.perp",
+            provider_symbol="SOLUSDT",
+            base_symbol="SOL",
+            instrument_class="crypto",
+            quote_asset="USDT",
+            observed_at_ms=NOW,
+        ),
+    )
+
+
+def _pending_executable_case(
+    connection: Any,
+    *,
+    manifest: TradingCaseManifest | None = None,
+) -> TradingCaseManifest:
+    connection.execute("TRUNCATE trading_intents, trading_orders, trading_cases CASCADE")
+    manifest = manifest or _executable_manifest()
+    repos = repositories_for_connection(connection)
+    assert repos.trading.insert_case(
+        case_id="case-sol",
+        underlying_key=manifest.underlying_key,
+        trigger_kind=manifest.trigger_kind,
+        strategy_id=manifest.strategy_id,
+        strategy_version=manifest.strategy_version,
+        strategy_config_digest=manifest.strategy_config_digest,
+        mode="paper",
+        primary_source_key=manifest.primary_trigger.source_key,
+        supplemental_source_keys=(),
+        manifest=manifest.model_dump(mode="json"),
+        manifest_sha256=manifest.digest(),
+        regime=manifest.regime.regime.value,
+        observed_at_ms=NOW,
+        source_observed_at_ms=NOW,
+        trigger_persisted_at_ms=NOW,
+        now_ms=NOW,
+    )
+    connection.commit()
+    return manifest
+
+
+def _candidate_runner(connection: Any, *, fail_intent_settle: bool = False) -> CandidateRunner:
+    async def _bars(_symbol: str, _start: int, _end: int) -> tuple[()]:
+        return ()
+
+    return CandidateRunner(
+        db=_RunnerDb(connection, fail_intent_settle=fail_intent_settle),
+        config=TradingConfig(fixed_notional_usd=Decimal("7.5")),
+        bars=lambda _venue: _bars,
+        candidate_projection=lambda *_args: ((), (), ()),
+        instrument_projection=lambda *_args: (),
+        clock=lambda: NOW + 1_000,
+    )
+
+
 def _observe_close(
     repos: Any,
     intent: TradeIntent,
@@ -100,6 +263,64 @@ def _observe_close(
     assert observed.flat_verified_at_ms is None
     assert observed.commissions_by_currency == commissions_by_currency
     return observed
+
+
+def test_candidate_runner_atomically_emits_intent_and_advances_case(conn: Any) -> None:
+    manifest = _pending_executable_case(conn)
+
+    result = asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel()))
+
+    assert result == "smart_money_momentum_long"
+    row = conn.execute(
+        "SELECT c.state, c.policy_decision, i.instrument_id, i.execution_state, i.target_notional_usd "
+        "FROM trading_cases c JOIN trading_intents i ON i.case_id = c.case_id "
+        "WHERE c.case_id = 'case-sol'"
+    ).fetchone()
+    assert dict(row) == {
+        "state": "INTENT_EMITTED",
+        "policy_decision": "long",
+        "instrument_id": "SOLUSDT-PERP.BINANCE",
+        "execution_state": "PENDING",
+        "target_notional_usd": Decimal("7.5"),
+    }
+    assert conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"] == 0
+    stored = repositories_for_connection(conn).trading.intent_for_case(case_id="case-sol")
+    assert stored is not None and stored[0].case_manifest_sha256 == manifest.digest()
+
+
+def test_candidate_runner_rolls_back_intent_when_case_transition_fails(conn: Any) -> None:
+    _pending_executable_case(conn)
+
+    result = asyncio.run(_candidate_runner(conn, fail_intent_settle=True)._advance(funnel=Funnel()))
+
+    assert result == "intent_admission_blocked"
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
+    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert dict(case) == {"state": "BLOCKED", "policy_reason": "intent_admission_blocked"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("exchange_id", "hyperliquid"),
+        ("venue", "hl.perp"),
+        ("provider_symbol", "SOL"),
+        ("base_symbol", "ETH"),
+        ("instrument_class", "equity"),
+        ("quote_asset", "USDC"),
+    ),
+)
+def test_candidate_runner_refuses_every_nonexact_instrument_identity(conn: Any, field: str, value: str) -> None:
+    exact = _executable_manifest().instrument
+    altered = InstrumentRef.model_validate({**exact.model_dump(), field: value})
+    _pending_executable_case(conn, manifest=_executable_manifest(instrument=altered))
+
+    result = asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel()))
+
+    assert result == "intent_instrument_not_allowed"
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
+    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert dict(case) == {"state": "POLICY_REJECTED", "policy_reason": "intent_instrument_not_allowed"}
 
 
 def test_trade_intent_round_trips_as_one_immutable_material_fact(conn: Any) -> None:
@@ -632,6 +853,22 @@ def test_nautilus_poll_and_runtime_heartbeat_share_the_business_row(conn: Any) -
     assert runtime["nautilus_unexpected_exposure"] is False
 
 
+def test_event_projection_selects_the_complete_intent(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    intent = _intent()
+    assert repos.trading.insert_intent(intent) is True
+    conn.commit()
+
+    row = repos.trading.console_case_for_source_key(primary_source_key="source-case-intent-1")
+
+    assert row is not None
+    assert row["valid_until_ms"] == intent.valid_until_ms
+    assert row["created_at_ms"] == intent.created_at_ms
+    assert isinstance(row["updated_at_ms"], int)
+    assert row["case_state"] == "RUNNING"
+
+
 def _case_without_reset(connection: Any, *, case_id: str) -> None:
     connection.execute("UPDATE trading_cases SET state = 'ORDER_PREPARED' WHERE state = 'RUNNING'")
     connection.execute(
@@ -750,6 +987,8 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     )
     assert recovered_unknown is not None
     assert recovered_unknown.commissions_by_currency == {"USDT": "0.02"}
+    unverified_latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
+    assert unverified_latency["position_opened_to_closed_flat"] == {"n": 0}
     assert (
         repos.trading.record_closed_flat(
             intent.intent_id,
@@ -787,6 +1026,8 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     )
     assert closed.flat_verified_at_ms == NOW + 2_200
     assert closed.commissions_by_currency == {"USDT": "0.02"}
+    verified_latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
+    assert verified_latency["position_opened_to_closed_flat"] == {"n": 1, "p50": 1_100, "p95": 1_100}
     assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000) is None
 
 

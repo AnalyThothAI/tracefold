@@ -38,20 +38,17 @@ class TradingStrategy(Protocol):
 
 def strategies(
     *,
-    allow_short: bool = False,
     min_whale_long_profit_bps: int = 9_500,
-    live_min_surprise: int = 2,
-    live_max_price_in: int = 1,
 ) -> dict[StrategyId, TradingStrategy]:
     """No registry lifecycle: this literal map is the complete production strategy set."""
 
     configured: tuple[TradingStrategy, ...] = (
-        cast(TradingStrategy, OiSmartMoneyMomentumStrategy(OiSmartMoneyMomentumConfig(allow_short=allow_short))),
+        cast(TradingStrategy, OiSmartMoneyMomentumStrategy(OiSmartMoneyMomentumConfig(allow_short=False))),
         cast(
             TradingStrategy,
             OiMomentumStrategy(
                 OiMomentumConfig(
-                    allow_short=allow_short,
+                    allow_short=False,
                     min_whale_long_profit_bps=min_whale_long_profit_bps,
                 )
             ),
@@ -60,10 +57,8 @@ def strategies(
             TradingStrategy,
             NewsOiAlignmentStrategy(
                 NewsOiAlignmentConfig(
-                    allow_short=allow_short,
+                    allow_short=False,
                     min_whale_long_profit_bps=min_whale_long_profit_bps,
-                    live_min_surprise=live_min_surprise,
-                    live_max_price_in=live_max_price_in,
                 )
             ),
         ),

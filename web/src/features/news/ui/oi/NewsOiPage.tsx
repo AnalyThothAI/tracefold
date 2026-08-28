@@ -1,6 +1,6 @@
 import {
   useTradingGateWithToken,
-  useTradingOrdersWithToken,
+  useTradingIntentsWithToken,
   useTradingStatusWithToken,
 } from "@features/trading";
 import { newsLeveragePath } from "@shared/routing/paths";
@@ -35,7 +35,7 @@ import "./newsOi.css";
  *
  * Bounded reads: `/api/news/status` for thresholds and 24 h counts, `/api/news/feed` filtered to the
  * deterministic lane for frames, one current-quote batch for the visible assets, and one
- * `/api/trading/orders` batch for exact Event-to-ledger joins.
+ * `/api/trading/intents` batch for exact Event-to-ledger joins.
  *
  * What this page deliberately does not do: it draws no open-interest curve (the provider emits a frame only
  * when its own trigger fires, so there are no samples between them and a line through them would be
@@ -47,7 +47,7 @@ export function NewsOiPage({ token }: { token: string }) {
   const tab = parseOiTab(searchParams.get("oi"));
   const statusQuery = useNewsStatusWithToken(token);
   const feedQuery = useNewsOiFeedWithToken(token, tab);
-  const tradingQuery = useTradingOrdersWithToken(token);
+  const tradingQuery = useTradingIntentsWithToken(token);
   /*
    * The admission ledger for the same window (#269). Its own read rather than a field on the orders
    * batch: it is a different population — every source the lane saw, not the ones that became a case —
@@ -256,11 +256,11 @@ export function NewsOiPage({ token }: { token: string }) {
 const EMPTY_FLOORS = {
   allow_short: false,
   enabled: false,
+  execution_environment: "BINANCE_USDM_DEMO" as const,
   max_price_move_bps: 0,
   min_oi_value_usd: 0,
   min_price_move_bps: 0,
   min_whale_long_profit_bps: 0,
-  mode: "paper",
   pre_move_lookback_ms: 0,
 };
 

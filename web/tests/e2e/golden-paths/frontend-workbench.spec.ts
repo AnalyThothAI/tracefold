@@ -26,7 +26,7 @@ const tradingArchetype = {
   name: "trading",
   path: "/trading",
   ready: (page: Page) => page.locator(".trading-exposure-row").first(),
-  settled: (page: Page) => page.locator(".trading-ladder-row").first(),
+  settled: (page: Page) => page.locator(".trading-case-row").first(),
 } as const;
 
 const symbolArchetype = {
@@ -173,6 +173,7 @@ async function expectTradingOverflowContract(page: Page) {
   const widths = await page.evaluate(() => {
     const route = document.querySelector<HTMLElement>(".center-column");
     const table = document.querySelector<HTMLElement>(".trading-table");
+    const mandate = document.querySelector<HTMLElement>(".trading-mandate");
     return {
       documentClient: document.documentElement.clientWidth,
       documentScroll: document.documentElement.scrollWidth,
@@ -180,12 +181,23 @@ async function expectTradingOverflowContract(page: Page) {
       routeScroll: route?.scrollWidth ?? 0,
       tableClient: table?.clientWidth ?? 0,
       tableScroll: table?.scrollWidth ?? 0,
+      mandateClient: mandate?.clientWidth ?? 0,
+      mandateScroll: mandate?.scrollWidth ?? 0,
     };
   });
   expect(widths.documentScroll).toBe(widths.documentClient);
   expect(widths.routeScroll).toBe(widths.routeClient);
   if ((page.viewportSize()?.width ?? 0) <= 834) {
     expect(widths.tableScroll).toBeGreaterThan(widths.tableClient);
+  }
+  if ((page.viewportSize()?.width ?? 0) <= 767) {
+    expect(widths.mandateScroll).toBeGreaterThan(widths.mandateClient);
+    await expectScrollableToLastMeaningfulElement(
+      page,
+      ".trading-mandate",
+      ".trading-mandate > *:last-child",
+    );
+    await page.locator(".trading-mandate").evaluate((element) => element.scrollTo(0, 0));
   }
 }
 

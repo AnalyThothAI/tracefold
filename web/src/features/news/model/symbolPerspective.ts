@@ -294,7 +294,7 @@ function signedPercent(bps: number): string {
  * shared `oi_gate`, which refuses on `<`. A table that read `>=` everywhere stamped 过地板 on exactly the
  * frames the ledger refused: the shipped smart-money profit floor is 0, and 0 is a refusal there.
  *
- * Keyed by `strategy_id` for the same reason. `/api/trading/orders?underlying=` filters on the name alone,
+ * Keyed by `strategy_id` for the same reason. `/api/trading/intents?underlying=` filters on the name alone,
  * so the newest case can belong to any lane, and the three freeze disjoint `strategy_config` key sets —
  * one lane's rows over another lane's case renders every row 未冻结 and explains nothing.
  */

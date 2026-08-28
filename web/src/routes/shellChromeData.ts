@@ -25,7 +25,7 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/oi$/, "OI 遥测审计"],
   [/^\/news\/leverage$/, "杠杆异动"],
   [/^\/news$/, "事件流"],
-  [/^\/trading$/, "交易 · 模拟仓"],
+  [/^\/trading$/, "交易 · Demo"],
 ];
 
 export type ShellRouteContext = {
@@ -49,7 +49,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   // poll. The sidebar shows the 24 h intake behind the Event feed.
   const newsStatusQuery = useNewsStatusWithToken(session.token);
   /*
-   * The capital lane's mode for the 交易 slot. Its own key and its own 15 s rhythm — the frame reads it
+   * The capital lane's execution environment for the 交易 slot. Its own key and its own 15 s rhythm — the frame reads it
    * so the badge is right on every route, and the trading page shares the same cache entry rather than
    * opening a second poll of the same endpoint.
    */
@@ -91,8 +91,8 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       navCounts: {
         /*
          * The capital lane's own 24 h cases, from the same `/api/trading/status` this shell already reads
-         * for the `PAPER` badge. Every state counts: `POLICY_REJECTED` is a case the lane authored and
-         * refused, and it is most of a normal day — a slot that counted only the ones that reached an order
+         * for the Demo badge. Every state counts: `POLICY_REJECTED` is a case the lane authored and
+         * refused, and it is most of a normal day — a slot that counted only cases that reached an intent
          * would read `0` on a lane that decided ninety-seven times.
          */
         cases: sumCounts(tradingStatusQuery.data?.counts?.cases_by_state),
@@ -102,9 +102,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
         oiFrames: newsStatusQuery.data?.pipeline?.telemetry_received_24h,
       },
       navBadges: {
-        // Uppercased because it is a mode word, not prose: `PAPER` beside 交易 answers "is any of this real
-        // money" before the reader spends a click finding out.
-        tradingMode: tradingStatusQuery.data?.readiness.mode?.toUpperCase(),
+        tradingEnvironment: tradingStatusQuery.data?.readiness.execution_environment,
       },
       outletContext: routeContext,
       topbar: {
@@ -141,15 +139,19 @@ export function topbarFigures(
     const readiness = tradingStatus?.readiness;
     const budget = tradingStatus?.budget;
     return [
-      { label: "MODE", text: readiness?.mode },
+      { label: "AUTHORITY", text: readiness?.execution_authority },
       {
-        label: "LIVE READY",
-        text: readiness?.live_readiness,
-        tone: readiness?.live_ready === false ? "caution" : undefined,
+        label: "ENGINE",
+        text: readiness?.engine_ready
+          ? "READY"
+          : (readiness?.engine_readiness_reason ?? "NOT READY"),
+        tone: readiness?.engine_ready === false ? "caution" : undefined,
       },
       {
-        label: "今日订单",
-        text: budget ? `${budget.orders_today} / ${budget.max_orders_per_day}` : undefined,
+        label: "今日入场",
+        text: budget
+          ? `${tradingStatus?.counts.entries_today ?? 0} / ${budget.max_entries_per_utc_day}`
+          : undefined,
       },
     ];
   }
@@ -211,7 +213,7 @@ function oiDailyFigure(
       ? `成案 · 放行 · ${/^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey.slice(5) : "STALE"}`
       : "今日成案 · 放行",
     // Sparse counter maps omit zeroes; once the status document exists, absence is the ledger's zero.
-    text: `${tradingStatus.counts.funnel_today?.case_created ?? 0} · ${tradingStatus.budget.orders_today}`,
+    text: `${tradingStatus.counts.funnel_today?.case_created ?? 0} · ${tradingStatus.counts.entries_today}`,
     ...(stale
       ? {
           title: dayKey ? `UTC ${dayKey}` : "UTC 日期未知",

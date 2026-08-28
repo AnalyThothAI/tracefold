@@ -45,7 +45,9 @@ test.describe("desktop sidebar navigation", () => {
     await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
     // The mode rides beside the label without renaming the destination (#207 PR-W4).
-    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText("PAPER");
+    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText(
+      "BINANCE_USDM_DEMO",
+    );
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 

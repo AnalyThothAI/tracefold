@@ -51,22 +51,20 @@ def test_trading_status_reports_capability_without_claiming_runtime_readiness() 
     response = json.loads(stdout.getvalue())
     assert exit_code == 0
     data = response["data"]
-    assert data["live_symbol"] is None
-    assert data["nominal_daily_stop_loss_usd"] == "4"
-    assert "worst_case_daily_loss_usd" not in data
-    assert data["execution_backend"] == "disabled"
-    assert data["execution_configured"] is False
-    assert data["live_mode_supported"] is False
-    assert data["live_ready"] is False
-    assert data["live_readiness"] == "not_applicable"
+    assert data["execution_authority"] == "nautilus"
+    assert data["execution_environment"] == "BINANCE_USDM_DEMO"
+    assert data["instrument_id"] == "SOLUSDT-PERP.BINANCE"
+    assert data["target_notional_usd"] == "10"
     # #211: the stage report is keyed by stage and by nothing else — no symbol, event or order id can
     # enter it — and every stage says how much evidence it rests on.
     assert set(data["stage_latency_ms"]) == {
         "source_observed_to_verdict_persisted",
         "verdict_persisted_to_case_created",
-        "case_created_to_order_prepared",
         "case_created_to_case_decided",
-        "order_prepared_to_position_opened",
+        "case_created_to_intent_emitted",
+        "intent_emitted_to_entry_fenced",
+        "entry_fenced_to_position_opened",
+        "position_opened_to_closed_flat",
     }
     assert all(isinstance(stage["n"], int) for stage in data["stage_latency_ms"].values())
 

@@ -8,7 +8,7 @@ from typing import Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .contracts import canonical_sha256
+from .contracts import InstrumentRef, canonical_sha256
 
 TRADE_INTENT_VERSION: Final[Literal["trade_intent_v1"]] = "trade_intent_v1"
 BINANCE_USDM_DEMO: Final[Literal["BINANCE_USDM_DEMO"]] = "BINANCE_USDM_DEMO"
@@ -29,6 +29,13 @@ INTENT_POLICY_PAYLOAD: Final = {
 }
 INTENT_POLICY_SHA256 = canonical_sha256(INTENT_POLICY_PAYLOAD)
 IntentLeg = Literal["entry", "stop", "close"]
+IntentExecutionState = Literal["PENDING", "IN_FLIGHT", "OPEN_PROTECTED", "MANUAL_REVIEW", "TERMINAL"]
+ACTIVE_INTENT_STATES: Final[tuple[IntentExecutionState, ...]] = (
+    "PENDING",
+    "IN_FLIGHT",
+    "OPEN_PROTECTED",
+    "MANUAL_REVIEW",
+)
 IntentReasonCode = Literal[
     "intent_expired",
     "runtime_not_ready",
@@ -56,6 +63,19 @@ RejectedReason = Literal[
     "quantity_unexecutable",
     "risk_denied",
 ]
+
+
+def is_executable_instrument(instrument: InstrumentRef) -> bool:
+    """Whether a frozen Case names the one V1 capital instrument exactly."""
+
+    return (
+        instrument.exchange_id == "binance"
+        and instrument.venue == "binance.perp"
+        and instrument.provider_symbol == "SOLUSDT"
+        and instrument.base_symbol == "SOL"
+        and instrument.instrument_class == "crypto"
+        and instrument.quote_asset == "USDT"
+    )
 
 
 def deterministic_client_order_id(
@@ -170,7 +190,7 @@ class IntentOutcome(BaseModel):
 
     intent_id: str
     engine_identity: str | None = None
-    execution_state: Literal["PENDING", "IN_FLIGHT", "OPEN_PROTECTED", "MANUAL_REVIEW", "TERMINAL"]
+    execution_state: IntentExecutionState
     execution_phase: Literal["ENTRY", "PROTECTION", "EXIT"] | None = None
     terminal_outcome: Literal["EXPIRED", "REJECTED", "CLOSED_FLAT"] | None = None
     reason_code: IntentReasonCode | None = None
@@ -213,15 +233,18 @@ class IntentOutcome(BaseModel):
 
 
 __all__ = [
+    "ACTIVE_INTENT_STATES",
     "BINANCE_USDM_DEMO",
     "INTENT_POLICY_PAYLOAD",
     "INTENT_POLICY_SHA256",
     "INTENT_POLICY_VERSION",
     "TRADE_INTENT_VERSION",
+    "IntentExecutionState",
     "IntentOutcome",
     "IntentReasonCode",
     "ManualReviewReason",
     "RejectedReason",
     "TradeIntent",
     "deterministic_client_order_id",
+    "is_executable_instrument",
 ]

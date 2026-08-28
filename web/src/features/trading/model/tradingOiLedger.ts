@@ -2,14 +2,14 @@ import type {
   TradingCase,
   TradingGate,
   TradingGateDecision,
-  TradingOrder,
-  TradingOrders,
+  TradingIntent,
+  TradingIntents,
 } from "../api/tradingQueries";
 
 import { CASE_STATE_ZH, GATE_STATUS_ZH, REGIME_ZH, gateReasonLabel } from "./tradingLabels";
 
 export type TradingOiLedgerEntry =
-  | { kind: "order"; value: TradingOrder }
+  | { kind: "intent"; value: TradingIntent }
   | { kind: "case"; value: TradingCase };
 
 export type TradingOiLookup = {
@@ -51,7 +51,7 @@ export type TradingOiCellCopy = {
 };
 
 /**
- * Every case and order the ledger batch holds, keyed by `case_id`.
+ * Every case and intent the ledger batch holds, keyed by `case_id`.
  *
  * `case_id` is the ledger's own identity and is always present. `event_id` is not: the server recovers it
  * only when `primary_source_key` round-trips as `oi:{event_id}:{metric_version}`, so a news- or
@@ -60,16 +60,16 @@ export type TradingOiCellCopy = {
  * deterministic OI trigger — which is most of them.
  */
 export function tradingLedgerEntries(
-  trading: TradingOrders | undefined,
+  trading: TradingIntents | undefined,
 ): Map<string, TradingOiLedgerEntry> {
   const result = new Map<string, TradingOiLedgerEntry>();
-  for (const value of trading?.cases_without_orders ?? []) {
+  for (const value of trading?.cases_without_intents ?? []) {
     result.set(value.case_id, { kind: "case", value });
   }
-  // An order supersedes the case row it was authored from; the API returns the two sets disjoint, and
+  // An intent supersedes the case row it was authored from; the API returns the two sets disjoint, and
   // keying both by `case_id` keeps them that way if it ever stops.
-  for (const value of trading?.orders ?? []) {
-    result.set(value.case_id, { kind: "order", value });
+  for (const value of trading?.intents ?? []) {
+    result.set(value.case_id, { kind: "intent", value });
   }
   return result;
 }
@@ -82,14 +82,14 @@ export function tradingLedgerEntries(
  * `tradingLedgerEntries`.
  */
 export function tradingOiLedgerByEventId(
-  trading: TradingOrders | undefined,
+  trading: TradingIntents | undefined,
 ): Map<string, TradingOiLedgerEntry> {
   const result = new Map<string, TradingOiLedgerEntry>();
-  for (const value of trading?.cases_without_orders ?? []) {
+  for (const value of trading?.cases_without_intents ?? []) {
     if (value.event_id) result.set(value.event_id, { kind: "case", value });
   }
-  for (const value of trading?.orders ?? []) {
-    if (value.event_id) result.set(value.event_id, { kind: "order", value });
+  for (const value of trading?.intents ?? []) {
+    if (value.event_id) result.set(value.event_id, { kind: "intent", value });
   }
   return result;
 }
@@ -119,7 +119,7 @@ export function tradingGateByEventId(
  *   拒/过期/待重试 · <named gate reason>   admission refused the frame, and says on which rule
  *   未评估                                 the lane holds no row for it under any gate version
  *   拒 · <policy rule> | <case state>      a case exists and the strategy decided it
- *   多/空 · <order state>                  an order exists
+ *   多 · <intent state>                    an intent exists
  *
  * The gate is consulted only when there is no case: a frame that produced one has an admission row too
  * (`freeze:case_created`), and showing 已开案 where the case's own state belongs would hide the decision.
@@ -147,19 +147,22 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
       return { primary: "已开案", title: gate.case_id ?? "案例不在本批账本内" };
     }
     // 未评估 is a claim about this frame and only the *admission* batch can support it. Reading the
-    // order batch's completeness here would have blamed a truncated order page for a gap in a ledger
-    // that had answered in full, and vice versa.
+    // Intent-read completeness here would have blamed a truncated Intent page for a gap in a ledger that
+    // had answered in full, and vice versa.
     return lookup.gateComplete
       ? { primary: "未评估", title: "资本通道尚未在任何 gate 版本下评估过这一帧" }
       : { primary: "未确认", title: "准入台账批次已截断" };
   }
-  if (lookup.entry.kind === "order") {
+  if (lookup.entry.kind === "intent") {
     const value = lookup.entry.value;
-    const realized = value.realized_bps == null ? "" : ` ${signedBps(value.realized_bps)}`;
+    const realized =
+      value.realized_pnl_amount == null
+        ? ""
+        : ` ${signedAmount(value.realized_pnl_amount, value.realized_pnl_currency)}`;
     return {
-      primary: `${value.side === "buy" ? "多" : "空"} · ${value.state}${realized}`,
+      primary: `多 · ${value.execution_state}${realized}`,
       quadrant: regimeLabel(value.regime),
-      title: `${value.case_id} · ${value.order_id}`,
+      title: `${value.case_id} · ${value.intent_id}`,
     };
   }
   const value = lookup.entry.value;
@@ -173,7 +176,7 @@ export function tradingOiCellCopy(lookup: TradingOiLookup): TradingOiCellCopy {
   };
 }
 
-/** The exact case/order ledger fields shown in the expanded Trading trace. */
+/** The exact Case/Intent/Outcome fields shown in the expanded Trading trace. */
 export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, string]> {
   if (lookup.loadFailed) return [["ledger", "读取失败"]];
   if (!lookup.loaded) return [["ledger", "读取中"]];
@@ -183,7 +186,7 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
       return [
         ["event_id", lookup.eventId],
         // Two batches, two completeness answers, and neither may speak for the other: the case line is
-        // the order batch's, the gate line is the admission ledger's.
+        // the Intent read model's, the gate line is the admission ledger's.
         ["case", lookup.complete ? "未成案" : "未确认（交易账本批次已截断）"],
         ["gate", gateAbsenceNote(lookup)],
         ["join", "只按已发布 event_id；不按 symbol/time 猜"],
@@ -204,7 +207,7 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
       ["join", "只按已发布 event_id；不按 symbol/time 猜"],
     ];
   }
-  if (lookup.entry.kind === "order") {
+  if (lookup.entry.kind === "intent") {
     const value = lookup.entry.value;
     return [
       ["event_id", value.event_id ?? lookup.eventId],
@@ -214,8 +217,11 @@ export function tradingOiTraceEntries(lookup: TradingOiLookup): Array<[string, s
       ["regime", value.regime ? `${regimeLabel(value.regime)} (${value.regime})` : "—"],
       ["policy_decision", value.policy_decision ?? "—"],
       ["policy_reason", value.policy_reason ?? "—"],
-      ["order_id", value.order_id],
-      ["order_state", value.state],
+      ["intent_id", value.intent_id],
+      ["execution_state", value.execution_state],
+      ["execution_phase", value.execution_phase ?? "—"],
+      ["terminal_outcome", value.terminal_outcome ?? "—"],
+      ["reason_code", value.reason_code ?? "—"],
       ["side", value.side],
     ];
   }
@@ -310,6 +316,9 @@ export function policyRuleZh(value: string | null | undefined): string {
   );
 }
 
-function signedBps(value: number): string {
-  return `${value < 0 ? "−" : value > 0 ? "+" : ""}${Math.abs(value)}bps`;
+function signedAmount(value: string, currency: string | null | undefined): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return `${value} ${currency ?? ""}`.trim();
+  const sign = amount < 0 ? "−" : amount > 0 ? "+" : "";
+  return `${sign}${Math.abs(amount)} ${currency ?? ""}`.trim();
 }

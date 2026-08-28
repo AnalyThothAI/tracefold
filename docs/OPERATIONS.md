@@ -16,142 +16,90 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Paper Trading activation (#213)
+### Trading activation and atomic authority cut (#283)
 
-Paper mode uses real persisted News/OI/liquidation facts and real public venue
-bars, then writes simulated entries and exits to the production Trading ledger.
-It never sends an order to an exchange. The browser is therefore showing real
-production pipeline data and durable paper results, not fixture rows; paper
-fills still do **not** prove spread, precision, partial-fill, liquidation, or
-profitability behavior.
+Trading has one production-shaped path and no paper/OpenTrade fallback:
 
-Before enabling it, from the clean primary checkout:
+```text
+Evidence -> Case -> atomic immutable Intent -> Nautilus
+         -> Binance USD-M Demo -> reconciled Outcome
+```
 
-1. run `uv run tracefold config` and confirm the reported path is
-   `~/.tracefold/config.yaml`, `trading.mode=paper`, and no redacted config
-   error is present;
-2. deploy the exact reviewed image at the current Alembic head, which must include
-   the Strategy Kernel migration `20260826_0310`, then require `make status` to pass;
-3. set only `trading.enabled=true`, leaving the mode `paper`, and run
-   `make up` followed by `make status` again;
-4. require `uv run tracefold trading status` to report `enabled=true`,
-   `mode=paper`, and control `RUNNING`; inspect `/api/trading/status` and
-   `/api/trading/orders` without writing through HTTP;
-5. wait for an eligible production trigger. Do not seed a production Case or
-   Order to make the page non-empty. `oi_momentum_v1` and
-   `news_oi_alignment_v1` are the only capital strategies in paper.
+Before enabling Trading, run `uv run tracefold config` and confirm only
+redacted facts: `config_path=~/.tracefold/config.yaml`, the exact
+`BINANCE_USDM_DEMO` / `SOLUSDT-PERP.BINANCE` contract, target notional at
+most 10 USDT, and `credentials_configured=true`. Never print or copy either
+credential. The dedicated Demo account must be NETTING/one-way, 1x, and contain
+no external SOLUSDT position or order.
 
-The first enabled worker turn durably registers both liquidation strategy
-identities; any older frame is refused from the holdout. Every later live
-Strategy 2000 frame should create two shadow evaluation rows and zero
-cases/orders. After the one-hour horizon plus the next 5-minute close, status
-should move fully measured cohorts from evaluated to completed. The report must show all six
-horizons; 5s/30s/1m and funding currently appear as named missing data because
-the source is 5-minute trade-price closes. Cohorts are separated by strategy,
-venue and liquidity bucket and include bootstrap, MFE/MAE and cost assumptions.
-Event-study v3 owns those research exit/cost assumptions as constants; editing
-the capital Order configuration cannot rewrite a pending evaluation.
-Their promotion gate must remain false with source/coverage/cost reasons;
-changing the YAML cannot
-override the code-owned `shadow` permission. To stop new paper cases without
-losing audit history, restore `trading.enabled=false` and redeploy. Existing
-paper orders remain ledger facts and should be allowed to reconcile/close under
-the reviewed rollback procedure rather than being deleted.
+On a fresh database, `tracefold init` and `make up` create the Nautilus
+password and role with the other runtime roles. For an existing volume that
+predates `20260828_0316`, stop the entire stack and run
+`make db-provision-nautilus-role` once; it is offline-only.
 
-Before deploying #129, remove the retired
-`news.triage.deadline_seconds` key from the operator config. The typed schema
-rejects it; each route deadline is code-owned by the Program factory.
+The one-time PR 2 cutover from the PR 1 dark slice is:
 
-Before deploying #160, remove every retired policy-v9 action/priority key from
-`news.policy`: `escalate_magnitude`, `min_push_magnitude`,
-`min_watchlist_magnitude`, `unclear_push_min_magnitude`,
-`unclear_push_event_types`, `high_priority_escalates`,
-`noise_veto_max_magnitude`, `noise_veto_respects_gate_priority`, and
-`contested_push_min_magnitude`. Run `uv run tracefold config` against
-`~/.tracefold/config.yaml` and report only its redacted result. There is no
-compatibility alias.
+1. Set Trading control to `PAUSED`. Do not stop Nautilus; it must retain
+   authority over any already-fenced lifecycle.
+2. Update `~/.tracefold/config.yaml` to the PR 2 contract before running the new
+   CLI or image: remove the retired `mode`, `live_symbol`, `account_ref`,
+   `venues`, `opentrade`, and `nautilus.accept_intents` keys. Preserve the
+   strategy/gate values, `trading.enabled`, `trading.order.fixed_notional_usd`
+   (`0 < value <= 10`), and the two Nautilus Demo secret-file paths. Run
+   `uv run tracefold config`; unknown retired keys fail closed.
+3. Confirm the current Nautilus `/readyz` is green. Its startup reconciliation
+   must have proved the exact Demo account/instrument configuration,
+   authoritative venue flat, and no unexpected exposure.
+4. Run `make trading-hard-cut-preflight` from the clean primary checkout. It
+   fails unless control is `PAUSED`, exactly one Nautilus Compose replica
+   exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
+   zero, nonterminal Intents are zero, and legacy active/unknown Orders are
+   zero.
+5. Deploy the exact reviewed image at Alembic head `20260828_0317`. Both
+   `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
+   the full preflight before migration or service shutdown; the migration then
+   repeats the three database drain predicates in its transaction before
+   revoking the legacy writer.
+6. Run `make status`, then `uv run tracefold trading status`. Require one
+   healthy Nautilus replica, `execution_authority=nautilus`,
+   `execution_environment=BINANCE_USDM_DEMO`, exact instrument, current
+   heartbeat, `engine_ready=true`, and `unexpected_exposure=false`.
+7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
+   Intent; there is no `accept_intents` flag or per-order approval.
 
-Issue #185 PR-C2 implements the reviewed OpenTrade write lifecycle but does not
-make configuration equivalent to provider readiness. A configured
-`live_reviewed` lane must use one venue, a non-empty owner-private regular
-non-symlink token file (normally mode `0600`, at most 16 KiB),
-one explicit `trading.live_symbol`, notional at most 10 USD, one open
-underlying and one order per day. `trading status` shows
-`execution_backend=opentrade_reviewed`, `live_mode_supported=true`,
-`live_ready=false`, and `live_readiness=not_proven`: the CLI cannot infer the
-Workers process's account/metadata/position-mode/inventory receipt. The database
-accepts an approval only during the 60 s window from order creation. A valid
-approval near the end of that window remains due for one 30 s reconcile cadence,
-and the runner still requires a fresh no-drift preflight immediately before the
-write; rejection there is expected fail-closed behavior and must record zero
-provider attempts. An `APPROVED` row without the C2 approval marker has no
-provable approval instant and rejects without a write after upgrade.
-`live_bounded` is rejected at settings
-validation and again at composition. If a partially filled tracked entry still
-appears in provider open orders, reconciliation enters manual review and sends
-no position close: the remaining entry could otherwise fill after the filled
-slice was closed. Cancel or otherwise settle the entry at the venue, then let a
-fresh provider read prove it terminal before resolving the manual row.
-Provider redirects are ambiguous writes even when their body says rejection;
-they never release the daily attempt charge or active-underlying slot.
-A live ticker must identify the exact exchange and provider symbol selected by
-metadata and carry a millisecond timestamp within the 10-second preflight
-freshness window. Missing, cross-market, stale, seconds-unit or future ticker
-facts disable that attempt before sizing or any provider write.
-A provider rejection with explicit zero fill also remains ambiguous when the
-same snapshot contains any current open order or correlated position history
-that cannot be fully attributed to the tracked lifecycle.
-Same-symbol opening trades from the provider's lookback are scoped to the
-current order's frozen instrument/preflight time. Only a valid timestamp proven
-inside the composite snapshot's seven-day millisecond bounds and earlier beyond
-the tolerated 30-second provider clock skew is ignored. Missing timestamps stay
-conflicting; malformed, seconds-unit, too-old or future values invalidate the
-observation.
-The same rule applies to unmatched reverse-side or reduce-only trades: a current
-closing trade means the preceding position quantity may already be stale, so
-reconciliation enters manual review and sends no close. Only closing history
-proven earlier than the lifecycle cutoff is ignored.
-When a lost entry response reaches manual review with no remote identity, use
-`tracefold trading resolve <order-id> open --remote-order-id <provider-id>` only
-after confirming that exact order and position at the venue. The command
-persists the identity before protection/max-holding reconciliation resumes. A
-known provider identity is immutable: supplying a different ID rejects the
-resolution and leaves the order in manual review.
+Do not seed a production Case or Intent to make the console non-empty. A normal
+source must produce the Case, and only the exact frozen long/non-shadow SOL Case
+may emit an Intent.
 
-### Nautilus Binance Demo dark slice (#283 PR 1)
+After the hard cut, `make up` and `make deploy-image` refuse enabled Trading
+without both secure Demo credential files. They start Nautilus only for enabled
+Trading. `make status` requires exactly one healthy/readiness-passing replica.
+The browser and HTTP surface are read-only Case -> Intent -> Outcome views at
+`/api/trading/intents`.
 
-PR 1 installs one optional `tracefold nautilus run` process but does not cut
-over the current Trading writer. Its normal config remains
-`trading.nautilus.accept_intents=false`; RabbitMQ is not involved. Before first
-start, confirm `uv run tracefold config` names
-`~/.tracefold/config.yaml`, reports the exact
-`SOLUSDT-PERP.BINANCE` instrument, and reports only the redacted Demo
-`credentials_configured=true`. Never print the two credential files. The
-dedicated Demo account must be One-way, 1x, and free of external positions or
-orders; startup checks account mode once, and Nautilus reconciliation checks
-the remaining venue state before readiness. The redacted credential result is
-the code-owned optional-process selector: configured credentials start the dark
-process even while `accept_intents=false`; missing credentials keep it absent.
+If an Intent reaches `MANUAL_REVIEW`, an entry outcome is unknown, protection
+cannot be proved, or flat cannot be proved:
 
-On a fresh database, `tracefold init` and `make up` create the Nautilus password
-and role with the other runtime roles. For an existing PostgreSQL volume that
-predates migration `20260828_0316`, stop the whole stack and run the offline
-`make db-provision-nautilus-role` once before `make up`; the command refuses a
-running Compose container. With both secure Demo credential files present,
-`make up` starts Nautilus with the other application processes. Subsequent
-`make up` and `make deploy-image` recreate it—even after `make down` removed its
-container—and verify the same image; `make status` includes its health/readiness
-and `make logs` includes its logs. Without configured credentials, an absent
-container remains a valid PR 1 dark state. The opt-in real Demo
-closure/restart drill is `tests/live/test_nautilus_binance_demo.py`; use its
-isolated database/config/container contract rather than seeding a production
-Intent or adding a bypass CLI.
+- immediately set `PAUSED` or `CLOSE_ONLY` to block new entry fences;
+- leave Nautilus running so query/protection/full-close reconciliation
+  continues;
+- do not start a legacy writer, submit a manual replacement through Tracefold,
+  or mark the row closed from local inference;
+- treat fresh targeted venue proof of zero position plus terminal/canceled
+  owned legs as the only `CLOSED_FLAT` proof.
 
-If execution reaches `MANUAL_REVIEW` or flat cannot be proven, do not start the
-legacy writer or submit another entry. Leave Nautilus running so it can continue
-query/protection/exit reconciliation, block new fences with Trading
-`PAUSED`/`CLOSE_ONLY`, and treat a fresh targeted venue-zero result as the only
-flat terminal proof.
+Rollback is permitted only while the venue is authoritatively flat and only to
+an image compatible with the live schema. A non-flat incident must roll
+forward: Nautilus remains the sole authority until exposure is protected or
+closed.
+
+The deterministic PostgreSQL acceptance lane is `make trading-smoke`; it
+proves atomic Case/Intent handoff, fences, restart/outcome projection, and
+role constraints, not venue behavior. The opt-in real Demo closure/restart
+drill is `tests/live/test_nautilus_binance_demo.py`; use its isolated
+database/config/container contract and exact committed image. Its terminal is
+`DEMO_CLOSED_FLAT`, otherwise the run must preserve the recoverable state and
+report failure or `MANUAL_REVIEW`.
 
 ## Operator lifecycle
 
@@ -169,7 +117,8 @@ CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
-also recreates Nautilus when the effective config reports Demo credentials; it
+also recreates exactly one Nautilus process when Trading is enabled; enabled
+Trading without both Demo credential files fails before services are stopped. It
 does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
 password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
@@ -183,8 +132,8 @@ contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. If the Demo credentials are configured, Nautilus health
-and readiness must also pass; otherwise status reports the expected dark state.
+HTML console all pass. When Trading is enabled, exactly one Nautilus container,
+its health, and its readiness must also pass; disabled Trading does not require it.
 It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
@@ -282,12 +231,12 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the cold loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
-     when Trading is enabled, trading-candidate and trading-reconcile;
+     when Trading is enabled, trading-candidate;
      workers-control
 ```
 
-The five cold loops (#75 instruments, #88 quotes and Event Reactions, #104's
-two Trading runners) admit their database work through the one-slot
+The four cold loops (#75 instruments, #88 quotes and Event Reactions, and
+#104's CandidateRunner) admit their database work through the one-slot
 heavy-business lane, never the four News hot-path slots, so neither a price
 backlog nor a Trading backlog can starve a live Event. Their
 provider calls are bounded (quotes: one batch per source per turn — the #109 day
@@ -729,8 +678,10 @@ Start from `uv run tracefold trading status`:
   vocabulary is closed; anything outside it is a bug, not a new rule.
 - `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of
   admission. A recent source with no recent `CASE_CREATED` is an admission
-  question; a recent case with no `latest_order_prepared_at_ms` is a strategy or
-  a risk question.
+  question; a recent Case with no `latest_intent_emitted_at_ms` is a strategy or
+  atomic admission question. Compare `latest_entry_fenced_at_ms`,
+  `latest_position_opened_at_ms`, and `latest_position_closed_at_ms` only after
+  an Intent exists.
 
 For one frame, `GET /api/trading/events/{event_id}?lane=oi` returns the decision
 with its `gate_evidence` — the measurement it failed on and the threshold it

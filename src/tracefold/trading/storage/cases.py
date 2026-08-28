@@ -76,9 +76,9 @@ class CaseStorage:
     def claim_case(self, *, run_id: str, lease_ms: int, now_ms: int) -> dict[str, Any] | None:
         """Take the oldest claimable case under a short lease.
 
-        A `RUNNING` case whose lease expired may be reclaimed: re-running an undecided case is safe.
-        Re-sending a prepared or submitted economic intent is not, and the proposal/order uniqueness —
-        not the lease — is what prevents that.
+        A `RUNNING` Case whose lease expired may be reclaimed: re-running an undecided Case is safe.
+        Emitted Intents are outside this claim query; the atomic state transition, not the lease,
+        prevents duplicate execution authority.
         """
 
         row = self.conn.execute(

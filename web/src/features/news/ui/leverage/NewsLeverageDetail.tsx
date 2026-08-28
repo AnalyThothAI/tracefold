@@ -1,4 +1,9 @@
-import { ORDER_STATE_NOTE, policyRuleZh, stopVerified, type TradingOrder } from "@features/trading";
+import {
+  INTENT_STATE_NOTE,
+  policyRuleZh,
+  stopVerified,
+  type TradingIntent,
+} from "@features/trading";
 import { newsOiPath, tradingPath } from "@shared/routing/paths";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import { useState } from "react";
@@ -43,7 +48,7 @@ export function NewsLeverageDetail({
   symbolHref: string;
 }) {
   const [plane, setPlane] = useState<Plane>("t0");
-  const order = item.entry.kind === "order" ? item.entry.value : null;
+  const intent = item.entry.kind === "intent" ? item.entry.value : null;
   const planes = leveragePlanes(item, quote?.price ?? null, Date.now());
   const timeline = leverageTimeline(item);
   const gaps = item.evidence
@@ -61,15 +66,10 @@ export function NewsLeverageDetail({
         <span className="news-leverage-regime">{item.regime}</span>
         <span className="news-leverage-detail-verdict">
           <b data-decision={item.decision}>{DECISION_LABEL[item.decision].big}</b>
-          {/*
-           * The case's own frozen `mode`, not the strategy's current published `permission`. The artifact
-           * puts a permission word beside the verdict because 「LONG」 and 「LONG, on paper」 are different
-           * claims; reading it live would relabel every case in the window the moment a strategy was
-           * promoted, including ones that only ever ran on paper — the exact confusion the chip exists
-           * to prevent.
-           */}
-          <span className="news-leverage-permission" title="这个案例当时被允许做到哪一步">
-            {item.mode.toUpperCase()}
+          {/* Read from the Intent, or the code-owned Demo contract before emission. Historical strategy
+              permission never selects an execution backend. */}
+          <span className="news-leverage-permission" title="资本通道执行环境">
+            {item.executionEnvironment}
           </span>
           <span className="news-leverage-phase" data-phase={item.phase}>
             {PHASE_LABEL[item.phase]}
@@ -82,7 +82,7 @@ export function NewsLeverageDetail({
           <small>{setupLabel(item)}</small>
           <p>{item.why}</p>
           <small>失效条件 · INVALIDATION</small>
-          <p>{invalidationSentence(item, order)}</p>
+          <p>{invalidationSentence(item, intent)}</p>
         </div>
         {/* The artifact's five rows. `case_id` used to hold the third slot and is now in the trace behind
             the fold: it is an identifier, not an answer, and it was the one row here nobody reads. */}
@@ -139,7 +139,7 @@ export function NewsLeverageDetail({
 
       <div className="news-leverage-columns">
         <div className="news-leverage-timeline">
-          <small>时间线 · TRIGGER → STRATEGY → CASE → ORDER</small>
+          <small>时间线 · TRIGGER → STRATEGY → CASE → INTENT → OUTCOME</small>
           {timeline.map((step) => (
             <div key={step.key}>
               <span aria-hidden data-tone={step.tone} />
@@ -153,37 +153,40 @@ export function NewsLeverageDetail({
         </div>
         <div className="news-leverage-capital">
           <small>资本闭环 · 查看，不下单</small>
-          {order ? (
+          {intent ? (
             <>
               <div className="news-leverage-capital-head">
-                <code>{order.order_id}</code>
-                <span data-state={order.state}>{order.state}</span>
+                <code>{intent.intent_id}</code>
+                <span data-state={intent.execution_state}>{intent.execution_state}</span>
               </div>
               <KeyValue>
                 <KeyValueRow
-                  k="订单"
-                  v={`${order.mode} ${order.side === "buy" ? "买入" : "卖出"} ${order.quantity} @ ${order.entry_reference}`}
+                  k="Intent"
+                  v={`${intent.execution_environment} 多 ${intent.target_notional_usd} USD @ ${intent.reference_price}`}
                 />
                 <KeyValueRow
                   k="止损"
-                  v={`${order.stop_price}${stopVerified(order) ? " · 原生止损已证明" : " · 保护未证明"}`}
+                  v={`${intent.stop_price ?? "—"}${stopVerified(intent) ? " · 原生止损已证明" : " · 保护未证明"}`}
                 />
-                <KeyValueRow k="状态说明" v={ORDER_STATE_NOTE[order.state] ?? order.state} />
+                <KeyValueRow
+                  k="状态说明"
+                  v={INTENT_STATE_NOTE[intent.execution_state] ?? intent.execution_state}
+                />
               </KeyValue>
-              <Link to={tradingPath()}>打开模拟仓 ›</Link>
+              <Link to={tradingPath()}>打开执行台账 ›</Link>
             </>
           ) : (
             <p>
               {/*
                * `item.rule` is the ledger's raw reason everywhere else on this pane — the timeline note and
                * the 策略 · 规则 cell both print it verbatim — so it is translated in exactly one place, and a
-               * case with no recorded reason says that rather than rendering `未成单：—。`
+               * case with no recorded reason says that rather than rendering `未形成 Intent：—。`
                */}
               {item.decision === "pending"
                 ? "判定未完成，不形成资本意图——永不预下单。"
                 : item.rule === "—"
-                  ? "未成单：账本没有记录停在哪条规则上。"
-                  : `未成单：${policyRuleZh(item.rule)}。`}
+                  ? "未形成 Intent：账本没有记录停在哪条规则上。"
+                  : `未形成 Intent：${policyRuleZh(item.rule)}。`}
             </p>
           )}
         </div>
@@ -233,21 +236,18 @@ function setupLabel(item: LeverageCase): string {
 /**
  * What would end this case, from the ledger rather than from a sentence nobody wrote.
  *
- * The stop is only described as *working* when the ledger has proven it. `stopVerified` recognises exactly
- * `OPEN` — the one state with both a filled position and a read-back reduce-only stop covering it — and
- * every other state is a frozen intent. Telling an operator that crossing `stop_price` will trigger a
- * native stop on a `PREPARED`, `ACKNOWLEDGED` or `UNPROTECTED` order is false risk assurance on precisely
- * the rows that may carry exposure with no working protection (#185 P0-3).
+ * The stop is only described as working when Nautilus has written `OPEN_PROTECTED`, proving both the
+ * position and a venue-native reduce-only stop covering it. Every other state is still unproved.
  *
  * A `no_trade` case has nothing to invalidate — there is no position — and saying so is more useful than
  * leaving the field blank, which reads as missing data rather than as an answer.
  */
-function invalidationSentence(item: LeverageCase, order: TradingOrder | null): string {
+function invalidationSentence(item: LeverageCase, intent: TradingIntent | null): string {
   if (item.decision === "no_trade") return "—（no_trade 无持仓可失效）";
-  if (!order) return "判断形成后给出。";
+  if (!intent) return "判断形成后由原子事务写入 Intent。";
   const hold =
-    order.must_close_at_ms == null ? "最长持有从首笔成交起算，尚未起算" : "或最长持有到期强制平仓";
-  return stopVerified(order)
-    ? `价格穿过 ${order.stop_price} 触发原生止损，${hold}。`
-    : `预设止损 ${order.stop_price}；账本尚未证明交易所持有对应的原生止损（${order.state}），${hold}。`;
+    intent.opened_at_ms == null ? "最长持有从首笔成交起算，尚未起算" : "或最长持有到期强制平仓";
+  return stopVerified(intent)
+    ? `价格穿过 ${intent.stop_price} 触发交易所原生止损，${hold}。`
+    : `预设止损 ${intent.stop_price ?? "—"}；账本尚未证明交易所原生保护（${intent.execution_state}），${hold}。`;
 }

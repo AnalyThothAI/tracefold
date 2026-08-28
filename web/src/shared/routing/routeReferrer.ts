@@ -19,7 +19,7 @@ const REFERRER_LABELS: Array<[RegExp, string]> = [
   [/^\/news\/oi$/, "OI 遥测审计"],
   [/^\/news\/leverage$/, "杠杆异动"],
   [/^\/news$/, "事件流"],
-  [/^\/trading$/, "交易 · 模拟仓"],
+  [/^\/trading$/, "交易 · Demo"],
 ];
 
 const FEED_REFERRER: RouteReferrer = { label: "事件流", to: "/news" };

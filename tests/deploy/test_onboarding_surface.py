@@ -53,7 +53,9 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
   if [ -n "${TRACEFOLD_TEST_ROLE_PROVISION:-}" ]; then printf '%s\\n' "$*" > "$TRACEFOLD_TEST_ROLE_PROVISION"; fi
   case "$*" in
     *"--entrypoint tracefold migrate config"*)
-      printf '%s' '{"ok":true,"data":{"trading":{"nautilus":{"credentials_configured":'
+      printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
+      printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
+      printf '%s' ',"nautilus":{"credentials_configured":'
       printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
       printf '}}}}\\n'
       ;;
@@ -63,6 +65,8 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
+    *to_regclass*) printf '%s\\n' "$TRACEFOLD_TEST_SCHEMA_STATE" ;;
+    *alembic_version*trading_cases_state_check*) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATION_STATE" ;;
     *) printf '%s\\n' "$TRACEFOLD_TEST_DB_HEAD" ;;
   esac
   exit 0
@@ -143,14 +147,16 @@ if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "scripts/with_deployment_
   exec python3 scripts/with_deployment_lock.py "$@"
 fi
 if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
-  printf '%s' '{"ok":true,"data":{"trading":{"nautilus":{"credentials_configured":'
+  printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
+  printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
+  printf '%s' ',"nautilus":{"credentials_configured":'
   printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
   printf '}}}}\\n'
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
-    *credentials_configured*) shift 2; exec python3 "$@" ;;
+    *credentials_configured*|*trading*enabled*) shift 2; exec python3 "$@" ;;
   esac
 fi
 case "$*" in
@@ -190,6 +196,8 @@ esac
         "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
+        "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260828_0317|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -198,6 +206,7 @@ esac
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
+        "TRACEFOLD_TEST_TRADING_ENABLED": "false",
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
         "TRACEFOLD_TEST_ROLE_PROVISION": str(tmp_path / "role-provision"),
     }
@@ -215,7 +224,7 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     targets = {line.split(maxsplit=1)[0] for line in result.stdout.splitlines() if line}
 
     assert result.returncode == 0, result.stderr
-    assert {"up", "status", "logs", "down", "db-provision-nautilus-role"} <= targets
+    assert {"up", "status", "logs", "down", "db-provision-nautilus-role", "trading-hard-cut-preflight"} <= targets
     assert {
         "docker-up",
         "docker-status",
@@ -381,9 +390,62 @@ def test_up_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
     assert not external_activity.exists()
 
 
+def test_trading_hard_cut_preflight_proves_one_ready_replica_and_drained_ledgers(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+
+    result = subprocess.run(
+        ["make", "trading-hard-cut-preflight"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "venue flat, PAUSED, ledgers drained, one Nautilus replica" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("replica_present", "cut_state", "message"),
+    (
+        (False, "PAUSED|0|0|0", "exactly one Nautilus replica; found 0"),
+        (True, "RUNNING|0|0|0", "observed RUNNING|0|0|0"),
+        (True, "PAUSED|1|0|0", "observed PAUSED|1|0|0"),
+        (True, "PAUSED|0|1|0", "observed PAUSED|0|1|0"),
+        (True, "PAUSED|0|0|1", "observed PAUSED|0|0|1"),
+    ),
+)
+def test_trading_hard_cut_preflight_fails_closed(
+    tmp_path: Path,
+    replica_present: bool,
+    cut_state: str,
+    message: str,
+) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    if replica_present:
+        env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = cut_state
+
+    result = subprocess.run(
+        ["make", "trading-hard-cut-preflight"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
 def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
 
     result = subprocess.run(
         ["make", "up"],
@@ -398,17 +460,121 @@ def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path)
     assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize(
-    ("credentials_configured", "expected_ok", "expected_message"),
-    (("true", False, "nautilus: missing or stopped"), ("false", True, "nautilus: not configured (dark slice)")),
-)
-def test_status_uses_demo_credentials_as_nautilus_process_switch(
+def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading hard-cut preflight passed" in result.stdout
+    assert services_stopped.exists()
+
+
+def test_up_refuses_the_pr2_migration_when_the_automatic_preflight_fails(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|0|0|0"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "observed RUNNING|0|0|0" in result.stderr
+    assert not services_stopped.exists()
+
+
+def test_db_migrate_automatically_enforces_the_pr2_preflight(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading hard-cut preflight passed" in result.stdout
+
+
+def test_db_migrate_does_not_invent_a_cutover_for_a_fresh_database(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_SCHEMA_STATE"] = "fresh"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Fresh database: no PR 1 execution authority exists to cut over" in result.stdout
+
+
+@pytest.mark.parametrize("target", ("up", "deploy-image"))
+def test_deploy_refuses_enabled_trading_without_demo_credentials_before_stopping_services(
     tmp_path: Path,
+    target: str,
+) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    command = ["make", target]
+    if target == "deploy-image":
+        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
+
+    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode != 0
+    assert "Trading is enabled but Binance Demo Nautilus credentials are not configured" in result.stderr
+    assert not services_stopped.exists()
+
+
+@pytest.mark.parametrize(
+    ("trading_enabled", "credentials_configured", "expected_ok", "expected_message"),
+    (
+        ("true", "true", False, "nautilus: expected exactly one replica, found 0"),
+        ("true", "false", False, "Trading enabled but Demo credentials are not configured"),
+        ("false", "false", True, "nautilus: not required (Trading disabled)"),
+    ),
+)
+def test_status_requires_one_nautilus_for_enabled_trading(
+    tmp_path: Path,
+    trading_enabled: str,
     credentials_configured: str,
     expected_ok: bool,
     expected_message: str,
 ) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
 
     result = subprocess.run(
@@ -427,6 +593,7 @@ def test_status_uses_demo_credentials_as_nautilus_process_switch(
 def test_exact_image_deploy_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
 
     result = subprocess.run(
         ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],

@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/orders`, `/api/trading/gate`, and `/api/trading/events/{event_id}` over HTTP. Every one of them is a read: since #256 the browser has no write path at all — the ReviewDesk page and its two mutation endpoints are gone, and `lib/api/client.ts` no longer exposes a `postApi`, so "the console cannot write" is true by construction rather than by convention. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench with one read-only Trading view. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/intents`, `/api/trading/gate`, and `/api/trading/events/{event_id}` over HTTP. Every one of them is a read: since #256 the browser has no write path at all — the ReviewDesk page and its two mutation endpoints are gone, and `lib/api/client.ts` no longer exposes a `postApi`, so "the console cannot write" is true by construction rather than by convention. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -105,330 +105,42 @@ the route components into the eager shell chunk.
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
   exactly `事件流`, `杠杆异动`, `交易` and `OI 遥测审计`, backed by `/news`,
-  `/news/leverage`, `/trading` and `/news/oi`, in two groups: `Workbench` is
-  where a reader does something with what the pipeline produced,
-  `System · 数据健康` is where they check whether the pipeline is telling the
-  truth (#256). `学习复盘` held a fourth slot until #256
-  removed it outright — see below. `/news/status`
-  is still a route and still reads the same endpoint, but it holds no
-  navigation slot: a healthy pipeline makes it a click that answers "everything
-  is fine", and the topbar health lamp brings the failing item's own sentence to
-  every page instead. It
-  lives in the sidebar at tablet width and above and in the bottom tab bar
-  below it (#87) — one `APP_NAVIGATION_GROUPS` model, two presentations, and no
-  route renders a second section switcher. Event
-  detail lives at `/news/events/:eventId`, highlights `事件流` in the navigation
-  rather than being a destination of its own, and carries a `RouteBackLink`
-  to the feed it came from. The retired `/news/brief`, `/news/sources`,
-  and `/news/stories/:storyId` routes, hooks, fixtures, and CSS are deleted;
-  they resolve through the standard not-found route with no redirect. There is
-  one operator-bound product and no reader-personalized or user-adjustable
-  threshold. OpenNews admission is the exact configured account Strategy
-  allowlist; the browser neither displays the private Strategy IDs nor
-  reimplements provider rules, Gate admission, Triage, or storyline throttling.
+  `/news/leverage` is `杠杆异动` (#256): the capital lane's reading of the
+  same deterministic frames `/news/oi` audits. It reads the OI feed, one
+  `/api/trading/intents` batch, `/api/trading/status`, and the selected
+  symbol's quote. The audit asks whether a source cleared the News/Gate path;
+  this page asks which frozen Case the capital lane decided, whether it emitted
+  an Intent, and what Outcome Nautilus has proved.
 
-  There is no `/news/review` and no ReviewDesk surface in the browser (#256).
-  The #112 desk was the console's only write path, its only four-view route and
-  its only page that manufactured nothing a read could answer; the v7 artifact
-  drops it, and the lane it fed did not need a browser. `tracefold news review
-  queue | evidence | submit | accept-drafts | external-miss` is the whole
-  ReviewDesk contract now, appending to the same `news_reviews` rows the
-  learning lane reads. The public route and generated HTTP contracts keep the
-  route and every browser write verb out.
+  The lane is enumerated by `case_id`, never inferred from symbol/time.
+  `event_id` is only a nullable join hint for deterministic OI source keys.
+  An Intent entry supersedes its authoring Case in the list; a Case without an
+  Intent remains visible with its named terminal rule. URL state owns selected
+  Case and tab.
 
-  Current quotes are a separate 15 s query (`/api/news/quotes`) keyed by the
-  sorted symbol batch, never a feed field: a price that changed must not
-  invalidate the feed's ETag or re-run its count query. A quote renders its
-  venue, price kind and age; a stale one stays on screen marked `陈旧` and an
-  unavailable or unlisted one says so in words. Market direction uses the
-  mainland `--dir-bullish` / `--dir-bearish` tokens (red up, green down) for
-  *actual* returns only, told apart from the model's judgment by weight — the
-  judgment is a filled chip, the outcome is plain figures. Feed asset chips
-  show `现价 · 24H`; Event detail keeps the fuller current-quote table. Pipeline outcome
-  colours stay blue/amber/grey and are never repurposed. A pending horizon says
-  `未到期`; nothing missing is ever drawn as `0.00%`.
+  The detail keeps trigger-time, current quote, and Outcome as three labelled
+  fact planes. Its timeline is exactly
+  `TRIGGER -> STRATEGY -> CASE -> INTENT -> OUTCOME`. The capital block is
+  read-only and shows immutable Demo/instrument/notional/reference identity,
+  current execution state, stop evidence only when
+  `OPEN_PROTECTED` plus exact protected quantity proves it, and terminal
+  PnL/fees only when the ledger publishes them. Missing evidence is named;
+  neither the browser nor elapsed time promotes an execution state.
 
-  Feed query state is URL-owned and mirrors the server contract exactly. The visible controls own `outcome`
-  (`pushed|held|pending|all`, in the order `已推送 / 被拦截 / 处理中 / 全部`), `hours`
-  (`1|24|168`), comma-separated `direction` (`bullish|bearish|neutral`) and comma-separated `channel`
-  (`news|listing|oi|liquidation|unsupported_market`, rendered as
-  `新闻 / 上币/下币 / OI 帧 / 强平 / 未支持市场`). The legacy `family`, `admission`, `decision` and `symbol` query fields remain valid for linked
-  surfaces and old bookmarks but have no second control in the Event-feed toolbar. Absent or invalid
-  `outcome` falls back to `pushed`; absent or invalid `hours` falls back to 24. The default request is
-  `limit=25`, `hours=24`, `outcome=pushed`, with no direction or channel filter. Topbar search writes `q` on `/news`;
-  the browser never resolves tokens or symbols itself. The backend searches Event text/title, reporting origin,
-  raw/canonical symbols, venue and venue symbol,
-  and filters before cursor pagination. Direction and channel are multi-select buttons in one compact
-  disclosure; its trigger reads `筛选 · N` while active and the disclosure exposes one `清除` action that
-  removes only direction and channel, preserving search, outcome and time. Selected 利多 / 利空 controls use
-  their direction tokens rather than the pipeline accent. The time window is a Radix three-item radio menu,
-  not a native select. Radix owns
-  Arrow/Home/End/Escape focus semantics and returns focus to the trigger on dismissal.
-  Pagination is an explicit `加载更多事件` action, loaded pages deduplicate by
-  `event_id`, and there is no automatic infinite scroll. A refreshed first
-  page inserts new Events at the top when the reader is already there; when
-  the reader is scrolled away, the route preserves the viewport and shows a
-  bounded new-item affordance that returns to the top.
-
-  The Feed header renders a 24 h funnel card
-  (`采集 / 已解析 / 过门禁 / 已审稿 / 已推送` from `funnel_24h` as five
-  `Metric` tiles, plus one conversion sentence) and nothing else. It carries no
-  health pill of its own: pipeline health is the topbar lamp, which is on every
-  route rather than this one, and two pills on one screen saying the same thing
-  is one of them the reader learns to skip (#207).
-
-  The card carries no proportion bar. It used to draw four segments that were
-  differences between layers counted two different ways — `candidates` by
-  `opened_at_ms`, `triaged` by verdict `created_at_ms` — so at the window edge
-  it read a few percent short and needed a paragraph to explain itself. The
-  proportions live on `/news/status`, where the same numbers get a full-width
-  bar and a sentence naming the biggest drop. Every figure here is a
-  `funnel_24h` field or the difference between two of them. This legacy `parsed`
-  means the transport/envelope parser, so it equals the Event population; strict
-  source-contract parsing is reported separately under
-  `pipeline.source_contracts_24h.parsed/parse_failed`. `admitted` is the actual
-  count whose Gate admission belongs to the admitted set. All five figures use Events opened in the same 24 h cohort; `triaged` and `delivered`
-  ask whether each Event in that cohort has a durable Triage verdict and sent first delivery. The independent
-  rolling judgment and delivery ledgers remain health/throughput facts and do not leak into the funnel. The summary may
-  still name `tagged - grounded` as the instrument-universe warning, but it is not one of the five stages.
-
-  The task tabs carry the server's `counts` for the current filter and window
-  (`total / pushed / held / pending`), so an empty tab is visible without
-  visiting it. Counts come only from the API — the browser never derives them
-  from the loaded page — and a paged request reuses the first page's.
-
-  A visible `TIME / EVENT / OUTCOME` header precedes one flat chronological list. Feed rows (`NewsEventRow`)
-  are `when · what · one outcome` on a
-  `54 / 1fr / 150` grid, tiered by that outcome: the local `HH:MM` of
-  `opened_at_ms` (full timestamp and relative time in the title), the Triage
-  `headline_zh` (falling back to `title_zh`, then `leader_title`) as the two-line
-  primary headline linking to `/news/events/:eventId`, the original wire line
-  clamped to one line when it differs, and a meta line of exactly four things —
-  reporting origin `·` `direction_zh` `·` the compact source-kind badge `·` up
-  to three asset chips with `+N` for the rest. Magnitude and the merged-report
-  count are real facts but belong to the Event rather than to a scan; both are
-  one click away in the drawer and on the Event's own page. A chip renders
-  the durable, resolved Event projection in `assets[]` as `venue:SYMBOL` plus
-  current price and rolling 24H change when `listed`, and
-  inside a dashed amber box with the ticker struck through when it is not
-  (#87). That box is the only frame allowed in a meta line, precisely so it
-  cannot be read as one more listing. Whether a tag names something real is the
-  server's answer; the browser owns no symbol table. `grounded_assets` stays on
-  the payload as raw provider/Gate evidence. Server `assets[]` entries render
-  even when that evidence is empty; only an unmatched grounded tag is appended
-  as an unlisted fallback.
-
-  The source-kind badge reads only the server's durable `event_kind` and maps
-  its five values to `新闻 / 上币/下币 / OI 帧 / 强平 / 未支持市场`; it never infers kind from
-  admission, title, verdict type or whether an OI block happens to exist. The
-  same badge appears beside the outcome on Event detail.
-
-  The 3px left rail is the *market call*, not the pipeline state: red for
-  利多, green for 利空, and both at 45% on a held row. The pipeline's own state
-  lives in the right column as a word, because a coloured pill on every row
-  draws a vertical band the reader stops seeing. A row renders exactly one
-  `NewsOutcomeBadge` as plain text; queue scheduling metadata never changes
-  reader loudness. A held row keeps its word in quiet grey with
-  the server's `reason_zh` under it; on a phone the card drops the held badge
-  entirely, since roughly three quarters of a day's Events are held and a grey
-  capsule on each of those cards is the screenful of equals this rule exists to
-  prevent. `reason_zh` is shown on every row that has one; delivered time is only the fallback when the
-  server supplied no reason. Rows never render admission, family, asset class,
-  decision, rule, throttle, or score keys; `data-outcome`,
-  `data-outcome-group` and `data-direction` are styling hooks
-  only. Missing values are omitted, never rendered as placeholder copy. The
-  whole row opens the Event through a stretched headline link — one accessible
-  name, no click handler on the article itself. At 1366×720 the target is at
-  least four rows, at 390×844 about two, with no horizontal overflow.
-
-  Rows carry hour headings (#256): a thin `--accent-band` strip reading
-  `01:00 — 02:00` with the run's own `N 条`, from the local hour of
-  `opened_at_ms`. It is `aria-hidden` because every row already announces its
-  own full timestamp. Today the headings mark consecutive runs of the order the
-  server returned, and the strip gains a `08-21` prefix once the loaded page
-  spans more than one day — otherwise two `03:00` headings three days apart read
-  as one, which is the only thing here that would actually mislead. How much
-  more a group becomes — collapsible, countable, a selection unit — is open.
-
-  Rows have no expansion caret, Reaction column, bulk-label checkbox or hover-only review action. The
-  canonical detail and drawer remain one click away.
-
-  Keyboard: the route binds nothing. There is no reading cursor, no `Space`
-  expand, no digit tab keys and no `<kbd>` hint row — every action is a real
-  control the pointer and the tab order both reach. What is left is the
-  platform's own behaviour: `Tab` walks the controls, `Enter` submits the search
-  form, and Radix closes the drawer on `Esc`. Feed-tab counts remain in each tab's accessible name, matching
-  the approved control; sidebar counts stay decorative and cannot rename their route links.
-
-  Two more things exist only to keep the reader's place. New first-page Events
-  are held back while the reader is scrolled away and offered as a pulsing
-  `N 条新事件 · 回到顶部` capsule; when they land they flash once, so a reader
-  already at the top sees which rows are new without re-reading the list.
-  Feed rows are deliberately not a labeling surface. A production judgment is
-  made only from a sampled, evidence-versioned ReviewDesk task, so there is no
-  row selection, bulk label action, clipboard command, or `X` shortcut.
-
-  From 1024px up, a plain click on a row opens the Event in a *non-modal*
-  drawer beside the list instead of replacing it: the queue stays on screen and
-  clicking the next row swaps what the drawer shows instead of closing it.
-  Opening moves focus into the panel; `Esc` and the icon-labelled 关闭 control return focus to the last row
-  used to open or swap it. The row's
-  `href` is still real, so a modified click, a middle click and every assistive path go to the page. The
-  compact drawer follows source → wire title → priced assets → `why_zh` → `判定链路`; the first two raw facts
-  for each of the four judgment steps remain visible without a disclosure. Its sticky footer owns
-  `打开事件详情` and the primary token-page link. Current quote tables, `技术详情`, `同类报道`, every raw verdict
-  record and delivery detail stay on the full page, which remains the canonical, shareable surface. Below 1024px there
-  is no drawer and a row opens the page.
-
-  `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders,
-  in fixed order: a toolbar (`RouteBackLink` to the feed the reader came from
-  plus `上一条` / `下一条` and `i / n`); the hero, whose 3px left rail is the
-  direction and whose contents are the `event_kind` badge and `outcome` badge beside its `reason_zh`,
-  the publication time with the end-to-end figure, the Triage `headline_zh` as
-  `h1`, `title_zh` when it differs, the direction chip with its magnitude and
-  the asset chips, the `当前报价` table, `why_zh` as a callout, the
-  `类型 / 范围 / 把握 / 新颖度 / 可操作 / 受众` verdict grid, the model's own
-  primary/mentioned assets, and the original wire line with its origin, merged
-  report count and link; the `符号归一` block when the server sends a
-  `normalization[]` group that actually collapses several names into one
-  `base_symbol` (#87), which is what makes the normalized storyline identity legible; the
-  `事件后反应` card; then a two-column band — the timeline
-  (`这条新闻经历了什么`) over the server `timeline[]`, one `summary_zh`
-  sentence per step with `+Δ` from the previous step, an end-to-end figure on
-  the card, and the raw `facts` behind an `展开字段` toggle — beside
-  `同类报道` (members: time, title, origin, 首条/归并, original link); and a
-  collapsed `技术详情` disclosure that holds `event_id`, `storyline_key`,
-  family, admission, engine/ingest mode, grounded assets, provenance, every
-  verdict record (versions, model, rule keys, `verdict` and `trace` JSON),
-  delivery records with receipts, and member ids with match kind/Jaccard.
-
-  The pager walks the cached feed for the search string the row travelled with;
-  a cold URL has no such list and the pager renders nothing rather than
-  inventing an order. Every duration on the page is two server timestamps
-  subtracted. Internal identifiers do not appear above the fold. The browser
-  does not recompute any verdict, decision, or delivery state, and it writes
-  nothing anywhere. Event detail still renders the 人工复盘 card — whether a human
-  has judged this Event, and the accepted conclusion, from
-  `/api/news/events/{event_id}.review` — because `tracefold news review submit`
-  still appends those judgments. What went with the retired page is the link
-  into it, not the fact.
-
-  `/news/status` reads `/api/news/status` and renders four thresholded
-  health cards plus a `标的表快照` card. That card renders the whole
-  `instruments` summary — trading contracts, base symbols, venues, last
-  snapshot time, per-venue and per-class counts, and `dangling_aliases` — and
-  is not a fifth health card because the snapshot loop's *per-venue* failures
-  live in the worker process and are never persisted, so there is no venue
-  health to show. `dangling_aliases` is the one figure the server states a
-  target for (it should be 0: a seed alias pointing at a symbol no venue lists
-  resolves to nothing, silently, which is how `1810.HK -> XIAOMI` went
-  unnoticed for a week), so it takes the caution tone the moment it is not
-  zero. The card renders every field the summary carries, so a field the
-  server adds cannot go unnoticed the way `by_class` and `dangling_aliases`
-  did. The health cards are
-  (`Ingest / Broker / Model / Delivery` as the eyebrow, from
-  `health.*`: a 2px top edge in the level colour, the level word, `summary_zh`,
-  `detail_zh`, and two server numbers each — four cards in one panel so the
-  coloured edges line up and a screenful is comparable at a glance, with no bar
-  and no badge), an overall pill (`总体正常/注意/异常`), the 24 h funnel
-  (`funnel_24h`, each layer linking to the matching feed tab, with one sentence
-  naming the layer that loses the most), the reason ranking (`reasons_24h`
-  grouped by stage with `label_zh` bars — never raw keys; the `ungrounded`
-  stage lists provider tags that name nothing, where the tag *is* the label
-  because inventing the English word it collided with would be a guess),
-  the watchlist chips, and a
-  collapsed `技术指标` disclosure with the raw pipeline/ingest/broker facts (latency
-  percentiles, queue depths, incidents, counters). No layer computes a second health
-  state; thresholds are the server's. There is no control panel at all: the
-  pause/mute plane was removed after it never withheld a card in the whole
-  retained history — and no source inventory and no Brief. It also lists the
-  four OI telemetry counters (`telemetry_received / parsed / parse_failed /
-  push_24h`) among the raw counters; the gate-by-gate breakdown belongs to the
-  destination that owns that lane.
-
-  `/news/leverage` is `杠杆异动` (#256): the capital lane's reading of the same
-  deterministic frames `/news/oi` audits. Two questions, two pages — the audit
-  asks whether a frame parsed, cleared the push gates and took a window slot;
-  this one asks what the capital lane then decided, on which named rule, and
-  what happened to the money. They use different thresholds, so merging them
-  would let a reader carry a push decision into a trading one, and each page
-  names the other in its own caption.
-
-  It is a list of case cards beside one case in full, from three reads it shares
-  with pages already making them — `/api/news/feed?admission=telemetry_deterministic`,
-  one `/api/trading/orders` batch, and `/api/news/status` for the capital floors
-  — plus `/api/news/quotes` for the selected case.
-
-  The lane is enumerated from the ledger and keyed by `case_id`, never by
-  `event_id`. The server publishes an `event_id` only where `primary_source_key`
-  round-trips as `oi:{event_id}:{metric_version}` — the deterministic OI trigger
-  — so a news- or liquidation-triggered case carries `null` by design, its source
-  key being a content hash no Event id rebuilds. Keying the list by `event_id`
-  dropped every one of them, and the page told the operator 「24 小时内没有成案」
-  while nine sat in the ledger. The frame is attached by `event_id` when the
-  loaded frame page holds it and is decoration either way: it carries the wire
-  line and the OI measurements, not the case's identity. A frame that authored no
-  case is still not listed, because that whole population is the audit's.
-  Selected case and tab are URL-owned (`?case=` — a `case_id` —, `?lev=live|directional|no_trade|done`).
-
-  The phase of a case is read from the ledger's own states, never from elapsed
-  time. The evidence matrix has exactly four states — 支持 / 冲突 / 缺失 /
-  不适用 — and `缺失` is the most common and most load-bearing: the pre-frame 1 h
-  move, funding and liquidity are inputs the capital lane consumes and does not
-  publish, so the rows say so rather than being dropped, which would read as
-  "everything checked out". An unconfigured (zero) floor is 不适用, never a pass.
-  The three fact planes — 触发时 / 现在 / 结果 — are separate tabs and not one
-  table, because a frozen cutoff figure beside a live quote invites subtracting
-  one from the other and calling the difference a return.
-
-  The page is cut to the v8 artifact's measurements (#280): a `336px` list beside
-  a pane that takes the remainder, the list sticky and scrolling inside itself,
-  the pane one panel with ruled sections rather than a stack of cards, and the
-  title row carrying five `标签 数字` figures — 数据新鲜 / 活跃案例 / 有方向 /
-  数据不足 / 资本警报 — on the heading's own baseline. 数据新鲜 reads the newest
-  loaded frame and turns caution past thirty minutes, about three expected frames
-  for a lane that runs a hundred a day; 资本警报 counts the same four order states
-  `leverageOrder` floats to the top. The lane's own 24 h funnel sits under the
-  cases rather than over them, and it is rendered once the status read has
-  answered — including when it answered with a failure, since 读取失败 and 0 帧 are
-  different days — because its zeroes would otherwise describe a request still in
-  flight.
-
-  Two deliberate departures from the artifact. There is no thesis sentence:
-  `oi_momentum_v1` is a pure rule and writes no narrative, and
-  `program_output.decision.thesis_zh` exists only for the model lane, so the page
-  names the rule (`policyRuleZh`, the same map the OI table's 交易判定 cell uses)
-  instead of paraphrasing a decision nobody wrote. And it binds no keys: #82 cut
-  the console's keyboard layer whole, and the cards are real buttons in the tab
-  order. The artifact's
-  「N 个新案例到达 · 点击合并」 pill is likewise absent: selection is URL-owned by
-  `?case=`, so an arriving case cannot move what the pane is showing.
-
-  Two facts in the pane's header are read off the case, never off today's
-  configuration, and both were the same bug before #280 closed them. The
-  permission beside the verdict is the case's frozen `mode` — `LONG` and
-  `LONG, on paper` are different claims, and reading `strategies[].permission`
-  live relabelled every case in the window the moment a strategy was promoted,
-  including ones that only ever ran on paper. 预期窗口 is likewise the span the
-  order actually froze, `must_close_at_ms − position_opened_at_ms`; a case that
-  never opened a position has no frozen window and falls back to the mandate's
-  `budget.max_hold_ms` *labelled as the current budget*, rather than presenting a
-  standing rule as that case's own. Behind 原始证据与技术详情 the provider line
-  sits beside `leverageTrace`, the ledger row verbatim; `case_id` lives there
-  rather than in the key/value block above, which is where the artifact puts an
-  identifier.
 
   `/news/oi` is `OI 遥测审计` (#207, #137, #256): the deterministic open-interest lane,
   which is roughly a fifth of the day's volume and is judged by rule rather than
   by the model. It reads bounded endpoints — `/api/news/status` for
   `oi.policy`, `oi.by_rule_24h` and `oi.trade_floors`,
   `/api/news/feed?admission=telemetry_deterministic&hours=24` for the frames,
-  one `/api/news/quotes` batch for the visible resolved assets, and one
-  `/api/trading/orders` batch for capital-lane cases and orders. It renders
+  one `/api/news/quotes` batch for the visible resolved assets, one
+  `/api/trading/intents` batch for Case/Intent outcomes, and
+  `/api/trading/gate` for named admission decisions. It renders
   the 24 h telemetry band, two compact side-by-side policy panels, and the frame
   table; the old standalone rank-occupancy card and visible source footers are not part of this scan surface.
-  The Trading panel reads `enabled`, `mode`, and `allow_short` from those floors so a disabled lane is
-  labelled as disabled and the direction tile never hard-codes a policy the runtime is not using.
+  The Trading panel reads the server's enabled state, exact Demo environment,
+  long-only direction and floors, so a disabled lane is labelled as disabled
+  and the browser invents no execution policy.
 
   The frame table's four tabs (`全部 / 已推送 / 未达阈值 / 解析失败`) filter
   server-side through `?oi=pushed|withheld|parse_failed` and take their counts
@@ -501,7 +213,7 @@ the route components into the eager shell chunk.
   and how the frame's measurements compare with the floors. 交易复盘 lists every
   case in the window, and expanding a row shows the named rule beside the frozen
   `strategy_config` it was decided against. Both read one
-  `/api/trading/orders?underlying=` batch, so they share a poll, and the frame is
+  `/api/trading/intents?underlying=` batch, so they share a poll, and the frame is
   attached by the `event_id` the ledger itself published — never by symbol and
   time, the join the OI audit refuses to guess at.
 
@@ -521,7 +233,7 @@ the route components into the eager shell chunk.
   today's configuration.
 
   The floor table is keyed by `strategy_id`, and each row carries the operator
-  its own strategy refuses on. `/api/trading/orders?underlying=` filters on the
+  its own strategy refuses on. `/api/trading/intents?underlying=` filters on the
   name alone, so this token's newest case can belong to any lane, and the three
   freeze disjoint `strategy_config` key sets — one lane's rows over another
   lane's case label every row 未冻结 and explain nothing. Inclusivity is per key
@@ -549,12 +261,12 @@ the route components into the eager shell chunk.
   table each carry three states — the lane opened no case, the batch has not
   come back yet, the batch failed — because rendering all three as the first
   makes the strongest possible positive claim exactly when the page knows least.
-  The two halves of that batch also have different windows: cases are bounded at
-  `window_hours`, active orders are unbounded in time by design, so neither
+  The two halves of that batch also have different windows: Cases are bounded at
+  `window_hours`, active Intents are unbounded in time by design, so neither
   section calls the batch 「这个窗口」 without naming both.
 
   Both sections name every endpoint they read in their `NewsSourceLine`. 交易视角
-  joins the case to its frame, so it declares `/api/trading/orders` *and*
+  joins the Case to its frame, so it declares `/api/trading/intents` *and*
   `/api/news/feed → events[].oi`; the identity band declares the two endpoints
   its three tiles come from beside the one its contracts do. A card that names
   one of two sources points an auditing reader at a response that does not carry
@@ -569,11 +281,10 @@ the route components into the eager shell chunk.
   shared 600 bps ceiling and its own 1000. Reading it there told an operator the
   ledger had recorded no reason, over a manifest that had recorded one.
 
-  The 案例状态 column carries `case_state` for both halves of the batch. Case
-  states and order states are disjoint vocabularies, so an order row putting its
-  own `CLOSED` there rendered an order fact, in English, under a case heading —
-  and `CLOSED` is not a case state at all. The order's own state stays in the
-  订单 column, where order facts belong.
+  The Case column carries `case_state` for both halves of the batch. Case and
+  Intent execution states are disjoint vocabularies: the next columns separately
+  show Intent identity/state and the proven Outcome, so neither is mislabeled as
+  a Case transition.
 
   Two things the artifact draws that this lane cannot answer. `thesis_zh` and
   `invalidation_zh` are not written by a pure rule — the same finding #256
@@ -590,81 +301,31 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is 交易 · 模拟仓 (#207 PR-W4, #104, #185, #213): a production
-  ledger against a fake exchange. Its triggers and market bars are real; its
-  entries and exits are simulated. It reads `/api/trading/status` for the
-  mandate, readiness, capital-strategy funnel, source-admission ledger, and
-  liquidation shadow cohorts,
-  and `/api/trading/orders` for the exposure, the closes and the cases that
-  stopped before authoring an intent — both halves, because a
-  `POLICY_REJECTED` case is where the capital floors actually bite and has no
-  order to join through.
+  `/trading` is the read-only `Case -> Intent -> Outcome` workbench for the
+  sole Binance USD-M Demo execution path. It reads `/api/trading/status` and
+  `/api/trading/intents`; the page has no action, mode switch, approval,
+  resend, resolve, or alternate backend affordance.
 
-  The page opens on the mandate band, as the v8 artifact draws it (#280): those
-  five figures are what one order is allowed to be, and they are the same five
-  whether the lane placed three orders today or none. The 今天怎么样 readout that
-  explains a quiet day (#273) sits directly under it, above the first zero it
-  explains, rather than above the mandate that does not change. The exposure and
-  closed tables use the artifact's tracks; both had been cut narrower, which
-  ellipsised the order state and the sentence beside it — the two columns that
-  carry the page's whole claim — without removing the scroll it was meant to save.
+  The header and five-cell mandate band state the exact execution authority,
+  environment, instrument, configured notional, today's entry fences, and
+  current nonterminal Intent count. The readiness stamp names UTC budget day,
+  runtime control, and whether Nautilus is ready; unexpected exposure or an
+  unready engine uses the caution tone without inventing a diagnosis.
 
-  The funnel starts before the case. Its first two rows — `上游帧` and `过准入` —
-  come from `counts.candidate_counts_24h`, the durable admission ledger, and the
-  rows below them are the ledger's own UTC budget day; each row names its own
-  clock rather than the card averaging two intervals into one label. Beside it
-  the `未成案的来源帧` card lists `counts.candidate_reasons_24h` descending, each
-  entry rendering the `stage:reason` key verbatim beside its Chinese, the way
-  `policy_reason` already does. Source admission and strategy refusal stay two
-  panels: a frame refused before a manifest could be frozen and a case a
-  strategy declined are different stages, and one list holding both taught a
-  reader that 成案 and 有交易 were the same thing (#264). An empty ledger says
-  which kind of empty it is — no frames in 24 h, or none ever recorded.
+  The body has three ledger sections. Fresh/Active Intent contains
+  `PENDING | IN_FLIGHT | OPEN_PROTECTED | MANUAL_REVIEW`; Terminal Outcome
+  contains only `TERMINAL` rows and prints the exact outcome plus PnL/currency
+  when known; Cases without Intent contains decided Cases and their named
+  policy rule. Each row keeps Case, immutable Intent, and Outcome facts distinct.
+  `OPEN_PROTECTED` is the only state whose native fixed-quantity protection
+  has been venue-proven. `MANUAL_REVIEW` is unresolved authority evidence, not
+  a prompt for the browser to resend anything.
 
-  Trigger identity and strategy identity remain separate facts. The compact
-  workbench chips are a direct presentation mapping of the frozen
-  `strategy_id`: `oi_smart_money_momentum_v1 → oi_smart_money`,
-  `oi_momentum_v1 → oi_only` and
-  `news_oi_alignment_v1 → news_oi`; the raw identity remains in the chip title.
-  `oi_momentum_v1` keeps its label unchanged because Cases frozen under it are
-  still read; #265 routes no new Case to it.
-  The UI never reconstructs a case kind from symbol, time, or nearby News data,
-  and no `news_only` strategy exists. The primary surface follows the approved
-  mandate / exposure / daily closes / operational snapshot frame. The snapshot
-  labels its mixed clocks explicitly: cases/policy by UTC budget-day case creation,
-  submission by that day's charged attempts, closes by that day's authoritative close
-  time, and in-market as current unbounded exposure. The technical evidence
-  disclosure below it shows the real 24 h counts for
-  `liquidation_continuation_shadow_v1` and
-  `liquidation_exhaustion_shadow_v1`, registration-valid holdout and completed
-  counts, coverage/source latency, 5m/15m/1h measured return and bootstrap
-  interval, MFE/MAE, exit/cost facts and named 5s/30s/1m/funding gaps, plus the
-  ledger's promotion reasons. The detailed rows remain separated by strategy,
-  source venue and liquidity bucket. A shadow evaluation
-  is not rendered as a case, position, or order, and
-  `source_contract_incomplete` is shown as a refusal, not as a warning the
-  browser can override.
+  When Trading is disabled, empty ledger copy says the lane has no work; it
+  never rebrands the Demo contract as paper. Loading, cold failure, stale
+  refresh, and a genuinely empty batch remain different page states. Legacy
+  Orders and observations are absent by contract, not filtered in the browser.
 
-  Every state string on the page is the ledger's own. `ACKNOWLEDGED` is the venue
-  answering, not a fill; `OPEN` is the only state that has proven both a real
-  position and a native stop covering it, which is why the verification tick is
-  `state === "OPEN"` and never "has a `stop_price`" — every prepared order
-  carries a stop price and it proves nothing. `AMBIGUOUS` carries no action at
-  all: the one thing that must never happen from a screen is a human resending an
-  order nobody has reconciled. There is no action on any row, and the three
-  operator mutations stay on the CLI where they run as `workers`.
-
-  There is no live switch and no field that could become one. `live_ready` is
-  reported as the ledger's own word — `not_proven` until #185 PR-C3's venue
-  canary — and the HTTP surface has no write endpoint to offer even if someone
-  drew a button. The unrealised column says 纸面 wherever the mode is paper,
-  because paper fills at the frozen `entry_reference` with no spread, precision,
-  partial fill or liquidation; the page draws no equity curve from those numbers.
-  When `trading.enabled` is false — still the shipped default — the UTC budget
-  line states that compactly, so the empty tables read as "never ran" rather
-  than as a failed request without displacing the approved frame.
-  An operator deployment may explicitly enable paper mode; the page has no
-  switch and only reflects that durable runtime state.
 
   The Event detail's 未成案 chip carries the admission ledger's stage and reason
   when there is one. The bare chip was the same shape for "below the liquidity
@@ -679,7 +340,7 @@ the route components into the eager shell chunk.
   model lane's is a content hash of an artifact and a fingerprint (#154), and a
   未成案 chip there would report a refusal that never happened. The token page's
   交易复盘 section is owned by `features/trading` for the same reason the badge is
-  — case states, order states and rule keys are the capital lane's vocabulary,
+  — Case states, Intent/Outcome states and rule keys are the capital lane's vocabulary,
   and a copy inside News would be a second place they could drift.
 
   Polling: Feed every 3 seconds; the OI frame table every 5 seconds; Event
@@ -740,7 +401,7 @@ the route components into the eager shell chunk.
   open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there — the artifact draws no way to collapse it and a console with three destinations has nothing to gain from hiding them (#256). From `768px` to `1279px` the same sidebar is the left `Drawer` that the topbar trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds, reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail or remembered collapse state. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries four working surfaces in two groups — `Workbench`: `事件流` `/news`, `杠杆异动` `/news/leverage`, `交易` `/trading`; `System · 数据健康`: `OI 遥测审计` `/news/oi`; `/news/events/:eventId` highlights `事件流`, and `/news/status` is a route without a slot, reached from the topbar health lamp. The feed entry shows the 24 h `funnel_24h.received` count, the 杠杆异动 entry the capital lane's cases over its own published `window_hours` (every state, summed from `counts.cases_by_state` on the `/api/trading/status` the frame already reads for the badge — `POLICY_REJECTED` is a case the lane authored and refused, and it is most of a normal day), and the OI entry `pipeline.telemetry_received_24h`; the 交易 entry carries the capital lane's `mode` as a word rather than a count (`PAPER` today) because "is any of this real money" is what a reader needs before opening it. The counts are compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and every one of them is `aria-hidden` so it decorates the link without renaming it, with its own `title` naming what it counts. The two groups are separated by 14px, as the artifact sets on its second heading: `Workbench` and `System · 数据健康` answer different questions asked at different times. The sidebar carries no health dot: health is the lamp's, in one place, on every frame. The shell reads these through `@features/news/shell` — the same query key the funnel card, the OI audit and the status route use, so React Query serves all of them from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. There is one topbar and it is the same on every route (#256): the `事件 / base_symbol / 场所` placeholder, the inert `/` keycap, the route's context figures and a permanent `流水线` affordance — and no refresh control anywhere, because every surface polls and a button that re-asks is theatre. While a frame-owned read is still in flight the shell draws a 2px `PageState.RouteProgress` line at the top of the viewport. The public SPA routes are `/`, `/news`, `/news/leverage`, `/news/oi`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; `/news/review`, `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there — the artifact draws no way to collapse it and a console with three destinations has nothing to gain from hiding them (#256). From `768px` to `1279px` the same sidebar is the left `Drawer` that the topbar trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds, reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail or remembered collapse state. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries four working surfaces in two groups — `Workbench`: `事件流` `/news`, `杠杆异动` `/news/leverage`, `交易` `/trading`; `System · 数据健康`: `OI 遥测审计` `/news/oi`; `/news/events/:eventId` highlights `事件流`, and `/news/status` is a route without a slot, reached from the topbar health lamp. The feed entry shows the 24 h `funnel_24h.received` count, the 杠杆异动 entry the capital lane's cases over its own published `window_hours` (every state, summed from `counts.cases_by_state` on the `/api/trading/status` the frame already reads for the badge — `POLICY_REJECTED` is a case the lane authored and refused, and it is most of a normal day), and the OI entry `pipeline.telemetry_received_24h`; the 交易 entry carries `BINANCE_USDM_DEMO` rather than a count because the execution environment is what a reader needs before opening it. The counts are compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and every one of them is `aria-hidden` so it decorates the link without renaming it, with its own `title` naming what it counts. The two groups are separated by 14px, as the artifact sets on its second heading: `Workbench` and `System · 数据健康` answer different questions asked at different times. The sidebar carries no health dot: health is the lamp's, in one place, on every frame. The shell reads these through `@features/news/shell` — the same query key the funnel card, the OI audit and the status route use, so React Query serves all of them from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. There is one topbar and it is the same on every route (#256): the `事件 / base_symbol / 场所` placeholder, the inert `/` keycap, the route's context figures and a permanent `流水线` affordance — and no refresh control anywhere, because every surface polls and a button that re-asks is theatre. While a frame-owned read is still in flight the shell draws a 2px `PageState.RouteProgress` line at the top of the viewport. The public SPA routes are `/`, `/news`, `/news/leverage`, `/news/oi`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; `/news/review`, `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.

@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Protocol, TypedDict, runtime_checkable
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -30,11 +30,6 @@ TRADING_POLICY_VERSION = "trading_strategy_policy_v1"
 TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
 # Code-owned execution timing shared by the pipeline and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
-TRADING_RECONCILE_BACKOFF_MS = 30_000
-TRADING_LIVE_APPROVAL_MARKER = "operator_approved_c2"
-TRADING_LIVE_APPROVAL_TTL_MS = 60_000
-TRADING_LIVE_MAX_ENTRY_DRIFT_BPS = 25
-TRADING_LIVE_PREFLIGHT_MAX_AGE_MS = 10_000
 
 # Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
 # a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
@@ -168,7 +163,6 @@ class InstrumentCandidateRow(TypedDict):
     last_seen_ms: int
 
 
-TradingMode = Literal["paper", "live_reviewed", "live_bounded"]
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 TriggerKind = Literal["oi", "liquidation", "news"]
 StrategyPermission = Literal["shadow", "paper", "live_reviewed"]
@@ -190,9 +184,8 @@ StrategyId = Literal[
     "liquidation_continuation_shadow_v1",
     "liquidation_exhaustion_shadow_v1",
 ]
-ExchangeId = Literal["binance", "hyperliquid", "paper"]
-LiveExchangeId = Literal["binance", "hyperliquid"]
-OrderSide = Literal["buy", "sell"]
+ExchangeId = Literal["binance", "hyperliquid"]
+LiveExchangeId = ExchangeId
 PolicyDecision = Literal["no_trade", "long", "short"]
 
 
@@ -207,50 +200,10 @@ class CaseState(StrEnum):
     RUNNING = "RUNNING"
     NO_TRADE = "NO_TRADE"
     POLICY_REJECTED = "POLICY_REJECTED"
+    INTENT_EMITTED = "INTENT_EMITTED"
+    # Audit-only history from the retired Paper/OpenTrade writer.
     ORDER_PREPARED = "ORDER_PREPARED"
     BLOCKED = "BLOCKED"
-
-
-class OrderState(StrEnum):
-    PREPARED = "PREPARED"
-    AWAITING_APPROVAL = "AWAITING_APPROVAL"
-    APPROVED = "APPROVED"
-    REJECTED_BY_OPERATOR = "REJECTED_BY_OPERATOR"
-    SUBMITTING = "SUBMITTING"
-    REJECTED = "REJECTED"
-    ACKNOWLEDGED = "ACKNOWLEDGED"
-    PARTIAL = "PARTIAL"
-    OPEN = "OPEN"
-    UNPROTECTED = "UNPROTECTED"
-    SAFETY_CLOSING = "SAFETY_CLOSING"
-    AMBIGUOUS = "AMBIGUOUS"
-    RECONCILING = "RECONCILING"
-    MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
-    CLOSED = "CLOSED"
-
-
-# States that can retain, or later reveal, capital exposure. Runners use this public classification for
-# admission decisions; integration tests exercise the independently migrated database constraints.
-ACTIVE_ORDER_STATES: tuple[str, ...] = (
-    OrderState.PREPARED,
-    OrderState.AWAITING_APPROVAL,
-    OrderState.APPROVED,
-    OrderState.SUBMITTING,
-    OrderState.AMBIGUOUS,
-    OrderState.RECONCILING,
-    OrderState.MANUAL_REVIEW_REQUIRED,
-    OrderState.ACKNOWLEDGED,
-    OrderState.PARTIAL,
-    OrderState.OPEN,
-    OrderState.UNPROTECTED,
-    OrderState.SAFETY_CLOSING,
-)
-
-TERMINAL_ORDER_STATES: tuple[str, ...] = (
-    OrderState.REJECTED,
-    OrderState.REJECTED_BY_OPERATOR,
-    OrderState.CLOSED,
-)
 
 
 class OiRegime(StrEnum):
@@ -455,26 +408,6 @@ class LiquidationTradeCandidate(_Frozen):
         return max(0, self.received_at_ms - self.event_at_ms)
 
 
-class MarketContext(_Frozen):
-    """Point-in-time market truth, read fresh and never cached across a decision."""
-
-    instrument: InstrumentRef
-    mark_price: Decimal
-    observed_at_ms: int
-    pre_move_bps: int | None
-    pre_move_lookback_ms: int
-    spread_bps: int | None
-    # Paper cannot read an order book, so spread is unknown rather than zero. Live fails closed on it.
-    spread_available: bool
-    # Exact contract precision. The public instrument catalogue does not carry it, so paper sizes on a
-    # declared conservative step and live must get it from provider metadata or refuse to size at all.
-    quantity_step: Decimal | None = None
-    price_tick: Decimal | None = None
-    min_quantity: Decimal | None = None
-    min_notional: Decimal | None = None
-    contract_size: Decimal = Decimal("1")
-
-
 class RegimeAssessment(_Frozen):
     regime: OiRegime
     reason: str
@@ -580,7 +513,7 @@ class FrozenMarketContext(_Frozen):
 class FrozenStrategyContext(_Frozen):
     """Only point-in-time facts visible at the primary trigger's cutoff."""
 
-    mode: TradingMode
+    mode: Literal["paper"]
     oi: OiTradeCandidate | None = None
     news: NewsTradeCandidate | None = None
     liquidation: LiquidationTradeCandidate | None = None
@@ -653,258 +586,16 @@ class TradingCaseManifest(_Frozen):
         return canonical_sha256(self.model_dump(mode="json"))
 
 
-class PreparedOrder(_Frozen):
-    """The immutable economic intent. The payload is frozen before any network call exists.
-
-    The four exit numbers are all here, and all of them come from the order row rather than from the
-    running configuration (#209). Two were already absolute prices; `max_holding_ms` and
-    `taker_fee_bps` are the snapshot that makes the other two exits — the clock and the realised
-    return — replayable. An order that has been approved may not have its execution semantics
-    rewritten by a later deploy, so a config edit changes the next order and never this one.
-    """
-
-    order_id: str
-    case_id: str
-    underlying_key: str
-    account_ref: str
-    remote_order_id: str | None = None
-    remote_close_order_id: str | None = None
-    instrument: InstrumentRef
-    mode: TradingMode
-    side: OrderSide
-    notional_usd: Decimal
-    quantity: Decimal
-    entry_reference: Decimal
-    stop_price: Decimal
-    take_profit_price: Decimal | None
-    max_holding_ms: int = Field(gt=0)
-    taker_fee_bps: int = Field(ge=0)
-    payload: dict[str, Any]
-
-    @property
-    def payload_sha256(self) -> str:
-        return canonical_sha256(self.payload)
-
-
-class RiskRejection(_Frozen):
-    rule: str
-    detail: str = ""
-
-
-class ExecutionReceipt(_Frozen):
-    """What one adapter attempt returned. `ACKNOWLEDGED` is not a fill; remote reads own that."""
-
-    state: Literal["ACKNOWLEDGED", "REJECTED", "AMBIGUOUS"]
-    remote_order_id: str | None = None
-    filled_quantity: Decimal | None = None
-    average_price: Decimal | None = None
-    reason: str = ""
-    raw: dict[str, Any] = Field(default_factory=dict)
-
-
-class RemoteExposure(_Frozen):
-    """One provider-side position or working order visible to the capital lane."""
-
-    kind: Literal["position", "open_order"]
-    exchange_id: LiveExchangeId
-    provider_symbol: str
-    side: str
-    quantity: Decimal
-    remote_id: str | None = None
-
-
-class LivePreflight(_Frozen):
-    """Fresh execution truth; unlike a Case manifest, it says whether an exact order is safe now."""
-
-    provider: str
-    observed_at_ms: int
-    server_time_ms: int
-    venue_healthy: bool
-    instrument: InstrumentRef
-    mark_price: Decimal
-    bid_price: Decimal
-    ask_price: Decimal
-    spread_bps: int
-    quantity_step: Decimal | None = None
-    price_tick: Decimal | None = None
-    min_quantity: Decimal | None = None
-    min_notional: Decimal | None = None
-    contract_size: Decimal = Decimal("1")
-    requested_account_ref: str
-    observed_account_ref: str | None = None
-    available_balance: Decimal | None = None
-    available_currency: str | None = None
-    hedged: bool
-    leverage: int
-    margin_mode: str
-    positions: tuple[RemoteExposure, ...] = ()
-    open_orders: tuple[RemoteExposure, ...] = ()
-
-    @property
-    def execution_contract_sha256(self) -> str:
-        """Identity of the provider facts that must not drift after operator approval."""
-
-        return canonical_sha256(
-            {
-                "instrument": {
-                    "exchange_id": self.instrument.exchange_id,
-                    "provider_symbol": self.instrument.provider_symbol,
-                },
-                "quantity_step": None if self.quantity_step is None else str(self.quantity_step),
-                "price_tick": None if self.price_tick is None else str(self.price_tick),
-                "min_quantity": None if self.min_quantity is None else str(self.min_quantity),
-                "min_notional": None if self.min_notional is None else str(self.min_notional),
-                "contract_size": str(self.contract_size),
-                "available_currency": self.available_currency,
-                "hedged": self.hedged,
-                "leverage": self.leverage,
-                "margin_mode": self.margin_mode,
-            }
-        )
-
-    def audit_payload(self) -> dict[str, Any]:
-        """Persist the execution proof without account balances or provider response bodies."""
-
-        return {
-            "schema": "tracefold.trading.live_preflight.v2",
-            "provider": self.provider,
-            "observed_at_ms": self.observed_at_ms,
-            "server_time_ms": self.server_time_ms,
-            "venue_healthy": self.venue_healthy,
-            "instrument": self.instrument.model_dump(mode="json"),
-            "mark_price": str(self.mark_price),
-            "bid_price": str(self.bid_price),
-            "ask_price": str(self.ask_price),
-            "spread_bps": self.spread_bps,
-            "quantity_step": None if self.quantity_step is None else str(self.quantity_step),
-            "price_tick": None if self.price_tick is None else str(self.price_tick),
-            "min_quantity": None if self.min_quantity is None else str(self.min_quantity),
-            "min_notional": None if self.min_notional is None else str(self.min_notional),
-            "contract_size": str(self.contract_size),
-            "requested_account_ref": self.requested_account_ref,
-            "account_identity_proven": self.observed_account_ref is not None,
-            "available_balance_proven": self.available_balance is not None,
-            "available_currency": self.available_currency,
-            "hedged": self.hedged,
-            "leverage": self.leverage,
-            "margin_mode": self.margin_mode,
-            "execution_contract_sha256": self.execution_contract_sha256,
-            "positions": [item.model_dump(mode="json") for item in self.positions],
-            "open_orders": [item.model_dump(mode="json") for item in self.open_orders],
-        }
-
-
-class StartupReconciliation(_Frozen):
-    """The complete read capability proof required before a live candidate may advance."""
-
-    preflight: LivePreflight
-
-    @property
-    def exposures(self) -> tuple[RemoteExposure, ...]:
-        return (*self.preflight.positions, *self.preflight.open_orders)
-
-
-class ExecutionObservationState(StrEnum):
-    ABSENT_CONFIRMED = "ABSENT_CONFIRMED"
-    WORKING = "WORKING"
-    PARTIAL = "PARTIAL"
-    OPEN_PROTECTED = "OPEN_PROTECTED"
-    OPEN_UNPROTECTED = "OPEN_UNPROTECTED"
-    CLOSED = "CLOSED"
-    REJECTED = "REJECTED"
-    UNKNOWN = "UNKNOWN"
-
-
-class NativeProtection(_Frozen):
-    remote_order_id: str
-    parent_remote_order_id: str
-    account_ref: str
-    exchange_id: LiveExchangeId
-    provider_symbol: str
-    side: OrderSide
-    quantity: Decimal
-    trigger_price: Decimal
-    reduce_only: bool
-    status: str
-
-
-class ExecutionObservation(_Frozen):
-    """One composite provider read. Missing evidence is UNKNOWN, never Python None."""
-
-    state: ExecutionObservationState
-    observed_at_ms: int
-    remote_order_id: str | None = None
-    actual_position_quantity: Decimal | None = None
-    filled_quantity: Decimal | None = None
-    average_price: Decimal | None = None
-    first_fill_at_ms: int | None = None
-    closed_at_ms: int | None = None
-    exit_price: Decimal | None = None
-    protection: NativeProtection | None = None
-    evidence: dict[str, Any] = Field(default_factory=dict)
-
-    @property
-    def snapshot_sha256(self) -> str:
-        """Stable provider-state identity; polling time belongs to the ledger's seen timestamps."""
-
-        snapshot = self.model_dump(mode="json")
-        snapshot.pop("observed_at_ms")
-        return canonical_sha256(snapshot)
-
-
-class ExecutionAdapter(Protocol):
-    """The execution operations shared by the deterministic fake and the live provider."""
-
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def writes_enabled(self) -> bool: ...
-
-    async def submit(self, order: PreparedOrder) -> ExecutionReceipt: ...
-
-    async def observe(self, order: PreparedOrder) -> ExecutionObservation: ...
-
-    async def close(self, order: PreparedOrder, *, quantity: Decimal) -> ExecutionReceipt: ...
-
-    async def aclose(self) -> None: ...
-
-
-@runtime_checkable
-class LiveExecutionAdapter(ExecutionAdapter, Protocol):
-    """The live-only read seam. Provider HTTP and credentials remain outside the package."""
-
-    async def startup(
-        self,
-        *,
-        instrument: InstrumentRef,
-        account_ref: str,
-    ) -> StartupReconciliation: ...
-
-    async def preflight(self, *, instrument: InstrumentRef, account_ref: str) -> LivePreflight: ...
-
-
 __all__ = [
-    "ACTIVE_ORDER_STATES",
     "NO_TRADE_DECISION",
-    "TERMINAL_ORDER_STATES",
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
-    "TRADING_LIVE_APPROVAL_MARKER",
-    "TRADING_LIVE_APPROVAL_TTL_MS",
-    "TRADING_LIVE_MAX_ENTRY_DRIFT_BPS",
-    "TRADING_LIVE_PREFLIGHT_MAX_AGE_MS",
     "TRADING_MANIFEST_VERSION",
     "TRADING_POLICY_VERSION",
     "TRADING_PROGRAM_VERSION",
-    "TRADING_RECONCILE_BACKOFF_MS",
     "Bar",
     "CaseState",
     "ControlState",
     "ExchangeId",
-    "ExecutionAdapter",
-    "ExecutionObservation",
-    "ExecutionObservationState",
-    "ExecutionReceipt",
     "FrozenMarketContext",
     "FrozenStrategyContext",
     "InstrumentCandidateRow",
@@ -914,11 +605,7 @@ __all__ = [
     "LiquidationMarketTrigger",
     "LiquidationTradeCandidate",
     "LiveExchangeId",
-    "LiveExecutionAdapter",
-    "LivePreflight",
-    "MarketContext",
     "MarketTrigger",
-    "NativeProtection",
     "NewsCandidateRow",
     "NewsMarketTrigger",
     "NewsTradeCandidate",
@@ -926,21 +613,14 @@ __all__ = [
     "OiMarketTrigger",
     "OiRegime",
     "OiTradeCandidate",
-    "OrderSide",
-    "OrderState",
     "PolicyDecision",
     "PolicyOutcome",
-    "PreparedOrder",
     "RegimeAssessment",
-    "RemoteExposure",
-    "RiskRejection",
-    "StartupReconciliation",
     "StrategyId",
     "StrategyOutcome",
     "StrategyPermission",
     "TradeDecision",
     "TradingCaseManifest",
-    "TradingMode",
     "TriggerKind",
     "canonical_base_symbol",
     "canonical_sha256",
