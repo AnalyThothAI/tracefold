@@ -1,3 +1,3 @@
-from tracefold.app.workers.root import run_workers
+from tracefold.app.workers.entrypoint import run_workers
 
 __all__ = ["run_workers"]
