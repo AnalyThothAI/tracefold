@@ -369,13 +369,21 @@ class TradeProjectionStorage:
         return [_liquidation_projection_row(row) for row in rows]
 
     def trade_candidate_instrument(
-        self, *, base_symbol: str, venues: Sequence[str]
+        self,
+        *,
+        base_symbol: str,
+        venues: Sequence[str],
+        observed_at_ms: int | None = None,
     ) -> list[TradeInstrumentProjectionRow]:
         """Exactly-listed native crypto perpetuals for one underlying, in the caller's venue order.
 
         `instrument_class = 'crypto'` is not decoration: Binance labels its 169 TradFi perps `EQUITY`
         and friends, so a `WMT` Event whose Gate class says crypto still resolves to nothing here.
         HIP-3 builder venues (`hl.xyz`) are excluded by naming the two native perp venues explicitly.
+
+        Live callers omit ``observed_at_ms`` and see only the current catalogue. Replay callers also
+        see a contract whose durable delisting boundary is later than the source fact; a present-day
+        delisting must not erase the instrument identity that existed when that fact was observed.
         """
 
         if not venues:
@@ -386,7 +394,10 @@ class TradeProjectionStorage:
               FROM news_market_instruments
              WHERE base_symbol = %s
                AND venue = ANY(%s)
-               AND status = 'trading'
+               AND (
+                 status = 'trading'
+                 OR (status = 'delisted' AND last_seen_ms > COALESCE(%s, last_seen_ms))
+               )
                AND instrument_class = 'crypto'
              -- Deterministic, because the caller freezes the first row per venue into an immutable
              -- payload. `binance.perp` is snapshotted without a quote filter, so DOGEUSDT, DOGEUSDC and
@@ -397,7 +408,7 @@ class TradeProjectionStorage:
                       length(venue_symbol),
                       venue_symbol
             """,
-            (str(base_symbol or "").strip().upper(), list(venues)),
+            (str(base_symbol or "").strip().upper(), list(venues), observed_at_ms),
         ).fetchall()
         return [
             TradeInstrumentProjectionRow(

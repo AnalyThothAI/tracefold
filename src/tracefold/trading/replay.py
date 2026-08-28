@@ -428,16 +428,13 @@ def _market_outcome(
         ts_event=plan.source.observed_at_ms,
         ts_init=plan.source.verdict_created_at_ms,
     )
-    try:
-        episode = run_episode(
-            intent=replay_intent,
-            capability=capability,
-            bars=item.bars,
-            reference_price=anchor.close,
-            target_notional=target_notional,
-        )
-    except (RuntimeError, ValueError):
-        episode = BarEpisodeResult("REJECTED", "market_unacceptable")
+    episode = run_episode(
+        intent=replay_intent,
+        capability=capability,
+        bars=item.bars,
+        reference_price=anchor.close,
+        target_notional=target_notional,
+    )
     return ReplayTerminalOutcomeV1(
         source_identity=plan.source.source_key,
         strategy_identity=strategy_identity,

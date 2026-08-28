@@ -288,7 +288,14 @@ def _plans(
         if isinstance(planned, ReplayTerminalOutcomeV1):
             immediate.append(planned)
             continue
-        rows = list(news_trade_instruments(repos, planned.source.base_symbol, (planned.venue,)))
+        rows = list(
+            news_trade_instruments(
+                repos,
+                planned.source.base_symbol,
+                (planned.venue,),
+                observed_at_ms=planned.source.observed_at_ms,
+            )
+        )
         research_rows.extend(dict(row) for row in rows)
         exchange = "binance" if planned.venue == "binance.perp" else "hyperliquid"
         instrument = resolve_instrument(

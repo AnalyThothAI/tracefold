@@ -83,7 +83,7 @@ def test_snapshot_identity_is_byte_stable_when_both_providers_return_a_different
     assert reversed_rows.snapshot_sha256 == forward.snapshot_sha256
 
 
-def test_inactive_provider_only_rows_are_outside_the_frozen_active_candidate_union() -> None:
+def test_inactive_provider_rows_are_in_the_frozen_candidate_partition() -> None:
     inactive = _provider("OLDUSDT", "OLD").model_copy(update={"active": False})
     matching_inactive = _provider("XRPUSDT", "XRP").model_copy(update={"active": False})
 
@@ -96,5 +96,5 @@ def test_inactive_provider_only_rows_are_outside_the_frozen_active_candidate_uni
     )
 
     assert "OLDUSDT-PERP.BINANCE" not in snapshot.included
-    assert "OLDUSDT-PERP.BINANCE" not in snapshot.excluded
+    assert snapshot.excluded["OLDUSDT-PERP.BINANCE"].reason == "missing_news_projection"
     assert snapshot.excluded["XRPUSDT-PERP.BINANCE"].reason == "not_active"

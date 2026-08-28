@@ -193,12 +193,22 @@ def news_trade_candidates(
     )
 
 
-def news_trade_instruments(repos: Any, base_symbol: str, venues: Sequence[str]) -> Sequence[InstrumentCandidateRow]:
+def news_trade_instruments(
+    repos: Any,
+    base_symbol: str,
+    venues: Sequence[str],
+    *,
+    observed_at_ms: int | None = None,
+) -> Sequence[InstrumentCandidateRow]:
     """`InstrumentProjectionReader`: News instrument facts, mapped into Trading's venue resolver."""
 
     return [
         to_instrument_candidate_row(row)
-        for row in repos.news.trade_candidate_instrument(base_symbol=base_symbol, venues=venues)
+        for row in repos.news.trade_candidate_instrument(
+            base_symbol=base_symbol,
+            venues=venues,
+            observed_at_ms=observed_at_ms,
+        )
     ]
 
 

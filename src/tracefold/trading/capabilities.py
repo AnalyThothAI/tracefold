@@ -133,8 +133,7 @@ def build_execution_capability_snapshot(
     provider_by_id = {row.instrument_id: row for row in provider_rows}
     included: dict[str, ExecutionInstrumentCapabilityV1] = {}
     excluded: dict[str, StableCapabilityExclusionV1] = {}
-    provider_active_ids = {row.instrument_id for row in provider_rows if row.active}
-    for instrument_id in sorted(set(news_by_id).union(provider_active_ids)):
+    for instrument_id in sorted(set(news_by_id).union(provider_by_id)):
         news = news_by_id.get(instrument_id)
         provider = provider_by_id.get(instrument_id)
         reason = _exclusion_reason(news, provider)

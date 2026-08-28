@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
+import pytest
+
 from tracefold.app.cli.commands import trading_replay as trading_replay_command
 from tracefold.app.trading_config import trading_config_from_settings, trading_settings_strategies
 from tracefold.integrations.nautilus.replay import run_bar_episode
@@ -112,7 +114,7 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
     assert market_slice.start_ms == NOW - regime.lookback_ms - regime.bar_gap_tolerance_ms
 
 
-def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() -> None:
+def _directional_market_slice() -> ReplayMarketSlice:
     source = _source()
     plan = DirectionalReplayPlan(
         source=source,
@@ -162,7 +164,11 @@ def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() 
         )
         for index in range(1, 6)
     )
-    market_slice = ReplayMarketSlice(plan, bars, None, NOW - 7_530_000, NOW + 1_500_000)
+    return ReplayMarketSlice(plan, bars, None, NOW - 7_530_000, NOW + 1_500_000)
+
+
+def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() -> None:
+    market_slice = _directional_market_slice()
     configured_settings = Settings.model_validate(
         {
             "trading": {
@@ -214,3 +220,27 @@ def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() 
     assert (configured_outcome.capital_admission, configured_outcome.capital_reason) == ("DENIED", "blacklisted")
     assert configured_outcome.replay_intent is not None
     assert (default_outcome.decision, default_outcome.decision_reason) == ("NO_TRADE", "move_above_band_chasing")
+
+
+def test_replay_engine_failure_aborts_without_a_policy_outcome() -> None:
+    settings = Settings.model_validate(
+        {"trading": {"regime": {"lookback_seconds": 7_200, "min_price_move_bps": 75, "max_price_move_bps": 800}}}
+    )
+    configured = trading_config_from_settings(settings)
+    strategy = next(
+        item for item in trading_settings_strategies(settings) if item.strategy_id == "oi_smart_money_momentum_v1"
+    )
+
+    def failed_episode(**_kwargs):
+        raise RuntimeError("replay_instrument_unavailable")
+
+    with pytest.raises(RuntimeError, match="replay_instrument_unavailable"):
+        replay.evaluate_replay_market_slices(
+            [_directional_market_slice()],
+            strategy=strategy,
+            snapshot=_snapshot(),
+            blacklist=BlacklistSnapshotV1(revision=0, active_rows=()),
+            run_episode=failed_episode,
+            regime_policy=configured.regime,
+            target_notional=configured.fixed_notional_usd,
+        )

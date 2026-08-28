@@ -106,6 +106,35 @@ def test_second_snapshot_reconciles_and_is_idempotent(conn) -> None:
     assert repos.instruments.venues_for("OLD") == ("binance.perp",)
 
 
+def test_trade_projection_preserves_a_source_time_instrument_after_delisting(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "OLDUSDT", "OLD", "USDT")],
+            now_ms=NOW,
+        )
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "BTCUSDT", "BTC", "USDT")],
+            now_ms=NOW + 3_600_000,
+        )
+
+    assert repos.news.trade_candidate_instrument(base_symbol="OLD", venues=("binance.perp",)) == []
+    historical = repos.news.trade_candidate_instrument(
+        base_symbol="OLD",
+        venues=("binance.perp",),
+        observed_at_ms=NOW + 1,
+    )
+    assert [(row["venue_symbol"], row["status"]) for row in historical] == [("OLDUSDT", "delisted")]
+    assert (
+        repos.news.trade_candidate_instrument(
+            base_symbol="OLD",
+            venues=("binance.perp",),
+            observed_at_ms=NOW + 3_600_000,
+        )
+        == []
+    )
+
+
 def test_a_venue_that_did_not_answer_is_never_read_as_a_mass_delisting(conn) -> None:
     """The failure mode that would matter most: Binance times out and every Binance symbol reads as delisted."""
 
