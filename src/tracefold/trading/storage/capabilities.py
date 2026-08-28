@@ -9,6 +9,7 @@ from ..capabilities import ExecutionCapabilitySnapshotV1
 from .sql_values import _dumps
 
 _NAUTILUS_ZERO_PROOF_MAX_AGE_MS = 15_000
+_NAUTILUS_BOOTSTRAP_ZERO_PROOF_MAX_AGE_MS = 5 * 60_000
 
 
 class CapabilityStorage:
@@ -115,7 +116,7 @@ class CapabilityStorage:
         bootstrap_at_ms = runtime["nautilus_bootstrap_account_zero_at_ms"]
         bootstrap_proved_flat = (
             bootstrap_at_ms is not None
-            and int(bootstrap_at_ms) >= int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS
+            and int(bootstrap_at_ms) >= int(created_at_ms) - _NAUTILUS_BOOTSTRAP_ZERO_PROOF_MAX_AGE_MS
             and not runtime["nautilus_unexpected_exposure"]
         )
         runtime_proved_flat = bootstrap_proved_flat
