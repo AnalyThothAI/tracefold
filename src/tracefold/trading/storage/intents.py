@@ -149,7 +149,7 @@ class IntentStorage:
         return TradeIntent.model_validate(intent_values), IntentOutcome.model_validate(outcome_values)
 
     def fence_entry(self, intent_id: str, *, engine_identity: str, now_ms: int) -> IntentOutcome | None:
-        blacklist = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=False)
+        blacklist = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
         observation = blacklist.model_dump(mode="json")
         permission = self.conn.execute(
             """

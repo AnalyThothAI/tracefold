@@ -252,6 +252,12 @@ runtime readiness fields.
 Migration `0317` revokes Workers mutation of legacy Orders/observations and
 retired runtime counters in the same transaction that activates
 `INTENT_EMITTED`; the historical tables remain readable audit only.
+Migration `0319` keeps Nautilus blacklist access read-only and grants only the
+database-time `materialize_trading_blacklist_expiry()` function. That
+`SECURITY DEFINER` path accepts no caller timestamp, locks the runtime singleton,
+deletes only rows expired by the database clock, and increments the blacklist
+revision in the same transaction; Nautilus still has no direct
+INSERT/UPDATE/DELETE privilege on the blacklist.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as

@@ -187,15 +187,17 @@ class CapabilityStorage:
         if expired_n:
             if not materialize_expiry:
                 raise RuntimeError("blacklist_expiry_not_materialized")
-            self.conn.execute(
-                "DELETE FROM trading_symbol_blacklist WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= %s",
+            materialized = self.conn.execute("SELECT materialize_trading_blacklist_expiry() AS revision").fetchone()
+            if materialized is None:
+                raise RuntimeError("blacklist_expiry_materialization_failed")
+            revision = int(materialized["revision"])
+            remaining = self.conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM trading_symbol_blacklist "
+                "WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= %s) AS blocked",
                 (int(now_ms),),
-            )
-            revision += 1
-            self.conn.execute(
-                "UPDATE trading_runtime_state SET blacklist_revision = %s, updated_at_ms = %s WHERE id = 1",
-                (revision, int(now_ms)),
-            )
+            ).fetchone()
+            if remaining is None or bool(remaining["blocked"]):
+                raise RuntimeError("blacklist_expiry_not_materialized")
         rows = self.conn.execute(
             """
             SELECT base_symbol, reason, created_at_ms, expires_at_ms

@@ -117,6 +117,7 @@ def _intent(
     *,
     case_id: str = "case-intent-1",
     case_manifest_sha256: str = "1" * 64,
+    created_at_ms: int = NOW,
 ) -> TradeIntent:
     blacklist = AUTHORITY["blacklist"]
     return TradeIntent.create(
@@ -126,7 +127,7 @@ def _intent(
         blacklist_snapshot=blacklist,
         instrument_id="SOLUSDT-PERP.BINANCE",
         underlying_key="crypto:SOL",
-        created_at_ms=NOW,
+        created_at_ms=created_at_ms,
         reference_price=Decimal("60000"),
         target_notional_usd=Decimal("10"),
     )
@@ -764,6 +765,44 @@ def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fe
     conn.commit()
 
 
+def test_expired_blacklist_does_not_kill_a_pending_entry_fence(conn: Any) -> None:
+    _case(conn)
+    db_now_ms = int(
+        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+            "now_ms"
+        ]
+    )
+    intent = _intent(created_at_ms=db_now_ms - 1_000)
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    repos.trading.blacklist_upsert(
+        base_symbol="SOL",
+        reason="timed_operator_hold",
+        expires_at_ms=db_now_ms - 1,
+        now_ms=db_now_ms - 500,
+    )
+    _allow_entry(conn)
+    conn.commit()
+
+    conn.execute("SET ROLE tracefold_nautilus")
+    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=db_now_ms)
+    conn.commit()
+    conn.execute("RESET ROLE")
+    conn.commit()
+
+    assert fenced is not None
+    assert (fenced.execution_state, fenced.execution_phase) == ("IN_FLIGHT", "ENTRY")
+    evidence = conn.execute(
+        "SELECT blacklist_revision_at_fence, blacklist_snapshot_payload_at_fence "
+        "FROM trading_intents WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()
+    assert evidence["blacklist_revision_at_fence"] == 2
+    assert all(
+        row["underlying_key"] != "crypto:SOL" for row in evidence["blacklist_snapshot_payload_at_fence"]["active_rows"]
+    )
+
+
 def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner(conn: Any) -> None:
     _case(conn)
     intent = _intent()
@@ -902,6 +941,17 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
                 AS nautilus_control_select,
               has_column_privilege('tracefold_nautilus', 'trading_runtime_state', 'orders_today', 'SELECT')
                 AS nautilus_counter_select,
+              has_table_privilege('tracefold_nautilus', 'trading_symbol_blacklist', 'DELETE')
+                AS nautilus_blacklist_delete,
+              has_function_privilege(
+                'tracefold_nautilus', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
+              ) AS nautilus_expiry_execute,
+              has_function_privilege(
+                'tracefold_workers', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
+              ) AS workers_expiry_execute,
+              has_function_privilege(
+                'tracefold_serve', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
+              ) AS serve_expiry_execute,
               has_table_privilege('tracefold_serve', 'trading_intents', 'SELECT') AS serve_select,
               has_table_privilege('tracefold_serve', 'trading_intents', 'INSERT') AS serve_insert
             """
@@ -924,6 +974,10 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
         "nautilus_runtime_id_select": True,
         "nautilus_control_select": True,
         "nautilus_counter_select": False,
+        "nautilus_blacklist_delete": False,
+        "nautilus_expiry_execute": True,
+        "workers_expiry_execute": True,
+        "serve_expiry_execute": False,
         "serve_select": True,
         "serve_insert": False,
     }
@@ -1224,6 +1278,10 @@ def test_event_projection_selects_the_complete_intent(conn: Any) -> None:
     row = repos.trading.console_case_for_source_key(primary_source_key="source-case-intent-1")
 
     assert row is not None
+    assert row["intent_version"] == "trade_intent_v2"
+    assert row["execution_capability_snapshot_sha256"] == CAPABILITY_SNAPSHOT.snapshot_sha256
+    assert row["blacklist_revision_at_emission"] == 0
+    assert len(row["blacklist_snapshot_sha256_at_emission"]) == 64
     assert row["valid_until_ms"] == intent.valid_until_ms
     assert row["created_at_ms"] == intent.created_at_ms
     assert isinstance(row["updated_at_ms"], int)

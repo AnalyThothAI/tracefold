@@ -201,6 +201,47 @@ def upgrade() -> None:
         "CREATE TRIGGER trg_trading_intents_v2_only BEFORE INSERT ON trading_intents "
         "FOR EACH ROW EXECUTE FUNCTION reject_new_trade_intent_v1()"
     )
+    # Expiry is the only authorised blacklist deletion path available to
+    # Nautilus. It accepts no caller time and changes rows plus revision under
+    # the runtime lock; the role keeps no direct INSERT/UPDATE/DELETE grant.
+    op.execute(
+        """
+        CREATE FUNCTION materialize_trading_blacklist_expiry() RETURNS bigint
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog, public
+        AS $$
+        DECLARE
+          v_now_ms bigint := floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+          v_removed integer := 0;
+          v_revision bigint;
+        BEGIN
+          PERFORM id FROM public.trading_runtime_state WHERE id = 1 FOR UPDATE;
+          IF NOT FOUND THEN
+            RAISE EXCEPTION 'trading_runtime_state_missing';
+          END IF;
+          DELETE FROM public.trading_symbol_blacklist
+           WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= v_now_ms;
+          GET DIAGNOSTICS v_removed = ROW_COUNT;
+          IF v_removed > 0 THEN
+            UPDATE public.trading_runtime_state
+               SET blacklist_revision = blacklist_revision + 1,
+                   updated_at_ms = v_now_ms
+             WHERE id = 1
+         RETURNING blacklist_revision INTO v_revision;
+          ELSE
+            SELECT blacklist_revision INTO v_revision
+              FROM public.trading_runtime_state WHERE id = 1;
+          END IF;
+          RETURN v_revision;
+        END;
+        $$
+        """
+    )
+    op.execute("REVOKE ALL ON FUNCTION materialize_trading_blacklist_expiry() FROM PUBLIC")
+    op.execute(
+        "GRANT EXECUTE ON FUNCTION materialize_trading_blacklist_expiry() TO tracefold_workers, tracefold_nautilus"
+    )
 
     op.execute(
         "REVOKE ALL ON trading_execution_capability_snapshots, trading_replay_runs "
