@@ -296,6 +296,18 @@
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_market_instrument_listing_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `venue` | `TEXT` | False | `None` |
+| `venue_symbol` | `TEXT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `base_symbol` | `TEXT` | False | `None` |
+| `instrument_class` | `TEXT` | False | `None` |
+| `quote_asset` | `TEXT` | True | `None` |
+| `status` | `TEXT` | False | `None` |
+
 ## `news_market_instruments`
 
 | Column | Type | Nullable | Default |
@@ -545,6 +557,17 @@
 | `strategy_version` | `TEXT` | False | `None` |
 | `strategy_config_digest` | `TEXT` | False | `None` |
 
+## `trading_execution_capability_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `snapshot_sha256` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `execution_environment` | `TEXT` | False | `None` |
+| `included_count` | `INTEGER` | False | `None` |
+| `excluded_count` | `INTEGER` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
 ## `trading_intents`
 
 | Column | Type | Nullable | Default |
@@ -592,6 +615,14 @@
 | `realized_pnl_currency` | `TEXT` | True | `None` |
 | `commissions_by_currency` | `JSONB` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint` |
+| `execution_capability_snapshot_sha256` | `TEXT` | True | `None` |
+| `blacklist_revision_at_emission` | `BIGINT` | True | `None` |
+| `blacklist_snapshot_sha256_at_emission` | `TEXT` | True | `None` |
+| `blacklist_snapshot_payload_at_emission` | `JSONB` | True | `None` |
+| `underlying_key` | `TEXT` | True | `None` |
+| `blacklist_revision_at_fence` | `BIGINT` | True | `None` |
+| `blacklist_snapshot_sha256_at_fence` | `TEXT` | True | `None` |
+| `blacklist_snapshot_payload_at_fence` | `JSONB` | True | `None` |
 
 ## `trading_order_observations`
 
@@ -645,6 +676,20 @@
 | `max_holding_ms` | `BIGINT` | True | `None` |
 | `taker_fee_bps` | `INTEGER` | True | `None` |
 
+## `trading_replay_runs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `run_id` | `TEXT` | False | `None` |
+| `spec_sha256` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `terminal_status` | `TEXT` | False | `None` |
+| `artifact_path` | `TEXT` | False | `None` |
+| `artifact_sha256` | `TEXT` | False | `None` |
+| `source_count` | `INTEGER` | False | `None` |
+| `directional_count` | `INTEGER` | False | `None` |
+| `terminal_outcome_count` | `INTEGER` | False | `None` |
+
 ## `trading_runtime_state`
 
 | Column | Type | Nullable | Default |
@@ -660,6 +705,10 @@
 | `nautilus_ready` | `BOOLEAN` | False | `false` |
 | `nautilus_readiness_reason` | `TEXT` | True | `None` |
 | `nautilus_unexpected_exposure` | `BOOLEAN` | False | `false` |
+| `active_capability_snapshot_sha256` | `TEXT` | True | `None` |
+| `active_capability_included_count` | `INTEGER` | False | `0` |
+| `nautilus_bootstrap_account_zero_at_ms` | `BIGINT` | True | `None` |
+| `blacklist_revision` | `BIGINT` | False | `0` |
 
 ## `trading_strategy_evaluations`
 

@@ -33,6 +33,7 @@ from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -45,6 +46,8 @@ from tracefold.integrations.nautilus.messages import (
     PositionFlatConfirmed,
     PositionQuantityChanged,
     ReadinessChanged,
+    StartupAccountReconciliationConfirmed,
+    StartupAccountReconciliationUnproven,
     StopAccepted,
     StopSubmitted,
     StrategyQueues,
@@ -54,13 +57,19 @@ from tracefold.integrations.nautilus.messages import (
     strategy_queues,
 )
 from tracefold.integrations.nautilus.strategy import (
-    SOLUSDT_PERP,
     TracefoldNautilusStrategy,
     tracefold_strategy_config,
 )
-from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import (
+    BlacklistSnapshotV1,
+    ExecutionInstrumentCapabilityV1,
+    IntentOutcome,
+    TradeIntent,
+    deterministic_client_order_id,
+)
 
 NOW_MS = 1_900_000_000_000
+SOLUSDT_PERP = InstrumentId.from_str("SOLUSDT-PERP.BINANCE")
 
 
 def _solusdt_perp_binance() -> CryptoPerpetual:
@@ -70,14 +79,35 @@ def _solusdt_perp_binance() -> CryptoPerpetual:
         raw_symbol="SOLUSDT",
         base_currency="SOL",
         min_notional="5.00000000 USDT",
+        info={"status": "TRADING", "contractType": "PERPETUAL"},
     )
     return CryptoPerpetual.from_dict(values)
+
+
+def _capability(instrument: CryptoPerpetual | None = None) -> ExecutionInstrumentCapabilityV1:
+    selected = instrument or _solusdt_perp_binance()
+    return ExecutionInstrumentCapabilityV1(
+        instrument_id=selected.id.value,
+        native_symbol=selected.raw_symbol.value,
+        underlying_key=f"crypto:{selected.base_currency.code}",
+        quote_currency=selected.quote_currency.code,
+        price_precision=selected.price_precision,
+        size_precision=selected.size_precision,
+        price_increment=str(selected.price_increment.as_decimal()),
+        size_increment=str(selected.size_increment.as_decimal()),
+        min_quantity=None if selected.min_quantity is None else str(selected.min_quantity.as_decimal()),
+        min_notional=None if selected.min_notional is None else str(selected.min_notional.as_decimal()),
+    )
 
 
 def _intent(*, case_id: str = "case-1") -> TradeIntent:
     return TradeIntent.create(
         case_id=case_id,
         case_manifest_sha256="1" * 64,
+        execution_capability_snapshot_sha256="2" * 64,
+        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
+        instrument_id=SOLUSDT_PERP.value,
+        underlying_key="crypto:SOL",
         created_at_ms=NOW_MS,
         reference_price=Decimal("10000"),
         target_notional_usd=Decimal("10"),
@@ -96,12 +126,20 @@ def _outcome(intent: TradeIntent, **values: object) -> IntentOutcome:
 
 
 class RecordingStrategy(TracefoldNautilusStrategy):
-    def __init__(self, *, queues: StrategyQueues) -> None:
+    def __init__(
+        self,
+        *,
+        queues: StrategyQueues,
+        capability: ExecutionInstrumentCapabilityV1 | None = None,
+    ) -> None:
         self.flat_requests: list[VenueFlatProofRequested] = []
         super().__init__(
             engine_identity="nt-v1",
+            instrument_ids=[SOLUSDT_PERP],
+            capabilities={SOLUSDT_PERP.value: capability or _capability()},
             queues=queues,
             request_venue_flat=self.flat_requests.append,
+            request_startup_account_reconciliation=lambda: None,
         )
         self.submitted: list[tuple[object, object, object]] = []
         self.canceled: list[object] = []
@@ -122,6 +160,8 @@ def _registered_strategy(
     leverage: str = "1",
     instrument: CryptoPerpetual | None = None,
     queue_maxsize: int = 64,
+    with_quote: bool = True,
+    startup_reconciled: bool = True,
 ) -> tuple[RecordingStrategy, StrategyQueues]:
     queues = strategy_queues(maxsize=queue_maxsize)
     clock = TestClock()
@@ -130,21 +170,30 @@ def _registered_strategy(
     cache = Cache()
     instrument = instrument or _solusdt_perp_binance()
     cache.add_instrument(instrument)
-    cache.add_quote_tick(
-        TestDataStubs.quote_tick(
-            instrument=instrument,
-            bid_price=9_999,
-            ask_price=10_000,
-            ts_event=NOW_MS * 1_000_000,
-            ts_init=NOW_MS * 1_000_000,
+    if with_quote:
+        cache.add_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=instrument,
+                bid_price=9_999,
+                ask_price=10_000,
+                ts_event=NOW_MS * 1_000_000,
+                ts_init=NOW_MS * 1_000_000,
+            )
         )
-    )
     account = TestExecStubs.margin_account(AccountId("BINANCE-001"))
     account.set_leverage(SOLUSDT_PERP, Decimal(leverage))
     cache.add_account(account)
     portfolio = Portfolio(msgbus, cache, clock)
-    strategy = RecordingStrategy(queues=queues)
+    strategy = RecordingStrategy(queues=queues, capability=_capability(instrument))
     strategy.register(TraderId("TRACEFOLD-001"), portfolio, msgbus, cache, clock)
+    if startup_reconciled:
+        queues.commands.put_nowait(
+            StartupAccountReconciliationConfirmed(
+                verified_at_ms=NOW_MS,
+                bootstrap_account_zero=False,
+            )
+        )
+        strategy.on_timer(None)
     return strategy, queues
 
 
@@ -225,17 +274,21 @@ def test_strategy_queues_are_bounded_and_never_silently_drop_messages() -> None:
     assert queues.commands.maxsize == queues.events.maxsize == 1
 
 
-def test_strategy_config_claims_only_exact_sol_netting_instrument() -> None:
-    config = tracefold_strategy_config()
+def test_strategy_config_claims_exact_snapshot_netting_instruments() -> None:
+    eth = InstrumentId.from_str("ETHUSDT-PERP.BINANCE")
+    config = tracefold_strategy_config([SOLUSDT_PERP, eth])
 
     assert config.oms_type == "NETTING"
-    assert config.external_order_claims == [InstrumentId.from_str("SOLUSDT-PERP.BINANCE")]
+    assert config.external_order_claims == [eth, SOLUSDT_PERP]
 
     with pytest.raises(ValueError, match="nautilus_external_order_claims_invalid"):
         TracefoldNautilusStrategy(
             engine_identity="nt-v1",
+            instrument_ids=[SOLUSDT_PERP],
+            capabilities={SOLUSDT_PERP.value: _capability()},
             queues=strategy_queues(),
             request_venue_flat=lambda _request: None,
+            request_startup_account_reconciliation=lambda: None,
             config=StrategyConfig(
                 oms_type="NETTING",
                 external_order_claims=[InstrumentId.from_str("ETHUSDT-PERP.BINANCE")],
@@ -243,6 +296,83 @@ def test_strategy_config_claims_only_exact_sol_netting_instrument() -> None:
         )
 
     assert InstrumentId.from_str("SOLUSDT-PERP.BINANCE") == SOLUSDT_PERP
+
+
+def test_strategy_config_allows_zero_claim_bootstrap() -> None:
+    config = tracefold_strategy_config([])
+
+    assert config.oms_type == "NETTING"
+    assert config.external_order_claims == []
+
+
+def test_zero_claim_bootstrap_projects_fresh_zero_proof_but_never_claims_readiness() -> None:
+    queues = strategy_queues()
+    requests: list[None] = []
+    clock = TestClock()
+    clock.set_time(NOW_MS * 1_000_000)
+    msgbus = MessageBus(TraderId("TRACEFOLD-001"), clock)
+    cache = Cache()
+    cache.add_account(TestExecStubs.margin_account(AccountId("BINANCE-001")))
+    strategy = TracefoldNautilusStrategy(
+        engine_identity="nt-bootstrap-v1",
+        instrument_ids=[],
+        capabilities={},
+        queues=queues,
+        request_venue_flat=lambda _request: None,
+        request_startup_account_reconciliation=lambda: requests.append(None),
+    )
+    strategy.register(TraderId("TRACEFOLD-001"), Portfolio(msgbus, cache, clock), msgbus, cache, clock)
+
+    strategy.on_start()
+
+    assert requests == [None]
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="startup_account_reconciliation_unproven",
+        unexpected_exposure=False,
+    )
+
+    queues.commands.put_nowait(
+        StartupAccountReconciliationUnproven(
+            observed_at_ms=NOW_MS,
+            unexpected_exposure=True,
+        )
+    )
+    strategy.on_timer(None)
+    assert queues.events.get_nowait() == BootstrapAccountZeroChanged(
+        verified_at_ms=None,
+        observed_at_ms=NOW_MS,
+    )
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="external_exposure",
+        unexpected_exposure=True,
+    )
+
+    clock.set_time((NOW_MS + 4_999) * 1_000_000)
+    strategy.on_timer(None)
+    assert requests == [None]
+
+    clock.set_time((NOW_MS + 5_000) * 1_000_000)
+    strategy.on_timer(None)
+    assert requests == [None, None]
+
+    queues.commands.put_nowait(
+        StartupAccountReconciliationConfirmed(
+            verified_at_ms=NOW_MS + 5_000,
+            bootstrap_account_zero=True,
+        )
+    )
+    strategy.on_timer(None)
+    assert queues.events.get_nowait() == BootstrapAccountZeroChanged(
+        verified_at_ms=NOW_MS + 5_000,
+        observed_at_ms=NOW_MS + 5_000,
+    )
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="capability_snapshot_missing",
+        unexpected_exposure=False,
+    )
 
 
 def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -> None:
@@ -282,6 +412,35 @@ def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -
     assert position_id is None
 
 
+def test_dynamic_subscription_waits_for_its_first_quote_before_requesting_the_fence() -> None:
+    strategy, queues = _registered_strategy(with_quote=False)
+    intent = _intent()
+
+    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
+    strategy.on_timer(None)
+
+    assert queues.events.empty()
+    assert strategy.submitted == []
+
+    instrument = _solusdt_perp_binance()
+    strategy.cache.add_quote_tick(
+        TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=9_999,
+            ask_price=10_000,
+            ts_event=NOW_MS * 1_000_000,
+            ts_init=NOW_MS * 1_000_000,
+        )
+    )
+    strategy.on_timer(None)
+
+    assert queues.events.get_nowait() == EntryFenceRequested(
+        intent_id=intent.intent_id,
+        engine_identity="nt-v1",
+        quantity=Decimal("0.001"),
+    )
+
+
 def test_entry_preflight_refuses_quantity_below_the_venue_min_notional() -> None:
     values = CryptoPerpetual.to_dict(_solusdt_perp_binance())
     values["min_notional"] = "50.00000000 USDT"
@@ -304,6 +463,20 @@ def test_startup_readiness_requires_authoritative_one_x_leverage() -> None:
     assert one_x_queues.events.get_nowait() == ReadinessChanged(
         ready=True,
         reason="ready",
+        unexpected_exposure=False,
+    )
+
+
+def test_startup_rejects_a_provider_instrument_that_is_no_longer_trading() -> None:
+    values = CryptoPerpetual.to_dict(_solusdt_perp_binance())
+    values["info"] = {"status": "SETTLING", "contractType": "PERPETUAL"}
+    strategy, queues = _registered_strategy(instrument=CryptoPerpetual.from_dict(values))
+
+    strategy.on_start()
+
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="capability_snapshot_mismatch",
         unexpected_exposure=False,
     )
 
@@ -1042,6 +1215,7 @@ def test_active_close_keeps_stop_until_venue_zero_then_retires_it_before_final_f
             position_id=position_id.value,
             authoritative_quantity=Decimal(0),
             verified_at_ms=NOW_MS + 51,
+            account_wide_zero=False,
         )
     )
     strategy.on_timer(None)
@@ -1062,6 +1236,21 @@ def test_active_close_keeps_stop_until_venue_zero_then_retires_it_before_final_f
             ts_event=(NOW_MS + 53) * 1_000_000,
         )
     )
+    assert len(strategy.flat_requests) == 2
+    assert queues.events.empty()
+
+    queues.commands.put_nowait(
+        VenueFlatConfirmed(
+            intent_id=intent.intent_id,
+            instrument_id=SOLUSDT_PERP.value,
+            position_id=position_id.value,
+            authoritative_quantity=Decimal(0),
+            verified_at_ms=NOW_MS + 54,
+            account_wide_zero=True,
+        )
+    )
+    strategy.on_timer(None)
+
     assert queues.events.get_nowait() == PositionFlatConfirmed(
         intent_id=intent.intent_id,
         position_id=position_id.value,
@@ -1071,7 +1260,7 @@ def test_active_close_keeps_stop_until_venue_zero_then_retires_it_before_final_f
         realized_pnl_currency=None,
         commissions_by_currency=None,
         closed_at_ms=NOW_MS + 50,
-        flat_verified_at_ms=NOW_MS + 51,
+        flat_verified_at_ms=NOW_MS + 54,
     )
 
 
@@ -1153,8 +1342,8 @@ def test_fresh_position_max_holding_closes_without_a_database_command() -> None:
     )
 
 
-def test_fenced_intent_recovery_queries_the_reconciled_order_and_never_resubmits() -> None:
-    strategy, queues = _registered_strategy()
+def test_fenced_intent_recovery_waits_for_startup_reconciliation_then_queries_without_resubmit() -> None:
+    strategy, queues = _registered_strategy(startup_reconciled=False)
     intent = _intent()
     entry_id = deterministic_client_order_id(intent.intent_id, "entry")
     instrument = _solusdt_perp_binance()
@@ -1185,6 +1374,18 @@ def test_fenced_intent_recovery_queries_the_reconciled_order_and_never_resubmits
     )
 
     queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=fenced))
+    strategy.on_timer(None)
+
+    assert strategy.queried == []
+    assert strategy.submitted == []
+    assert queues.events.empty()
+
+    queues.commands.put_nowait(
+        StartupAccountReconciliationConfirmed(
+            verified_at_ms=NOW_MS,
+            bootstrap_account_zero=False,
+        )
+    )
     strategy.on_timer(None)
 
     assert strategy.queried == [entry]
@@ -1235,6 +1436,14 @@ def test_position_closed_callback_reports_observation_without_claiming_reconcile
             position_id=position_id.value,
             closing_client_order_id=stop.client_order_id.value,
             observed_at_ms=NOW_MS + 50,
+            owned_open_order_ids=tuple(
+                sorted(
+                    (
+                        deterministic_client_order_id(intent.intent_id, "entry"),
+                        stop.client_order_id.value,
+                    )
+                )
+            ),
         )
     ]
     assert queues.events.empty()

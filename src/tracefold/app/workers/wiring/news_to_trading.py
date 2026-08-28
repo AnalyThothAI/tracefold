@@ -23,6 +23,7 @@ from tracefold.news.storage.trade_projection import (
     OiTradeProjectionRow,
     TradeInstrumentProjectionRow,
 )
+from tracefold.trading.capabilities import ExecutionUniverseCandidateRow
 from tracefold.trading.contracts import (
     InstrumentCandidateRow,
     LiquidationCandidateRow,
@@ -32,7 +33,7 @@ from tracefold.trading.contracts import (
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v7"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v8"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
@@ -192,17 +193,45 @@ def news_trade_candidates(
     )
 
 
-def news_trade_instruments(repos: Any, base_symbol: str, venues: Sequence[str]) -> Sequence[InstrumentCandidateRow]:
+def news_trade_instruments(
+    repos: Any,
+    base_symbol: str,
+    venues: Sequence[str],
+    *,
+    observed_at_ms: int | None = None,
+) -> Sequence[InstrumentCandidateRow]:
     """`InstrumentProjectionReader`: News instrument facts, mapped into Trading's venue resolver."""
 
     return [
         to_instrument_candidate_row(row)
-        for row in repos.news.trade_candidate_instrument(base_symbol=base_symbol, venues=venues)
+        for row in repos.news.trade_candidate_instrument(
+            base_symbol=base_symbol,
+            venues=venues,
+            observed_at_ms=observed_at_ms,
+        )
+    ]
+
+
+def news_execution_instruments(repos: Any) -> list[ExecutionUniverseCandidateRow]:
+    """All News-owned Binance instrument facts mapped field by field for one cold refresh."""
+
+    return [
+        ExecutionUniverseCandidateRow(
+            venue=row["venue"],
+            venue_symbol=row["venue_symbol"],
+            base_symbol=row["base_symbol"],
+            instrument_class=row["instrument_class"],
+            quote_asset=row["quote_asset"],
+            status=row["status"],
+            last_seen_ms=row["last_seen_ms"],
+        )
+        for row in repos.news.trade_execution_instruments()
     ]
 
 
 __all__ = [
     "MAPPED_NEWS_PROJECTION_VERSION",
+    "news_execution_instruments",
     "news_trade_candidates",
     "news_trade_instruments",
     "to_instrument_candidate_row",

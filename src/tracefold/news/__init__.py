@@ -7,6 +7,7 @@ configuration constants remain under their owning modules instead of becoming an
 from __future__ import annotations
 
 from .models import NewsFeedEntry, ReaderReceipt, TriageVerdict
+from .oi_contracts import OI_METRIC_VERSION
 from .opennews import (
     OpenNewsEvent,
     OpenNewsExpectedError,
@@ -31,6 +32,7 @@ from .told_context import NEWS_RETRIEVAL_SHA256
 __all__ = [
     "EVENT_KINDS",
     "NEWS_RETRIEVAL_SHA256",
+    "OI_METRIC_VERSION",
     "EditorialEnvelope",
     "EventKind",
     "NewsFeedEntry",

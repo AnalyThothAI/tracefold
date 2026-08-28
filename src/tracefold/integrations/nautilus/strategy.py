@@ -1,24 +1,33 @@
-"""Public-v1 Nautilus adapter for Tracefold's single Binance Demo intent."""
+"""Public-v1 Nautilus adapter for capability-governed Binance Demo intents."""
 
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import Decimal
 from queue import Empty, Full
-from typing import Any, cast
+from typing import Any
 
-from nautilus_trader.adapters.binance import BINANCE
+from nautilus_trader.adapters.binance import BINANCE, BINANCE_VENUE
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, InstrumentId, PositionId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import IntentOutcome, IntentReasonCode, TradeIntent, deterministic_client_order_id
+from tracefold.trading import (
+    ExecutionInstrumentCapabilityV1,
+    IntentOutcome,
+    IntentReasonCode,
+    TradeIntent,
+    deterministic_client_order_id,
+)
+from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
 
+from .capabilities import instrument_matches_capability
 from .messages import (
     AdoptIntent,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -32,6 +41,8 @@ from .messages import (
     PositionFlatConfirmed,
     PositionQuantityChanged,
     ReadinessChanged,
+    StartupAccountReconciliationConfirmed,
+    StartupAccountReconciliationUnproven,
     StopAccepted,
     StopSubmitted,
     StrategyCommand,
@@ -42,41 +53,56 @@ from .messages import (
     VenueFlatUnproven,
 )
 
-SOLUSDT_PERP = InstrumentId.from_str("SOLUSDT-PERP.BINANCE")
 _FLAT_PROOF_RETRY_MS = 5_000
 
 
-def tracefold_strategy_config() -> StrategyConfig:
+def tracefold_strategy_config(instrument_ids: Sequence[InstrumentId]) -> StrategyConfig:
     """Return the one supported strategy ownership configuration."""
 
+    claims = sorted(set(instrument_ids), key=lambda item: item.value)
     return StrategyConfig(
         strategy_id="TRACEFOLD",
         order_id_tag="001",
         oms_type="NETTING",
-        external_order_claims=[SOLUSDT_PERP],
+        external_order_claims=claims,
     )
 
 
 class TracefoldNautilusStrategy(Strategy):
-    """Own one exact instrument and exchange typed messages with the DB thread."""
+    """Own one active lifecycle across the frozen executable instrument set."""
 
     def __init__(
         self,
         *,
         engine_identity: str,
+        instrument_ids: Sequence[InstrumentId],
+        capabilities: Mapping[str, ExecutionInstrumentCapabilityV1],
         queues: StrategyQueues,
         request_venue_flat: Callable[[VenueFlatProofRequested], None],
+        request_startup_account_reconciliation: Callable[[], None],
         config: StrategyConfig | None = None,
     ) -> None:
-        selected = config or tracefold_strategy_config()
-        if selected.oms_type != "NETTING" or selected.external_order_claims != [SOLUSDT_PERP]:
+        claims = sorted(set(instrument_ids), key=lambda item: item.value)
+        selected = config or tracefold_strategy_config(claims)
+        if selected.oms_type != "NETTING" or selected.external_order_claims != claims:
             raise ValueError("nautilus_external_order_claims_invalid")
         if not engine_identity.strip():
             raise ValueError("nautilus_engine_identity_invalid")
         super().__init__(selected)
         self._engine_identity = engine_identity
+        self._instrument_ids = frozenset(claims)
+        if set(capabilities) != {item.value for item in claims}:
+            raise ValueError("nautilus_capability_claims_mismatch")
+        self._capabilities = dict(capabilities)
         self._queues = queues
         self._request_venue_flat = request_venue_flat
+        self._request_startup_account_reconciliation = request_startup_account_reconciliation
+        self._bootstrap_mode = not claims
+        self._startup_account_reconciled = False
+        self._startup_unexpected_exposure = False
+        self._startup_request_pending = False
+        self._startup_retry_at_ms: int | None = None
+        self._pending_startup_adopt: AdoptIntent | None = None
         # One active lifecycle is retained losslessly behind the bounded thread queue.
         self._pending_events: deque[StrategyEvent] = deque()
         self._projection_overflow = False
@@ -109,7 +135,6 @@ class TracefoldNautilusStrategy(Strategy):
     def on_start(self) -> None:
         """Publish post-reconciliation readiness and start the command pump."""
 
-        self.subscribe_quote_ticks(SOLUSDT_PERP)
         self.clock.set_timer(
             name=f"{self.id}:COMMANDS",
             interval=timedelta(milliseconds=100),
@@ -117,29 +142,49 @@ class TracefoldNautilusStrategy(Strategy):
             fire_immediately=True,
         )
         self._publish_readiness()
+        self._request_startup_reconciliation_if_due()
 
     def on_stop(self) -> None:
         timer_name = f"{self.id}:COMMANDS"
         if timer_name in self.clock.timer_names:
             self.clock.cancel_timer(timer_name)
-        self.unsubscribe_quote_ticks(SOLUSDT_PERP)
+        if self._active_intent is not None:
+            self.unsubscribe_quote_ticks(self._instrument_id())
 
     def _readiness(self) -> ReadinessChanged:
-        instrument = self.cache.instrument(SOLUSDT_PERP)
-        account = self.portfolio.account(venue=SOLUSDT_PERP.venue)
+        active_instrument = None if self._active_intent is None else self._instrument_id()
+        account = self.portfolio.account(venue=BINANCE_VENUE)
         expected_position_id = None if self._position_id is None else self._position_id.value
         unexpected_position = any(
-            position.instrument_id != SOLUSDT_PERP or position.id.value != expected_position_id
+            active_instrument is None
+            or position.instrument_id != active_instrument
+            or position.id.value != expected_position_id
             for position in self.cache.positions_open()
         )
         unowned_order = any(order.client_order_id.value not in self._orders for order in self.cache.orders_open())
         unexpected = unexpected_position or unowned_order
         if self._projection_overflow:
             return ReadinessChanged(False, "projection_overflow", unexpected)
-        if instrument is None or account is None:
+        if not self._startup_account_reconciled:
+            unexpected = unexpected or self._startup_unexpected_exposure
+            return ReadinessChanged(
+                False,
+                "external_exposure" if unexpected else "startup_account_reconciliation_unproven",
+                unexpected,
+            )
+        if self._bootstrap_mode:
+            return ReadinessChanged(False, "capability_snapshot_missing", unexpected)
+        instruments = {item: self.cache.instrument(item) for item in self._instrument_ids}
+        if account is None or any(instrument is None for instrument in instruments.values()):
             return ReadinessChanged(False, "account_or_instrument_missing", unexpected)
-        leverage = account.leverage(SOLUSDT_PERP) if hasattr(account, "leverage") else None
-        if leverage != Decimal(1):
+        if any(
+            instrument is None or not instrument_matches_capability(instrument, self._capabilities[item.value])
+            for item, instrument in instruments.items()
+        ):
+            return ReadinessChanged(False, "capability_snapshot_mismatch", unexpected)
+        if not hasattr(account, "leverage") or any(
+            account.leverage(item) != Decimal(1) for item in self._instrument_ids
+        ):
             return ReadinessChanged(False, "leverage_not_one", unexpected)
         if unexpected:
             return ReadinessChanged(False, "external_exposure", True)
@@ -162,28 +207,87 @@ class TracefoldNautilusStrategy(Strategy):
             except Empty:
                 break
             self._handle_command(command)
+        self._request_entry_fence_if_ready()
         self._enforce_max_holding()
         self._retry_venue_flat_proof()
+        self._request_startup_reconciliation_if_due()
         if self._last_readiness is not None:
             self._publish_readiness()
         self._flush_events()
 
     def _handle_command(self, command: StrategyCommand) -> None:
         if isinstance(command, AdoptIntent):
-            self._adopt_intent(command)
+            if not self._startup_account_reconciled:
+                pending = self._pending_startup_adopt
+                if pending is not None and pending.intent.intent_id != command.intent.intent_id:
+                    raise ValueError("nautilus_second_startup_intent")
+                self._pending_startup_adopt = command
+            else:
+                self._adopt_intent(command)
+        elif isinstance(command, StartupAccountReconciliationConfirmed):
+            if command.bootstrap_account_zero != self._bootstrap_mode:
+                raise RuntimeError("nautilus_startup_reconciliation_mode_mismatch")
+            self._startup_account_reconciled = True
+            self._startup_unexpected_exposure = False
+            self._startup_request_pending = False
+            self._startup_retry_at_ms = (
+                int(self.clock.timestamp_ms()) + _FLAT_PROOF_RETRY_MS if self._bootstrap_mode else None
+            )
+            if self._bootstrap_mode:
+                self._emit(
+                    BootstrapAccountZeroChanged(
+                        verified_at_ms=command.verified_at_ms,
+                        observed_at_ms=command.verified_at_ms,
+                    )
+                )
+            pending = self._pending_startup_adopt
+            self._pending_startup_adopt = None
+            if pending is not None:
+                self._adopt_intent(pending)
+        elif isinstance(command, StartupAccountReconciliationUnproven):
+            self._startup_account_reconciled = False
+            self._startup_unexpected_exposure = command.unexpected_exposure
+            self._startup_request_pending = False
+            self._startup_retry_at_ms = int(self.clock.timestamp_ms()) + _FLAT_PROOF_RETRY_MS
+            if self._bootstrap_mode:
+                self._emit(
+                    BootstrapAccountZeroChanged(
+                        verified_at_ms=None,
+                        observed_at_ms=command.observed_at_ms,
+                    )
+                )
         elif isinstance(command, EntryFenceGranted):
             self._submit_fenced_entry(command)
         elif isinstance(command, IntentReleased):
-            self._release_pending_intent(command.intent_id)
+            pending = self._pending_startup_adopt
+            if pending is not None and pending.intent.intent_id == command.intent_id:
+                self._pending_startup_adopt = None
+            else:
+                self._release_pending_intent(command.intent_id)
         elif isinstance(command, VenueFlatConfirmed):
             self._confirm_venue_flat(command)
         elif isinstance(command, VenueFlatUnproven):
             self._venue_flat_unproven(command)
 
+    def _request_startup_reconciliation_if_due(self) -> None:
+        if self._startup_request_pending or (self._startup_account_reconciled and not self._bootstrap_mode):
+            return
+        now_ms = int(self.clock.timestamp_ms())
+        if self._startup_retry_at_ms is not None and now_ms < self._startup_retry_at_ms:
+            return
+        self._startup_request_pending = True
+        self._request_startup_account_reconciliation()
+
+    def _instrument_id(self) -> InstrumentId:
+        if self._active_intent is None:
+            raise RuntimeError("nautilus_active_instrument_missing")
+        return InstrumentId.from_str(self._active_intent.instrument_id)
+
     def _adopt_intent(self, command: AdoptIntent) -> None:
         intent = command.intent
         outcome = command.outcome
-        if intent.instrument_id != SOLUSDT_PERP.value:
+        instrument_id = InstrumentId.from_str(intent.instrument_id)
+        if instrument_id not in self._instrument_ids:
             raise ValueError("nautilus_intent_instrument_invalid")
         if outcome.intent_id != intent.intent_id:
             raise ValueError("nautilus_intent_outcome_mismatch")
@@ -192,10 +296,22 @@ class TracefoldNautilusStrategy(Strategy):
 
         self._active_intent = intent
         self._active_outcome = outcome
+        self.subscribe_quote_ticks(instrument_id)
         if outcome.entry_fenced_at_ms is not None:
             self._recover_fenced_intent(outcome)
             return
+        self._request_entry_fence_if_ready()
 
+    def _request_entry_fence_if_ready(self) -> None:
+        intent = self._active_intent
+        outcome = self._active_outcome
+        if (
+            intent is None
+            or outcome is None
+            or outcome.entry_fenced_at_ms is not None
+            or self._pending_fence_quantity is not None
+        ):
+            return
         quantity = self._entry_quantity(intent)
         if quantity is None:
             return
@@ -231,40 +347,37 @@ class TracefoldNautilusStrategy(Strategy):
                 self._refuse_intent(intent, "runtime_not_ready")
             return None
 
-        instrument = self.cache.instrument(SOLUSDT_PERP)
-        quote = self.cache.quote_tick(SOLUSDT_PERP)
-        if instrument is None or quote is None:
+        instrument_id = self._instrument_id()
+        instrument = self.cache.instrument(instrument_id)
+        quote = self.cache.quote_tick(instrument_id)
+        if instrument is None:
             self._refuse_intent(intent, "runtime_not_ready")
+            return None
+        if quote is None:
             return None
 
         quote_ms = int(quote.ts_event) // 1_000_000
-        if quote_ms < intent.created_at_ms or quote_ms > now_ms:
-            self._refuse_intent(intent, "market_unacceptable")
-            return None
-
         bid = quote.bid_price.as_decimal()
         ask = quote.ask_price.as_decimal()
-        mid = (bid + ask) / 2
-        spread_bps = (ask - bid) / mid * 10_000
-        drift_bps = abs(ask - intent.reference_price) / intent.reference_price * 10_000
-        if spread_bps > intent.max_spread_bps or drift_bps > intent.max_entry_drift_bps:
-            self._refuse_intent(intent, "market_unacceptable")
+        decision = evaluate_entry(
+            now_ms=now_ms,
+            created_at_ms=intent.created_at_ms,
+            valid_until_ms=intent.valid_until_ms,
+            quote_at_ms=quote_ms,
+            bid=bid,
+            ask=ask,
+            reference_price=intent.reference_price,
+            target_notional=intent.target_notional_usd,
+            size_increment=instrument.size_increment.as_decimal(),
+            min_quantity=None if instrument.min_quantity is None else instrument.min_quantity.as_decimal(),
+            min_notional=None if instrument.min_notional is None else instrument.min_notional.as_decimal(),
+            max_spread_bps=intent.max_spread_bps,
+            max_drift_bps=intent.max_entry_drift_bps,
+        )
+        if decision.quantity is None:
+            self._refuse_intent(intent, decision.reason)
             return None
-
-        increment = instrument.size_increment.as_decimal()
-        raw_quantity = intent.target_notional_usd / ask
-        quantity = (raw_quantity / increment).to_integral_value(rounding=ROUND_DOWN) * increment
-        minimum = instrument.min_quantity
-        min_notional = instrument.min_notional
-        notional = instrument.notional_value(instrument.make_qty(quantity), instrument.make_price(ask))
-        if (
-            quantity <= 0
-            or (minimum is not None and quantity < minimum.as_decimal())
-            or (min_notional is not None and notional < min_notional)
-        ):
-            self._refuse_intent(intent, "quantity_unexecutable")
-            return None
-        return cast(Decimal, quantity)
+        return decision.quantity
 
     def _refuse_intent(self, intent: TradeIntent, reason_code: IntentReasonCode) -> None:
         self._emit(IntentRefused(intent.intent_id, reason_code))
@@ -277,6 +390,7 @@ class TracefoldNautilusStrategy(Strategy):
             or (self._position_quantity is not None and self._position_quantity > 0)
         ):
             return
+        self.unsubscribe_quote_ticks(self._instrument_id())
         self._active_intent = None
         self._active_outcome = None
         self._pending_fence_quantity = None
@@ -299,11 +413,12 @@ class TracefoldNautilusStrategy(Strategy):
         if expected_id in self._orders:
             return
 
-        instrument = self.cache.instrument(SOLUSDT_PERP)
+        instrument_id = self._instrument_id()
+        instrument = self.cache.instrument(instrument_id)
         if instrument is None:
             raise RuntimeError("nautilus_instrument_missing_after_fence")
         entry = self.order_factory.market(
-            instrument_id=SOLUSDT_PERP,
+            instrument_id=instrument_id,
             order_side=OrderSide.BUY,
             quantity=instrument.make_qty(command.quantity),
             reduce_only=False,
@@ -349,7 +464,7 @@ class TracefoldNautilusStrategy(Strategy):
         if position is None:
             positions = [
                 candidate
-                for candidate in self.cache.positions_open(instrument_id=SOLUSDT_PERP)
+                for candidate in self.cache.positions_open(instrument_id=self._instrument_id())
                 if candidate.opening_order_id == ClientOrderId(client_order_id)
             ]
             position = positions[0] if len(positions) == 1 else None
@@ -365,7 +480,11 @@ class TracefoldNautilusStrategy(Strategy):
             return
 
         recovered_closed_position = None
-        if position is not None and position.instrument_id == SOLUSDT_PERP and position.quantity.as_decimal() > 0:
+        if (
+            position is not None
+            and position.instrument_id == self._instrument_id()
+            and position.quantity.as_decimal() > 0
+        ):
             self._position_id = position.id
             self._position_quantity = position.quantity.as_decimal()
             self._opened_at_ms = outcome.opened_at_ms or int(position.ts_opened) // 1_000_000
@@ -381,7 +500,7 @@ class TracefoldNautilusStrategy(Strategy):
                 )
         elif (
             position is not None
-            and position.instrument_id == SOLUSDT_PERP
+            and position.instrument_id == self._instrument_id()
             and position.is_closed
             and position.opening_order_id == ClientOrderId(client_order_id)
         ):
@@ -530,9 +649,9 @@ class TracefoldNautilusStrategy(Strategy):
 
     def on_position_opened(self, event: Any) -> None:
         intent = self._active_intent
-        if intent is None or event.instrument_id != SOLUSDT_PERP:
+        if intent is None or event.instrument_id != self._instrument_id():
             return
-        account = self.portfolio.account(venue=SOLUSDT_PERP.venue)
+        account = self.portfolio.account(venue=self._instrument_id().venue)
         opening_client_order_id = event.opening_order_id.value
         expected_entry_id = deterministic_client_order_id(intent.intent_id, "entry")
         if (
@@ -576,7 +695,7 @@ class TracefoldNautilusStrategy(Strategy):
         intent = self._active_intent
         if (
             intent is None
-            or event.instrument_id != SOLUSDT_PERP
+            or event.instrument_id != self._instrument_id()
             or self._position_id is None
             or event.position_id != self._position_id
         ):
@@ -608,7 +727,7 @@ class TracefoldNautilusStrategy(Strategy):
             intent is None
             or self._position_id is None
             or event.position_id != self._position_id
-            or event.instrument_id != SOLUSDT_PERP
+            or event.instrument_id != self._instrument_id()
         ):
             return
         pnl = event.realized_pnl
@@ -715,6 +834,7 @@ class TracefoldNautilusStrategy(Strategy):
             position_id=observation.position_id,
             closing_client_order_id=observation.closing_client_order_id,
             observed_at_ms=observation.closed_at_ms,
+            owned_open_order_ids=tuple(sorted(self._orders)),
         )
         try:
             self._request_venue_flat(request)
@@ -969,7 +1089,7 @@ class TracefoldNautilusStrategy(Strategy):
             intent is None
             or observation is None
             or command.intent_id != intent.intent_id
-            or command.instrument_id != SOLUSDT_PERP.value
+            or command.instrument_id != self._instrument_id().value
             or command.position_id != observation.position_id
             or command.authoritative_quantity != 0
         ):
@@ -1014,7 +1134,11 @@ class TracefoldNautilusStrategy(Strategy):
 
         if stop_id is None or stop_id in self._terminal_stop_ids:
             self._stop_order = None
-            self._finalize_flat()
+            if confirmation.account_wide_zero:
+                self._finalize_flat()
+            else:
+                self._pending_flat_confirmation = None
+                self._request_current_venue_flat_proof()
             return
         if self._stop_order is None or self._stop_order.client_order_id.value != stop_id:
             self._venue_flat_unproven(
@@ -1056,6 +1180,8 @@ class TracefoldNautilusStrategy(Strategy):
         confirmation = self._pending_flat_confirmation
         if intent is None or observation is None or confirmation is None:
             raise RuntimeError("nautilus_flat_finalization_context_missing")
+        if not confirmation.account_wide_zero:
+            raise RuntimeError("nautilus_account_wide_flat_unproven")
         stop_id = self._stop_id_at_close
         close_id = deterministic_client_order_id(intent.intent_id, "close")
         closing_id = observation.closing_client_order_id
@@ -1078,6 +1204,7 @@ class TracefoldNautilusStrategy(Strategy):
                 flat_verified_at_ms=confirmation.verified_at_ms,
             )
         )
+        self.unsubscribe_quote_ticks(self._instrument_id())
         self._active_intent = None
         self._active_outcome = None
         self._pending_fence_quantity = None
@@ -1137,7 +1264,7 @@ class TracefoldNautilusStrategy(Strategy):
         expected_quantity: Decimal | None = None,
     ) -> bool:
         stop = self._stop_order
-        account = self.portfolio.account(venue=SOLUSDT_PERP.venue)
+        account = self.portfolio.account(venue=self._instrument_id().venue)
         quantity = self._position_quantity if expected_quantity is None else expected_quantity
         trigger_price = self._stop_trigger_price
         # Reconciled external orders jump from INITIALIZED to ACCEPTED, so Nautilus leaves
@@ -1151,7 +1278,7 @@ class TracefoldNautilusStrategy(Strategy):
             and account is not None
             and observed_account_id == account.id
             and stop.venue_order_id is not None
-            and stop.instrument_id == SOLUSDT_PERP
+            and stop.instrument_id == self._instrument_id()
             and stop.order_type == OrderType.STOP_MARKET
             and stop.status == OrderStatus.ACCEPTED
             and stop.side == OrderSide.SELL
@@ -1171,10 +1298,10 @@ class TracefoldNautilusStrategy(Strategy):
         return bool(order.status == OrderStatus.REJECTED and order.venue_order_id is not None)
 
     def _owned_position_contract_matches(self, position: Any, entry_client_order_id: str) -> bool:
-        account = self.portfolio.account(venue=SOLUSDT_PERP.venue)
+        account = self.portfolio.account(venue=self._instrument_id().venue)
         return bool(
             account is not None
-            and position.instrument_id == SOLUSDT_PERP
+            and position.instrument_id == self._instrument_id()
             and position.account_id == account.id
             and position.strategy_id == self.id
             and position.entry == OrderSide.BUY
@@ -1233,22 +1360,25 @@ class TracefoldNautilusStrategy(Strategy):
     ) -> None:
         intent = self._active_intent
         position_id = self._position_id
-        instrument = self.cache.instrument(SOLUSDT_PERP)
+        instrument_id = self._instrument_id()
+        instrument = self.cache.instrument(instrument_id)
         if intent is None or position_id is None or instrument is None:
             raise RuntimeError("nautilus_stop_context_missing")
         if trigger_price is None:
             if avg_entry_price is None:
                 raise RuntimeError("nautilus_stop_price_missing")
-            raw_price = avg_entry_price * (Decimal(10_000 - intent.stop_loss_bps) / Decimal(10_000))
-            increment = instrument.price_increment.as_decimal()
-            trigger_price = (raw_price / increment).to_integral_value(rounding=ROUND_DOWN) * increment
+            trigger_price = stop_price(
+                entry_price=avg_entry_price,
+                stop_loss_bps=intent.stop_loss_bps,
+                price_increment=instrument.price_increment.as_decimal(),
+            )
         client_order_id = deterministic_client_order_id(
             intent.intent_id,
             "stop",
             previous_client_order_id=previous_client_order_id,
         )
         stop = self.order_factory.stop_market(
-            instrument_id=SOLUSDT_PERP,
+            instrument_id=instrument_id,
             order_side=OrderSide.SELL,
             quantity=instrument.make_qty(quantity),
             trigger_price=instrument.make_price(trigger_price),
@@ -1281,11 +1411,12 @@ class TracefoldNautilusStrategy(Strategy):
         client_order_id = deterministic_client_order_id(intent.intent_id, "close")
         if client_order_id in self._orders:
             return
-        instrument = self.cache.instrument(SOLUSDT_PERP)
+        instrument_id = self._instrument_id()
+        instrument = self.cache.instrument(instrument_id)
         if instrument is None:
             raise RuntimeError("nautilus_instrument_missing_for_close")
         close = self.order_factory.market(
-            instrument_id=SOLUSDT_PERP,
+            instrument_id=instrument_id,
             order_side=OrderSide.SELL,
             quantity=instrument.make_qty(quantity),
             reduce_only=True,
@@ -1311,7 +1442,11 @@ class TracefoldNautilusStrategy(Strategy):
         opened_at_ms = self._opened_at_ms
         if intent is None or position_id is None or quantity is None or quantity <= 0 or opened_at_ms is None:
             return
-        if int(self.clock.timestamp_ms()) < opened_at_ms + intent.max_holding_ms:
+        if not max_holding_due(
+            opened_at_ms=opened_at_ms,
+            max_holding_ms=intent.max_holding_ms,
+            now_ms=int(self.clock.timestamp_ms()),
+        ):
             return
 
         close_id = deterministic_client_order_id(intent.intent_id, "close")
@@ -1349,7 +1484,6 @@ class TracefoldNautilusStrategy(Strategy):
 
 
 __all__ = [
-    "SOLUSDT_PERP",
     "TracefoldNautilusStrategy",
     "tracefold_strategy_config",
 ]

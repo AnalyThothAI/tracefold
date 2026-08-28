@@ -14,6 +14,7 @@ from psycopg import OperationalError
 from tracefold.app.nautilus.database import NautilusDatabaseBridge
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -27,7 +28,7 @@ from tracefold.integrations.nautilus.messages import (
     StopSubmitted,
     strategy_queues,
 )
-from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import BlacklistSnapshotV1, IntentOutcome, TradeIntent, deterministic_client_order_id
 
 NOW_MS = 1_900_000_000_000
 
@@ -40,6 +41,10 @@ def _intent() -> TradeIntent:
     return TradeIntent.create(
         case_id="case-1",
         case_manifest_sha256="1" * 64,
+        execution_capability_snapshot_sha256="2" * 64,
+        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
+        instrument_id="SOLUSDT-PERP.BINANCE",
+        underlying_key="crypto:SOL",
         created_at_ms=NOW_MS,
         reference_price=Decimal("10000"),
         target_notional_usd=Decimal("10"),
@@ -76,6 +81,26 @@ def _ready(bridge: NautilusDatabaseBridge, repos: _Repositories) -> None:
     )
 
 
+def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness() -> None:
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+
+    assert bridge._handle_event(
+        repos,
+        BootstrapAccountZeroChanged(
+            verified_at_ms=NOW_MS - 1,
+            observed_at_ms=NOW_MS,
+        ),
+    )
+
+    repos.trading.set_nautilus_bootstrap_account_zero.assert_called_once_with(
+        verified_at_ms=NOW_MS - 1,
+        now_ms=NOW_MS,
+    )
+    assert bridge.readiness()["engine_ready"] is False
+
+
 def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_entry() -> None:
     intent = _intent()
     outcome = _outcome(intent)
@@ -95,6 +120,28 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
     assert queues.commands.get_nowait() == AdoptIntent(intent=intent, outcome=outcome)
     assert queues.commands.empty()
     assert repos.trading.set_nautilus_runtime.call_count == 3
+
+
+def test_capability_pointer_change_stops_the_old_engine_before_dispatch() -> None:
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(
+        _settings(),
+        queues,
+        capability_snapshot_sha256="2" * 64,
+        now_ms=lambda: NOW_MS,
+    )
+    repos = _Repositories()
+    repos.trading.nautilus_runtime_state.return_value = {
+        "control": "PAUSED",
+        "active_capability_snapshot_sha256": "3" * 64,
+    }
+
+    with pytest.raises(RuntimeError, match="nautilus_capability_snapshot_changed"):
+        bridge._cycle(repos)
+
+    repos.trading.nautilus_runtime_state.assert_called_once_with(for_update=True)
+    repos.trading.active_intent.assert_not_called()
+    repos.trading.set_nautilus_runtime.assert_not_called()
 
 
 def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> None:

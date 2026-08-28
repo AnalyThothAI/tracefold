@@ -13,7 +13,13 @@ class map consults only when no real venue knows the symbol. It is never a price
 from __future__ import annotations
 
 from .binance import BINANCE_FUTURES_BASE_URL, BINANCE_SPOT_BASE_URL, fetch_binance_instruments
-from .candles import fetch_binance_candles, fetch_hyperliquid_candles
+from .candles import (
+    VenueBar,
+    fetch_binance_bars,
+    fetch_binance_candles,
+    fetch_hyperliquid_bars,
+    fetch_hyperliquid_candles,
+)
 from .errors import VenueExpectedError
 from .hyperliquid import HYPERLIQUID_BASE_URL, fetch_hyperliquid_instruments
 from .quotes import (
@@ -31,13 +37,16 @@ __all__ = [
     "HYPERLIQUID_BASE_URL",
     "US_REFERENCE_BASE_URL",
     "US_REFERENCE_VENUE",
+    "VenueBar",
     "VenueExpectedError",
+    "fetch_binance_bars",
     "fetch_binance_candles",
     "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",
     "fetch_binance_instruments",
     "fetch_binance_spot_day_quotes",
     "fetch_binance_spot_quotes",
+    "fetch_hyperliquid_bars",
     "fetch_hyperliquid_candles",
     "fetch_hyperliquid_instruments",
     "fetch_hyperliquid_quotes",

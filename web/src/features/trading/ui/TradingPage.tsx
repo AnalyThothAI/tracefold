@@ -32,7 +32,7 @@ export function TradingPage({ token }: { token: string }) {
       <header className="trading-page-header">
         <div className="trading-heading-copy">
           <h1>Case → Intent → Outcome</h1>
-          <p>唯一执行权威：Nautilus · Binance USD-M Demo · SOLUSDT-PERP.BINANCE</p>
+          <p>唯一执行权威：Nautilus · Binance USD-M Demo · capability snapshot − blacklist</p>
         </div>
         {status ? (
           <div className="trading-heading-aside" data-tone={readinessTone(status.readiness)}>
@@ -57,7 +57,15 @@ export function TradingPage({ token }: { token: string }) {
           <div className="trading-body">
             <MetricRow className="trading-mandate" columns={5} label="冻结执行契约">
               <Metric eyebrow="VENUE" value="Binance" caption="USD-M Demo" />
-              <Metric eyebrow="SYMBOL" value="SOL" caption={status.readiness.instrument_id} />
+              <Metric
+                eyebrow="CAPABILITY"
+                value={`${status.readiness.active_capability_included_count} 合约`}
+                caption={
+                  status.readiness.active_capability_snapshot_sha256
+                    ? status.readiness.active_capability_snapshot_sha256.slice(0, 12)
+                    : "尚未激活快照"
+                }
+              />
               <Metric
                 eyebrow="NOTIONAL"
                 value={`$${status.budget.target_notional_usd}`}

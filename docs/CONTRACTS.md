@@ -163,8 +163,10 @@ The strategy set and its thresholds remain code-owned/frozen into each Case.
 News-bearing Case; without it that Case settles
 `no_trade/program_unconfigured`. The OI arithmetic lane makes no model call.
 
-Execution is one code-owned contract: `SOLUSDT-PERP.BINANCE`, Binance USD-M
-Demo, NETTING/one-way, long-only, 1x, market entry, 60-second Intent TTL,
+Execution permission is the active content-addressed Binance USD-M Demo
+capability snapshot minus the canonical underlying blacklist. It is not an
+operator target-symbol list. The code-owned contract remains NETTING/one-way,
+long-only, 1x, market entry, 60-second Intent TTL,
 200-bps native fixed-quantity reduce-only stop, 180-second maximum holding,
 25-bps entry drift, 30-bps spread, one nonterminal Intent globally, and one
 entry fence per UTC day. Quantity is
@@ -763,6 +765,11 @@ irreversible. The structured-output constraint now follows the endpoint —
 `json_schema` where supported, `json_object` with the same schema inlined into
 the system message where not — which moves fallback-route prompt bytes while
 leaving both seed texts unchanged.
+`20260828_0320` adds append-only execution-capability snapshots and replay
+receipts, the active capability/blacklist revisions, the distinct bootstrap
+account-zero proof, TradeIntentV2, and immutable News instrument-listing
+validity events used by source-time replay. It requires `PAUSED` with no
+nonterminal Intent, rejects every new V1 insert, and has no downgrade.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -813,15 +820,25 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
-- `tracefold trading replay-oi --days N` is a read-only report, not an endpoint:
-  every parsed OI fact in the window driven through the production source stage,
-  Candidate Gate and strategy, counted by stage and by rule, with the target
-  template's cohort listed separately. It proposes no threshold and evaluates
-  neither the price band nor any outcome, because it fetches no market data.
+- `tracefold trading refresh-capabilities` is a cold command. It loads the full
+  public News/provider candidate union without credentials, appends its stable
+  partition, and moves the active pointer only while `PAUSED`, no nonterminal
+  Intent exists, and the account-wide zero proof is fresh. A replacement uses
+  current green Nautilus readiness; initial activation uses the separate
+  bootstrap-zero proof while the zero-claim process remains formally unready.
+  Activation clears that bootstrap proof and invalidates readiness.
+- `tracefold trading replay-oi --days 7 --strategy
+  oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
+  gives every bounded source fact one terminal source-native BAR outcome. It
+  reports decision, independent capital admission, execution/coverage,
+  gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The
+  response names an immutable artifact and PostgreSQL receipt by deterministic
+  `run_id`; funding and portfolio drawdown remain `null`.
 - `GET /api/trading/status` returns the exact Demo execution contract and
   current readiness. `budget` exposes only target notional and the code-owned
   one-entry-per-UTC-day ceiling. `readiness` exposes enabled/control,
-  `nautilus`, `BINANCE_USDM_DEMO`, `SOLUSDT-PERP.BINANCE`, redacted
+  `nautilus`, `BINANCE_USDM_DEMO`, active capability digest/count, canonical
+  blacklist revision, redacted
   credential availability, engine readiness/reason, heartbeat, and unexpected
   exposure. `floors`, Gate identity, frozen strategy configs/permissions,
   Case/Intent/Outcome counts, entry/close milestones, admission counts, shadow
@@ -1420,7 +1437,7 @@ Event with admission, grounded assets, and preliminary storyline. `news why
 and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`.
 
-The `trading` family is read-mostly and has no execution write command.
+The `trading` family is read-mostly and has no provider-execution write command.
 `trading status` reports the frozen Demo identity, target notional, control,
 Nautilus readiness, active/fenced/closed Intent counts, the day's funnel,
 durable admission counts, stage latency, Cases by trigger/strategy, and
@@ -1429,11 +1446,15 @@ the CLI does not infer flat, protection, PnL, or fees.
 
 `trading cases [--state] [--limit]` lists the Case ledger.
 `trading show <case-id>` returns exactly `case`, optional immutable `intent`,
-and optional current `outcome`. The only Trading writes are
+and optional current `outcome`. Operator control writes are
 `trading blacklist add|remove`, which manages the canonical deny-list, and
 `trading control running|close-only|paused`. `PAUSED` and `CLOSE_ONLY`
 block new entry fences but do not stop an already-fenced Nautilus lifecycle.
-`trading replay-oi --days N` is a read-only Candidate Gate/strategy report.
+`trading refresh-capabilities` appends and conditionally activates a capability
+snapshot. `trading replay-oi --days N` fetches public source-native BAR data,
+publishes one content-addressed artifact, materializes timed blacklist expiry
+through a short Workers transaction, and inserts one immutable replay receipt;
+it has no execution credentials and performs no provider order write.
 
 Trading consumes `news_trade_projection_v5`: separate editorial News,
 deterministic OI, and typed liquidation rows. The liquidation row preserves

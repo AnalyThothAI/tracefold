@@ -16,6 +16,7 @@ from psycopg import InterfaceError, OperationalError
 from tracefold.app.repository_session import repositories
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -47,11 +48,13 @@ class NautilusDatabaseBridge:
         settings: Settings,
         queues: StrategyQueues,
         *,
+        capability_snapshot_sha256: str | None = None,
         repository_factory: _RepositoryFactory = repositories,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._settings = settings
         self._queues = queues
+        self._capability_snapshot_sha256 = capability_snapshot_sha256
         self._repository_factory = repository_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
         self._stop_event = Event()
@@ -165,7 +168,9 @@ class NautilusDatabaseBridge:
         now_ms = self._now_ms()
         command: AdoptIntent | IntentReleased | None = None
         with repos.transaction():
-            runtime = repos.trading.nautilus_runtime_state()
+            runtime = repos.trading.nautilus_runtime_state(for_update=True)
+            if runtime is None or runtime.get("active_capability_snapshot_sha256") != self._capability_snapshot_sha256:
+                raise RuntimeError("nautilus_capability_snapshot_changed")
             active = repos.trading.active_intent()
             if active is None:
                 self._dispatched_intent_id = None
@@ -207,6 +212,14 @@ class NautilusDatabaseBridge:
         )
 
     def _handle_event(self, repos: Any, event: StrategyEvent) -> bool:
+        if isinstance(event, BootstrapAccountZeroChanged):
+            with repos.transaction():
+                repos.trading.set_nautilus_bootstrap_account_zero(
+                    verified_at_ms=event.verified_at_ms,
+                    now_ms=event.observed_at_ms,
+                )
+            return True
+
         if isinstance(event, ReadinessChanged):
             with self._lock:
                 self._engine_ready = event.ready
@@ -222,6 +235,10 @@ class NautilusDatabaseBridge:
                     now_ms=self._now_ms(),
                 )
             if outcome is None:
+                self._dispatched_intent_id = None
+                self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
+                return True
+            if outcome.execution_state == "TERMINAL":
                 self._dispatched_intent_id = None
                 self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
                 return True

@@ -7,13 +7,17 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from tracefold.trading import INTENT_POLICY_SHA256, IntentOutcome, TradeIntent
+from tracefold.trading import INTENT_POLICY_SHA256, BlacklistSnapshotV1, IntentOutcome, TradeIntent
 
 
 def _intent(**overrides: object) -> TradeIntent:
     intent = TradeIntent.create(
         case_id="case-1",
         case_manifest_sha256="1" * 64,
+        execution_capability_snapshot_sha256="2" * 64,
+        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
+        instrument_id="SOLUSDT-PERP.BINANCE",
+        underlying_key="crypto:SOL",
         created_at_ms=1_900_000_000_000,
         reference_price=Decimal("60000"),
         target_notional_usd=Decimal("10"),
@@ -26,7 +30,6 @@ def _intent(**overrides: object) -> TradeIntent:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("instrument_id", "ETHUSDT-PERP.BINANCE"),
         ("target_notional_usd", Decimal("10.01")),
         ("valid_until_ms", 1_900_000_059_999),
         ("stop_loss_bps", 199),
@@ -35,14 +38,26 @@ def _intent(**overrides: object) -> TradeIntent:
         ("max_spread_bps", 29),
     ],
 )
-def test_v1_policy_rejects_values_outside_the_single_frozen_demo_slice(field: str, value: object) -> None:
+def test_v2_policy_rejects_values_outside_the_frozen_risk_slice(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         _intent(**{field: value})
 
 
-def test_v1_policy_accepts_the_frozen_demo_slice() -> None:
+def test_v2_policy_accepts_dynamic_demo_instruments() -> None:
     intent = _intent()
     assert intent.instrument_id == "SOLUSDT-PERP.BINANCE"
+    eth = TradeIntent.create(
+        case_id="case-2",
+        case_manifest_sha256="1" * 64,
+        execution_capability_snapshot_sha256="2" * 64,
+        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
+        instrument_id="ETHUSDT-PERP.BINANCE",
+        underlying_key="crypto:ETH",
+        created_at_ms=1_900_000_000_000,
+        reference_price=Decimal("3000"),
+        target_notional_usd=Decimal("10"),
+    )
+    assert eth.instrument_id == "ETHUSDT-PERP.BINANCE"
     assert intent.intent_policy_sha256 == INTENT_POLICY_SHA256
     assert intent.valid_until_ms == intent.created_at_ms + 60_000
     assert intent.stop_loss_bps == 200
@@ -51,7 +66,7 @@ def test_v1_policy_accepts_the_frozen_demo_slice() -> None:
     assert intent.max_spread_bps == 30
 
 
-def test_v1_policy_identity_is_code_owned() -> None:
+def test_v2_policy_identity_is_code_owned() -> None:
     with pytest.raises(ValidationError):
         _intent(intent_policy_sha256="3" * 64)
 

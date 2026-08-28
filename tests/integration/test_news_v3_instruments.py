@@ -29,6 +29,7 @@ def conn():
 
 @pytest.fixture(autouse=True)
 def _clean(conn):
+    conn.execute("DELETE FROM news_market_instrument_listing_events")
     conn.execute("DELETE FROM news_market_instruments")
     conn.execute("DELETE FROM news_symbol_aliases")
     conn.execute("DELETE FROM news_items")
@@ -104,6 +105,78 @@ def test_second_snapshot_reconciles_and_is_idempotent(conn) -> None:
     with repos.transaction():
         repos.instruments.apply_snapshot(first, now_ms=NOW + 10800_000)
     assert repos.instruments.venues_for("OLD") == ("binance.perp",)
+
+
+def test_trade_projection_uses_source_time_listing_intervals_across_relisting(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "OLDUSDT", "OLD", "USDT")],
+            now_ms=NOW,
+        )
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "BTCUSDT", "BTC", "USDT")],
+            now_ms=NOW + 3_600_000,
+        )
+
+    assert repos.news.trade_candidate_instrument(base_symbol="OLD", venues=("binance.perp",)) == []
+    historical = repos.news.trade_candidate_instrument(
+        base_symbol="OLD",
+        venues=("binance.perp",),
+        observed_at_ms=NOW + 1,
+    )
+    assert [(row["venue_symbol"], row["status"]) for row in historical] == [("OLDUSDT", "trading")]
+    assert (
+        repos.news.trade_candidate_instrument(
+            base_symbol="OLD",
+            venues=("binance.perp",),
+            observed_at_ms=NOW + 3_600_000,
+        )
+        == []
+    )
+
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "OLDUSDT", "OLD", "USDT")],
+            now_ms=NOW + 7_200_000,
+        )
+
+    assert repos.news.trade_candidate_instrument(base_symbol="OLD", venues=("binance.perp",))
+    assert (
+        repos.news.trade_candidate_instrument(
+            base_symbol="OLD",
+            venues=("binance.perp",),
+            observed_at_ms=NOW + 3_600_001,
+        )
+        == []
+    )
+    relisted = repos.news.trade_candidate_instrument(
+        base_symbol="OLD",
+        venues=("binance.perp",),
+        observed_at_ms=NOW + 7_200_000,
+    )
+    assert [(row["venue_symbol"], row["status"]) for row in relisted] == [("OLDUSDT", "trading")]
+
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "OLDUSDT", "NEW", "USDT")],
+            now_ms=NOW + 10_800_000,
+        )
+
+    assert (
+        repos.news.trade_candidate_instrument(
+            base_symbol="OLD",
+            venues=("binance.perp",),
+            observed_at_ms=NOW + 10_800_000,
+        )
+        == []
+    )
+    changed = repos.news.trade_candidate_instrument(
+        base_symbol="NEW",
+        venues=("binance.perp",),
+        observed_at_ms=NOW + 10_800_000,
+    )
+    assert [(row["venue_symbol"], row["base_symbol"]) for row in changed] == [("OLDUSDT", "NEW")]
 
 
 def test_a_venue_that_did_not_answer_is_never_read_as_a_mass_delisting(conn) -> None:
@@ -285,7 +358,7 @@ def test_unmatched_provider_tags_rank_the_missing_symbols(conn) -> None:
 
 
 def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:
-    """The migration adds no explicit grants; it relies on ALTER DEFAULT PRIVILEGES. Verify, don't assume."""
+    """The current universe is mutable by Workers; the replay history is insert-only."""
 
     row = conn.execute(
         """
@@ -299,12 +372,33 @@ def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:
                  AS workers_update,
                has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'DELETE')
                  AS workers_delete,
+               has_table_privilege(
+                 'tracefold_serve', 'public.news_market_instrument_listing_events', 'SELECT'
+               ) AS serve_history_select,
+               has_table_privilege(
+                 'tracefold_serve', 'public.news_market_instrument_listing_events', 'INSERT'
+               ) AS serve_history_insert,
+               has_table_privilege(
+                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'SELECT'
+               ) AS workers_history_select,
+               has_table_privilege(
+                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'INSERT'
+               ) AS workers_history_insert,
+               has_table_privilege(
+                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'UPDATE'
+               ) AS workers_history_update,
+               has_table_privilege(
+                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'DELETE'
+               ) AS workers_history_delete,
                has_table_privilege('tracefold_workers', 'public.news_symbol_aliases', 'INSERT') AS workers_alias
         """
     ).fetchone()
     assert row["serve_select"] is True
     assert row["serve_insert"] is False
     assert all(row[key] is True for key in ("workers_select", "workers_insert", "workers_update", "workers_delete"))
+    assert row["serve_history_select"] is True and row["serve_history_insert"] is False
+    assert row["workers_history_select"] is True and row["workers_history_insert"] is True
+    assert row["workers_history_update"] is False and row["workers_history_delete"] is False
     assert row["workers_alias"] is True
 
 

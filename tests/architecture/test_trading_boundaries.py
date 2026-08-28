@@ -110,6 +110,20 @@ def test_trading_reads_only_trading_tables() -> None:
     assert offenders == []
 
 
+def test_current_production_code_contains_no_target_instrument_literal() -> None:
+    """Historical migrations retain V1 evidence; current runtime permission cannot name a target."""
+
+    target = re.compile(r"[A-Z0-9]+USDT-PERP\.BINANCE")
+    offenders = [
+        str(path.relative_to(ROOT))
+        for path in SRC.rglob("*.py")
+        if "__pycache__" not in path.parts
+        and "alembic/versions" not in path.as_posix()
+        and target.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
 def test_trading_does_not_reach_through_the_app_repository_session_for_news() -> None:
     offenders: list[str] = []
     for path in _trading_sources():
@@ -180,12 +194,26 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
 
     assert trading.__all__ == [
         "ACTIVE_INTENT_STATES",
+        "BAR_FIDELITY_VERSION",
         "INTENT_POLICY_SHA256",
         "Bar",
+        "BlacklistSnapshotV1",
         "CaseState",
+        "ExecutionCapabilitySnapshotV1",
+        "ExecutionInstrumentCapabilityV1",
+        "ExecutionUniverseCandidateRow",
         "InstrumentRef",
         "IntentOutcome",
         "IntentReasonCode",
+        "ProviderInstrumentCandidateV1",
+        "ReplayArtifactV1",
+        "ReplayBarV1",
+        "ReplayExecutionIntentV1",
+        "ReplayReceiptV1",
+        "ReplayScenarioCapabilityV1",
+        "ReplaySpecV1",
+        "ReplayTerminalOutcomeV1",
+        "StableCapabilityExclusionV1",
         "TradeIntent",
         "TradingCaseManifest",
         "deterministic_client_order_id",

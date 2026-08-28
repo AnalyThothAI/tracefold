@@ -432,6 +432,10 @@ def build_parser() -> argparse.ArgumentParser:
     trading = subcommands.add_parser("trading", help="Trading Case -> Intent -> Outcome and safety controls")
     trading_subcommands = trading.add_subparsers(dest="trading_command", required=True)
     trading_subcommands.add_parser("status", help="Nautilus readiness, intent outcomes, and the daily funnel")
+    trading_subcommands.add_parser(
+        "refresh-capabilities",
+        help="cold refresh of the Binance Demo execution capability snapshot",
+    )
     trading_cases = trading_subcommands.add_parser("cases", help="list Trading cases newest first")
     trading_cases.add_argument(
         "--state",
@@ -441,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     trading_cases.add_argument("--limit", type=_positive_int, default=20)
     trading_replay = trading_subcommands.add_parser(
         "replay-oi",
-        help="read-only: every parsed OI fact in a window, and the rule each one stopped on (#265)",
+        help="source-native BAR replay with an audited artifact and immutable receipt (#286)",
     )
     trading_replay.add_argument(
         "--days",
@@ -449,6 +453,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=7,
         help="how far back to replay; the OI ledger holds 30 days of parsed frames",
     )
+    trading_replay.add_argument(
+        "--strategy",
+        choices=("oi_smart_money_momentum_v1",),
+        default="oi_smart_money_momentum_v1",
+    )
+    trading_replay.add_argument(
+        "--venues",
+        default="binance.perp,hl.perp",
+        help="comma-separated exact source-native venue scenarios",
+    )
+    trading_replay.add_argument("--fidelity", choices=("bar_v1",), default="bar_v1")
+    trading_replay.add_argument("--out", default="artifacts/trading-replay", help="artifact root")
     trading_show = trading_subcommands.add_parser("show", help="one case with its intent and current outcome")
     trading_show.add_argument("case_id")
     trading_blacklist = trading_subcommands.add_parser(

@@ -78,15 +78,18 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.contracts",
         "tracefold.news.storage.root",
         "tracefold.trading.storage.root",
-        # #269. Three surfaces have to describe the *same* capital rules — the Workers wiring that
+        # #269/#286. Three surfaces have to describe the *same* capital rules — the Workers wiring that
         # executes them, the CLI replay that reports what they did, and the HTTP status the console
         # reads — so `app/trading_config.py` assembles them from settings once and every reader gets
-        # the same digest. Each of these is a pure code-owned value: the gate's config and version, the
-        # eligibility policy it is built from, and the strategy map with its per-strategy thresholds.
-        # Composition is App's, which is why this belongs here and not in `app.http`; a route that
-        # imported them directly would be a second assembly free to drift from the scanner's.
+        # the same digest. #286 extends that assembly to the runtime's regime, trade and notional config
+        # so replay cannot silently use defaults. These are pure code-owned values; composition is App's,
+        # which is why this belongs here rather than in `app.http` or either business package.
         "tracefold.trading.candidate.eligibility",
         "tracefold.trading.candidate.gate",
+        "tracefold.trading.contracts",
+        "tracefold.trading.decision.policy",
+        "tracefold.trading.decision.regime",
+        "tracefold.trading.pipeline.runtime",
         "tracefold.trading.strategy.root",
     ),
     "app.http": (
@@ -98,6 +101,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # here would stop matching the day `oi_signals` bumps it — silently, as "no case".
         "tracefold.news.oi_signals",
         "tracefold.news.review.desk",
+        "tracefold.trading.intent",
     ),
     "app.trading_cli": (
         "tracefold.trading.contracts",
@@ -109,8 +113,16 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.candidate.blacklist",
         "tracefold.trading.candidate.eligibility",
         "tracefold.trading.candidate.gate",
+        "tracefold.trading.candidate.routing",
+        "tracefold.trading.capabilities",
+        "tracefold.trading.contracts",
+        "tracefold.trading.decision.regime",
+        "tracefold.trading.execution_policy",
+        "tracefold.trading.intent",
+        "tracefold.trading.replay",
         "tracefold.trading.research.oi_replay",
         "tracefold.trading.strategy.oi_smart_money_momentum",
+        "tracefold.trading.strategy.root",
         # The OI lane's measurement version, so the replay reads the same rows the scanner does. A
         # literal here would silently stop matching the day `oi_signals` bumps it.
         "tracefold.news.oi_signals",
@@ -146,10 +158,16 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.pipeline.candidate",
         "tracefold.trading.pipeline.root",
         "tracefold.trading.pipeline.runtime",
+        "tracefold.trading.capabilities",
     ),
+    "app.nautilus": ("tracefold.trading.intent",),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": ("tracefold.news.bus",),
     "integrations.venues": ("tracefold.news.market_review.instruments", "tracefold.news.market_review.pricing"),
+    "integrations.nautilus": (
+        "tracefold.trading.execution_policy",
+        "tracefold.trading.replay",
+    ),
 }
 # Concrete integration families may own one business-facing adapter. This is a module-family rule,
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
@@ -257,18 +275,24 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
     family: str | None = None
     if parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("news"):
         family = "app.news_cli"
-    elif parts == ["tracefold", "app", "cli", "commands", "trading"]:
+    elif (
+        parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("trading")
+    ) or parts == ["tracefold", "app", "cli", "replay_artifacts"]:
         family = "app.trading_cli"
     elif parts[:3] == ["tracefold", "app", "workers"]:
         family = "app.workers"
     elif parts[:3] == ["tracefold", "app", "http"]:
         family = "app.http"
+    elif parts[:3] == ["tracefold", "app", "nautilus"]:
+        family = "app.nautilus"
     elif parts[:2] == ["tracefold", "app"] and len(parts) == 3:
         family = "app.composition"
     elif parts[:3] == ["tracefold", "integrations", "opennews"]:
         family = "integrations.opennews"
     elif parts[:3] == ["tracefold", "integrations", "venues"]:
         family = "integrations.venues"
+    elif parts[:3] == ["tracefold", "integrations", "nautilus"]:
+        family = "integrations.nautilus"
     elif parts == ["tracefold", "integrations", "rabbitmq"]:
         family = "integrations.rabbitmq"
     allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())

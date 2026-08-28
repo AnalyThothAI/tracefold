@@ -19,7 +19,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-bootstrap-if-needed verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -209,7 +209,7 @@ _db-provision-nautilus-role-locked:
 		docker compose run --rm --no-deps --user postgres \
 			--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres
 
-trading-hard-cut-preflight: preflight ## prove the one-time #283 PR 2 cutover prerequisites
+trading-hard-cut-preflight: preflight ## prove one-time Trading execution cutover prerequisites
 	@set -eu; \
 		nautilus_ids=$$(docker compose ps --all -q nautilus); \
 		nautilus_count=$$(printf '%s\n' "$$nautilus_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
@@ -265,11 +265,18 @@ _trading-hard-cut-preflight-if-needed:
 			    SELECT 1 FROM pg_constraint \
 			     WHERE conname = 'trading_cases_state_check' \
 			       AND pg_get_constraintdef(oid) LIKE '%INTENT_EMITTED%' \
+			  ), \
+			  EXISTS ( \
+			    SELECT 1 FROM pg_class \
+			     WHERE relnamespace = 'public'::regnamespace \
+			       AND relname = 'trading_execution_capability_snapshots' \
+			       AND relkind = 'r' \
 			  ))"); \
 		case "$$migration_state" in \
-			20260828_0316\|f) make --no-print-directory trading-hard-cut-preflight ;; \
-			*\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
-			*) echo "Database state '$$migration_state' cannot safely enter the PR 2 hard cut." >&2; exit 2 ;; \
+			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f|20260828_0319\|t\|f) \
+				make --no-print-directory trading-hard-cut-preflight ;; \
+			*\|t\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
+			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
 
 serve: ## run the read-only public runtime in foreground
@@ -351,12 +358,49 @@ _up-locked:
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate serve workers"; \
-		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+		if [ "$$trading_enabled" = true ]; then \
+			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
+		fi; \
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
+
+_trading-capability-bootstrap-if-needed:
+	@set -eu; \
+		active_capability=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			PGOPTIONS="-c default_transaction_read_only=on"; \
+			export PGPASSWORD PGOPTIONS; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
+			-c "SELECT active_capability_snapshot_sha256 FROM trading_runtime_state WHERE id = 1"'); \
+		if [ -z "$$active_capability" ]; then \
+			echo "Bootstrapping the first Trading execution capability snapshot."; \
+			docker compose up -d --no-build --force-recreate nautilus; \
+			bootstrap_ready=; attempt=0; \
+			while [ "$$attempt" -lt $(TRACEFOLD_COMPOSE_WAIT_SECONDS) ]; do \
+				bootstrap_ready=$$(docker compose exec -T postgres sh -eu -c \
+					'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+					PGOPTIONS="-c default_transaction_read_only=on"; \
+					export PGPASSWORD PGOPTIONS; \
+					exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
+					-c "SELECT CASE WHEN nautilus_bootstrap_account_zero_at_ms IS NOT NULL \
+					AND nautilus_bootstrap_account_zero_at_ms >= \
+					floor(extract(epoch from clock_timestamp()) * 1000)::bigint - 15000 \
+					AND NOT nautilus_unexpected_exposure THEN '\''ready'\'' ELSE '\'''\'' END \
+					FROM trading_runtime_state WHERE id = 1"'); \
+				[ "$$bootstrap_ready" = ready ] && break; \
+				attempt=$$((attempt + 1)); sleep 1; \
+			done; \
+			if [ "$$bootstrap_ready" != ready ]; then \
+				echo "Nautilus did not establish a fresh bootstrap account-zero proof." >&2; \
+				exit 1; \
+			fi; \
+			docker compose run --rm --no-deps --entrypoint tracefold workers trading refresh-capabilities; \
+		fi; \
+		docker compose up -d --no-build --force-recreate --wait \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus
 
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
@@ -473,10 +517,14 @@ _deploy-image-locked:
 			exit 1; \
 		}; \
 		runtime_services="migrate serve workers"; \
+		base_services="$$runtime_services"; \
 		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
+		if [ "$$trading_enabled" = true ]; then \
+			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
+		fi; \
 		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
 			if [ -z "$$container_id" ]; then \

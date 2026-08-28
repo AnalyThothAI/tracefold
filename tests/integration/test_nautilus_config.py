@@ -19,7 +19,7 @@ def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() 
     config = build_node_config(
         api_key="demo-key",
         api_secret="demo-secret",
-        instrument_id=instrument_id,
+        instrument_ids=[instrument_id, InstrumentId.from_str("BTCUSDT-PERP.BINANCE")],
     )
 
     assert TradingNode.__module__ == "nautilus_trader.live.node"
@@ -52,3 +52,31 @@ def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() 
     assert execution.max_retries is None
     assert execution.api_key == "demo-key"
     assert execution.api_secret == "demo-secret"
+
+
+def test_public_v1_node_config_allows_zero_claim_bootstrap() -> None:
+    import asyncio
+
+    from nautilus_trader.adapters.binance import (
+        BINANCE,
+        BinanceLiveDataClientFactory,
+        BinanceLiveExecClientFactory,
+    )
+    from nautilus_trader.live.node import TradingNode
+
+    from tracefold.integrations.nautilus import build_node_config, single_execution_client
+
+    config = build_node_config(api_key="demo-key", api_secret="demo-secret", instrument_ids=[])
+
+    assert config.data_clients[BINANCE].instrument_provider.load_ids == frozenset()
+    assert config.exec_clients[BINANCE].instrument_provider.load_ids == frozenset()
+    loop = asyncio.new_event_loop()
+    node = TradingNode(config=config, loop=loop)
+    try:
+        node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+        node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
+        node.build()
+        assert single_execution_client(node.kernel.exec_engine).__class__.__name__ == "BinanceFuturesExecutionClient"
+    finally:
+        node.dispose()
+        loop.close()

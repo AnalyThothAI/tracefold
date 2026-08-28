@@ -42,7 +42,7 @@ from ..opennews import source_artifact_identity
 # `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
 # measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
 # be proven for this frame and a consumer must refuse it rather than assume five minutes.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v7"
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v8"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -369,35 +369,110 @@ class TradeProjectionStorage:
         return [_liquidation_projection_row(row) for row in rows]
 
     def trade_candidate_instrument(
-        self, *, base_symbol: str, venues: Sequence[str]
+        self,
+        *,
+        base_symbol: str,
+        venues: Sequence[str],
+        observed_at_ms: int | None = None,
     ) -> list[TradeInstrumentProjectionRow]:
         """Exactly-listed native crypto perpetuals for one underlying, in the caller's venue order.
 
         `instrument_class = 'crypto'` is not decoration: Binance labels its 169 TradFi perps `EQUITY`
         and friends, so a `WMT` Event whose Gate class says crypto still resolves to nothing here.
         HIP-3 builder venues (`hl.xyz`) are excluded by naming the two native perp venues explicitly.
+
+        Live callers omit ``observed_at_ms`` and see only the current catalogue. Replay callers read the
+        last immutable listing event at or before the source cutoff, so neither a later listing/relisting
+        nor a present-day delisting can alter the instrument identity that source fact observed.
         """
 
         if not venues:
             return []
+        normalized_base = str(base_symbol or "").strip().upper()
+        if observed_at_ms is None:
+            rows = self.conn.execute(
+                """
+                SELECT venue, venue_symbol, base_symbol, instrument_class,
+                       quote_asset, status, last_seen_ms
+                  FROM news_market_instruments
+                 WHERE base_symbol = %s
+                   AND venue = ANY(%s)
+                   AND status = 'trading'
+                   AND instrument_class = 'crypto'
+                 ORDER BY venue,
+                          CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
+                          length(venue_symbol),
+                          venue_symbol
+                """,
+                (normalized_base, list(venues)),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                WITH candidate_symbols AS (
+                  SELECT DISTINCT venue, venue_symbol
+                    FROM news_market_instrument_listing_events
+                   WHERE venue = ANY(%s)
+                     AND base_symbol = %s
+                     AND observed_at_ms <= %s
+                ), historical AS (
+                  SELECT DISTINCT ON (event.venue, event.venue_symbol)
+                         event.venue, event.venue_symbol, event.observed_at_ms,
+                         event.base_symbol, event.instrument_class, event.quote_asset, event.status
+                    FROM news_market_instrument_listing_events AS event
+                    JOIN candidate_symbols AS candidate
+                      ON candidate.venue = event.venue
+                     AND candidate.venue_symbol = event.venue_symbol
+                   WHERE event.observed_at_ms <= %s
+                   ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
+                )
+                SELECT venue, venue_symbol, base_symbol, instrument_class,
+                       quote_asset, status, observed_at_ms AS last_seen_ms
+                  FROM historical
+                 WHERE base_symbol = %s
+                   AND status = 'trading'
+                   AND instrument_class = 'crypto'
+                 ORDER BY venue,
+                          CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
+                          length(venue_symbol),
+                          venue_symbol
+                """,
+                (
+                    list(venues),
+                    normalized_base,
+                    int(observed_at_ms),
+                    int(observed_at_ms),
+                    normalized_base,
+                ),
+            ).fetchall()
+        return [
+            TradeInstrumentProjectionRow(
+                venue=row["venue"],
+                venue_symbol=row["venue_symbol"],
+                base_symbol=row["base_symbol"],
+                instrument_class=row["instrument_class"],
+                quote_asset=row["quote_asset"],
+                status=row["status"],
+                last_seen_ms=row["last_seen_ms"],
+            )
+            for row in rows
+        ]
+
+    def trade_execution_instruments(self) -> list[TradeInstrumentProjectionRow]:
+        """All active Binance USD-M rows for the cold capability-snapshot command.
+
+        Crypto classification deliberately crosses the App seam instead of filtering here: every
+        provider candidate must receive an included row or a named mechanical exclusion.
+        """
+
         rows = self.conn.execute(
             """
             SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
               FROM news_market_instruments
-             WHERE base_symbol = %s
-               AND venue = ANY(%s)
+             WHERE venue = 'binance.perp'
                AND status = 'trading'
-               AND instrument_class = 'crypto'
-             -- Deterministic, because the caller freezes the first row per venue into an immutable
-             -- payload. `binance.perp` is snapshotted without a quote filter, so DOGEUSDT, DOGEUSDC and
-             -- any dated contract all match; unspecified row order would let two identical manifests
-             -- resolve to different books and break "replayable from the case row alone".
-             ORDER BY venue,
-                      CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
-                      length(venue_symbol),
-                      venue_symbol
-            """,
-            (str(base_symbol or "").strip().upper(), list(venues)),
+             ORDER BY venue_symbol, base_symbol
+            """
         ).fetchall()
         return [
             TradeInstrumentProjectionRow(

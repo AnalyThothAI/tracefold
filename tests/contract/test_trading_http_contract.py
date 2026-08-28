@@ -18,9 +18,13 @@ NOW = 1_790_000_000_000
 def _intent(**overrides: Any) -> dict[str, Any]:
     row = {
         "intent_id": "intent-sol",
+        "intent_version": "trade_intent_v2",
         "case_id": "case-sol",
         "case_manifest_sha256": "a" * 64,
         "execution_environment": "BINANCE_USDM_DEMO",
+        "execution_capability_snapshot_sha256": "c" * 64,
+        "blacklist_revision_at_emission": 3,
+        "blacklist_snapshot_sha256_at_emission": "d" * 64,
         "instrument_id": "SOLUSDT-PERP.BINANCE",
         "side": "long",
         "target_notional_usd": "10",
@@ -101,6 +105,9 @@ class _Trading:
             "nautilus_readiness_reason": "ready",
             "nautilus_unexpected_exposure": False,
             "nautilus_heartbeat_at_ms": NOW,
+            "active_capability_snapshot_sha256": "c" * 64,
+            "active_capability_included_count": 2,
+            "blacklist_revision": 3,
         }
 
     def status_counts(self, **kwargs: Any) -> dict[str, Any]:
@@ -173,7 +180,9 @@ def test_status_publishes_one_frozen_execution_authority(client) -> None:
         | {
             "execution_authority": "nautilus",
             "execution_environment": "BINANCE_USDM_DEMO",
-            "instrument_id": "SOLUSDT-PERP.BINANCE",
+            "active_capability_snapshot_sha256": "c" * 64,
+            "active_capability_included_count": 2,
+            "blacklist_revision": 3,
         }
         == data["readiness"]
     )
@@ -192,6 +201,8 @@ def test_intents_publish_native_lifecycle_and_exclude_legacy_payloads(client) ->
     assert data["complete"] is True
     intent = data["intents"][0]
     assert (intent["case_state"], intent["execution_state"]) == ("INTENT_EMITTED", "PENDING")
+    assert intent["intent_version"] == "trade_intent_v2"
+    assert intent["execution_capability_snapshot_sha256"] == "c" * 64
     assert (intent["instrument_id"], intent["side"]) == ("SOLUSDT-PERP.BINANCE", "long")
     assert data["cases_without_intents"][0]["state"] == "POLICY_REJECTED"
     for retired in ("payload", "order_id", "remote_order_id", "account_ref", "mode"):

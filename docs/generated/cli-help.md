@@ -835,15 +835,18 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,replay-oi,show,blacklist,control} ...
+                         {status,refresh-capabilities,cases,replay-oi,show,blacklist,control} ...
 
 positional arguments:
-  {status,cases,replay-oi,show,blacklist,control}
+  {status,refresh-capabilities,cases,replay-oi,show,blacklist,control}
     status              Nautilus readiness, intent outcomes, and the daily
                         funnel
+    refresh-capabilities
+                        cold refresh of the Binance Demo execution capability
+                        snapshot
     cases               list Trading cases newest first
-    replay-oi           read-only: every parsed OI fact in a window, and the
-                        rule each one stopped on (#265)
+    replay-oi           source-native BAR replay with an audited artifact and
+                        immutable receipt (#286)
     show                one case with its intent and current outcome
     blacklist           the canonical deny-list; one row blocks every provider
                         spelling of that underlying
@@ -858,6 +861,16 @@ options:
 
 ```
 usage: tracefold trading status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `trading refresh-capabilities`
+
+```
+usage: tracefold trading refresh-capabilities [-h]
 
 options:
   -h, --help  show this help message and exit
@@ -882,11 +895,18 @@ options:
 
 ```
 usage: tracefold trading replay-oi [-h] [--days DAYS]
+                                   [--strategy {oi_smart_money_momentum_v1}]
+                                   [--venues VENUES] [--fidelity {bar_v1}]
+                                   [--out OUT]
 
 options:
-  -h, --help   show this help message and exit
-  --days DAYS  how far back to replay; the OI ledger holds 30 days of parsed
-               frames
+  -h, --help            show this help message and exit
+  --days DAYS           how far back to replay; the OI ledger holds 30 days of
+                        parsed frames
+  --strategy {oi_smart_money_momentum_v1}
+  --venues VENUES       comma-separated exact source-native venue scenarios
+  --fidelity {bar_v1}
+  --out OUT             artifact root
 
 ```
 

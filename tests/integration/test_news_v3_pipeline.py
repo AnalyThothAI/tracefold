@@ -52,6 +52,7 @@ NEWS_TABLES = {
     "news_review_active_agent_v1",
     # #75 instrument universe: a News-owned provider fact table plus its alias map.
     "news_market_instruments",
+    "news_market_instrument_listing_events",
     "news_symbol_aliases",
     # #88 price review plane: latest-only current quotes, versioned deterministic Event Reactions.
     "news_quote_snapshots",

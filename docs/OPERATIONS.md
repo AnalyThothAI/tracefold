@@ -16,7 +16,7 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading activation and atomic authority cut (#283)
+### Trading activation and capability cut (#283, #286)
 
 Trading has one production-shaped path and no paper/OpenTrade fallback:
 
@@ -26,11 +26,12 @@ Evidence -> Case -> atomic immutable Intent -> Nautilus
 ```
 
 Before enabling Trading, run `uv run tracefold config` and confirm only
-redacted facts: `config_path=~/.tracefold/config.yaml`, the exact
-`BINANCE_USDM_DEMO` / `SOLUSDT-PERP.BINANCE` contract, target notional at
-most 10 USDT, and `credentials_configured=true`. Never print or copy either
-credential. The dedicated Demo account must be NETTING/one-way, 1x, and contain
-no external SOLUSDT position or order.
+redacted facts: `config_path=~/.tracefold/config.yaml`,
+`execution_environment=BINANCE_USDM_DEMO`,
+`instrument_permission=active_capability_snapshot_minus_blacklist`, target
+notional at most 10 USDT, and `credentials_configured=true`. Never print or
+copy either credential. The dedicated Demo account must be NETTING/one-way, 1x,
+and contain no external position or open order.
 
 On a fresh database, `tracefold init` and `make up` create the Nautilus
 password and role with the other runtime roles. For an existing volume that
@@ -67,9 +68,29 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
+For the V2 capability cut, keep Trading `PAUSED` and require zero nonterminal
+Intents. On an existing active snapshot, require a fresh green Nautilus
+readiness heartbeat with account-wide zero exposure and zero open orders. On a
+fresh database, `make up` starts a zero-claim Nautilus process, waits for its
+separate fresh `nautilus_bootstrap_account_zero_at_ms` proof while `/readyz`
+correctly remains red with `capability_snapshot_missing`, activates the first
+snapshot, and recreates Nautilus. Deploy/migrate the exact reviewed image to
+`20260828_0320`, then run:
+
+```text
+uv run tracefold trading refresh-capabilities
+uv run tracefold trading status
+```
+
+Record the active snapshot digest/count and blacklist revision. Restart
+Nautilus and require readiness to return green only after it loads and
+revalidates every included instrument. Then set control to `RUNNING`. A later
+refresh follows the same cold sequence; a failed load or activation leaves the
+old active snapshot unchanged and Trading paused.
+
 Do not seed a production Case or Intent to make the console non-empty. A normal
-source must produce the Case, and only the exact frozen long/non-shadow SOL Case
-may emit an Intent.
+source must produce the Case, and only a frozen long/non-shadow Case admitted by
+the active snapshot and current blacklist may emit an Intent.
 
 After the hard cut, `make up` and `make deploy-image` refuse enabled Trading
 without both secure Demo credential files. They start Nautilus only for enabled
@@ -222,7 +243,7 @@ tracefold serve
 
 tracefold workers
   -> one singleton advisory lock and runtime_id
-  -> one DB pool min 1 / max 8 / max_waiting 3
+  -> one DB pool min 2 / max 8 / max_waiting 3
      (1 singleton lock + 2 business + 4 News lane + 1 control)
   -> one pinned singleton session / business DB executor 2 / News DB lane 4 /
      control DB executor 1
@@ -714,33 +735,31 @@ Changing a threshold does not rewrite history: `gate_config_digest` is half the
 key, so an edit starts a new row and the old one stays as the record of what the
 old rule decided.
 
-### Which OI rule is actually binding (#265)
+### OI BAR replay and attribution (#286)
 
-`uv run tracefold trading replay-oi --days 7` replays every parsed OI fact in a
-window through the same pure functions the scanner runs — the source stage, the
-Candidate Gate and `oi_smart_money_momentum_v1` — and reports where each one
-stopped. It is read-only, runs as `serve`, writes nothing, and proposes no
-threshold: survivor counts per rule say which condition is binding, and reading
-a better number off the same window that produced them is how a lane ends up
-tuned to its own history.
+`uv run tracefold trading replay-oi --days 7 --venues
+binance.perp,hl.perp --fidelity bar_v1` freezes the bounded parsed OI source
+population, active capability snapshot and canonical blacklist, then fetches
+source-native public Binance/Hyperliquid OHLCV bars. It gives every selected
+source one terminal decision, coverage reason or fresh Nautilus
+`BacktestEngine` outcome and keeps capital admission separate from the Alpha
+decision.
 
-Two things it will not answer, both by design. The pre-move band and any
-outcome need market data the report does not fetch, so a fact that survives the
-deterministic rules is reported as `pending_market_context` with its
-measurements attached rather than as an entry. And freshness is excluded — every
-row in a seven-day window is stale against now, so replaying it would stop
-everything at `trigger_stale` and say nothing about the rules under test.
+This is a cold audited research command, not a read-only diagnostic. Before the
+Serve repeatable-read snapshot it uses one short Workers transaction to
+materialize timed blacklist expiry under the canonical revision contract. It
+then performs public market-data I/O outside database transactions, atomically
+publishes a content-addressed artifact under `--out`, and uses one final short
+Workers transaction to insert the immutable `trading_replay_runs` receipt.
+Rerunning an identical spec verifies and reuses the existing artifact/receipt.
 
-`target_cohort` is a separate list from the funnel and answers a different
-question: how often the three-dimensional shape occurs at all, ignoring
-liquidity, rank and routing. A frame in the cohort but not in `surviving` is the
-useful case — the shape occurred and something else refused it — and merging the
-two would make "the shape never happens" and "it happens and we cannot trade it"
-look identical when they call for opposite responses.
-
-The report carries `gate_config_digest` and `strategy_config_digest`, which are
-the digests the durable rows are filed under, so a report and the ledger it
-describes cannot silently be about different thresholds.
+The replay process never mounts Binance Demo execution credentials and never
+constructs an execution adapter or performs a provider order write. BAR-v1 is
+reported as BAR-v1: funding and portfolio drawdown remain unavailable, and
+missing source-native history receives a stable coverage reason rather than
+fabricated data. `run_id` binds the source rows, market slices, capability,
+blacklist payload, Gate, Strategy, regime, notional, execution policy, engine,
+fees and fidelity identities.
 
 ### Price Review plane (#88)
 
@@ -919,6 +938,10 @@ supported, `json_object` with the same schema inlined into the system message
 for DeepSeek-class endpoints — which moves fallback-route prompt bytes; the
 first hours of the v8 cohort, a third of whose verdicts degraded against the
 rejected format, become immutable audit history.
+`0320` is the #286 TradeIntentV2 hard cut. It adds immutable capability/replay
+ledgers plus the News catalogue's immutable listing-validity events, refuses a
+warm migration, and never rewrites V1 history. Roll forward; there is no
+downgrade to a second execution permission model.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

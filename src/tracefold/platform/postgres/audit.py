@@ -58,6 +58,7 @@ NEWS_TABLES = (
     "news_reviews",
     "news_external_miss_snapshots",
     "news_market_instruments",
+    "news_market_instrument_listing_events",
     "news_symbol_aliases",
     "news_quote_snapshots",
     "news_event_reactions",
@@ -87,6 +88,8 @@ TRADING_TABLES = (
     "trading_orders",
     "trading_order_observations",
     "trading_intents",
+    "trading_execution_capability_snapshots",
+    "trading_replay_runs",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

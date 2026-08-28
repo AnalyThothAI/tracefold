@@ -1,7 +1,8 @@
-"""Opt-in Binance USD-M Demo closure proof for #283.
+"""Opt-in dynamic Binance USD-M Demo lifecycle proof for #286.
 
 Provide a migrated, empty, isolated PostgreSQL database named
-``tracefold_283_live`` plus one *stopped* container whose exact clean-HEAD
+``tracefold_286_live`` for the first run, then retain its terminal ledgers for
+the second UTC-day run. Provide one *stopped* container whose exact clean-HEAD
 image runs ``tracefold nautilus run`` against it. Mount a test-owned config at
 ``/root/.tracefold/config.yaml`` and mount the operator-configured
 0600 Binance Demo key/secret and Nautilus-role password files at their exact
@@ -16,8 +17,13 @@ container paths, read-only. The container must set
       uv run pytest -q tests/live/test_nautilus_binance_demo.py
 
 The test owns only the intent, one temporary database trigger, kill/restart,
-and assertions. It never copies or prints credentials. After a post-entry
-failure it leaves the production process running for recovery.
+and assertions. The instrument is selected mechanically from the active
+capability snapshot minus the current blacklist and prior successful symbols;
+there is no target-symbol input. Set
+``TRACEFOLD_BINANCE_DEMO_REQUIRE_TWO_DAY=1`` on the second UTC-day run to prove
+two different instruments and entry-fence days. The test never copies or
+prints credentials. After a post-entry failure it leaves the production
+process running for recovery.
 """
 
 from __future__ import annotations
@@ -46,14 +52,19 @@ from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import connect_postgres
 from tracefold.platform.postgres.migrations import latest_migration_version
-from tracefold.trading import INTENT_POLICY_SHA256, TradeIntent, deterministic_client_order_id
+from tracefold.trading import (
+    INTENT_POLICY_SHA256,
+    ExecutionInstrumentCapabilityV1,
+    TradeIntent,
+    deterministic_client_order_id,
+)
+from tracefold.trading.execution_policy import evaluate_entry
 
 pytestmark = [pytest.mark.live, pytest.mark.integration, pytest.mark.slow]
 
 _BASE_URL = "https://demo-fapi.binance.com"
-_SYMBOL = "SOLUSDT"
-_INSTRUMENT = "SOLUSDT-PERP.BINANCE"
-_LOCK = 283_031_500
+_LOCK = 286_031_800
+_TARGET_NOTIONAL = Decimal("9.50")
 
 
 class _Demo:
@@ -79,11 +90,11 @@ class _Demo:
         except (httpx.HTTPError, json.JSONDecodeError):
             raise RuntimeError(f"binance_demo_unavailable:{path}") from None
 
-    def orders(self, start_ms: int) -> list[dict[str, Any]]:
-        return list(self.get("/fapi/v1/allOrders", {"symbol": _SYMBOL, "startTime": start_ms, "limit": 1_000}))
+    def orders(self, symbol: str, start_ms: int) -> list[dict[str, Any]]:
+        return list(self.get("/fapi/v1/allOrders", {"symbol": symbol, "startTime": start_ms, "limit": 1_000}))
 
-    def algo_orders(self, start_ms: int) -> list[dict[str, Any]]:
-        return list(self.get("/fapi/v1/allAlgoOrders", {"symbol": _SYMBOL, "startTime": start_ms, "limit": 1_000}))
+    def algo_orders(self, symbol: str, start_ms: int) -> list[dict[str, Any]]:
+        return list(self.get("/fapi/v1/allAlgoOrders", {"symbol": symbol, "startTime": start_ms, "limit": 1_000}))
 
     def positions(self) -> list[dict[str, Any]]:
         return list(self.get("/fapi/v2/positionRisk"))
@@ -139,15 +150,15 @@ def _mounted(
 def _block_projection(conn: Any) -> None:
     conn.execute(
         f"""
-        CREATE FUNCTION tf283_block_entry_projection() RETURNS trigger LANGUAGE plpgsql AS $$
+        CREATE FUNCTION tf286_block_entry_projection() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
           IF OLD.actual_quantity IS NULL AND NEW.actual_quantity IS NOT NULL THEN
             PERFORM pg_advisory_xact_lock({_LOCK});
           END IF;
           RETURN NEW;
         END $$;
-        CREATE TRIGGER tf283_block_entry_projection BEFORE UPDATE OF actual_quantity ON trading_intents
-          FOR EACH ROW EXECUTE FUNCTION tf283_block_entry_projection();
+        CREATE TRIGGER tf286_block_entry_projection BEFORE UPDATE OF actual_quantity ON trading_intents
+          FOR EACH ROW EXECUTE FUNCTION tf286_block_entry_projection();
         """
     )
     conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK,))
@@ -155,40 +166,133 @@ def _block_projection(conn: Any) -> None:
 
 def _unblock_projection(conn: Any) -> None:
     conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK,))
-    conn.execute("DROP TRIGGER IF EXISTS tf283_block_entry_projection ON trading_intents")
-    conn.execute("DROP FUNCTION IF EXISTS tf283_block_entry_projection()")
+    conn.execute("DROP TRIGGER IF EXISTS tf286_block_entry_projection ON trading_intents")
+    conn.execute("DROP FUNCTION IF EXISTS tf286_block_entry_projection()")
 
 
 def _outcome(conn: Any, intent_id: str) -> Any:
     return repositories_for_connection(conn).trading.intent_outcome(intent_id)
 
 
-def _create_intent(conn: Any, reference_price: Decimal) -> TradeIntent:
+def _create_intent(
+    conn: Any,
+    capability: ExecutionInstrumentCapabilityV1,
+    reference_price: Decimal,
+) -> TradeIntent:
     now_ms = int(time.time() * 1_000) - 1_000
-    manifest_sha = "283".ljust(64, "0")
-    intent = TradeIntent.create(
-        case_id=f"case-binance-demo-{uuid.uuid4().hex}",
-        case_manifest_sha256=manifest_sha,
-        created_at_ms=now_ms,
-        reference_price=reference_price,
-        target_notional_usd=Decimal("9.50"),
-    )
+    manifest_sha = "286".ljust(64, "0")
     repos = repositories_for_connection(conn)
     with repos.transaction():
+        snapshot = repos.trading.active_execution_capability_snapshot(for_update=True)
+        if snapshot is None or snapshot.included.get(capability.instrument_id) != capability:
+            pytest.fail("active capability snapshot does not include the Demo instrument", pytrace=False)
+        blacklist = repos.trading.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
+        if any(row.underlying_key == capability.underlying_key for row in blacklist.active_rows):
+            pytest.fail("mechanically selected Demo instrument became blacklisted", pytrace=False)
+        intent = TradeIntent.create(
+            case_id=f"case-binance-demo-{uuid.uuid4().hex}",
+            case_manifest_sha256=manifest_sha,
+            execution_capability_snapshot_sha256=snapshot.snapshot_sha256,
+            blacklist_snapshot=blacklist,
+            instrument_id=capability.instrument_id,
+            underlying_key=capability.underlying_key,
+            created_at_ms=now_ms,
+            reference_price=reference_price,
+            target_notional_usd=_TARGET_NOTIONAL,
+        )
         conn.execute(
             """
             INSERT INTO trading_cases (
               case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
               strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
               manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, 'crypto:SOL', 'oi', 'oi_smart_money_momentum_v1',
+            ) VALUES (%s, %s, 'oi', 'oi_smart_money_momentum_v1',
                       'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
                       '{}'::jsonb, %s, 'INTENT_EMITTED', %s, %s, %s)
             """,
-            (intent.case_id, "0" * 64, intent.intent_id, manifest_sha, now_ms, now_ms, now_ms),
+            (
+                intent.case_id,
+                capability.underlying_key,
+                "0" * 64,
+                intent.intent_id,
+                manifest_sha,
+                now_ms,
+                now_ms,
+                now_ms,
+            ),
         )
         assert repos.trading.insert_intent(intent)
     return intent
+
+
+def _select_capability(
+    conn: Any,
+    venue: _Demo,
+) -> tuple[ExecutionInstrumentCapabilityV1, Decimal]:
+    """Choose the first currently executable unused capability; no symbol is operator-selected."""
+
+    now_ms = venue.now_ms()
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        snapshot = repos.trading.active_execution_capability_snapshot(for_update=True)
+        if snapshot is None:
+            pytest.fail("active capability snapshot is missing", pytrace=False)
+        blacklist = repos.trading.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
+        used = {
+            str(row["instrument_id"])
+            for row in conn.execute(
+                "SELECT instrument_id FROM trading_intents WHERE terminal_outcome = 'CLOSED_FLAT'"
+            ).fetchall()
+        }
+    denied = {row.underlying_key for row in blacklist.active_rows}
+    tickers = {
+        str(row["symbol"]): row
+        for row in venue.get("/fapi/v1/ticker/bookTicker", signed=False)
+        if isinstance(row, dict) and row.get("symbol")
+    }
+    for instrument_id in sorted(snapshot.included):
+        capability = snapshot.included[instrument_id]
+        if capability.instrument_id in used or capability.underlying_key in denied:
+            continue
+        ticker = tickers.get(capability.native_symbol)
+        if ticker is None:
+            continue
+        bid = Decimal(str(ticker["bidPrice"]))
+        ask = Decimal(str(ticker["askPrice"]))
+        decision = evaluate_entry(
+            now_ms=now_ms,
+            created_at_ms=now_ms - 1,
+            valid_until_ms=now_ms + 60_000,
+            quote_at_ms=now_ms,
+            bid=bid,
+            ask=ask,
+            reference_price=ask,
+            target_notional=_TARGET_NOTIONAL,
+            size_increment=Decimal(capability.size_increment),
+            min_quantity=None if capability.min_quantity is None else Decimal(capability.min_quantity),
+            min_notional=None if capability.min_notional is None else Decimal(capability.min_notional),
+            max_spread_bps=30,
+            max_drift_bps=25,
+        )
+        if decision.quantity is not None:
+            return capability, ask
+    pytest.fail("active capability snapshot has no unused quantity-executable Demo instrument", pytrace=False)
+
+
+def _assert_two_day_evidence(conn: Any) -> None:
+    if os.environ.get("TRACEFOLD_BINANCE_DEMO_REQUIRE_TWO_DAY") != "1":
+        return
+    rows = conn.execute(
+        """
+        SELECT instrument_id, entry_fenced_at_ms / 86400000 AS utc_day
+          FROM trading_intents
+         WHERE terminal_outcome = 'CLOSED_FLAT'
+           AND entry_fenced_at_ms IS NOT NULL
+         ORDER BY entry_fenced_at_ms
+        """
+    ).fetchall()
+    assert len({str(row["instrument_id"]) for row in rows}) >= 2
+    assert len({int(row["utc_day"]) for row in rows}) >= 2
 
 
 def _preconditions(
@@ -229,7 +333,7 @@ def _preconditions(
         dsn = conninfo.conninfo_to_dict(str(postgres_config["nautilus_dsn"]))
         config_bound = bool(
             dsn.get("user") == "tracefold_nautilus"
-            and dsn.get("dbname") == "tracefold_283_live"
+            and dsn.get("dbname") == "tracefold_286_live"
             and dsn.get("host") == "postgres"
             and dsn.get("port", "5432") == "5432"
             and "password" not in dsn
@@ -320,18 +424,40 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         version = conn.execute(
             "SELECT current_database() AS database_name, version_num FROM alembic_version"
         ).fetchone()
-        counts = conn.execute("SELECT count(*) AS intents FROM trading_intents").fetchone()
-        runtime = conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
+        counts = conn.execute(
+            """
+            SELECT count(*) FILTER (
+                     WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
+                   ) AS nonterminal_intents,
+                   count(*) FILTER (
+                     WHERE entry_fenced_at_ms >= %s AND entry_fenced_at_ms < %s
+                   ) AS entries_today
+              FROM trading_intents
+            """,
+            (
+                venue.now_ms() // 86_400_000 * 86_400_000,
+                (venue.now_ms() // 86_400_000 + 1) * 86_400_000,
+            ),
+        ).fetchone()
+        runtime = conn.execute(
+            "SELECT control, active_capability_snapshot_sha256 FROM trading_runtime_state WHERE id = 1"
+        ).fetchone()
         if not (
             version
-            and version["database_name"] == "tracefold_283_live"
+            and version["database_name"] == "tracefold_286_live"
             and version["version_num"] == latest_migration_version()
             and counts
-            and counts["intents"] == 0
+            and counts["nonterminal_intents"] == 0
+            and counts["entries_today"] == 0
             and runtime
             and runtime["control"] == "PAUSED"
+            and runtime["active_capability_snapshot_sha256"] is not None
         ):
-            pytest.fail("isolated PostgreSQL must be migrated, empty, and PAUSED", pytrace=False)
+            pytest.fail(
+                "isolated PostgreSQL must be migrated, PAUSED, active-snapshot bound, "
+                "and free of nonterminal/today-entry rows",
+                pytrace=False,
+            )
         if venue.get("/fapi/v1/positionSide/dual")["dualSidePosition"] is not False:
             pytest.fail("Binance Demo account must use one-way mode", pytrace=False)
         if (
@@ -358,18 +484,20 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
                 and row["nautilus_heartbeat_at_ms"] >= process_started_at_ms
             ),
         )
-        sol = next(row for row in venue.positions() if row["symbol"] == _SYMBOL)
-        assert int(sol["leverage"]) == 1 and Decimal(str(sol["positionAmt"])) == 0
-        ask = Decimal(str(venue.get("/fapi/v1/ticker/bookTicker", {"symbol": _SYMBOL}, signed=False)["askPrice"]))
+        capability, ask = _select_capability(conn, venue)
+        symbol = capability.native_symbol
+        selected_position = next(row for row in venue.positions() if row["symbol"] == symbol)
+        assert int(selected_position["leverage"]) == 1
+        assert Decimal(str(selected_position["positionAmt"])) == 0
         conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
-        intent = _create_intent(conn, ask)
+        intent = _create_intent(conn, capability, ask)
         capital_possible = True
         entry_id = deterministic_client_order_id(intent.intent_id, "entry")
         stop_id = deterministic_client_order_id(intent.intent_id, "stop")
         close_id = deterministic_client_order_id(intent.intent_id, "close")
 
         def entry_and_stop() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-            orders, algos = venue.orders(start_ms), venue.algo_orders(start_ms)
+            orders, algos = venue.orders(symbol, start_ms), venue.algo_orders(symbol, start_ms)
             entry = [row for row in orders if row["clientOrderId"] == entry_id and row["status"] == "FILLED"]
             stop = [row for row in algos if row["clientAlgoId"] == stop_id and row["algoStatus"] == "NEW"]
             return (orders, algos) if len(entry) == len(stop) == 1 else ([], [])
@@ -401,7 +529,7 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
 
         _docker("kill", "--signal", "KILL", container)
         _wait("killed_process", 15, lambda: _running(container), lambda value: not value)
-        assert len([row for row in venue.orders(start_ms) if row["clientOrderId"] == entry_id]) == 1
+        assert len([row for row in venue.orders(symbol, start_ms) if row["clientOrderId"] == entry_id]) == 1
         _unblock_projection(conn)
         blocked = False
         _docker("start", container)
@@ -415,10 +543,10 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         assert protected.opened_at_ms is not None
         close_deadline_ms = protected.opened_at_ms + intent.max_holding_ms
         assert venue.now_ms() < close_deadline_ms
-        assert [row["clientOrderId"] for row in venue.orders(start_ms) if row["clientOrderId"].startswith("tf-e-")] == [
-            entry_id
-        ]
-        assert [row for row in venue.orders(start_ms) if row["clientOrderId"] == close_id] == []
+        assert [
+            row["clientOrderId"] for row in venue.orders(symbol, start_ms) if row["clientOrderId"].startswith("tf-e-")
+        ] == [entry_id]
+        assert [row for row in venue.orders(symbol, start_ms) if row["clientOrderId"] == close_id] == []
         closed = _wait(
             "closed_flat",
             300,
@@ -438,7 +566,7 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         orders, algos = _wait(
             "terminal_owned_orders",
             30,
-            lambda: (venue.orders(start_ms), venue.algo_orders(start_ms)),
+            lambda: (venue.orders(symbol, start_ms), venue.algo_orders(symbol, start_ms)),
             lambda pair: (
                 len([row for row in pair[0] if row["clientOrderId"] == entry_id and row["status"] == "FILLED"]) == 1
                 and len([row for row in pair[0] if row["clientOrderId"] == close_id and row["status"] == "FILLED"]) == 1
@@ -456,12 +584,13 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
         stop = next(row for row in algos if row["clientAlgoId"] == stop_id)
         assert by_id[entry_id]["status"] == by_id[close_id]["status"] == "FILLED"
         assert stop["algoStatus"] in {"CANCELED", "EXPIRED"}
-        fresh_position = next(row for row in venue.positions() if row["symbol"] == _SYMBOL)
+        fresh_position = next(row for row in venue.positions() if row["symbol"] == symbol)
         assert Decimal(str(fresh_position["positionAmt"])) == 0
         flat_seen = True
-        trades = venue.get("/fapi/v1/userTrades", {"symbol": _SYMBOL, "startTime": start_ms, "limit": 1_000})
+        trades = venue.get("/fapi/v1/userTrades", {"symbol": symbol, "startTime": start_ms, "limit": 1_000})
         assert {str(row["orderId"]) for row in trades if row["buyer"]} == {str(by_id[entry_id]["orderId"])}
         assert str(by_id[close_id]["orderId"]) in {str(row["orderId"]) for row in trades if not row["buyer"]}
+        _assert_two_day_evidence(conn)
     except BaseException as exc:
         with suppress(Exception):
             conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")

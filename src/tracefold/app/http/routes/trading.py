@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from tracefold.app.trading_config import CANDIDATE_GATE_VERSION, trading_settings_gate, trading_settings_strategies
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.platform.config.secret_file import secret_file_configured
-from tracefold.trading import ACTIVE_INTENT_STATES
+from tracefold.trading.intent import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -63,7 +63,9 @@ def get_trading_status(request: Request) -> Response:
                 "enabled": settings.trading.enabled,
                 "execution_authority": "nautilus",
                 "execution_environment": "BINANCE_USDM_DEMO",
-                "instrument_id": "SOLUSDT-PERP.BINANCE",
+                "active_capability_snapshot_sha256": state.get("active_capability_snapshot_sha256"),
+                "active_capability_included_count": int(state.get("active_capability_included_count") or 0),
+                "blacklist_revision": int(state.get("blacklist_revision") or 0),
                 "credentials_configured": secret_file_configured(key_file) and secret_file_configured(secret_file),
                 "engine_ready": bool(state.get("nautilus_ready")),
                 "engine_readiness_reason": state.get("nautilus_readiness_reason"),
@@ -306,8 +308,12 @@ def _intent(row: dict[str, Any]) -> dict[str, Any]:
         key: row.get(key)
         for key in (
             "intent_id",
+            "intent_version",
             "case_id",
             "execution_environment",
+            "execution_capability_snapshot_sha256",
+            "blacklist_revision_at_emission",
+            "blacklist_snapshot_sha256_at_emission",
             "instrument_id",
             "side",
             "valid_until_ms",
