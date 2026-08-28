@@ -69,7 +69,7 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # #310 rebinds it to factory v9 (endpoint-capable structured-output envelope). Recorded mode composes no
 # request, so the corpus, every score (`case_macro` 0.660714 / `cluster_macro` 0.71645) and every case
 # result are byte-identical again; only the identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "cf7351fa1a470e26f288dd290369187b0f9cbfcecaf2f381aad34e4cac1a129d"
+_EXPECTED_REPORT_SHA256 = "107e24b8cf411c8b4e36a5911e460334ee54d91a3dde627fc5c365e8d186b343"
 
 
 @pytest.fixture(scope="module")

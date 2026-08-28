@@ -2,8 +2,15 @@
 
 `program_sha256` says which two instructions are running. This module says what the code around them
 does: the exact request bytes a Predictor composes, the output contract and schema the provider is held
-to, the fields the model is shown, the route budget, and the breaker. Together they are the whole of
-Program behavior identity, and neither is a claim anybody has to remember to update.
+to, the fields the model is shown, the route budget, the breaker, and — since the #314 review found the
+hole — what the code decides once an answer arrives: the `reader_value` to delivery-decision map, the
+`actionable` conjunction, and the restatement index rule. Together they are the whole of Program behavior
+identity, and neither is a claim anybody has to remember to update.
+
+What it does not cover, deliberately: operator policy (`policy_sha256`), the retrieval and told-selection
+contract (`retrieval_sha256`), and the model slots (`runtime_model_bindings_sha256`). Those are separate
+members of the same bundle, so a change to any of them still opens a new epoch — the bundle is the
+compatibility unit, and this hash is one of its four parts.
 
 It replaced a declared `factory_id` literal (#314). A hand-written version has one failure mode, and it
 is not that somebody picks the wrong string — it is that a change lands and nobody bumps anything. Three
@@ -22,6 +29,8 @@ from __future__ import annotations
 from typing import Any, Final
 
 from ..artifact_identity import canonical_sha
+from .assembly import READER_VALUE_DECISION, is_actionable, restatement_index_error
+from .contracts import TRADE_CHANNEL_ORDER
 from .runtime import (
     _MODEL_BINDING_SLOTS,
     _UNTRUSTED_EVENT_CLOSE,
@@ -73,6 +82,43 @@ def _golden_request(predictor: PredictorName, mode: StructuredOutputMode) -> dic
     )
 
 
+# Rendered as an outcome table rather than described, for the same reason the requests are: a rule stated
+# in prose can drift from the rule that runs. `restatement_index_error` reads three inputs and
+# `is_actionable` reads three; enumerating both is small enough to read in a diff and total enough that no
+# edit to either can leave the hash still.
+_NOVELTIES: Final[tuple[str, ...]] = ("new_fact", "progression", "restatement")
+_TRADABILITIES: Final[tuple[str, ...]] = ("direct", "second_order", "contextual", "none")
+
+
+def _assembly_surface() -> dict[str, Any]:
+    """Every decision the code makes about a model's answer, enumerated over the inputs that decide it."""
+
+    return {
+        "reader_value_decision": dict(READER_VALUE_DECISION),
+        "actionable": {
+            f"{tradability}|channels={int(channels)}|markets={int(markets)}": is_actionable(
+                tradability=tradability,  # type: ignore[arg-type]
+                has_channels=channels,
+                has_affected_markets=markets,
+            )
+            for tradability in _TRADABILITIES
+            for channels in (False, True)
+            for markets in (False, True)
+        },
+        "restatement_index": {
+            f"{novelty}|restates={restates}|told={told}": restatement_index_error(
+                novelty=novelty, restates=restates, told_count=told
+            )
+            for novelty in _NOVELTIES
+            for restates in (-1, 0, 1)
+            for told in (0, 1, 2)
+        },
+        # The code-owned enum the model chooses from; adding or reordering a channel changes what a
+        # judgment can say, and the canonical order decides how a set is hashed for gold and replay.
+        "trade_channel_order": list(TRADE_CHANNEL_ORDER),
+    }
+
+
 def execution_envelope() -> dict[str, Any]:
     """The complete material `compute_execution_identity` hashes, as a readable document.
 
@@ -94,6 +140,7 @@ def execution_envelope() -> dict[str, Any]:
             }
             for predictor in PREDICTOR_INPUT_FIELDS
         },
+        "assembly": _assembly_surface(),
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
             "wire_model_prefix": _WIRE_MODEL_PREFIX,

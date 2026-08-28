@@ -602,7 +602,7 @@ code, and `envelope_sha256` is computed over what that code renders; a semantic
 change to any of them moves that hash by construction, which one contract test
 pins. See `docs/ARCHITECTURE.md` for the identity model. Rendered instructions are derived bytes, never a
 second editable truth, and they contain no identity hash and no demo section.
-Loading fails closed on an unknown hash/version/factory, non-canonical or
+Loading fails closed on an unknown hash or schema version, non-canonical or
 duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
 name that is not its own root, or unsafe or secret-bearing state.
 The optimizer can emit only a typed patch carrying the two Predictor

@@ -379,7 +379,19 @@ def liquidation_candidate(
 
 
 def _uses_current_news_generation(raw: object) -> bool:
-    """Whether an untrusted persisted manifest names the one executable News generation."""
+    """Whether an untrusted persisted manifest names the two News contracts Trading reasons about.
+
+    Not the News *epoch* (#314). Trading used to compare a `program_vN` literal here, which it had to edit
+    on every News identity move to restate what the two version pins beside it already said. Since #314 the
+    epoch label is derived per deployment and belongs to News; a copy of it here would be a second
+    declaration of a fact this package does not own.
+
+    What that leaves is narrower than the old check *looked*, so say it plainly: a manifest frozen under a
+    superseded News bundle whose `program_version` and `policy_version` are unchanged passes here. It is
+    refused upstream instead — `trade_candidate_*_rows` join the running bundle's epoch, so a stale row
+    never reaches this function on the live path. This check exists for an untrusted persisted document,
+    and its job is the contract shape, not the generation.
+    """
 
     if not isinstance(raw, Mapping) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
         return False
@@ -395,7 +407,6 @@ def _uses_current_news_generation(raw: object) -> bool:
         found = True
         if (
             not isinstance(source, Mapping)
-            or not str(source.get("learning_epoch") or "")
             or source.get("policy_version") != "news_triage_policy_v10"
             or source.get("program_version") != expected_program
         ):

@@ -44,6 +44,7 @@ from .artifact import (
     render_model_evidence_json,
     validate_program_instruction,
 )
+from .assembly import decision_for, is_actionable, restatement_index_error
 from .contracts import (
     EditorialEnvelope,
     FrozenEventEvidence,
@@ -135,23 +136,18 @@ def _assemble(
     *,
     told_count: int,
 ) -> tuple[TriageVerdict, EditorialEnvelope]:
-    if semantics.novelty == "restatement":
-        if semantics.restates < 0 or semantics.restates >= told_count:
-            raise ValueError("news_program_restatement_index_invalid")
-    elif semantics.restates != -1:
-        raise ValueError("news_program_non_restatement_index_invalid")
-    relevance = semantics.relevance
-    actionable = (
-        relevance.tradability in {"direct", "second_order"}
-        and bool(relevance.channels)
-        and bool(relevance.affected_markets)
+    error = restatement_index_error(
+        novelty=semantics.novelty, restates=semantics.restates, told_count=told_count
     )
-    decision = {
-        "escalate": "escalate",
-        "realtime": "push",
-        "background": "drop",
-        "none": "drop",
-    }[relevance.reader_value]
+    if error is not None:
+        raise ValueError(error)
+    relevance = semantics.relevance
+    actionable = is_actionable(
+        tradability=relevance.tradability,
+        has_channels=bool(relevance.channels),
+        has_affected_markets=bool(relevance.affected_markets),
+    )
+    decision = decision_for(relevance.reader_value)
     verdict = TriageVerdict.model_validate(
         {
             "novelty": semantics.novelty,
@@ -174,11 +170,11 @@ def _assemble(
 
 
 def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) -> None:
-    if semantics.novelty == "restatement":
-        if semantics.restates < 0 or semantics.restates >= told_count:
-            raise ValueError("news_program_restatement_index_invalid")
-    elif semantics.restates != -1:
-        raise ValueError("news_program_non_restatement_index_invalid")
+    error = restatement_index_error(
+        novelty=semantics.novelty, restates=semantics.restates, told_count=told_count
+    )
+    if error is not None:
+        raise ValueError(error)
 
 
 def _normalize_semantics(

@@ -79,9 +79,16 @@ def epoch_id_for_bundle(bundle_sha: str) -> str:
     """
 
     identity = str(bundle_sha)
-    if len(identity) != 64 or any(char not in "0123456789abcdef" for char in identity):
+    if not is_bundle_sha(identity):
         raise ValueError("news_learning_epoch_bundle_sha_invalid")
     return f"bundle_{identity[:8]}"
+
+
+def is_bundle_sha(value: object) -> bool:
+    """Whether a value is shaped like a bundle identity, for callers reading untrusted sealed payloads."""
+
+    identity = str(value)
+    return len(identity) == 64 and all(char in "0123456789abcdef" for char in identity)
 
 
 def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -352,7 +359,11 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
+    # `bundle_<sha8>` for anything sealed since #314, `program_vN` for the nine declared epochs that came
+    # before. A ref may name a historical corpus — that is what `migrate-corpus` opens — so the pattern
+    # admits both shapes and the *self-agreement* check (`DevelopmentDatasetStore._validate_dataset_payload`)
+    # is what distinguishes a derived label from a legacy one.
+    learning_epoch: str = Field(pattern=r"^(bundle_[0-9a-f]{8}|program_v\d+)$")
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
 
@@ -623,4 +634,5 @@ __all__ = [
     "dataset_coverage",
     "endpoint_fingerprint",
     "epoch_id_for_bundle",
+    "is_bundle_sha",
 ]

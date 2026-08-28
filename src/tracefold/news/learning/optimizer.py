@@ -602,7 +602,7 @@ def run_gepa(
         )
     trajectory = trajectory_receipt(run)
     winner = _winning_candidate(run)
-    checkpoint = checkpoint_receipt(base_program, winner)
+    checkpoint = checkpoint_receipt(winner)
     patch = ProgramStrategyPatchV1.issue(
         parent=base_program,
         event_semantics_instruction=winner["event_semantics"],
@@ -893,9 +893,16 @@ def trajectory_receipt(run: Any) -> dict[str, Any]:
     }
 
 
-def checkpoint_receipt(parent: ProgramStrategyArtifactV1, winner: Mapping[str, str]) -> dict[str, Any]:
+def checkpoint_receipt(winner: Mapping[str, str]) -> dict[str, Any]:
+    """What one compile run produced, and the code identity it produced it under.
+
+    v3, not v2: the receipt named a `factory` and now names an `envelope_sha256` (#314), and one schema
+    string standing for two different key sets is the same lie a version exists to prevent. It also stopped
+    taking a `parent` — the factory literal was the only thing it read from one.
+    """
+
     return {
-        "schema": "tracefold.news.compile_checkpoint_receipt.v2",
+        "schema": "tracefold.news.compile_checkpoint_receipt.v3",
         "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
         # The instruction text itself, not a digest of it: this receipt is the record of what the run
         # produced, and the winner's two instructions are already carried by the patch beside it.

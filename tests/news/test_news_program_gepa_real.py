@@ -353,7 +353,7 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() ->
     assert 0 < result.report.usage["metric_calls"] <= 40 + val_n + minibatch
     assert result.report.usage["reflection_model_calls"] > 0, "the reflection endpoint was never used"
 
-    assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
+    assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v3"
     assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     receipt = result.report.optimizer

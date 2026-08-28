@@ -15,7 +15,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "2be3327309268a66b3c4e58e1c5497374751ae4cfe49cd8aa22088c57ecd99d5"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "3215def169c3809cc6efbe3a19eca4d45983c6385b512ce20075fc88b06b513c"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -90,7 +90,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
 
     envelope = execution_envelope()
 
-    assert set(envelope) == {"identity_schema", "requests", "model_visible_input", "route"}
+    assert set(envelope) == {"identity_schema", "requests", "model_visible_input", "assembly", "route"}
     assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == {"event_semantics", "reader_card"}
     for predictor, modes in envelope["requests"].items():
         assert set(modes) == {"json_schema", "json_object"}, predictor
@@ -107,6 +107,12 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
                 "response_format",
             }, (predictor, mode)
             assert [message["role"] for message in request["messages"]] == ["system", "user"]
+    assert set(envelope["assembly"]) == {
+        "reader_value_decision",
+        "actionable",
+        "restatement_index",
+        "trade_channel_order",
+    }
     assert set(envelope["route"]) == {
         "model_binding_slots",
         "wire_model_prefix",
@@ -151,6 +157,22 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
             lambda e: e["model_visible_input"]["reader_card"]["schema"].__setitem__("title", "Other"),
             id="model_visible_schema",
         ),
+        # The #314 review's finding: these decide the verdict after the model answers, and nothing else in
+        # the bundle moves when they change. Flipping one background judgment to a delivery must not be
+        # invisible.
+        pytest.param(
+            lambda e: e["assembly"]["reader_value_decision"].__setitem__("background", "push"),
+            id="reader_value_decision_map",
+        ),
+        pytest.param(
+            lambda e: e["assembly"]["actionable"].__setitem__("contextual|channels=1|markets=1", True),
+            id="actionable_rule",
+        ),
+        pytest.param(
+            lambda e: e["assembly"]["restatement_index"].__setitem__("restatement|restates=0|told=0", None),
+            id="restatement_index_rule",
+        ),
+        pytest.param(lambda e: e["assembly"]["trade_channel_order"].reverse(), id="trade_channel_order"),
     ],
 )
 def test_every_material_surface_actually_moves_the_identity(mutate: Any) -> None:

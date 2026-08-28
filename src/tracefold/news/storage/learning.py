@@ -472,6 +472,18 @@ class LearningStorage:
         `starts_at_ms` is strictly after every epoch already recorded. Evidence eligibility is a timestamp
         comparison, so an epoch that opened at or before its predecessor would admit that predecessor's
         verdicts into this cohort.
+
+        Known limitation, deliberately not fixed here (#314 review). Deploying A, then B, then A again — a
+        redeploy of an earlier image is the only rollback there is — leaves A's row at its original start,
+        because the table is append-only and the row cannot move. A reader that filters on `bundle_sha`
+        is unaffected and that is most of them; a reader that can only compare timestamps, notably
+        external-miss eligibility (an external miss has no bundle to filter on), will admit evidence
+        produced while B was live into A's cohort. Stating the shape of the fix so it is not re-derived:
+        a cohort is really the union of the intervals during which its bundle was the appointed Agent, and
+        `news_learning_artifacts(kind='active_agent')` already records every appointment with a timestamp.
+        Until a reader consults that history, one lower bound per epoch is an approximation that is exact
+        for a forward-only deployment sequence and generous for a rollback. It is strictly better than what
+        it replaced, where every bundle shared one hand-declared epoch and no rollback registered at all.
         """
 
         row = self.conn.execute(

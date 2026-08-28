@@ -658,9 +658,12 @@ Diagnose News in this order:
 
 The current evidence eligibility window starts at the deployment timestamp the
 running deployment wrote into `news_learning_epochs` for its own bundle. Find it
-with `SELECT epoch_id, starts_at_ms FROM news_learning_epochs e JOIN
-news_review_active_agent_v1 a ON a.stable_sha = e.bundle_sha ORDER BY
-a.created_at_ms DESC LIMIT 1`. Only accepted `news_review_v4` rows from that
+with `WITH agent AS (SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY
+created_at_ms DESC LIMIT 1) SELECT e.epoch_id, e.starts_at_ms FROM
+news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
+newest agent *before* the join, not after: joining the whole appointment history
+and then taking one row reports the previous deployment's epoch when the current
+agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v4` rows from that
 epoch, bound to that exact bundle, enter metric v5, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
@@ -1000,6 +1003,14 @@ Learning evidence follows #118's separate deterministic policy:
 - the newest manifest for each of the current and previous distinct stable
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
+- Redeploying an earlier image re-appoints that bundle and re-enters its existing
+  epoch rather than opening a new one, and the epoch keeps its original
+  `starts_at_ms` because the table is append-only. Evidence produced by the
+  intervening deployment is therefore inside the restored epoch's window for the
+  readers that can only compare timestamps — external-miss eligibility above all,
+  since an external miss carries no bundle to filter on. Freezing a dataset
+  immediately after a rollback will carry those misses; if that matters, freeze a
+  window that starts after the re-appointment.
 - `news_learning_epochs` is append-only permanent audit truth, whether a
   migration or the startup barrier wrote the row. An epoch change alters
   eligibility, not retention: all earlier evidence remains auditable until the
