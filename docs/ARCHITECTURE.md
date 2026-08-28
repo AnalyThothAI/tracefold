@@ -1704,6 +1704,11 @@ receives exactly one terminal replay outcome. Alpha evaluation ignores the
 current blacklist; capital admission is a separate field, so research is not
 rewritten by today's deny policy.
 
+Instrument resolution uses the last immutable News catalogue validity event at
+or before each source timestamp. The mutable current universe remains the live
+view; the event ledger is only its historical listing/relisting/delisting
+evidence, so a future contract cannot leak into an older replay.
+
 Every directional scenario produces a typed replay intent and runs in a fresh
 Nautilus `BacktestEngine`. Live and replay share the quantity, spread/drift,
 stop, maximum-holding, and economic-leg identity policy. BAR fidelity is

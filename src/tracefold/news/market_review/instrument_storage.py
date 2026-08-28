@@ -1,9 +1,9 @@
 """Persistence for the instrument universe (#75, consolidated in #89). Callers own the transaction.
 
 The snapshot write is idempotent by ``(venue, venue_symbol)``: re-running it on an unchanged catalogue only moves
-``last_seen_ms``. The universe answers two questions and no others — what is this issuer's canonical symbol, and is
-this a coin or a stock — so there is no listing-time column and no diff here: OpenNews pushes listing frames and the
-pipeline admits them (#72), which is a first source, not a second one.
+``last_seen_ms``. The current universe answers what an issuer's canonical symbol is and whether it is a coin or a
+stock. A separate immutable event ledger records only the catalogue validity boundaries needed by historical
+Trading replay; it is not a second latest universe or a source of reader-facing listing news.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from .instruments import (
     ALIAS_SEEDS,
     REFERENCE_VENUES,
     Instrument,
+    InstrumentStatus,
     instruments_from_rows,
     normalize_symbol,
     resolve_base_symbol,
@@ -30,6 +31,10 @@ class SnapshotResult:
     total: int
     venues: tuple[str, ...]
     delisted: int
+
+
+def _instrument_identity(item: Instrument) -> tuple[str, str, str | None]:
+    return item.base_symbol, item.instrument_class, item.quote_asset
 
 
 class InstrumentsRepository:
@@ -414,9 +419,11 @@ class InstrumentsRepository:
         """
 
         answered = {i.venue for i in instruments}
-        previous = tuple(i for i in self.all_instruments() if i.venue in answered and i.status == "trading")
+        before = {(item.venue, item.venue_symbol): item for item in self.all_instruments() if item.venue in answered}
+        previous = tuple(item for item in before.values() if item.status == "trading")
 
         for item in instruments:
+            prior = before.get((item.venue, item.venue_symbol))
             self.conn.execute(
                 """
                 INSERT INTO news_market_instruments (
@@ -438,6 +445,8 @@ class InstrumentsRepository:
                     int(now_ms),
                 ),
             )
+            if prior is None or prior.status != "trading" or _instrument_identity(prior) != _instrument_identity(item):
+                self._record_listing_event(item, status="trading", observed_at_ms=now_ms)
 
         current_keys = {(i.venue, i.venue_symbol) for i in instruments}
         gone = [i for i in previous if (i.venue, i.venue_symbol) not in current_keys]
@@ -447,7 +456,26 @@ class InstrumentsRepository:
                 " WHERE venue = %s AND venue_symbol = %s",
                 (int(now_ms), item.venue, item.venue_symbol),
             )
+            self._record_listing_event(item, status="delisted", observed_at_ms=now_ms)
         return SnapshotResult(total=len(instruments), venues=tuple(sorted(answered)), delisted=len(gone))
+
+    def _record_listing_event(self, item: Instrument, *, status: InstrumentStatus, observed_at_ms: int) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO news_market_instrument_listing_events (
+              venue, venue_symbol, observed_at_ms, base_symbol, instrument_class, quote_asset, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                item.venue,
+                item.venue_symbol,
+                int(observed_at_ms),
+                item.base_symbol,
+                item.instrument_class,
+                item.quote_asset,
+                status,
+            ),
+        )
 
     def learn_aliases_from_universe(self, *, now_ms: int) -> int:
         """Record the venue-derived aliases the pipeline will meet: the provider's ``XYZ-`` form and each

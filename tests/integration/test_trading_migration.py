@@ -500,10 +500,16 @@ def test_0320_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -
             str(row["table_name"])
             for row in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' "
-                "AND table_name IN ('trading_execution_capability_snapshots', 'trading_replay_runs')"
+                "AND table_name IN ("
+                "'news_market_instrument_listing_events', "
+                "'trading_execution_capability_snapshots', 'trading_replay_runs')"
             ).fetchall()
         }
-        assert tables == {"trading_execution_capability_snapshots", "trading_replay_runs"}
+        assert tables == {
+            "news_market_instrument_listing_events",
+            "trading_execution_capability_snapshots",
+            "trading_replay_runs",
+        }
         runtime = conn.execute(
             "SELECT blacklist_revision, nautilus_bootstrap_account_zero_at_ms FROM trading_runtime_state WHERE id = 1"
         ).fetchone()

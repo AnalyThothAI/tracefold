@@ -37,6 +37,46 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        CREATE TABLE news_market_instrument_listing_events (
+          venue             TEXT NOT NULL,
+          venue_symbol      TEXT NOT NULL,
+          observed_at_ms    BIGINT NOT NULL,
+          base_symbol       TEXT NOT NULL,
+          instrument_class  TEXT NOT NULL,
+          quote_asset       TEXT,
+          status            TEXT NOT NULL,
+          PRIMARY KEY (venue, venue_symbol, observed_at_ms),
+          CONSTRAINT news_instrument_listing_event_time_check CHECK (observed_at_ms >= 0),
+          CONSTRAINT news_instrument_listing_event_status_check CHECK (status IN ('trading', 'delisted')),
+          CONSTRAINT news_instrument_listing_event_class_check CHECK (
+            instrument_class IN ('crypto', 'equity', 'commodity', 'index', 'fx', 'pre_ipo', 'unknown')
+          )
+        )
+        """
+    )
+    op.execute(
+        "CREATE INDEX ix_news_instrument_listing_events_lookup "
+        "ON news_market_instrument_listing_events (venue, base_symbol, observed_at_ms DESC, venue_symbol)"
+    )
+    # The mutable catalogue cannot reconstruct history that predates this migration. Its last successful
+    # snapshot is the earliest honest lower bound for each existing row; older replay facts fail closed.
+    op.execute(
+        """
+        INSERT INTO news_market_instrument_listing_events (
+          venue, venue_symbol, observed_at_ms, base_symbol, instrument_class, quote_asset, status
+        )
+        SELECT venue, venue_symbol, last_seen_ms, base_symbol, instrument_class, quote_asset, status
+          FROM news_market_instruments
+        """
+    )
+    op.execute(
+        "REVOKE ALL ON news_market_instrument_listing_events "
+        "FROM tracefold_workers, tracefold_serve, tracefold_nautilus"
+    )
+    op.execute("GRANT SELECT, INSERT ON news_market_instrument_listing_events TO tracefold_workers")
+    op.execute("GRANT SELECT ON news_market_instrument_listing_events TO tracefold_serve")
+    op.execute(
+        """
         CREATE TABLE trading_execution_capability_snapshots (
           snapshot_sha256      TEXT PRIMARY KEY,
           created_at_ms        BIGINT NOT NULL,

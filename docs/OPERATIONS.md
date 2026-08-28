@@ -939,8 +939,9 @@ for DeepSeek-class endpoints — which moves fallback-route prompt bytes; the
 first hours of the v8 cohort, a third of whose verdicts degraded against the
 rejected format, become immutable audit history.
 `0320` is the #286 TradeIntentV2 hard cut. It adds immutable capability/replay
-ledgers, refuses a warm migration, and never rewrites V1 history. Roll forward;
-there is no downgrade to a second execution permission model.
+ledgers plus the News catalogue's immutable listing-validity events, refuses a
+warm migration, and never rewrites V1 history. Roll forward; there is no
+downgrade to a second execution permission model.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

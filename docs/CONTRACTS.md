@@ -767,8 +767,9 @@ the system message where not — which moves fallback-route prompt bytes while
 leaving both seed texts unchanged.
 `20260828_0320` adds append-only execution-capability snapshots and replay
 receipts, the active capability/blacklist revisions, the distinct bootstrap
-account-zero proof, and TradeIntentV2. It requires `PAUSED` with no nonterminal
-Intent, rejects every new V1 insert, and has no downgrade.
+account-zero proof, TradeIntentV2, and immutable News instrument-listing
+validity events used by source-time replay. It requires `PAUSED` with no
+nonterminal Intent, rejects every new V1 insert, and has no downgrade.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

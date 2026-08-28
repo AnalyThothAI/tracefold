@@ -257,7 +257,10 @@ database-time `materialize_trading_blacklist_expiry()` function. That
 `SECURITY DEFINER` path accepts no caller timestamp, locks the runtime singleton,
 deletes only rows expired by the database clock, and increments the blacklist
 revision in the same transaction; Nautilus still has no direct
-INSERT/UPDATE/DELETE privilege on the blacklist.
+INSERT/UPDATE/DELETE privilege on the blacklist. The same migration grants
+Workers SELECT/INSERT and Serve SELECT on immutable instrument-listing events;
+neither runtime role can update or delete that replay evidence, and Nautilus
+has no access to it.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as

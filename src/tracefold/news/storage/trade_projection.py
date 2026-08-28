@@ -381,35 +381,55 @@ class TradeProjectionStorage:
         and friends, so a `WMT` Event whose Gate class says crypto still resolves to nothing here.
         HIP-3 builder venues (`hl.xyz`) are excluded by naming the two native perp venues explicitly.
 
-        Live callers omit ``observed_at_ms`` and see only the current catalogue. Replay callers also
-        see a contract whose durable delisting boundary is later than the source fact; a present-day
-        delisting must not erase the instrument identity that existed when that fact was observed.
+        Live callers omit ``observed_at_ms`` and see only the current catalogue. Replay callers read the
+        last immutable listing event at or before the source cutoff, so neither a later listing/relisting
+        nor a present-day delisting can alter the instrument identity that source fact observed.
         """
 
         if not venues:
             return []
-        rows = self.conn.execute(
-            """
-            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
-              FROM news_market_instruments
-             WHERE base_symbol = %s
-               AND venue = ANY(%s)
-               AND (
-                 status = 'trading'
-                 OR (status = 'delisted' AND last_seen_ms > COALESCE(%s, last_seen_ms))
-               )
-               AND instrument_class = 'crypto'
-             -- Deterministic, because the caller freezes the first row per venue into an immutable
-             -- payload. `binance.perp` is snapshotted without a quote filter, so DOGEUSDT, DOGEUSDC and
-             -- any dated contract all match; unspecified row order would let two identical manifests
-             -- resolve to different books and break "replayable from the case row alone".
-             ORDER BY venue,
-                      CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
-                      length(venue_symbol),
-                      venue_symbol
-            """,
-            (str(base_symbol or "").strip().upper(), list(venues), observed_at_ms),
-        ).fetchall()
+        normalized_base = str(base_symbol or "").strip().upper()
+        if observed_at_ms is None:
+            rows = self.conn.execute(
+                """
+                SELECT venue, venue_symbol, base_symbol, instrument_class,
+                       quote_asset, status, last_seen_ms
+                  FROM news_market_instruments
+                 WHERE base_symbol = %s
+                   AND venue = ANY(%s)
+                   AND status = 'trading'
+                   AND instrument_class = 'crypto'
+                 ORDER BY venue,
+                          CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
+                          length(venue_symbol),
+                          venue_symbol
+                """,
+                (normalized_base, list(venues)),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT venue, venue_symbol, base_symbol, instrument_class,
+                       quote_asset, status, observed_at_ms AS last_seen_ms
+                  FROM (
+                    SELECT DISTINCT ON (venue, venue_symbol)
+                           venue, venue_symbol, observed_at_ms, base_symbol,
+                           instrument_class, quote_asset, status
+                     FROM news_market_instrument_listing_events
+                     WHERE venue = ANY(%s)
+                       AND observed_at_ms <= %s
+                       AND base_symbol = %s
+                     ORDER BY venue, venue_symbol, observed_at_ms DESC
+                  ) AS historical
+                 WHERE status = 'trading'
+                   AND instrument_class = 'crypto'
+                 ORDER BY venue,
+                          CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
+                          length(venue_symbol),
+                          venue_symbol
+                """,
+                (list(venues), int(observed_at_ms), normalized_base),
+            ).fetchall()
         return [
             TradeInstrumentProjectionRow(
                 venue=row["venue"],

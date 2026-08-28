@@ -10,10 +10,10 @@ the venue universe is the natural reference table for News, and it does exactly 
   prefix alone. Since #91 the table also carries a *reference* tier (``us.listed``) for the thousands of equities
   no crypto venue lists; it can only answer that second question, never the first.
 
-It is deliberately *not* a filter: existence on a venue is not evidence that a headline matters (#75), and it is
-not a source of listing events either — OpenNews pushes those as frames and the pipeline admits them
-(``listing_deterministic``, #72), so the snapshot diff that used to live here was a second, worse source covering
-41% of the frames and was removed in #89.
+It is deliberately *not* a filter: existence on a venue is not evidence that a headline matters (#75), and its
+snapshot boundaries are not reader-facing listing news — OpenNews pushes those frames and the pipeline admits them
+(``listing_deterministic``, #72). The catalogue stores its own immutable validity events only so historical Trading
+replay cannot resolve an instrument before a listing or through a delisted interval.
 
 Everything here is pure: fetching lives in ``tracefold.integrations.venues``, persistence in
 ``market_review.instrument_storage.InstrumentsRepository``.
