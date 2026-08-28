@@ -1062,7 +1062,10 @@ class _MeteredPredictorAdapter:
 
     Until #306 Phase 3 this was `_BudgetedLM`, a `dspy.BaseLM` subclass wrapping the framework's LM and
     settling its budget out of a captured provider response. The transport hands the response back
-    directly now, so the proxy is a proxy: `before` reserves, the call happens, `after` settles.
+    directly now, so the proxy is a proxy: `before` admits the attempt, the call happens, `after` settles
+    it. `before` does not accumulate anything — it refuses a call the budget could not afford one
+    worst-case attempt of — so every attempt that reached the provider has to reach `after`, answered or
+    refused. `transport_failures` counts only requests that never arrived, which is what its name says.
     """
 
     def __init__(self, adapter: PredictorAdapter, *, meter: _BudgetMeter) -> None:
