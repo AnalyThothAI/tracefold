@@ -66,6 +66,7 @@ class ServeDatabase:
             lock_timeout_seconds=0.250,
             read_only=True,
             idle_in_transaction_session_timeout_seconds=5.0,
+            session_settings=_SERVE_SESSION_CONFIG,
         )
         pool.wait(timeout=float(postgres.connect_timeout_seconds))
         return cls(
@@ -101,8 +102,6 @@ class ServeDatabase:
                             "serve",
                             (time.perf_counter() - permit_acquired_at) * 1000,
                         )
-                    for name, value in _SERVE_SESSION_CONFIG.items():
-                        _set_config(conn, name, value)
                     yield repositories_for_connection(conn)
             except (PoolClosed, PoolTimeout) as exc:
                 raise ServeDatabaseBusy(f"serve_database_pool_busy:{lane}") from exc
@@ -111,10 +110,6 @@ class ServeDatabase:
 
     async def aclose(self) -> None:
         await _close_pool(self.api_pool)
-
-
-def _set_config(conn: Any, name: str, value: str) -> None:
-    conn.execute("SELECT set_config(%s, %s, false)", (str(name), str(value)))
 
 
 async def _close_pool(pool: Any) -> None:
