@@ -86,7 +86,10 @@ def build_node_config(
     ids = frozenset(instrument_ids)
     provider = BinanceInstrumentProviderConfig(
         load_ids=ids,
-        query_commission_rates=True,
+        # The adapter already derives the account fee tier once. Per-symbol
+        # commission reads multiply startup I/O by the whole cold universe and
+        # can exhaust Binance Demo's request budget before the node connects.
+        query_commission_rates=False,
     )
     return TradingNodeConfig(
         trader_id=TraderId("TRACEFOLD-001"),

@@ -824,9 +824,12 @@ reader/writer.
   public News/provider candidate union without credentials, appends its stable
   partition, and moves the active pointer only while `PAUSED`, no nonterminal
   Intent exists, and the account-wide zero proof is fresh. A replacement uses
-  current green Nautilus readiness; initial activation uses the separate
-  bootstrap-zero proof while the zero-claim process remains formally unready.
-  Activation clears that bootstrap proof and invalidates readiness.
+  current green Nautilus readiness or the separate account-wide proof from
+  `nautilus run --bootstrap-zero-claims`; initial activation uses that same
+  zero-claim proof while the process remains formally unready. The deployment
+  lifecycle uses the explicit zero-claim form so a mechanically invalid old
+  snapshot cannot prevent its own safe replacement. Activation clears that
+  bootstrap proof and invalidates readiness.
 - `tracefold trading replay-oi --days 7 --strategy
   oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It

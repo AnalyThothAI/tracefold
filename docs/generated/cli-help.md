@@ -62,10 +62,13 @@ options:
 ## `nautilus run`
 
 ```
-usage: tracefold nautilus run [-h]
+usage: tracefold nautilus run [-h] [--bootstrap-zero-claims]
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help            show this help message and exit
+  --bootstrap-zero-claims
+                        prove a paused Demo account is empty before rotating
+                        the capability snapshot
 
 ```
 

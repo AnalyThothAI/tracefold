@@ -72,6 +72,8 @@ class CliTests(unittest.TestCase):
         assert parser.parse_args(["workers"]).command == "workers"
         nautilus = parser.parse_args(["nautilus", "run"])
         assert (nautilus.command, nautilus.nautilus_command) == ("nautilus", "run")
+        bootstrap = parser.parse_args(["nautilus", "run", "--bootstrap-zero-claims"])
+        assert bootstrap.bootstrap_zero_claims is True
 
     def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()

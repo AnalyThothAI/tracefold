@@ -98,3 +98,20 @@ def test_inactive_provider_rows_are_in_the_frozen_candidate_partition() -> None:
     assert "OLDUSDT-PERP.BINANCE" not in snapshot.included
     assert snapshot.excluded["OLDUSDT-PERP.BINANCE"].reason == "missing_news_projection"
     assert snapshot.excluded["XRPUSDT-PERP.BINANCE"].reason == "not_active"
+
+
+def test_non_stablecoin_contract_is_mechanically_excluded_from_usdm_execution() -> None:
+    provider = _provider("ETHBTC", "ETH").model_copy(update={"quote_currency": "BTC"})
+    news = _news("ETHBTC", "ETH")
+    news["quote_asset"] = "BTC"
+
+    snapshot = build_execution_capability_snapshot(
+        news_rows=[news, _news("ETHUSDT", "ETH")],
+        provider_rows=[provider, _provider("ETHUSDT", "ETH")],
+        app_revision="revision-1",
+        app_image_digest="image-1",
+        nautilus_wheel_identity="wheel-1",
+    )
+
+    assert set(snapshot.included) == {"ETHUSDT-PERP.BINANCE"}
+    assert snapshot.excluded["ETHBTC-PERP.BINANCE"].reason == "unsupported_quote"
