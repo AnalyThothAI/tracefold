@@ -1253,7 +1253,7 @@ shown as `暂无`, never borrowed from another window. Telegram renders each ass
 `🎯 标的 BTC`, `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%`; multiple assets repeat the complete block with
 a blank line between them. Impact and polarity share one direction row, such as `🧭 方向 明显利空`, while
 novelty is a badge immediately below the title (`🆕 新事实` or `🔄 新进展`). A progression names the previous
-headline only when an exact-fact or sufficiently similar retrieval row supports the relationship; broad
+headline only for an exact-fact retrieval or a stored title-similarity score of at least `0.50`; broad
 zero-similarity storyline buckets never become a fabricated “上一条”. If a macro or sector verdict has no
 code-verified ticker, Telegram explicitly renders its scope and `暂无直接标的`. It turns
 the normalized reporting-origin

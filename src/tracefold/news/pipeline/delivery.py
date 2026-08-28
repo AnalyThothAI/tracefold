@@ -30,6 +30,7 @@ _DELIVERY_CANDLE_GAP_MS = 90_000
 _ONE_HOUR_MS = 3_600_000
 _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
 _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
+_PROGRESSION_LINK_SIMILARITY_MIN = 0.5
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,9 @@ def _progression_from_headline(triage_row: Mapping[str, Any], verdict: Mapping[s
         tier = str(entry.get("tier") or "")
         similarity = entry.get("similarity")
         related = tier == "exact_fact" or (
-            isinstance(similarity, int | float) and not isinstance(similarity, bool) and float(similarity) >= 0.25
+            isinstance(similarity, int | float)
+            and not isinstance(similarity, bool)
+            and float(similarity) >= _PROGRESSION_LINK_SIMILARITY_MIN
         )
         headline = str(entry.get("headline_zh") or "").strip()
         if related and headline:

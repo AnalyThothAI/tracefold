@@ -429,6 +429,20 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "reaction",
         "reactions",
     }
+    assert set(event_schemas.NewsDeliveryData.model_fields) == {
+        "kind",
+        "state",
+        "error_code",
+        "attempted_at_ms",
+        "settled_at_ms",
+        "card",
+        "receipt",
+        "pending_card",
+        "edit_state",
+        "edit_error_code",
+        "edit_attempted_at_ms",
+        "edit_settled_at_ms",
+    }
     assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
     assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}

@@ -796,6 +796,55 @@
             "title": "Card",
             "type": "object"
           },
+          "edit_attempted_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edit Attempted At Ms"
+          },
+          "edit_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edit Error Code"
+          },
+          "edit_settled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edit Settled At Ms"
+          },
+          "edit_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "editing",
+                  "edited",
+                  "ambiguous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edit State"
+          },
           "error_code": {
             "anyOf": [
               {
@@ -810,6 +859,18 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "pending_card": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Card"
           },
           "receipt": {
             "anyOf": [

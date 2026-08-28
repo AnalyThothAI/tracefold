@@ -1317,7 +1317,7 @@ def test_deliverer_passes_macro_scope_and_a_grounded_progression_reference_to_te
                         "tier": "exact_fact",
                         "similarity": 0.0,
                         "headline_zh": "美国此前公布初步就业基准修订",
-                    }
+                    },
                 ]
             },
         },
@@ -1339,6 +1339,49 @@ def test_deliverer_passes_macro_scope_and_a_grounded_progression_reference_to_te
         )
     ]
     assert sender.edited_presentations == []
+
+
+@pytest.mark.parametrize(
+    ("similarity", "expected_previous"),
+    [(0.4999, None), (0.5, "a16z 推出 Machine Age Fund")],
+)
+def test_deliverer_links_a_progression_only_at_fifty_percent_title_similarity(
+    similarity: float,
+    expected_previous: str | None,
+) -> None:
+    news = _delivery_news(
+        event_card=_card(grounded_assets=[]),
+        latest_verdict=lambda **_kwargs: {
+            "final_decision": "push",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "scope": "macro",
+                "novelty": "progression",
+                "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
+                "assets": [],
+            },
+            "trace": {
+                "told": [
+                    {
+                        "tier": "storyline",
+                        "similarity": similarity,
+                        "headline_zh": "a16z 推出 Machine Age Fund",
+                    }
+                ]
+            },
+        },
+    )
+    sender = RecordingEditableSender([])
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert sender.presentations[0].novelty == "progression"
+    assert sender.presentations[0].progression_from_headline == expected_previous
 
 
 def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
