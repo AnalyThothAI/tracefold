@@ -25,6 +25,7 @@ from ..program.transport import (
     chat_request_body,
     choice_content,
     provider_call_metrics,
+    provider_error_detail,
 )
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 
@@ -231,7 +232,10 @@ class MetricJudgeEndpoint:
             transport=self._transport,
         )
         if reply.status_code >= 400 or reply.payload is None:
-            raise ValueError(f"news_program_compile_metric_judge_http_{reply.status_code}")
+            detail = provider_error_detail(reply.payload)
+            raise ValueError(
+                f"news_program_compile_metric_judge_http_{reply.status_code}" + (f": {detail}" if detail else "")
+            )
         metrics = provider_call_metrics(reply.payload)
         payload = reply.payload
         content = choice_content(payload)

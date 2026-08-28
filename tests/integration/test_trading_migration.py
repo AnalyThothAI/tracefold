@@ -408,7 +408,7 @@ def test_0317_refuses_every_durable_legacy_or_nonterminal_owner(blocker: str, er
         conn = None
 
         with pytest.raises(DBAPIError, match=error):
-            _upgrade("20260828_0318")
+            _upgrade("20260828_0320")
     finally:
         if conn is not None:
             conn.close()
@@ -423,7 +423,7 @@ def test_0317_admits_intent_emitted_and_removes_legacy_worker_writes() -> None:
         conn.commit()
         conn.close()
         conn = None
-        _upgrade("20260828_0318")
+        _upgrade("20260828_0320")
         conn = connect_postgres_test(read_only=False)
         _seed_pre_hard_cut_case(conn, case_id="emitted-case", state="INTENT_EMITTED")
         conn.commit()
@@ -462,10 +462,10 @@ def test_0317_admits_intent_emitted_and_removes_legacy_worker_writes() -> None:
         ("intent", "trading_v2_cutover_nonterminal_intent"),
     ),
 )
-def test_0319_refuses_a_warm_v2_cutover(blocker: str, error: str) -> None:
+def test_0320_refuses_a_warm_v2_cutover(blocker: str, error: str) -> None:
     conn: Any | None = None
     try:
-        _fresh_schema_at("20260828_0318")
+        _fresh_schema_at("20260828_0319")
         conn = connect_postgres_test(read_only=False)
         conn.execute(
             "UPDATE trading_runtime_state SET control = %s WHERE id = 1",
@@ -478,22 +478,22 @@ def test_0319_refuses_a_warm_v2_cutover(blocker: str, error: str) -> None:
         conn = None
 
         with pytest.raises(DBAPIError, match=error):
-            _upgrade("20260828_0319")
+            _upgrade("20260828_0320")
     finally:
         if conn is not None:
             conn.close()
 
 
-def test_0319_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -> None:
+def test_0320_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -> None:
     conn: Any | None = None
     try:
-        _fresh_schema_at("20260828_0318")
+        _fresh_schema_at("20260828_0319")
         conn = connect_postgres_test(read_only=False)
         conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
         conn.commit()
         conn.close()
         conn = None
-        _upgrade("20260828_0319")
+        _upgrade("20260828_0320")
 
         conn = connect_postgres_test(read_only=False)
         tables = {

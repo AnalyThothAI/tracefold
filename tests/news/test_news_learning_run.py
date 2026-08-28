@@ -137,7 +137,7 @@ def _optimization(**updates: Any) -> dict[str, Any]:
             "development_dataset_sha256": _DATASET,
             "episode_projection_root_sha256": _EPISODE_ROOT,
             "episode_count": 84,
-            "learning_epoch": "program_v8",
+            "learning_epoch": "program_v9",
             "review_rubric_version": "news_review_v4",
         },
         "objective": {
@@ -753,7 +753,7 @@ def test_a_real_baseline_and_a_real_optimization_over_one_corpus_reconcile_field
     from .test_news_learning_optimize import _budget, _StampedJudge
 
     corpus = _corpus()
-    payload = {"role": "development", "learning_epoch": "program_v8", "cases": []}
+    payload = {"role": "development", "learning_epoch": "program_v9", "cases": []}
     dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})
     episode_root = canonical_sha([episode.model_dump(mode="json") for episode in corpus])
     plan = build_gepa_objective_plan(corpus)

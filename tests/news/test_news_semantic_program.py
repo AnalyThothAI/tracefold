@@ -177,7 +177,7 @@ def test_stable_root_is_one_factory_and_two_instructions() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_program_strategy_artifact_v1"
-    assert artifact.factory_id == "tracefold.news.program.factory_v8"
+    assert artifact.factory_id == "tracefold.news.program.factory_v9"
     assert artifact.event_semantics_instruction == seed_instruction("event_semantics")
     assert artifact.reader_card_instruction == seed_instruction("reader_card")
     assert set(artifact.model_dump(mode="json")) == {
@@ -236,7 +236,7 @@ def test_factory_id_is_part_of_the_program_identity() -> None:
     payload = artifact.model_dump(mode="json", exclude={"program_sha256"})
     assert artifact.program_sha256 == canonical_sha(payload)
 
-    forked = dict(payload, factory_id="tracefold.news.program.factory_v9")
+    forked = dict(payload, factory_id="tracefold.news.program.factory_v10")
     assert canonical_sha(forked) != artifact.program_sha256
 
 
@@ -1508,3 +1508,21 @@ def test_no_unsafe_serialization_surface_in_production_module() -> None:
         for alias in node.names
     }
     assert imported.isdisjoint({"pickle", "cloudpickle"})
+
+
+def test_a_refused_providers_own_reason_reaches_the_audit_trace() -> None:
+    """#310: the bounded provider error body rides the failed attempt's trace entry."""
+
+    refusal = PredictorAdapterError(
+        "news_program_provider_http_400",
+        provider_reached=True,
+        provider_detail="invalid_request_error: This response_format type is unavailable now",
+    )
+    adapter = ScriptedPredictorAdapter([refusal])
+
+    with pytest.raises(SemanticJudgeError) as excinfo:
+        asyncio.run(_program(adapter).judge(_context()))
+
+    call = excinfo.value.partial_trace.calls[0]
+    assert call.error_code == "news_program_provider_http_400"
+    assert call.error_detail == "invalid_request_error: This response_format type is unavailable now"

@@ -25,7 +25,7 @@ from ..triage_rules import DecidePolicy
 # so a corpus frozen under v1 already fails closed — but the root is a digest and this is the name a
 # report prints, and one readable name must not stand for two different sets of gates.
 LEARNING_PROFILE_ID: Literal["news_learning_release_v2"] = "news_learning_release_v2"
-LEARNING_EPOCH: Literal["program_v8"] = "program_v8"
+LEARNING_EPOCH: Literal["program_v9"] = "program_v9"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
@@ -327,7 +327,7 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    learning_epoch: Literal["program_v8"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v9"] = LEARNING_EPOCH
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
 

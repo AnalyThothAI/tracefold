@@ -127,7 +127,7 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one canonical, content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version, `factory_id` `tracefold.news.program.factory_v8`, and
+holds a schema version, `factory_id` `tracefold.news.program.factory_v9`, and
 the two complete Predictor instructions; `program_sha256` is the canonical hash
 of exactly those four values. The loader re-verifies that hash, the schema and
 the factory, applies the instruction bounds — NFC, byte and estimated-token
@@ -252,7 +252,7 @@ runtime readiness fields.
 Migration `0317` revokes Workers mutation of legacy Orders/observations and
 retired runtime counters in the same transaction that activates
 `INTENT_EMITTED`; the historical tables remain readable audit only.
-Migration `0319` keeps Nautilus blacklist access read-only and grants only the
+Migration `0320` keeps Nautilus blacklist access read-only and grants only the
 database-time `materialize_trading_blacklist_expiry()` function. That
 `SECURITY DEFINER` path accepts no caller timestamp, locks the runtime singleton,
 deletes only rows expired by the database clock, and increments the blacklist

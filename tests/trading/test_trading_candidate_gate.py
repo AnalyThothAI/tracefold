@@ -52,7 +52,7 @@ def _row(**kwargs: Any) -> dict[str, Any]:
         "observed_at_ms": NOW - 10_000,
         "verdict_created_at_ms": NOW - 9_000,
         "venue": "hyperliquid",
-        "learning_epoch": "program_v8",
+        "learning_epoch": "program_v9",
         "program_sha256": "a" * 64,
         "policy_version": "news_triage_policy_v10",
         "editorial_origin": "telemetry_deterministic",

@@ -272,7 +272,7 @@ def _optimize_real(
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
 
     episodes = compiler_development_corpus()
-    dataset_payload = {"role": "development", "learning_epoch": "program_v8", "cases": []}
+    dataset_payload = {"role": "development", "learning_epoch": "program_v9", "cases": []}
     dataset = FrozenDevelopmentDataset.bind(
         dataset_payload=dataset_payload,
         ref=DevelopmentDatasetRef(

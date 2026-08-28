@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from tests.news.test_news_semantic_program import _card, _context, _semantics
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.graph import NewsSemanticProgram, predictor_spec
 from tracefold.news.program.signatures import EventSemantics, ReaderCard
@@ -28,7 +28,9 @@ from tracefold.news.program.transport import (
     PredictorRequest,
     chat_request_body,
     provider_call_metrics,
+    provider_error_detail,
     response_format,
+    structured_output_mode,
     system_message,
     user_message,
     wire_model_name,
@@ -393,3 +395,93 @@ def test_an_injected_transport_survives_more_than_one_request() -> None:
     for _ in range(3):
         assert asyncio.run(adapter.invoke(_request(adapter), _spec())).output == {"semantics": _semantics()}
     assert len(calls) == 3
+
+
+# --- endpoint-capable structured output (#310) ----------------------------------------------------
+
+
+def test_the_structured_output_mode_follows_the_wire_model_name() -> None:
+    assert structured_output_mode("deepseek-v4-flash") == "json_object"
+    assert structured_output_mode("openai/deepseek-chat") == "json_object"
+    assert structured_output_mode("DeepSeek-R2") == "json_object"
+    assert structured_output_mode("openai/qwen3-30b") == "json_schema"
+    assert structured_output_mode("scripted/test") == "json_schema"
+
+
+def test_a_json_object_only_endpoint_gets_the_schema_inside_the_message_instead() -> None:
+    """DeepSeek rejects `json_schema` outright (HTTP 400, #310), so its constraint is `json_object` and the
+    same envelope schema rides the system message — decided from the model name at composition time, never
+    as a fallback after a failure."""
+
+    spec = _spec()
+    body = chat_request_body(
+        model="deepseek-v4-flash",
+        instruction=spec.instruction,
+        field_order=("evidence_json",),
+        values={"evidence_json": "{}"},
+        output_field=spec.output_field,
+        output_model=spec.output_model,
+        max_tokens=64,
+    )
+
+    assert body["response_format"] == {"type": "json_object"}
+    schema = response_format(spec.output_field, spec.output_model)["json_schema"]["schema"]
+    assert canonical_json(schema) in body["messages"][0]["content"]
+
+
+def test_a_json_schema_endpoint_keeps_the_riding_schema_and_carries_no_inline_copy() -> None:
+    spec = _spec()
+    kwargs: dict[str, Any] = dict(
+        model="openai/qwen3-30b",
+        instruction=spec.instruction,
+        field_order=("evidence_json",),
+        values={"evidence_json": "{}"},
+        output_field=spec.output_field,
+        output_model=spec.output_model,
+        max_tokens=64,
+    )
+
+    assert chat_request_body(**kwargs) == chat_request_body(**kwargs, structured_output="json_schema")
+    body = chat_request_body(**kwargs)
+    assert body["response_format"]["type"] == "json_schema"
+    schema = response_format(spec.output_field, spec.output_model)["json_schema"]["schema"]
+    assert canonical_json(schema) not in body["messages"][0]["content"]
+
+
+def test_provider_error_detail_is_bounded_and_secret_scrubbed() -> None:
+    assert provider_error_detail(None) is None
+    assert provider_error_detail({"error": "down"}) is None
+    assert provider_error_detail({"error": {"message": ""}}) is None
+    detail = provider_error_detail(
+        {"error": {"code": "invalid_request_error", "message": "no sk-" + "a" * 24 + " for you " + "x" * 400}}
+    )
+    assert detail is not None
+    assert detail.startswith("invalid_request_error: no [redacted] for you")
+    assert "sk-" not in detail
+    assert len(detail) <= 200
+
+
+def test_a_refused_request_carries_the_providers_own_reason() -> None:
+    """#310 was diagnosed with an offline probe because the 400's body was discarded; the error now keeps a
+    bounded copy of what the provider actually said."""
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {"code": "invalid_request_error", "message": "This response_format type is unavailable now"}
+            },
+        )
+
+    adapter = _adapter(handler)
+    with pytest.raises(PredictorAdapterError) as excinfo:
+        asyncio.run(adapter.invoke(_request(adapter), _spec()))
+
+    assert excinfo.value.code == "news_program_provider_http_400"
+    assert excinfo.value.provider_detail == "invalid_request_error: This response_format type is unavailable now"
+
+
+def test_a_gateway_aliased_deepseek_route_still_gets_json_object() -> None:
+    assert structured_output_mode("accounts/fireworks/models/deepseek-v3") == "json_object"
+    assert structured_output_mode("openai/gateway/deepseek-chat") == "json_object"
+    assert structured_output_mode("accounts/acme/models/qwen3-30b") == "json_schema"

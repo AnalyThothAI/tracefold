@@ -496,6 +496,9 @@ class ProgramCallTrace(_ExactContractModel):
     provider_cost_microusd: int | None = None
     finish_reason: str | None = None
     error_code: str | None = None
+    # Bounded, secret-scrubbed provider error body for a refused request (#310). Absent on every
+    # pre-factory_v9 trace and on any attempt the provider answered.
+    error_detail: str | None = None
 
     @model_validator(mode="after")
     def _synthetic_entry_has_no_provider_usage(self) -> ProgramCallTrace:
@@ -507,6 +510,7 @@ class ProgramCallTrace(_ExactContractModel):
             or self.provider is not None
             or self.model is not None
             or self.model_sha256 is not None
+            or self.error_detail is not None
             or self.output_sha256 is not None
             or self.validated_output is not None
             or bool(self.normalizations)

@@ -100,28 +100,35 @@ not the phases themselves. Use code review and static typing to improve
 cohesion; do not turn exact line counts, `Any` occurrences, suppression counts,
 or historical file inventories into permanent architecture contracts.
 
-**Program identity.** The two advisory instructions and `program_sha256`, the
-`factory_id` that versions code-owned prompt/RulePack/route/budget behavior,
+**Program identity.** The two Predictor instructions and `program_sha256`, the
+`factory_id` that versions code-owned envelope/route/budget behavior,
 the policy version and the metric identity are release evidence, not
 implementation details. A structural change must leave every one of them
 byte-identical; `tests/contract/test_program_release_identity.py` protects the
-exact artifact bytes, rendered prompt identity, factory, Program, epoch, policy,
-review and metric versions directly. A
-change to code-owned behavior — a RulePack body, the renderer, the normalizer
+exact artifact bytes, the Predictor instruction bytes, factory, Program, epoch,
+policy, review and metric versions directly. A
+change to code-owned behavior — the wire envelope, the normalizer
 or assembler, the route or the call budget — is a factory bump you declare, not
-a component hash that cascades on its own; both belong to an explicit,
-evidence-gated identity migration.
+a component hash that cascades on its own; an edit to the seed instruction text
+(`src/tracefold/news/program/seed.py`) moves `program_sha256` itself. Both
+belong to an explicit, evidence-gated identity migration.
 
 Issue #193 is one such explicit hard cut. The artifact becomes one canonical
 document holding `schema_version` `news_program_strategy_artifact_v1`,
 `factory_id` and the two instructions, with `program_sha256` over exactly those
-four values. Issue #306 is the current one. It bumps the factory to
-`tracefold.news.program.factory_v8` and the epoch to `program_v8`, and the sole
-stable root is `c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
-Prompt bytes move twice inside that one migration, deliberately paid once: the
-kernel/RulePack/advisory/seal layering collapses into one seed text per
-Predictor (`program/seed.py`), and the self-owned chat transport composes the
-field envelope that DSPy's JSON adapter used to compose.
+four values. Issue #306 bumped the factory to
+`tracefold.news.program.factory_v8` and the epoch to `program_v8`: prompt bytes
+moved twice inside that one migration, deliberately paid once — the
+kernel/RulePack/advisory/seal layering collapsed into one seed text per
+Predictor (`program/seed.py`), and the self-owned chat transport composed the
+field envelope that DSPy's JSON adapter used to compose. Issue #310 is the
+current one. Its transport sent `json_schema` to every endpoint, and DeepSeek
+rejects that format, so the structured-output constraint now follows the
+endpoint — `json_schema` where supported, `json_object` with the same schema
+inlined into the system message where not. That moves fallback-route prompt
+bytes: `factory_v9`, epoch `program_v9`, and the sole stable root — the seed
+texts unchanged — is
+`23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754`.
 
 ## Tests
 
@@ -578,12 +585,14 @@ invisible while its only tests drove a fake GEPA:
 The reflection endpoint is configured separately from the task endpoint
 (`llm.news_compiler_reflection`) with its own 32k-token, 300 s, temperature-1.0
 budget. Passing one endpoint for both made the local student its own teacher,
-capped a proposed instruction at the task route's 1,200 tokens — below the
-2,048 the advisory bound itself accepts — and pointed a multi-hour run at the same
-single-slot GPU that serves production Triage. A code-owned
-`RulePackAwareProposer` puts the full rendered instruction in front of the
-reflection model as read-only context; before it, `<curr_param>` was one space
-and the model was rewriting 8.5 KB of rules it could not see.
+capped a proposed instruction at the task route's 1,200 tokens — far below what
+the instruction bound accepts (8,192 estimated tokens since #306; 2,048 in the
+advisory era this incident dates from) — and pointed a multi-hour run at the same
+single-slot GPU that serves production Triage. The code-owned
+`InstructionProposer` (named `RulePackAwareProposer` until #306 retired the
+RulePack layering) puts the candidate's complete current instruction in front
+of the reflection model; before it, `<curr_param>` was one space and the model
+was rewriting 8.5 KB of rules it could not see.
 
 The optimization has three typed roles, not copied adjacent scalars: task,
 reflection and `metric_judge`, each one `ModelExecutionIdentity`. Secret-free

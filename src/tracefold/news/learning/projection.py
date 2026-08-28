@@ -388,6 +388,14 @@ def _recording_verification_projection(raw: Mapping[str, Any]) -> dict[str, Any]
             usage = program.get("usage")
             if isinstance(usage, dict):
                 usage.pop("wall_latency_ms", None)
+            # #310: the provider's error prose is audit evidence, not behavior. Recordings do not carry
+            # it and a replayed refusal cannot reproduce it, so it leaves the root the same way the
+            # verifier's own wall time does — on both the trace's calls and the flattened copy.
+            for calls in (program.get("calls"), (program.get("trace") or {}).get("calls")):
+                if isinstance(calls, list):
+                    for call in calls:
+                        if isinstance(call, dict):
+                            call.pop("error_detail", None)
     return projected
 
 

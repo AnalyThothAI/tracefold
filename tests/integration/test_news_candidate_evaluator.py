@@ -145,12 +145,12 @@ def _epoch_started_at_ms(conn: object) -> int:
     return int(row["starts_at_ms"])
 
 
-def test_candidate_evaluator_pins_the_program_v8_epoch_contract(conn) -> None:
+def test_candidate_evaluator_pins_the_program_v9_epoch_contract(conn) -> None:
     """The evaluator proves the persisted epoch identity — against what the epoch was *opened* with.
 
     `program_factory_id` and `artifact_schema_version` record what opened the epoch, exactly like
     `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only ever
-    be history. #306 opens `program_v8` with `factory_v8`, and later in-epoch re-issues (a serialization or
+    be history. #310 opens `program_v9` with `factory_v9`, and later in-epoch re-issues (a serialization or
     factory change that does not change which evidence is eligible) must not rewrite it. Asserting today's
     runtime values against those columns therefore only holds while the epoch is fresh; asserting what the
     migration wrote catches migration drift and a corrupted ledger row, which is what the check is for.
@@ -162,28 +162,25 @@ def test_candidate_evaluator_pins_the_program_v8_epoch_contract(conn) -> None:
         (LEARNING_EPOCH,),
     ).fetchone()
 
-    assert LEARNING_EPOCH == "program_v8"
-    assert (
-        ledger_module.LEARNING_EPOCH_RESET_REASON
-        == "single_instruction_seed_and_self_owned_transport_identity_migration"
-    )
+    assert LEARNING_EPOCH == "program_v9"
+    assert ledger_module.LEARNING_EPOCH_RESET_REASON == "endpoint_capable_structured_output_envelope_identity_migration"
     # The three columns the evaluator validates, and nothing else about identity.
     assert row["baseline_program_version"] == PROGRAM_VERSION
     assert row["prior_evidence_disposition"] == "audit_only"
     assert row["reset_reason"] == ledger_module.LEARNING_EPOCH_RESET_REASON
-    # The two that name what #306 opened the epoch with, and are validated against exactly those.
+    # The two that name what #310 opened the epoch with, and are validated against exactly those.
     assert (
         (row["program_factory_id"], row["artifact_schema_version"])
         == (
             ledger_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
             ledger_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
         )
-        == ("tracefold.news.program.factory_v8", "news_program_strategy_artifact_v1")
+        == ("tracefold.news.program.factory_v9", "news_program_strategy_artifact_v1")
     )
     assert (
         candidate_evaluator_module.LEARNING_PROGRAM_FACTORY_ID
         == PROGRAM_FACTORY_ID
-        == ("tracefold.news.program.factory_v8")
+        == ("tracefold.news.program.factory_v9")
     )
     evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
     assert evaluator._ledger.epoch_started_at_ms() > 0
@@ -194,7 +191,7 @@ def test_candidate_evaluator_pins_the_program_v8_epoch_contract(conn) -> None:
         "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, program_factory_id, "
         "artifact_schema_version, baseline_program_version, baseline_program_sha256, "
         "prior_evidence_disposition, reset_reason, created_at_ms) "
-        "VALUES ('program_v8_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
+        "VALUES ('program_v9_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
         "'audit_only', %s, %s)",
         (
             row["starts_at_ms"],
@@ -207,7 +204,7 @@ def test_candidate_evaluator_pins_the_program_v8_epoch_contract(conn) -> None:
         ),
     )
     with (
-        patch.object(ledger_module, "LEARNING_EPOCH", "program_v8_corrupted"),
+        patch.object(ledger_module, "LEARNING_EPOCH", "program_v9_corrupted"),
         pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"),
     ):
         CandidateEvaluator(conn, stable=_arm(), judges={})._ledger.epoch_started_at_ms()

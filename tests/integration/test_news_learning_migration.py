@@ -72,7 +72,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260828_0319"
+        assert revision["version_num"] == "20260828_0320"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -176,7 +176,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
     finally:
         if conn is not None:
             conn.close()
@@ -218,7 +218,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -541,7 +541,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -572,9 +572,10 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert view_columns[-3:] == ["editorial", "scored_judgment_sha256", "runtime_manifest_sha"]
 
         epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
-        # v1..v6 plus `program_v7` (#162) and `program_v8` (#306): every migration between 0300 and head
+        # v1..v6 plus `program_v7` (#162), `program_v8` (#306) and `program_v9` (#310): every
+        # migration between 0300 and head
         # that opened an epoch appended one, and none of them rewrote an earlier row.
-        assert len(epochs) == 8
+        assert len(epochs) == 9
         for epoch_id, prior in prior_epochs.items():
             assert dict(next(row for row in epochs if row["epoch_id"] == epoch_id)) == prior
         program_v6 = next(row for row in epochs if row["epoch_id"] == "program_v6")
@@ -787,16 +788,17 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
 
         epochs = {
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
         # Every epoch that existed before this migration survives byte for byte. `program_v8` is appended
-        # by a *later* migration on the way to head (#306's 0318), and its presence is not this migration
+        # by a *later* migration on the way to head (#306's 0318; #310's 0319 appends `program_v9`
+        # after it), and its presence is not this migration
         # re-opening anything: what this test pins is that `program_v7` is untouched.
-        assert {name: row for name, row in epochs.items() if name != "program_v8"} == prior_epochs
+        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
         assert epochs["program_v7"]["program_factory_id"] == "tracefold.news.program.factory_v5"
         assert epochs["program_v7"]["artifact_schema_version"] == "news_semantic_program_artifact_v2"
         assert epochs["program_v7"]["baseline_program_sha256"] == (
@@ -944,13 +946,13 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
 
         epochs = {
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        assert {name: row for name, row in epochs.items() if name != "program_v8"} == prior_epochs
+        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
         assert epochs["program_v7"]["baseline_program_sha256"] == (
             "7a460f8d3812c64c6ee38158871eb9f060811e5ffe87f399f7bc2e506b4e28ad"
         )
@@ -1069,7 +1071,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
 
         activation = dict(
             conn.execute(
@@ -1090,7 +1092,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        assert {name: row for name, row in epochs.items() if name != "program_v8"} == prior_epochs
+        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
     finally:
         if conn is not None:
             conn.close()
@@ -1138,7 +1140,7 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0319"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0320"
 
         activation = dict(
             conn.execute(
@@ -1172,7 +1174,7 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
             row["epoch_id"]: dict(row)
             for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         }
-        assert {name: row for name, row in epochs.items() if name != "program_v8"} == prior_epochs
+        assert {name: row for name, row in epochs.items() if name not in {"program_v8", "program_v9"}} == prior_epochs
     finally:
         if conn is not None:
             conn.close()

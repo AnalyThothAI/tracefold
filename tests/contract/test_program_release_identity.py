@@ -20,13 +20,13 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_artifact().program_sha256,
     } == {
-        "factory_id": "tracefold.news.program.factory_v8",
+        "factory_id": "tracefold.news.program.factory_v9",
         "program_version": "news_semantic_program_v5",
-        "learning_epoch": "program_v8",
+        "learning_epoch": "program_v9",
         "policy_version": "news_triage_policy_v10",
         "review_rubric_version": "news_review_v4",
         "metric_id": "tracefold.news.production_action_trade_relevance_v5",
-        "program_sha256": "c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9",
+        "program_sha256": "23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754",
     }
 
 

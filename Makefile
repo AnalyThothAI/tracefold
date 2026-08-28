@@ -273,7 +273,7 @@ _trading-hard-cut-preflight-if-needed:
 			       AND relkind = 'r' \
 			  ))"); \
 		case "$$migration_state" in \
-			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f) \
+			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f|20260828_0319\|t\|f) \
 				make --no-print-directory trading-hard-cut-preflight ;; \
 			*\|t\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \

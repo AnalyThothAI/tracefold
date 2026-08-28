@@ -134,7 +134,7 @@ class ProgramStrategyArtifactV1(_ExactModel):
     """
 
     schema_version: Literal["news_program_strategy_artifact_v1"] = "news_program_strategy_artifact_v1"
-    factory_id: Literal["tracefold.news.program.factory_v8"] = "tracefold.news.program.factory_v8"
+    factory_id: Literal["tracefold.news.program.factory_v9"] = "tracefold.news.program.factory_v9"
     event_semantics_instruction: str
     reader_card_instruction: str
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

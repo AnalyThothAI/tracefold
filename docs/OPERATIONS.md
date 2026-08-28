@@ -75,7 +75,7 @@ fresh database, `make up` starts a zero-claim Nautilus process, waits for its
 separate fresh `nautilus_bootstrap_account_zero_at_ms` proof while `/readyz`
 correctly remains red with `capability_snapshot_missing`, activates the first
 snapshot, and recreates Nautilus. Deploy/migrate the exact reviewed image to
-`20260828_0319`, then run:
+`20260828_0320`, then run:
 
 ```text
 uv run tracefold trading refresh-capabilities
@@ -655,7 +655,7 @@ Diagnose News in this order:
    Deduper+Gate on a saved provider payload without broker or model.
 
 The current evidence eligibility window starts at the deployment timestamp
-stored in `news_learning_epochs(program_v8)`. Only accepted `news_review_v4`
+stored in `news_learning_epochs(program_v9)`. Only accepted `news_review_v4`
 rows from this epoch that are bound to the exact current factory/Program bundle
 enter metric v5, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
@@ -921,7 +921,7 @@ prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
 `0316` adds the #283 immutable Trading Intent handoff and Nautilus execution
 projection; on an existing volume, provision the Nautilus role before applying
 it as described above.
-`0318` is the #306 prompt-layer hard cut and the current epoch boundary. It
+`0318` is the #306 prompt-layer hard cut. It
 appends `program_v8` for `factory_v8` and trips every armed or active canary.
 Two byte changes land under that one identity migration, deliberately paid once
 rather than twice: the sealed kernel / nine RulePacks / advisory / authority-seal
@@ -930,7 +930,15 @@ self-owned chat transport composes the request envelope DSPy's JSON adapter used
 to compose. `program_v7` evidence — which closed with zero accepted candidates,
 zero canary activations and two empty advisory instructions — becomes immutable
 audit history. It adds no column and is irreversible.
-`0319` is the #286 TradeIntentV2 hard cut. It adds immutable capability/replay
+`0319` is the #310 envelope hard cut and the current epoch boundary. It appends
+`program_v9` for `factory_v9`, trips every armed or active canary, and re-issues
+the stable root over unchanged seed texts. The self-owned transport's
+structured-output constraint now follows the endpoint — `json_schema` where
+supported, `json_object` with the same schema inlined into the system message
+for DeepSeek-class endpoints — which moves fallback-route prompt bytes; the
+first hours of the v8 cohort, a third of whose verdicts degraded against the
+rejected format, become immutable audit history.
+`0320` is the #286 TradeIntentV2 hard cut. It adds immutable capability/replay
 ledgers, refuses a warm migration, and never rewrites V1 history. Roll forward;
 there is no downgrade to a second execution permission model.
 
@@ -978,7 +986,7 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v8` reset changes eligibility, not retention: all earlier evidence
+  `program_v9` reset changes eligibility, not retention: all earlier evidence
   remains auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;

@@ -43,7 +43,7 @@ from tracefold.news.program.transport import ChatCompletionsPredictorAdapter
 from .test_news_gepa_core import _episodes as _corpus
 from .test_news_gepa_core import _FakeGepaOptimize, _MeteredFakeReflectionLM, _MeteredTaskAdapter, _NoopJudge
 
-_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v8", "cases": []}
+_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v9", "cases": []}
 
 
 class _StampedJudge(_NoopJudge):

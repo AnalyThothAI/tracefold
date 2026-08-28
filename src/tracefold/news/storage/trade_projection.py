@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any, TypedDict
 
+from ..learning.contracts import LEARNING_EPOCH
 from ..opennews import source_artifact_identity
 
 # Bump when a key is added, removed or retyped below — and when what a key *means* changes without the
@@ -239,7 +240,7 @@ class TradeProjectionStorage:
                 ON s.event_id = v.event_id AND s.metric_version = %s
               JOIN news_events e ON e.event_id = v.event_id
               JOIN news_learning_epochs epoch
-                ON epoch.epoch_id = 'program_v8'
+                ON epoch.epoch_id = %s
                AND e.opened_at_ms >= epoch.starts_at_ms
                AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
@@ -261,6 +262,7 @@ class TradeProjectionStorage:
             """,
             (
                 metric_version,
+                LEARNING_EPOCH,
                 int(after_created_at_ms),
                 int(until_created_at_ms),
                 int(limit),
@@ -311,7 +313,7 @@ class TradeProjectionStorage:
               FROM news_verdicts v
               JOIN news_events e ON e.event_id = v.event_id
               JOIN news_learning_epochs epoch
-                ON epoch.epoch_id = 'program_v8'
+                ON epoch.epoch_id = %s
                AND e.opened_at_ms >= epoch.starts_at_ms
                AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
@@ -333,7 +335,7 @@ class TradeProjectionStorage:
              ORDER BY v.created_at_ms DESC, v.event_id DESC
              LIMIT %s
             """,
-            (int(after_created_at_ms), int(until_created_at_ms), int(limit)),
+            (LEARNING_EPOCH, int(after_created_at_ms), int(until_created_at_ms), int(limit)),
         ).fetchall()
         return [_news_projection_row(row) for row in rows]
 

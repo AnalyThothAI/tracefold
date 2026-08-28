@@ -1,15 +1,15 @@
 """Capability-governed TradeIntentV2 and immutable replay receipts (#286).
 
-Revision ID: 20260828_0319
-Revises: 20260828_0318
+Revision ID: 20260828_0320
+Revises: 20260828_0319
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260828_0319"
-down_revision = "20260828_0318"
+revision = "20260828_0320"
+down_revision = "20260828_0319"
 branch_labels = None
 depends_on = None
 
@@ -288,4 +288,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260828_0319 owns TradeIntentV2 and replay receipts and cannot be downgraded")
+    raise RuntimeError("20260828_0320 owns TradeIntentV2 and replay receipts and cannot be downgraded")
