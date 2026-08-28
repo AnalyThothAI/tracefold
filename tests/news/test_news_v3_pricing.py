@@ -90,7 +90,9 @@ def test_rank_sql_is_generated_from_the_same_order_so_the_two_cannot_drift() -> 
 
     sql = source_rank_sql()
     assert "WHEN i.venue = 'binance.perp' THEN 0" in sql and "WHEN i.venue = 'hl.xyz' THEN 4" in sql
-    assert "WHEN i.venue LIKE 'hl.%' THEN 5" in sql
+    # The fragment is interpolated into parameterized psycopg queries, so a literal SQL wildcard must be
+    # doubled for the driver's pyformat parser. A lone `%` raises ProgrammingError before PostgreSQL sees it.
+    assert "WHEN i.venue LIKE 'hl.%%' THEN 5" in sql
     assert "WHEN i.venue = 'okx.perp' THEN 6" in sql
     assert sql.endswith("ELSE 8 END")
     assert "upper(i.quote_asset)" in quote_asset_rank_sql()

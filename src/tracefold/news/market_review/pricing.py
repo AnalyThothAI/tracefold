@@ -114,7 +114,9 @@ def quote_asset_rank(quote_asset: str | None) -> int:
 def _rank_case_sql(column: str, values: Sequence[str], *, other: int) -> str:
     branches = " ".join(
         (
-            f"WHEN {column} LIKE '{value[:-1]}%' THEN {index}"
+            # These fragments are embedded in psycopg parameterized queries. ``%%`` reaches PostgreSQL as
+            # one literal LIKE wildcard; a lone ``%`` is rejected by psycopg's pyformat parser.
+            f"WHEN {column} LIKE '{value[:-1]}%%' THEN {index}"
             if value.endswith(".*")
             else f"WHEN {column} = '{value}' THEN {index}"
         )
