@@ -479,3 +479,9 @@ def test_a_refused_request_carries_the_providers_own_reason() -> None:
 
     assert excinfo.value.code == "news_program_provider_http_400"
     assert excinfo.value.provider_detail == "invalid_request_error: This response_format type is unavailable now"
+
+
+def test_a_gateway_aliased_deepseek_route_still_gets_json_object() -> None:
+    assert structured_output_mode("accounts/fireworks/models/deepseek-v3") == "json_object"
+    assert structured_output_mode("openai/gateway/deepseek-chat") == "json_object"
+    assert structured_output_mode("accounts/acme/models/qwen3-30b") == "json_schema"

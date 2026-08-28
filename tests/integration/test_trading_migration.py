@@ -408,7 +408,7 @@ def test_0317_refuses_every_durable_legacy_or_nonterminal_owner(blocker: str, er
         conn = None
 
         with pytest.raises(DBAPIError, match=error):
-            _upgrade("20260828_0318")
+            _upgrade("20260828_0319")
     finally:
         if conn is not None:
             conn.close()
@@ -423,7 +423,7 @@ def test_0317_admits_intent_emitted_and_removes_legacy_worker_writes() -> None:
         conn.commit()
         conn.close()
         conn = None
-        _upgrade("20260828_0318")
+        _upgrade("20260828_0319")
         conn = connect_postgres_test(read_only=False)
         _seed_pre_hard_cut_case(conn, case_id="emitted-case", state="INTENT_EMITTED")
         conn.commit()

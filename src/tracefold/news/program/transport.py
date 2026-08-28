@@ -81,8 +81,11 @@ _JSON_OBJECT_ONLY_MODEL_PREFIXES: Final[tuple[str, ...]] = ("deepseek",)
 def structured_output_mode(model_name: str) -> StructuredOutputMode:
     """Which structured-output constraint this model's endpoint accepts."""
 
-    wire = wire_model_name(model_name).casefold()
-    if any(wire.startswith(prefix) for prefix in _JSON_OBJECT_ONLY_MODEL_PREFIXES):
+    # Matched on the leaf after the last "/" — the same convention `app/llm.py` uses to recognize a
+    # provider family — so a gateway-aliased route (`accounts/fireworks/models/deepseek-v3`) still lands
+    # on the mode its model actually accepts.
+    leaf = wire_model_name(model_name).casefold().rsplit("/", 1)[-1]
+    if any(leaf.startswith(prefix) for prefix in _JSON_OBJECT_ONLY_MODEL_PREFIXES):
         return "json_object"
     return "json_schema"
 
@@ -174,8 +177,8 @@ _OUTPUT_CONTRACT: Final[str] = (
 _OUTPUT_CONTRACT_INLINE: Final[str] = (
     "\n\n# OUTPUT CONTRACT\n"
     "Reply with one JSON object and nothing else: no prose, no explanation, no markdown fence. "
-    'The object has exactly one key, "{field}", whose value is a {model} object matching this JSON schema '
-    "exactly. Every field the schema marks required must be present.\n"
+    'The object has exactly one key, "{field}", whose value is a {model} object. The entire reply must '
+    "match this JSON schema exactly; every field the schema marks required must be present.\n"
     "{schema}"
 )
 

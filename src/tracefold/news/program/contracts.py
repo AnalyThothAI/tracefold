@@ -510,6 +510,7 @@ class ProgramCallTrace(_ExactContractModel):
             or self.provider is not None
             or self.model is not None
             or self.model_sha256 is not None
+            or self.error_detail is not None
             or self.output_sha256 is not None
             or self.validated_output is not None
             or bool(self.normalizations)

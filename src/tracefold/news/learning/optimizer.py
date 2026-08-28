@@ -55,6 +55,7 @@ from ..program.transport import (
     RuntimeModelIdentity,
     _is_retryable_exception,
     provider_call_metrics,
+    provider_error_detail,
     wire_model_name,
 )
 from .contracts import (
@@ -770,7 +771,10 @@ class ReflectionLM:
             transport=self._transport,
         )
         if reply.status_code >= 400 or reply.payload is None:
-            raise RuntimeError(f"news_program_compile_reflection_http_{reply.status_code}")
+            detail = provider_error_detail(reply.payload)
+            raise RuntimeError(
+                f"news_program_compile_reflection_http_{reply.status_code}" + (f": {detail}" if detail else "")
+            )
         payload = reply.payload
         self.last_metrics = provider_call_metrics(payload)
         choices = payload.get("choices") or []
