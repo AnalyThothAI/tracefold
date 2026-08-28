@@ -16,6 +16,7 @@ from psycopg import InterfaceError, OperationalError
 from tracefold.app.repository_session import repositories
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -211,6 +212,14 @@ class NautilusDatabaseBridge:
         )
 
     def _handle_event(self, repos: Any, event: StrategyEvent) -> bool:
+        if isinstance(event, BootstrapAccountZeroChanged):
+            with repos.transaction():
+                repos.trading.set_nautilus_bootstrap_account_zero(
+                    verified_at_ms=event.verified_at_ms,
+                    now_ms=event.observed_at_ms,
+                )
+            return True
+
         if isinstance(event, ReadinessChanged):
             with self._lock:
                 self._engine_ready = event.ready

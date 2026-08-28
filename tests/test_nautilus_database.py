@@ -14,6 +14,7 @@ from psycopg import OperationalError
 from tracefold.app.nautilus.database import NautilusDatabaseBridge
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -78,6 +79,26 @@ def _ready(bridge: NautilusDatabaseBridge, repos: _Repositories) -> None:
         repos,
         ReadinessChanged(ready=True, reason="ready", unexpected_exposure=False),
     )
+
+
+def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness() -> None:
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+
+    assert bridge._handle_event(
+        repos,
+        BootstrapAccountZeroChanged(
+            verified_at_ms=NOW_MS - 1,
+            observed_at_ms=NOW_MS,
+        ),
+    )
+
+    repos.trading.set_nautilus_bootstrap_account_zero.assert_called_once_with(
+        verified_at_ms=NOW_MS - 1,
+        now_ms=NOW_MS,
+    )
+    assert bridge.readiness()["engine_ready"] is False
 
 
 def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_entry() -> None:

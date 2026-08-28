@@ -101,12 +101,16 @@ def upgrade() -> None:
         ALTER TABLE trading_runtime_state
           ADD COLUMN active_capability_snapshot_sha256 TEXT,
           ADD COLUMN active_capability_included_count INTEGER NOT NULL DEFAULT 0,
+          ADD COLUMN nautilus_bootstrap_account_zero_at_ms BIGINT,
           ADD COLUMN blacklist_revision BIGINT NOT NULL DEFAULT 0,
           ADD CONSTRAINT trading_runtime_capability_snapshot_fk
             FOREIGN KEY (active_capability_snapshot_sha256)
             REFERENCES trading_execution_capability_snapshots(snapshot_sha256) ON DELETE RESTRICT,
           ADD CONSTRAINT trading_runtime_capability_count_check
-            CHECK (active_capability_included_count >= 0)
+            CHECK (active_capability_included_count >= 0),
+          ADD CONSTRAINT trading_runtime_bootstrap_zero_at_check
+            CHECK (nautilus_bootstrap_account_zero_at_ms IS NULL
+                   OR nautilus_bootstrap_account_zero_at_ms >= 0)
         """
     )
     op.execute(
@@ -227,12 +231,18 @@ def upgrade() -> None:
     )
     op.execute(
         "GRANT UPDATE (active_capability_snapshot_sha256, active_capability_included_count, "
-        "blacklist_revision, nautilus_ready, nautilus_readiness_reason, updated_at_ms) "
+        "nautilus_bootstrap_account_zero_at_ms, blacklist_revision, nautilus_ready, "
+        "nautilus_readiness_reason, updated_at_ms) "
         "ON trading_runtime_state TO tracefold_workers"
     )
     op.execute(
         "GRANT SELECT (active_capability_snapshot_sha256, active_capability_included_count, "
-        "blacklist_revision) ON trading_runtime_state TO tracefold_nautilus"
+        "nautilus_bootstrap_account_zero_at_ms, blacklist_revision) "
+        "ON trading_runtime_state TO tracefold_nautilus"
+    )
+    op.execute(
+        "GRANT UPDATE (nautilus_bootstrap_account_zero_at_ms, updated_at_ms) "
+        "ON trading_runtime_state TO tracefold_nautilus"
     )
 
 

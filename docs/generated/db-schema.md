@@ -695,6 +695,7 @@
 | `nautilus_unexpected_exposure` | `BOOLEAN` | False | `false` |
 | `active_capability_snapshot_sha256` | `TEXT` | True | `None` |
 | `active_capability_included_count` | `INTEGER` | False | `0` |
+| `nautilus_bootstrap_account_zero_at_ms` | `BIGINT` | True | `None` |
 | `blacklist_revision` | `BIGINT` | False | `0` |
 
 ## `trading_strategy_evaluations`

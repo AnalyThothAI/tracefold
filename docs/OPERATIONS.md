@@ -68,10 +68,14 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
-For the V2 capability cut, keep Trading `PAUSED` and Nautilus running. Require a
-fresh green readiness heartbeat with account-wide zero exposure and zero open
-orders, and require zero nonterminal Intents. Deploy/migrate the exact reviewed
-image to `20260828_0319`, then run:
+For the V2 capability cut, keep Trading `PAUSED` and require zero nonterminal
+Intents. On an existing active snapshot, require a fresh green Nautilus
+readiness heartbeat with account-wide zero exposure and zero open orders. On a
+fresh database, `make up` starts a zero-claim Nautilus process, waits for its
+separate fresh `nautilus_bootstrap_account_zero_at_ms` proof while `/readyz`
+correctly remains red with `capability_snapshot_missing`, activates the first
+snapshot, and recreates Nautilus. Deploy/migrate the exact reviewed image to
+`20260828_0319`, then run:
 
 ```text
 uv run tracefold trading refresh-capabilities
@@ -239,7 +243,7 @@ tracefold serve
 
 tracefold workers
   -> one singleton advisory lock and runtime_id
-  -> one DB pool min 1 / max 8 / max_waiting 3
+  -> one DB pool min 2 / max 8 / max_waiting 3
      (1 singleton lock + 2 business + 4 News lane + 1 control)
   -> one pinned singleton session / business DB executor 2 / News DB lane 4 /
      control DB executor 1

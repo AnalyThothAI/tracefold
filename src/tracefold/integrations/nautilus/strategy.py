@@ -27,8 +27,7 @@ from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, 
 from .capabilities import instrument_matches_capability
 from .messages import (
     AdoptIntent,
-    BootstrapAccountZeroConfirmed,
-    BootstrapAccountZeroUnproven,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -42,6 +41,8 @@ from .messages import (
     PositionFlatConfirmed,
     PositionQuantityChanged,
     ReadinessChanged,
+    StartupAccountReconciliationConfirmed,
+    StartupAccountReconciliationUnproven,
     StopAccepted,
     StopSubmitted,
     StrategyCommand,
@@ -78,7 +79,7 @@ class TracefoldNautilusStrategy(Strategy):
         capabilities: Mapping[str, ExecutionInstrumentCapabilityV1],
         queues: StrategyQueues,
         request_venue_flat: Callable[[VenueFlatProofRequested], None],
-        request_bootstrap_account_zero: Callable[[], None] | None = None,
+        request_startup_account_reconciliation: Callable[[], None],
         config: StrategyConfig | None = None,
     ) -> None:
         claims = sorted(set(instrument_ids), key=lambda item: item.value)
@@ -87,8 +88,6 @@ class TracefoldNautilusStrategy(Strategy):
             raise ValueError("nautilus_external_order_claims_invalid")
         if not engine_identity.strip():
             raise ValueError("nautilus_engine_identity_invalid")
-        if not claims and request_bootstrap_account_zero is None:
-            raise ValueError("nautilus_bootstrap_account_zero_request_missing")
         super().__init__(selected)
         self._engine_identity = engine_identity
         self._instrument_ids = frozenset(claims)
@@ -97,11 +96,12 @@ class TracefoldNautilusStrategy(Strategy):
         self._capabilities = dict(capabilities)
         self._queues = queues
         self._request_venue_flat = request_venue_flat
-        self._request_bootstrap_account_zero = request_bootstrap_account_zero
-        self._bootstrap_account_zero_confirmed = bool(claims)
-        self._bootstrap_unexpected_exposure = False
-        self._bootstrap_request_pending = False
-        self._bootstrap_retry_at_ms: int | None = None
+        self._request_startup_account_reconciliation = request_startup_account_reconciliation
+        self._bootstrap_mode = not claims
+        self._startup_account_reconciled = False
+        self._startup_unexpected_exposure = False
+        self._startup_request_pending = False
+        self._startup_retry_at_ms: int | None = None
         # One active lifecycle is retained losslessly behind the bounded thread queue.
         self._pending_events: deque[StrategyEvent] = deque()
         self._projection_overflow = False
@@ -141,7 +141,7 @@ class TracefoldNautilusStrategy(Strategy):
             fire_immediately=True,
         )
         self._publish_readiness()
-        self._request_bootstrap_zero_if_due()
+        self._request_startup_reconciliation_if_due()
 
     def on_stop(self) -> None:
         timer_name = f"{self.id}:COMMANDS"
@@ -164,13 +164,15 @@ class TracefoldNautilusStrategy(Strategy):
         unexpected = unexpected_position or unowned_order
         if self._projection_overflow:
             return ReadinessChanged(False, "projection_overflow", unexpected)
-        if not self._bootstrap_account_zero_confirmed:
-            unexpected = unexpected or self._bootstrap_unexpected_exposure
+        if not self._startup_account_reconciled:
+            unexpected = unexpected or self._startup_unexpected_exposure
             return ReadinessChanged(
                 False,
-                "external_exposure" if unexpected else "bootstrap_account_zero_unproven",
+                "external_exposure" if unexpected else "startup_account_reconciliation_unproven",
                 unexpected,
             )
+        if self._bootstrap_mode:
+            return ReadinessChanged(False, "capability_snapshot_missing", unexpected)
         instruments = {item: self.cache.instrument(item) for item in self._instrument_ids}
         if account is None or any(instrument is None for instrument in instruments.values()):
             return ReadinessChanged(False, "account_or_instrument_missing", unexpected)
@@ -207,7 +209,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._request_entry_fence_if_ready()
         self._enforce_max_holding()
         self._retry_venue_flat_proof()
-        self._request_bootstrap_zero_if_due()
+        self._request_startup_reconciliation_if_due()
         if self._last_readiness is not None:
             self._publish_readiness()
         self._flush_events()
@@ -215,16 +217,34 @@ class TracefoldNautilusStrategy(Strategy):
     def _handle_command(self, command: StrategyCommand) -> None:
         if isinstance(command, AdoptIntent):
             self._adopt_intent(command)
-        elif isinstance(command, BootstrapAccountZeroConfirmed):
-            self._bootstrap_account_zero_confirmed = True
-            self._bootstrap_unexpected_exposure = False
-            self._bootstrap_request_pending = False
-            self._bootstrap_retry_at_ms = None
-        elif isinstance(command, BootstrapAccountZeroUnproven):
-            self._bootstrap_account_zero_confirmed = False
-            self._bootstrap_unexpected_exposure = command.unexpected_exposure
-            self._bootstrap_request_pending = False
-            self._bootstrap_retry_at_ms = int(self.clock.timestamp_ms()) + _FLAT_PROOF_RETRY_MS
+        elif isinstance(command, StartupAccountReconciliationConfirmed):
+            if command.bootstrap_account_zero != self._bootstrap_mode:
+                raise RuntimeError("nautilus_startup_reconciliation_mode_mismatch")
+            self._startup_account_reconciled = True
+            self._startup_unexpected_exposure = False
+            self._startup_request_pending = False
+            self._startup_retry_at_ms = (
+                int(self.clock.timestamp_ms()) + _FLAT_PROOF_RETRY_MS if self._bootstrap_mode else None
+            )
+            if self._bootstrap_mode:
+                self._emit(
+                    BootstrapAccountZeroChanged(
+                        verified_at_ms=command.verified_at_ms,
+                        observed_at_ms=command.verified_at_ms,
+                    )
+                )
+        elif isinstance(command, StartupAccountReconciliationUnproven):
+            self._startup_account_reconciled = False
+            self._startup_unexpected_exposure = command.unexpected_exposure
+            self._startup_request_pending = False
+            self._startup_retry_at_ms = int(self.clock.timestamp_ms()) + _FLAT_PROOF_RETRY_MS
+            if self._bootstrap_mode:
+                self._emit(
+                    BootstrapAccountZeroChanged(
+                        verified_at_ms=None,
+                        observed_at_ms=command.observed_at_ms,
+                    )
+                )
         elif isinstance(command, EntryFenceGranted):
             self._submit_fenced_entry(command)
         elif isinstance(command, IntentReleased):
@@ -234,17 +254,14 @@ class TracefoldNautilusStrategy(Strategy):
         elif isinstance(command, VenueFlatUnproven):
             self._venue_flat_unproven(command)
 
-    def _request_bootstrap_zero_if_due(self) -> None:
-        if self._instrument_ids or self._bootstrap_account_zero_confirmed or self._bootstrap_request_pending:
+    def _request_startup_reconciliation_if_due(self) -> None:
+        if self._startup_request_pending or (self._startup_account_reconciled and not self._bootstrap_mode):
             return
         now_ms = int(self.clock.timestamp_ms())
-        if self._bootstrap_retry_at_ms is not None and now_ms < self._bootstrap_retry_at_ms:
+        if self._startup_retry_at_ms is not None and now_ms < self._startup_retry_at_ms:
             return
-        request = self._request_bootstrap_account_zero
-        if request is None:
-            raise RuntimeError("nautilus_bootstrap_account_zero_request_missing")
-        self._bootstrap_request_pending = True
-        request()
+        self._startup_request_pending = True
+        self._request_startup_account_reconciliation()
 
     def _instrument_id(self) -> InstrumentId:
         if self._active_intent is None:

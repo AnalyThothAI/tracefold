@@ -504,12 +504,11 @@ def test_0319_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -
             ).fetchall()
         }
         assert tables == {"trading_execution_capability_snapshots", "trading_replay_runs"}
-        assert (
-            conn.execute("SELECT blacklist_revision FROM trading_runtime_state WHERE id = 1").fetchone()[
-                "blacklist_revision"
-            ]
-            == 0
-        )
+        runtime = conn.execute(
+            "SELECT blacklist_revision, nautilus_bootstrap_account_zero_at_ms FROM trading_runtime_state WHERE id = 1"
+        ).fetchone()
+        assert runtime["blacklist_revision"] == 0
+        assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
 
         _seed_pre_hard_cut_case(conn, case_id="v1-refused", state="INTENT_EMITTED")
         with pytest.raises(RaiseException, match="new_trade_intent_v1_forbidden"):
@@ -546,7 +545,15 @@ def test_0319_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -
               has_table_privilege('tracefold_workers', 'trading_replay_runs', 'DELETE')
                 AS workers_replay_delete,
               has_column_privilege('tracefold_workers', 'trading_runtime_state', 'nautilus_ready', 'UPDATE')
-                AS workers_can_invalidate_readiness
+                AS workers_can_invalidate_readiness,
+              has_column_privilege(
+                'tracefold_workers', 'trading_runtime_state',
+                'nautilus_bootstrap_account_zero_at_ms', 'UPDATE'
+              ) AS workers_can_clear_bootstrap_proof,
+              has_column_privilege(
+                'tracefold_nautilus', 'trading_runtime_state',
+                'nautilus_bootstrap_account_zero_at_ms', 'UPDATE'
+              ) AS nautilus_can_project_bootstrap_proof
             """
         ).fetchone()
         assert dict(privileges) == {
@@ -558,6 +565,8 @@ def test_0319_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -
             "workers_replay_update": False,
             "workers_replay_delete": False,
             "workers_can_invalidate_readiness": True,
+            "workers_can_clear_bootstrap_proof": True,
+            "nautilus_can_project_bootstrap_proof": True,
         }
     finally:
         if conn is not None:

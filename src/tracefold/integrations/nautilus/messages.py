@@ -13,14 +13,18 @@ OrderLeg = Literal["entry", "stop", "close"]
 
 
 @dataclass(frozen=True, slots=True)
-class BootstrapAccountZeroConfirmed:
-    """Confirm a complete provider report proved the bootstrap account empty."""
+class StartupAccountReconciliationConfirmed:
+    """Confirm the startup process reconciled one complete provider account report."""
+
+    verified_at_ms: int
+    bootstrap_account_zero: bool
 
 
 @dataclass(frozen=True, slots=True)
-class BootstrapAccountZeroUnproven:
-    """Keep bootstrap closed after provider failure or observed account exposure."""
+class StartupAccountReconciliationUnproven:
+    """Keep startup closed after provider failure or observed account exposure."""
 
+    observed_at_ms: int
     unexpected_exposure: bool
 
 
@@ -86,6 +90,14 @@ class ReadinessChanged:
     ready: bool
     reason: str
     unexpected_exposure: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapAccountZeroChanged:
+    """Project the bootstrap-only zero proof without claiming engine readiness."""
+
+    verified_at_ms: int | None
+    observed_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,15 +209,16 @@ class OrderOutcomeUnknown:
 
 StrategyCommand = (
     AdoptIntent
-    | BootstrapAccountZeroConfirmed
-    | BootstrapAccountZeroUnproven
+    | StartupAccountReconciliationConfirmed
+    | StartupAccountReconciliationUnproven
     | EntryFenceGranted
     | IntentReleased
     | VenueFlatConfirmed
     | VenueFlatUnproven
 )
 StrategyEvent = (
-    ReadinessChanged
+    BootstrapAccountZeroChanged
+    | ReadinessChanged
     | EntryFenceRequested
     | IntentRefused
     | EntryFilled
@@ -236,8 +249,7 @@ def strategy_queues(*, maxsize: int = 64) -> StrategyQueues:
 
 __all__ = [
     "AdoptIntent",
-    "BootstrapAccountZeroConfirmed",
-    "BootstrapAccountZeroUnproven",
+    "BootstrapAccountZeroChanged",
     "CloseSubmitted",
     "EntryFenceGranted",
     "EntryFenceRequested",
@@ -251,6 +263,8 @@ __all__ = [
     "PositionFlatConfirmed",
     "PositionQuantityChanged",
     "ReadinessChanged",
+    "StartupAccountReconciliationConfirmed",
+    "StartupAccountReconciliationUnproven",
     "StopAccepted",
     "StopSubmitted",
     "StrategyCommand",

@@ -358,7 +358,6 @@ _up-locked:
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate serve workers"; \
-		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -378,11 +377,30 @@ _trading-capability-bootstrap-if-needed:
 			-c "SELECT active_capability_snapshot_sha256 FROM trading_runtime_state WHERE id = 1"'); \
 		if [ -z "$$active_capability" ]; then \
 			echo "Bootstrapping the first Trading execution capability snapshot."; \
+			docker compose up -d --no-build --force-recreate nautilus; \
+			bootstrap_ready=; attempt=0; \
+			while [ "$$attempt" -lt 60 ]; do \
+				bootstrap_ready=$$(docker compose exec -T postgres sh -eu -c \
+					'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+					PGOPTIONS="-c default_transaction_read_only=on"; \
+					export PGPASSWORD PGOPTIONS; \
+					exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
+					-c "SELECT CASE WHEN nautilus_bootstrap_account_zero_at_ms IS NOT NULL \
+					AND nautilus_bootstrap_account_zero_at_ms >= \
+					floor(extract(epoch from clock_timestamp()) * 1000)::bigint - 15000 \
+					AND NOT nautilus_unexpected_exposure THEN '\''ready'\'' ELSE '\'''\'' END \
+					FROM trading_runtime_state WHERE id = 1"'); \
+				[ "$$bootstrap_ready" = ready ] && break; \
+				attempt=$$((attempt + 1)); sleep 1; \
+			done; \
+			if [ "$$bootstrap_ready" != ready ]; then \
+				echo "Nautilus did not establish a fresh bootstrap account-zero proof." >&2; \
+				exit 1; \
+			fi; \
 			docker compose run --rm --no-deps --entrypoint tracefold workers trading refresh-capabilities; \
-			docker compose restart -t 40 nautilus; \
-			docker compose up -d --no-build --wait \
-				--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus; \
-		fi
+		fi; \
+		docker compose up -d --no-build --force-recreate --wait \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus
 
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
@@ -499,10 +517,11 @@ _deploy-image-locked:
 			exit 1; \
 		}; \
 		runtime_services="migrate serve workers"; \
+		base_services="$$runtime_services"; \
 		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
 		if [ "$$trading_enabled" = true ]; then \
 			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
 		fi; \

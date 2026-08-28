@@ -102,7 +102,8 @@ class CapabilityStorage:
         runtime = self.conn.execute(
             """
             SELECT control, active_capability_snapshot_sha256, nautilus_heartbeat_at_ms,
-                   nautilus_ready, nautilus_unexpected_exposure
+                   nautilus_ready, nautilus_unexpected_exposure,
+                   nautilus_bootstrap_account_zero_at_ms
               FROM trading_runtime_state WHERE id = 1 FOR UPDATE
             """
         ).fetchone()
@@ -111,11 +112,21 @@ class CapabilityStorage:
         current = runtime["active_capability_snapshot_sha256"]
         if current == digest:
             return True
-        heartbeat_at_ms = runtime["nautilus_heartbeat_at_ms"]
-        proof_is_fresh = heartbeat_at_ms is not None and int(heartbeat_at_ms) >= (
-            int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS
-        )
-        if not runtime["nautilus_ready"] or runtime["nautilus_unexpected_exposure"] or not proof_is_fresh:
+        if current is None:
+            proof_at_ms = runtime["nautilus_bootstrap_account_zero_at_ms"]
+            proof_is_fresh = proof_at_ms is not None and int(proof_at_ms) >= (
+                int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS
+            )
+            runtime_proved_flat = proof_is_fresh and not runtime["nautilus_unexpected_exposure"]
+        else:
+            heartbeat_at_ms = runtime["nautilus_heartbeat_at_ms"]
+            proof_is_fresh = heartbeat_at_ms is not None and int(heartbeat_at_ms) >= (
+                int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS
+            )
+            runtime_proved_flat = (
+                proof_is_fresh and runtime["nautilus_ready"] and not runtime["nautilus_unexpected_exposure"]
+            )
+        if not runtime_proved_flat:
             return False
         nonterminal = self.conn.execute(
             """
@@ -132,6 +143,7 @@ class CapabilityStorage:
             UPDATE trading_runtime_state
                SET active_capability_snapshot_sha256 = %s,
                    active_capability_included_count = %s,
+                   nautilus_bootstrap_account_zero_at_ms = NULL,
                    nautilus_ready = false,
                    nautilus_readiness_reason = 'capability_snapshot_changed',
                    updated_at_ms = %s

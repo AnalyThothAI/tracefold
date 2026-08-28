@@ -282,7 +282,7 @@ def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_pat
         _ensure_process_stopped(process)
 
 
-def test_steady_and_maintenance_locks_are_mutually_exclusive(tmp_path) -> None:
+def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtimes(tmp_path) -> None:
     prepare_postgres_database()
     settings = Settings(storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "app-home")
@@ -290,6 +290,23 @@ def test_steady_and_maintenance_locks_are_mutually_exclusive(tmp_path) -> None:
     second = WorkerDatabase.create(settings)
     steady_lock = first.acquire_steady_runtime_lock()
     try:
+        first.prewarm_control_connection()
+
+        def control_query() -> int:
+            with first.worker_pool.connection(timeout=0.250) as conn:
+                row = conn.execute("SELECT 1 AS ok").fetchone()
+                return int(row["ok"])
+
+        assert (
+            asyncio.run(
+                first.run_control(
+                    "worker_pool_control_lane_test",
+                    control_query,
+                    operation_timeout_seconds=1.0,
+                )
+            )
+            == 1
+        )
         with pytest.raises(RuntimeError, match="steady_workers_runtime_already_active"):
             second.acquire_steady_runtime_lock()
         with pytest.raises(RuntimeError, match="steady_workers_runtime_active"):

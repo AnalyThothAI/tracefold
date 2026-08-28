@@ -79,8 +79,9 @@ def conn():
     migrate(connection)
     repos = repositories_for_connection(connection)
     connection.execute(
-        "UPDATE trading_runtime_state SET nautilus_ready = true, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        "UPDATE trading_runtime_state SET nautilus_ready = false, "
+        "nautilus_unexpected_exposure = false, nautilus_bootstrap_account_zero_at_ms = %s "
+        "WHERE id = 1",
         (NOW,),
     )
     assert repos.trading.append_and_activate_execution_capability_snapshot(
@@ -148,7 +149,8 @@ def _reset_authority(connection: Any) -> None:
            SET control = 'PAUSED', blacklist_revision = 0,
                active_capability_snapshot_sha256 = %s,
                active_capability_included_count = %s,
-               nautilus_ready = false, nautilus_unexpected_exposure = false
+               nautilus_ready = false, nautilus_unexpected_exposure = false,
+               nautilus_bootstrap_account_zero_at_ms = NULL
          WHERE id = 1
         """,
         (CAPABILITY_SNAPSHOT.snapshot_sha256, len(CAPABILITY_SNAPSHOT.included)),
@@ -510,18 +512,34 @@ def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: An
     conn.execute(
         "UPDATE trading_runtime_state SET control = 'PAUSED', active_capability_snapshot_sha256 = NULL, "
         "active_capability_included_count = 0, nautilus_ready = false, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL WHERE id = 1"
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL, "
+        "nautilus_bootstrap_account_zero_at_ms = NULL WHERE id = 1"
     )
 
     assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
     assert repos.trading.runtime_state()["active_capability_snapshot_sha256"] is None
 
     conn.execute(
+        "UPDATE trading_runtime_state SET nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
+        (NOW - 15_001,),
+    )
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
+
+    conn.execute(
         "UPDATE trading_runtime_state SET nautilus_ready = true, nautilus_heartbeat_at_ms = %s WHERE id = 1",
         (NOW,),
     )
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
+
+    conn.execute(
+        "UPDATE trading_runtime_state SET nautilus_ready = false, "
+        "nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
     assert repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
-    assert repos.trading.runtime_state()["active_capability_snapshot_sha256"] == initial.snapshot_sha256
+    runtime = repos.trading.runtime_state()
+    assert runtime["active_capability_snapshot_sha256"] == initial.snapshot_sha256
+    assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
     _reset_authority(conn)
 
 
@@ -882,6 +900,10 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
         ready=True,
         readiness_reason="ready",
         unexpected_exposure=False,
+        now_ms=NOW + 1_000,
+    )
+    repos.trading.set_nautilus_bootstrap_account_zero(
+        verified_at_ms=None,
         now_ms=NOW + 1_000,
     )
     assert repos.trading.nautilus_runtime_state(for_update=True) is not None

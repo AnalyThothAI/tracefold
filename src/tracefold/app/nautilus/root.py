@@ -31,8 +31,8 @@ from tracefold.integrations.nautilus import (
     single_execution_client,
 )
 from tracefold.integrations.nautilus.messages import (
-    BootstrapAccountZeroConfirmed,
-    BootstrapAccountZeroUnproven,
+    StartupAccountReconciliationConfirmed,
+    StartupAccountReconciliationUnproven,
     StrategyCommand,
     StrategyQueues,
     VenueFlatConfirmed,
@@ -95,10 +95,13 @@ def run_nautilus(settings: Settings) -> None:
                 loop=loop,
                 request=request,
             ),
-            request_bootstrap_account_zero=(
-                None
-                if capability_snapshot is not None
-                else lambda: _schedule_bootstrap_account_zero_proof(node=node, queues=queues, loop=loop)
+            request_startup_account_reconciliation=(
+                lambda: _schedule_startup_account_reconciliation(
+                    node=node,
+                    queues=queues,
+                    loop=loop,
+                    bootstrap_account_zero=capability_snapshot is None,
+                )
             ),
         )
         node.trader.add_strategy(strategy)
@@ -248,15 +251,20 @@ def _schedule_venue_flat_proof(
     task.add_done_callback(_log_account_proof_task_failure)
 
 
-def _schedule_bootstrap_account_zero_proof(
+def _schedule_startup_account_reconciliation(
     *,
     node: TradingNode,
     queues: StrategyQueues,
     loop: asyncio.AbstractEventLoop,
+    bootstrap_account_zero: bool,
 ) -> None:
     task = loop.create_task(
-        _run_bootstrap_account_zero_proof(node=node, queues=queues),
-        name="bootstrap-account-zero-proof",
+        _run_startup_account_reconciliation(
+            node=node,
+            queues=queues,
+            bootstrap_account_zero=bootstrap_account_zero,
+        ),
+        name="startup-account-reconciliation",
     )
     task.add_done_callback(_log_account_proof_task_failure)
 
@@ -269,22 +277,41 @@ def _log_account_proof_task_failure(task: asyncio.Task[None]) -> None:
         logger.error("Nautilus account proof task failed ({})", type(error).__name__)
 
 
-async def _run_bootstrap_account_zero_proof(
+async def _run_startup_account_reconciliation(
     *,
     node: TradingNode,
     queues: StrategyQueues,
+    bootstrap_account_zero: bool,
 ) -> None:
+    observed_at_ms = int(node.kernel.clock.timestamp_ms())
     try:
         client = single_execution_client(node.kernel.exec_engine)
         position_reports, order_reports = await load_complete_account_reports(client)
-        command: StrategyCommand = (
-            BootstrapAccountZeroConfirmed()
-            if not position_reports and not order_reports
-            else BootstrapAccountZeroUnproven(unexpected_exposure=True)
+        if bootstrap_account_zero and (position_reports or order_reports):
+            raise RuntimeError("nautilus_bootstrap_account_not_empty")
+        if not bootstrap_account_zero:
+            reports = [*position_reports, *order_reports]
+            reconciliation_succeeded = True
+            for report in reports:
+                if report.account_id != client.account_id:
+                    raise RuntimeError("nautilus_startup_report_account_mismatch")
+                reconciliation_succeeded = (
+                    node.kernel.exec_engine.reconcile_execution_report(report) and reconciliation_succeeded
+                )
+            if not reconciliation_succeeded:
+                raise RuntimeError("nautilus_startup_report_reconciliation_failed")
+        verified_at_ms = int(node.kernel.clock.timestamp_ms())
+        command: StrategyCommand = StartupAccountReconciliationConfirmed(
+            verified_at_ms=verified_at_ms,
+            bootstrap_account_zero=bootstrap_account_zero,
         )
     except Exception as exc:
-        logger.warning("Nautilus bootstrap account zero was not established ({})", type(exc).__name__)
-        command = BootstrapAccountZeroUnproven(unexpected_exposure=False)
+        unexpected_exposure = isinstance(exc, RuntimeError) and str(exc) == "nautilus_bootstrap_account_not_empty"
+        logger.warning("Nautilus startup account reconciliation was not established ({})", type(exc).__name__)
+        command = StartupAccountReconciliationUnproven(
+            observed_at_ms=observed_at_ms,
+            unexpected_exposure=unexpected_exposure,
+        )
     await _enqueue_strategy_command(queues, command)
 
 

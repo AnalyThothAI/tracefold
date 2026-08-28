@@ -1632,11 +1632,14 @@ order, provider payload, approval state, backend selector, dual-write, or
 fallback writer.
 
 V1 rows remain readable audit history, but the database rejects every new V1
-insert. Replacing the active capability is a cold operation: Trading must be
-`PAUSED`, the current Nautilus heartbeat must freshly prove account-wide zero
-positions and open orders, and no nonterminal Intent may exist. Activation
-invalidates readiness. The replacement process then loads every included
-instrument and revalidates all frozen provider facts before it can become ready.
+insert. Capability activation is a cold operation: Trading must be `PAUSED` and
+no nonterminal Intent may exist. The first activation consumes a fresh,
+bootstrap-only account-zero proof; that zero-claim process never reports formal
+readiness. A replacement instead consumes the current process's fresh green
+heartbeat and account-wide zero proof. Activation clears the bootstrap proof
+and invalidates readiness. The replacement process then loads every included
+instrument, revalidates all frozen provider facts, and reconciles a complete
+provider account report before it can become ready.
 
 ### Nautilus execution authority
 

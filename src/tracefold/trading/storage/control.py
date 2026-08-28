@@ -66,7 +66,8 @@ class ControlStorage:
             "SELECT control, day_key, dspy_calls_today, funnel, "
             "nautilus_heartbeat_at_ms, nautilus_ready, nautilus_readiness_reason, "
             "nautilus_unexpected_exposure, active_capability_snapshot_sha256, "
-            "active_capability_included_count, blacklist_revision, updated_at_ms "
+            "active_capability_included_count, nautilus_bootstrap_account_zero_at_ms, "
+            "blacklist_revision, updated_at_ms "
             "FROM trading_runtime_state WHERE id = 1"
         ).fetchone()
         return dict(row) if row is not None else None
@@ -77,7 +78,8 @@ class ControlStorage:
         row = self.conn.execute(
             "SELECT control, nautilus_heartbeat_at_ms, nautilus_ready, "
             "nautilus_readiness_reason, nautilus_unexpected_exposure, "
-            "active_capability_snapshot_sha256, active_capability_included_count, blacklist_revision "
+            "active_capability_snapshot_sha256, active_capability_included_count, "
+            "nautilus_bootstrap_account_zero_at_ms, blacklist_revision "
             "FROM trading_runtime_state WHERE id = 1" + (" FOR UPDATE" if for_update else "")
         ).fetchone()
         return dict(row) if row is not None else None
@@ -108,6 +110,16 @@ class ControlStorage:
                 "unexpected": bool(unexpected_exposure),
                 "now": int(now_ms),
             },
+        )
+
+    def set_nautilus_bootstrap_account_zero(self, *, verified_at_ms: int | None, now_ms: int) -> None:
+        """Project a bootstrap proof only while no capability snapshot is active."""
+
+        self.conn.execute(
+            "UPDATE trading_runtime_state "
+            "SET nautilus_bootstrap_account_zero_at_ms = %s, updated_at_ms = %s "
+            "WHERE id = 1 AND active_capability_snapshot_sha256 IS NULL",
+            (None if verified_at_ms is None else int(verified_at_ms), int(now_ms)),
         )
 
     def bump_dspy_calls(self, *, day_key: str, now_ms: int) -> int:

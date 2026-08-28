@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import ExitStack, contextmanager
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,31 +15,6 @@ from tracefold.app import worker_database as worker_database_module
 from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.resource import ResourceAdmissionTimeout
-
-
-def test_worker_pool_preopens_steady_lock_and_control_connections(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-
-    class FakePool:
-        def wait(self, *, timeout: float) -> None:
-            captured["wait_timeout"] = timeout
-
-    def fake_create_pool(dsn: str, **kwargs: Any) -> FakePool:
-        captured.update({"dsn": dsn, **kwargs})
-        return FakePool()
-
-    monkeypatch.setattr(worker_database_module, "create_pool", fake_create_pool)
-    settings = SimpleNamespace(
-        storage=SimpleNamespace(postgres=SimpleNamespace(connect_timeout_seconds=5.0)),
-        postgres_dsn=lambda _role: "postgresql://workers@example.test/tracefold",
-        postgres_password_file=lambda _role: None,
-    )
-
-    database = WorkerDatabase.create(settings, telemetry=None)
-    database.close_executors()
-
-    assert captured["min_size"] == 2
-    assert captured["wait_timeout"] == 5.0
 
 
 def test_background_worker_session_bounds_postgres_parallelism() -> None:

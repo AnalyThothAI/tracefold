@@ -33,8 +33,7 @@ from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
-    BootstrapAccountZeroConfirmed,
-    BootstrapAccountZeroUnproven,
+    BootstrapAccountZeroChanged,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -47,6 +46,8 @@ from tracefold.integrations.nautilus.messages import (
     PositionFlatConfirmed,
     PositionQuantityChanged,
     ReadinessChanged,
+    StartupAccountReconciliationConfirmed,
+    StartupAccountReconciliationUnproven,
     StopAccepted,
     StopSubmitted,
     StrategyQueues,
@@ -138,6 +139,7 @@ class RecordingStrategy(TracefoldNautilusStrategy):
             capabilities={SOLUSDT_PERP.value: capability or _capability()},
             queues=queues,
             request_venue_flat=self.flat_requests.append,
+            request_startup_account_reconciliation=lambda: None,
         )
         self.submitted: list[tuple[object, object, object]] = []
         self.canceled: list[object] = []
@@ -183,6 +185,13 @@ def _registered_strategy(
     portfolio = Portfolio(msgbus, cache, clock)
     strategy = RecordingStrategy(queues=queues, capability=_capability(instrument))
     strategy.register(TraderId("TRACEFOLD-001"), portfolio, msgbus, cache, clock)
+    queues.commands.put_nowait(
+        StartupAccountReconciliationConfirmed(
+            verified_at_ms=NOW_MS,
+            bootstrap_account_zero=False,
+        )
+    )
+    strategy.on_timer(None)
     return strategy, queues
 
 
@@ -277,6 +286,7 @@ def test_strategy_config_claims_exact_snapshot_netting_instruments() -> None:
             capabilities={SOLUSDT_PERP.value: _capability()},
             queues=strategy_queues(),
             request_venue_flat=lambda _request: None,
+            request_startup_account_reconciliation=lambda: None,
             config=StrategyConfig(
                 oms_type="NETTING",
                 external_order_claims=[InstrumentId.from_str("ETHUSDT-PERP.BINANCE")],
@@ -293,7 +303,7 @@ def test_strategy_config_allows_zero_claim_bootstrap() -> None:
     assert config.external_order_claims == []
 
 
-def test_zero_claim_bootstrap_stays_unready_until_complete_account_zero_is_confirmed() -> None:
+def test_zero_claim_bootstrap_projects_fresh_zero_proof_but_never_claims_readiness() -> None:
     queues = strategy_queues()
     requests: list[None] = []
     clock = TestClock()
@@ -307,7 +317,7 @@ def test_zero_claim_bootstrap_stays_unready_until_complete_account_zero_is_confi
         capabilities={},
         queues=queues,
         request_venue_flat=lambda _request: None,
-        request_bootstrap_account_zero=lambda: requests.append(None),
+        request_startup_account_reconciliation=lambda: requests.append(None),
     )
     strategy.register(TraderId("TRACEFOLD-001"), Portfolio(msgbus, cache, clock), msgbus, cache, clock)
 
@@ -316,23 +326,49 @@ def test_zero_claim_bootstrap_stays_unready_until_complete_account_zero_is_confi
     assert requests == [None]
     assert queues.events.get_nowait() == ReadinessChanged(
         ready=False,
-        reason="bootstrap_account_zero_unproven",
+        reason="startup_account_reconciliation_unproven",
         unexpected_exposure=False,
     )
 
-    queues.commands.put_nowait(BootstrapAccountZeroUnproven(unexpected_exposure=True))
+    queues.commands.put_nowait(
+        StartupAccountReconciliationUnproven(
+            observed_at_ms=NOW_MS,
+            unexpected_exposure=True,
+        )
+    )
     strategy.on_timer(None)
+    assert queues.events.get_nowait() == BootstrapAccountZeroChanged(
+        verified_at_ms=None,
+        observed_at_ms=NOW_MS,
+    )
     assert queues.events.get_nowait() == ReadinessChanged(
         ready=False,
         reason="external_exposure",
         unexpected_exposure=True,
     )
 
-    queues.commands.put_nowait(BootstrapAccountZeroConfirmed())
+    clock.set_time((NOW_MS + 4_999) * 1_000_000)
     strategy.on_timer(None)
+    assert requests == [None]
+
+    clock.set_time((NOW_MS + 5_000) * 1_000_000)
+    strategy.on_timer(None)
+    assert requests == [None, None]
+
+    queues.commands.put_nowait(
+        StartupAccountReconciliationConfirmed(
+            verified_at_ms=NOW_MS + 5_000,
+            bootstrap_account_zero=True,
+        )
+    )
+    strategy.on_timer(None)
+    assert queues.events.get_nowait() == BootstrapAccountZeroChanged(
+        verified_at_ms=NOW_MS + 5_000,
+        observed_at_ms=NOW_MS + 5_000,
+    )
     assert queues.events.get_nowait() == ReadinessChanged(
-        ready=True,
-        reason="ready",
+        ready=False,
+        reason="capability_snapshot_missing",
         unexpected_exposure=False,
     )
 

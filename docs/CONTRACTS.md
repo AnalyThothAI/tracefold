@@ -758,9 +758,9 @@ the kernel/RulePack/advisory/seal layering collapsing into one seed instruction
 per Predictor, and the Program's self-owned chat transport composing the request
 envelope — deliberately paid once rather than twice.
 `20260828_0319` adds append-only execution-capability snapshots and replay
-receipts, the active capability/blacklist revisions, and TradeIntentV2. It
-requires `PAUSED` with no nonterminal Intent, rejects every new V1 insert, and
-has no downgrade.
+receipts, the active capability/blacklist revisions, the distinct bootstrap
+account-zero proof, and TradeIntentV2. It requires `PAUSED` with no nonterminal
+Intent, rejects every new V1 insert, and has no downgrade.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -806,8 +806,10 @@ reader/writer.
 - `tracefold trading refresh-capabilities` is a cold command. It loads the full
   public News/provider candidate union without credentials, appends its stable
   partition, and moves the active pointer only while `PAUSED`, no nonterminal
-  Intent exists, and current Nautilus readiness is a fresh account-wide zero
-  proof. Initial bootstrap may activate the first snapshot while paused.
+  Intent exists, and the account-wide zero proof is fresh. A replacement uses
+  current green Nautilus readiness; initial activation uses the separate
+  bootstrap-zero proof while the zero-claim process remains formally unready.
+  Activation clears that bootstrap proof and invalidates readiness.
 - `tracefold trading replay-oi --days 7 --strategy
   oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
