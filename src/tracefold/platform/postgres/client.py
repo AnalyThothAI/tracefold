@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,7 @@ def create_pool(
     statement_timeout_seconds: float | None = None,
     lock_timeout_seconds: float | None = None,
     idle_in_transaction_session_timeout_seconds: float | None = None,
+    session_settings: Mapping[str, str] | None = None,
     keepalives: bool | None = None,
     keepalives_idle: int | None = None,
     keepalives_interval: int | None = None,
@@ -73,6 +74,7 @@ def create_pool(
         statement_timeout_seconds=statement_timeout_seconds,
         lock_timeout_seconds=lock_timeout_seconds,
         idle_in_transaction_session_timeout_seconds=idle_in_transaction_session_timeout_seconds,
+        session_settings=session_settings,
         read_only=read_only,
     )
     if options:
@@ -102,6 +104,7 @@ def _postgres_runtime_options(
     statement_timeout_seconds: float | None,
     lock_timeout_seconds: float | None,
     idle_in_transaction_session_timeout_seconds: float | None,
+    session_settings: Mapping[str, str] | None = None,
     read_only: bool = False,
 ) -> str:
     options: list[str] = []
@@ -115,6 +118,8 @@ def _postgres_runtime_options(
         )
     if read_only:
         options.append("-c default_transaction_read_only=on")
+    for name, value in sorted((session_settings or {}).items()):
+        options.append(f"-c {name}={value}")
     return " ".join(options)
 
 
