@@ -255,7 +255,7 @@ def event_timeline(
     for row in deliveries:
         state = str(row.get("state") or "")
         if state == "sent":
-            summary = "已推送到飞书"
+            summary = "已送达"
         elif state == "terminal":
             summary = "未送达：" + (delivery_error_zh(row.get("error_code")) or "未知原因")
         else:

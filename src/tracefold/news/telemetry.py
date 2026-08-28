@@ -11,6 +11,7 @@ NewsExternalDataSource = Literal[
     "binance_perp",
     "binance_spot",
     "hyperliquid",
+    "okx",
     "opennews",
     "other",
     "us_reference",

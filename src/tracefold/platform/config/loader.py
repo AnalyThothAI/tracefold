@@ -89,6 +89,8 @@ news:
     enabled: false
     feishu_webhook_url:
     feishu_signing_secret:
+    telegram_bot_token_file:
+    telegram_chat_id:
     min_interval_seconds: 0.6
   policy:
     restatement_drop: true
@@ -109,6 +111,9 @@ news:
     enabled: true
     binance: true
     hyperliquid: true
+    okx: true
+    lighter: true
+    bitget: true
     us_reference: true
     snapshot_period_hours: 6.0
   watchlist: []

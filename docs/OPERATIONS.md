@@ -387,7 +387,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> deterministic assembler -> atomic SemanticJudgment/ScoredJudgment
      -> policy-v10 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
-  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first)
+  -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
   -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
   -> Janitor: outbox catch-up (unpublished candidates older than 15 s), band
      expiry, 30-day purge, broker snapshot
@@ -564,10 +564,14 @@ Diagnose News in this order:
    `telemetry_push_24h`; `dropped_by_rule.oi_parse_failed` is a provider parser
    contract fault, not ordinary model noise.
 5. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
-   (`delivery_unavailable` = push disabled or webhook invalid;
+   (`delivery_unavailable` = push disabled or the selected provider configuration unavailable;
    `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
    still contain the retired `delivery_paused` and
    `hourly_cap_reached` error, but policy v7 never writes it.
+   `delivery_available` is true only when the selected provider contract is
+   complete and Workers is running. If push is explicitly enabled with an
+   absent or insecure Telegram token file, Workers fails startup; inspect
+   `workers_state` and Workers logs instead of treating the target as available.
 6. `tracefold news review queue --view coverage --hours 168` first checks
    whether there is enough same-version production evidence and accepted
    review coverage to make a quality claim. Work the deterministic strata with
@@ -946,6 +950,20 @@ rejected format, become immutable audit history.
 ledgers plus the News catalogue's immutable listing-validity events, refuses a
 warm migration, and never rewrites V1 history. Roll forward; there is no
 downgrade to a second execution permission model.
+`0321` adds the durable News delivery edit-intent lifecycle and its stale-edit
+index; it performs no provider call and requires no new credential or runtime
+role. `0322` adds the receipt-bound deletion lifecycle and its stale-intent
+index for authoritative five-venue single-name absence.
+
+One private Telegram branch previously used the upstream `0317`/`0318`
+identifiers for those two delivery changes. Before Alembic advances a database
+reporting that colliding `0318`, `tracefold db migrate` fingerprints all eleven
+delivery columns, four constraints and two indexes and also checks that the
+upstream Trading authority cut and `program_v8` epoch are absent. Only that
+exact shape is reconciled: the upstream `0317`/`0318` effects are applied in one
+transaction, the existing Telegram state is retained, and normal `0319` through
+`0322` migration resumes. A partial, mixed or unknown shape fails with
+`legacy_migration_lineage_unrecognized`; never stamp past it manually.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

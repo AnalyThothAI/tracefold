@@ -80,19 +80,29 @@ REVIEW_POTENTIAL_MISS_LIMIT: Final = 50
 # The one place venue precedence is written down. `asset_refs` (the console chip), the Quote planner and the
 # Reaction planner all order candidates through the helpers below — #88 §2 forbids independent copies, and
 # the SQL builders exist so a repository query cannot quietly grow a second ranking.
-PRICE_SOURCE_ORDER: Final[tuple[str, ...]] = ("binance.perp", "binance.spot", "hl.perp", "hl.spot", "hl.xyz")
+PRICE_SOURCE_ORDER: Final[tuple[str, ...]] = (
+    "binance.perp",
+    "binance.spot",
+    "hl.perp",
+    "hl.spot",
+    "hl.xyz",
+    "hl.*",
+    "okx.perp",
+    "okx.spot",
+)
 QUOTE_ASSET_ORDER: Final[tuple[str, ...]] = ("USDT", "USDC", "FDUSD")
 _OTHER_SOURCE_RANK: Final = len(PRICE_SOURCE_ORDER)
 _OTHER_QUOTE_RANK: Final = len(QUOTE_ASSET_ORDER)
 
 
 def source_rank(venue: str) -> int:
-    """Deterministic venue precedence; anything unranked (a new HIP-3 dex) sorts after the named ones."""
+    """Deterministic venue precedence; any new Hyperliquid builder DEX still ranks before OKX."""
 
+    value = str(venue)
     try:
-        return PRICE_SOURCE_ORDER.index(str(venue))
+        return PRICE_SOURCE_ORDER.index(value)
     except ValueError:
-        return _OTHER_SOURCE_RANK
+        return PRICE_SOURCE_ORDER.index("hl.*") if value.startswith("hl.") else _OTHER_SOURCE_RANK
 
 
 def quote_asset_rank(quote_asset: str | None) -> int:
@@ -103,8 +113,17 @@ def quote_asset_rank(quote_asset: str | None) -> int:
 
 
 def _rank_case_sql(column: str, values: Sequence[str], *, other: int) -> str:
-    branches = " ".join(f"WHEN '{value}' THEN {index}" for index, value in enumerate(values))
-    return f"CASE {column} {branches} ELSE {other} END"
+    branches = " ".join(
+        (
+            # These fragments are embedded in psycopg parameterized queries. ``%%`` reaches PostgreSQL as
+            # one literal LIKE wildcard; a lone ``%`` is rejected by psycopg's pyformat parser.
+            f"WHEN {column} LIKE '{value[:-1]}%%' THEN {index}"
+            if value.endswith(".*")
+            else f"WHEN {column} = '{value}' THEN {index}"
+        )
+        for index, value in enumerate(values)
+    )
+    return f"CASE {branches} ELSE {other} END"
 
 
 def source_rank_sql(column: str = "i.venue") -> str:
@@ -118,9 +137,9 @@ def quote_asset_rank_sql(column: str = "i.quote_asset") -> str:
 
 
 def price_kind_for(venue: str) -> PriceKind:
-    """What the venue's number actually is. Binance publishes a traded last price; Hyperliquid a book mid."""
+    """What the venue's current-quote endpoint publishes."""
 
-    return "last" if str(venue).startswith("binance.") else "mid"
+    return "mid" if str(venue).startswith("hl.") else "last"
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,7 +301,41 @@ class Candle:
     close: Decimal
 
 
-def select_candle(candles: Sequence[Candle], *, target_ms: int) -> Candle | None:
+@dataclass(frozen=True, slots=True)
+class Trade:
+    """One public venue trade, retaining the provider's millisecond event time."""
+
+    traded_at_ms: int
+    price: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class PricePoint:
+    """The price selected for one delivery-time anchor and how it was obtained."""
+
+    at_ms: int
+    price: Decimal
+    basis: Literal["trade", "candle_1m"]
+
+
+def select_trade(trades: Sequence[Trade], *, target_ms: int, max_gap_ms: int = 60_000) -> Trade | None:
+    """Last trade at or before the anchor, provided it is no more than one minute old."""
+
+    best: Trade | None = None
+    for trade in trades:
+        if trade.traded_at_ms <= int(target_ms) and (best is None or trade.traded_at_ms > best.traded_at_ms):
+            best = trade
+    if best is None or int(target_ms) - best.traded_at_ms > int(max_gap_ms):
+        return None
+    return best
+
+
+def select_candle(
+    candles: Sequence[Candle],
+    *,
+    target_ms: int,
+    max_gap_ms: int = CANDLE_GAP_TOLERANCE_MS,
+) -> Candle | None:
     """The last candle closed at or before `target_ms`, or None when the nearest one is too far back.
 
     No forward fill: a halted session, a delisted contract or an illiquid gap must read as missing data, not
@@ -294,7 +347,7 @@ def select_candle(candles: Sequence[Candle], *, target_ms: int) -> Candle | None
     for candle in candles:
         if candle.close_at_ms <= int(target_ms) and (best is None or candle.close_at_ms > best.close_at_ms):
             best = candle
-    if best is None or int(target_ms) - best.close_at_ms > CANDLE_GAP_TOLERANCE_MS:
+    if best is None or int(target_ms) - best.close_at_ms > int(max_gap_ms):
         return None
     return best
 

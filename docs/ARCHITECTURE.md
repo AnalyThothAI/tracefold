@@ -26,9 +26,11 @@ plane (#88, #304): two polling loops in Workers read their own work from Postgre
 call public venue REST with no database connection held, and write two derived
 read models — latest-only current quotes and versioned Event Reactions. It is
 not a market lane: no tick history, no socket, no OI, no order book, and no
-price reaches the Gate, Triage, `decide()` or a delivery card. Its failure is
-local by construction; News ingestion, judgment, delivery and readiness do not
-depend on it.
+price reaches the Gate, Triage or `decide()`. Delivery may make bounded,
+ephemeral public-history reads solely to render the already-approved card; a
+price failure never changes whether the card is sent. The plane's failure is
+local by construction; News ingestion, judgment and readiness do not depend on
+it.
 
 Beside both runs the Trading core (#104), disabled by default. One cold
 CandidateRunner in Workers reads persisted Triage/OI facts through two
@@ -139,10 +141,15 @@ evidence rather than executable configuration.
 | Binance spot quote/day quote | News Market Review | `latest_state` | Binance public spot REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
 | Binance perpetual quote/day quote | News Market Review | `latest_state` | Binance public USD-M REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
 | Hyperliquid quote | News Market Review | `latest_state` | Hyperliquid public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
+| OKX quote | News Market Review | `latest_state` | OKX public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
+| Delivery price anchors | News Delivery | `derived_work` | Binance aggregate trades, then Hyperliquid/OKX/Lighter/Bitget recent trades; closed 1 m candles as fallback | bounded public REST on one approved delivery | `news-deliverer`; verdict message | ephemeral `ReaderDeliveryPresentation` only; no persisted tick history |
+| Single-name tradeability verification | News Delivery | `derived_work` | fresh Binance, Hyperliquid, OKX, Lighter and Bitget public catalogues | one bounded post-send fan-out | `news-deliverer`; eligible sent message | result stored in desired card or receipt-bound deletion evidence |
 | Binance candles | News Market Review / Trading adapter | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
 | Hyperliquid candles | News Market Review / Trading adapter | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
+| OKX candles | News Market Review | `derived_work` | OKX public closed bars | REST on planned demand | `news-reactions` or delivery fallback | versioned `news_event_reactions` or ephemeral delivery presentation |
 | Binance instruments | News Market Review | `latest_state` | Binance spot and USD-M catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
 | Hyperliquid instruments | News Market Review | `latest_state` | main perp, spot and bounded HIP-3 catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
+| OKX instruments | News Market Review | `latest_state` | OKX live USDT swaps and USDT/USDC spot catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate and price-source resolution |
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
 | Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
@@ -165,10 +172,15 @@ does not apply.
 | Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
 | Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
 | Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=360 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
+| OKX quote | 20 s | fresh through 60 s | `okx.spot` / `okx.perp` source group | shared cap 256 symbols | shared cap 12 groups; one whole-market request/group | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| Delivery price anchors | one approved delivery | event/push-time | one venue symbol + news/push-1h/push/push-24h anchors | displayed assets only | at most two Binance contracts, then one Hyperliquid, one OKX, one Lighter, and one Bitget contract; 2 s/contract | displayed assets parallel; anchors parallel where supported | bounded by the per-contract deadline | no / duplicate anchors coalesced / no | use the last trade at/before each anchor only within 60 s, then the last closed 1 m candle within 90 s; venue failure tries the next whole calculation and never changes delivery policy |
+| Single-name tradeability verification | one eligible sent card | current catalogue | exact ticker aliases | one single-name ticker | exactly five venue families | venue families parallel | 25 s whole review | no / exact contract dedupe / yes | any hit edits and keeps; only five successful empty answers delete; any failure or unresolved identity keeps |
 | Binance candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
 | Hyperliquid candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
+| OKX candles | planned Event/delivery demand | useful while provider history exists | venue symbol + bounded time range | shared Reaction cap 100 due rows; delivery displayed assets only | shared Reaction cap 32; delivery one request/missing anchor | shared Reaction cap 4; delivery displayed assets parallel | 8 s provider; delivery 2 s/contract outer deadline | yes for Reaction / duplicate delivery anchors coalesced / no | same local failure semantics as the other price venues |
 | Binance instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | one catalogue snapshot | one family fetch; adapter owns spot/perp subrequests | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
 | Hyperliquid instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family / DEX | main perp, spot and at most 32 builder DEXes | one bounded family fetch | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
+| OKX instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | live USDT swaps and USDT/USDC spot | one bounded family fetch | venue families serial | 8 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
@@ -379,8 +391,8 @@ tracefold.trading
   pipeline/           CandidateRunner and its one-runner composition root
 
 tracefold.integrations
-  provider and external-system adapters: OpenNews, RabbitMQ, Feishu, public
-  market data, and the pinned Nautilus/Binance Demo strategy adapter
+  provider and external-system adapters: OpenNews, RabbitMQ, Feishu, Telegram,
+  public market data, and the pinned Nautilus/Binance Demo strategy adapter
 
 tracefold.platform
   config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
@@ -457,9 +469,10 @@ A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
-(`aio-pika`), Feishu (the custom-bot webhook), and the isolated Nautilus
-Binance Demo boundary. No provider owns a durable
-queue. Expected provider failures stay inside the owning bounded
+(`aio-pika`), Feishu (the custom-bot webhook), Telegram (one operator-bound
+channel via the Bot API; fixed origin and configured target), and the isolated
+Nautilus Binance Demo boundary. No provider owns a durable queue. Expected
+provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
 
@@ -569,7 +582,8 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        judgment hashes, exact runtime manifest,
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
        named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
-  -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
+  -> q:news.deliver [single-active-consumer] Deliverer: provider prepare/preflight -> begin(sending)
+       -> one configured-provider delivery attempt
        -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
@@ -602,6 +616,15 @@ due Event-assets (live Events, pushed and held alike) -> pinned or resolved inst
   -> p0 = last closed candle at or before opened_at_ms; p1/p4 the same at +1H/+4H
   -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v1)
   -> Feed/Detail attachment + `news review queue --view market`
+
+one approved delivery -> the same exact-symbol-first contract candidates
+  -> Binance first, then Hyperliquid, then OKX
+  -> for news time, push-minus-1H and push time: last trade at/before the
+     millisecond anchor when no more than 60 s old
+  -> otherwise the last closed 1 m candle at/before that anchor within 90 s
+  -> accept one venue/contract for the complete calculation; never mix endpoints
+     from different venues in one return
+  -> ephemeral Telegram presentation only; no tick table and no continuous collector
 ```
 
 Work is `O(source groups)`, never `O(Events x assets)`: a hundred Events naming
@@ -968,6 +991,21 @@ deleted rather than left empty, and the transport composes one system message
 and one user message from the instruction and the bounded fields, so there is no
 path by which a demo could reach a provider at all.
 
+The factory owns route topology, slot roles, token ceilings, deadlines and
+breaker policy. The concrete model bound to each slot has a separate
+secret-free `configured_endpoint_model_v2` identity over provider, model,
+endpoint fingerprint, code-selected request profile and normalized LM kwargs.
+That boundary makes provider execution semantics auditable without pretending
+an endpoint change rewrote the Program graph. On the exact Kimi Coding endpoint,
+the `news_event` profile drops the unsupported explicit temperature and binds
+K3 `reasoning_effort=low`; the `news_reader` profile drops temperature but does
+not give `kimi-for-coding` a K3 effort override. The profile and kwargs change
+the runtime-model binding SHA and therefore the exact evidence cohort. Default,
+Trading and non-News endpoints never inherit these News profiles. The learning
+experiment student arm inherits the production `news_event` profile when it
+rebinds a model name, so an experiment cannot silently compare default-effort
+requests with the K3-low production route.
+
 The production registry resolves an image-carried SHA, never arbitrary database
 instructions, and the document is one `<program_sha256>.json` file. Loading
 fails closed on an unknown version, hash or factory, non-canonical or
@@ -1205,24 +1243,89 @@ publication time in the reader's zone (UTC+8). Ordinary News derives this list
 from model-primary ∩ Gate-grounded assets; deterministic OI derives one symbol
 from its matching rank-ledger row only when the current Event kind and full OI Program
 identity also match. The third body line is the market's own number for those
-same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`
-— and it exists only when `PriceRepository.quotes_for_symbols` answered `fresh`:
-a `stale`, `unavailable` or `unlisted` quote leaves no line, no placeholder and
-no zero. The change window is named from `change_basis` rather than assumed
+same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`. At delivery, an
+on-demand trade/candle point becomes the current number; if no contract
+produces one, an existing `fresh` Quote Snapshot may still provide the display
+price. A stale, unavailable or unlisted result leaves no line, no placeholder
+and no zero. The change window is named from `change_basis` rather than assumed
 (`rolling_24h` -> `24h`, `provider_day` -> `日内`, unknown -> the price without a
 percentage), `（永续）` marks each asset whose number comes from a proxy
 market rather than its own — an equity/commodity/index on a Binance TradFi perp
-or a Hyperliquid builder-DEX, 51.9% of a week's card assets. It is keyed on
+or a Hyperliquid/OKX TradFi perp, 51.9% of a week's card assets. It is keyed on
 `instrument_class`, not on the contract type: BTC also prices on a perpetual,
 but for a crypto asset that *is* its own market, so it carries no mark. The mark
 is repeated per asset rather than said once for the line, because a trailing
 mark on a mixed line cannot say whether it covers the last asset or all of them.
 The price/percentage formatting
 mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
-character. The quotes are read in a separate short database session over
-exactly the code-verified `reader_assets()` result, so the two lines cannot name different assets, and any
-price failure degrades to no line: delivery never depends on the price plane.
-Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
+character. Source candidates and the existing quote snapshot are read in one
+separate short database session over exactly the code-verified
+`reader_assets()` result. Provider I/O begins only after that connection is
+returned, so the facts and market lines cannot name different assets and no
+database transaction is held across public REST calls. Any price failure
+degrades to the existing fresh display quote or no line: delivery eligibility
+never depends on the price plane.
+That same read may produce an ephemeral typed `ReaderTradeTarget` only from an exact official catalogue contract.
+The target is not part of `news_delivery_card_v10`: only the Telegram Adapter uses it to link the displayed ticker
+to the matching Binance, Hyperliquid, OKX, Lighter, or Bitget trade page. Untyped URLs and inconsistent metadata
+stay plain text, and Feishu receives the card unchanged.
+The same ephemeral `ReaderDeliveryPresentation` carries one ordered market row
+per displayed asset. `新闻后` is the delivery-time point versus the provider
+publication-time point; `1h` is that same delivery-time point versus the point
+exactly one hour before delivery. For Telegram, “delivery time” is the timestamp returned in the receipt of the
+initial `sendMessage`, not the later edit time. The Deliverer intentionally renders a pending presentation first,
+settles that receipt as `sent`, and starts price enrichment only afterward in a background task. The pending
+message shows `计算中` for `新闻后`, `1h`, and `24h`; the ready presentation is applied to the same provider
+message with `editMessageText`. Immediately before the provider mutation, the desired ready card is durably
+recorded as `pending_card/editing`. Provider confirmation atomically promotes it to the canonical card and
+`edited`; an uncertain failure retains the previous confirmed card plus the desired card under `ambiguous`.
+This keeps public price latency outside the reader's initial-news path and gives
+later enrichers one receipt-bound in-place update capability without creating a follow-up card. Edit work is
+serialized independently of initial sends, so a slow update cannot delay the next accepted news message.
+These are request-time presentation returns,
+not `reaction_v1`: they do not wait for a future horizon and are never persisted
+as review evidence. For every anchor the adapter first selects the latest trade
+at or before the millisecond timestamp when it is at most 60 seconds old, then
+falls back to the last closed one-minute candle within 90 seconds. Binance is
+tried first, Hyperliquid second, OKX third, Lighter fourth, and Bitget fifth; one row always retains the same
+venue and contract for all its anchors. `24h` is retained only from a fresh
+same-contract quote that explicitly declares `rolling_24h`. A missing value is
+shown as `暂无`, never borrowed from another window. Telegram renders each asset as a separate four-line block:
+`🎯 标的 BTC`, `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%`; multiple assets repeat the complete block with
+a blank line between them. Impact and polarity share one direction row, such as `🧭 方向 明显利空`, while
+novelty is a badge immediately below the title (`🆕 新事实` or `🔄 新进展`). A progression names the previous
+headline immediately only when the optional post-delivery verifier is unavailable and an exact-fact retrieval or
+a stored title-similarity score of at least `0.50` supports it. With the verifier configured, the first message
+shows a one-line indented `关联确认中` child block without naming a parent. After the send receipt is durable, one bounded structured LLM
+call compares the current Event with at most eight selected told-ledger candidates. It confirms only the same
+concrete subject and event chain with a material new action, result, number, confirmation, reversal, or state
+change; a shared topic, sector, ticker, country, or storyline bucket is insufficient. Price reads and this review
+run concurrently and settle through one edit of the original Telegram message. A confirmation replaces the
+pending child block with `✅ 已确认关联: <concise reason> (<parent age> 前)`; a rejection shows
+`↩️ 未确认关联: <concise reason>`; timeout or invalid output shows an explicit unavailable child block. The exact
+verifier result and its content-addressed verifier identity are stored inside the desired durable card before the
+edit intent. Broad zero-similarity storyline buckets therefore never become an unaudited “上一条”. If a macro or sector verdict has no
+code-verified ticker, Telegram explicitly renders its scope and `暂无直接标的`. It turns
+the normalized reporting-origin
+text itself into the original-source HTTPS link (X/Twitter handles become `<handle> 的推特`; known wire brands
+use their reader names), so it has no separate source button. The footer has no time heading and lists the
+original artifact or provider publication time, send-start time, and normalized linked source in that order.
+Times use the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
+remain visible. Typed trade targets, movements, and timing context are not persisted; the progression-review
+result is part of the desired card, alongside the rendered desired card and edit lifecycle. The edit ledger CAS identifies the original provider, message ID, push timestamp,
+and keyed target digest, and a canonical receipt admits no extra provider fields. Every `editing` row inherited by
+a new process is changed to `ambiguous` at startup rather than guessed successful or retried. The consumer does not
+start until that reconciliation commits. A 30-second runtime sweep also terminalizes an `editing` intent older than
+60 seconds, so a temporary failure of both edit settlement and ambiguity recording cannot strand it forever.
+For a `single_name` card with one candidate ticker, a second post-send task derives exact ticker aliases (including
+market-coded forms such as `02605.HK`) and queries fresh Binance, Hyperliquid, OKX, Lighter, and Bitget catalogues.
+An exact hit keeps the message, adds the typed target link, and prices that contract without waiting for the
+periodic universe snapshot. Only five successful empty catalogue answers authorize deletion. Any missing identity,
+timeout, blocked response, malformed catalogue, or partial venue fan-out keeps the message. Before `deleteMessage`,
+the full catalogue outcome and reason become a durable `deleting` intent bound to the original receipt; provider
+success becomes `deleted`, while uncertainty becomes `ambiguous` and is never retried destructively at startup.
+Feishu still receives the stable card unchanged.
+The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or
 scope enum, no provider score, and no line labelled as AI: those internals stay
 in the console and `tracefold news why`.
@@ -1234,8 +1337,11 @@ and no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire 
 too, so the console feed and the context line name the Event (issue #65). The
 行情 line still renders there: the price is our own fact, not the model's.
 AI copy is sanitized (URLs fall back to the code-owned title). There is no
-retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
-inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
+initial-send retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
+inserted as `sending` after provider prepare/preflight and before the single
+initial delivery HTTP call, then settled `sent`/`terminal`. Telegram enrichment begins only after a successful
+settlement. It records edit intent before provider I/O; update success confirms the ready card/receipt, while an
+uncertain update or post-provider persistence failure keeps the initial `sent` state and records edit ambiguity;
 interrupted rows are terminalized at startup. Recovery items, suppressed
 events never deliver. There is no operator pause or mute: `news_control_state`
 was removed after never withholding a single card in the whole retained history,
@@ -1578,6 +1684,9 @@ factory evidence is audit-only and the factory-v7 cohort starts with zero
 eligible evidence.
 `20260828_0316` adds the one-table Trading Intent handoff, its Nautilus
 execution projection, and the least-privilege grants for that separate runtime.
+`20260828_0317` adds the durable desired/edited/ambiguous lifecycle for in-place News delivery edits.
+`20260828_0318` adds the durable deleting/deleted/ambiguous lifecycle and five-venue evidence for confirmed
+untradeable single-name Telegram messages.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -1614,6 +1723,18 @@ projections supplied by the app composition root; neither package imports the
 other or reads the other's tables directly. RabbitMQ remains News-only. No
 Trading exchange, queue, outbox, LISTEN/NOTIFY channel, Redis, second database,
 or in-memory correctness ledger exists.
+
+**Trigger and context are different types.** A trigger is the one persisted
+fact that starts an evaluation and fixes its cutoff. Context may enrich that
+evaluation only when it existed no later than the cutoff. Notification `sent` is
+notification transport success, not a trigger; capital must not depend on a
+notification channel being reachable. The frozen manifest names exactly one
+`primary_trigger`, one `strategy_id` / `strategy_version` /
+exact typed `strategy_config` / `strategy_config_digest`, and a point-in-time
+`contexts` object. `contexts.market` is the sole market truth; the manifest does
+not serialize a second market copy. A restart rebuilds the exact strategy from
+the frozen values instead of comparing the Case with today's thresholds. This prevents
+a later News, OI, or market observation from leaking backwards into the case.
 
 ### Frozen execution contract
 

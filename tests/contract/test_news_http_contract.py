@@ -482,6 +482,20 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "reaction",
         "reactions",
     }
+    assert set(event_schemas.NewsDeliveryData.model_fields) == {
+        "kind",
+        "state",
+        "error_code",
+        "attempted_at_ms",
+        "settled_at_ms",
+        "card",
+        "receipt",
+        "pending_card",
+        "edit_state",
+        "edit_error_code",
+        "edit_attempted_at_ms",
+        "edit_settled_at_ms",
+    }
     assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
     assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
@@ -763,6 +777,32 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     assert data["delivery"]["delivery_available"] is False
     assert "hourly_cap" not in data["delivery"]
     assert isinstance(data["watchlist"], list)
+
+
+def test_status_does_not_call_a_declared_target_available_without_running_workers() -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_chat_id": -1001234567890,
+                },
+            },
+        }
+    )
+    app = create_app(settings=settings)
+    news = _FakeNewsRepository()
+    app.state.service = _FakeRuntime(settings, news)
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workers_state"] is None
+    assert data["delivery"]["delivery_available"] is False
 
 
 def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pytest.MonkeyPatch) -> None:

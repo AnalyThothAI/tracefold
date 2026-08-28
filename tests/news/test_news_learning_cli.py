@@ -622,6 +622,7 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
         api_key="unused",
         api_base="http://endpoint.invalid/v1",
         model_kwargs={},
+        request_profile="default",
     )
     monkeypatch.setattr(
         learning_runtime,

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v5"
@@ -50,8 +51,87 @@ Novelty = Literal["new_fact", "progression", "restatement"]
 ReaderReceiptState = Literal["received", "not_received", "unknown"]
 
 
+@dataclass(frozen=True, slots=True)
+class ReaderTradeTarget:
+    """One exact venue contract that a delivery adapter may expose as a reader action."""
+
+    ticker: str
+    venue: Literal[
+        "binance.perp",
+        "binance.spot",
+        "hl.perp",
+        "hl.spot",
+        "hl.builder",
+        "okx.perp",
+        "okx.spot",
+        "lighter.perp",
+        "lighter.spot",
+        "bitget.perp",
+        "bitget.spot",
+    ]
+    venue_symbol: str
+    base_symbol: str
+    quote_asset: str
+
+
+ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
+ReaderMarketDataState = Literal["pending", "ready"]
+ReaderMarketScope = Literal["macro", "sector", "single_name"]
+ProgressionReviewState = Literal["pending", "confirmed", "rejected", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderMarketMovement:
+    """Reader-facing news-to-push and trailing-one-hour returns for one displayed ticker."""
+
+    ticker: str
+    after_news_bps: int | None
+    return_1h_bps: int | None
+    change_24h_bps: int | None
+    one_hour_state: ReaderMarketState
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderDeliveryPresentation:
+    """Ephemeral adapter-only context; never part of the persisted reader card."""
+
+    trade_targets: tuple[ReaderTradeTarget, ...] = ()
+    market_movements: tuple[ReaderMarketMovement, ...] = ()
+    news_at_ms: int | None = None
+    observed_at_ms: int | None = None
+    market_data_state: ReaderMarketDataState = "ready"
+    market_scope: ReaderMarketScope | None = None
+    novelty: Novelty | None = None
+    progression_from_headline: str | None = None
+    progression_review_state: ProgressionReviewState | None = None
+    progression_review_reason: str | None = None
+    progression_review_parent_age_minutes: int | None = None
+
+
 class ExactNewsModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TelegramDeliveryReceipt(ExactNewsModel):
+    """Credential-free identity and lifecycle timestamps for one Telegram channel message."""
+
+    provider: Literal["telegram"]
+    message_id: int = Field(gt=0, strict=True)
+    pushed_at_ms: int = Field(gt=0, strict=True)
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
+    edited_at_ms: int | None = Field(default=None, gt=0, strict=True)
+    deleted_at_ms: int | None = Field(default=None, gt=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_lifecycle_order(self) -> TelegramDeliveryReceipt:
+        if self.edited_at_ms is not None and self.edited_at_ms < self.pushed_at_ms:
+            raise ValueError("telegram_delivery_receipt_edit_before_push")
+        if self.deleted_at_ms is not None and self.deleted_at_ms < (self.edited_at_ms or self.pushed_at_ms):
+            raise ValueError("telegram_delivery_receipt_delete_before_last_mutation")
+        return self
+
+    def canonical(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class NewsFeedEntry(ExactNewsModel):
@@ -86,6 +166,10 @@ class ReaderReceipt(ExactNewsModel):
             return cls(state="not_received")
         delivery_state = str(delivery.get("state") or "") or None
         error_code = str(delivery.get("error_code") or "") or None
+        # A card intentionally removed after authoritative tradability review is not part of the durable reader
+        # history. Keeping it as "received" would let an untradeable, deleted issuer suppress a future listing.
+        if delivery.get("delete_state") == "deleted":
+            return cls(state="not_received", delivery_state=delivery_state, error_code=error_code)
         if delivery_state == "sent":
             return cls(
                 state="received",
@@ -219,8 +303,12 @@ __all__ = [
     "ExactNewsModel",
     "NewsFeedEntry",
     "Novelty",
+    "ReaderDeliveryPresentation",
+    "ReaderMarketMovement",
+    "ReaderMarketState",
     "ReaderReceipt",
     "ReaderReceiptState",
+    "ReaderTradeTarget",
     "TriageAsset",
     "TriageVerdict",
     "base_symbol",

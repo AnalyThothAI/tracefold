@@ -47,41 +47,54 @@ class QuoteStorage:
         Keyed by the caller's raw symbol so no caller needs normalization knowledge of its own.
         """
 
+        candidates = self.instruments_for_symbols(symbols)
+        return {symbol: rows[0] for symbol, rows in candidates.items() if rows}
+
+    def instruments_for_symbols(self, symbols: Iterable[str]) -> dict[str, tuple[PriceInstrument, ...]]:
+        """Every priceable contract for each tag, in the single code-owned venue order.
+
+        Delivery uses this larger view to fail over an entire price calculation from Binance to Hyperliquid
+        and then OKX. Exact tradeable tags still suppress issuer-alias candidates, preserving the same SKHX/SKHY
+        identity rule as :meth:`resolve_instruments`.
+        """
+
         normalized = {str(symbol): normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()}
         wanted = sorted({value for value in normalized.values() if value})
         if not wanted:
             return {}
+        alias_rows = self.conn.execute(
+            "SELECT alias, base_symbol FROM news_symbol_aliases WHERE alias = ANY(%s)", (wanted,)
+        ).fetchall()
+        aliases = {str(row["alias"]): str(row["base_symbol"]) for row in alias_rows}
+        bases = sorted({*wanted, *(aliases.get(symbol, symbol) for symbol in wanted)})
         rows = self.conn.execute(
             f"""
-            SELECT s.symbol AS requested, m.venue, m.venue_symbol, m.base_symbol, m.instrument_class,
-                   m.quote_asset
-              FROM unnest(%s::text[]) AS s(symbol)
-              LEFT JOIN news_symbol_aliases a ON a.alias = s.symbol
-              LEFT JOIN LATERAL (
-                SELECT i.venue, i.venue_symbol, i.base_symbol, i.instrument_class, i.quote_asset
-                  FROM news_market_instruments i
-                 WHERE i.status = 'trading'
-                   AND NOT (i.venue = ANY(%s))
-                   AND i.base_symbol IN (s.symbol, COALESCE(a.base_symbol, s.symbol))
-                 ORDER BY (i.base_symbol = s.symbol) DESC,
-                          {source_rank_sql()}, {quote_asset_rank_sql()}, i.venue, i.venue_symbol
-                 LIMIT 1
-              ) m ON true
-             WHERE m.venue IS NOT NULL
+            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset
+              FROM news_market_instruments i
+             WHERE i.status = 'trading'
+               AND NOT (i.venue = ANY(%s))
+               AND i.base_symbol = ANY(%s)
+             ORDER BY i.base_symbol, {source_rank_sql()}, {quote_asset_rank_sql()}, i.venue, i.venue_symbol
             """,
-            (wanted, sorted(REFERENCE_VENUES)),
+            (sorted(REFERENCE_VENUES), bases),
         ).fetchall()
-        resolved = {
-            str(row["requested"]): PriceInstrument(
-                venue=str(row["venue"]),
-                venue_symbol=str(row["venue_symbol"]),
-                base_symbol=str(row["base_symbol"]),
-                instrument_class=str(row["instrument_class"]),
-                quote_asset=str(row["quote_asset"]) if row["quote_asset"] else None,
+        grouped: dict[str, list[PriceInstrument]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["base_symbol"]), []).append(
+                PriceInstrument(
+                    venue=str(row["venue"]),
+                    venue_symbol=str(row["venue_symbol"]),
+                    base_symbol=str(row["base_symbol"]),
+                    instrument_class=str(row["instrument_class"]),
+                    quote_asset=str(row["quote_asset"]) if row["quote_asset"] else None,
+                )
             )
-            for row in rows
-        }
-        return {raw: resolved[norm] for raw, norm in normalized.items() if norm in resolved}
+        result: dict[str, tuple[PriceInstrument, ...]] = {}
+        for raw, symbol in normalized.items():
+            candidates = grouped.get(symbol) or grouped.get(aliases.get(symbol, symbol)) or []
+            if candidates:
+                result[raw] = tuple(candidates)
+        return result
 
     def quote_target_symbols(self, *, since_ms: int, limit: int = 1000) -> list[str]:
         """Code-verified assets on recent live Events, most recently observed first.
@@ -425,20 +438,33 @@ class QuoteStorage:
             ),
         )
 
-    def event_reactions(self, event_id: str) -> list[dict[str, Any]]:
+    def event_reactions(self, event_id: str, *, metric_version: str | None = None) -> list[dict[str, Any]]:
         """Every per-asset Reaction for one Event, with the raw closes the returns were computed from."""
 
-        rows = self.conn.execute(
-            """
-            SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
-                   p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                   is_primary, state, unavailable_reason, updated_at_ms
-              FROM news_event_reactions
-             WHERE event_id = %s
-             ORDER BY symbol
-            """,
-            (str(event_id),),
-        ).fetchall()
+        if metric_version is None:
+            rows = self.conn.execute(
+                """
+                SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
+                       p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
+                       is_primary, state, unavailable_reason, updated_at_ms
+                  FROM news_event_reactions
+                 WHERE event_id = %s
+                 ORDER BY symbol, metric_version
+                """,
+                (str(event_id),),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
+                       p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
+                       is_primary, state, unavailable_reason, updated_at_ms
+                  FROM news_event_reactions
+                 WHERE event_id = %s AND metric_version = %s
+                 ORDER BY symbol
+                """,
+                (str(event_id), str(metric_version)),
+            ).fetchall()
         return [_reaction_public(dict(row)) for row in rows]
 
     def event_reaction_aggregates(self, event_ids: Sequence[str], *, now_ms: int) -> dict[str, dict[str, Any]]:

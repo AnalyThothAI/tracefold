@@ -152,7 +152,7 @@ class PredictorSpec:
     registry or a route table of its own.
     """
 
-    name: Literal["event_semantics", "reader_card"]
+    name: Literal["event_semantics", "reader_card", "progression_review"]
     instruction: str
     input_fields: tuple[str, ...]
     output_field: str
@@ -299,7 +299,7 @@ class PredictorRequest(_ExactModel):
     program_version: str
     program_sha256: str
     context_sha256: str
-    predictor: Literal["event_semantics", "reader_card"]
+    predictor: Literal["event_semantics", "reader_card", "progression_review"]
     route: Literal["primary", "fallback"]
     attempt: int = Field(ge=1, le=2)
     model_binding: str

@@ -109,6 +109,17 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "attempted_at_ms",
         "settled_at_ms",
         "created_at_ms",
+        "edit_state",
+        "pending_card",
+        "edit_error_code",
+        "edit_attempted_at_ms",
+        "edit_settled_at_ms",
+        "delete_state",
+        "delete_evidence",
+        "delete_reason",
+        "delete_error_code",
+        "delete_attempted_at_ms",
+        "delete_settled_at_ms",
     }
     assert news_ingest_columns == {
         "singleton_key",
@@ -140,6 +151,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_verdicts_final",
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
+        "ix_news_deliveries_editing",
+        "ix_news_deliveries_deleting",
         "ix_news_event_evidence_created",
         "ix_news_external_miss_created",
         "ix_news_reviews_event_created",
@@ -154,7 +167,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260828_0320"
+    assert version == latest_migration_version() == "20260828_0322"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -179,4 +192,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260828_0320"
+    assert version == latest_migration_version() == "20260828_0322"

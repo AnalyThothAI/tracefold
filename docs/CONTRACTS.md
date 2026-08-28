@@ -21,12 +21,12 @@ model and loader implementation.
 Unknown settings or worker keys fail validation.
 
 `tracefold init` creates the operator directory, config, cache/log directories,
-and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
-mode `0700`; config and password files are `0600`. A normal rerun preserves
+an empty Telegram bot-token placeholder, and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
+mode `0700`; config, Telegram placeholder, and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
 existing database passwords. The generated config has a new API bearer token
-(`ws_token`) but no live provider/model/webhook credential, `news.push.enabled`
+(`ws_token`) but no live provider/model/webhook/bot credential, `news.push.enabled`
 is false, and `news.broker.url` points at the compose RabbitMQ service.
 
 The configuration schema is exactly the top-level keys `ws_token`, `api`
@@ -127,8 +127,12 @@ dashboard.
 run; `news.broker.name_prefix` prefixes every exchange and queue name and
 `news.broker.connect_timeout_seconds` bounds the connect. `news.triage.*`
 (`concurrency`, `circuit_failures`, `circuit_open_seconds`), `news.push.*`
-(`enabled`, `feishu_webhook_url`,
-optional `feishu_signing_secret`, `min_interval_seconds`), and
+(`enabled`, the mutually exclusive Feishu fields `feishu_webhook_url` and
+optional `feishu_signing_secret`, or Telegram fields
+`telegram_bot_token_file` and `telegram_chat_id`, plus
+`min_interval_seconds`), and
+`news.venues.*` (`enabled`, public-data switches `binance`, `hyperliquid`,
+`okx`, `lighter`, `bitget`, reference-only `us_reference`, and `snapshot_period_hours`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
 Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
@@ -136,9 +140,63 @@ policy versions are image state. `tracefold config` exposes only redacted boolea
 model names, and watchlist symbols; it never prints the token, broker URL,
 keys, or webhook.
 
-Push delivery is available only when `news.push.enabled` is true and the
-webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
-Workers still start and deliveries settle `terminal/delivery_unavailable`.
+Push delivery is available only when `news.push.enabled` is true, exactly one
+provider is complete, and Workers is running. Feishu requires a valid HTTPS custom-bot v2 URL.
+Telegram requires a secure bot-token file and one private channel Bot API ID
+beginning with `-100`. Provider conflicts, invalid targets, and missing or
+insecure credentials fail closed: Serve remains credential-free, while an
+explicitly enabled invalid provider configuration makes Workers fail startup.
+On Telegram, a reader ticker is clickable only when an official venue catalogue proves an exact contract.
+Destinations are built from typed Binance, Hyperliquid, OKX, Lighter, or Bitget identities; untyped URLs and
+inconsistent metadata remain plain text. A pushed `single_name` card with exactly one candidate ticker is checked
+after the initial send against fresh catalogues from all five venue families. Any exact match keeps the message and
+is added through one in-place edit; its delivery prices use trade-first anchors and closed one-minute candles as
+fallback. An absent result authorizes `deleteMessage` only when all five catalogues answered successfully and none
+matched. A timeout, blocked endpoint, malformed catalogue, incomplete issuer identity, or any other partial result
+retains the message. PostgreSQL records the complete five-venue evidence and reason before deletion, then settles
+the exact receipt as `deleted` or `ambiguous`; startup and the stale-intent sweep terminalize inherited `deleting`
+intents instead of retrying an uncertain destructive action. A settled deletion is excluded from the durable
+reader-history ledger, so a removed untradeable issuer cannot suppress a later genuinely tradable listing. The
+Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
+`新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
+line between them. The novelty badge sits directly below the title: `🆕 新事实`, or `🔄 新进展` with the prior
+headline immediately only when no post-delivery verifier is configured and an exact-fact retrieval or stored
+title-similarity score of at least `0.50` supports it. With the verifier configured, an initial progression shows
+an indented one-line `关联确认中` child block and never waits for another model call. The same message is later
+edited to a compact child block: `✅ 已确认关联: <reason> (<parent age> 前)`, `↩️ 未确认关联: <reason>`, or an
+explicit unavailable state. Confirmed display reasons are clipped to one line; the model is instructed to avoid
+repeating the headline. The verifier considers at most eight already-delivered told-ledger candidates and its
+structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector
+verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
+or inventing a trade. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a
+send, the first `sendMessage` contains the complete news facts immediately and labels all three market values
+`计算中`; it performs no public price read first. The returned message ID and original send timestamp are settled
+as `sent` before a background enrichment reads prices and, for a progression, verifies the claimed historical
+relationship. Those operations run concurrently. That enrichment replaces the same Telegram message with
+`editMessageText`; it never sends a second card. Before that provider mutation, PostgreSQL stores the desired card
+as `pending_card` with `edit_state=editing`, bound to the same provider, message ID, original push timestamp, and
+target digest. A confirmed edit promotes that card and canonical receipt under `edit_state=edited`. A crash,
+timeout, invalid receipt, or settlement conflict after intent is recorded becomes `edit_state=ambiguous`; the
+original `sent` outcome is never retracted or retried, and the ledger does not pretend to know which version TG
+currently shows. Startup converts every inherited `editing` intent to the same explicit ambiguity. Feishu has no editable
+capability and retains its single enriched send. Startup reconciliation must succeed before the delivery consumer
+starts; while running, a 30-second sweep converts any edit still unsettled after 60 seconds to ambiguity and retries
+after transient database failures.
+Current-vs-anchor and fixed 1 h returns come only from the
+same request-time venue and contract: Binance is tried first, Hyperliquid second and OKX third. At each news,
+push-minus-1H and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
+at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
+The calculation never mixes venues or contracts, needs no continuously collected tick history, and does not
+write these presentation returns into `reaction_v1`. The 24 h value appears only from that asset's fresh,
+same-contract `rolling_24h` quote. An unavailable value is labelled rather than replaced with another window.
+Direction renders impact and polarity together on one line, such as `🧭 方向 明显利空`; novelty remains its
+own line. The footer has no time heading: it lists news publication time, send-start time, and then the
+normalized source words carrying the original HTTPS link, with no separate source button. Times use
+whole-second precision in UTC+8; any missing
+input is displayed as `暂无` without hiding known timestamps. The persisted reader card and Feishu payload are
+unchanged; these values travel only in an ephemeral typed delivery presentation.
+When push is disabled, both processes still start and a verdict that reaches a
+delivery consumer settles `terminal/delivery_unavailable`.
 
 `trading.*` is the whole Trading surface (#104) and is `enabled: false` by
 default. A disabled Trading context constructs no Program and no CandidateRunner,
@@ -393,7 +451,8 @@ title alone selects a deterministic route.
   every Triage verdict (model decision, rule baseline, final decision,
   override rule, throttle reason, verdict payload, runtime model, Program
   version/SHA, degraded flag and trace; nullable `prompt_version` is Prompt-era
-  audit history only), deliveries, and `normalization[]` — the alias
+  audit history only), deliveries (including confirmed `card`, nullable `pending_card`, canonical receipt,
+  `edit_state`, bounded edit error, and edit attempt/settlement timestamps), and `normalization[]` — the alias
   groups this Event's assets fall into (`base_symbol`, every `alias` that
   resolves into it including the base itself, and the alias `sources`). Only
   the code-owned seed aliases count (`source = 'seed'`, reconciled from
@@ -452,7 +511,8 @@ title alone selects a deterministic route.
   gates and never merged with them, read from platform configuration so this
   endpoint imports nothing from `tracefold.trading`),
   and `delivery` (sent/terminal
-  counts, last error, end-to-end p50/p95, availability), plus
+  counts, last error, end-to-end p50/p95, availability; availability requires
+  both a complete declared provider and a running Workers runtime), plus
   the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
   snapshot time, per-venue and per-class counts, `dangling_aliases`, and
@@ -663,9 +723,12 @@ direction-neutral push/drop. Parse failure is a deterministic drop.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
-history. States are `sending`, `sent`, `terminal`. There is exactly one HTTP
-attempt; a delivery without a configured sender settles `terminal` immediately
-instead of holding the message.
+history. States are `sending`, `sent`, `terminal`. Telegram target/permission
+preflight completes before `sending`; after that row there is exactly one
+initial delivery HTTP attempt. A successful Telegram initial attempt may be followed by a durable-intent in-place
+edit of that same receipt-bound message; an edit is neither a second delivery nor permission to retry the
+initial send. A delivery without a configured sender or whose
+preflight fails settles `terminal` immediately instead of holding the message.
 
 Broker contract (code-owned): topic exchange `news`, dead-letter exchange
 `news.dlx`, fanout retry exchange `news.retry`, three quorum business queues —
@@ -770,6 +833,16 @@ receipts, the active capability/blacklist revisions, the distinct bootstrap
 account-zero proof, TradeIntentV2, and immutable News instrument-listing
 validity events used by source-time replay. It requires `PAUSED` with no
 nonterminal Intent, rejects every new V1 insert, and has no downgrade.
+`20260828_0321` adds the News delivery edit-intent columns and stale-intent
+index used to distinguish a desired, confirmed, or ambiguous in-place Telegram
+update without changing the initial `sent` state.
+`20260828_0322` adds the receipt-bound deletion intent, five-venue evidence,
+reason, settlement timestamps, and stale-intent index used only after
+authoritative single-name tradeability absence.
+The migration entrypoint recognizes the one private branch whose Telegram
+schema used the colliding `20260828_0317`/`20260828_0318` identifiers. It may
+bridge that lineage only after an exact schema-and-epoch fingerprint; unknown or
+mixed `0318` state is a hard error, not an Alembic stamp or best-effort guess.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -1297,7 +1370,7 @@ what "better" means; both observed ceilings are printed in the row. A judge that
 went `unavailable` is reported separately under `judge_availability`, because it
 makes its leg a lower bound rather than a different population. The endpoint check compares each report against the
 digest of the route this run composed rather than the two reports against each
-other, because the baseline fingerprints it as `configured_endpoint_model_v1`
+other, because the baseline fingerprints it as `configured_endpoint_model_v2`
 and the optimizer as `model_execution_identity.v1`. Any `mismatch` makes
 `same_population` false and exits `2` with
 `news_learning_run_population_identity_mismatch`; the summary is still written,

@@ -486,10 +486,22 @@ export interface components {
             card?: {
                 [key: string]: unknown;
             };
+            /** Edit Attempted At Ms */
+            edit_attempted_at_ms?: number | null;
+            /** Edit Error Code */
+            edit_error_code?: string | null;
+            /** Edit Settled At Ms */
+            edit_settled_at_ms?: number | null;
+            /** Edit State */
+            edit_state?: ("editing" | "edited" | "ambiguous") | null;
             /** Error Code */
             error_code?: string | null;
             /** Kind */
             kind: string;
+            /** Pending Card */
+            pending_card?: {
+                [key: string]: unknown;
+            } | null;
             /** Receipt */
             receipt?: {
                 [key: string]: unknown;

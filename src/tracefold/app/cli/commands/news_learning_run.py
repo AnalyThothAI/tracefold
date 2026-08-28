@@ -243,7 +243,7 @@ def _reflection_judge_model(settings: Any) -> str:
 def _task_route(settings: Any) -> dict[str, str]:
     """The task endpoint this run composes, fingerprinted the two ways the two reports fingerprint it.
 
-    The baseline records `configured_endpoint_model_v1` and the optimizer records
+    The baseline records `configured_endpoint_model_v2` and the optimizer records
     `model_execution_identity.v1` over the same endpoint, so the digests differ by construction. Resolving
     the endpoint once here and computing both is what lets the summary check each report against the host
     this run actually used instead of comparing two incomparable hashes.

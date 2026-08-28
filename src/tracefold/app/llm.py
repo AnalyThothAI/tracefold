@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
+RequestProfile = Literal["default", "news_event", "news_reader"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,6 +15,7 @@ class ConfiguredLMEndpoint:
     api_key: str = field(repr=False)
     api_base: str = field(repr=False)
     model_kwargs: dict[str, Any]
+    request_profile: RequestProfile = "default"
 
 
 def configured_lm_endpoint(
@@ -21,6 +25,7 @@ def configured_lm_endpoint(
     thinking: bool = False,
     api_key: str | None = None,
     base_url: str | None = None,
+    request_profile: RequestProfile = "default",
 ) -> ConfiguredLMEndpoint:
     """Resolve one direct endpoint without importing a model framework.
 
@@ -35,11 +40,21 @@ def configured_lm_endpoint(
         base_url=endpoint_url,
     )
     model_kwargs = _provider_model_kwargs(effective_model, thinking=thinking)
+    effective_profile: RequestProfile = request_profile if _is_kimi_code_endpoint(endpoint_url) else "default"
+    if effective_profile != "default":
+        # The coding endpoint fixes temperature at 1 and rejects an explicit Program temperature. This is an
+        # endpoint execution profile, not an invisible transport mutation: both the profile and these kwargs
+        # enter configured_endpoint_model_v2 through `_endpoint_model_sha256`.
+        model_kwargs["additional_drop_params"] = ["temperature"]
+        leaf = effective_model.rsplit("/", maxsplit=1)[-1].lower()
+        if effective_profile == "news_event" and leaf in {"k3", "k3-256k"}:
+            model_kwargs["extra_body"] = {"reasoning_effort": "low"}
     return ConfiguredLMEndpoint(
         model_name=effective_model,
         api_key=str(endpoint_key),
         api_base=str(endpoint_url),
         model_kwargs=model_kwargs,
+        request_profile=effective_profile,
     )
 
 
@@ -68,11 +83,35 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
         # Qwen3 on llama.cpp / vLLM thinks by default and spends the whole ``max_tokens`` budget on reasoning
         # before the tool call; ``chat_template_kwargs`` is the OpenAI-compatible switch both servers honour.
         return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    if leaf == "minimax-m3" and not thinking:
+        # MiniMax-M3 includes ``<think>`` reasoning in the response content by default.  The News Program expects
+        # the response body to contain only its strict structured output, so use MiniMax's OpenAI-compatible
+        # thinking switch for production prediction calls.
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
     return {}
+
+
+def _is_kimi_code_endpoint(base_url: object) -> bool:
+    try:
+        parsed = urlsplit(str(base_url or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "api.kimi.com"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/coding/v1"
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 __all__ = [
     "ConfiguredLMEndpoint",
+    "RequestProfile",
     "configured_lm_endpoint",
     "litellm_proxy_model_name",
     "llm_is_configured",
