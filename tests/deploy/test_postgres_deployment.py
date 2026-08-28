@@ -89,7 +89,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert services["nautilus"]["ports"] == [
         "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
     ]
-    assert "http://127.0.0.1:8767/healthz" in services["nautilus"]["healthcheck"]["test"][3]
+    assert "http://127.0.0.1:8767/readyz" in services["nautilus"]["healthcheck"]["test"][3]
 
 
 def test_compose_declares_host_role_password_files_as_postgres_init_secrets() -> None:
