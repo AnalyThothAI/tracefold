@@ -1,21 +1,25 @@
 """The two Predictor output shapes.
 
-`EventSemantics` is what the interpreting Predictor must return; `ReaderCard` is what the writing one must.
-They are code-owned schemas, versioned by `factory_id` along with the rest of the graph. Since #306 Phase 3
-they are also what the provider is constrained by: `transport.response_format` builds the request's
-`json_schema` from `model_json_schema()`, so the schema the code validates against and the schema the model
-is handed cannot drift.
+`EventSemantics` is what the interpreting Predictor must return; `ReaderCard` is what the writing one must,
+together with the bounded fields each is shown and the envelope key its answer arrives under. Since #306
+Phase 3 the output models are also what the provider is constrained by: `transport.response_format` builds
+the request's `json_schema` from `model_json_schema()`, so the schema the code validates against and the
+schema the model is handed cannot drift.
+
+All four values are code, not artifact state, and `identity.compute_execution_identity` hashes the request
+they compose. They live here rather than in `graph.py` so that identity can be computed without importing
+the executor.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from ..models import TriageAsset
 from .contracts import TradeRelevanceV1
-from .runtime import _ExactModel
+from .runtime import PredictorName, _ExactModel
 
 
 class EventSemantics(_ExactModel):
@@ -64,3 +68,16 @@ class ReaderCard(_ExactModel):
         if not self.headline_zh.strip():
             raise ValueError("news_program_reader_headline_empty")
         return self
+
+
+# The bounded fields each Predictor is shown, in the fixed order the transport renders them.
+PREDICTOR_INPUT_FIELDS: Final[dict[PredictorName, tuple[str, ...]]] = {
+    "event_semantics": ("evidence_json",),
+    "reader_card": ("evidence_json", "semantics_json"),
+}
+
+# The single envelope key each Predictor answers under, and the model that key is validated against.
+PREDICTOR_OUTPUT: Final[dict[PredictorName, tuple[str, type[BaseModel]]]] = {
+    "event_semantics": ("semantics", EventSemantics),
+    "reader_card": ("card", ReaderCard),
+}

@@ -184,6 +184,12 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
                 runtime_revision=identity.runtime_revision,
             ),
             "stable_bundle_sha": stable_arm.bundle_sha,
+            # What this bundle *is*, carried down so the startup barrier can open its evidence epoch
+            # without re-deriving an identity the composition root already holds (#314).
+            "envelope_sha256": stable_arm.envelope_sha256,
+            "artifact_schema_version": stable_artifact.schema_version,
+            "program_version": stable_arm.program_version,
+            "program_sha256": stable_arm.program_sha256,
             "candidate_shas": sorted(compiled_candidates),
             "image_digest": identity.image_digest,
             "runtime_revision": identity.runtime_revision,

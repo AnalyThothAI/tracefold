@@ -30,7 +30,14 @@ from ..review.desk import (
     REVIEW_RUBRIC_VERSIONS,
 )
 from ..storage.root import NewsRepository
-from .contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID, ArmManifest, ClosedWindow, DatasetCaseRef
+from .contracts import (
+    LEARNING_PROFILE_ID,
+    ArmManifest,
+    ClosedWindow,
+    DatasetCaseRef,
+    epoch_id_for_bundle,
+    is_bundle_sha,
+)
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt
 from .ledger import LearningLedger
 from .profile import _PROFILE, TRUSTED_ROOT_SHA
@@ -48,7 +55,10 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v2"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v9"] = LEARNING_EPOCH
+    # No `learning_epoch` (#314). It was a declared field defaulting to a module constant, which meant a
+    # caller could name an epoch and the freeze would then check the name against the same constant it came
+    # from. The epoch a freeze belongs to is a fact about the deployment, and the ledger is the one place
+    # that knows it.
     observation_ref: str | None = None
 
 
@@ -59,7 +69,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v9"]
+    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
@@ -157,8 +167,6 @@ class DevelopmentDatasetStore:
 
     async def freeze_dataset(self, spec: DatasetSpec, *, admitted: AdmittedCandidate | None = None) -> DatasetManifest:
         self._ledger.assert_active_stable()
-        if spec.learning_epoch != LEARNING_EPOCH:
-            raise ValueError("news_learning_epoch_mismatch")
         epoch_started_at_ms = self._ledger.epoch_started_at_ms()
         if spec.window.from_ms < epoch_started_at_ms:
             raise ValueError("news_learning_window_precedes_program_epoch")
@@ -192,7 +200,7 @@ class DevelopmentDatasetStore:
             "dataset_version": DATASET_VERSION,
             "role": spec.role,
             "profile_id": spec.profile_id,
-            "learning_epoch": spec.learning_epoch,
+            "learning_epoch": self._ledger.epoch_id(),
             "learning_epoch_started_at_ms": epoch_started_at_ms,
             "window": spec.window.model_dump(mode="json"),
             "freeze_as_of_ms": freeze_as_of_ms,
@@ -205,7 +213,7 @@ class DevelopmentDatasetStore:
             "counts": counts,
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,
-                "learning_epoch_sha": _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms}),
+                "learning_epoch_sha": _sha({"epoch": self._ledger.epoch_id(), "started_at_ms": epoch_started_at_ms}),
                 "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
                 "reader_contract_sha": READER_CONTRACT_SHA256,
                 "agent_bundle_sha": self._stable.bundle_sha,
@@ -299,7 +307,7 @@ class DevelopmentDatasetStore:
             "dataset_version": DATASET_VERSION,
             "role": "development",
             "profile_id": spec.profile_id,
-            "learning_epoch": spec.learning_epoch,
+            "learning_epoch": self._ledger.epoch_id(),
             "learning_epoch_started_at_ms": self._ledger.epoch_started_at_ms(),
             "window": spec.window.model_dump(mode="json"),
             "freeze_as_of_ms": freeze_as_of_ms,
@@ -321,7 +329,7 @@ class DevelopmentDatasetStore:
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,
                 "learning_epoch_sha": _sha(
-                    {"epoch": LEARNING_EPOCH, "started_at_ms": self._ledger.epoch_started_at_ms()}
+                    {"epoch": self._ledger.epoch_id(), "started_at_ms": self._ledger.epoch_started_at_ms()}
                 ),
                 "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
                 "reader_contract_sha": READER_CONTRACT_SHA256,
@@ -876,13 +884,31 @@ class DevelopmentDatasetStore:
         """
 
         exact_payload = dict(payload)
-        if exact_payload.get("learning_epoch") != LEARNING_EPOCH:
+        # Self-agreement, not authorization (#314). An epoch is derived from the bundle that opened it, so
+        # a seal naming an epoch its own `agent_cohort` could not have produced is corrupt whoever reads
+        # it — while a seal that is merely *old* stays valid here and reaches its reader's own honest
+        # refusal. Comparing against the running ledger instead would kill every stale corpus as an epoch
+        # mismatch before `news_learning_dataset_agent_cohort_mismatch` could name the real problem, which
+        # is the mistake this docstring already records once.
+        #
+        # Pre-#314 seals cannot pass this validator at all, and no branch here changes that. Removing the
+        # declared epoch from `_PROFILE` moved `TRUSTED_ROOT_SHA`, which every seal carries and this
+        # function compares below — so a `program_vN` corpus fails as a contract-hash mismatch before any
+        # epoch branch could speak. An earlier draft accepted legacy labels here to keep
+        # `development_migration_export` (#300) able to open a stale corpus; review showed that reader can
+        # never reach the branch, and dead code claiming to enable something is worse than its absence.
+        #
+        # No live evidence is lost by saying so: the seven datasets in production carry `program_v7`, and
+        # the predecessor of this check already refused them for naming an epoch that was not the current
+        # one. Carry-forward works from #314 onward, bundle to bundle, which is the case it exists for.
+        sealed_epoch = str(exact_payload.get("learning_epoch") or "")
+        sealed_bundle = (dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha")
+        if not is_bundle_sha(sealed_bundle) or sealed_epoch != epoch_id_for_bundle(str(sealed_bundle)):
             raise ValueError("news_learning_epoch_mismatch")
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
-        if exact_payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
-            raise ValueError("news_learning_epoch_deployment_mismatch")
         hashes = dict(exact_payload.get("hashes") or {})
-        expected_epoch_sha = _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms})
+        expected_epoch_sha = _sha(
+            {"epoch": sealed_epoch, "started_at_ms": exact_payload.get("learning_epoch_started_at_ms")}
+        )
         if hashes.get("learning_epoch_sha") != expected_epoch_sha:
             raise ValueError("news_learning_epoch_hash_mismatch")
         if exact_payload.get("profile_id") != LEARNING_PROFILE_ID:

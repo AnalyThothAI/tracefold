@@ -308,14 +308,18 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 `news_agent_runtime_manifests` are the durable production control/audit seam.
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
-`news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v9` epoch was opened for `news_semantic_program_v5`, and its
-row keeps naming the factory, artifact schema and baseline root it was *opened*
-with; the running image is `tracefold.news.program.factory_v9` on the
-`news_program_strategy_artifact_v1` document. Every earlier Prompt/Program row
-remains append-only audit history. Only accepted `news_review_v4` evidence
-created in the v9 epoch and bound to the exact current factory/Program bundle
-is eligible for metric v5, compiler, replay or release gates.
+`news_learning_epochs` records immutable evidence epochs. Since #314 the running
+deployment opens its own: the same startup barrier that appoints the active
+Agent appends a row for its bundle if it has never run here, named
+`bundle_<first eight hex of bundle_sha>`, carrying that bundle's
+`envelope_sha256`, and tripping every armed or active canary. Because a bundle
+covers the two instructions, the computed execution envelope, the four model
+slots, the retrieval contract and the policy, a deployment that changes what the
+model sees cannot go on accruing evidence into the previous cohort. Rows
+`program_v1`–`program_v9`, each opened by a hand-written migration, remain
+append-only audit history. Only accepted `news_review_v4` evidence created in
+the running bundle's epoch and bound to that exact bundle is eligible for
+metric v5, compiler, replay or release gates.
 Beside that plane, and deliberately not in it, sits the operator's fast loop
 (`tracefold.news.learning.experiment`, #193). It freezes one closed window into
 a run directory on disk, compares arms on the frozen cases, and runs the same
@@ -357,7 +361,7 @@ tracefold.news
     objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
     optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
     evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
-    ledger.py / epoch.py / profile.py  the learning plane's own rows, epoch identity, and release profile
+    ledger.py / profile.py  the learning plane's own rows, its bundle's epoch, and the release profile
     experiment/       operator run directories: frozen window and arm comparison
   release/
     candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
@@ -929,18 +933,38 @@ sentinel, and keeps public `title_zh` empty. Splitting semantic judgment from co
 per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
-The only executable generation is `news_semantic_program_v5` from
-`tracefold.news.program.factory_v9` in learning epoch `program_v9`.
-Issue #193 hard-cuts the artifact to one canonical JSON document holding
-`schema_version` `news_program_strategy_artifact_v1`, one `factory_id`, and one
-instruction per Predictor. Issue #306 keeps that shape and changes what the two
-instructions *are*: each is now the complete prompt for its Predictor rather
-than a bounded advisory appended to a rendered stack, and the code-owned seed
-text lives in `tracefold/news/program/seed.py`. Issue #310 re-issued the root
-under `factory_v9`, seed texts unchanged, when the transport's structured-output
-constraint became endpoint-capable. `program_sha256` is the
-canonical hash of exactly those four values, and the stable root is
-`23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754`.
+The only executable generation is `news_semantic_program_v5`. Issue #193
+hard-cuts the artifact to one canonical JSON document; issue #306 keeps that
+shape and changes what the two instructions *are*, each becoming the complete
+prompt for its Predictor rather than a bounded advisory appended to a rendered
+stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
+#314 removes the last field that was not a written instruction: the artifact
+holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
+per Predictor, and `program_sha256` is the canonical hash of exactly those
+three values. The stable root is
+`c71bd9041f26d8ee75f055dc0997a92a2b44c1fbdb0d00d1a2e9ecb18ee675a4`.
+
+**Program identity has two halves, and they have two authors.**
+`program_sha256` addresses the write-set a human or GEPA may edit.
+`envelope_sha256` — `compute_execution_identity()` in
+`tracefold/news/program/identity.py` — addresses everything the code decides
+about a model call: the golden render of each Predictor's complete chat request
+in both structured-output modes, the two output contracts and their JSON
+schemas, the model-visible input shapes and their delimiters, the endpoint
+capability table, the model binding slots, the route deadline, the token
+ceilings and the breaker. It is computed from those values rather than declared
+beside them, so a change to any of them moves the identity whether or not anyone
+remembers to say so. One contract test
+(`tests/contract/test_program_release_identity.py`) pins it, and re-pinning that
+line is the signature on an identity migration.
+
+This replaced a declared `factory_id` literal, which had the failure mode every
+hand-maintained version has: not that somebody picks the wrong string, but that
+a change lands and nobody bumps anything. Three identity-clearing incidents in
+four days were that, and the pin net that grew to catch them — nine epoch
+counts, four byte-equality tests, a mirrored constant module and five documents
+each restating the current identity — was guarding the declaration rather than
+the behavior.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
 parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
@@ -953,10 +977,10 @@ what "this Program" meant.
 
 Everything else the Program needs — the two-Predictor graph, the typed schemas,
 the normalizer, the assembler, the model route and the execution budget — is
-code, versioned by `factory_id`. A semantic change to any of them bumps the
-factory explicitly instead of cascading twenty-odd component hashes that the
-same package generated and verified in the same process; that is a self-proof,
-not an attestation, and it never replaced exact image/CI evidence.
+code, and `envelope_sha256` is computed over what that code renders. It is one
+hash over one golden render rather than twenty-odd component hashes that the
+same package generated and verified in the same process; that was a self-proof,
+not an attestation, and neither it nor this replaces exact image/CI evidence.
 
 There is one prompt text per Predictor and no renderer (#306 Phase 2). Until
 then the prompt was a layering — a sealed QualityKernel, nine ordered code-owned
@@ -1393,7 +1417,7 @@ created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v9` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
+current-epoch / `news_review_v4` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -1416,7 +1440,7 @@ and then holds three model endpoints and a typed budget — no DB write, broker,
 delivery, canary or promotion credential — and can emit only a bounded
 `PromptPatchV1`. That patch carries the two Predictor instructions and nothing
 else: the graph, the output schemas, the execution budget, the model slots and
-the policy are code under `factory_id` and are outside the write set. Since #306
+the policy are code, covered by `envelope_sha256`, and outside the write set. Since #306
 Phase 3 the optimizer calls `gepa.optimize` directly through a `GEPAAdapter`
 this repository owns, and evaluates a candidate by running the production
 Program over the frozen corpus — so "the optimized bytes are the production
@@ -1675,6 +1699,13 @@ a candidate registered against the old chain names a receipt that no longer
 validates and can no longer be evaluated. It does not re-open `program_v7`
 either — how a compile is serialized says nothing about whether an accepted
 review is true.
+`20260828_0320` ends the practice these rows document (#314): it gives
+`news_learning_epochs` a `bundle_sha` and an `envelope_sha256`, relaxes
+`program_factory_id` to nullable, and grants `tracefold_workers` the INSERT that
+lets a deployment open its own epoch. UPDATE and DELETE stay revoked and the
+append-only trigger stays, so a runtime writer may add history and still cannot
+rewrite it. No migration appends an epoch row after this one.
+
 `20260827_0315` persists the #288 exact source-contract route and Event-kind
 hard cut, trips open canary activations, and records the factory-v6 to
 factory-v7 migration receipt. It neither rewrites nor appends the `program_v7`

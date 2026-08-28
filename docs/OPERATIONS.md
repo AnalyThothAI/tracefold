@@ -579,12 +579,14 @@ Diagnose News in this order:
    append a rubric with `review submit`; a fact that never became an Event uses
    `review external-miss`. Do not infer precision/recall from unlabeled rows or
    infer causality from the market tab.
-   Before and after a Prompt, RulePack or policy edit, run
-   `news learning baseline` and name the mode you mean. A RulePack body is code
-   under `factory_id`, not artifact state: editing one changes the prompt bytes
-   every call is billed for while leaving `program_sha256` untouched, so the
-   edit is finished only when the factory is bumped and the stable root
-   reissued in the same change. `--mode recorded` costs
+   Before and after a Prompt or policy edit, run
+   `news learning baseline` and name the mode you mean. Code around the
+   instructions — the wire envelope, the output contract, the route budget — is
+   not artifact state: editing it changes what every call is billed for while
+   leaving `program_sha256` untouched, and what catches it is the computed
+   `envelope_sha256` pin in
+   `tests/contract/test_program_release_identity.py` (see
+   `docs/ARCHITECTURE.md`). `--mode recorded` costs
    nothing and answers "is the metric still wired the way it was"; it makes no
    provider call, so it cannot see a Prompt change. `--mode compile_live` is the
    graph GEPA optimizes and has no fallback, retry, deadline or breaker.
@@ -662,10 +664,15 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-The current evidence eligibility window starts at the deployment timestamp
-stored in `news_learning_epochs(program_v9)`. Only accepted `news_review_v4`
-rows from this epoch that are bound to the exact current factory/Program bundle
-enter metric v5, GEPA or release evidence. Every earlier Prompt/Program
+The current evidence eligibility window starts at the deployment timestamp the
+running deployment wrote into `news_learning_epochs` for its own bundle. Find it
+with `WITH agent AS (SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY
+created_at_ms DESC LIMIT 1) SELECT e.epoch_id, e.starts_at_ms FROM
+news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
+newest agent *before* the join, not after: joining the whole appointment history
+and then taking one row reports the previous deployment's epoch when the current
+agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v4` rows from that
+epoch, bound to that exact bundle, enter metric v5, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
@@ -950,9 +957,19 @@ rejected format, become immutable audit history.
 ledgers plus the News catalogue's immutable listing-validity events, refuses a
 warm migration, and never rewrites V1 history. Roll forward; there is no
 downgrade to a second execution permission model.
-`0321` adds the durable News delivery edit-intent lifecycle and its stale-edit
+`0321` is #314's computed-identity cut and the last epoch migration there will
+be. It adds `bundle_sha` and `envelope_sha256` to `news_learning_epochs`, ties
+`epoch_id` to `left(bundle_sha, 8)` by CHECK, relaxes `program_factory_id` to
+nullable, and grants `tracefold_workers` INSERT so the startup barrier can open
+the running bundle's epoch itself; UPDATE and DELETE stay revoked and the
+append-only trigger stays. The artifact loses its `factory_id` field, which
+re-issues the stable root over unchanged seed texts one last time, so the first
+deployment after this migration opens a new `bundle_<sha8>` epoch and trips every
+armed or active canary. After it, an identity migration is a code change plus a
+re-pinned line in `tests/contract/test_program_release_identity.py`.
+`0322` adds the durable News delivery edit-intent lifecycle and its stale-edit
 index; it performs no provider call and requires no new credential or runtime
-role. `0322` adds the receipt-bound deletion lifecycle and its stale-intent
+role. `0323` adds the receipt-bound deletion lifecycle and its stale-intent
 index for authoritative five-venue single-name absence.
 
 One private Telegram branch previously used the upstream `0317`/`0318`
@@ -962,7 +979,7 @@ delivery columns, four constraints and two indexes and also checks that the
 upstream Trading authority cut and `program_v8` epoch are absent. Only that
 exact shape is reconciled: the upstream `0317`/`0318` effects are applied in one
 transaction, the existing Telegram state is retained, and normal `0319` through
-`0322` migration resumes. A partial, mixed or unknown shape fails with
+`0323` migration resumes. A partial, mixed or unknown shape fails with
 `legacy_migration_lineage_unrecognized`; never stamp past it manually.
 
 Before applying 0278 remove `providers.macro_sources` and the
@@ -1008,10 +1025,19 @@ Learning evidence follows #118's separate deterministic policy:
 - the newest manifest for each of the current and previous distinct stable
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
-- `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v9` reset changes eligibility, not retention: all earlier evidence
-  remains auditable until the existing deterministic
-  retention policy makes an otherwise-unpinned row eligible;
+- Redeploying an earlier image re-appoints that bundle and re-enters its existing
+  epoch rather than opening a new one, and the epoch keeps its original
+  `starts_at_ms` because the table is append-only. Evidence produced by the
+  intervening deployment is therefore inside the restored epoch's window for the
+  readers that can only compare timestamps — external-miss eligibility above all,
+  since an external miss carries no bundle to filter on. Freezing a dataset
+  immediately after a rollback will carry those misses; if that matters, freeze a
+  window that starts after the re-appointment.
+- `news_learning_epochs` is append-only permanent audit truth, whether a
+  migration or the startup barrier wrote the row. An epoch change alters
+  eligibility, not retention: all earlier evidence remains auditable until the
+  existing deterministic retention policy makes an otherwise-unpinned row
+  eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;
 - every purge call deletes at most 500 recordings, 500 cases and 500 artifacts.
   Eligible counters are capped at 501: `501` means “at least one more full

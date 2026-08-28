@@ -33,7 +33,6 @@ def test_the_shipped_stable_artifact_is_the_seed_text_itself() -> None:
 
     stable = load_stable_program_artifact()
 
-    assert stable.factory_id == "tracefold.news.program.factory_v9"
     for predictor in _PREDICTORS:
         assert stable.instruction_for(predictor) == seed_instruction(predictor)
         # And what the graph binds to a route is that same string, unchanged.

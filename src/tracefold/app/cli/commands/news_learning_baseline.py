@@ -126,7 +126,7 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID, dataset_coverage
+    from tracefold.news.learning.contracts import LEARNING_PROFILE_ID, dataset_coverage, epoch_id_for_bundle
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import (
         DevelopmentEpisode,
@@ -134,16 +134,16 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         build_gepa_objective_plan,
         build_readiness_report,
     )
-    from tracefold.news.program.runtime import PROGRAM_FACTORY_ID
+    from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
     from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
     dataset_sha = str(args.development).strip()
     identity: dict[str, Any] = {
         "development_dataset_sha": dataset_sha,
-        "learning_epoch": LEARNING_EPOCH,
+        "learning_epoch": epoch_id_for_bundle(stable.bundle_sha),
         "profile_id": LEARNING_PROFILE_ID,
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
-        "program_factory_id": PROGRAM_FACTORY_ID,
+        "execution_envelope_sha256": EXECUTION_ENVELOPE_SHA256,
         "program_version": stable.program_version,
         "program_sha256": stable.program_sha256,
         "stable_bundle_sha": stable.bundle_sha,

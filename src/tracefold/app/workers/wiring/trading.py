@@ -5,12 +5,14 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 from loguru import logger
 
+from tracefold.app.learning_runtime import active_arm_manifest
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.trading_config import trading_config_from_settings
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_trade_candidates, news_trade_instruments
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
+from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.contracts import Bar as TradingBar
@@ -64,6 +66,10 @@ def _wire_trading_pipeline(
             bars=_trading_bar_fetcher(settings),
             candidate_projection=news_trade_candidates,
             instrument_projection=news_trade_instruments,
+            # The one place that may tell Trading which News generation is running (#314). Trading holds
+            # no News literal and reads no News table; this seam derives the label from the same stable
+            # arm the News workers appoint, so the two cannot drift.
+            news_generation=epoch_id_for_bundle(active_arm_manifest(settings).bundle_sha),
             program=program,
             telemetry=telemetry,
         )

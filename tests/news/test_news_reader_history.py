@@ -10,6 +10,7 @@ from tracefold.news.learning.contracts import ArmManifest
 from tracefold.news.learning.evaluate import CandidateEvaluator
 from tracefold.news.learning.evaluation_history import ArmState, Receipt
 from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.reader_history import (
     READER_HISTORY_SHA256,
     RECENT_HISTORY_WINDOW_MS,
@@ -48,6 +49,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
         stable=ArmManifest(
             program_version="news_semantic_program_v5",
             program_sha256="a" * 64,
+            envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             runtime_model_bindings_sha256="b" * 64,
             retrieval_sha256="c" * 64,
             policy=policy,

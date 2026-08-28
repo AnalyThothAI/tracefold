@@ -43,6 +43,8 @@ from tracefold.trading.strategy.root import strategies
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_900_000_000_000
+# The bundle epoch the fixture Cases are frozen under, and the one the runner is composed with.
+NEWS_GENERATION = "bundle_00000000"
 AUTHORITY: dict[str, BlacklistSnapshotV1] = {}
 CAPABILITY_SNAPSHOT = ExecutionCapabilitySnapshotV1(
     app_revision="test-revision",
@@ -246,7 +248,7 @@ def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingC
         source_strategy_id="oi_5m",
         source_contract_version="oi_source_v1",
         measurement_window_ms=300_000,
-        learning_epoch="program_v9",
+        learning_epoch=NEWS_GENERATION,
         program_version="news_oi_signal_v1",
         program_sha256="a" * 64,
         policy_version="news_triage_policy_v10",
@@ -331,6 +333,10 @@ def _candidate_runner(connection: Any, *, fail_intent_settle: bool = False) -> C
         bars=lambda _venue: _bars,
         candidate_projection=lambda *_args: ((), (), ()),
         instrument_projection=lambda *_args: (),
+        # The News generation this runner may advance a Case under (#314 review). It matches the epoch the
+        # fixture manifests are frozen with; `test_candidate_runner_refuses_a_superseded_news_generation`
+        # is where they deliberately disagree.
+        news_generation=NEWS_GENERATION,
         clock=lambda: NOW + 1_000,
     )
 
@@ -366,6 +372,28 @@ def _observe_close(
     assert observed.flat_verified_at_ms is None
     assert observed.commissions_by_currency == commissions_by_currency
     return observed
+
+
+def test_candidate_runner_refuses_a_case_frozen_under_a_superseded_news_generation(conn: Any) -> None:
+    """A Case that outlived the News bundle it was reasoned under must not become an Intent (#314 review).
+
+    The sequence is ordinary rather than exotic: a Case is frozen, left undecided, and a deployment moves
+    the News bundle — a prompt edit or a model re-slot does that without moving `program_version` or
+    `policy_version`, which are the only other upstream pins this path holds. The projection that creates
+    Cases joins the running epoch, so a stale row cannot enter; nothing but this check stops one that is
+    already persisted from advancing.
+    """
+
+    _pending_executable_case(conn)
+    runner = _candidate_runner(conn)
+    runner._news_generation = "bundle_deadbeef"
+
+    result = asyncio.run(runner._advance(funnel=Funnel()))
+
+    assert result == "news_generation_retired"
+    row = conn.execute("SELECT state, policy_decision FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert dict(row) == {"state": "BLOCKED", "policy_decision": "no_trade"}
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
 
 
 def test_candidate_runner_atomically_emits_intent_and_advances_case(conn: Any) -> None:

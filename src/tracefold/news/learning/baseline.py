@@ -51,6 +51,7 @@ from ..program.artifact import (
 )
 from ..program.contracts import SemanticJudge, TriageContext
 from ..program.graph import NewsSemanticProgram
+from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.runtime import PROGRAM_VERSION
 from ..program.transport import ChatCompletionsPredictorAdapter
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
@@ -872,7 +873,7 @@ def _build_report(
             **dict(dataset_identity or {}),
             "program_version": PROGRAM_VERSION,
             "program_sha256": artifact.program_sha256,
-            "factory_id": artifact.factory_id,
+            "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
             "policy_version": policy["policy_version"],
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],

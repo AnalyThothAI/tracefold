@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..artifact_identity import canonical_sha
+from ..learning.contracts import epoch_id_for_bundle
 from .sql_values import _dumps
 
 
@@ -451,16 +452,123 @@ class LearningStorage:
         assignment["validation_error"] = reason
         return assignment
 
+    def open_learning_epoch(
+        self,
+        *,
+        bundle_sha: str,
+        envelope_sha256: str,
+        artifact_schema_version: str,
+        program_version: str,
+        program_sha256: str,
+        now_ms: int,
+    ) -> bool:
+        """Open this bundle's evidence epoch if it has never run here, and say whether it was new.
+
+        This is what migrations `0292`-`0319` used to do by hand, one per identity change (#314). Doing it
+        at startup instead removes the failure mode those migrations had: an author who changed behavior and
+        did not think to write one. The append-only trigger and the primary key make a concurrent or repeated
+        start idempotent rather than merely unlikely — the second writer loses the insert and reads `False`.
+
+        `starts_at_ms` is strictly after every epoch already recorded. Evidence eligibility is a timestamp
+        comparison, so an epoch that opened at or before its predecessor would admit that predecessor's
+        verdicts into this cohort.
+
+        Known limitation, deliberately not fixed here (#314 review). Deploying A, then B, then A again — a
+        redeploy of an earlier image is the only rollback there is — leaves A's row at its original start,
+        because the table is append-only and the row cannot move. A reader that filters on `bundle_sha`
+        is unaffected and that is most of them; a reader that can only compare timestamps, notably
+        external-miss eligibility (an external miss has no bundle to filter on), will admit evidence
+        produced while B was live into A's cohort. Stating the shape of the fix so it is not re-derived:
+        a cohort is really the union of the intervals during which its bundle was the appointed Agent, and
+        `news_learning_artifacts(kind='active_agent')` already records every appointment with a timestamp.
+        Until a reader consults that history, one lower bound per epoch is an approximation that is exact
+        for a forward-only deployment sequence and generous for a rollback. It is strictly better than what
+        it replaced, where every bundle shared one hand-declared epoch and no rollback registered at all.
+        """
+
+        row = self.conn.execute(
+            """
+            INSERT INTO news_learning_epochs (
+              epoch_id, starts_at_ms, source_issue, bundle_sha, envelope_sha256, artifact_schema_version,
+              baseline_program_version, baseline_program_sha256, prior_evidence_disposition,
+              reset_reason, created_at_ms
+            )
+            SELECT %s,
+                   greatest(%s, coalesce(max(starts_at_ms), 0) + 1),
+                   'https://github.com/AnalyThothAI/tracefold/issues/314',
+                   %s, %s, %s, %s, %s, 'audit_only', 'runtime_bundle_identity_change',
+                   greatest(%s, coalesce(max(starts_at_ms), 0) + 1)
+              FROM news_learning_epochs
+            ON CONFLICT (epoch_id) DO NOTHING
+            RETURNING epoch_id
+            """,
+            (
+                epoch_id_for_bundle(bundle_sha),
+                int(now_ms),
+                bundle_sha,
+                envelope_sha256,
+                artifact_schema_version,
+                program_version,
+                program_sha256,
+                int(now_ms),
+            ),
+        ).fetchone()
+        if row is None:
+            # The insert lost. Either this bundle already has its epoch — the ordinary restart — or an
+            # unrelated bundle already holds the eight-hex label this one abbreviates to. The second is
+            # vanishingly unlikely and completely silent if left alone: the freeze that needed the epoch
+            # would fail hours later as `news_learning_epoch_not_deployed`, naming the wrong problem. So
+            # the barrier reads back what it lost to and refuses to start if it is not this bundle's.
+            existing = self.conn.execute(
+                "SELECT bundle_sha FROM news_learning_epochs WHERE epoch_id = %s",
+                (epoch_id_for_bundle(bundle_sha),),
+            ).fetchone()
+            if existing is None or str(existing["bundle_sha"] or "") != bundle_sha:
+                raise ValueError("news_learning_epoch_id_collision")
+            return False
+        # A canary compares a candidate against the stable arm it was registered under. That arm no longer
+        # runs here, so every nonterminal activation is comparing against something absent — the same
+        # reasoning, and the same trip, that every hand-written epoch migration carried.
+        status = self.canary_status()
+        activation = status.get("activation")
+        if activation is not None and str(activation["state"]) in {"armed", "active"}:
+            self.transition_canary(
+                activation_id=str(activation["activation_id"]),
+                target_state="tripped",
+                reason="learning_epoch_opened",
+                now_ms=int(now_ms),
+            )
+        return True
+
     def register_agent_runtime_manifest(
         self,
         *,
         manifest_sha: str,
         stable_bundle_sha: str,
+        envelope_sha256: str,
+        artifact_schema_version: str,
+        program_version: str,
+        program_sha256: str,
         candidate_shas: Sequence[str],
         image_digest: str,
         runtime_revision: str,
         now_ms: int,
     ) -> None:
+        """Appoint the running Agent, opening its evidence epoch first.
+
+        The epoch is opened before the manifest short-circuit below, not after: an unchanged manifest is the
+        normal restart, and a restart must still leave a database that lost the row — or never had it —
+        with an epoch for the bundle that is running.
+        """
+
+        self.open_learning_epoch(
+            bundle_sha=stable_bundle_sha,
+            envelope_sha256=envelope_sha256,
+            artifact_schema_version=artifact_schema_version,
+            program_version=program_version,
+            program_sha256=program_sha256,
+            now_ms=now_ms,
+        )
         previous_active = self.conn.execute(
             "SELECT artifact_sha, payload FROM news_learning_artifacts "
             "WHERE kind = 'active_agent' ORDER BY created_at_ms DESC LIMIT 1"
@@ -1084,12 +1192,19 @@ class LearningStorage:
         rows = self.conn.execute("SELECT * FROM news_reviews WHERE review_id = ANY(%s)", (list(review_ids),)).fetchall()
         return {str(row["review_id"]): dict(row) for row in rows}
 
-    def learning_epoch_row(self, epoch_id: str) -> dict[str, Any] | None:
+    def learning_epoch_row_for_bundle(self, bundle_sha: str) -> dict[str, Any] | None:
+        """The epoch one exact bundle accrues evidence under, or None until that bundle has deployed.
+
+        Keyed on the bundle rather than on an epoch label (#314): the label is a truncation for humans,
+        and two different bundles must never resolve to one epoch because their first eight hex digits
+        collide.
+        """
+
         row = self.conn.execute(
-            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
-            "baseline_program_version, prior_evidence_disposition, reset_reason "
-            "FROM news_learning_epochs WHERE epoch_id = %s",
-            (epoch_id,),
+            "SELECT epoch_id, starts_at_ms, bundle_sha, envelope_sha256, artifact_schema_version, "
+            "baseline_program_version, baseline_program_sha256, prior_evidence_disposition, reset_reason "
+            "FROM news_learning_epochs WHERE bundle_sha = %s",
+            (bundle_sha,),
         ).fetchone()
         return None if row is None else dict(row)
 

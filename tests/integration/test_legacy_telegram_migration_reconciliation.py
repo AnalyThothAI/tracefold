@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 REMOTE_COMMON_PARENT = "20260828_0316"
 COLLIDING_LOCAL_HEAD = "20260828_0318"
-CURRENT_HEAD = "20260828_0322"
+CURRENT_HEAD = "20260828_0323"
 
 
 def _fresh_schema_at(revision: str) -> None:

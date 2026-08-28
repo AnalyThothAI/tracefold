@@ -34,10 +34,12 @@ Two facts worth carrying into every task because they are easy to get wrong:
 - PostgreSQL material facts and durable ledgers are the only business truth.
   Provider frames, broker messages, process caches, projections, model outputs
   and HTTP responses are not an alternate truth.
-- Program identity — the two Predictor instructions and `program_sha256`, the
-  `factory_id` that versions code-owned envelope/route/budget behavior,
-  and the policy and metric versions — is release evidence. Changing it is an
-  explicit, evidence-gated migration, never a side effect.
+- Program identity — the two Predictor instructions under `program_sha256`, the
+  computed `envelope_sha256` over code-owned envelope/route/budget behavior, and
+  the policy and metric versions — is release evidence. `envelope_sha256` is
+  computed, so it moves on its own; what you owe is the re-pinned line in
+  `tests/contract/test_program_release_identity.py`, which is the signature on an
+  explicit, evidence-gated identity migration.
 
 ## Agent skills
 

@@ -26,7 +26,7 @@ from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
 from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..program.contracts import ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
-from ..program.runtime import PROGRAM_FACTORY_ID
+from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..release.candidate import CandidateRegistry
 from ..review.desk import (
     READER_CONTRACT_SHA256,
@@ -34,7 +34,6 @@ from ..review.desk import (
 )
 from ..storage.root import NewsRepository
 from .contracts import (
-    LEARNING_EPOCH,
     LEARNING_PROFILE_ID,
     ArmManifest,
     CandidateManifest,
@@ -67,8 +66,9 @@ from .projection import (
 )
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
-# stop duplicating, and it would drift silently the first time the factory is bumped.
-LEARNING_PROGRAM_FACTORY_ID = PROGRAM_FACTORY_ID
+# stop duplicating — and since #314 there is no literal to copy: the value is computed from the code the
+# judgment ran under, so a stale alias is not a shape this module can have.
+LEARNING_EXECUTION_ENVELOPE_SHA256 = EXECUTION_ENVELOPE_SHA256
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
 ArmJudgeKey = tuple[ArmName, str]
@@ -949,7 +949,7 @@ class CandidateEvaluator:
                 or judgment.program_sha256 != arm.program_sha256
                 or judgment.trace.program_version != arm.program_version
                 or judgment.trace.program_sha256 != arm.program_sha256
-                or judgment.trace.factory_id != LEARNING_PROGRAM_FACTORY_ID
+                or judgment.trace.envelope_sha256 != LEARNING_EXECUTION_ENVELOPE_SHA256
             ):
                 raise ValueError("news_program_judgment_identity_mismatch")
             observation = judgment.model_dump(mode="json")
@@ -1025,7 +1025,7 @@ class CandidateEvaluator:
             {
                 "program_sha256": arm.program_sha256,
                 "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
-                "factory_id": trace.get("factory_id"),
+                "envelope_sha256": trace.get("envelope_sha256"),
                 "runtime_binding_sha256": runtime_binding_sha,
                 "provider": provider,
             }
@@ -1809,22 +1809,22 @@ def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
 def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
     """Whether one observation *dict* carries the identity a release decision needs.
 
-    Every clause here is trivially true of a judgment this process just built, `factory_id` included.
+    Every clause here is trivially true of a judgment this process just built, `envelope_sha256` included.
     That is the point: the function validates a mapping whose provenance the evaluator does not own —
     replayed, stored, or handed in — and its job is to refuse a shape that has lost its identity, not to
     re-derive one. What pins a release cohort to a generation is `_accepted_cases`, which filters on the
-    active arm's `program_sha256` and `bundle_sha`; the factory id is a coarser cross-check beside it.
+    active arm's `program_sha256` and `bundle_sha`; the envelope hash is the code half of that pair.
     """
 
     usage = dict(observation.get("usage") or {})
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
     physical_calls = [call for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
-    factory_id = str(trace.get("factory_id") or "") if isinstance(trace, Mapping) else ""
+    envelope_sha256 = str(trace.get("envelope_sha256") or "") if isinstance(trace, Mapping) else ""
     return (
         usage.get("physical_call_count") is not None
         and int(usage["physical_call_count"]) == len(physical_calls)
-        and (not physical_calls or factory_id == LEARNING_PROGRAM_FACTORY_ID)
+        and (not physical_calls or envelope_sha256 == LEARNING_EXECUTION_ENVELOPE_SHA256)
         and all(_program_call_identity_complete(call) for call in physical_calls)
     )
 
@@ -1928,7 +1928,6 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "LEARNING_EPOCH",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "CandidateEvaluator",

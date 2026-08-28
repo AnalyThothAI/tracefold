@@ -18,10 +18,13 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # named composition families and concrete adapter families may reach the named private contracts.
 PRIVATE_BUSINESS_IMPORT_RULES = {
     "app.news_cli": (
-        # The code-owned Program contract: the version every verdict row is stamped with, and the route
-        # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,
-        # where they were optimizer-shaped state they never were, and into the factory that versions them.
+        # The code-owned Program contract: the version every verdict row is stamped with, the route
+        # budget the composition seam builds its LM clients against, and the computed identity of that
+        # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
+        # for the same reason it stamps `PROGRAM_VERSION`. #193 moved these off the Artifact, where they
+        # were optimizer-shaped state they never were.
         "tracefold.news.program.runtime",
+        "tracefold.news.program.identity",
         "tracefold.news.learning.baseline",
         "tracefold.news.review.drafter",
         # The two offline optimization capabilities. App composition may invoke them, while the capability
@@ -63,10 +66,13 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.contracts",
     ),
     "app.composition": (
-        # The code-owned Program contract: the version every verdict row is stamped with, and the route
-        # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,
-        # where they were optimizer-shaped state they never were, and into the factory that versions them.
+        # The code-owned Program contract: the version every verdict row is stamped with, the route
+        # budget the composition seam builds its LM clients against, and the computed identity of that
+        # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
+        # for the same reason it stamps `PROGRAM_VERSION`. #193 moved these off the Artifact, where they
+        # were optimizer-shaped state they never were.
         "tracefold.news.program.runtime",
+        "tracefold.news.program.identity",
         "tracefold.news.program.artifact",
         "tracefold.news.program.transport",
         "tracefold.news.program.graph",
@@ -131,10 +137,13 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.oi_signals",
     ),
     "app.workers": (
-        # The code-owned Program contract: the version every verdict row is stamped with, and the route
-        # budget the composition seam builds its LM clients against. #193 moved these off the Artifact,
-        # where they were optimizer-shaped state they never were, and into the factory that versions them.
+        # The code-owned Program contract: the version every verdict row is stamped with, the route
+        # budget the composition seam builds its LM clients against, and the computed identity of that
+        # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
+        # for the same reason it stamps `PROGRAM_VERSION`. #193 moved these off the Artifact, where they
+        # were optimizer-shaped state they never were.
         "tracefold.news.program.runtime",
+        "tracefold.news.program.identity",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
         "tracefold.news.program.graph",

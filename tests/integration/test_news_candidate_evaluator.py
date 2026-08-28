@@ -9,22 +9,18 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
-import tracefold.news.learning.evaluate as candidate_evaluator_module
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import dataset as dataset_module
-from tracefold.news.learning import ledger as ledger_module
-from tracefold.news.learning.contracts import PromptCandidateV1, PromptPatchV1
+from tracefold.news.learning.contracts import PromptCandidateV1, PromptPatchV1, epoch_id_for_bundle
 from tracefold.news.learning.dataset import DevelopmentDatasetStore
 from tracefold.news.learning.evaluate import (
-    LEARNING_EPOCH,
     ArmManifest,
     CandidateManifest,
     ClosedWindow,
@@ -63,7 +59,8 @@ from tracefold.news.program.contracts import (
     TriageContext,
 )
 from tracefold.news.program.graph import NewsSemanticProgram
-from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_VERSION
+from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.program.transport import ScriptedPredictorAdapter
 from tracefold.news.reader_history import assemble_reader_history
 from tracefold.news.release.canary import (
@@ -123,6 +120,10 @@ def conn():
         repositories_for_connection(connection).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "test"}),
             stable_bundle_sha=stable.bundle_sha,
+            envelope_sha256=stable.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
             candidate_shas=(),
             image_digest="sha256:test-image",
             runtime_revision="test-revision",
@@ -139,75 +140,108 @@ def _sha(value: object) -> str:
 
 def _epoch_started_at_ms(conn: object) -> int:
     row = conn.execute(  # type: ignore[attr-defined]
-        "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-        (LEARNING_EPOCH,),
+        "SELECT starts_at_ms FROM news_learning_epochs WHERE bundle_sha = %s",
+        (_arm().bundle_sha,),
     ).fetchone()
     return int(row["starts_at_ms"])
 
 
-def test_candidate_evaluator_pins_the_program_v9_epoch_contract(conn) -> None:
-    """The evaluator proves the persisted epoch identity — against what the epoch was *opened* with.
+def test_the_deployment_that_appoints_an_agent_opens_that_agent_s_epoch(conn) -> None:
+    """No migration wrote this row: the startup barrier did, when it appointed the bundle (#314).
 
-    `program_factory_id` and `artifact_schema_version` record what opened the epoch, exactly like
-    `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only ever
-    be history. #310 opens `program_v9` with `factory_v9`, and later in-epoch re-issues (a serialization or
-    factory change that does not change which evidence is eligible) must not rewrite it. Asserting today's
-    runtime values against those columns therefore only holds while the epoch is fresh; asserting what the
-    migration wrote catches migration drift and a corrupted ledger row, which is what the check is for.
+    Every column is checked against today's runtime values, which the predecessor could not do. An epoch
+    used to be a hand-written label that outlived several Program re-issues, so the row recorded what it
+    was *opened* with and the evaluator had to compare against a mirrored copy of those values. Keying the
+    epoch to the bundle removes the gap: a re-issued Program, a moved envelope or a re-slotted model is a
+    different bundle and therefore a different epoch, so "what opened it" and "what is running" are the
+    same fact and disagreement is corruption.
     """
 
+    stable = _arm()
     row = conn.execute(
-        "SELECT starts_at_ms, program_factory_id, artifact_schema_version, baseline_program_version, "
-        "prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
-        (LEARNING_EPOCH,),
+        "SELECT epoch_id, bundle_sha, envelope_sha256, artifact_schema_version, baseline_program_version, "
+        "baseline_program_sha256, prior_evidence_disposition, reset_reason, program_factory_id "
+        "FROM news_learning_epochs WHERE bundle_sha = %s",
+        (stable.bundle_sha,),
     ).fetchone()
 
-    assert LEARNING_EPOCH == "program_v9"
-    assert ledger_module.LEARNING_EPOCH_RESET_REASON == "endpoint_capable_structured_output_envelope_identity_migration"
-    # The three columns the evaluator validates, and nothing else about identity.
+    assert row["epoch_id"] == epoch_id_for_bundle(stable.bundle_sha)
+    assert row["envelope_sha256"] == EXECUTION_ENVELOPE_SHA256 == stable.envelope_sha256
+    assert row["artifact_schema_version"] == PROGRAM_SCHEMA_VERSION
     assert row["baseline_program_version"] == PROGRAM_VERSION
+    assert row["baseline_program_sha256"] == stable.program_sha256
     assert row["prior_evidence_disposition"] == "audit_only"
-    assert row["reset_reason"] == ledger_module.LEARNING_EPOCH_RESET_REASON
-    # The two that name what #310 opened the epoch with, and are validated against exactly those.
-    assert (
-        (row["program_factory_id"], row["artifact_schema_version"])
-        == (
-            ledger_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
-            ledger_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
-        )
-        == ("tracefold.news.program.factory_v9", "news_program_strategy_artifact_v1")
-    )
-    assert (
-        candidate_evaluator_module.LEARNING_PROGRAM_FACTORY_ID
-        == PROGRAM_FACTORY_ID
-        == ("tracefold.news.program.factory_v9")
-    )
-    evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
+    assert row["reset_reason"] == "runtime_bundle_identity_change"
+    # Nothing declares a factory any more, and the column that used to hold one stays empty rather than
+    # being handed a value invented to fill it.
+    assert row["program_factory_id"] is None
+
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
     assert evaluator._ledger.epoch_started_at_ms() > 0
 
-    # A drifted or corrupted row must not be treated as an eligible epoch. The table is append-only by
-    # trigger, so the corruption is staged by making the evaluator read a different epoch id.
+    # An epoch row that does not describe the running bundle is refused rather than used. The table is
+    # append-only by trigger, so the drift is staged as a second bundle's row read through an arm whose
+    # envelope does not match it.
+    drifted = _arm(program_sha256="d" * 64)
     conn.execute(
-        "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, program_factory_id, "
-        "artifact_schema_version, baseline_program_version, baseline_program_sha256, "
+        "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, bundle_sha, "
+        "envelope_sha256, artifact_schema_version, baseline_program_version, baseline_program_sha256, "
         "prior_evidence_disposition, reset_reason, created_at_ms) "
-        "VALUES ('program_v9_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
-        "'audit_only', %s, %s)",
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'audit_only', 'runtime_bundle_identity_change', %s)",
         (
-            row["starts_at_ms"],
-            "https://github.com/AnalyThothAI/tracefold/issues/193",
-            ledger_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
+            epoch_id_for_bundle(drifted.bundle_sha),
+            row_start := _epoch_started_at_ms(conn),
+            "https://github.com/AnalyThothAI/tracefold/issues/314",
+            drifted.bundle_sha,
+            "0" * 64,
+            PROGRAM_SCHEMA_VERSION,
             PROGRAM_VERSION,
-            "a" * 64,
-            ledger_module.LEARNING_EPOCH_RESET_REASON,
-            row["starts_at_ms"],
+            drifted.program_sha256,
+            row_start,
         ),
     )
-    with (
-        patch.object(ledger_module, "LEARNING_EPOCH", "program_v9_corrupted"),
-        pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"),
-    ):
-        CandidateEvaluator(conn, stable=_arm(), judges={})._ledger.epoch_started_at_ms()
+    with pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"):
+        CandidateEvaluator(conn, stable=drifted, judges={})._ledger.epoch_started_at_ms()
+
+
+def test_an_unseen_bundle_has_no_epoch_and_cannot_freeze_evidence(conn) -> None:
+    """The refusal a missing epoch has to produce, now that no migration guarantees one exists."""
+
+    never_deployed = _arm(program_sha256="e" * 64)
+
+    with pytest.raises(ValueError, match="news_learning_epoch_not_deployed"):
+        CandidateEvaluator(conn, stable=never_deployed, judges={})._ledger.epoch_started_at_ms()
+
+
+def test_reopening_the_same_bundle_is_idempotent_and_keeps_the_original_start(conn) -> None:
+    """A restart must not move the epoch its evidence is measured from."""
+
+    stable = _arm()
+    opened_at = _epoch_started_at_ms(conn)
+    repositories = repositories_for_connection(conn)
+    with repositories.transaction():
+        assert (
+            repositories.news.open_learning_epoch(
+                bundle_sha=stable.bundle_sha,
+                envelope_sha256=stable.envelope_sha256,
+                artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+                program_version=stable.program_version,
+                program_sha256=stable.program_sha256,
+                now_ms=NOW,
+            )
+            is False
+        )
+
+    assert _epoch_started_at_ms(conn) == opened_at
+    assert (
+        int(
+            conn.execute(
+                "SELECT count(*) AS n FROM news_learning_epochs WHERE bundle_sha = %s",
+                (stable.bundle_sha,),
+            ).fetchone()["n"]
+        )
+        == 1
+    )
 
 
 def _arm(
@@ -221,6 +255,7 @@ def _arm(
     return ArmManifest(
         program_version=program_version,
         program_sha256=program_sha256 or _sha({"program": program_version, "fixture": "stable"}),
+        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
         runtime_model_bindings_sha256=runtime_model_bindings_sha256
         or _sha({"model_bindings": "fixture-primary+fallback"}),
         retrieval_sha256=_sha({"told": "v1", "evidence": "v1"}),
@@ -353,7 +388,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         program_version=arm.program_version,
         program_sha256=arm.program_sha256,
         context_sha256=context_sha,
-        factory_id=PROGRAM_FACTORY_ID,
+        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
         event_semantics_sha256=_sha(semantics),
         reader_card_sha256=_sha(card),
         verdict_sha256=_sha(verdict),
@@ -725,7 +760,7 @@ def _insert_validation_dataset(conn, *, development, candidate: CandidateManifes
         "dataset_version": "news_learning_dataset_v1",
         "role": "validation",
         "profile_id": "news_learning_release_v2",
-        "learning_epoch": LEARNING_EPOCH,
+        "learning_epoch": epoch_id_for_bundle(_arm().bundle_sha),
         "learning_epoch_started_at_ms": development.learning_epoch_started_at_ms,
         "window": {"from_ms": NOW - 6 * 3_600_000, "to_ms": NOW},
         "freeze_as_of_ms": NOW + 10_000,
@@ -842,6 +877,10 @@ def _open_event(
             repos.news.register_agent_runtime_manifest(
                 manifest_sha=runtime_manifest_sha,
                 stable_bundle_sha=stable.bundle_sha,
+                envelope_sha256=stable.envelope_sha256,
+                artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+                program_version=stable.program_version,
+                program_sha256=stable.program_sha256,
                 candidate_shas=(effective_bundle,),
                 image_digest="sha256:test-image",
                 runtime_revision="test-revision-with-candidate",
@@ -900,7 +939,7 @@ def _open_event(
                 "program_version": effective_program_version,
                 "program_sha256": effective_program_sha,
                 "context_sha256": _sha(context),
-                "factory_id": PROGRAM_FACTORY_ID,
+                "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
                 "event_semantics_sha256": _sha(semantics),
                 "reader_card_sha256": _sha(card),
                 "verdict_sha256": _sha(verdict),
@@ -1178,6 +1217,10 @@ def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None
         repos.news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": prior_runtime.bundle_sha, "runtime": "retired-four-slot-runtime"}),
             stable_bundle_sha=prior_runtime.bundle_sha,
+            envelope_sha256=prior_runtime.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=prior_runtime.program_version,
+            program_sha256=prior_runtime.program_sha256,
             candidate_shas=(),
             image_digest="sha256:retired-test-image",
             runtime_revision="retired-four-slot-runtime",
@@ -1193,6 +1236,10 @@ def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None
         repos.news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "current-four-slot-runtime"}),
             stable_bundle_sha=stable.bundle_sha,
+            envelope_sha256=stable.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
             candidate_shas=(),
             image_digest="sha256:current-test-image",
             runtime_revision="current-four-slot-runtime",
@@ -1584,6 +1631,10 @@ def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> No
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": legacy.bundle_sha, "runtime": "legacy-v1"}),
             stable_bundle_sha=legacy.bundle_sha,
+            envelope_sha256=legacy.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=legacy.program_version,
+            program_sha256=legacy.program_sha256,
             candidate_shas=(),
             image_digest="sha256:legacy-v1",
             runtime_revision="legacy-v1",
@@ -1832,6 +1883,10 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "dataset-baseline-test"}),
             stable_bundle_sha=stable.bundle_sha,
+            envelope_sha256=stable.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
             candidate_shas=(),
             image_digest="sha256:dataset-baseline-test",
             runtime_revision="dataset-baseline-test",
@@ -1941,6 +1996,10 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "register-f2p"}),
             stable_bundle_sha=stable.bundle_sha,
+            envelope_sha256=stable.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
             candidate_shas=(),
             image_digest="sha256:register-f2p",
             runtime_revision="register-f2p",
@@ -2227,6 +2286,10 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "record-replay-test"}),
             stable_bundle_sha=stable.bundle_sha,
+            envelope_sha256=stable.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
             candidate_shas=(),
             image_digest="sha256:record-replay-test",
             runtime_revision="record-replay-test",
@@ -2357,6 +2420,10 @@ def test_strict_recording_verification_reports_replay_misses_as_unknown_without_
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "missing-replay-test"}),
             stable_bundle_sha=stable.bundle_sha,
+            envelope_sha256=stable.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
             candidate_shas=(),
             image_digest="sha256:missing-replay-test",
             runtime_revision="missing-replay-test",
@@ -3045,6 +3112,10 @@ def test_corpus_migration_carries_only_replay_equivalent_cases_under_the_new_arm
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
             manifest_sha=_sha({"stable": arm_b.bundle_sha, "runtime": "test-b"}),
             stable_bundle_sha=arm_b.bundle_sha,
+            envelope_sha256=arm_b.envelope_sha256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=arm_b.program_version,
+            program_sha256=arm_b.program_sha256,
             candidate_shas=(),
             image_digest="sha256:test-image-b",
             runtime_revision="test-revision-b",
@@ -3699,3 +3770,40 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
     assert case["evaluation_stage"] == "canary"
     assert case["stable_observation"]["not_assigned"] is True
     assert case["candidate_observation"]["delivery"] == "observed_sent"
+
+
+def test_an_epoch_label_claimed_by_another_bundle_fails_the_startup_barrier(conn) -> None:
+    """The eight-hex label is an abbreviation, and an abbreviation can in principle collide.
+
+    Left alone the collision is silent: the losing deployment starts, runs, and the freeze that needed its
+    epoch fails hours later as `news_learning_epoch_not_deployed` — a message about the wrong thing. The
+    barrier reads back what its insert lost to and refuses instead.
+    """
+
+    stable = _arm()
+    impostor = "f" * 8 + "0" * 56
+    repositories = repositories_for_connection(conn)
+    with repositories.transaction():
+        assert (
+            repositories.news.open_learning_epoch(
+                bundle_sha=impostor,
+                envelope_sha256=EXECUTION_ENVELOPE_SHA256,
+                artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+                program_version=stable.program_version,
+                program_sha256=stable.program_sha256,
+                now_ms=NOW,
+            )
+            is True
+        )
+
+    colliding = impostor[:8] + "1" * 56
+    assert epoch_id_for_bundle(colliding) == epoch_id_for_bundle(impostor)
+    with pytest.raises(ValueError, match="news_learning_epoch_id_collision"), repositories.transaction():
+        repositories.news.open_learning_epoch(
+            bundle_sha=colliding,
+            envelope_sha256=EXECUTION_ENVELOPE_SHA256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
+            now_ms=NOW + 1,
+        )

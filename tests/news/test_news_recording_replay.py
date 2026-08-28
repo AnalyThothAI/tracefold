@@ -303,7 +303,6 @@ def test_sealed_replay_exposes_an_absent_run_corpus_as_unavailable() -> None:
 def test_sealed_replay_rejects_program_v1_artifacts_before_reading_recordings() -> None:
     legacy_artifact: Any = SimpleNamespace(
         schema_version="news_semantic_program_artifact_v1",
-        factory_id="tracefold.news.semantic_program.factory_v1",
     )
     conn = _ExactRunConnection([])
 

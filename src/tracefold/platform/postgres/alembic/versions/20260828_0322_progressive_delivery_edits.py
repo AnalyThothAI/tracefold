@@ -1,15 +1,15 @@
 """Add a durable intent and settlement ledger for in-place delivery edits.
 
-Revision ID: 20260828_0321
-Revises: 20260828_0320
+Revision ID: 20260828_0322
+Revises: 20260828_0321
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260828_0321"
-down_revision = "20260828_0320"
+revision = "20260828_0322"
+down_revision = "20260828_0321"
 branch_labels = None
 depends_on = None
 
@@ -98,4 +98,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260828_0321 owns durable provider edit intent and cannot be downgraded")
+    raise RuntimeError("20260828_0322 owns durable provider edit intent and cannot be downgraded")

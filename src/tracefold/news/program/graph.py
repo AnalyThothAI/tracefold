@@ -44,6 +44,13 @@ from .artifact import (
     render_model_evidence_json,
     validate_program_instruction,
 )
+from .assembly import (
+    decision_for,
+    is_actionable,
+    is_fast_retryable,
+    normalize_restates,
+    restatement_index_error,
+)
 from .contracts import (
     EditorialEnvelope,
     FrozenEventEvidence,
@@ -61,17 +68,17 @@ from .contracts import (
     TriageContext,
     aggregate_program_usage,
 )
+from .identity import EXECUTION_ENVELOPE_SHA256
 from .runtime import (
-    PROGRAM_FACTORY_ID,
-    PROGRAM_LEARNING_EPOCH,
     PROGRAM_PRIMARY_BREAKER_FAILURES,
     PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
     PROGRAM_ROUTE_DEADLINE_SECONDS,
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
-    PredictorName,
 )
 from .signatures import (
+    PREDICTOR_INPUT_FIELDS,
+    PREDICTOR_OUTPUT,
     EventSemantics,
     ReaderCard,
 )
@@ -92,25 +99,15 @@ from .transport import (
     _is_retryable_exception,
 )
 
-# The bounded fields each Predictor is shown, in the fixed order the transport renders them.
-_PREDICTOR_INPUT_FIELDS: dict[PredictorName, tuple[str, ...]] = {
-    "event_semantics": ("evidence_json",),
-    "reader_card": ("evidence_json", "semantics_json"),
-}
-_PREDICTOR_OUTPUT: dict[PredictorName, tuple[str, type[BaseModel]]] = {
-    "event_semantics": ("semantics", EventSemantics),
-    "reader_card": ("card", ReaderCard),
-}
-
 
 def predictor_spec(state: PredictorState) -> PredictorSpec:
     """One Predictor's complete request shape, derived from its ready-to-execute state."""
 
-    output_field, output_model = _PREDICTOR_OUTPUT[state.name]
+    output_field, output_model = PREDICTOR_OUTPUT[state.name]
     return PredictorSpec(
         name=state.name,
         instruction=state.instruction,
-        input_fields=_PREDICTOR_INPUT_FIELDS[state.name],
+        input_fields=PREDICTOR_INPUT_FIELDS[state.name],
         output_field=output_field,
         output_model=output_model,
         max_tokens=state.max_tokens,
@@ -145,23 +142,16 @@ def _assemble(
     *,
     told_count: int,
 ) -> tuple[TriageVerdict, EditorialEnvelope]:
-    if semantics.novelty == "restatement":
-        if semantics.restates < 0 or semantics.restates >= told_count:
-            raise ValueError("news_program_restatement_index_invalid")
-    elif semantics.restates != -1:
-        raise ValueError("news_program_non_restatement_index_invalid")
+    error = restatement_index_error(novelty=semantics.novelty, restates=semantics.restates, told_count=told_count)
+    if error is not None:
+        raise ValueError(error)
     relevance = semantics.relevance
-    actionable = (
-        relevance.tradability in {"direct", "second_order"}
-        and bool(relevance.channels)
-        and bool(relevance.affected_markets)
+    actionable = is_actionable(
+        tradability=relevance.tradability,
+        has_channels=bool(relevance.channels),
+        has_affected_markets=bool(relevance.affected_markets),
     )
-    decision = {
-        "escalate": "escalate",
-        "realtime": "push",
-        "background": "drop",
-        "none": "drop",
-    }[relevance.reader_value]
+    decision = decision_for(relevance.reader_value)
     verdict = TriageVerdict.model_validate(
         {
             "novelty": semantics.novelty,
@@ -184,23 +174,22 @@ def _assemble(
 
 
 def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) -> None:
-    if semantics.novelty == "restatement":
-        if semantics.restates < 0 or semantics.restates >= told_count:
-            raise ValueError("news_program_restatement_index_invalid")
-    elif semantics.restates != -1:
-        raise ValueError("news_program_non_restatement_index_invalid")
+    error = restatement_index_error(novelty=semantics.novelty, restates=semantics.restates, told_count=told_count)
+    if error is not None:
+        raise ValueError(error)
 
 
 def _normalize_semantics(
     semantics: EventSemantics,
 ) -> tuple[EventSemantics, tuple[ProgramNormalizationTrace, ...]]:
-    if semantics.novelty == "restatement" or semantics.restates == -1:
+    normalized_restates = normalize_restates(novelty=semantics.novelty, restates=semantics.restates)
+    if normalized_restates == semantics.restates:
         return semantics, ()
     normalization = ProgramNormalizationTrace(
         field="restates",
         reason="non_restatement_index_ignored",
         input_value=semantics.restates,
-        output_value=-1,
+        output_value=normalized_restates,
     )
     normalized = semantics.model_copy(update={"restates": normalization.output_value})
     return normalized, (normalization,)
@@ -253,9 +242,11 @@ class _CallFailure(Exception):
 
     @property
     def fast_retryable(self) -> bool:
-        return (self.retryable or self.output_failure) and (
-            self.finish_reason or ""
-        ).casefold() not in _TRUNCATED_FINISH_REASONS
+        return is_fast_retryable(
+            retryable=self.retryable,
+            output_failure=self.output_failure,
+            truncated_finish=(self.finish_reason or "").casefold() in _TRUNCATED_FINISH_REASONS,
+        )
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -911,7 +902,7 @@ class NewsSemanticProgram:
             program_version=PROGRAM_VERSION,
             program_sha256=self.artifact.program_sha256,
             context_sha256=context_sha,
-            factory_id=self.artifact.factory_id,
+            envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             event_semantics_sha256=event_semantics_sha256,
             reader_card_sha256=reader_card_sha256,
             verdict_sha256=verdict_sha256,
@@ -955,8 +946,7 @@ class NewsSemanticProgram:
 
 
 __all__ = [
-    "PROGRAM_FACTORY_ID",
-    "PROGRAM_LEARNING_EPOCH",
+    "EXECUTION_ENVELOPE_SHA256",
     "PROGRAM_SCHEMA_VERSION",
     "PROGRAM_VERSION",
     "ChatCompletionsPredictorAdapter",

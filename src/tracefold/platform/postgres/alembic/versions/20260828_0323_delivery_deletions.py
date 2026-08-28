@@ -1,15 +1,15 @@
 """Add an auditable provider-delete intent for confirmed untradeable single-name cards.
 
-Revision ID: 20260828_0322
-Revises: 20260828_0321
+Revision ID: 20260828_0323
+Revises: 20260828_0322
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260828_0322"
-down_revision = "20260828_0321"
+revision = "20260828_0323"
+down_revision = "20260828_0322"
 branch_labels = None
 depends_on = None
 
@@ -103,4 +103,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260828_0322 owns durable provider delete intent and cannot be downgraded")
+    raise RuntimeError("20260828_0323 owns durable provider delete intent and cannot be downgraded")

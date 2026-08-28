@@ -15,6 +15,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.program.transport import ScriptedPredictorAdapter
@@ -698,6 +699,7 @@ def _program_candidate_document() -> CandidateManifest:
     candidate_arm = ArmManifest(
         program_version=PROGRAM_VERSION,
         program_sha256="c" * 64,
+        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
         runtime_model_bindings_sha256="d" * 64,
         retrieval_sha256="e" * 64,
         policy=policy,
@@ -758,8 +760,9 @@ def _wire_startup_test(
         bundle_sha="a" * 64,
         program_version=PROGRAM_VERSION,
         program_sha256="b" * 64,
+        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
     )
-    stable_artifact = SimpleNamespace(program_sha256="b" * 64)
+    stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version="news_program_strategy_artifact_v1")
     stable_program = object()
     progression_verifier = object()
     news = _StartupNewsRepository(

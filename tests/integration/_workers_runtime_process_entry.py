@@ -99,6 +99,10 @@ class _ManifestBarrierPipeline(_TurnPipeline):
                 repositories.news.register_agent_runtime_manifest(
                     manifest_sha=RUNTIME_MANIFEST_BARRIER_SHA,
                     stable_bundle_sha="b" * 64,
+                    envelope_sha256="e" * 64,
+                    artifact_schema_version="news_program_strategy_artifact_v1",
+                    program_version="news_semantic_program_v5",
+                    program_sha256="f" * 64,
                     candidate_shas=(),
                     image_digest="sha256:" + "c" * 64,
                     runtime_revision="git:test-manifest-barrier",

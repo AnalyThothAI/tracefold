@@ -43,7 +43,7 @@ from tracefold.news.program.transport import ChatCompletionsPredictorAdapter
 from .test_news_gepa_core import _episodes as _corpus
 from .test_news_gepa_core import _FakeGepaOptimize, _MeteredFakeReflectionLM, _MeteredTaskAdapter, _NoopJudge
 
-_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v9", "cases": []}
+_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "bundle_00000000", "cases": []}
 
 
 class _StampedJudge(_NoopJudge):
@@ -118,6 +118,7 @@ def _dataset(episodes: tuple[DevelopmentEpisode, ...] | None = None) -> FrozenDe
         development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
         episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in cases]),
         episode_count=len(cases),
+        learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1_787_549_907_739,
         review_rubric_version="news_review_v4",
     )
@@ -308,6 +309,7 @@ def test_a_dataset_ref_that_describes_a_different_projection_fails_closed() -> N
         development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
         episode_projection_root_sha256="b" * 64,
         episode_count=len(episodes),
+        learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1,
         review_rubric_version="news_review_v4",
     )
@@ -333,6 +335,7 @@ def test_a_dataset_ref_naming_an_artifact_it_was_not_built_from_fails_closed() -
         development_dataset_sha256="c" * 64,
         episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in episodes]),
         episode_count=len(episodes),
+        learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1,
         review_rubric_version="news_review_v4",
     )
@@ -355,6 +358,7 @@ def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() ->
         development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
         episode_projection_root_sha256=canonical_sha([case.model_dump(mode="json") for case in episodes]),
         episode_count=len(episodes),
+        learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1,
         review_rubric_version="news_review_v4",
     )
