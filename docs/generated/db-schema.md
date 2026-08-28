@@ -296,6 +296,18 @@
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_market_instrument_listing_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `venue` | `TEXT` | False | `None` |
+| `venue_symbol` | `TEXT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `base_symbol` | `TEXT` | False | `None` |
+| `instrument_class` | `TEXT` | False | `None` |
+| `quote_asset` | `TEXT` | True | `None` |
+| `status` | `TEXT` | False | `None` |
+
 ## `news_market_instruments`
 
 | Column | Type | Nullable | Default |
