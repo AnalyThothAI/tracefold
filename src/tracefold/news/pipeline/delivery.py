@@ -122,6 +122,9 @@ class DelivererConsumer:
             quotes=quotes,
         )
         news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
+        reaction_anchor_at_ms = (
+            int(timing["reaction_anchor_at_ms"]) if timing and timing.get("reaction_anchor_at_ms") is not None else None
+        )
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         presentation = ReaderDeliveryPresentation(
             trade_targets=reader_trade_targets(quotes),
@@ -131,6 +134,7 @@ class DelivererConsumer:
                 reactions,
                 news_at_ms=news_at_ms,
                 now_ms=stamp,
+                reaction_anchor_at_ms=reaction_anchor_at_ms,
             ),
             news_at_ms=news_at_ms,
             observed_at_ms=observed_at_ms,

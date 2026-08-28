@@ -47,6 +47,7 @@ _MAGNITUDE_LABELS = {
 }
 _HEADER_ICON = {"green": "🟢", "red": "🔴", "grey": "⚪"}
 _READER_TIMEZONE = timezone(timedelta(hours=8))
+_NEWSLIQUID_RELAY_HOSTS = frozenset({"news-history.newsliquid.com"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,9 +343,9 @@ def _telegram_message(
     if explanation:
         sections.append(_escape_html(_clip(explanation, 1800)))
 
-    metadata: list[str] = []
+    metadata_groups: list[str] = []
     if facts.assets:
-        metadata.append(
+        metadata_groups.append(
             "🎯 <b>标的</b>\n"
             + "\n".join(
                 _telegram_asset_lines(
@@ -358,19 +359,21 @@ def _telegram_message(
     if facts.direction or facts.magnitude:
         direction = _escape_html(facts.direction or "不明确")
         magnitude = _escape_html(_MAGNITUDE_LABELS.get(facts.magnitude, facts.magnitude or "未知"))
-        metadata.append(f"🧭 <b>方向</b>  {direction}")
-        metadata.append(f"📊 <b>影响程度</b>  {magnitude}")
-    if facts.novelty:
-        metadata.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
+        judgment = [f"🧭 <b>方向</b>  {direction}", f"📊 <b>影响程度</b>  {magnitude}"]
+        if facts.novelty:
+            judgment.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
+        metadata_groups.append("\n".join(judgment))
+    elif facts.novelty:
+        metadata_groups.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
     if facts.origin or source_url:
         source = _telegram_source_html(facts.origin, source_url)
         count = f" · {facts.report_count} 条报道" if facts.report_count is not None else ""
-        metadata.append(f"🔗 <b>来源</b>  {source}{count}")
+        metadata_groups.append(f"🔗 <b>来源</b>  {source}{count}")
     timing = _telegram_timing_html(news_at_ms=news_at_ms, observed_at_ms=observed_at_ms, pushed_at_ms=pushed_at_ms)
     if timing:
-        metadata.append(f"⏱ <b>时间</b>  {timing}")
-    if metadata:
-        sections.append("\n".join(metadata))
+        metadata_groups.append(f"⏱ <b>时间</b>\n{timing}")
+    if metadata_groups:
+        sections.append("\n\n".join(metadata_groups))
 
     message = "\n\n".join(sections).strip()
     if len(_plain_html_text(message)) > _TELEGRAM_TEXT_MAX:
@@ -469,7 +472,7 @@ def _telegram_timing_html(
         processing = f"{processing_seconds} 秒"
     else:
         processing = "暂无"
-    return f"新闻 {news_text or '暂无'}｜处理 {processing}｜推送 {pushed_text}"
+    return f"新闻时间  {news_text or '暂无'}\n处理时长  {processing}\n推送时间  {pushed_text}"
 
 
 def _positive_timestamp(value: object) -> bool:
@@ -512,6 +515,13 @@ def _normalized_source_label(origin: str, source_url: str) -> str:
         "reuters": "路透社",
         "路透": "路透社",
     }
+    if host in _NEWSLIQUID_RELAY_HOSTS:
+        # This is a provider-owned relay, not a publisher. When OpenNews supplies a distinct source it is
+        # provider-attested and can be named; otherwise say what is actually known instead of presenting the
+        # transport domain as a newsroom or guessing a publisher from an opaque article id.
+        if normalized and lowered not in {host, "newsliquid", "opennews"}:
+            return aliases.get(lowered, normalized)
+        return "原始媒体未识别（NewsLiquid 中转）"
     if host in {"jin10.com", "jin10.com.cn"} or host.endswith((".jin10.com", ".jin10.com.cn")):
         return "金十"
     if host == "bloomberg.com" or host.endswith(".bloomberg.com"):

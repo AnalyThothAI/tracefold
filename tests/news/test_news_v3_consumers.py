@@ -1290,7 +1290,11 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
             leader_url="https://www.bloomberg.com/news/articles/example",
             grounded_assets=["BTC", "ETH"],
         ),
-        event_delivery_timing={"news_at_ms": NOW_MS - 20_000, "observed_at_ms": NOW_MS - 8_000},
+        event_delivery_timing={
+            "news_at_ms": NOW_MS - 20_000,
+            "reaction_anchor_at_ms": NOW_MS - 20_000,
+            "observed_at_ms": NOW_MS - 8_000,
+        },
         latest_verdict=lambda *, event_id, stage: {
             "final_decision": "push",
             "verdict": {
@@ -1320,7 +1324,7 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
             ),
             market_movements=(
                 ReaderMarketMovement("BTC", 110, 80, 320, "available"),
-                ReaderMarketMovement("ETH", None, None, 170, "pending"),
+                ReaderMarketMovement("ETH", None, None, 170, "not_due"),
             ),
             news_at_ms=NOW_MS - 20_000,
             observed_at_ms=NOW_MS - 8_000,

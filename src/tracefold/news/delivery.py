@@ -187,11 +187,13 @@ def reader_market_movements(
     *,
     news_at_ms: int | None,
     now_ms: int,
+    reaction_anchor_at_ms: int | None = None,
 ) -> tuple[ReaderMarketMovement, ...]:
     """Honest per-asset reader returns bound to one versioned venue contract.
 
     ``news_at_ms`` is source-display evidence and deliberately does not decide Reaction maturity. The fixed
-    horizon is due from the persisted Reaction anchor, which can be later than an original X post.
+    horizon is due from the persisted Reaction anchor. Before a due row exists, ``reaction_anchor_at_ms`` is
+    the Event-asset anchor contract; it can be later than an original X post.
     """
 
     del news_at_ms
@@ -227,15 +229,16 @@ def reader_market_movements(
         return_1h = reaction.get("return_1h_bps")
         return_1h_bps = int(return_1h) if isinstance(return_1h, int) and not isinstance(return_1h, bool) else None
         anchor_at_ms = reaction.get("anchor_at_ms")
+        readiness_anchor_at_ms = anchor_at_ms if anchor_at_ms is not None else reaction_anchor_at_ms
         if return_1h_bps is not None:
             one_hour_state: Literal["not_due", "pending", "available", "unavailable"] = "available"
         elif reaction.get("state") == "unavailable":
             one_hour_state = "unavailable"
         elif (
-            isinstance(anchor_at_ms, int)
-            and not isinstance(anchor_at_ms, bool)
-            and anchor_at_ms > 0
-            and now_ms < anchor_at_ms + 3_600_000
+            isinstance(readiness_anchor_at_ms, int)
+            and not isinstance(readiness_anchor_at_ms, bool)
+            and readiness_anchor_at_ms > 0
+            and now_ms < readiness_anchor_at_ms + 3_600_000
         ):
             one_hour_state = "not_due"
         else:

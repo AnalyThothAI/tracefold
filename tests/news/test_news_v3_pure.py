@@ -1369,6 +1369,38 @@ def test_reader_market_movements_ignore_unmatched_reaction_rows() -> None:
     ) == (ReaderMarketMovement("BTC", None, None, 320, "pending"),)
 
 
+def test_reader_market_movements_use_event_anchor_before_the_first_reaction_row_exists() -> None:
+    quote = _quote(
+        "CL",
+        "83.34",
+        1.81,
+        requested_symbol="CL",
+        base_symbol="CL",
+        venue="binance.perp",
+        venue_symbol="CLUSDT",
+        quote_asset="USDT",
+    )
+    anchor_at_ms = 1_800_000_000_000
+
+    assert reader_market_movements(
+        ["CL"],
+        [quote],
+        [],
+        news_at_ms=anchor_at_ms,
+        now_ms=anchor_at_ms + 11_000,
+        reaction_anchor_at_ms=anchor_at_ms,
+    ) == (ReaderMarketMovement("CL", None, None, 181, "not_due"),)
+
+    assert reader_market_movements(
+        ["CL"],
+        [quote],
+        [],
+        news_at_ms=anchor_at_ms,
+        now_ms=anchor_at_ms + 3_600_001,
+        reaction_anchor_at_ms=anchor_at_ms,
+    ) == (ReaderMarketMovement("CL", None, None, 181, "pending"),)
+
+
 def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_changing_the_card() -> None:
     perpetual_quote = _quote(
         "LRCX",

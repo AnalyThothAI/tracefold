@@ -1456,6 +1456,7 @@ def test_delivery_timing_uses_original_tweet_time_and_first_local_observation(co
 
     assert repos.news.event_delivery_timing(admitted.event_id) == {
         "news_at_ms": 1_787_073_026_483,
+        "reaction_anchor_at_ms": int(event.entry.published_at_ms or 0),
         "observed_at_ms": observed_at_ms,
     }
     conn.commit()

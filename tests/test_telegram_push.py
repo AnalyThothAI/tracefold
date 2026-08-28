@@ -67,7 +67,7 @@ def _card(*, source_url: str = "https://www.coindesk.com/news/1") -> dict[str, o
 def _without_timing(value: object) -> str:
     """Keep layout assertions deterministic; timing has its own fixed-clock contract tests below."""
 
-    return str(value).rsplit("\n⏱ <b>时间</b>", maxsplit=1)[0]
+    return str(value).rsplit("\n⏱ <b>时间</b>", maxsplit=1)[0].rstrip()
 
 
 def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() -> None:
@@ -106,10 +106,10 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>\n"
-        "BTC 新闻后 待计算，1h 待到期，24h +7.91%\n"
+        "BTC 新闻后 待计算，1h 待到期，24h +7.91%\n\n"
         "🧭 <b>方向</b>  利多\n"
         "📊 <b>影响程度</b>  明显\n"
-        "🆕 <b>进展</b>  新进展\n"
+        "🆕 <b>进展</b>  新进展\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
     assert observed["parse_mode"] == "HTML"
@@ -170,10 +170,10 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>\n"
         "BTC-USDT 新闻后 待计算，1h 待到期，24h 暂无\n"
-        f"{ticker} 新闻后 待计算，1h 待到期，24h +7.91%\n"
+        f"{ticker} 新闻后 待计算，1h 待到期，24h +7.91%\n\n"
         "🧭 <b>方向</b>  利多\n"
         "📊 <b>影响程度</b>  明显\n"
-        "🆕 <b>进展</b>  新进展\n"
+        "🆕 <b>进展</b>  新进展\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
 
@@ -249,9 +249,9 @@ def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
         "资金从 BTC 轮动至 ETH\n\n"
         "🎯 <b>标的</b>\n"
         f"{btc} 新闻后 +1.10%，1h +0.80%，24h +3.20%\n"
-        f"{eth} 新闻后 -0.40%，1h 待到期，24h +1.70%\n"
+        f"{eth} 新闻后 -0.40%，1h 待到期，24h +1.70%\n\n"
         "🧭 <b>方向</b>  利空\n"
-        "📊 <b>影响程度</b>  重大\n"
+        "📊 <b>影响程度</b>  重大\n\n"
         '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>'
     )
     assert "reply_markup" not in observed
@@ -290,8 +290,11 @@ def test_sender_shows_second_level_news_processing_and_push_times() -> None:
     )
 
     assert str(observed["text"]).endswith(
-        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>\n'
-        "⏱ <b>时间</b>  新闻 2026-08-28 14:32:05｜处理 8 秒｜推送 2026-08-28 14:32:13"
+        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>\n\n'
+        "⏱ <b>时间</b>\n"
+        "新闻时间  2026-08-28 14:32:05\n"
+        "处理时长  8 秒\n"
+        "推送时间  2026-08-28 14:32:13"
     )
 
 
@@ -317,7 +320,9 @@ def test_sender_keeps_known_push_time_when_news_time_is_missing() -> None:
     sender.prepare()
     sender.send_card(_card(), presentation=ReaderDeliveryPresentation())
 
-    assert str(observed["text"]).endswith("⏱ <b>时间</b>  新闻 暂无｜处理 暂无｜推送 2026-08-28 14:32:13")
+    assert str(observed["text"]).endswith(
+        "⏱ <b>时间</b>\n新闻时间  暂无\n处理时长  暂无\n推送时间  2026-08-28 14:32:13"
+    )
 
 
 def test_sender_uses_source_url_host_when_card_origin_is_missing() -> None:
@@ -356,6 +361,17 @@ def test_sender_uses_source_url_host_when_card_origin_is_missing() -> None:
         ("jin10", "https://jin10.com.evil.test/story", "jin10.com.evil.test"),
         ("Bloomberg", "https://bloomberg.com.evil.test/story", "bloomberg.com.evil.test"),
         ("Reuters", "https://reuters.com.evil.test/story", "reuters.com.evil.test"),
+        (
+            "news-history.newsliquid.com",
+            "https://news-history.newsliquid.com/b/nL1N44P00N",
+            "原始媒体未识别（NewsLiquid 中转）",
+        ),
+        ("Reuters", "https://news-history.newsliquid.com/b/nL1N44P00N", "路透社"),
+        (
+            "Reuters",
+            "https://news-history.newsliquid.com.evil.test/b/nL1N44P00N",
+            "news-history.newsliquid.com.evil.test",
+        ),
     ],
 )
 def test_sender_normalizes_only_proven_source_domains(origin: str, source_url: str, label: str) -> None:
@@ -481,9 +497,9 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
         "🔴 <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
         "🎯 <b>标的</b>\n"
-        "A&amp;B 新闻后 待计算，1h 待到期，24h 暂无\n"
+        "A&amp;B 新闻后 待计算，1h 待到期，24h 暂无\n\n"
         "🧭 <b>方向</b>  利空\n"
-        "📊 <b>影响程度</b>  明显\n"
+        "📊 <b>影响程度</b>  明显\n\n"
         "🔗 <b>来源</b>  路透社"
     )
 
@@ -518,7 +534,7 @@ def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -
         "⚪ <b>交易所恢复提现</b>\n\n"
         "🎯 <b>标的</b>\n"
         "BTC 新闻后 待计算，1h 待到期，24h 暂无\n"
-        "ETH 新闻后 待计算，1h 待到期，24h 暂无\n"
+        "ETH 新闻后 待计算，1h 待到期，24h 暂无\n\n"
         "🔗 <b>来源</b>  opennews"
     )
 
@@ -692,7 +708,7 @@ def test_sender_keeps_an_unsafe_source_destination_as_plain_text(source_url: str
 
     assert "reply_markup" not in observed
     assert "<a href=" not in str(observed["text"])
-    assert "🔗 <b>来源</b>  CoinDesk · 2 条报道\n⏱ <b>时间</b>" in str(observed["text"])
+    assert "🔗 <b>来源</b>  CoinDesk · 2 条报道\n\n⏱ <b>时间</b>" in str(observed["text"])
 
 
 @pytest.mark.parametrize(
