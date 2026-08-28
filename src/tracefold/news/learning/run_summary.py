@@ -282,7 +282,7 @@ def _metric_check(*, baseline: Mapping[str, Any] | None, optimization: Mapping[s
         _sha_or_none(_without_judge_ceiling(standalone_receipt)),
         _sha_or_none(_without_judge_ceiling(gepa_receipt)),
         note=(
-            "tracefold.news.compile_metric_receipt.v3 excluding semantic_judge.execution.max_model_calls, "
+            "tracefold.news.compile_metric_receipt.v4 excluding semantic_judge.execution.max_model_calls, "
             "which bounds spend and cannot change what better means"
         ),
     )

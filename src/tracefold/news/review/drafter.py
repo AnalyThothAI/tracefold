@@ -36,6 +36,41 @@ from ..program.contracts import (
     TradeTradability,
 )
 
+
+def build_drafter_lm(
+    *,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    model_kwargs: Mapping[str, Any],
+    timeout: float = 120.0,
+    max_tokens: int = 4_096,
+) -> dspy.LM:
+    """The drafting endpoint. `model_kwargs` comes from the app's provider resolution.
+
+    Passing it matters: for `deepseek-v4-*` it carries `extra_body.thinking = disabled`, and this gateway
+    enables thinking by default. Without it the model spends its whole output budget reasoning and returns an
+    empty answer — which is what made every early draft fail to parse. Raising `max_tokens` only hid that.
+
+    It lives here rather than in `learning/baseline.py`, where it used to sit beside the metric judge's
+    binding: #306 Phase 3 moved the Program and the whole optimization chain off DSPy, and the drafter is
+    now the reason DSPy is still a dependency at all. Keeping its binding in a module that no longer
+    imports the framework would have put the last DSPy import back where the architecture test forbids it.
+    """
+
+    return dspy.LM(
+        str(model_name),
+        api_key=str(api_key),
+        api_base=str(api_base),
+        timeout=float(timeout),
+        max_tokens=int(max_tokens),
+        temperature=0,
+        cache=False,
+        num_retries=0,
+        **dict(model_kwargs),
+    )
+
+
 DRAFTER_ID = "tracefold.news.review_drafter_v2"
 # `Final` is what makes mypy infer the literal type rather than `str`, which is what the
 # `Literal[...]` field below needs as its default.
@@ -322,5 +357,6 @@ __all__ = [
     "ReviewDraftBatch",
     "ReviewDrafter",
     "build_draft_batch",
+    "build_drafter_lm",
     "submission_payload",
 ]

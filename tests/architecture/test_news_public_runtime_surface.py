@@ -153,9 +153,15 @@ def test_news_value_families_do_not_depend_on_io_or_runtime_owners() -> None:
 
 
 def test_dspy_is_confined_to_model_implementation_families() -> None:
+    """#306 Phase 3 removed `news/program` and `news/learning` from this list.
+
+    The Program owns its transport (`program/transport.py`), and the optimizer calls `gepa.optimize`
+    through an adapter this repository writes, so neither family imports DSPy at all any more. What is
+    left is the issue's own follow-on list: the review drafter and the Trading decision Program, both of
+    which are ordinary public-API users with no private-surface dependency.
+    """
+
     allowed_roots = (
-        NEWS_ROOT / "program",
-        NEWS_ROOT / "learning",
         # #202 §4.3. The review plane acquires human truth; the drafter is the one thing in it that asks a
         # model first, so a person has a rubric to accept or rewrite rather than a blank form. The companion
         # test below keeps that to the one module — a ReviewDesk that could call a model would be a desk
@@ -170,6 +176,28 @@ def test_dspy_is_confined_to_model_implementation_families() -> None:
         if "dspy" in _imported_roots(path) and not any(root in path.parents for root in allowed_roots)
     ]
     assert offenders == []
+
+
+def test_the_news_program_and_its_optimizer_import_no_model_framework() -> None:
+    """The positive half of #306 Phase 3, stated where the boundary lives.
+
+    The test above would still pass if `news/program` grew a DSPy import back and someone widened the
+    allow-list; this one says what the Issue actually bought, and it fails on the widening.
+    """
+
+    for family in (NEWS_ROOT / "program", NEWS_ROOT / "learning"):
+        offenders = sorted(
+            str(path.relative_to(ROOT)) for path in family.rglob("*.py") if "dspy" in _imported_roots(path)
+        )
+        assert offenders == []
+
+    # And the one thing that may reach gepa-core is the optimizer, which is where the adapter lives.
+    gepa_users = sorted(
+        str(path.relative_to(ROOT))
+        for path in SRC.rglob("*.py")
+        if "gepa" in _imported_roots(path) or "gepa" in {module.split(".")[0] for module in _imported_modules(path)}
+    )
+    assert gepa_users == ["src/tracefold/news/learning/optimizer.py"]
 
 
 def test_only_the_drafter_may_call_a_model_inside_the_review_plane() -> None:

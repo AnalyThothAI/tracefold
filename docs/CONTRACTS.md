@@ -146,7 +146,7 @@ and Compose does not start Nautilus. The accepted keys are only:
 
 - `enabled`;
 - `candidates.*`: source age, counterpart lookbacks, cooldown, OI rank/value,
-  and daily DSPy budget;
+  and daily decision-model budget;
 - `regime.*`: the frozen OI/price measurement band;
 - `policy.min_whale_long_profit_bps`;
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
@@ -600,13 +600,13 @@ second editable truth, and they contain no identity hash and no demo section.
 Loading fails closed on an unknown hash/version/factory, non-canonical or
 duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
 name that is not its own root, or unsafe or secret-bearing state.
-The optimizer can emit only a typed patch carrying the two advisory
-instructions; there is no DemoBank to write to, and a demo on a Predictor is
-refused. The trusted side reconstructs the final Artifact from the exact
-active stable root. Pickle, cloudpickle,
-DSPy Flex state, dynamic Python/classes,
-endpoints and credentials are not artifact formats. DSPy cache and hidden
-provider retries are disabled; every provider attempt must appear in the trace.
+The optimizer can emit only a typed patch carrying the two Predictor
+instructions; there is no DemoBank to write to. The trusted side reconstructs
+the final Artifact from the exact active stable root. Pickle, cloudpickle,
+dynamic Python/classes, endpoints and credentials are not artifact formats.
+One `invoke` is one HTTP request with no client cache, no client retry and no
+second call on a parse failure, so every provider attempt appears in the trace
+by construction.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
 audit-only.
@@ -1025,8 +1025,7 @@ publishes seven scored checks (`headline_language`, `headline_length`,
 `why_single_sentence`, `no_emoji`) and its two gates in the metric receipt under
 `card_lint`, tables included. Reports expose each component's effective
 denominator, effective weight mass, gold coverage and field count. The score is
-identical with or without DSPy's `pred_name`; that argument filters feedback
-only. EventSemantics receives relevance, semantics, novelty and its owned action
+identical with or without `pred_name`; that argument filters feedback only. EventSemantics receives relevance, semantics, novelty and its owned action
 feedback; ReaderCard receives headline/why/factual feedback and action feedback
 only for a headline-caused duplicate. Reviewer correction prose reaches a
 Predictor only when it has an owned failed dimension; it is not broadcast
@@ -1060,9 +1059,10 @@ addresses the timings separately. `identity.case_root_sha256` answers "the same
 cases?" and `identity.corpus_sha256` answers "the same inputs?" — hashing ids
 alone let one address describe two corpora, because any evidence edit that kept
 the ids left the receipt untouched.
-`compile_live` reports wall clock only, because in that mode `dspy.Evaluate`
-owns the program call and per-case provider timing is not observable. Neither
-receipt contains a credential or an endpoint URL.
+Both live modes report the same route and latency facts, because since #306
+Phase 3 both execute the same graph; what separates them is what was bound to it,
+and `execution_scope` is where the report says so. Neither receipt contains a
+credential or an endpoint URL.
 
 Policy is frozen into each scored example rather than read from process-global
 state: `policy_metric` carries the exact `policy_values` and `policy_sha256` of

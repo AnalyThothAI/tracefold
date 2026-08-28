@@ -13,7 +13,6 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import dspy
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -41,8 +40,17 @@ from tracefold.news.program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
-from tracefold.news.program.dspy_adapter import (
-    DspyPredictorAdapter,
+from tracefold.news.program.graph import (
+    NewsSemanticProgram,
+)
+from tracefold.news.program.runtime import PROGRAM_PREDICTOR_MAX_TOKENS
+from tracefold.news.program.seed import seed_instruction
+from tracefold.news.program.signatures import (
+    EventSemantics,
+    ReaderCard,
+)
+from tracefold.news.program.transport import (
+    ChatCompletionsPredictorAdapter,
     PredictorAdapterError,
     PredictorRequest,
     PredictorResponse,
@@ -50,16 +58,6 @@ from tracefold.news.program.dspy_adapter import (
     RecordReplayPredictorAdapter,
     RuntimeModelIdentity,
     ScriptedPredictorAdapter,
-)
-from tracefold.news.program.graph import (
-    DspyCompileProgram,
-    DspyNewsSemanticProgram,
-    extract_optimizer_patch,
-)
-from tracefold.news.program.seed import seed_instruction
-from tracefold.news.program.signatures import (
-    EventSemantics,
-    ReaderCard,
 )
 from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
@@ -146,8 +144,8 @@ def _program(
     *,
     fallback: ScriptedPredictorAdapter | None = None,
     artifact: ProgramStrategyArtifactV1 | None = None,
-) -> DspyNewsSemanticProgram:
-    return DspyNewsSemanticProgram(
+) -> NewsSemanticProgram:
+    return NewsSemanticProgram(
         artifact or load_stable_program_artifact(),
         primary_adapter=primary,
         fallback_adapter=fallback,
@@ -906,7 +904,7 @@ def test_record_replay_uses_full_request_identity_and_real_assembler() -> None:
     }
     replay = RecordReplayPredictorAdapter(recordings)
     repeated = asyncio.run(
-        DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=replay).judge(_context())
+        NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=replay).judge(_context())
     )
     assert repeated.verdict == original.verdict
     assert repeated.answering_model == "resolved-replay-card"
@@ -914,9 +912,9 @@ def test_record_replay_uses_full_request_identity_and_real_assembler() -> None:
 
     with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
-            DspyNewsSemanticProgram(
-                load_stable_program_artifact(), primary_adapter=RecordReplayPredictorAdapter({})
-            ).judge(_context())
+            NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=RecordReplayPredictorAdapter({})).judge(
+                _context()
+            )
         )
     assert caught.value.code == "news_program_recording_missing"
 
@@ -958,31 +956,6 @@ def test_transport_failure_opens_only_instance_local_primary_breaker(monkeypatch
     assert isolated.trace.answering_route == "primary"
 
 
-@pytest.mark.parametrize(
-    "error_type",
-    [
-        dspy.LMTransportError,
-        dspy.LMServerError,
-        dspy.LMTimeoutError,
-        dspy.LMRateLimitError,
-    ],
-)
-def test_dspy_transient_lm_errors_are_retryable(error_type: type[Exception]) -> None:
-    assert semantic_program_module._is_retryable_exception(error_type("provider failed")) is True
-
-
-@pytest.mark.parametrize(
-    "error_type",
-    [
-        dspy.LMAuthError,
-        dspy.LMInvalidRequestError,
-        dspy.ContextWindowExceededError,
-    ],
-)
-def test_dspy_permanent_lm_errors_are_not_retryable(error_type: type[Exception]) -> None:
-    assert semantic_program_module._is_retryable_exception(error_type(message="request rejected")) is False
-
-
 def test_usage_distinguishes_synthetic_trace_entries_from_provider_attempts() -> None:
     class UnresolvedIdentityAdapter:
         def runtime_identity(self, model_binding: str) -> Any:
@@ -994,7 +967,7 @@ def test_usage_distinguishes_synthetic_trace_entries_from_provider_attempts() ->
             raise AssertionError("invoke must not run")
 
     judgment = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             load_stable_program_artifact(),
             primary_adapter=UnresolvedIdentityAdapter(),
             fallback_adapter=ScriptedPredictorAdapter([_semantics(), _card()]),
@@ -1022,7 +995,7 @@ def test_transport_error_trace_has_elapsed_time_without_forged_provider_metadata
 
     with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
-            DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=SlowTransportAdapter()).judge(
+            NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=SlowTransportAdapter()).judge(
                 _context()
             )
         )
@@ -1040,7 +1013,7 @@ def test_per_predictor_adapter_bindings_are_explicit() -> None:
     semantics_adapter = ScriptedPredictorAdapter([_semantics()], model_name="semantic-only")
     reader_adapter = ScriptedPredictorAdapter([_card()], model_name="reader-only")
     judgment = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             load_stable_program_artifact(),
             primary_adapter={
                 "event_semantics.primary": semantics_adapter,
@@ -1064,7 +1037,7 @@ def test_route_deadline_is_shared_and_audited(monkeypatch: pytest.MonkeyPatch) -
 
     artifact = _execution(monkeypatch, route_deadline_seconds=0.05)
     with pytest.raises(SemanticJudgeError) as caught:
-        asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=SlowAdapter()).judge(_context()))
+        asyncio.run(NewsSemanticProgram(artifact, primary_adapter=SlowAdapter()).judge(_context()))
     assert caught.value.code == "news_program_route_deadline"
     assert caught.value.retryable is True
     assert caught.value.attempts == 1
@@ -1086,7 +1059,7 @@ def test_reader_card_deadline_is_attributed_to_reader_predictor(monkeypatch: pyt
     artifact = _execution(monkeypatch, route_deadline_seconds=0.05)
     with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
-            DspyNewsSemanticProgram(
+            NewsSemanticProgram(
                 artifact,
                 primary_adapter={
                     "event_semantics.primary": ScriptedPredictorAdapter([_semantics()]),
@@ -1103,164 +1076,18 @@ def test_reader_card_deadline_is_attributed_to_reader_predictor(monkeypatch: pyt
     assert caught.value.partial_trace.calls[-1].latency_ms >= 25
 
 
-def test_runtime_lm_factory_rejects_retry_or_cache_override() -> None:
+def test_runtime_adapter_refuses_kwargs_it_owns() -> None:
+    """The transport composes the request body, so a caller may not overwrite the fields it composes."""
+
     with pytest.raises(ValueError, match="runtime_model_kwargs_owned"):
-        DspyPredictorAdapter.from_runtime(
+        ChatCompletionsPredictorAdapter.from_runtime(
             model_name="openai/test",
             api_key="secret",
             api_base="https://provider.invalid/v1",
             timeout=5,
             max_tokens=100,
-            model_kwargs={"cache": True},
+            model_kwargs={"temperature": 0.9},
         )
-
-
-def test_dspy_adapter_fails_closed_without_an_exact_provider_response() -> None:
-    class FakePrediction:
-        def toDict(self) -> dict[str, Any]:
-            return _semantics()
-
-        def get_lm_usage(self) -> dict[str, dict[str, Any]]:
-            return {
-                "openai/test": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 4,
-                    "total_tokens": 14,
-                    "prompt_tokens_details": {"cached_tokens": 3},
-                    "response_cost": 0.000012,
-                }
-            }
-
-    class FakePredictor:
-        async def acall(self, **inputs: Any) -> FakePrediction:
-            assert inputs == {"evidence_json": "{}"}
-            return FakePrediction()
-
-    adapter = DspyPredictorAdapter.from_runtime(
-        model_name="openai/test",
-        api_key="secret",
-        api_base="https://provider.invalid/v1",
-        timeout=5,
-        max_tokens=100,
-    )
-    runtime = adapter.runtime_identity("event_semantics.primary")
-    request = PredictorRequest(
-        program_version="test",
-        program_sha256="a" * 64,
-        context_sha256="b" * 64,
-        predictor="event_semantics",
-        route="primary",
-        attempt=1,
-        model_binding="event_semantics.primary",
-        runtime_provider=runtime.provider,
-        runtime_model=runtime.model,
-        runtime_model_sha256=runtime.model_sha256,
-        runtime_binding_sha256=runtime.binding_sha256,
-        inputs={"evidence_json": "{}"},
-    )
-    with pytest.raises(PredictorAdapterError, match="provider_metadata_unavailable"):
-        asyncio.run(adapter.invoke(request, FakePredictor()))  # type: ignore[arg-type]
-
-
-def test_dspy_adapter_observes_each_exact_33_provider_response_under_concurrency() -> None:
-    """Provider metadata belongs to the in-flight call, never shared ``LM.history[-1]``."""
-
-    from litellm import ModelResponse
-
-    class FakePrediction:
-        def __init__(self, marker: str) -> None:
-            self._marker = marker
-
-        def toDict(self) -> dict[str, Any]:
-            return _semantics(event_type=self._marker)
-
-        def get_lm_usage(self) -> dict[str, Any]:
-            # DSPy usage aggregation intentionally omits finish reason and cost.
-            return {}
-
-    class FakePredictor:
-        async def acall(self, **inputs: Any) -> FakePrediction:
-            marker = str(inputs["evidence_json"])
-            await dspy.settings.lm.acall(messages=[{"role": "user", "content": marker}])
-            return FakePrediction(marker)
-
-    adapter = DspyPredictorAdapter.from_runtime(
-        model_name="openai/test",
-        api_key="secret",
-        api_base="https://provider.invalid/v1",
-        timeout=5,
-        max_tokens=100,
-    )
-
-    async def fake_aforward(*, prompt: Any = None, messages: Any = None, **kwargs: Any) -> ModelResponse:
-        del prompt, kwargs
-        marker = str(messages[0]["content"])
-        if marker == "slow":
-            await asyncio.sleep(0.02)
-        tokens = 11 if marker == "slow" else 23
-        response = ModelResponse(
-            model=f"resolved-{marker}",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "{}"},
-                    "finish_reason": "length" if marker == "slow" else "stop",
-                }
-            ],
-            usage={
-                "prompt_tokens": tokens,
-                "completion_tokens": 5,
-                "total_tokens": tokens + 5,
-                "prompt_tokens_details": {"cached_tokens": tokens - 10},
-            },
-        )
-        response._hidden_params["response_cost"] = tokens / 1_000_000
-        return response
-
-    adapter._lm.aforward = fake_aforward  # type: ignore[method-assign]
-
-    def request(marker: str) -> PredictorRequest:
-        return PredictorRequest(
-            program_version="test",
-            program_sha256="a" * 64,
-            context_sha256=canonical_sha(marker),
-            predictor="event_semantics",
-            route="primary",
-            attempt=1,
-            model_binding="event_semantics.primary",
-            runtime_provider="openai",
-            runtime_model="openai/test",
-            runtime_model_sha256=canonical_sha({"provider": "openai", "model": "openai/test"}),
-            runtime_binding_sha256=canonical_sha(
-                {
-                    "provider": "openai",
-                    "model": "openai/test",
-                    "model_sha256": canonical_sha({"provider": "openai", "model": "openai/test"}),
-                }
-            ),
-            inputs={"evidence_json": marker},
-        )
-
-    async def run() -> tuple[PredictorResponse, PredictorResponse]:
-        slow, fast = await asyncio.gather(
-            adapter.invoke(request("slow"), FakePredictor()),  # type: ignore[arg-type]
-            adapter.invoke(request("fast"), FakePredictor()),  # type: ignore[arg-type]
-        )
-        return slow, fast
-
-    slow, fast = asyncio.run(run())
-    assert (slow.finish_reason, slow.input_tokens, slow.cached_tokens, slow.provider_cost_microusd) == (
-        "length",
-        11,
-        1,
-        11,
-    )
-    assert (fast.finish_reason, fast.input_tokens, fast.cached_tokens, fast.provider_cost_microusd) == (
-        "stop",
-        23,
-        13,
-        23,
-    )
 
 
 def test_request_and_strict_replay_are_bound_to_one_runtime_model_identity() -> None:
@@ -1320,269 +1147,6 @@ def test_request_and_strict_replay_are_bound_to_one_runtime_model_identity() -> 
                 }
             }
         )
-
-
-def test_real_dspy_33_finish_reason_classifies_parse_failure_as_truncation() -> None:
-    from dspy.utils.exceptions import AdapterParseError
-    from litellm import ModelResponse
-
-    class TruncatedPredictor:
-        async def acall(self, **inputs: Any) -> Any:
-            del inputs
-            await dspy.settings.lm.acall(messages=[{"role": "user", "content": "truncated"}])
-            partial = _semantics()
-            partial.pop("novelty")
-            raise AdapterParseError(
-                "DspyStrictJSONAdapter",
-                dspy.Signature("evidence_json -> semantics"),
-                '{"semantics":',
-                parsed_result={"semantics": partial},  # type: ignore[arg-type]
-            )
-
-    adapter = DspyPredictorAdapter.from_runtime(
-        model_name="openai/test",
-        api_key="secret",
-        api_base="https://provider.invalid/v1",
-        timeout=5,
-        max_tokens=100,
-    )
-
-    async def fake_aforward(*, prompt: Any = None, messages: Any = None, **kwargs: Any) -> ModelResponse:
-        del prompt, messages, kwargs
-        response = ModelResponse(
-            model="resolved-test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": '{"semantics":'},
-                    "finish_reason": "length",
-                }
-            ],
-            usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
-        )
-        response._hidden_params["response_cost"] = 0.00001
-        return response
-
-    adapter._lm.aforward = fake_aforward  # type: ignore[method-assign]
-    runtime = adapter.runtime_identity("event_semantics.primary")
-    request = PredictorRequest(
-        program_version="test",
-        program_sha256="a" * 64,
-        context_sha256="b" * 64,
-        predictor="event_semantics",
-        route="primary",
-        attempt=1,
-        model_binding="event_semantics.primary",
-        runtime_provider=runtime.provider,
-        runtime_model=runtime.model,
-        runtime_model_sha256=runtime.model_sha256,
-        runtime_binding_sha256=runtime.binding_sha256,
-        inputs={"evidence_json": "{}"},
-    )
-    with pytest.raises(PredictorAdapterError) as caught:
-        asyncio.run(adapter.invoke(request, TruncatedPredictor()))  # type: ignore[arg-type]
-    assert caught.value.code == "news_program_output_truncated"
-    assert caught.value.finish_reason == "length"
-    observation = caught.value.provider_observation
-    assert isinstance(observation, ProviderCallObservation)
-    assert (observation.input_tokens, observation.output_tokens, observation.total_tokens) == (7, 3, 10)
-    assert observation.provider_cost_microusd == 10
-    assert observation.finish_reason == "length"
-    assert caught.value.partial_output is not None
-    assert adapter._lm.history == []
-
-    reader = ScriptedPredictorAdapter([_card()])
-    program = DspyNewsSemanticProgram(
-        load_stable_program_artifact(),
-        primary_adapter={
-            "event_semantics.primary": adapter,
-            "reader_card.primary": reader,
-        },
-    )
-    program.event_semantics = TruncatedPredictor()  # type: ignore[assignment]
-    with pytest.raises(SemanticJudgeError) as program_error:
-        asyncio.run(program.judge(_context()))
-    assert program_error.value.attempts == 1
-    assert program_error.value.code == "news_program_output_truncated"
-    assert program_error.value.partial_trace is not None
-    assert program_error.value.partial_trace.novelty_defaulted is False
-    assert reader.requests == []
-
-
-@pytest.mark.parametrize(("finish_reason", "expected_attempts"), [("stop", 2), ("length", 1)])
-def test_real_dspy_parse_failure_trace_keeps_exact_usage_and_truncation_does_not_retry(
-    finish_reason: str,
-    expected_attempts: int,
-) -> None:
-    from litellm import ModelResponse
-
-    adapter = DspyPredictorAdapter.from_runtime(
-        model_name="openai/test",
-        api_key="secret",
-        api_base="https://provider.invalid/v1",
-        timeout=5,
-        max_tokens=100,
-    )
-
-    async def fake_aforward(*, prompt: Any = None, messages: Any = None, **kwargs: Any) -> ModelResponse:
-        del prompt, messages, kwargs
-        await asyncio.sleep(0.002)
-        response = ModelResponse(
-            model="resolved-parse-test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "{}"},
-                    "finish_reason": finish_reason,
-                }
-            ],
-            usage={"prompt_tokens": 13, "completion_tokens": 2, "total_tokens": 15},
-        )
-        response._hidden_params["response_cost"] = 0.000012
-        return response
-
-    adapter._lm.aforward = fake_aforward  # type: ignore[method-assign]
-    program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=adapter)
-
-    with pytest.raises(SemanticJudgeError) as caught:
-        asyncio.run(program.judge(_context()))
-
-    assert caught.value.attempts == expected_attempts
-    assert caught.value.partial_trace is not None
-    assert len(caught.value.partial_trace.calls) == expected_attempts
-    for call in caught.value.partial_trace.calls:
-        assert call.provider == "openai"
-        assert call.model == "resolved-parse-test"
-        assert call.model_sha256 == canonical_sha({"provider": "openai", "model": "resolved-parse-test"})
-        assert call.latency_ms > 0
-        assert (call.input_tokens, call.output_tokens, call.total_tokens) == (13, 2, 15)
-        assert call.provider_cost_microusd == 12
-        assert call.finish_reason == finish_reason
-    assert adapter._lm.history == []
-
-
-def test_real_adapter_partial_semantics_defaults_novelty_only_after_retry_is_exhausted() -> None:
-    from dspy.utils.exceptions import AdapterParseError
-    from litellm import ModelResponse
-
-    class PartialSemanticsPredictor:
-        async def acall(self, **inputs: Any) -> Any:
-            del inputs
-            await dspy.settings.lm.acall(messages=[{"role": "user", "content": "partial"}])
-            partial = _semantics()
-            partial.pop("novelty")
-            raise AdapterParseError(
-                "DspyStrictJSONAdapter",
-                dspy.Signature("evidence_json -> semantics"),
-                "safe partial result",
-                parsed_result={"semantics": partial},  # type: ignore[arg-type]
-            )
-
-    adapter = DspyPredictorAdapter.from_runtime(
-        model_name="openai/test",
-        api_key="secret",
-        api_base="https://provider.invalid/v1",
-        timeout=5,
-        max_tokens=100,
-    )
-
-    async def fake_aforward(*, prompt: Any = None, messages: Any = None, **kwargs: Any) -> ModelResponse:
-        del prompt, messages, kwargs
-        response = ModelResponse(
-            model="resolved-partial-test",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "{}"},
-                    "finish_reason": "stop",
-                }
-            ],
-            usage={"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10},
-        )
-        response._hidden_params["response_cost"] = 0.000007
-        return response
-
-    adapter._lm.aforward = fake_aforward  # type: ignore[method-assign]
-    reader = ScriptedPredictorAdapter([_card()])
-    program = DspyNewsSemanticProgram(
-        load_stable_program_artifact(),
-        primary_adapter={
-            "event_semantics.primary": adapter,
-            "reader_card.primary": reader,
-        },
-    )
-    program.event_semantics = PartialSemanticsPredictor()  # type: ignore[assignment]
-
-    judgment = asyncio.run(program.judge(_context()))
-
-    assert judgment.verdict.novelty == "new_fact"
-    assert judgment.verdict.restates == -1
-    assert judgment.trace.novelty_defaulted is True
-    assert judgment.usage.call_count == 3
-    assert judgment.usage.provider_cost_microusd is None
-    assert [call.error_code for call in judgment.trace.calls[:2]] == [
-        "news_program_dspy_output_adapterparseerror",
-        "news_program_novelty_defaulted",
-    ]
-    assert all(call.provider_cost_microusd == 7 for call in judgment.trace.calls[:2])
-    assert adapter._lm.history == []
-
-
-def test_real_dspy_33_predict_path_returns_exact_response_metadata() -> None:
-    from litellm import ModelResponse
-
-    class Signature(dspy.Signature):
-        evidence_json: str = dspy.InputField()
-        semantics: dict[str, Any] = dspy.OutputField()
-
-    adapter = DspyPredictorAdapter.from_runtime(
-        model_name="openai/configured-alias",
-        api_key="secret",
-        api_base="https://provider.invalid/v1",
-        timeout=5,
-        max_tokens=100,
-    )
-
-    async def fake_aforward(*, prompt: Any = None, messages: Any = None, **kwargs: Any) -> ModelResponse:
-        del prompt, messages
-        assert kwargs["response_format"] == {"type": "json_object"}
-        response = ModelResponse(
-            model="resolved-model-2026-08-22",
-            choices=[
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": json.dumps({"semantics": {"ok": True}})},
-                    "finish_reason": "stop",
-                }
-            ],
-            usage={"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
-        )
-        response._hidden_params["response_cost"] = 0.000009
-        return response
-
-    adapter._lm.aforward = fake_aforward  # type: ignore[method-assign]
-    runtime = adapter.runtime_identity("event_semantics.primary")
-    request = PredictorRequest(
-        program_version="test",
-        program_sha256="a" * 64,
-        context_sha256="b" * 64,
-        predictor="event_semantics",
-        route="primary",
-        attempt=1,
-        model_binding="event_semantics.primary",
-        runtime_provider=runtime.provider,
-        runtime_model=runtime.model,
-        runtime_model_sha256=runtime.model_sha256,
-        runtime_binding_sha256=runtime.binding_sha256,
-        inputs={"evidence_json": "{}"},
-    )
-
-    response = asyncio.run(adapter.invoke(request, dspy.Predict(Signature)))
-    assert response.output == {"semantics": {"ok": True}}
-    assert response.model == "resolved-model-2026-08-22"
-    assert (response.finish_reason, response.input_tokens, response.total_tokens) == ("stop", 8, 10)
-    assert response.provider_cost_microusd == 9
-    assert response.runtime_binding_sha256 == request.runtime_binding_sha256
 
 
 def test_artifact_rejects_unsafe_state_and_unregistered_identity(tmp_path: Path) -> None:
@@ -1682,38 +1246,27 @@ def test_codec_hard_cuts_the_superseded_artifact_v2_before_schema_loading() -> N
             ProgramStrategyArtifactCodec.decode(document)
 
 
-def test_optimizer_extractor_reads_back_exactly_the_two_instructions() -> None:
-    parent = load_stable_program_artifact()
-    cold = DspyCompileProgram(parent)
-    # The optimizer's seed is the whole instruction now, not an empty advisory slot beside a rendered prompt.
-    assert cold.event_semantics.signature.instructions == parent.event_semantics_instruction
-    assert cold.reader_card.signature.instructions == parent.reader_card_instruction
-    cold.event_semantics.signature = cold.event_semantics.signature.with_instructions("Prefer explicit causal facts.")
+def test_a_predictor_is_its_instruction_its_fields_and_its_ceiling_and_nothing_else() -> None:
+    """#306 Phase 3 deleted the separate optimizer student along with the framework under it.
 
-    patch = extract_optimizer_patch(cold, parent)
+    `DspyCompileProgram` and `extract_optimizer_patch` used to live here: a second Module mirroring the
+    production graph, plus a reader that pulled the two instructions back out of its signatures. What GEPA
+    evaluates is this Module now, and its write-set is a plain `dict[str, str]` — so the thing worth
+    asserting is that a Predictor carries the artifact's own instruction and no place to hide anything
+    else, demos included.
+    """
 
-    assert patch.event_semantics_instruction == "Prefer explicit causal facts."
-    assert patch.reader_card_instruction == parent.reader_card_instruction
-    assert patch.parent_program_sha256 == parent.program_sha256
-
-
-def test_optimizer_extractor_refuses_a_proposal_the_safety_bounds_reject() -> None:
-    parent = load_stable_program_artifact()
-    cold = DspyCompileProgram(parent)
-    cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
-        "Read the full policy at https://example.test/policy before judging."
-    )
-
-    with pytest.raises(ValueError, match="news_program_instruction_unsafe"):
-        extract_optimizer_patch(cold, parent)
-
-
-def test_runtime_predictors_never_carry_a_demo() -> None:
+    artifact = load_stable_program_artifact()
     program = _program(ScriptedPredictorAdapter([]))
 
-    assert list(program.event_semantics.demos) == []
-    assert list(program.reader_card.demos) == []
-    assert list(DspyCompileProgram(load_stable_program_artifact()).event_semantics.demos) == []
+    for name in ("event_semantics", "reader_card"):
+        spec = getattr(program, name)
+        assert spec.instruction == artifact.instruction_for(name)
+        assert spec.max_tokens == PROGRAM_PREDICTOR_MAX_TOKENS[name]
+        assert not hasattr(spec, "demos")
+    assert program.event_semantics.input_fields == ("evidence_json",)
+    assert program.reader_card.input_fields == ("evidence_json", "semantics_json")
+    assert (program.event_semantics.output_field, program.reader_card.output_field) == ("semantics", "card")
 
 
 def test_trusted_patch_applier_writes_exactly_the_two_instructions() -> None:
@@ -1818,7 +1371,7 @@ def test_program_schemas_carry_only_allowlisted_digests() -> None:
         for module in (
             importlib.import_module("tracefold.news.program.artifact"),
             importlib.import_module("tracefold.news.program.contracts"),
-            importlib.import_module("tracefold.news.program.dspy_adapter"),
+            importlib.import_module("tracefold.news.program.transport"),
             importlib.import_module("tracefold.news.program.runtime"),
             importlib.import_module("tracefold.news.program.signatures"),
         )
@@ -1846,7 +1399,7 @@ def test_the_hard_cut_leaves_no_tombstone_model_or_legacy_alias() -> None:
 
     modules = [
         importlib.import_module(f"tracefold.news.program.{name}")
-        for name in ("artifact", "contracts", "dspy_adapter", "graph", "runtime", "signatures")
+        for name in ("artifact", "contracts", "graph", "runtime", "seed", "signatures", "transport")
     ]
     retired = {
         "CompileProvenance",
@@ -1864,6 +1417,19 @@ def test_the_hard_cut_leaves_no_tombstone_model_or_legacy_alias() -> None:
         "ProgramPatchV2",
         "QualityKernelRef",
         "RulePack",
+        # #306 retired the layering and the framework transport with it.
+        "RulePackSpec",
+        "CoverageAnchor",
+        "DspyCompileProgram",
+        "DspyNewsSemanticProgram",
+        "DspyPredictorAdapter",
+        "DspyStrictJSONAdapter",
+        "ExactMetadataDspyLM",
+        "ExactProviderCallCapture",
+        "code_owned_rule_packs",
+        "extract_optimizer_patch",
+        "render_predictor_instruction",
+        "validate_learned_instruction",
         "EVENT_SEMANTICS_SIGNATURE_SHA256",
         "READER_CARD_SIGNATURE_SHA256",
         "PROGRAM_ADAPTER_SHA256",

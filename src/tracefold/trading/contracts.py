@@ -33,7 +33,7 @@ TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
 # Trading consumes one explicit News generation. This is an upstream input contract, not a fallback:
 # a case frozen under an older News Program/policy is terminal audit history after #160's hard cut.
-NewsLearningEpoch = Literal["program_v7"]
+NewsLearningEpoch = Literal["program_v8"]
 
 # ---------------------------------------------------------------------------- upstream input rows
 # What the composition root must hand this context to produce candidates. Trading owns these because

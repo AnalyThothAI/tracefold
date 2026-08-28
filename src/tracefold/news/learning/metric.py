@@ -13,14 +13,14 @@ Nothing here has database, artifact-writer, proposal or promotion authority.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
-import importlib.metadata
 import inspect
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Final
 
-import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from ..artifact_identity import canonical_sha
@@ -101,6 +101,61 @@ _DIMENSION_FIELD = {
     "trade_affected_markets": "affected_markets",
     "reader_value": "reader_value",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class CompileExample:
+    """One scored case as the ruler sees it: the frozen question, and every accepted fact about it.
+
+    Until #306 Phase 3 this was a `dspy.Example` and the metric read it through `.get()`. The fields were
+    the same; what the dict bought was that a typo silently became `None` and scored as an absent label.
+    """
+
+    case_id: str
+    cluster_id: str
+    context: TriageContext
+    accepted_review: dict[str, Any]
+    production_judgment: dict[str, Any] | None
+    policy_metric: dict[str, Any]
+    # The card Predictor's exact model-visible evidence, which is what the sealed judge verifies a factual
+    # repair against, and the immutable source headline the deterministic card lint compares numbers to.
+    card_evidence_json: str
+    source_title: str
+    told_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CandidatePrediction:
+    """What one candidate answered, or the code that stopped it from answering."""
+
+    verdict: Mapping[str, Any] | None = None
+    editorial: Any = None
+    instruction_rejected: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MetricOutcome:
+    """One case's complete score, and everything a report or a reflection prompt reads out of it.
+
+    GEPA reads `score` and `feedback`. Everything else exists because a scalar cannot answer "how much
+    accepted truth was behind this number", and a report that could not answer it published its own label
+    distribution as if it were a measurement.
+    """
+
+    score: float
+    feedback: str
+    hard_gate: str = ""
+    production_action: str = ""
+    production_rule: str = ""
+    production_throttled_by: str = ""
+    objective_guard: str = "none"
+    gold_scored_n: int = 0
+    labelled_n: int = 0
+    component_scores: dict[str, float | None] = dataclasses.field(default_factory=dict)
+    component_denominators: dict[str, int] = dataclasses.field(default_factory=dict)
+    component_diagnostics: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+    effective_weight_mass: float = 0.0
+    dimension_outcomes: tuple[tuple[str, str], ...] = ()
 
 
 def _reader_card_owns_action_feedback(decision: DecisionResult, projection: Mapping[str, Any]) -> bool:
@@ -302,7 +357,9 @@ def _component(
     return (hits / scored_n if scored_n else None, gold_scored, scored_n, len(anchors))
 
 
-def _parse_prediction(pred: Any) -> tuple[TriageVerdict, EditorialEnvelope, ScoredJudgment, dict[str, Any]] | None:
+def _parse_prediction(
+    pred: CandidatePrediction,
+) -> tuple[TriageVerdict, EditorialEnvelope, ScoredJudgment, dict[str, Any]] | None:
     """The candidate's schema-valid judgment, or ``None`` when it did not produce one.
 
     Returns the raw verdict mapping beside the typed one because the scored dimensions compare the values
@@ -310,14 +367,14 @@ def _parse_prediction(pred: Any) -> tuple[TriageVerdict, EditorialEnvelope, Scor
     """
 
     try:
-        verdict_value = pred.get("verdict")
+        verdict_value = pred.verdict
         verdict = (
             verdict_value.model_dump(mode="json") if isinstance(verdict_value, BaseModel) else dict(verdict_value or {})
         )
         if not verdict:
             raise ValueError("verdict_missing")
         typed = TriageVerdict.model_validate(verdict)
-        editorial_value = pred.get("editorial")
+        editorial_value = pred.editorial
         editorial = (
             editorial_value
             if isinstance(editorial_value, EditorialEnvelope)
@@ -329,22 +386,19 @@ def _parse_prediction(pred: Any) -> tuple[TriageVerdict, EditorialEnvelope, Scor
 
 
 def accepted_review_metric(
-    gold: dspy.Example,
-    pred: dspy.Prediction,
-    trace: Any = None,
-    pred_name: str | None = None,
-    pred_trace: Any = None,
-    program_trace: Any = None,
+    gold: CompileExample,
+    pred: CandidatePrediction,
     *,
+    pred_name: str | None = None,
     judge: Any = None,
-) -> dspy.Prediction:
+) -> MetricOutcome:
     """Score the reader-facing action, then the two Predictors, over accepted development truth only.
 
-    The last four parameters carry defaults because GEPA calls this metric two different ways. When it asks for
-    per-Predictor feedback it passes all five, matching `GEPAFeedbackMetric`; when it scores a candidate over
-    the full valset it goes through `dspy.Evaluate`, which calls `metric(example, prediction)` with two. Without
-    the defaults every full-valset evaluation raised `TypeError` and GEPA recorded it as a zero — a failure the
-    `_FakeGEPA` tests could not see, because they never drove the real evaluator.
+    `pred_name` names the Predictor the feedback is being routed to, or `None` when the caller wants the
+    case's own score. It never changes the number — only which repair instructions come back. Until #306
+    Phase 3 this signature also carried DSPy's four positional trace arguments, because `dspy.GEPA` called
+    the same function two different ways and a missing default turned every full-valset evaluation into a
+    silent zero. The GEPA adapter this repository now owns calls it one way.
 
     The predecessor compared the model's intermediate ``decision`` field and averaged every check flat. Both
     were wrong in the same direction: ``decision`` is an intent that ``decide()`` routinely overrides — a
@@ -356,9 +410,8 @@ def accepted_review_metric(
     release decision and never sees the future holdout.
     """
 
-    del trace, pred_trace, program_trace
-    review = dict(gold.get("accepted_review") or {})
-    production_raw = gold.get("production_judgment")
+    review = dict(gold.accepted_review or {})
+    production_raw = gold.production_judgment
     production_judgment = (
         production_raw
         if isinstance(production_raw, ScoredJudgment)
@@ -373,7 +426,7 @@ def accepted_review_metric(
         else {}
     )
     production = {**production_verdict, **production_relevance}
-    projection = dict(gold.get("policy_metric") or {})
+    projection = dict(gold.policy_metric or {})
     dimensions = dict(review.get("dimensions") or {})
     should_push = str(review.get("should_push") or "uncertain")
     # v4 exact gold. A failed dimension without a stated correct value is visible
@@ -404,7 +457,7 @@ def accepted_review_metric(
     novelty_denominator = int(expected_novelty != "uncertain")
     # Parsed before the diagnostics, not after the gates: `reader_card_lint` is a scored component, so the
     # ruler cannot state its own denominator until it knows whether this prediction carries a card at all.
-    rejected = str(pred.get("instruction_rejected") or "")
+    rejected = str(pred.instruction_rejected or "")
     parsed = None if rejected else _parse_prediction(pred)
     lint = (
         None
@@ -412,7 +465,7 @@ def accepted_review_metric(
         else lint_reader_card(
             headline_zh=parsed[0].headline_zh,
             why_zh=parsed[0].why_zh,
-            source_title=str(gold.get("source_title") or ""),
+            source_title=gold.source_title,
         )
     )
     component_diagnostics = _component_diagnostics(
@@ -443,7 +496,7 @@ def accepted_review_metric(
         outcomes: Sequence[tuple[str, str]] | None = None,
         production_rule: str = "",
         production_throttled_by: str = "",
-    ) -> dspy.Prediction:
+    ) -> MetricOutcome:
         """A hard-gated case still says what it did.
 
         The first version returned a bare `score`/`feedback` here, so a `must_hold` violation reached the
@@ -473,7 +526,7 @@ def accepted_review_metric(
             routed_feedback = feedback
         else:
             routed_feedback = "No ReaderCard-owned correction applies; retain factual headline and why copy."
-        return dspy.Prediction(
+        return MetricOutcome(
             score=0.0,
             feedback=routed_feedback,
             hard_gate=gate,
@@ -553,7 +606,7 @@ def accepted_review_metric(
             **decision_metadata,
         )
     if dimensions.get("factual_fidelity") == "fail":
-        evidence_json = str(gold.get("card_evidence_json") or "")
+        evidence_json = gold.card_evidence_json
         verify_facts = getattr(judge, "facts_supported", None)
         try:
             facts_supported = bool(
@@ -693,7 +746,7 @@ def accepted_review_metric(
     if correction and (pred_name is None or bool(failed)):
         feedback.append(f"Reviewer correction: {correction}")
 
-    return dspy.Prediction(
+    return MetricOutcome(
         score=round(score, 6),
         feedback=" ".join(feedback) or "Retain the accepted behavior while making the output more precise.",
         # Which gate zeroed the case, or "" when none did. The predecessor recovered this by matching the
@@ -762,7 +815,10 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
     except (OSError, TypeError) as exc:
         raise ValueError("news_program_compile_metric_source_unavailable") from exc
     return {
-        "schema": "tracefold.news.compile_metric_receipt.v3",
+        # v4 (#306). The shape moved twice under one Issue: the deterministic `card_lint` block joined it
+        # and `dspy_version` left with the framework it pinned. A schema label that stays put while the
+        # document changes is the same lie `METRIC_ID` bumps to avoid.
+        "schema": "tracefold.news.compile_metric_receipt.v4",
         "metric_id": METRIC_ID,
         "gold_source": "news_reviews.payload.expected (news_review_v4 exact gold only)",
         # Which ruler measured the free-text retention anchors. Two runs judged differently are not comparable,
@@ -818,7 +874,9 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "operational_controls": "none_the_pause_mute_plane_was_removed_in_137",
         },
         "review_rubric_version": review_rubric_version,
-        "dspy_version": importlib.metadata.version("dspy"),
+        # #306 Phase 3 removed the `dspy_version` line that used to sit here. It pinned the framework whose
+        # optimizer and whose adapter produced the number; neither is in this path any more, and the two
+        # things that are — the metric's own source and the judge's execution identity — are already above.
     }
 
 
@@ -837,25 +895,25 @@ def _told_rows(context: TriageContext) -> list[dict[str, Any]]:
     ]
 
 
-def _compile_example(episode: DevelopmentEpisode) -> dspy.Example:
-    return dspy.Example(
-        evidence_json=render_model_evidence_json(
-            episode.context.event_semantics_payload(), predictor="event_semantics"
-        ),
-        card_evidence_json=render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card"),
-        told_count=len(episode.context.told.entries),
-        # The immutable Event headline the card was written from. Carried as its own field rather than
-        # re-parsed out of `card_evidence_json`: the delimited envelope is the model's input, and a ruler
-        # that reached back into it would be reading a rendering decision instead of the evidence.
-        source_title=episode.context.evidence.title,
+def _compile_example(episode: DevelopmentEpisode) -> CompileExample:
+    return CompileExample(
         case_id=episode.case_id,
         cluster_id=episode.cluster_id,
-        accepted_review=episode.accepted_review,
+        # The frozen question itself. The Program renders its own model-visible evidence from this, so a
+        # candidate is asked exactly what production is asked rather than a re-rendering of it.
+        context=episode.context,
+        accepted_review=dict(episode.accepted_review),
         production_judgment=(
             episode.production_judgment.model_dump(mode="json") if episode.production_judgment is not None else None
         ),
         policy_metric={**episode.policy_metric, "told": _told_rows(episode.context)},
-    ).with_inputs("evidence_json", "card_evidence_json", "told_count")
+        card_evidence_json=render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card"),
+        # The immutable Event headline the card was written from. Carried as its own field rather than
+        # re-parsed out of `card_evidence_json`: the delimited envelope is the model's input, and a ruler
+        # that reached back into it would be reading a rendering decision instead of the evidence.
+        source_title=episode.context.evidence.title,
+        told_count=len(episode.context.told.entries),
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -884,6 +942,9 @@ __all__ = [
     "LABEL_GROUP",
     "METRIC_ID",
     "UNGROUPED_LABEL",
+    "CandidatePrediction",
+    "CompileExample",
+    "MetricOutcome",
     "accepted_review_metric",
     "bind_metric",
     "build_compile_example",

@@ -33,7 +33,7 @@ depend on it.
 Beside both runs the Trading core (#104), disabled by default. One cold
 CandidateRunner in Workers reads persisted Triage/OI facts through two
 **public News projections**, freezes one content-addressed Case, decides it —
-arithmetic for an OI case, one `dspy.Predict` call for a News one — and, only
+arithmetic for an OI case, one Predictor call for a News one — and, only
 for the exact frozen Demo contract, atomically inserts one TradeIntent while
 advancing the Case. It shares the price plane's one-slot cold database
 admission rather than the four News lane slots.
@@ -350,7 +350,7 @@ tracefold.news
     canary.py         deterministic one-arm assignment and durable trip/close control
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
-  program/            SemanticJudge, DSPy Program artifacts/adapters, code-owned quality baseline, artifact_tool
+  program/            SemanticJudge, artifact/registry, seed instructions, chat transport, artifact_tool
   delivery.py / control.py  cards, control commands
   pipeline/
     admission.py      the atomic Deduper transaction and raw-queue consumer
@@ -372,7 +372,7 @@ tracefold.trading
   contracts.py        App-facing values/ports plus Case/Manifest vocabulary
   intent.py           immutable TradeIntent and current Outcome contract
   candidate/          deny-list, eligibility/funnel, News/OI fusion, venue routing
-  decision/           measured OI/price regime, one-call DSPy Program, pure trade policy
+  decision/           measured OI/price regime, one-call DSPy Program (#306 follow-on), pure trade policy
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
   pipeline/           CandidateRunner and its one-runner composition root
 
@@ -551,7 +551,7 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
           listing, OI or liquidation Event; unsupported_market is a named held
           Event and never reaches Triage; the suffix affects broker scheduling only
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
-       SemanticJudge.judge(TriageContext) -> DSPy EventSemantics.v2 with nested
+       SemanticJudge.judge(TriageContext) -> EventSemantics.v2 with nested
           TradeRelevanceV1
        -> deterministic SemanticNormalizer -> ReaderCard.v2
        -> deterministic VerdictAssembler -> one atomic SemanticJudgment
@@ -839,7 +839,7 @@ used by duplicate comparison, operator grouping, and advisory locking.
 
 Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
-consumer does not know DSPy signatures, instructions, demonstrations, model
+consumer does not know Predictor instructions, output schemas, model
 routing, retry state, or artifact layout. That **Interface** lives at the
 semantic-judgment **Seam**, and `DspyNewsSemanticProgram` is the production
 **Adapter** there. Cold strict replay is an evaluator-side sealed-corpus
@@ -852,7 +852,7 @@ live provider; an identity or tamper mismatch fails closed. This shape gives
 the hot-path caller **Leverage** (one call owns graph execution, validation,
 fallback and audit) while keeping replay authority outside production
 generation. Its **Depth** is the amount of behavior hidden behind the single
-hot-path `judge()` method, not the number of internal DSPy nodes.
+hot-path `judge()` method, not the number of internal Predictor calls.
 
 Inside the Module, the fixed Program graph is
 `EventSemantics.v2 -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
@@ -944,7 +944,7 @@ instructions, and the document is one `<program_sha256>.json` file. Loading
 fails closed on an unknown version, hash or factory, non-canonical or
 duplicate-keyed JSON, a non-finite number, an unsafe or secret-bearing key, a
 symlink or traversal path, or a file whose name is not its own root. Pickle,
-cloudpickle, DSPy Flex, dynamic code/classes, endpoints and credentials are not
+cloudpickle, dynamic code/classes, endpoints and credentials are not
 supported formats. This is the executable-state Seam: Program evolution can
 change reviewed state without allowing a data row to become Python control
 flow. There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
@@ -1077,7 +1077,7 @@ A retryable transport failure or a non-truncated unusable answer can spend that
 retry; `max_tokens` truncation cannot. The code-owned 20-second deadline
 applies to the whole route, not to each call. If primary still fails, fallback
 restarts the full graph with its own shared retry and route deadline; the
-complete chain therefore makes at most six visible provider attempts. DSPy
+complete chain therefore makes at most six visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
 attempts. A verdict complete except for `novelty` can still be accepted as
 `new_fact` (`novelty_defaulted`) after the retry. A Program failure is
@@ -1089,7 +1089,7 @@ consecutive retryable whole-chain failures open the default 60-second consumer
 circuit that also opens a
 `triage_circuit_open` incident (closed by the next success); an output failure
 (`news_program_output_truncated` when a Predictor hit `max_tokens`, or a
-typed Program/DSPy output error on schema mismatch) is degraded but never
+typed Program output error on schema mismatch) is degraded but never
 counts toward the circuit and records the failing Predictor, finish reason,
 tokens and error code. After the Program returns the consumer decides and
 persists in one transaction under a per-storyline advisory lock on the final
@@ -1302,10 +1302,10 @@ budget and shipped nothing is still readable. Issue #193 had already collapsed
 the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
 itself, and with it the record, the sealed input bundle, the sidecar's per-call
 ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
-*where* two advisory instructions were produced. Nothing downstream ever needed
-that: `dspy.GEPA` only assigns `predictor.signature.with_instructions(...)`, so
-the write-set is two bounded strings and `extract_optimizer_patch` refuses
-anything else. Rows written under the old chain stay in `news_learning_artifacts`
+*where* two instructions were produced. Nothing downstream ever needed that:
+`gepa.optimize` returns a `dict[str, str]` of named component texts, so the
+write-set is two strings and `run_gepa` refuses a winner that is not exactly the
+two. Rows written under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
 
 What replaced provenance is binding, checked at registration by a party that did

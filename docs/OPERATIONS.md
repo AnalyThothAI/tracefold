@@ -426,7 +426,7 @@ Strategy off in the OpenNews account (#126).
 
 Model failure: Triage's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
-Adapter runs the code-owned DSPy Program
+Adapter runs the code-owned Program
 `EventSemantics.v2 -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
 deterministic assembler`. The normalizer changes a stray non-negative
 `restates` value on `new_fact`/`progression` to `-1`, records both values on the
@@ -444,9 +444,9 @@ fails, a configured `llm.news_triage_fallback` restarts the full graph with its
 own retry/deadline budget. Its ReaderCard slot explicitly aliases the same
 endpoint unless a complete `llm.news_reader_card_fallback` endpoint is present;
 one missing or invalid fallback slot disables fallback instead of mixing
-routes. One Program execution's maximum remains six. DSPy
-cache and hidden provider retries are disabled, so every billable attempt is
-visible. There is still one persisted final semantic judgment and one card,
+routes. One Program execution's maximum remains six. The transport makes one HTTP
+request per `invoke` with no client cache and no client retry, so every billable
+attempt is visible. There is still one persisted final semantic judgment and one card,
 not a restored Analyst stage. Capacity planning must account for the normal
 1 -> 2 call increase and serial latency. A stale-ledger re-ask is a second full
 Program execution:
@@ -900,6 +900,15 @@ prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
 `0316` adds the #283 immutable Trading Intent handoff and Nautilus execution
 projection; on an existing volume, provision the Nautilus role before applying
 it as described above.
+`0318` is the #306 prompt-layer hard cut and the current epoch boundary. It
+appends `program_v8` for `factory_v8` and trips every armed or active canary.
+Two byte changes land under that one identity migration, deliberately paid once
+rather than twice: the sealed kernel / nine RulePacks / advisory / authority-seal
+layering collapses into one seed instruction per Predictor, and the Program's
+self-owned chat transport composes the request envelope DSPy's JSON adapter used
+to compose. `program_v7` evidence — which closed with zero accepted candidates,
+zero canary activations and two empty advisory instructions — becomes immutable
+audit history. It adds no column and is irreversible.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

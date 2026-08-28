@@ -29,7 +29,7 @@ _SELECTION_ROOT = "2" * 64
 _PROGRAM = "9" * 64
 _BASELINE_REPORT = "b" * 64
 _OPTIMIZATION_REPORT = "a" * 64
-_METRIC = {"schema": "tracefold.news.compile_metric_receipt.v3", "metric_id": "m4", "weights": {"final_action": 0.45}}
+_METRIC = {"schema": "tracefold.news.compile_metric_receipt.v4", "metric_id": "m5", "weights": {"final_action": 0.45}}
 _TASK_ROUTE = {
     "model": "qwen3-30b",
     "baseline_endpoint_sha256": "4" * 64,
@@ -137,7 +137,7 @@ def _optimization(**updates: Any) -> dict[str, Any]:
             "development_dataset_sha256": _DATASET,
             "episode_projection_root_sha256": _EPISODE_ROOT,
             "episode_count": 84,
-            "learning_epoch": "program_v7",
+            "learning_epoch": "program_v8",
             "review_rubric_version": "news_review_v4",
         },
         "objective": {
@@ -740,22 +740,20 @@ def test_a_real_baseline_and_a_real_optimization_over_one_corpus_reconcile_field
     so a renamed field or a drifted receipt fails here rather than in an operator's run directory.
     """
 
-    import dspy
-
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.baseline import BaselineCase, compile_program_factory, run_baseline
+    from tracefold.news.learning.baseline import BaselineCase, run_baseline
     from tracefold.news.learning.contracts import DevelopmentDatasetRef
     from tracefold.news.learning.objective import build_gepa_objective_plan
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
     from tracefold.news.program.artifact import load_stable_program_artifact
 
-    from .test_news_baseline_modes import _ScriptedLM
+    from .test_news_baseline_modes import _compile_program
     from .test_news_gepa_core import _episodes as _corpus
-    from .test_news_gepa_core import _FakeGEPA, _MeteredFakeLM
+    from .test_news_gepa_core import _FakeGepaOptimize, _MeteredFakeReflectionLM, _MeteredTaskAdapter
     from .test_news_learning_optimize import _budget, _StampedJudge
 
     corpus = _corpus()
-    payload = {"role": "development", "learning_epoch": "program_v7", "cases": []}
+    payload = {"role": "development", "learning_epoch": "program_v8", "cases": []}
     dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})
     episode_root = canonical_sha([episode.model_dump(mode="json") for episode in corpus])
     plan = build_gepa_objective_plan(corpus)
@@ -768,8 +766,7 @@ def test_a_real_baseline_and_a_real_optimization_over_one_corpus_reconcile_field
         tuple(BaselineCase(episode=episode) for episode in plan.optimizer_episodes),
         mode="compile_live",
         artifact=artifact,
-        program_factory=compile_program_factory,
-        lm=_ScriptedLM(break_card=False),
+        semantic_judge=_compile_program(break_card=False),
         judge=judge,
         objective=plan,
         cohort_scope="frozen_development",
@@ -798,20 +795,18 @@ def test_a_real_baseline_and_a_real_optimization_over_one_corpus_reconcile_field
         dataset_payload=payload,
         target_runtime_manifest_sha256="a" * 64,
     )
-    task_lm = _MeteredFakeLM("task/model", cost=0.000002)
-    with dspy.context(lm=task_lm):
-        result = optimize(
-            dataset,
-            OptimizationConfig(
-                task_lm=task_lm,
-                reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),
-                judge=judge,
-                budget=_budget(),
-                optimizer_factory=_FakeGEPA,
-                now_ms=lambda: 1_800_000_123_456,
-                monotonic=lambda: 0.0,
-            ),
-        )
+    result = optimize(
+        dataset,
+        OptimizationConfig(
+            task_adapter=_MeteredTaskAdapter("task/model"),
+            reflection_lm=_MeteredFakeReflectionLM(),
+            judge=judge,
+            budget=_budget(),
+            optimize_fn=_FakeGepaOptimize(),
+            now_ms=lambda: 1_800_000_123_456,
+            monotonic=lambda: 0.0,
+        ),
+    )
     optimization = result.report.model_dump(mode="json")
     # The task endpoint fingerprint the optimizer stamped. `learning run` computes both digests from the
     # endpoint it composed; the summary checks each report against its own digest of that one host.
@@ -869,7 +864,7 @@ def _real_readiness(plan: Any, *, dataset_sha: str, episode_root: str, corpus: A
 def test_the_judge_call_ceiling_is_the_one_field_the_ruler_comparison_excludes() -> None:
     """Why `metric_sha256` normalizes one field away instead of comparing the receipt whole.
 
-    The ruler both legs are scored by is `compile_metric_receipt.v3`, and the equivalence judge's whole
+    The ruler both legs are scored by is `compile_metric_receipt.v4`, and the equivalence judge's whole
     role contract is inside it — including `execution.max_model_calls`, which is a spend bound and not a
     ruler. The optimizer declares one for a run that may last hours; the baseline is bounded by its corpus
     instead. Comparing the receipts whole would therefore fail closed on every honest run, and giving the

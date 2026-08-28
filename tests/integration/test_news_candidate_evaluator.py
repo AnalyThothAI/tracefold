@@ -47,6 +47,7 @@ from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.artifact import (
+    ProgramStrategyPatchV1,
     apply_program_patch,
     load_stable_program_artifact,
 )
@@ -61,13 +62,9 @@ from tracefold.news.program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
-from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
-from tracefold.news.program.graph import (
-    DspyCompileProgram,
-    DspyNewsSemanticProgram,
-    extract_optimizer_patch,
-)
+from tracefold.news.program.graph import NewsSemanticProgram
 from tracefold.news.program.runtime import PROGRAM_FACTORY_ID, PROGRAM_VERSION
+from tracefold.news.program.transport import ScriptedPredictorAdapter
 from tracefold.news.reader_history import assemble_reader_history
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
@@ -148,17 +145,15 @@ def _epoch_started_at_ms(conn: object) -> int:
     return int(row["starts_at_ms"])
 
 
-def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
+def test_candidate_evaluator_pins_the_program_v8_epoch_contract(conn) -> None:
     """The evaluator proves the persisted epoch identity — against what the epoch was *opened* with.
 
     `program_factory_id` and `artifact_schema_version` record what opened the epoch, exactly like
     `baseline_program_sha256` — `news_learning_epochs` is append-only by trigger, so the row can only ever
-    be history. #193 replaced `factory_v5` with `factory_v6`, and #288 replaced it with `factory_v7`,
-    without rewriting or appending the epoch row: accepted review truth remains immutable, while the exact
-    current-bundle eligibility filter makes prior-factory judgments audit-only and starts the factory-v7 cohort
-    at zero. Asserting today's runtime values against those columns would therefore fail a correctly migrated
-    database; asserting the historical ones still catches migration drift and a corrupted ledger row, which is
-    what the check is for.
+    be history. #306 opens `program_v8` with `factory_v8`, and later in-epoch re-issues (a serialization or
+    factory change that does not change which evidence is eligible) must not rewrite it. Asserting today's
+    runtime values against those columns therefore only holds while the epoch is fresh; asserting what the
+    migration wrote catches migration drift and a corrupted ledger row, which is what the check is for.
     """
 
     row = conn.execute(
@@ -167,25 +162,28 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
         (LEARNING_EPOCH,),
     ).fetchone()
 
-    assert LEARNING_EPOCH == "program_v7"
-    assert ledger_module.LEARNING_EPOCH_RESET_REASON == "program_learning_package_split_identity_migration"
+    assert LEARNING_EPOCH == "program_v8"
+    assert (
+        ledger_module.LEARNING_EPOCH_RESET_REASON
+        == "single_instruction_seed_and_self_owned_transport_identity_migration"
+    )
     # The three columns the evaluator validates, and nothing else about identity.
     assert row["baseline_program_version"] == PROGRAM_VERSION
     assert row["prior_evidence_disposition"] == "audit_only"
     assert row["reset_reason"] == ledger_module.LEARNING_EPOCH_RESET_REASON
-    # The two that name what #162 opened the epoch with, and are validated against exactly those.
+    # The two that name what #306 opened the epoch with, and are validated against exactly those.
     assert (
         (row["program_factory_id"], row["artifact_schema_version"])
         == (
             ledger_module.LEARNING_EPOCH_OPENED_FACTORY_ID,
             ledger_module.LEARNING_EPOCH_OPENED_ARTIFACT_SCHEMA_VERSION,
         )
-        == ("tracefold.news.program.factory_v5", "news_semantic_program_artifact_v2")
+        == ("tracefold.news.program.factory_v8", "news_program_strategy_artifact_v1")
     )
     assert (
         candidate_evaluator_module.LEARNING_PROGRAM_FACTORY_ID
         == PROGRAM_FACTORY_ID
-        == ("tracefold.news.program.factory_v7")
+        == ("tracefold.news.program.factory_v8")
     )
     evaluator = CandidateEvaluator(conn, stable=_arm(), judges={})
     assert evaluator._ledger.epoch_started_at_ms() > 0
@@ -196,7 +194,7 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
         "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, program_factory_id, "
         "artifact_schema_version, baseline_program_version, baseline_program_sha256, "
         "prior_evidence_disposition, reset_reason, created_at_ms) "
-        "VALUES ('program_v7_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
+        "VALUES ('program_v8_corrupted', %s, %s, 'tracefold.news.program.factory_v4', %s, %s, %s, "
         "'audit_only', %s, %s)",
         (
             row["starts_at_ms"],
@@ -209,7 +207,7 @@ def test_candidate_evaluator_pins_the_program_v7_epoch_contract(conn) -> None:
         ),
     )
     with (
-        patch.object(ledger_module, "LEARNING_EPOCH", "program_v7_corrupted"),
+        patch.object(ledger_module, "LEARNING_EPOCH", "program_v8_corrupted"),
         pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"),
     ):
         CandidateEvaluator(conn, stable=_arm(), judges={})._ledger.epoch_started_at_ms()
@@ -555,11 +553,13 @@ def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
     """A real compiled child artifact, and the one record that says how it was produced."""
 
     base = load_stable_program_artifact()
-    cold = DspyCompileProgram(base)
-    cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
-        "A sealed replay integration candidate instruction"
+    # What an optimizer run hands back since #306 Phase 3: two named texts, applied through the same
+    # trusted patch path a real candidate takes.
+    patch = ProgramStrategyPatchV1.issue(
+        parent=base,
+        event_semantics_instruction="A sealed replay integration candidate instruction",
+        reader_card_instruction=base.reader_card_instruction,
     )
-    patch = extract_optimizer_patch(cold, base)
     artifact = apply_program_patch(base, patch)
     registered = _prompt_candidate(
         conn,
@@ -607,7 +607,7 @@ def _prompt_candidate(
             if objective_summary is not None
             else objective_plan_summary(plan, episode_projection_root_sha256=exported.episode_projection_root_sha256)
         ),
-        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v1"},
+        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v2"},
         "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
         "budget": {"max_metric_calls": 12},
         "usage": {"metric_calls": 12},
@@ -1826,8 +1826,6 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
     apart compared two different populations under one name.
     """
 
-    import dspy
-
     from tracefold.news.artifact_identity import canonical_sha
     from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 
@@ -1861,19 +1859,35 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
     # dataset, because the plan classifies under a replayed `decide()` and `recorded` scores against the
     # action that shipped. The graph is stubbed to a fixed judgment so the parity this test is about is
     # measured without a provider; what it exercises is the corpus, the plan and the roots.
-    frozen_prediction = dspy.Prediction(verdict=_verdict(), editorial=_editorial().model_dump(mode="json"))
+    class _FrozenProgram:
+        """The Program seam, answering one fixed judgment: no provider, no framework, no network."""
 
-    class _FrozenCompileProgram(dspy.Module):
-        def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> Any:
-            del evidence_json, card_evidence_json, told_count
-            return frozen_prediction
+        async def judge(self, context: TriageContext) -> SemanticJudgment:
+            verdict = _verdict()
+            return SemanticJudgment(
+                verdict=verdict,
+                editorial=_editorial(),
+                program_version=stable.program_version,
+                program_sha256=stable.program_sha256,
+                trace=_trace(stable, context, verdict),
+                usage=ProgramUsage(
+                    wall_latency_ms=900,
+                    call_count=2,
+                    physical_call_count=2,
+                    input_tokens=500,
+                    output_tokens=90,
+                    cached_tokens=40,
+                    total_tokens=590,
+                    provider_cost_microusd=200,
+                ),
+                answering_model="fixture-model",
+            )
 
     report = run_baseline(
         build_baseline_cases(scored, action_source="policy"),
         mode="compile_live",
         artifact=stable_artifact,
-        program_factory=lambda _artifact: _FrozenCompileProgram(),
-        lm=dspy.LM("openai/offline-fixture", api_key="unused", api_base="http://127.0.0.1:1"),
+        semantic_judge=_FrozenProgram(),
         cohort_scope="frozen_development",
         objective=plan,
         dataset_identity={
@@ -2246,11 +2260,11 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     stable_adapter = ScriptedPredictorAdapter([value for _ in range(scripted_calls) for value in (semantics, card)])
     candidate_adapter = ScriptedPredictorAdapter([value for _ in range(scripted_calls) for value in (semantics, card)])
     judges = {
-        ("stable", stable.bundle_sha): DspyNewsSemanticProgram(
+        ("stable", stable.bundle_sha): NewsSemanticProgram(
             stable_artifact,
             primary_adapter=stable_adapter,
         ),
-        ("candidate", candidate.candidate_arm.bundle_sha): DspyNewsSemanticProgram(
+        ("candidate", candidate.candidate_arm.bundle_sha): NewsSemanticProgram(
             candidate_artifact,
             primary_adapter=candidate_adapter,
         ),

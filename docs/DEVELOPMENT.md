@@ -40,7 +40,7 @@ narrow interface instead of adding forwarding modules, aliases, compatibility
 packages, or a port for an internal object with only one adapter.
 
 Package roots are declarative: imports, constants, and a narrow `__all__`, with
-no runner lifecycle, SQL, network work, DSPy graph, provider construction, or
+no runner lifecycle, SQL, network work, model graph, provider construction, or
 import-time side effects.
 
 Module and function size are review signals, not correctness contracts. Prefer
@@ -515,13 +515,13 @@ cut — it moves `TRUSTED_ROOT_SHA`, and the profile is named
 `news_learning_release_v2` — so datasets and candidates frozen under v1 stay as
 audit history and a new experiment re-freezes.
 
-`learning optimize` (#202) is a cold, operator-invoked DSPy GEPA workflow, not a
+`learning optimize` (#202) is a cold, operator-invoked GEPA workflow, not a
 Worker and not a release gate. It reads the frozen development corpus once as
 `serve`, then holds nothing but three model endpoints and a typed budget: no
 database write credential, no broker, no delivery, no canary, no promotion. It
 ends in `NO_OP`, `REJECTED` or `ADVANCE`; all three write a complete
 `OptimizationRunReport`, and only `ADVANCE` also writes a
-`news_prompt_candidate_v1` — two advisory instructions, and nothing that could
+`news_prompt_candidate_v1` — two Predictor instructions, and nothing that could
 ask to ship.
 
 Until #202 there were two generation paths and two candidate types, because
@@ -548,27 +548,32 @@ allowed to load the optimizer in process, and asserts what the optimizer itself
 can reach: no database session, no review plane, no canary, no promotion.
 
 `learning baseline` (#143) is the step that has to come first and did not exist
-until then: a cold, read-only `dspy.Evaluate` over the same graph, the same
+until then: a cold, read-only run of the *production* graph over the same
 `decide()` and — literally the same function object — the same
-`accepted_review_metric`, so the number an operator reads before a RulePack edit
+`accepted_review_metric`, so the number an operator reads before a prompt edit
 is the number GEPA will later try to maximize. It needs no dataset, sandbox,
-tariff or container and writes nothing. Two source facts about the optimizer are
-worth stating plainly, because both were invisible while the optimizer's only
-tests drove a fake GEPA:
+tariff or container and writes nothing. Since #306 Phase 3 `compile_live` and
+the optimizer's evaluator are the same object bound the same way — the
+production `NewsSemanticProgram` on one task endpoint, no fallback slot — so
+"the baseline measures what the optimizer maximizes" is structural rather than
+a claim two code paths have to keep agreeing on.
 
-- **`dspy.GEPA` never writes demos.** Its `build_program` only assigns
-  `pred.signature = pred.signature.with_instructions(...)`, which is why the
-  write set is exactly two instructions and why #193 deleted the demo models
-  outright instead of shipping a bank that is required to stay empty. Demos
-  would need a `BootstrapFewShot` pass after GEPA, and only then would the
-  metric need the tutorial's `if trace is not None: return score >= 1.0` branch.
-- **GEPA matches traces to components by signature equality**
-  (`t[0].signature.equals(module.signature)`). `_OptimizerOwnedPredictor` renders
-  RulePacks plus the advisory into a fresh inner `dspy.Predict` and delegates, so
-  the trace records a signature the outer one never equals; the core re-keys
-  those two entries positionally. Without that, `make_reflective_dataset` raises
-  "No valid predictions found for any module" and the reflective loop cannot
-  propose anything at all.
+Two facts about the optimizer are worth stating plainly, because both were
+invisible while its only tests drove a fake GEPA:
+
+- **The write-set is two strings, and there is nowhere else to write.**
+  `gepa.optimize` returns a mapping from component name to text; `run_gepa`
+  refuses a winner that is not exactly `event_semantics` and `reader_card`.
+  There is no demo bank, and the transport composes its two messages from the
+  instruction and the bounded fields, so a demonstration has no path to a
+  provider even if something produced one.
+- **A rejected instruction has to come back as a score, not as a raise.**
+  `NewsGepaAdapter.evaluate` builds the candidate's artifact first; if the
+  code-owned bounds refuse the text it returns a scored prediction carrying the
+  refusal code, which the metric turns into a repair instruction. Raised
+  instead, the engine records a failure and the reflection model is told it
+  scored zero and nothing about why — and proposes text that trips the same
+  bound again.
 
 The reflection endpoint is configured separately from the task endpoint
 (`llm.news_compiler_reflection`) with its own 32k-token, 300 s, temperature-1.0

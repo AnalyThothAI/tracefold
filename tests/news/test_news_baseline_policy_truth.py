@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment, trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, run_baseline
-from tracefold.news.learning.metric import accepted_review_metric, build_compile_example
+from tracefold.news.learning.metric import CandidatePrediction, accepted_review_metric, build_compile_example
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
@@ -110,13 +109,10 @@ def _action(
     judgment = scored_judgment(_VERDICT, relevance=trade_relevance(**(relevance or {})))
     outcome = accepted_review_metric(
         build_compile_example(episode),
-        dspy.Prediction(
+        CandidatePrediction(
             verdict=judgment.verdict.model_dump(mode="json"),
             editorial=judgment.editorial.model_dump(mode="json"),
         ),
-        None,
-        None,
-        None,
     )
     return str(outcome.production_action)
 
@@ -164,7 +160,7 @@ def test_a_policy_scored_example_without_a_policy_fails_closed() -> None:
     with pytest.raises(ValueError, match="news_program_metric_policy_values_missing"):
         accepted_review_metric(
             build_compile_example(episode),
-            dspy.Prediction(
+            CandidatePrediction(
                 verdict=judgment.verdict.model_dump(mode="json"),
                 editorial=judgment.editorial.model_dump(mode="json"),
             ),
@@ -180,7 +176,7 @@ def test_a_tampered_policy_hash_fails_closed() -> None:
     with pytest.raises(ValueError, match=r"news_program_metric_policy_sha256_mismatch:[0-9a-f]{16}!=[0-9a-f]{16}"):
         accepted_review_metric(
             build_compile_example(episode.model_copy(update={"policy_metric": tampered})),
-            dspy.Prediction(
+            CandidatePrediction(
                 verdict=judgment.verdict.model_dump(mode="json"),
                 editorial=judgment.editorial.model_dump(mode="json"),
             ),

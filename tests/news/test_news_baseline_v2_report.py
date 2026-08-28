@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment
@@ -15,7 +14,7 @@ from tracefold.news.learning.baseline import (
     _failed_case,
     run_baseline,
 )
-from tracefold.news.learning.judge import CardEquivalenceJudge
+from tracefold.news.learning.judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from tracefold.news.learning.objective import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
@@ -113,16 +112,14 @@ def _report(cases: list[BaselineCase]) -> Any:
     return run_baseline(cases, mode="recorded", artifact=load_stable_program_artifact())
 
 
-class _SilentJudgeLM(dspy.BaseLM):  # type: ignore[misc]
+class _SilentJudgeLM(MetricJudgeEndpoint):
     """Never answers, because `recorded` must never ask it. Any call is the bug this pins."""
 
     def __init__(self) -> None:
-        super().__init__(model="scripted/judge")
-        self.cache = False
-        self.num_retries = 0
+        super().__init__(model_name="scripted/judge", api_key="k", api_base="https://judge.invalid/v1")
         self.calls = 0
 
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+    def ask(self, **kwargs: Any) -> Any:
         self.calls += 1
         raise AssertionError("recorded mode consulted the semantic judge")
 

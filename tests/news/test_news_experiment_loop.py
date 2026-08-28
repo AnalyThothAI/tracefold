@@ -147,24 +147,35 @@ def test_the_recorded_arm_scores_a_frozen_case() -> None:
     assert report.cases[0].error_code is None
 
 
-def test_the_student_arm_gets_the_program_factory_run_baseline_requires() -> None:
-    """`compile_live` refuses without a factory, and the caller is not the one who should remember it.
+def test_the_student_arm_runs_the_program_it_was_handed_and_publishes_its_failures() -> None:
+    """A provider that never answers is an outcome this plane publishes, not an absence it hides.
 
-    Left to the CLI it was forgotten, and `--student` being required meant no invocation escaped
-    `news_program_baseline_requires_program_factory`. `score_arm` picks it from the mode now, so reaching a
-    provider error here — rather than the factory error — is the whole assertion.
+    Until #306 Phase 3 the assertion here was about a `program_factory` argument `run_baseline` required
+    and the CLI kept forgetting. Both live modes take one `semantic_judge` now, so what is left to prove is
+    that the arm actually executed the graph: a route that cannot answer produces a scored case with an
+    error code, not a missing row.
     """
 
+    from tracefold.news.learning.baseline import build_compile_adapter, build_compile_program
+
+    artifact = load_stable_program_artifact()
     report = score_arm(
         [_case(0)],
         mode="compile_live",
-        artifact=load_stable_program_artifact(),
-        lm=object(),
+        artifact=artifact,
+        semantic_judge=build_compile_program(
+            artifact,
+            build_compile_adapter(
+                model_name="openai/unreachable",
+                api_key="k",
+                api_base="http://127.0.0.1:1/v1",
+                timeout=0.05,
+                max_tokens=64,
+            ),
+        ),
         cohort_scope="experiment",
     )
 
-    # It built the graph and tried to answer. A bogus LM is a provider failure, which this plane publishes
-    # as an outcome rather than an absence — the point is that it got that far at all.
     assert [case.case_id for case in report.cases] == [f"{0:064x}"]
     assert report.cases[0].error_code is not None
 

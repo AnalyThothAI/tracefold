@@ -1,4 +1,4 @@
-"""Evidence-grounded equivalence for metric v4 free-text dimensions (#148, #160).
+"""Evidence-grounded equivalence for the metric's free-text dimensions (#148, #160).
 
 #148 measured a published +0.060662 improvement from semantic copy comparison. ReaderCard carries 10% of metric
 v4; factual fidelity additionally asks whether candidate copy is supported by immutable evidence. Enum and
@@ -10,26 +10,28 @@ to the metric, never the Program, and cannot change ``program_sha256``.
 from __future__ import annotations
 
 import inspect
+import json
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import nullcontext
 from typing import Any, Literal, TypeVar, cast
 
-import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
+from ...integrations.chat_completions import chat_completions_url, post_chat_completion_sync
 from ..artifact_identity import canonical_json, canonical_sha
-from ..program.dspy_adapter import (
-    DspyStrictJSONAdapter,
-    ExactProviderCallCapture,
-    PredictorAdapterError,
+from ..program.transport import (
+    ProviderCallMetrics,
+    chat_request_body,
+    choice_content,
+    provider_call_metrics,
 )
-from .contracts import METRIC_JUDGE_MAX_TOKENS, ModelExecutionIdentity
+from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v2"
 
 _T = TypeVar("_T")
+_M = TypeVar("_M", bound=BaseModel)
 
 _INSTRUCTION = """You are checking whether a rewritten Chinese news card preserved what a human reviewer had
 already accepted about the original. You are NOT judging which card is better written.
@@ -101,22 +103,21 @@ class FactualEvidenceSupport(BaseModel):
     supported_by_evidence: bool
 
 
-class _CardEquivalenceSignature(dspy.Signature):  # type: ignore[misc]
-    accepted_headline_zh: str = dspy.InputField(desc="Headline the reviewer accepted")
-    accepted_why_zh: str = dspy.InputField(desc="Explanation the reviewer accepted")
-    accepted_semantics_json: str = dspy.InputField(desc="Accepted structured judgment")
-    candidate_headline_zh: str = dspy.InputField(desc="Headline the candidate produced")
-    candidate_why_zh: str = dspy.InputField(desc="Explanation the candidate produced")
-    candidate_semantics_json: str = dspy.InputField(desc="Candidate structured judgment")
-    verdict: CardEquivalence = dspy.OutputField(desc="Per-dimension equivalence, no prose")
-
-
-class _FactualEvidenceSignature(dspy.Signature):  # type: ignore[misc]
-    evidence_json: str = dspy.InputField(desc="Immutable, untrusted Event evidence")
-    candidate_headline_zh: str = dspy.InputField(desc="Candidate headline")
-    candidate_why_zh: str = dspy.InputField(desc="Candidate explanation")
-    candidate_semantics_json: str = dspy.InputField(desc="Candidate structured judgment")
-    verdict: FactualEvidenceSupport = dspy.OutputField(desc="Evidence support verdict, no prose")
+# The bounded fields each judge question is shown, in the fixed order the transport renders them.
+_EQUIVALENCE_FIELDS: tuple[str, ...] = (
+    "accepted_headline_zh",
+    "accepted_why_zh",
+    "accepted_semantics_json",
+    "candidate_headline_zh",
+    "candidate_why_zh",
+    "candidate_semantics_json",
+)
+_FACTUAL_EVIDENCE_FIELDS: tuple[str, ...] = (
+    "evidence_json",
+    "candidate_headline_zh",
+    "candidate_why_zh",
+    "candidate_semantics_json",
+)
 
 
 # `factual_fidelity` is a judgment about the whole card, so text alone cannot answer it: a candidate can copy
@@ -139,42 +140,119 @@ _UNAVAILABLE = CardEquivalenceAssessment(
 )
 
 
+class MetricJudgeEndpoint:
+    """One configured OpenAI-compatible endpoint answering one structured judge question per call.
+
+    Until #306 Phase 3 the judge held a `dspy.LM` and two `dspy.Predict` objects, and pinned DSPy's strict
+    JSON adapter to stop the stock one from silently retrying a failed parse as a second provider call.
+    Both concerns disappear with the framework: this composes the same wire envelope the two production
+    Predictors use (`program/transport.chat_request_body`) and makes exactly one request.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        api_key: str,
+        api_base: str,
+        max_tokens: int = METRIC_JUDGE_MAX_TOKENS,
+        timeout: float = METRIC_JUDGE_TIMEOUT_SECONDS,
+        model_kwargs: Mapping[str, Any] | None = None,
+        transport: Any = None,
+    ) -> None:
+        extras = dict(model_kwargs or {})
+        owned = {"api_key", "api_base", "base_url", "model", "messages", "temperature", "max_tokens"}
+        overlap = owned.intersection(extras)
+        if overlap:
+            raise ValueError(f"news_program_compile_metric_judge_kwargs_owned:{','.join(sorted(overlap))}")
+        self.model = str(model_name)
+        self.api_base = str(api_base)
+        self.max_tokens = int(max_tokens)
+        self.timeout = float(timeout)
+        self.model_kwargs = extras
+        self._extra_body = dict(extras.pop("extra_body", {}) or {})
+        self._extras = extras
+        self._api_key = str(api_key)
+        self._url = chat_completions_url(self.api_base)
+        self._transport = transport
+        self.tracefold_compiler_role_binding: ModelExecutionIdentity | None = None
+
+    def request_body(
+        self,
+        *,
+        instruction: str,
+        field_order: Sequence[str],
+        values: Mapping[str, Any],
+        output_model: type[BaseModel],
+    ) -> dict[str, Any]:
+        return chat_request_body(
+            model=self.model,
+            instruction=instruction,
+            field_order=field_order,
+            values=values,
+            output_field="verdict",
+            output_model=output_model,
+            max_tokens=self.max_tokens,
+            extras=self._extras,
+            extra_body=self._extra_body,
+        )
+
+    def ask(
+        self,
+        *,
+        instruction: str,
+        field_order: Sequence[str],
+        values: Mapping[str, Any],
+        output_model: type[_M],
+    ) -> tuple[_M, ProviderCallMetrics]:
+        body = self.request_body(
+            instruction=instruction, field_order=field_order, values=values, output_model=output_model
+        )
+        reply = post_chat_completion_sync(
+            url=self._url,
+            body=body,
+            api_key=self._api_key,
+            timeout=self.timeout,
+            transport=self._transport,
+        )
+        if reply.status_code >= 400 or reply.payload is None:
+            raise ValueError(f"news_program_compile_metric_judge_http_{reply.status_code}")
+        metrics = provider_call_metrics(reply.payload)
+        payload = reply.payload
+        content = choice_content(payload)
+        if content is None:
+            raise ValueError("news_program_compile_metric_judge_choice_missing")
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict) or "verdict" not in parsed:
+            raise ValueError("news_program_compile_metric_judge_output_envelope_invalid")
+        return output_model.model_validate(parsed["verdict"]), metrics
+
+
 class CardEquivalenceJudge:
     """One bounded model call per (accepted, candidate) card pair, memoized for the run."""
 
     def __init__(
         self,
-        lm: dspy.LM,
+        lm: MetricJudgeEndpoint,
         *,
         max_tokens: int = METRIC_JUDGE_MAX_TOKENS,
         max_model_calls: int | None = None,
         require_exact_accounting: bool = False,
     ) -> None:
-        if getattr(lm, "cache", True) is not False:
-            raise ValueError("news_program_compile_metric_judge_cache_must_be_disabled")
-        if int(getattr(lm, "num_retries", -1)) != 0:
-            raise ValueError("news_program_compile_metric_judge_hidden_retries_must_be_zero")
-        if require_exact_accounting and not callable(getattr(lm, "observe_exact_call", None)):
-            raise ValueError("news_program_compile_metric_judge_metadata_seam_required")
         binding = getattr(lm, "tracefold_compiler_role_binding", None)
         if isinstance(binding, ModelExecutionIdentity) and (
             binding.role != "metric_judge" or int(max_tokens) != binding.max_output_tokens
         ):
             raise ValueError("news_program_compile_metric_judge_role_binding_mismatch")
+        if int(max_tokens) != lm.max_tokens:
+            raise ValueError("news_program_compile_metric_judge_role_binding_mismatch")
         self.lm = lm
         self._max_tokens = int(max_tokens)
         self._max_model_calls = max_model_calls
+        # Kept as a named flag rather than deleted: `run_baseline` runs the judge without it and the
+        # optimizer runs it with, and what it now means is "a provider answer that reported no usage at
+        # all is not an answer" — the accounting seam it used to require is no longer optional.
         self._require_exact_accounting = require_exact_accounting
-        self._predict = dspy.Predict(
-            _CardEquivalenceSignature.with_instructions(_INSTRUCTION),
-            temperature=0,
-            max_tokens=max_tokens,
-        )
-        self._factual_predict = dspy.Predict(
-            _FactualEvidenceSignature.with_instructions(_FACTUAL_EVIDENCE_INSTRUCTION),
-            temperature=0,
-            max_tokens=max_tokens,
-        )
         self._cache: dict[str, CardEquivalenceAssessment] = {}
         self._factual_cache: dict[str, bool] = {}
         # `run_baseline` exposes `num_threads`; without this the counters written into the receipt under-count
@@ -197,41 +275,40 @@ class CardEquivalenceJudge:
         # The whole role contract, embedded. It used to be printed here beside an endpoint digest, a
         # kwargs digest and three fields already inside it.
         role_binding = binding.model_dump(mode="json") if isinstance(binding, ModelExecutionIdentity) else None
-        kwargs = getattr(self.lm, "kwargs", {})
-        safe_kwargs = dict(kwargs) if isinstance(kwargs, Mapping) else {}
-        owned = {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
-        extra_kwargs = {key: value for key, value in safe_kwargs.items() if key not in owned}
         execution = {
             "role_binding": role_binding,
             "max_output_tokens": self._max_tokens,
             "max_model_calls": self._max_model_calls,
             "timeout_seconds": (
-                binding.timeout_seconds if isinstance(binding, ModelExecutionIdentity) else safe_kwargs.get("timeout")
+                binding.timeout_seconds if isinstance(binding, ModelExecutionIdentity) else self.lm.timeout
             ),
-            "temperature": (
-                binding.temperature
-                if isinstance(binding, ModelExecutionIdentity)
-                else safe_kwargs.get("temperature", 0)
+            "temperature": binding.temperature if isinstance(binding, ModelExecutionIdentity) else 0,
+            "model_kwargs": (
+                binding.model_kwargs if isinstance(binding, ModelExecutionIdentity) else dict(self.lm.model_kwargs)
             ),
-            "model_kwargs": (binding.model_kwargs if isinstance(binding, ModelExecutionIdentity) else extra_kwargs),
             "cache": False,
             "num_retries": 0,
             "require_exact_accounting": self._require_exact_accounting,
         }
         return {
             "judge_id": JUDGE_ID,
-            "model": str(getattr(self.lm, "model", "") or ""),
+            "model": str(self.lm.model or ""),
             "instruction_sha256": canonical_sha(_INSTRUCTION),
-            "signature_sha256": canonical_sha(_CardEquivalenceSignature.model_json_schema()),
+            # The bounded fields the question is asked over, in the order the transport renders them. This
+            # replaces the DSPy signature digest that used to sit here and says the same thing about the
+            # same contract: what the judge is shown, and what shape its answer takes.
+            "signature_sha256": canonical_sha({"fields": list(_EQUIVALENCE_FIELDS), "output": "verdict"}),
             "output_schema_sha256": canonical_sha(CardEquivalence.model_json_schema()),
             "factual_evidence_instruction_sha256": canonical_sha(_FACTUAL_EVIDENCE_INSTRUCTION),
-            "factual_evidence_signature_sha256": canonical_sha(_FactualEvidenceSignature.model_json_schema()),
+            "factual_evidence_signature_sha256": canonical_sha(
+                {"fields": list(_FACTUAL_EVIDENCE_FIELDS), "output": "verdict"}
+            ),
             "factual_evidence_output_schema_sha256": canonical_sha(FactualEvidenceSupport.model_json_schema()),
             "implementation_source_sha256": canonical_sha(
                 inspect.getsource(inspect.getmodule(CardEquivalenceJudge) or CardEquivalenceJudge)
             ),
             "adapter": {
-                "implementation": "tracefold.news.program.graph.DspyStrictJSONAdapter",
+                "implementation": "tracefold.news.program.transport.chat_request_body",
                 "native_function_calling": False,
                 "format_fallback": False,
             },
@@ -278,21 +355,21 @@ class CardEquivalenceJudge:
             ]
         )
 
-        def invoke() -> CardEquivalenceAssessment:
-            # Pin the adapter. Under DSPy's default the judge's structured reply fails the chat-format parse
-            # and is silently retried as JSON — two provider calls for every one verdict, on a metric that runs
-            # once per case per candidate.
-            prediction = self._predict(
-                accepted_headline_zh=accepted_headline,
-                accepted_why_zh=accepted_why,
-                accepted_semantics_json=accepted_semantics,
-                candidate_headline_zh=candidate_headline,
-                candidate_why_zh=candidate_why,
-                candidate_semantics_json=candidate_semantics,
+        def invoke() -> tuple[CardEquivalenceAssessment, ProviderCallMetrics]:
+            verdict, metrics = self.lm.ask(
+                instruction=_INSTRUCTION,
+                field_order=_EQUIVALENCE_FIELDS,
+                values={
+                    "accepted_headline_zh": accepted_headline,
+                    "accepted_why_zh": accepted_why,
+                    "accepted_semantics_json": accepted_semantics,
+                    "candidate_headline_zh": candidate_headline,
+                    "candidate_why_zh": candidate_why,
+                    "candidate_semantics_json": candidate_semantics,
+                },
+                output_model=CardEquivalence,
             )
-            verdict = prediction.verdict
-            parsed = verdict if isinstance(verdict, CardEquivalence) else CardEquivalence.model_validate(verdict)
-            return CardEquivalenceAssessment(status="answered", verdict=parsed)
+            return CardEquivalenceAssessment(status="answered", verdict=verdict), metrics
 
         return self._cached_model_call(
             route="equivalence",
@@ -309,7 +386,7 @@ class CardEquivalenceJudge:
         key: str,
         cache: dict[str, _T],
         unavailable: _T,
-        invoke: Callable[[], _T],
+        invoke: Callable[[], tuple[_T, ProviderCallMetrics]],
     ) -> _T:
         flight_key = (route, key)
         with self._lock:
@@ -355,45 +432,28 @@ class CardEquivalenceJudge:
         flight.set_result(settled)
         return settled
 
-    def _invoke_model(self, invoke: Callable[[], _T]) -> tuple[bool, _T | None]:
-        capture: ExactProviderCallCapture | None = None
-        call_started = False
+    def _invoke_model(self, invoke: Callable[[], tuple[_T, ProviderCallMetrics]]) -> tuple[bool, _T | None]:
+        """One physical call, settled exactly once whether it answered or not.
+
+        A judge that raised without counting its call would let a run overrun the ceiling it admits
+        against, so the counter moves on the attempt and the *answer* is what the boolean reports.
+        """
+
         try:
-            observe = getattr(self.lm, "observe_exact_call", None)
-            capture_context = observe() if callable(observe) else nullcontext(None)
-            with (
-                capture_context as capture,
-                dspy.context(lm=self.lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)),
-            ):
-                call_started = True
-                result = invoke()
+            result, metrics = invoke()
         except Exception:
-            if call_started:
-                self._settle_capture(capture)
+            with self._lock:
+                self.model_calls += 1
             return False, None
-        except BaseException:
-            if call_started:
-                self._settle_capture(capture)
-            raise
-        if not self._settle_capture(capture):
+        if not self._settle(metrics):
             return False, None
         return True, result
 
-    def _settle_capture(self, capture: ExactProviderCallCapture | None) -> bool:
-        if capture is None:
-            with self._lock:
-                self.model_calls += 1
-            return not self._require_exact_accounting
-        try:
-            metadata = capture.require_exactly_one()
-        except PredictorAdapterError:
-            return False
+    def _settle(self, metrics: ProviderCallMetrics) -> bool:
         with self._lock:
             self.model_calls += 1
-            self.actual_cost_microusd += int(metadata.provider_cost_microusd or 0)
-        return metadata.total_tokens > 0 and (
-            metadata.provider_cost_microusd is not None or not self._require_exact_accounting
-        )
+            self.actual_cost_microusd += int(metrics.provider_cost_microusd or 0)
+        return metrics.total_tokens > 0 or not self._require_exact_accounting
 
     def facts_supported(self, evidence_json: str, candidate: Mapping[str, Any]) -> bool:
         """Verify a repair of reviewer-rejected facts against immutable Event evidence."""
@@ -403,20 +463,19 @@ class CardEquivalenceJudge:
         candidate_semantics = _semantics(candidate)
         key = canonical_sha(["factual_evidence", evidence_json, candidate_headline, candidate_why, candidate_semantics])
 
-        def invoke() -> bool:
-            prediction = self._factual_predict(
-                evidence_json=evidence_json,
-                candidate_headline_zh=candidate_headline,
-                candidate_why_zh=candidate_why,
-                candidate_semantics_json=candidate_semantics,
+        def invoke() -> tuple[bool, ProviderCallMetrics]:
+            verdict, metrics = self.lm.ask(
+                instruction=_FACTUAL_EVIDENCE_INSTRUCTION,
+                field_order=_FACTUAL_EVIDENCE_FIELDS,
+                values={
+                    "evidence_json": evidence_json,
+                    "candidate_headline_zh": candidate_headline,
+                    "candidate_why_zh": candidate_why,
+                    "candidate_semantics_json": candidate_semantics,
+                },
+                output_model=FactualEvidenceSupport,
             )
-            verdict = prediction.verdict
-            parsed = (
-                verdict
-                if isinstance(verdict, FactualEvidenceSupport)
-                else FactualEvidenceSupport.model_validate(verdict)
-            )
-            return parsed.supported_by_evidence
+            return verdict.supported_by_evidence, metrics
 
         return self._cached_model_call(
             route="factual_evidence",
@@ -451,4 +510,5 @@ __all__ = [
     "CardEquivalenceAssessment",
     "CardEquivalenceJudge",
     "FactualEvidenceSupport",
+    "MetricJudgeEndpoint",
 ]

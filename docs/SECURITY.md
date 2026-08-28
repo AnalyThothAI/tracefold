@@ -86,15 +86,20 @@ environment variables, or move code-owned safety budgets into
 
 `news_triage` is the only production product-model consumer. Its sole
 Interface is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
-production Adapter executes the fixed DSPy graph
+production Adapter executes the fixed two-Predictor graph
 `EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
 deterministic VerdictAssembler`; callers
-cannot supply instructions, demonstrations, topology, routes, retry policy or
-artifact paths. A normal judgment uses two serial provider calls. One fast
-retry is shared by a route (at most three calls); fallback restarts the full
-graph (at most six across the chain). The Program factory owns the route
-deadline and call/token budgets. DSPy cache and hidden provider retries are
-disabled so the audit trace contains every provider attempt.
+cannot supply instructions, topology, routes, retry policy or artifact paths. A
+normal judgment uses two serial provider calls. One fast retry is shared by a
+route (at most three calls); fallback restarts the full graph (at most six
+across the chain). The Program factory owns the route deadline and call/token
+budgets. Since #306 Phase 3 the Program composes its own request — one system
+message carrying the Predictor instruction and the output contract, one user
+message carrying the bounded fields, and a `response_format` built from the
+output model's own JSON Schema — and `tracefold.integrations.chat_completions`
+sends it. One `invoke` is one HTTP request, with no client cache, no client
+retry and no second call on a parse failure, so the audit trace contains every
+provider attempt by construction rather than by a disabled setting.
 
 EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
 endpoint unless the operator supplies the complete `llm.news_reader_card`
@@ -135,9 +140,10 @@ Everything the loader used to re-verify component by component — RulePacks, th
 graph, Signatures, the Adapter, the normalizer/assembler contracts, the model
 route, the token and deadline budgets — is code, versioned by `factory_id`, so
 it is proved by shipping the image rather than by the package hashing itself.
-An optimizer's write set is those two instructions and nothing else; there is
-no DemoBank to write to, and a Predictor carrying a demo is refused.
-Pickle, cloudpickle, DSPy Flex,
+An optimizer's write set is those two instructions and nothing else; there is no
+DemoBank to write to, and the transport composes its two messages from the
+instruction and the bounded fields, so no demo path exists to reach a provider.
+Pickle, cloudpickle,
 dynamic Python/classes, arbitrary callbacks/history, endpoints, credentials and
 secret-bearing headers are forbidden artifact state; a database candidate is
 not executable merely because it was persisted. Production candidate images
@@ -145,15 +151,15 @@ must pass normal code review and be shipped in the registry.
 There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
-The DSPy GEPA optimizer is a cold manual development workflow, not a runtime
+The GEPA optimizer is a cold manual development workflow, not a runtime
 Worker. Issue #202 deleted the container platform that used to surround it: the
 sealed image, the launcher, the metered proxy sidecar, the seccomp policy, the
 tariff, the three-party `CompilerBuildAttestation` and the runner. That platform
 answered one question — *where were these two strings produced* — and its threat
-model was "the optimizer might return code". It cannot: `dspy.GEPA` only assigns
-`predictor.signature.with_instructions(...)`, so the write-set is two bounded
-advisory strings and `extract_optimizer_patch` refuses anything else. Proving
-provenance was never what made a candidate safe to ship.
+model was "the optimizer might return code". It cannot: `gepa.optimize` returns a
+mapping from component name to text, so the write-set is two strings and
+`run_gepa` refuses a winner that is not exactly the two. Proving provenance was
+never what made a candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
 `news learning optimize` reads a frozen development corpus once as `serve` and

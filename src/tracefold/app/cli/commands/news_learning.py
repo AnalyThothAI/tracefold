@@ -185,7 +185,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     parent_stable_sha=stable.bundle_sha,
                     candidate_arm=candidate_arm,
                     hypothesis=str(args.hypothesis)
-                    or "Repair the accepted program_v7 failure clusters with the registered Prompt patch.",
+                    or "Repair the accepted program_v8 failure clusters with the registered Prompt patch.",
                     target_dimensions=plan.target_dimensions,
                     development_dataset_sha=str(args.development),
                     proposal_receipt=receipt,

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment
@@ -14,7 +14,7 @@ from tracefold.news.learning.baseline import (
     build_baseline_cases,
     run_baseline,
 )
-from tracefold.news.learning.metric import accepted_review_metric
+from tracefold.news.learning.metric import CandidatePrediction, MetricOutcome, accepted_review_metric
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
@@ -125,20 +125,17 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
     )
 
 
-def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> dspy.Prediction:
+def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> MetricOutcome:
     example = program_metric.build_compile_example(episode)
-    projection = dict(example.get("policy_metric") or {})
+    projection = dict(example.policy_metric)
     projection["recorded_decision_result"] = recorded_decision("push")
     judgment = scored_judgment(verdict)
     return accepted_review_metric(
-        example.copy(policy_metric=projection),
-        dspy.Prediction(
+        dataclasses.replace(example, policy_metric=projection),
+        CandidatePrediction(
             verdict=judgment.verdict.model_dump(mode="json"),
             editorial=judgment.editorial.model_dump(mode="json"),
         ),
-        None,
-        None,
-        None,
     )
 
 

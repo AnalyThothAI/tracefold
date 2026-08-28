@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+import asyncio
+import dataclasses
 from types import SimpleNamespace
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
-import dspy
 import pytest
 
 from tracefold.news.artifact_identity import canonical_sha
@@ -17,12 +16,21 @@ from tracefold.news.learning.contracts import (
     ModelExecutionIdentity,
     OptimizationBudget,
 )
-from tracefold.news.learning.metric import _metric_receipt, accepted_review_metric
+from tracefold.news.learning.metric import (
+    CandidatePrediction,
+    CompileExample,
+    MetricOutcome,
+    _metric_receipt,
+    accepted_review_metric,
+)
 from tracefold.news.learning.objective import DevelopmentEpisode, _honest_split, _retrieval_receipt
 from tracefold.news.learning.optimizer import (
-    _BudgetedLM,
+    InstructionProposer,
     _BudgetMeter,
-    build_optimizer_lm,
+    _MeteredPredictorAdapter,
+    _MeteredReflectionLM,
+    build_reflection_lm,
+    build_task_adapter,
     require_model_identity,
     run_gepa,
 )
@@ -37,10 +45,12 @@ from tracefold.news.program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
-from tracefold.news.program.dspy_adapter import (
-    DspyStrictJSONAdapter,
-    ExactProviderCallCapture,
-    ExactProviderMetadata,
+from tracefold.news.program.transport import (
+    PredictorRequest,
+    PredictorResponse,
+    PredictorSpec,
+    ProviderCallMetrics,
+    RuntimeModelIdentity,
 )
 from tracefold.news.told_context import ToldLedgerEntry
 
@@ -135,92 +145,165 @@ class _EvidenceJudge(_NoopJudge):
         return self.supported
 
 
-class _MeteredFakeLM:
-    """A fake route that carries the same stamp `build_compile_lm` puts on a real one.
+class _MeteredTaskAdapter:
+    """A fake task route carrying the same stamp `build_task_adapter` puts on a real one.
 
-    `ProgramCompiler` refuses an LM without `tracefold_compiler_endpoint_identity`, before any provider
-    call, because the role contract — temperature, output ceiling, deadline — is what an identity attests
-    and cannot be inferred from the object it describes. A fake that skips the stamp is not a cheaper
-    fixture, it is a route the compiler would refuse in production.
+    `optimize` refuses a route without `tracefold_compiler_endpoint_identity`, before any provider call,
+    because the role contract — temperature, output ceiling, deadline — is what an identity attests and
+    cannot be inferred from the object it describes. A fake that skips the stamp is not a cheaper fixture,
+    it is a route the optimizer would refuse in production.
     """
-
-    cache = False
-    num_retries = 0
 
     def __init__(
         self,
-        model: str,
+        model: str = "task/model",
         *,
-        cost: float = 0.000001,
+        cost: float = 0.000002,
         api_base: str = "https://compiler.test/v1",
-        role: Literal["task", "reflection"] = "task",
     ) -> None:
         self.model = model
         self.cost = cost
-        self.kwargs = {"api_base": api_base}
-        self.history: list[dict[str, Any]] = []
-        self._capture: ExactProviderCallCapture | None = None
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._runtime = RuntimeModelIdentity.issue(provider="fake", model=model)
         self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
-            role=role,
+            role="task",
             model=model,
             api_base=api_base,
-            max_output_tokens=REFLECTION_MAX_TOKENS if role == "reflection" else 512,
-            timeout_seconds=REFLECTION_TIMEOUT_SECONDS if role == "reflection" else 20.0,
-            temperature=1.0 if role == "reflection" else 0.0,
+            max_output_tokens=512,
+            timeout_seconds=20.0,
+            temperature=0.0,
             model_kwargs={},
         )
 
-    @contextmanager
-    def observe_exact_call(self) -> Iterator[ExactProviderCallCapture]:
-        capture = ExactProviderCallCapture()
-        self._capture = capture
-        try:
-            yield capture
-        finally:
-            self._capture = None
+    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
+        del model_binding
+        return self._runtime
 
-    def __call__(self, *args: Any, **kwargs: Any) -> list[str]:
-        del args, kwargs
-        # Shared history is deliberately wrong; the compiler must use the call-local observation.
-        self.history.append({"uuid": f"{self.model}:{len(self.history)}", "cost": 0.5})
-        assert self._capture is not None
-        self._capture.record_metadata(
-            ExactProviderMetadata(provider_cost_microusd=round(self.cost * 1_000_000), finish_reason="stop")
+    async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+        self.calls.append((spec.name, dict(request.inputs)))
+        answer = _semantics() if spec.name == "event_semantics" else _card()
+        return PredictorResponse(
+            output={spec.output_field: answer},
+            provider="fake",
+            model=self.model,
+            model_sha256=canonical_sha({"provider": "fake", "model": self.model}),
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            provider_cost_microusd=round(self.cost * 1_000_000),
+            finish_reason="stop",
+            runtime_binding_sha256=request.runtime_binding_sha256,
         )
-        return ["unused"]
-
-    async def acall(self, *args: Any, **kwargs: Any) -> list[str]:
-        return self(*args, **kwargs)
 
 
-class _FakeGEPA:
+class _MeteredFakeReflectionLM:
+    """The reflection role's fake: one callable, one settled cost, one stamped identity."""
+
+    def __init__(self, model: str = "reflection/model", *, cost: float = 0.000003) -> None:
+        self.model = model
+        self.prompts: list[Any] = []
+        self.last_metrics = ProviderCallMetrics(
+            provider_cost_microusd=round(cost * 1_000_000), finish_reason="stop", total_tokens=9
+        )
+        self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
+            role="reflection",
+            model=model,
+            api_base="https://compiler.test/v1",
+            max_output_tokens=REFLECTION_MAX_TOKENS,
+            timeout_seconds=REFLECTION_TIMEOUT_SECONDS,
+            temperature=1.0,
+            model_kwargs={},
+        )
+
+    def __call__(self, prompt: Any) -> str:
+        self.prompts.append(prompt)
+        return "```\nA proposed replacement instruction.\n```"
+
+
+def _semantics(**overrides: Any) -> dict[str, Any]:
+    """The EventSemantics shape the fake task route answers with."""
+
+    values: dict[str, Any] = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "filing",
+        "assets": [{"symbol": "ABC", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "confidence": 0.8,
+        "audience": "us_equity",
+        "relevance": _relevance().model_dump(mode="json"),
+    }
+    values.update(overrides)
+    return values
+
+
+def _card(**overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "headline_zh": "发行人提交重大更新，交付时间表整体推迟一个季度",
+        "why_zh": "交付推迟一个季度，已签约的下游客户要重排产能",
+    }
+    values.update(overrides)
+    return values
+
+
+def _spec(predictor: str = "event_semantics") -> PredictorSpec:
+    from tracefold.news.program.graph import predictor_spec
+
+    return predictor_spec(load_stable_program_artifact().predictor_state(predictor))
+
+
+def _fake_request(adapter: Any, spec: PredictorSpec) -> PredictorRequest:
+    runtime = adapter.runtime_identity(f"{spec.name}.primary")
+    return PredictorRequest(
+        program_version="test",
+        program_sha256="a" * 64,
+        context_sha256="b" * 64,
+        predictor=spec.name,
+        route="primary",
+        attempt=1,
+        model_binding=f"{spec.name}.primary",
+        runtime_provider=runtime.provider,
+        runtime_model=runtime.model,
+        runtime_model_sha256=runtime.model_sha256,
+        runtime_binding_sha256=runtime.binding_sha256,
+        inputs={"evidence_json": "{}"},
+    )
+
+
+class _FakeGepaOptimize:
+    """Stands in for `gepa.optimize`, and drives the adapter the way the real engine does.
+
+    It is a class only so the recorded kwargs survive between the call and the assertion; what `run_gepa`
+    receives is the `__call__` below, which is exactly the `optimize_fn` seam.
+    """
+
     calls: ClassVar[list[dict[str, Any]]] = []
 
-    def __init__(self, metric: Any, **kwargs: Any) -> None:
-        self.metric = metric
-        self.kwargs = kwargs
+    def __call__(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
-
-    def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
-        assert teacher is None
+        adapter = kwargs["adapter"]
+        trainset, valset = list(kwargs["trainset"]), list(kwargs["valset"])
+        seed = dict(kwargs["seed_candidate"])
         # The whole point of the split: GEPA optimizes on one set and picks the winner on another.
         assert trainset and valset
         assert {example.case_id for example in trainset}.isdisjoint({example.case_id for example in valset})
         assert {example.cluster_id for example in trainset}.isdisjoint({example.cluster_id for example in valset})
-        # Both Predictors' evidence is visibly delimited before the optimizer ever sees it: the model is told
-        # where untrusted Event bytes begin and end, on the compile path as much as in production.
+        # The card Predictor's evidence is visibly delimited before the optimizer ever sees it: the model is
+        # told where untrusted Event bytes begin and end, on the compile path as much as in production.
         for example in trainset + valset:
-            for field in ("evidence_json", "card_evidence_json"):
-                assert getattr(example, field).startswith("<tracefold-untrusted-event-json-v1>\n")
-                assert getattr(example, field).endswith("\n</tracefold-untrusted-event-json-v1>")
-        assert isinstance(dspy.settings.adapter, DspyStrictJSONAdapter)
-        assert dspy.settings.disable_history is True
-        dspy.settings.lm(prompt="task budget probe")
-        self.kwargs["reflection_lm"](prompt="reflection budget probe")
-        student.event_semantics.signature = student.event_semantics.signature.with_instructions(
-            student.event_semantics.signature.instructions + "\nCompiler candidate instruction."
-        )
-        student.detailed_results = SimpleNamespace(
+            assert example.card_evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
+            assert example.card_evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
+
+        batch = adapter.evaluate(trainset[:1], seed, capture_traces=True)
+        adapter.make_reflective_dataset(seed, batch, ["event_semantics"])
+        adapter.propose_new_texts(seed, {"event_semantics": [{"Feedback": "x"}]}, ["event_semantics"])
+
+        winner = {**seed, "event_semantics": seed["event_semantics"] + "\nCompiler candidate instruction."}
+        return SimpleNamespace(
+            best_candidate=winner,
+            candidates=[seed, winner],
             parents=[[None], [0]],
             val_aggregate_scores=[0.4, 0.7],
             discovery_eval_counts=[1, 2],
@@ -229,7 +312,6 @@ class _FakeGEPA:
             seed=17,
             best_idx=1,
         )
-        return student
 
 
 def _episode_payloads() -> tuple[dict[str, Any], ...]:
@@ -344,7 +426,7 @@ def _budget(**overrides: Any) -> OptimizationBudget:
     return OptimizationBudget(**values)
 
 
-def _run(*, optimizer_factory: Any = _FakeGEPA, judge: Any = None) -> Any:
+def _run(*, optimize_fn: Any = None, judge: Any = None) -> Any:
     """One bounded GEPA run over the corpus above, through the shared core.
 
     The container, the proxy and `ProgramCompiler` are gone (#202 PR-C); what is left is the core itself,
@@ -356,57 +438,77 @@ def _run(*, optimizer_factory: Any = _FakeGEPA, judge: Any = None) -> Any:
     return run_gepa(
         base_program=load_stable_program_artifact(),
         episodes=_episodes(),
-        task_lm=_BudgetedLM(_MeteredFakeLM("task/model", cost=0.000002), role="task", meter=meter),  # type: ignore[arg-type]
-        reflection_lm=_BudgetedLM(
-            _MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),  # type: ignore[arg-type]
-            role="reflection",
-            meter=meter,
-        ),
+        task_adapter=_MeteredPredictorAdapter(_MeteredTaskAdapter(), meter=meter),
+        reflection_lm=_MeteredReflectionLM(_MeteredFakeReflectionLM(), meter=meter),
         judge=judge or _NoopJudge(),
         max_metric_calls=3,
         seed=17,
         review_rubric_version="news_review_v4",
-        optimizer_factory=optimizer_factory,
+        optimize_fn=optimize_fn or _FakeGepaOptimize(),
     )
 
 
-def test_the_meter_uses_exact_call_metadata_not_shared_history() -> None:
-    lm = _MeteredFakeLM("task/model", cost=0.000002)
+def test_the_meter_settles_each_provider_answer_from_the_response_it_returned() -> None:
+    inner = _MeteredTaskAdapter(cost=0.000002)
     meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+    adapter = _MeteredPredictorAdapter(inner, meter=meter)
+    spec = _spec()
+    request = _fake_request(adapter, spec)
 
-    assert _BudgetedLM(lm, role="task", meter=meter)(prompt="probe") == ["unused"]  # type: ignore[arg-type]
+    assert asyncio.run(adapter.invoke(request, spec)).output == {"semantics": _semantics()}
 
-    # The provider reported 2 micro-USD for this call; the shared `history` list deliberately says 0.5 USD.
+    # The provider reported 2 micro-USD for this call; nothing else is consulted for the number.
     assert meter.actual_cost_microusd == 2
     assert meter.task_model_calls == 1
 
 
-def test_the_meter_charges_a_provider_response_even_when_the_lm_raises_afterward() -> None:
-    class _RaisingLM(_MeteredFakeLM):
-        def __call__(self, *args: Any, **kwargs: Any) -> list[str]:
-            super().__call__(*args, **kwargs)
-            raise ValueError("provider_answered_then_failed")
+def test_the_meter_charges_a_provider_answer_that_failed_to_parse() -> None:
+    """A refused answer is still a paid call, and `provider_observation` is how the transport says so."""
 
-    lm = _RaisingLM("task/model", cost=0.000002)
+    from tracefold.news.program.transport import PredictorAdapterError, ProviderCallObservation
+
+    class _ParseFailingAdapter(_MeteredTaskAdapter):
+        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+            raise PredictorAdapterError(
+                "news_program_provider_output_not_json",
+                output_failure=True,
+                provider_observation=ProviderCallObservation(
+                    provider="fake",
+                    model=self.model,
+                    model_sha256=canonical_sha({"provider": "fake", "model": self.model}),
+                    latency_ms=3,
+                    input_tokens=10,
+                    output_tokens=5,
+                    cached_tokens=0,
+                    total_tokens=15,
+                    provider_cost_microusd=2,
+                    finish_reason="stop",
+                    runtime_binding_sha256=request.runtime_binding_sha256,
+                ),
+            )
+
+    inner = _ParseFailingAdapter()
     meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+    adapter = _MeteredPredictorAdapter(inner, meter=meter)
+    spec = _spec()
 
-    with pytest.raises(ValueError, match="provider_answered_then_failed"):
-        _BudgetedLM(lm, role="task", meter=meter)(prompt="probe")  # type: ignore[arg-type]
+    with pytest.raises(PredictorAdapterError, match="output_not_json"):
+        asyncio.run(adapter.invoke(_fake_request(adapter, spec), spec))
 
     assert meter.actual_cost_microusd == 2
+    assert meter.task_model_calls == 1
 
 
 def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
-    _FakeGEPA.calls.clear()
+    _FakeGepaOptimize.calls.clear()
 
     result = _run()
 
-    kwargs = _FakeGEPA.calls[-1]
-    assert kwargs["auto"] is None
-    assert kwargs["max_full_evals"] is None
+    kwargs = _FakeGepaOptimize.calls[-1]
     assert kwargs["max_metric_calls"] == 3
-    assert kwargs["track_stats"] is True
+    assert kwargs["seed"] == 17
     assert kwargs["track_best_outputs"] is False
+    assert set(kwargs["seed_candidate"]) == {"event_semantics", "reader_card"}
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     # The whole write-set: one complete instruction per Predictor, carrying exactly what the optimizer
     # wrote. The fake optimizer appends to the seed, so the patch is the seed plus its line — an untouched
@@ -420,30 +522,45 @@ def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     assert result.failure_cluster_ids == ("cluster-1-target", "cluster-2-target", "cluster-3-target")
     assert result.target_dimensions == ("direction",)
     receipts = result.model_dump(mode="json")
-    assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
+    assert receipts["optimizer_config"]["optimizer"]["implementation"] == "gepa.optimize"
+    assert receipts["optimizer_config"]["optimizer"]["evaluator"].startswith("production NewsSemanticProgram")
+    assert "dspy_version" not in receipts["optimizer_config"]["optimizer"]
     assert "source" in receipts["metric"]["implementation"]
 
 
 def test_non_json_trajectory_value_fails_closed() -> None:
-    class _UnsafeGEPA(_FakeGEPA):
-        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
-            student = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
-            student.detailed_results.parents = [[object()]]
-            return student
+    class _UnsafeOptimize(_FakeGepaOptimize):
+        def __call__(self, **kwargs: Any) -> Any:
+            run = super().__call__(**kwargs)
+            run.parents = [[object()]]
+            return run
 
     with pytest.raises(TypeError, match="non_json_receipt_value"):
-        _run(optimizer_factory=_UnsafeGEPA)
+        _run(optimize_fn=_UnsafeOptimize())
 
 
 def test_nonfinite_trajectory_value_fails_closed() -> None:
-    class _NonfiniteGEPA(_FakeGEPA):
-        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
-            student = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
-            student.detailed_results.val_aggregate_scores = [float("nan")]
-            return student
+    class _NonfiniteOptimize(_FakeGepaOptimize):
+        def __call__(self, **kwargs: Any) -> Any:
+            run = super().__call__(**kwargs)
+            run.val_aggregate_scores = [float("nan")]
+            return run
 
     with pytest.raises(TypeError, match="nonfinite_receipt_value"):
-        _run(optimizer_factory=_NonfiniteGEPA)
+        _run(optimize_fn=_NonfiniteOptimize())
+
+
+def test_a_winner_missing_a_component_is_refused_rather_than_shipped() -> None:
+    """gepa returns a `dict[str, str]`; the write-set is exactly two named texts or it is not a candidate."""
+
+    class _PartialOptimize(_FakeGepaOptimize):
+        def __call__(self, **kwargs: Any) -> Any:
+            run = super().__call__(**kwargs)
+            run.best_candidate = {"event_semantics": "only one component"}
+            return run
+
+    with pytest.raises(ValueError, match="compile_result_type_invalid"):
+        _run(optimize_fn=_PartialOptimize())
 
 
 def test_an_unstamped_or_misrouted_endpoint_is_refused_before_anything_is_spent() -> None:
@@ -452,40 +569,52 @@ def test_an_unstamped_or_misrouted_endpoint_is_refused_before_anything_is_spent(
     Inferring it from the object it describes would be circular, so an LM without the stamp is refused.
     """
 
-    class _Unstamped(_MeteredFakeLM):
-        def __init__(self, model: str, **kwargs: Any) -> None:
-            super().__init__(model, **kwargs)
+    class _Unstamped(_MeteredTaskAdapter):
+        def __init__(self, model: str = "task/model") -> None:
+            super().__init__(model)
             del self.tracefold_compiler_endpoint_identity
 
     with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
-        require_model_identity(_Unstamped("task/model"), role="task")
+        require_model_identity(_Unstamped(), role="task")
     # Right stamp, wrong role: the reflection endpoint cannot answer as the task one.
     with pytest.raises(ValueError, match="endpoint_identity_unavailable"):
-        require_model_identity(_MeteredFakeLM("reflection/model", role="reflection"), role="task")
+        require_model_identity(_MeteredFakeReflectionLM(), role="task")
 
 
 def test_each_role_is_built_under_its_own_exact_budget() -> None:
-    reflection = build_optimizer_lm(
-        role="reflection",
+    """The reflection role's budget is exact, not a floor: its builder takes no timeout or ceiling at all."""
+
+    reflection = build_reflection_lm(
         model_name="reflection/model",
         api_key="k",
         api_base="https://reflection.test/v1",
-        # Deliberately the task route's numbers: the reflection role's budget is exact, not a floor.
-        timeout=20.0,
-        max_tokens=1_200,
     )
     identity = require_model_identity(reflection, role="reflection")
 
     assert identity.max_output_tokens == REFLECTION_MAX_TOKENS
     assert identity.timeout_seconds == REFLECTION_TIMEOUT_SECONDS
     assert identity.temperature == 1
+
+    task = build_task_adapter(
+        model_name="task/model",
+        api_key="k",
+        api_base="https://task.test/v1",
+        timeout=20.0,
+        max_tokens=1_200,
+    )
+    task_identity = require_model_identity(task, role="task")
+    assert (task_identity.max_output_tokens, task_identity.timeout_seconds, task_identity.temperature) == (
+        1_200,
+        20.0,
+        0,
+    )
     assert (METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS) == (4_096, 120.0)
 
 
 def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
-    def changed_metric(*args: Any, **kwargs: Any) -> dspy.Prediction:
+    def changed_metric(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
-        return dspy.Prediction(score=0.5, feedback="changed")
+        return MetricOutcome(score=0.5, feedback="changed")
 
     original = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v4")
     changed = _metric_receipt(changed_metric, review_rubric_version="news_review_v4")
@@ -504,9 +633,9 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     metric_sha = "a" * 64
     base = _optimizer_config_receipt(
         constructor=constructor,
-        task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_FakeGEPA,
+        task_adapter=_MeteredTaskAdapter("task/model"),
+        reflection_lm=_MeteredFakeReflectionLM(),
+        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -514,9 +643,9 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     )
     changed_scalar = _optimizer_config_receipt(
         constructor={**constructor, "seed": 18},
-        task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_FakeGEPA,
+        task_adapter=_MeteredTaskAdapter("task/model"),
+        reflection_lm=_MeteredFakeReflectionLM(),
+        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -524,9 +653,9 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     )
     changed_model = _optimizer_config_receipt(
         constructor=constructor,
-        task_lm=_MeteredFakeLM("task/other-model"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_FakeGEPA,
+        task_adapter=_MeteredTaskAdapter("task/other-model"),
+        reflection_lm=_MeteredFakeReflectionLM(),
+        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -534,9 +663,9 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     )
     changed_endpoint = _optimizer_config_receipt(
         constructor=constructor,
-        task_lm=_MeteredFakeLM("task/model", api_base="https://other-compiler.test/v1"),  # type: ignore[arg-type]
-        reflection_lm=_MeteredFakeLM("reflection/model", role="reflection"),  # type: ignore[arg-type]
-        optimizer_factory=_FakeGEPA,
+        task_adapter=_MeteredTaskAdapter("task/model", api_base="https://other-compiler.test/v1"),
+        reflection_lm=_MeteredFakeReflectionLM(),
+        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -575,20 +704,48 @@ def _metric_gold(**overrides: Any) -> Any:
             gold[key] = {**gold[key], **value}
         else:
             gold[key] = value
-    return dspy.Example(**gold)
+    return CompileExample(
+        case_id=str(gold.pop("case_id", "case-1")),
+        cluster_id=str(gold.pop("cluster_id", "cluster-1")),
+        context=_metric_context(),
+        accepted_review=dict(gold["accepted_review"]),
+        production_judgment=gold["production_judgment"],
+        policy_metric=dict(gold["policy_metric"]),
+        card_evidence_json=str(gold.pop("card_evidence_json", "")),
+        source_title=str(gold.pop("source_title", "")),
+        told_count=0,
+    )
+
+
+def _metric_context() -> TriageContext:
+    return TriageContext.from_card(
+        {
+            "event_id": "event-metric",
+            "evidence_version": 1,
+            "evidence_sha256": "e" * 64,
+            "focus_fact_id": "fact-metric",
+            "leader_title": "Issuer files a material update",
+            "opened_at_ms": 1_800_000_000_000,
+            "storyline_key": "asset:ABC",
+            "grounded_assets": ["ABC"],
+            "asset_class": "equity",
+            "admission": "candidate",
+        },
+        watchlist=(),
+        told_rows=(),
+        now_ms=1_800_000_000_000,
+        queue_lag_ms=0,
+    )
 
 
 def _score(gold: Any, verdict: dict[str, Any], pred_name: str | None = None) -> Any:
     return accepted_review_metric(
         gold,
-        dspy.Prediction(
+        CandidatePrediction(
             verdict=verdict,
             editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
         ),
-        None,
-        pred_name,
-        None,
-        None,
+        pred_name=pred_name,
     )
 
 
@@ -669,9 +826,12 @@ def test_factual_failure_must_be_repaired_against_evidence_not_merely_reworded()
             "novelty": {"judgment": "uncertain", "duplicate_of": ""},
         },
         production_judgment=_judgment(),
-    ).copy(card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>")
+    )
+    gold = dataclasses.replace(
+        gold, card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>"
+    )
     changed = _metric_verdict(headline_zh="发行人已提交重大更新，交付时间表整体推迟一个季度")
-    prediction = dspy.Prediction(
+    prediction = CandidatePrediction(
         verdict=changed,
         editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
     )
@@ -695,7 +855,10 @@ def test_factual_failure_fails_closed_without_an_evidence_judge() -> None:
             "novelty": {"judgment": "uncertain", "duplicate_of": ""},
         },
         production_judgment=_judgment(),
-    ).copy(card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>")
+    )
+    gold = dataclasses.replace(
+        gold, card_evidence_json="<trusted-test-evidence>issuer filed no update</trusted-test-evidence>"
+    )
     changed = _metric_verdict(headline_zh="任意改写不能证明事实已经修复，仍需对照原始证据核验")
 
     outcome = _score(gold, changed)
@@ -787,7 +950,7 @@ def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback
     )
     projection = dict(gold.policy_metric)
     projection["gate"] = {**dict(projection["gate"]), "watchlist_symbols": ["ABC"]}
-    gold = gold.copy(policy_metric=projection)
+    gold = dataclasses.replace(gold, policy_metric=projection)
     editorial = EditorialEnvelope.issue(
         editorial_origin="model",
         relevance=_relevance(
@@ -797,9 +960,9 @@ def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback
             affected_markets=[],
         ),
     )
-    prediction = dspy.Prediction(verdict=_metric_verdict(), editorial=editorial)
+    prediction = CandidatePrediction(verdict=_metric_verdict(), editorial=editorial)
 
-    outcome = accepted_review_metric(gold, prediction, None, "event_semantics", None, None)
+    outcome = accepted_review_metric(gold, prediction, pred_name="event_semantics")
 
     assert outcome.hard_gate == "must_hold_send"
     assert outcome.objective_guard == "watchlist"
@@ -852,7 +1015,7 @@ def test_the_metric_scores_editorial_judgment_with_no_operational_input() -> Non
     projection must still carry no control state, or a future control plane could leak into the reward.
     """
 
-    assert "control" not in _metric_gold()["policy_metric"]
+    assert "control" not in _metric_gold().policy_metric
 
 
 # ---------------------------------------------------------------- honest split

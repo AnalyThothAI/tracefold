@@ -16,18 +16,19 @@ from typing import Any, Literal, NoReturn, cast
 from ..artifact_identity import canonical_sha
 from ..program.artifact import ProgramStrategyArtifactV1
 from ..program.contracts import SemanticJudgment, TriageContext
-from ..program.dspy_adapter import (
-    PredictorAdapterError,
-    PredictorRequest,
-    PredictorResponse,
-    ProviderCallObservation,
-    RuntimeModelIdentity,
-)
-from ..program.graph import DspyNewsSemanticProgram
+from ..program.graph import NewsSemanticProgram
 from ..program.runtime import (
     PROGRAM_FACTORY_ID,
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
+)
+from ..program.transport import (
+    PredictorAdapterError,
+    PredictorRequest,
+    PredictorResponse,
+    PredictorSpec,
+    ProviderCallObservation,
+    RuntimeModelIdentity,
 )
 
 ArmName = Literal["stable", "candidate"]
@@ -148,8 +149,8 @@ class _ScopedRecordingAdapter:
             binding_sha256=str(request.get("runtime_binding_sha256") or ""),
         )
 
-    async def invoke(self, request: PredictorRequest, predictor: Any) -> PredictorResponse:
-        del predictor
+    async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+        del spec
         recording = self._next()
         expected = recording.request
         request_payload = request.model_dump(mode="json")
@@ -217,7 +218,7 @@ class _ScopedRecordingAdapter:
 class _ReplayArm:
     bundle_sha: str
     adapter: _ScopedRecordingAdapter
-    program: DspyNewsSemanticProgram
+    program: NewsSemanticProgram
 
 
 class RecordingReplayCapability:
@@ -363,7 +364,7 @@ def load_recording_replay_capability(
         replay_arms[arm] = _ReplayArm(
             bundle_sha=spec.bundle_sha,
             adapter=adapter,
-            program=DspyNewsSemanticProgram(
+            program=NewsSemanticProgram(
                 spec.artifact,
                 primary_adapter=adapter,
                 fallback_adapter=adapter,
@@ -451,7 +452,7 @@ def _error_behavior(error_code: str) -> tuple[bool, bool]:
         raise RecordingReplayError("news_learning_recording_replay_outcome_unreplayable:route_deadline")
     if error_code == "news_program_runtime_binding_mismatch":
         raise RecordingReplayError("news_learning_recording_replay_outcome_unreplayable:runtime_binding")
-    if error_code == "news_program_output_truncated" or error_code.startswith("news_program_dspy_output_"):
+    if error_code == "news_program_output_truncated" or error_code.startswith("news_program_provider_output_"):
         return False, True
     if error_code in {"news_program_event_semantics_invalid", "news_program_reader_card_invalid"}:
         return False, True

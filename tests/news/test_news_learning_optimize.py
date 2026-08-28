@@ -32,16 +32,18 @@ from tracefold.news.learning.optimizer import (
     FrozenDevelopmentDataset,
     OptimizationBudgetExceeded,
     OptimizationConfig,
-    _BudgetedLM,
     _BudgetMeter,
+    _MeteredPredictorAdapter,
+    _MeteredReflectionLM,
     optimize,
 )
 from tracefold.news.program.artifact import ProgramStrategyArtifactV1, load_stable_program_artifact
+from tracefold.news.program.transport import ChatCompletionsPredictorAdapter
 
 from .test_news_gepa_core import _episodes as _corpus
-from .test_news_gepa_core import _FakeGEPA, _MeteredFakeLM, _NoopJudge
+from .test_news_gepa_core import _FakeGepaOptimize, _MeteredFakeReflectionLM, _MeteredTaskAdapter, _NoopJudge
 
-_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v7", "cases": []}
+_DATASET_PAYLOAD = {"role": "development", "learning_epoch": "program_v8", "cases": []}
 
 
 class _StampedJudge(_NoopJudge):
@@ -129,18 +131,18 @@ def _dataset(episodes: tuple[DevelopmentEpisode, ...] | None = None) -> FrozenDe
 
 def _config(
     *,
-    optimizer_factory: Any = _FakeGEPA,
+    optimize_fn: Any = None,
     budget: OptimizationBudget | None = None,
     monotonic: Any = None,
-    task_lm: Any = None,
+    task_adapter: Any = None,
     judge: Any = None,
 ) -> OptimizationConfig:
     return OptimizationConfig(
-        task_lm=task_lm or _MeteredFakeLM("task/model", cost=0.000002),
-        reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),
+        task_adapter=task_adapter or _MeteredTaskAdapter(),
+        reflection_lm=_MeteredFakeReflectionLM(),
         judge=judge or _StampedJudge(),
         budget=budget or _budget(),
-        optimizer_factory=optimizer_factory,
+        optimize_fn=optimize_fn or _FakeGepaOptimize(),
         now_ms=lambda: _NOW_MS,
         monotonic=monotonic or (lambda: 0.0),
     )
@@ -154,30 +156,26 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
     construction in the repository, and this is what makes that claim checkable rather than asserted.
     """
 
-    from tracefold.news.learning.optimizer import _BudgetedLM, _BudgetMeter, run_gepa
+    from tracefold.news.learning.optimizer import _BudgetMeter, run_gepa
 
-    _FakeGEPA.calls.clear()
+    _FakeGepaOptimize.calls.clear()
     meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
     compiled = run_gepa(
         base_program=load_stable_program_artifact(),
         episodes=_corpus(),
-        task_lm=_BudgetedLM(_MeteredFakeLM("task/model", cost=0.000002), role="task", meter=meter),
-        reflection_lm=_BudgetedLM(
-            _MeteredFakeLM("reflection/model", cost=0.000003, role="reflection"),
-            role="reflection",
-            meter=meter,
-        ),
+        task_adapter=_MeteredPredictorAdapter(_MeteredTaskAdapter(), meter=meter),
+        reflection_lm=_MeteredReflectionLM(_MeteredFakeReflectionLM(), meter=meter),
         judge=_StampedJudge(),
         max_metric_calls=3,
         seed=17,
         review_rubric_version="news_review_v4",
-        optimizer_factory=_FakeGEPA,
+        optimize_fn=_FakeGepaOptimize(),
     )
-    compiler_constructor = dict(_FakeGEPA.calls[-1])
+    compiler_constructor = dict(_FakeGepaOptimize.calls[-1])
 
-    _FakeGEPA.calls.clear()
+    _FakeGepaOptimize.calls.clear()
     result = optimize(_dataset(), _config())
-    entry_constructor = dict(_FakeGEPA.calls[-1])
+    entry_constructor = dict(_FakeGepaOptimize.calls[-1])
 
     assert result.outcome == "ADVANCE"
     assert result.report.split == compiled.split
@@ -189,7 +187,7 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
     assert result.report.objective["target_dimensions"] == list(compiled.target_dimensions)
     assert entry_constructor["max_metric_calls"] == compiler_constructor["max_metric_calls"]
     assert entry_constructor["reflection_minibatch_size"] == compiler_constructor["reflection_minibatch_size"]
-    assert entry_constructor["component_selector"] == compiler_constructor["component_selector"]
+    assert entry_constructor["module_selector"] == compiler_constructor["module_selector"]
     assert entry_constructor["seed"] == compiler_constructor["seed"]
     assert result.candidate is not None
     assert result.candidate.patch.event_semantics_instruction == compiled.patch.event_semantics_instruction
@@ -224,25 +222,24 @@ def test_advance_produces_a_candidate_the_report_names_and_nothing_it_may_promot
 
 
 def test_a_run_that_learned_nothing_is_a_no_op_with_a_complete_report() -> None:
-    class _SeedGEPA(_FakeGEPA):
-        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
-            compiled = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
-            # Put the seed back: a Pareto front that kept the seed is exactly this, and since #306 Phase 2
-            # the seed is the complete instruction rather than the empty advisory it used to be.
-            compiled.event_semantics.signature = student.event_semantics.signature.with_instructions(
-                load_stable_program_artifact().event_semantics_instruction
-            )
-            return compiled
+    class _SeedOptimize(_FakeGepaOptimize):
+        def __call__(self, **kwargs: Any) -> Any:
+            run = super().__call__(**kwargs)
+            # A Pareto front that kept the seed is exactly this, and since #306 Phase 2 the seed is the
+            # complete instruction rather than the empty advisory it used to be.
+            run.best_candidate = dict(kwargs["seed_candidate"])
+            return run
 
-    result = optimize(_dataset(), _config(optimizer_factory=_SeedGEPA))
+    result = optimize(_dataset(), _config(optimize_fn=_SeedOptimize()))
 
     assert result.outcome == "NO_OP"
     assert result.candidate is None
     assert result.report.candidate_sha256 is None
     assert result.report.reasons == ("news_program_compile_no_program_change",)
-    # A `NO_OP` still spent a budget, so it still has to say what it spent it on.
+    # A `NO_OP` still spent a budget, so it still has to say what it spent it on. Two task calls, because
+    # one evaluated case is one EventSemantics call and one ReaderCard call.
     assert result.report.split is not None
-    assert result.report.usage["task_model_calls"] == 1
+    assert result.report.usage["task_model_calls"] == 2
     assert result.report.usage["reflection_model_calls"] == 1
 
 
@@ -253,30 +250,28 @@ def test_a_corpus_with_no_verified_prompt_target_is_rejected_before_any_endpoint
     have blocked must not become the expensive way to learn the same thing.
     """
 
-    task_lm = _MeteredFakeLM("task/model", cost=0.000002)
+    task_adapter = _MeteredTaskAdapter()
     dataset = _dataset(_episodes(first_bad_owner_explicit=None))
 
-    result = optimize(dataset, _config(task_lm=task_lm))
+    result = optimize(dataset, _config(task_adapter=task_adapter))
 
     assert result.outcome == "REJECTED"
     assert result.candidate is None
     assert "news_program_compile_no_verified_failure_clusters" in result.report.reasons
-    assert task_lm.history == []
+    assert task_adapter.calls == []
     assert result.report.usage["task_model_calls"] == 0
     assert result.report.split is None
     assert result.report.objective["exclusion_reasons"]
 
 
 def test_an_exhausted_call_budget_is_rejected_and_never_produces_a_candidate() -> None:
-    class _GreedyGEPA(_FakeGEPA):
-        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
-            import dspy
+    class _GreedyOptimize(_FakeGepaOptimize):
+        def __call__(self, **kwargs: Any) -> Any:
+            # One evaluation is two Predictor calls, so a one-call task budget cannot survive it.
+            kwargs["adapter"].evaluate(list(kwargs["trainset"])[:1], dict(kwargs["seed_candidate"]))
+            return super().__call__(**kwargs)
 
-            dspy.settings.lm(prompt="one")
-            dspy.settings.lm(prompt="two")
-            return super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
-
-    result = optimize(_dataset(), _config(optimizer_factory=_GreedyGEPA, budget=_budget(max_task_model_calls=1)))
+    result = optimize(_dataset(), _config(optimize_fn=_GreedyOptimize(), budget=_budget(max_task_model_calls=1)))
 
     assert result.outcome == "REJECTED"
     assert result.candidate is None
@@ -466,28 +461,35 @@ def test_an_unpriced_provider_call_is_charged_at_the_declared_ceiling_rather_tha
     keeps the cost budget meaningful — and over-charges, which is the direction that stops a run early.
     """
 
-    from tracefold.news.program.dspy_adapter import ExactProviderMetadata
+    from tracefold.news.program.transport import ProviderCallMetrics
 
     meter = _BudgetMeter(_budget(max_cost_microusd=12, max_call_cost_microusd=5), imputed_call_cost_microusd=5)
     meter.before("task")
-    meter.after(ExactProviderMetadata(provider_cost_microusd=None, finish_reason="stop"))
+    meter.after(ProviderCallMetrics(provider_cost_microusd=None, finish_reason="stop"))
     assert meter.actual_cost_microusd == 5
     assert meter.imputed_cost_calls == 1
 
     unpriced = _BudgetMeter(_budget())
     unpriced.before("task")
     with pytest.raises(OptimizationBudgetExceeded, match="provider_cost_unavailable"):
-        unpriced.after(ExactProviderMetadata(provider_cost_microusd=None, finish_reason="stop"))
+        unpriced.after(ProviderCallMetrics(provider_cost_microusd=None, finish_reason="stop"))
 
 
-def test_the_metered_lm_still_refuses_a_cached_or_silently_retrying_route() -> None:
-    meter = _BudgetMeter(_budget())
+def test_the_metered_adapter_has_nowhere_for_a_cache_or_a_hidden_retry_to_live() -> None:
+    """#306 Phase 3 turned two runtime refusals into a structural absence.
 
-    class _Cached(_MeteredFakeLM):
-        cache = True
+    `_BudgetedLM` used to check `cache is False` and `num_retries == 0` on the framework LM it wrapped,
+    because either would have made the ProgramTrace call count stop meaning "physical provider attempts".
+    The transport composes one HTTP request per `invoke` and holds neither setting, so the only retry left
+    is the metered one below, and it is counted.
+    """
 
-    with pytest.raises(ValueError, match="cache_must_be_disabled"):
-        _BudgetedLM(_Cached("task/model"), role="task", meter=meter)  # type: ignore[arg-type]
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+    adapter = _MeteredPredictorAdapter(_MeteredTaskAdapter(), meter=meter)
+
+    assert not hasattr(adapter, "cache")
+    assert adapter.transport_retries == 0
+    assert not any(hasattr(ChatCompletionsPredictorAdapter, name) for name in ("cache", "num_retries"))
 
 
 @pytest.mark.parametrize("capability", ["session", "repository", "activation", "artifact_root"])
@@ -501,22 +503,22 @@ def test_the_offline_job_rejects_storage_and_activation_capabilities(capability:
 def test_an_unbounded_or_unstamped_judge_is_refused_before_anything_is_spent() -> None:
     """#205 review, both halves.
 
-    The metric calls the judge directly, so `_BudgetedLM` never sees those requests — the judge admits them
+    The metric calls the judge directly, so the metered adapter never sees those requests — the judge admits them
     itself, atomically, before each provider call. That is a real pre-call bound only if the ceiling it
     admits against is the one declared here. And a judge with no stamped role binding produces scores a
     candidate would retain without naming the endpoint that produced them.
     """
 
-    task_lm = _MeteredFakeLM("task/model", cost=0.000002)
+    task_adapter = _MeteredTaskAdapter()
 
     with pytest.raises(ValueError, match="metric_judge_identity_unavailable"):
-        optimize(_dataset(), _config(task_lm=task_lm, judge=_NoopJudge()))
+        optimize(_dataset(), _config(task_adapter=task_adapter, judge=_NoopJudge()))
     with pytest.raises(ValueError, match="metric_judge_identity_unavailable"):
-        optimize(_dataset(), _config(task_lm=task_lm, judge=_StampedJudge(role="task")))
+        optimize(_dataset(), _config(task_adapter=task_adapter, judge=_StampedJudge(role="task")))
     # A ceiling above the declared budget is not a ceiling this run set.
     with pytest.raises(ValueError, match="metric_judge_call_budget_unbound"):
-        optimize(_dataset(), _config(task_lm=task_lm, judge=_StampedJudge(max_model_calls=17)))
-    assert task_lm.history == []
+        optimize(_dataset(), _config(task_adapter=task_adapter, judge=_StampedJudge(max_model_calls=17)))
+    assert task_adapter.calls == []
 
 
 def test_a_wall_clock_that_cannot_bound_one_call_is_refused() -> None:

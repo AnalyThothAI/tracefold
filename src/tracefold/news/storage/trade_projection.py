@@ -239,7 +239,7 @@ class TradeProjectionStorage:
                 ON s.event_id = v.event_id AND s.metric_version = %s
               JOIN news_events e ON e.event_id = v.event_id
               JOIN news_learning_epochs epoch
-                ON epoch.epoch_id = 'program_v7'
+                ON epoch.epoch_id = 'program_v8'
                AND e.opened_at_ms >= epoch.starts_at_ms
                AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
@@ -311,7 +311,7 @@ class TradeProjectionStorage:
               FROM news_verdicts v
               JOIN news_events e ON e.event_id = v.event_id
               JOIN news_learning_epochs epoch
-                ON epoch.epoch_id = 'program_v7'
+                ON epoch.epoch_id = 'program_v8'
                AND e.opened_at_ms >= epoch.starts_at_ms
                AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id

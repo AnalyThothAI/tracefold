@@ -7,8 +7,16 @@ The public Interface is deliberately small: callers submit one immutable
 Model transport is an Adapter Seam; domain validation, retry/fallback budgets,
 identity and audit remain owned by this Module.
 
+Since #306 Phase 3 there is no model framework under it. The two Predictors are
+``PredictorSpec`` values — an instruction, the bounded input fields, the output
+model and the token ceiling — and ``transport.py`` turns one of those plus one
+input mapping into one HTTP request. That also collapsed the separate optimizer
+student: what GEPA evaluates is this Module bound to one task endpoint, so "the
+optimized bytes are the production bytes" is what the code does rather than what
+a refactor-baseline test asserts.
+
 Only canonical JSON state is loadable.  This module never loads pickle,
-cloudpickle, DSPy Flex state, arbitrary classes, endpoints, or credentials.
+cloudpickle, arbitrary classes, endpoints, or credentials.
 """
 
 from __future__ import annotations
@@ -16,9 +24,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, TypeVar
 
-import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ValidationError
 
 from ..artifact_identity import canonical_json, canonical_sha
@@ -54,28 +61,9 @@ from .contracts import (
     TriageContext,
     aggregate_program_usage,
 )
-from .dspy_adapter import (
-    _TRUNCATED_FINISH_REASONS,
-    DspyPredictorAdapter,
-    DspyStrictJSONAdapter,
-    ExactMetadataDspyLM,
-    ExactProviderCallCapture,
-    ExactProviderMetadata,
-    PredictorAdapter,
-    PredictorAdapterError,
-    PredictorRecording,
-    PredictorRequest,
-    PredictorResponse,
-    ProviderCallObservation,
-    RecordReplayPredictorAdapter,
-    RuntimeModelIdentity,
-    ScriptedPredictorAdapter,
-    _is_retryable_exception,
-)
 from .runtime import (
     PROGRAM_FACTORY_ID,
     PROGRAM_LEARNING_EPOCH,
-    PROGRAM_PREDICTOR_MAX_TOKENS,
     PROGRAM_PRIMARY_BREAKER_FAILURES,
     PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
     PROGRAM_ROUTE_DEADLINE_SECONDS,
@@ -87,63 +75,46 @@ from .signatures import (
     EventSemantics,
     ReaderCard,
 )
+from .transport import (
+    _TRUNCATED_FINISH_REASONS,
+    ChatCompletionsPredictorAdapter,
+    PredictorAdapter,
+    PredictorAdapterError,
+    PredictorRecording,
+    PredictorRequest,
+    PredictorResponse,
+    PredictorSpec,
+    ProviderCallMetrics,
+    ProviderCallObservation,
+    RecordReplayPredictorAdapter,
+    RuntimeModelIdentity,
+    ScriptedPredictorAdapter,
+    _is_retryable_exception,
+)
+
+# The bounded fields each Predictor is shown, in the fixed order the transport renders them.
+_PREDICTOR_INPUT_FIELDS: dict[PredictorName, tuple[str, ...]] = {
+    "event_semantics": ("evidence_json",),
+    "reader_card": ("evidence_json", "semantics_json"),
+}
+_PREDICTOR_OUTPUT: dict[PredictorName, tuple[str, type[BaseModel]]] = {
+    "event_semantics": ("semantics", EventSemantics),
+    "reader_card": ("card", ReaderCard),
+}
 
 
-class _EventSemanticsSignature(dspy.Signature):  # type: ignore[misc]
-    evidence_json: str = dspy.InputField(desc="Delimited canonical bounded News evidence JSON")
-    semantics: EventSemantics = dspy.OutputField(desc="Strict semantic judgment; no reader prose")
+def predictor_spec(state: PredictorState) -> PredictorSpec:
+    """One Predictor's complete request shape, derived from its ready-to-execute state."""
 
-
-class _ReaderCardSignature(dspy.Signature):  # type: ignore[misc]
-    evidence_json: str = dspy.InputField(desc="Delimited canonical bounded News evidence JSON")
-    semantics_json: str = dspy.InputField(desc="Validated EventSemantics canonical JSON")
-    card: ReaderCard = dspy.OutputField(desc="Concise Chinese reader card")
-
-
-def _predictor(state: PredictorState, base_signature: type[dspy.Signature]) -> dspy.Predict:
-    signature = base_signature.with_instructions(state.instruction)
-    predictor = dspy.Predict(signature, temperature=0, max_tokens=state.max_tokens)
-    predictor.demos = []
-    return predictor
-
-
-class _OptimizerOwnedPredictor(dspy.Predict):  # type: ignore[misc]
-    """The optimizer's writable surface: one complete instruction per Predictor.
-
-    Until #306 Phase 2 this class existed to *shrink* that surface. GEPA saw only the advisory slot, the
-    nine RulePacks were re-wrapped around whatever it proposed on every forward, and a mutable-surface
-    check refused any attempt to move the signature, the config or the demos. The wrapping is what forced
-    `_FeedbackCompileProgram._rekey_trace` to exist at all: the call the provider answered belonged to an
-    anonymous inner Predictor whose signature GEPA could not match to a component.
-
-    With one text per Predictor the seed *is* the instruction, this Predictor answers the provider itself,
-    and the trace is keyed to it by construction. What remains is the safety bound, applied here rather
-    than only at patch extraction so a rejection surfaces from `forward` where the metric can score it and
-    tell the reflection model which bound it hit.
-    """
-
-    def __init__(self, artifact: ProgramStrategyArtifactV1, predictor: PredictorName) -> None:
-        self._predictor_name = predictor
-        base_signature = _EventSemanticsSignature if predictor == "event_semantics" else _ReaderCardSignature
-        super().__init__(
-            base_signature.with_instructions(artifact.instruction_for(predictor)),
-            temperature=0,
-            max_tokens=PROGRAM_PREDICTOR_MAX_TOKENS[predictor],
-        )
-        self.demos: list[dspy.Example] = []
-
-    def instruction(self) -> str:
-        """The live proposal, or the exact code the safety bounds refuse it with."""
-
-        return validate_program_instruction(str(self.signature.instructions or ""))
-
-    def forward(self, **kwargs: Any) -> dspy.Prediction:
-        self.instruction()
-        return cast(dspy.Prediction, super().forward(**kwargs))
-
-    async def aforward(self, **kwargs: Any) -> dspy.Prediction:
-        self.instruction()
-        return cast(dspy.Prediction, await super().aforward(**kwargs))
+    output_field, output_model = _PREDICTOR_OUTPUT[state.name]
+    return PredictorSpec(
+        name=state.name,
+        instruction=state.instruction,
+        input_fields=_PREDICTOR_INPUT_FIELDS[state.name],
+        output_field=output_field,
+        output_model=output_model,
+        max_tokens=state.max_tokens,
+    )
 
 
 def _unwrap_output(output: Mapping[str, Any], field: str) -> Any:
@@ -291,58 +262,7 @@ T = TypeVar("T", bound=BaseModel)
 AdapterPool = PredictorAdapter | Mapping[str, PredictorAdapter]
 
 
-class DspyCompileProgram(dspy.Module):  # type: ignore[misc]
-    """Cold-only optimizer Module; never used by the production hot path."""
-
-    def __init__(self, artifact: ProgramStrategyArtifactV1) -> None:
-        super().__init__()
-        if artifact.program_sha256 != artifact.computed_sha256():
-            raise ValueError("news_program_artifact_hash_mismatch")
-        self.artifact = artifact
-        self.event_semantics = _OptimizerOwnedPredictor(artifact, "event_semantics")
-        self.reader_card = _OptimizerOwnedPredictor(artifact, "reader_card")
-
-    def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> dspy.Prediction:
-        semantics_prediction = self.event_semantics(evidence_json=evidence_json)
-        semantics = EventSemantics.model_validate(_unwrap_output(semantics_prediction.toDict(), "semantics"))
-        semantics, _ = _normalize_semantics(semantics)
-        _validate_semantic_context(semantics, told_count=max(0, int(told_count)))
-        semantic_view = _reader_card_semantic_view(semantics)
-        card_prediction = self.reader_card(
-            evidence_json=card_evidence_json,
-            semantics_json=canonical_json(semantic_view.model_dump(mode="json")),
-        )
-        card = ReaderCard.model_validate(_unwrap_output(card_prediction.toDict(), "card"))
-        verdict, editorial = _assemble(semantics, card, told_count=max(0, int(told_count)))
-        return dspy.Prediction(semantics=semantics, card=card, verdict=verdict, editorial=editorial)
-
-
-def extract_optimizer_patch(
-    compiled: DspyCompileProgram,
-    parent: ProgramStrategyArtifactV1,
-) -> ProgramStrategyPatchV1:
-    """Freeze the two instructions, which is the whole optimizer write-set."""
-
-    if not isinstance(compiled, DspyCompileProgram):
-        raise TypeError("news_program_compiled_module_type_invalid")
-    if compiled.artifact.program_sha256 != parent.program_sha256:
-        raise ValueError("news_program_optimizer_parent_identity_mismatch")
-
-    instructions: dict[PredictorName, str] = {}
-    for predictor_name in ("event_semantics", "reader_card"):
-        predictor = getattr(compiled, predictor_name)
-        if not isinstance(predictor, _OptimizerOwnedPredictor):
-            raise ValueError("news_program_optimizer_predictor_type_invalid")
-        instructions[predictor_name] = predictor.instruction()
-
-    return ProgramStrategyPatchV1.issue(
-        parent=parent,
-        event_semantics_instruction=instructions["event_semantics"],
-        reader_card_instruction=instructions["reader_card"],
-    )
-
-
-class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
+class NewsSemanticProgram:
     """Deep Module owning graph execution, validation, budgets and audit."""
 
     def __init__(
@@ -352,7 +272,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         primary_adapter: AdapterPool,
         fallback_adapter: AdapterPool | None = None,
     ) -> None:
-        super().__init__()
         if artifact.program_sha256 != artifact.computed_sha256():
             raise ValueError("news_program_artifact_hash_mismatch")
         self.artifact = artifact
@@ -360,8 +279,8 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         self.fallback_adapter = (
             self._prepare_adapter_pool(fallback_adapter, route="fallback") if fallback_adapter is not None else None
         )
-        self.event_semantics = _predictor(artifact.event_semantics, _EventSemanticsSignature)
-        self.reader_card = _predictor(artifact.reader_card, _ReaderCardSignature)
+        self.event_semantics = predictor_spec(artifact.event_semantics)
+        self.reader_card = predictor_spec(artifact.reader_card)
         self._primary_failures = 0
         self._primary_open_until = 0.0
 
@@ -462,9 +381,6 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             answering_model=answering_model,
             fallback_from=fallback_from,
         )
-
-    async def aforward(self, context: TriageContext) -> SemanticJudgment:
-        return await self.judge(context)
 
     def _record_primary_failure(self) -> None:
         self._primary_failures += 1
@@ -594,7 +510,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             try:
                 semantics = await self._call_predictor(
                     state=self.artifact.event_semantics,
-                    predictor=self.event_semantics,
+                    spec=self.event_semantics,
                     adapter=self._resolve_adapter(adapter_pool, self.artifact.event_semantics, route),
                     route=route,
                     attempt=semantics_attempt,
@@ -661,7 +577,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             try:
                 card = await self._call_predictor(
                     state=self.artifact.reader_card,
-                    predictor=self.reader_card,
+                    spec=self.reader_card,
                     adapter=self._resolve_adapter(adapter_pool, self.artifact.reader_card, route),
                     route=route,
                     attempt=card_attempt,
@@ -708,7 +624,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         self,
         *,
         state: PredictorState,
-        predictor: dspy.Predict,
+        spec: PredictorSpec,
         adapter: PredictorAdapter,
         route: Literal["primary", "fallback"],
         attempt: int,
@@ -774,7 +690,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         input_sha = canonical_sha(inputs)
         adapter_started = time.perf_counter()
         try:
-            response = await adapter.invoke(request, predictor)
+            response = await adapter.invoke(request, spec)
         except asyncio.CancelledError:
             elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
             call = ProgramCallTrace(
@@ -829,21 +745,15 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 error_code=exc.code,
             )
             calls.append(call)
-            partial_raw_output: Mapping[str, Any] | None = None
-            if exc.partial_output is not None:
-                try:
-                    partial = _unwrap_output(exc.partial_output, output_field)
-                except ValueError:
-                    partial = None
-                if isinstance(partial, Mapping):
-                    partial_raw_output = dict(partial)
+            # No `raw_output` here on purpose. A provider answer that reached this branch never parsed
+            # into an object, so there is no partial verdict for the novelty default to repair; the branch
+            # that *can* produce one is the schema-validation failure below, which holds the parsed dict.
             raise _CallFailure(
                 code=exc.code,
                 retryable=exc.retryable,
                 output_failure=exc.output_failure,
                 finish_reason=exc.finish_reason,
                 trace=call,
-                raw_output=partial_raw_output,
             ) from exc
         except Exception as exc:
             elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
@@ -1048,22 +958,18 @@ __all__ = [
     "PROGRAM_LEARNING_EPOCH",
     "PROGRAM_SCHEMA_VERSION",
     "PROGRAM_VERSION",
-    "DspyCompileProgram",
-    "DspyNewsSemanticProgram",
-    "DspyPredictorAdapter",
-    "DspyStrictJSONAdapter",
+    "ChatCompletionsPredictorAdapter",
     "EditorialEnvelope",
     "EventSemantics",
-    "ExactMetadataDspyLM",
-    "ExactProviderCallCapture",
-    "ExactProviderMetadata",
     "FrozenEventEvidence",
+    "NewsSemanticProgram",
     "PredictorAdapter",
     "PredictorAdapterError",
     "PredictorModelBindings",
     "PredictorRecording",
     "PredictorRequest",
     "PredictorResponse",
+    "PredictorSpec",
     "PredictorState",
     "ProgramCallTrace",
     "ProgramNormalizationTrace",
@@ -1072,6 +978,7 @@ __all__ = [
     "ProgramStrategyPatchV1",
     "ProgramTrace",
     "ProgramUsage",
+    "ProviderCallMetrics",
     "ProviderCallObservation",
     "ReaderCard",
     "ReaderCardSemanticView",
@@ -1088,9 +995,9 @@ __all__ = [
     "apply_program_patch",
     "build_code_owned_program_artifact",
     "build_predictor_state",
-    "extract_optimizer_patch",
     "load_program_artifact",
     "load_stable_program_artifact",
+    "predictor_spec",
     "render_model_evidence_json",
     "validate_program_instruction",
 ]
