@@ -55,7 +55,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at Alembic head `20260828_0318`. Both
+5. Deploy the exact reviewed image at Alembic head `20260828_0317`. Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
    repeats the three database drain predicates in its transaction before
