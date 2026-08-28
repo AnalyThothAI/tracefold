@@ -189,7 +189,7 @@ config: ## print effective runtime config
 	@$(TRACEFOLD) config
 
 db-migrate: preflight ## apply PostgreSQL migrations
-	@$(MAKE) --no-print-directory _trading-hard-cut-preflight-if-needed
+	@make --no-print-directory _trading-hard-cut-preflight-if-needed
 	@$(TRACEFOLD) db migrate
 
 db-health: ## check PostgreSQL liveness and migration version
@@ -267,7 +267,7 @@ _trading-hard-cut-preflight-if-needed:
 			       AND pg_get_constraintdef(oid) LIKE '%INTENT_EMITTED%' \
 			  ))"); \
 		case "$$migration_state" in \
-			20260828_0316\|f) $(MAKE) --no-print-directory trading-hard-cut-preflight ;; \
+			20260828_0316\|f) make --no-print-directory trading-hard-cut-preflight ;; \
 			*\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the PR 2 hard cut." >&2; exit 2 ;; \
 		esac
@@ -339,7 +339,7 @@ _up-locked:
 			exit 1; \
 		fi; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
-		$(MAKE) --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
+		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
