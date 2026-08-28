@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import httpx
@@ -20,7 +21,7 @@ from tests.news.test_news_semantic_program import _card, _context, _semantics
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.graph import NewsSemanticProgram, predictor_spec
-from tracefold.news.program.signatures import EventSemantics
+from tracefold.news.program.signatures import EventSemantics, ReaderCard
 from tracefold.news.program.transport import (
     ChatCompletionsPredictorAdapter,
     PredictorAdapterError,
@@ -118,7 +119,33 @@ def test_the_response_format_is_built_from_the_model_the_answer_is_validated_aga
     assert fmt["json_schema"]["name"] == "EventSemantics"
     envelope = fmt["json_schema"]["schema"]
     assert envelope["required"] == ["semantics"] and envelope["additionalProperties"] is False
-    assert envelope["properties"]["semantics"] == EventSemantics.model_json_schema()
+    published = EventSemantics.model_json_schema()
+    published.pop("$defs")
+    assert envelope["properties"]["semantics"] == published
+
+
+@pytest.mark.parametrize(("field", "model"), [("semantics", EventSemantics), ("card", ReaderCard)])
+def test_every_schema_reference_resolves_from_the_envelope_root(field: str, model: Any) -> None:
+    """A dangling `$ref` is an unconstrained field wearing a constraint.
+
+    Pydantic emits `{"$ref": "#/$defs/TriageAsset"}` — a pointer from the *document* root — beside a
+    `$defs` block. Nesting the model's schema under one envelope key without moving its definitions leaves
+    every pointer resolving against an envelope that has none, and a provider answers that with either an
+    error or a field it never constrained. Nothing about "the schema is present" catches it.
+    """
+
+    envelope = response_format(field, model)["json_schema"]["schema"]
+    definitions = set(envelope.get("$defs", {}))
+    references = set(re.findall(r'"\$ref": "([^"]+)"', json.dumps(envelope)))
+
+    assert "$defs" not in envelope["properties"][field]
+    unresolved = [
+        ref for ref in references if not (ref.startswith("#/$defs/") and ref[len("#/$defs/") :] in definitions)
+    ]
+    assert unresolved == []
+    # And the pointer set is not empty for the model that actually nests: a test that passed because the
+    # schema had no references at all would prove nothing.
+    assert references if model is EventSemantics else True
 
 
 def test_the_client_library_prefix_is_not_part_of_the_model_name_on_the_wire() -> None:

@@ -174,20 +174,26 @@ def user_message(field_order: Sequence[str], values: Mapping[str, Any]) -> str:
 
 
 def response_format(output_field: str, output_model: type[BaseModel]) -> dict[str, Any]:
-    """The provider-side constraint, built from the same model the answer is validated against."""
+    """The provider-side constraint, built from the same model the answer is validated against.
 
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": output_model.__name__,
-            "schema": {
-                "type": "object",
-                "properties": {output_field: dict(output_model.model_json_schema())},
-                "required": [output_field],
-                "additionalProperties": False,
-            },
-        },
+    `$defs` is hoisted to the envelope root rather than left where Pydantic put it. Both output models
+    carry nested models — `TriageAsset` and `TradeRelevanceV1` — and Pydantic emits `{"$ref":
+    "#/$defs/TriageAsset"}`, a pointer from the *document* root. Nesting the model's schema one level down
+    without moving its definitions leaves every one of those pointers dangling, which a provider resolves
+    into either an error or, worse, an unconstrained field.
+    """
+
+    schema = dict(output_model.model_json_schema())
+    definitions = schema.pop("$defs", None)
+    envelope: dict[str, Any] = {
+        "type": "object",
+        "properties": {output_field: schema},
+        "required": [output_field],
+        "additionalProperties": False,
     }
+    if definitions:
+        envelope["$defs"] = definitions
+    return {"type": "json_schema", "json_schema": {"name": output_model.__name__, "schema": envelope}}
 
 
 def chat_request_body(
