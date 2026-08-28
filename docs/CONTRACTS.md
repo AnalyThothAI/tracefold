@@ -151,7 +151,10 @@ perpetuals open the matching Futures contract and spot instruments open the matc
 Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
 Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
 `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
-line between them. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a
+line between them. The novelty badge sits directly below the title: `🆕 新事实`, or `🔄 新进展` with the prior
+headline only when the stored retrieval evidence establishes a reliable relationship. A broad macro or sector
+verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
+or inventing a trade. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a
 send, the first `sendMessage` contains the complete news facts immediately and labels all three market values
 `计算中`; it performs no public price read first. The returned message ID and original send timestamp are settled
 as `sent` before a background enrichment reads prices. That enrichment replaces the same Telegram message with

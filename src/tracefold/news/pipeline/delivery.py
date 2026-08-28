@@ -7,13 +7,13 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
 from ..market_review.pricing import Candle, PriceInstrument, PricePoint, select_candle
-from ..models import ReaderDeliveryPresentation, TelegramDeliveryReceipt
+from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
@@ -37,6 +37,57 @@ DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 DeliveryCandleFetcherFor = Callable[[str], DeliveryCandleFetcher | None]
 DeliveryPriceFetcher = Callable[[str, Sequence[int]], Awaitable[Mapping[int, PricePoint]]]
 DeliveryPriceFetcherFor = Callable[[str], DeliveryPriceFetcher | None]
+
+
+def _reader_market_scope(verdict: Mapping[str, Any]) -> ReaderMarketScope | None:
+    value = str(verdict.get("scope") or "")
+    if value == "macro":
+        return "macro"
+    if value == "sector":
+        return "sector"
+    if value == "single_name":
+        return "single_name"
+    return None
+
+
+def _reader_novelty(verdict: Mapping[str, Any]) -> Novelty | None:
+    value = str(verdict.get("novelty") or "")
+    if value == "new_fact":
+        return "new_fact"
+    if value == "progression":
+        return "progression"
+    if value == "restatement":
+        return "restatement"
+    return None
+
+
+def _progression_from_headline(triage_row: Mapping[str, Any], verdict: Mapping[str, Any]) -> str | None:
+    """Name a prior card only when the stored retrieval evidence supports that relationship.
+
+    ``progression`` currently does not carry an explicit told-ledger index. The selected ledger is relevance-ranked,
+    but broad buckets such as ``macro:general`` may also contain unrelated zero-similarity cards. We therefore show
+    a prior headline only for an exact-fact match or a non-zero semantic/title match; otherwise the reader sees the
+    truthful ``新进展`` badge without a fabricated ``上一条`` relationship.
+    """
+
+    if verdict.get("novelty") != "progression":
+        return None
+    trace = triage_row.get("trace")
+    told = trace.get("told") if isinstance(trace, Mapping) else None
+    if not isinstance(told, Sequence) or isinstance(told, str | bytes):
+        return None
+    for entry in told:
+        if not isinstance(entry, Mapping):
+            continue
+        tier = str(entry.get("tier") or "")
+        similarity = entry.get("similarity")
+        related = tier == "exact_fact" or (
+            isinstance(similarity, int | float) and not isinstance(similarity, bool) and float(similarity) >= 0.25
+        )
+        headline = str(entry.get("headline_zh") or "").strip()
+        if related and headline:
+            return headline
+    return None
 
 
 class NewsPushSender(Protocol):
@@ -79,8 +130,7 @@ class _EnrichmentEditContext:
     shown: tuple[str, ...]
     degraded: bool
     receipt: TelegramDeliveryReceipt
-    news_at_ms: int | None
-    observed_at_ms: int | None
+    presentation: ReaderDeliveryPresentation
 
 
 class DelivererConsumer:
@@ -202,6 +252,13 @@ class DelivererConsumer:
         )
         news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
+        base_presentation = ReaderDeliveryPresentation(
+            news_at_ms=news_at_ms,
+            observed_at_ms=observed_at_ms,
+            market_scope=_reader_market_scope(tv),
+            novelty=_reader_novelty(tv),
+            progression_from_headline=_progression_from_headline(triage_row, tv),
+        )
         wait = self.min_interval - (time.monotonic() - self._last_send_at)
         if wait > 0:
             await asyncio.sleep(wait)
@@ -219,17 +276,12 @@ class DelivererConsumer:
             quotes=quotes,
         )
         presentation = (
-            ReaderDeliveryPresentation(
-                news_at_ms=news_at_ms,
-                observed_at_ms=observed_at_ms,
-                market_data_state="pending",
-            )
+            replace(base_presentation, market_data_state="pending")
             if progressive_sender is not None
-            else ReaderDeliveryPresentation(
+            else replace(
+                base_presentation,
                 trade_targets=reader_trade_targets(quotes),
                 market_movements=reader_market_movements(shown, quotes),
-                news_at_ms=news_at_ms,
-                observed_at_ms=observed_at_ms,
             )
         )
         state = await self.db.tx(
@@ -302,8 +354,7 @@ class DelivererConsumer:
                 shown=tuple(shown),
                 degraded=bool(triage_row.get("degraded")),
                 receipt=parsed_receipt,
-                news_at_ms=news_at_ms,
-                observed_at_ms=observed_at_ms,
+                presentation=base_presentation,
             )
         )
 
@@ -321,7 +372,7 @@ class DelivererConsumer:
             quotes = await self._market_data(
                 context.shown,
                 context.receipt.pushed_at_ms,
-                news_at_ms=context.news_at_ms,
+                news_at_ms=context.presentation.news_at_ms,
             )
             card_payload = render_first_card(
                 event=context.event,
@@ -332,11 +383,10 @@ class DelivererConsumer:
                 degraded=context.degraded,
                 quotes=quotes,
             )
-            presentation = ReaderDeliveryPresentation(
+            presentation = replace(
+                context.presentation,
                 trade_targets=reader_trade_targets(quotes),
                 market_movements=reader_market_movements(context.shown, quotes),
-                news_at_ms=context.news_at_ms,
-                observed_at_ms=context.observed_at_ms,
             )
             async with self._edit_lock:
                 wait = self.min_interval - (time.monotonic() - self._last_edit_at)

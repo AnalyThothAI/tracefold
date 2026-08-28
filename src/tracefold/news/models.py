@@ -64,6 +64,7 @@ class ReaderTradeTarget:
 
 ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
 ReaderMarketDataState = Literal["pending", "ready"]
+ReaderMarketScope = Literal["macro", "sector", "single_name"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,9 @@ class ReaderDeliveryPresentation:
     news_at_ms: int | None = None
     observed_at_ms: int | None = None
     market_data_state: ReaderMarketDataState = "ready"
+    market_scope: ReaderMarketScope | None = None
+    novelty: Novelty | None = None
+    progression_from_headline: str | None = None
 
 
 class ExactNewsModel(BaseModel):

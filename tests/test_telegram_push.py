@@ -108,13 +108,13 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
     assert observed["chat_id"] == CHANNEL_ID
     assert _without_timing(observed["text"]) == (
         "🟢 <b>BTC ETF 净流入</b>\n\n"
+        "🔄 <b>新进展</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>  BTC\n"
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h +7.91%\n\n"
-        "🧭 <b>方向</b>  明显利多\n"
-        "🆕 <b>进展</b>  新进展\n\n"
+        "🧭 <b>方向</b>  明显利多\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
     assert observed["parse_mode"] == "HTML"
@@ -184,12 +184,15 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
             ),
             news_at_ms=1_787_885_301_000,
             observed_at_ms=1_787_885_301_000,
+            novelty="progression",
+            progression_from_headline="美光工会此前启动劳资协商",
         ),
     )
 
     ticker = '<a href="https://www.binance.com/en/futures/MUUSDT">MU</a>'
     assert observed["text"] == (
         "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
+        "🔄 <b>新进展</b> · 接续「美光工会此前启动劳资协商」\n\n"
         "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
         "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
         "压低美光产能利用率与现金流。\n\n"
@@ -198,10 +201,62 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
         "1h -0.25%，\n"
         "24h -5.11%\n\n"
         "🧭 <b>方向</b>  明显利空\n"
-        "🆕 <b>进展</b>  新进展\n\n"
+        "\n"
         "新闻时间  10:48:21\n"
         "推送时间  10:48:33\n"
         '🔗 <b>来源</b>  <a href="https://x.com/jukan05/status/1234567890123456789">jukan05 的推特</a>'
+    )
+
+
+def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ticker() -> None:
+    observed: dict[str, object] = {}
+    card = {
+        "header": {"title": {"content": "⚡ 美国 2026 年初步基准非农就业下修 7.9 万人"}, "template": "red"},
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": (
+                    "官方就业基线整体下移，利率市场将重新定价劳动力转弱路径。\n利空 · 影响重大 · jin10 · 22:02"
+                ),
+            }
+        ],
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+        wall_clock_ms=lambda: 1_787_925_781_000,
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            news_at_ms=1_787_925_762_000,
+            market_scope="macro",
+            novelty="new_fact",
+        ),
+    )
+
+    assert observed["text"] == (
+        "⚡ <b>美国 2026 年初步基准非农就业下修 7.9 万人</b>\n\n"
+        "🆕 <b>新事实</b>\n\n"
+        "官方就业基线整体下移，利率市场将重新定价劳动力转弱路径。\n\n"
+        "🌐 <b>影响范围</b>  宏观市场 · 暂无直接标的\n\n"
+        "🧭 <b>方向</b>  重大利空\n\n"
+        "新闻时间  22:02:42\n"
+        "推送时间  22:03:01\n"
+        "🔗 <b>来源</b>  金十"
     )
 
 
@@ -361,6 +416,7 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
     ticker = '<a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>'
     assert _without_timing(observed["text"]) == (
         "🟢 <b>BTC ETF 净流入</b>\n\n"
+        "🔄 <b>新进展</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>  BTC-USDT\n"
         "新闻后 暂无\n"
@@ -370,8 +426,7 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h +7.91%\n\n"
-        "🧭 <b>方向</b>  明显利多\n"
-        "🆕 <b>进展</b>  新进展\n\n"
+        "🧭 <b>方向</b>  明显利多\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
 

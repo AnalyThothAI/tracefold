@@ -1293,6 +1293,54 @@ def test_deliverer_skips_dropped_first_cards() -> None:
         )
 
 
+def test_deliverer_passes_macro_scope_and_a_grounded_progression_reference_to_telegram() -> None:
+    news = _delivery_news(
+        event_card=_card(grounded_assets=[]),
+        latest_verdict=lambda **_kwargs: {
+            "final_decision": "escalate",
+            "verdict": {
+                "direction": "bearish",
+                "magnitude": 3,
+                "scope": "macro",
+                "novelty": "progression",
+                "headline_zh": "美国就业基准继续下修",
+                "assets": [],
+            },
+            "trace": {
+                "told": [
+                    {
+                        "tier": "storyline",
+                        "similarity": 0.0,
+                        "headline_zh": "同属宏观大类但与就业无关的旧闻",
+                    },
+                    {
+                        "tier": "exact_fact",
+                        "similarity": 0.0,
+                        "headline_zh": "美国此前公布初步就业基准修订",
+                    }
+                ]
+            },
+        },
+    )
+    sender = RecordingEditableSender([])
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert sender.presentations == [
+        ReaderDeliveryPresentation(
+            market_data_state="pending",
+            market_scope="macro",
+            novelty="progression",
+            progression_from_headline="美国此前公布初步就业基准修订",
+        )
+    ]
+    assert sender.edited_presentations == []
+
+
 def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
     price = RecordingPrice(
         quotes=[

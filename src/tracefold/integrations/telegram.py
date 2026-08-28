@@ -192,6 +192,9 @@ class TelegramNewsPushSender:
             news_at_ms=view.news_at_ms,
             pushed_at_ms=pushed_at_ms,
             market_data_pending=view.market_data_state == "pending",
+            market_scope=view.market_scope,
+            novelty=view.novelty,
+            progression_from_headline=view.progression_from_headline,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         try:
@@ -239,6 +242,9 @@ class TelegramNewsPushSender:
             news_at_ms=view.news_at_ms,
             pushed_at_ms=pushed_at_ms,
             market_data_pending=view.market_data_state == "pending",
+            market_scope=view.market_scope,
+            novelty=view.novelty,
+            progression_from_headline=view.progression_from_headline,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         result = self._call_api(
@@ -383,6 +389,9 @@ def _telegram_message(
     news_at_ms: int | None = None,
     pushed_at_ms: int | None = None,
     market_data_pending: bool = False,
+    market_scope: str | None = None,
+    novelty: str | None = None,
+    progression_from_headline: str | None = None,
 ) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
@@ -416,6 +425,12 @@ def _telegram_message(
     ticker_links = _binance_ticker_links(trade_targets)
 
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
+    novelty_line = _telegram_novelty_html(
+        novelty or facts.novelty,
+        progression_from_headline=progression_from_headline,
+    )
+    if novelty_line:
+        sections.append(novelty_line)
     if explanation:
         sections.append(_escape_html(_clip(explanation, 1800)))
 
@@ -430,15 +445,14 @@ def _telegram_message(
                 market_data_pending=market_data_pending,
             )
         )
+    elif market_scope:
+        scope_line = _telegram_scope_html(market_scope)
+        if scope_line:
+            metadata_groups.append(scope_line)
     if facts.direction or facts.magnitude:
         direction = _escape_html(facts.direction or "不明确")
         magnitude = _escape_html(_MAGNITUDE_LABELS.get(facts.magnitude, facts.magnitude))
-        judgment = [f"🧭 <b>方向</b>  {magnitude}{direction}"]
-        if facts.novelty:
-            judgment.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
-        metadata_groups.append("\n".join(judgment))
-    elif facts.novelty:
-        metadata_groups.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
+        metadata_groups.append(f"🧭 <b>方向</b>  {magnitude}{direction}")
     footer: list[str] = []
     timing = _telegram_timing_html(news_at_ms=news_at_ms, pushed_at_ms=pushed_at_ms)
     if timing:
@@ -456,6 +470,27 @@ def _telegram_message(
     if len(_plain_html_text(message)) > _TELEGRAM_TEXT_MAX:
         raise TelegramDeliveryError("news_delivery_telegram_message_too_long")
     return message
+
+
+def _telegram_novelty_html(value: str, *, progression_from_headline: str | None) -> str:
+    if value in {"new_fact", "新事实"}:
+        return "🆕 <b>新事实</b>"
+    if value in {"progression", "新进展"}:
+        previous = _clip(str(progression_from_headline or "").strip(), 72)
+        suffix = f" · 接续「{_escape_html(previous)}」" if previous else ""
+        return f"🔄 <b>新进展</b>{suffix}"
+    if value in {"restatement", "复述"}:
+        return "♻️ <b>复述</b>"
+    return ""
+
+
+def _telegram_scope_html(value: str) -> str:
+    label = {
+        "macro": "宏观市场 · 暂无直接标的",
+        "sector": "行业板块 · 暂无直接标的",
+        "single_name": "暂未验证到具体标的",
+    }.get(str(value or ""), "")
+    return f"🌐 <b>影响范围</b>  {label}" if label else ""
 
 
 def _telegram_facts(value: str) -> _TelegramFacts:
