@@ -338,8 +338,6 @@ _up-locked:
 			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured." >&2; \
 			exit 1; \
 		fi; \
-		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
-		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
@@ -350,6 +348,8 @@ _up-locked:
 			echo "  Deployment continues, but every runtime manifest it writes records" >&2; \
 			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
 		fi; \
+		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
+		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate serve workers"; \
 		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
