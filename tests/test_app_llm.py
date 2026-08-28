@@ -73,6 +73,9 @@ def test_minimax_m3_disables_thinking_for_structured_outputs() -> None:
 
     assert endpoint.model_name == "openai/MiniMax-M3"
     assert endpoint.model_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert endpoint.temperature == 1.0
+    assert endpoint.structured_output == "prompt_json"
+    assert endpoint.model_kwargs["top_p"] == 0.95
 
 
 def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
@@ -83,62 +86,37 @@ def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
     assert "extra_body" not in endpoint.model_kwargs
 
 
-def test_news_event_kimi_profile_uses_k3_low_and_drops_fixed_temperature() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
-
-    endpoint = configured_lm_endpoint(settings, model_name="k3", request_profile="news_event")
-
-    assert endpoint.request_profile == "news_event"
-    assert endpoint.model_kwargs == {
-        "additional_drop_params": ["temperature"],
-        "extra_body": {"reasoning_effort": "low"},
-    }
-
-
-def test_news_reader_kimi_profile_drops_temperature_without_k3_effort_override() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
-
-    endpoint = configured_lm_endpoint(
-        settings,
-        model_name="kimi-for-coding",
-        request_profile="news_reader",
-    )
-
-    assert endpoint.model_kwargs == {"additional_drop_params": ["temperature"]}
-
-
-def test_default_profile_never_silently_applies_the_news_kimi_strategy() -> None:
+def test_kimi_coding_endpoint_has_no_hidden_compatibility_profile() -> None:
     settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
 
     endpoint = configured_lm_endpoint(settings, model_name="k3")
 
-    assert endpoint.request_profile == "default"
     assert endpoint.model_kwargs == {}
+    assert endpoint.temperature == 0.0
+    assert endpoint.structured_output == "json_schema"
 
 
-@pytest.mark.parametrize(
-    "base_url",
-    [
-        "https://user@api.kimi.com/coding/v1",
-        "https://api.kimi.com:444/coding/v1",
-        "https://api.kimi.com/coding/v1?route=other",
-    ],
-)
-def test_news_profile_rejects_any_non_exact_kimi_coding_endpoint(base_url: str) -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url=base_url))
+def test_operator_can_describe_a_custom_openai_compatible_request_without_endpoint_detection() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "my-local-model",
+                "request": {
+                    "send_temperature": False,
+                    "structured_output": "prompt_json",
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                },
+            }
+        }
+    )
 
-    endpoint = configured_lm_endpoint(settings, model_name="k3", request_profile="news_event")
+    endpoint = configured_lm_endpoint(settings, model_name="my-local-model")
 
-    assert endpoint.request_profile == "default"
-    assert endpoint.model_kwargs == {}
-
-
-def test_news_request_profile_changes_the_secret_free_runtime_model_identity() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
-    default = configured_lm_endpoint(settings, model_name="k3")
-    news_low = configured_lm_endpoint(settings, model_name="k3", request_profile="news_event")
-
-    assert learning_runtime._endpoint_model_sha256(default) != learning_runtime._endpoint_model_sha256(news_low)
+    assert endpoint.temperature is None
+    assert endpoint.structured_output == "prompt_json"
+    assert endpoint.model_kwargs == {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
 
 
 def test_endpoint_override_targets_the_fallback_gateway() -> None:
@@ -178,17 +156,19 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
 
 
-def test_news_runtime_composition_assigns_role_specific_kimi_request_profiles() -> None:
+def test_news_runtime_composition_assigns_operator_request_controls_per_role() -> None:
     settings = Settings.model_validate(
         {
             "llm": {
                 "api_key": "event-key",
-                "base_url": "https://api.kimi.com/coding/v1",
-                "news_triage_model": "k3",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "event-model",
+                "request": {"send_temperature": False, "structured_output": "prompt_json"},
                 "news_reader_card": {
                     "api_key": "reader-key",
-                    "base_url": "https://api.kimi.com/coding/v1",
-                    "model": "kimi-for-coding",
+                    "base_url": "https://reader.test/v1",
+                    "model": "reader-model",
+                    "request": {"temperature": 0.4, "send_temperature": True},
                 },
             }
         }
@@ -196,10 +176,10 @@ def test_news_runtime_composition_assigns_role_specific_kimi_request_profiles() 
 
     composition = learning_runtime.compose_news_program_runtime(settings)
 
-    assert composition.event_semantics_primary.request_profile == "news_event"
-    assert composition.reader_card_primary.request_profile == "news_reader"
-    assert composition.event_semantics_primary.model_kwargs["extra_body"] == {"reasoning_effort": "low"}
-    assert "extra_body" not in composition.reader_card_primary.model_kwargs
+    assert composition.event_semantics_primary.temperature is None
+    assert composition.event_semantics_primary.structured_output == "prompt_json"
+    assert composition.reader_card_primary.temperature == 0.4
+    assert composition.reader_card_primary.structured_output == "json_schema"
 
 
 def test_news_runtime_composes_progression_review_from_the_event_model_endpoint() -> None:
@@ -236,24 +216,23 @@ def test_news_runtime_composes_progression_review_from_the_event_model_endpoint(
     assert created[0]["timeout"] == 12.0
 
 
-def test_news_experiment_student_inherits_the_production_kimi_event_profile() -> None:
+def test_news_experiment_student_inherits_the_production_request_controls() -> None:
     settings = Settings.model_validate(
         {
             "llm": {
                 "api_key": "event-key",
-                "base_url": "https://api.kimi.com/coding/v1",
-                "news_triage_model": "k3",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "local-model",
+                "request": {"send_temperature": False, "structured_output": "prompt_json"},
             }
         }
     )
 
-    student = _arm_endpoint(settings, arm="student", model="k3")
+    student = _arm_endpoint(settings, arm="student", model="local-model")
 
-    assert student.request_profile == "news_event"
-    assert student.model_kwargs == {
-        "additional_drop_params": ["temperature"],
-        "extra_body": {"reasoning_effort": "low"},
-    }
+    assert student.temperature is None
+    assert student.structured_output == "prompt_json"
+    assert student.model_kwargs == {}
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:

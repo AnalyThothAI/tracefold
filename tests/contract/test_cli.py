@@ -305,11 +305,31 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("news_brief_model", payload.get("llm") or {})
         self.assertEqual(
             payload["llm"]["news_reader_card"],
-            {"api_key": None, "base_url": None, "model": None},
+            {
+                "api_key": None,
+                "base_url": None,
+                "model": None,
+                "request": {
+                    "send_temperature": None,
+                    "temperature": 0,
+                    "structured_output": "auto",
+                    "extra_body": {},
+                },
+            },
         )
         self.assertEqual(
             payload["llm"]["news_reader_card_fallback"],
-            {"api_key": None, "base_url": None, "model": None},
+            {
+                "api_key": None,
+                "base_url": None,
+                "model": None,
+                "request": {
+                    "send_temperature": None,
+                    "temperature": 0,
+                    "structured_output": "auto",
+                    "extra_body": {},
+                },
+            },
         )
         self.assertNotIn("opennews_strategy_ids", payload["news"])
         self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")

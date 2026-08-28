@@ -170,11 +170,21 @@ llm:
   api_key: "<operator model secret>"
   base_url: "https://api.deepseek.com/v1"
   news_triage_model: "deepseek-v4-flash"
+  # Optional provider-neutral request controls. Omit to use known-provider defaults.
+  request:
+    send_temperature: true
+    temperature: 0
+    structured_output: "json_object"
+    extra_body: {}
   # Optional: omit this complete triple to run ReaderCard on the Triage endpoint.
   news_reader_card:
     api_key: "<reader model secret>"
     base_url: "https://reader.example/v1"
     model: "reader-model"
+    request:
+      send_temperature: false
+      structured_output: "prompt_json"
+      extra_body: {}
   # Optional all-or-none fallback route.
   news_triage_fallback:
     api_key: "<event fallback secret>"
@@ -234,14 +244,15 @@ news:
     - {symbol: COIN}
 ```
 
-When the News endpoints use exactly `https://api.kimi.com/coding/v1` (HTTPS,
-standard port, no URL credentials, query or fragment), the
-code-owned event profile binds `k3`/`k3-256k` to low reasoning and removes the
-explicit temperature that the Coding endpoint rejects. The reader profile also
-removes that unsupported temperature but does not apply a K3 effort override to
-`kimi-for-coding`. These request semantics are part of
-`configured_endpoint_model_v2`, so changing them changes the runtime-model
-binding and cannot reuse evidence from a different effort/profile.
+Use `prompt_json` for an OpenAI-compatible local/provider endpoint that rejects
+`response_format` but can follow an in-prompt JSON Schema. Set
+`send_temperature: false` when it rejects the temperature field. These controls
+are available on every endpoint block; they replace model-name or URL-specific
+compatibility hacks. In `auto`, MiniMax M3 uses temperature 1, `top_p: 0.95`,
+thinking disabled, and prompt-only JSON; DeepSeek uses JSON-object mode. Explicit
+operator values take precedence. These request semantics enter
+`configured_endpoint_model_v3`, so two endpoints with different request contracts
+cannot reuse the same evidence cohort.
 
 `news.gate` controls admission and `news.policy` exposes only four duplicate/
 safety knobs; trade-relevance action eligibility is code-owned. The

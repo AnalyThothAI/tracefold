@@ -93,8 +93,9 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_triage` is the only production product-model consumer. Its sole
-Interface is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
+The production model consumers are the News semantic Program and the optional
+post-delivery progression verifier. The Program's sole Interface is
+`SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
 production Adapter executes the fixed two-Predictor graph
 `EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
 deterministic VerdictAssembler`; callers
@@ -104,8 +105,9 @@ route (at most three calls); fallback restarts the full graph (at most six
 across the chain). The Program factory owns the route deadline and call/token
 budgets. Since #306 Phase 3 the Program composes its own request — one system
 message carrying the Predictor instruction and the output contract, one user
-message carrying the bounded fields, and a `response_format` built from the
-output model's own JSON Schema — and `tracefold.integrations.chat_completions`
+message carrying the bounded fields, and an endpoint-compatible structured-output
+mode. The schema is sent as `response_format` when supported and otherwise stays
+inside the system message for prompt-only JSON; `tracefold.integrations.chat_completions`
 sends it. One `invoke` is one HTTP request, with no client cache, no client
 retry and no second call on a parse failure, so the audit trace contains every
 provider attempt by construction rather than by a disabled setting.
@@ -345,25 +347,25 @@ channel type, bot identity, administrator status, and post permission; a public
 channel, group, supergroup, or mismatched target fails closed. Preflight and
 `sendMessage` are separate finite operations: preflight completes before the
 durable `sending` row exists, and the operation behind that row contains only
-`sendMessage`. After that message is verified and durably settled `sent`, the only permitted mutation is
-`editMessageText` for the exact same configured channel and positive message ID from the canonical receipt. The
+`sendMessage`. After that message is verified and durably settled `sent`, the only permitted mutations are
+`editMessageText` and receipt-bound `deleteMessage` for the exact same configured channel and positive message ID
+from the canonical receipt. The
 Adapter rejects a receipt with a different provider, target digest, invalid message ID, or missing original send
 timestamp. It independently verifies the edit response still names the configured channel and same message ID.
 The typed receipt has an exact allowlist (`provider`, `message_id`, `pushed_at_ms`, `target_sha256`, and optional
 `edited_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds `pushed_at_ms` as well as
 message and target identity before accepting either edit intent or settlement.
-The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`, and
-`editMessageText`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
+The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`,
+`editMessageText`, and `deleteMessage`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
 phase is capped at 1.25 seconds and later calls stop when the monotonic budget is
 exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
 guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out
 preflight thread still cannot progress into a later send.
-Binance trade links are a Telegram-only presentation capability, not stored card content. The delivery stage
-creates a typed target only when the displayed ticker, Binance base, quote asset and venue symbol agree exactly;
-the Telegram Adapter independently reconstructs and validates a credential-free `https://www.binance.com`
-destination with an allowlisted Futures or Spot path, no query, fragment, userinfo or non-default port. It wraps
-only an exact ticker token in HTML after escaping all other card text. A non-Binance, malformed, aliased or
-inconsistent target therefore degrades to plain text and cannot introduce an arbitrary link; Feishu ignores the
+Trade links are a Telegram-only presentation capability, not stored card content. The delivery stage creates a
+typed target only when the displayed ticker and an exact Binance, Hyperliquid, OKX, Lighter, or Bitget catalogue
+contract agree. The Telegram Adapter independently reconstructs an allowlisted credential-free venue URL and
+wraps only the exact ticker token in HTML after escaping all other card text. A malformed, aliased, unsupported,
+or inconsistent target therefore degrades to plain text and cannot introduce an arbitrary link; Feishu ignores the
 ephemeral target and receives the persisted card unchanged.
 The source hyperlink is reconstructed only from the stable card's existing original-source action and remains
 HTTPS-only with no redirects followed by Tracefold. Provider text never supplies HTML: the Adapter escapes the

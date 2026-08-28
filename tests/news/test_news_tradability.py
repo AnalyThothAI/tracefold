@@ -11,7 +11,11 @@ from tracefold.integrations.venues.candles import fetch_bitget_candles, fetch_li
 from tracefold.integrations.venues.lighter import fetch_lighter_instruments
 from tracefold.integrations.venues.tradability import VenueCatalogTradabilityVerifier
 from tracefold.news.market_review.instruments import Instrument
-from tracefold.news.tradability import REQUIRED_TRADABILITY_VENUES, tradability_candidates
+from tracefold.news.tradability import (
+    REQUIRED_TRADABILITY_VENUES,
+    tradability_candidate_identity,
+    tradability_candidates,
+)
 
 
 def test_hong_kong_code_builds_exact_exchange_aliases() -> None:
@@ -23,6 +27,54 @@ def test_hong_kong_code_builds_exact_exchange_aliases() -> None:
 
     assert confident is True
     assert {"2605", "02605", "HK2605", "HK02605", "2605.HK", "02605.HK", "METALIGHT"} <= set(candidates)
+
+
+def test_parenthesized_us_ticker_is_confident_without_a_grounded_asset() -> None:
+    candidates, confident = tradability_candidates(
+        event={"leader_title": "Apple (AAPL) launches a new product"},
+        verdict={"headline_zh": "Apple 发布新产品"},
+        symbols=[],
+    )
+
+    assert confident is True
+    assert {"AAPL", "APPLE"} <= set(candidates)
+    identity = tradability_candidate_identity(
+        event={"leader_title": "Apple (AAPL) launches a new product"},
+        verdict={},
+        symbols=[],
+    )
+    assert identity.searchable is True
+    assert identity.deletion_safe is False
+
+
+def test_exchange_prefixed_us_ticker_is_confident_without_a_grounded_asset() -> None:
+    candidates, confident = tradability_candidates(
+        event={"leader_title": "Microsoft (NASDAQ: MSFT) updates guidance"},
+        verdict={"headline_zh": "微软更新指引"},
+        symbols=[],
+    )
+
+    assert confident is True
+    assert "MSFT" in candidates
+    assert (
+        tradability_candidate_identity(
+            event={"leader_title": "Microsoft (NASDAQ: MSFT) updates guidance"},
+            verdict={},
+            symbols=[],
+        ).deletion_safe
+        is True
+    )
+
+
+def test_parenthesized_acronym_never_authorizes_destructive_absence() -> None:
+    identity = tradability_candidate_identity(
+        event={"leader_title": "OpenAI (GPT) announces a research update"},
+        verdict={"headline_zh": "OpenAI 发布研究更新"},
+        symbols=[],
+    )
+
+    assert identity.searchable is True
+    assert identity.deletion_safe is False
 
 
 def test_bare_numeric_code_is_not_safe_enough_to_authorize_deletion() -> None:
@@ -86,6 +138,43 @@ def test_any_exact_catalogue_match_wins_even_when_another_venue_failed() -> None
     assert review.matches[0].requested_symbol == "2605"
 
 
+def test_title_only_identity_uses_the_matched_contract_base_as_the_reader_symbol() -> None:
+    async def empty(_candidates: Sequence[str]) -> Sequence[Instrument]:
+        return ()
+
+    async def bitget(_candidates: Sequence[str]) -> Sequence[Instrument]:
+        return (
+            Instrument(
+                venue="bitget.perp",
+                venue_symbol="METALIGHTUSDT",
+                base_symbol="METALIGHT",
+                instrument_class="equity",
+                quote_asset="USDT",
+            ),
+        )
+
+    verifier = VenueCatalogTradabilityVerifier(
+        fetchers={
+            "binance": empty,
+            "hyperliquid": empty,
+            "okx": empty,
+            "lighter": empty,
+            "bitget": bitget,
+        }
+    )
+
+    review = asyncio.run(
+        verifier.review(
+            event={"leader_title": "MetaLight (02605.HK) announces interim results"},
+            verdict={"headline_zh": "MetaLight 公布中期业绩"},
+            symbols=[],
+        )
+    )
+
+    assert review.state == "matched"
+    assert review.matches[0].requested_symbol == "METALIGHT"
+
+
 def test_absence_requires_all_five_catalogues_to_answer_successfully() -> None:
     async def empty(_candidates: Sequence[str]) -> Sequence[Instrument]:
         return ()
@@ -100,6 +189,7 @@ def test_absence_requires_all_five_catalogues_to_answer_successfully() -> None:
     )
 
     assert review.state == "absent"
+    assert review.deletion_safe is True
     assert review.checked_venues == REQUIRED_TRADABILITY_VENUES
     assert review.failed_venues == ()
 

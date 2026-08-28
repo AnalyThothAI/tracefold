@@ -54,6 +54,7 @@ from ..program.transport import (
     PredictorSpec,
     ProviderCallMetrics,
     RuntimeModelIdentity,
+    StructuredOutputMode,
     _is_retryable_exception,
     provider_call_metrics,
     provider_error_detail,
@@ -795,6 +796,8 @@ def build_task_adapter(
     timeout: float,
     max_tokens: int,
     model_kwargs: Mapping[str, Any] | None = None,
+    temperature: float = _TASK_TEMPERATURE,
+    structured_output: StructuredOutputMode | None = None,
     transport: Any = None,
 ) -> ChatCompletionsPredictorAdapter:
     """The task route `run_gepa` drives, stamped with the identity it will be held to.
@@ -810,6 +813,8 @@ def build_task_adapter(
         timeout=float(timeout),
         max_tokens=int(max_tokens),
         model_kwargs=model_kwargs,
+        temperature=temperature,
+        structured_output=structured_output,
         transport=transport,
     )
     adapter.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(  # type: ignore[attr-defined]
@@ -818,7 +823,7 @@ def build_task_adapter(
         api_base=str(api_base),
         max_output_tokens=int(max_tokens),
         timeout_seconds=float(timeout),
-        temperature=_TASK_TEMPERATURE,
+        temperature=temperature,
         model_kwargs=dict(model_kwargs or {}),
     )
     return adapter

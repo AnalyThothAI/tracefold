@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
-RequestProfile = Literal["default", "news_event", "news_reader"]
+StructuredOutputMode = Literal["json_schema", "json_object", "prompt_json"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +14,8 @@ class ConfiguredLMEndpoint:
     api_key: str = field(repr=False)
     api_base: str = field(repr=False)
     model_kwargs: dict[str, Any]
-    request_profile: RequestProfile = "default"
+    temperature: float | None = 0.0
+    structured_output: StructuredOutputMode = "json_schema"
 
 
 def configured_lm_endpoint(
@@ -25,7 +25,7 @@ def configured_lm_endpoint(
     thinking: bool = False,
     api_key: str | None = None,
     base_url: str | None = None,
-    request_profile: RequestProfile = "default",
+    request_config: Any | None = None,
 ) -> ConfiguredLMEndpoint:
     """Resolve one direct endpoint without importing a model framework.
 
@@ -40,21 +40,28 @@ def configured_lm_endpoint(
         base_url=endpoint_url,
     )
     model_kwargs = _provider_model_kwargs(effective_model, thinking=thinking)
-    effective_profile: RequestProfile = request_profile if _is_kimi_code_endpoint(endpoint_url) else "default"
-    if effective_profile != "default":
-        # The coding endpoint fixes temperature at 1 and rejects an explicit Program temperature. This is an
-        # endpoint execution profile, not an invisible transport mutation: both the profile and these kwargs
-        # enter configured_endpoint_model_v2 through `_endpoint_model_sha256`.
-        model_kwargs["additional_drop_params"] = ["temperature"]
-        leaf = effective_model.rsplit("/", maxsplit=1)[-1].lower()
-        if effective_profile == "news_event" and leaf in {"k3", "k3-256k"}:
-            model_kwargs["extra_body"] = {"reasoning_effort": "low"}
+    temperature, structured_output = _provider_request_defaults(effective_model)
+    request = request_config if request_config is not None else getattr(settings.llm, "request", None)
+    if request is not None:
+        send_temperature = getattr(request, "send_temperature", None)
+        if send_temperature is False:
+            temperature = None
+        elif send_temperature is True:
+            temperature = float(request.temperature)
+        configured_mode = str(getattr(request, "structured_output", "auto"))
+        if configured_mode != "auto":
+            structured_output = configured_mode  # type: ignore[assignment]
+        configured_extra = dict(getattr(request, "extra_body", {}) or {})
+        if configured_extra:
+            provider_extra = dict(model_kwargs.get("extra_body") or {})
+            model_kwargs["extra_body"] = {**provider_extra, **configured_extra}
     return ConfiguredLMEndpoint(
         model_name=effective_model,
         api_key=str(endpoint_key),
         api_base=str(endpoint_url),
         model_kwargs=model_kwargs,
-        request_profile=effective_profile,
+        temperature=temperature,
+        structured_output=structured_output,
     )
 
 
@@ -87,31 +94,27 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
         # MiniMax-M3 includes ``<think>`` reasoning in the response content by default.  The News Program expects
         # the response body to contain only its strict structured output, so use MiniMax's OpenAI-compatible
         # thinking switch for production prediction calls.
-        return {"extra_body": {"thinking": {"type": "disabled"}}}
+        return {
+            "top_p": 0.95,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
     return {}
 
 
-def _is_kimi_code_endpoint(base_url: object) -> bool:
-    try:
-        parsed = urlsplit(str(base_url or "").strip())
-        port = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme == "https"
-        and parsed.hostname == "api.kimi.com"
-        and port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and parsed.path.rstrip("/") == "/coding/v1"
-        and not parsed.query
-        and not parsed.fragment
-    )
+def _provider_request_defaults(model_name: str) -> tuple[float | None, StructuredOutputMode]:
+    leaf = str(model_name or "").rsplit("/", maxsplit=1)[-1].lower()
+    if leaf == "minimax-m3":
+        # MiniMax-M3 rejects temperature=0 and does not advertise response_format support. Keep the exact JSON
+        # schema in the system message, then validate the bare JSON reply locally like every other route.
+        return 1.0, "prompt_json"
+    if leaf.startswith("deepseek"):
+        return 0.0, "json_object"
+    return 0.0, "json_schema"
 
 
 __all__ = [
     "ConfiguredLMEndpoint",
-    "RequestProfile",
+    "StructuredOutputMode",
     "configured_lm_endpoint",
     "litellm_proxy_model_name",
     "llm_is_configured",

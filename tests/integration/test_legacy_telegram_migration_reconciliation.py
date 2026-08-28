@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import psycopg
 import pytest
 from alembic import command
-from psycopg import conninfo
+from psycopg import sql
+from sqlalchemy.engine import make_url
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
@@ -19,15 +21,41 @@ MIGRATE_ROLE_PASSWORD = "M" * 43
 def _fresh_schema_at(revision: str) -> None:
     conn = connect_postgres_test(read_only=False)
     try:
+        conn.execute(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_app') THEN
+                CREATE ROLE tracefold_app NOLOGIN;
+              ELSE
+                ALTER ROLE tracefold_app NOLOGIN;
+              END IF;
+            END
+            $$
+            """
+        )
+        conn.execute("GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE")
+        conn.execute("GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE")
+        conn.execute("GRANT tracefold_owner TO tracefold_migrate WITH SET TRUE")
+        conn.execute(sql.SQL("ALTER ROLE tracefold_migrate PASSWORD {}").format(sql.Literal(MIGRATE_ROLE_PASSWORD)))
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
-        conn.execute("CREATE SCHEMA public")
+        conn.execute("CREATE SCHEMA public AUTHORIZATION tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
+        # Extensions are cluster/bootstrap concerns: the NOINHERIT migration role
+        # deliberately cannot create them on a fresh production database.
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
         conn.commit()
     finally:
         conn.close()
     config = alembic_config()
+    # Bootstrap the baseline as the test-database superuser, then run every
+    # chained migration as the locked-down migration role, matching production.
     config.attributes["database_url"] = postgres_test_dsn()
-    command.upgrade(config, revision)
+    command.upgrade(config, "20260818_0275")
+    migrate_config = alembic_config()
+    migrate_config.attributes["database_url"] = _migrate_role_dsn()
+    command.upgrade(migrate_config, revision)
 
 
 def _install_colliding_local_delivery_migrations() -> None:
@@ -111,21 +139,29 @@ def _install_colliding_local_delivery_migrations() -> None:
 
 
 def _migrate_role_dsn() -> str:
-    parts = conninfo.conninfo_to_dict(postgres_test_dsn())
-    parts["user"] = "tracefold_migrate"
-    parts["password"] = MIGRATE_ROLE_PASSWORD
-    return conninfo.make_conninfo(**parts)
+    return (
+        make_url(postgres_test_dsn())
+        .set(
+            username="tracefold_migrate",
+            password=MIGRATE_ROLE_PASSWORD,
+        )
+        .render_as_string(hide_password=False)
+    )
 
 
 def test_colliding_local_0318_is_reconciled_without_dropping_telegram_state() -> None:
     _fresh_schema_at(REMOTE_COMMON_PARENT)
     _install_colliding_local_delivery_migrations()
-    conn = connect_postgres_test(read_only=False)
-    try:
-        conn.execute("ALTER ROLE tracefold_migrate PASSWORD %s", (MIGRATE_ROLE_PASSWORD,))
-        conn.commit()
-    finally:
-        conn.close()
+
+    with psycopg.connect(_migrate_role_dsn()) as role_conn:
+        role_identity = role_conn.execute(
+            """
+            SELECT current_user,
+                   EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_owner'),
+                   pg_has_role(current_user, 'tracefold_owner', 'SET')
+            """
+        ).fetchone()
+    assert role_identity == ("tracefold_migrate", True, True)
 
     upgrade_head(_migrate_role_dsn())
 

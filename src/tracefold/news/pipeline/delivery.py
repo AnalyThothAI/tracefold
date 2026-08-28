@@ -24,6 +24,7 @@ from ..tradability import (
     TradabilityMatch,
     TradabilityReview,
     TradabilityVerifier,
+    tradability_candidates,
 )
 from .runtime import NewsDatabasePort
 
@@ -344,8 +345,11 @@ class DelivererConsumer:
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         progression_candidates = _progression_review_candidates(triage_row, tv)
         progression_review_pending = self._progression_verifier is not None and bool(progression_candidates)
+        _, title_identity_confident = tradability_candidates(event=card, verdict=tv, symbols=shown)
         tradability_pending = (
-            self._tradability_verifier is not None and _reader_market_scope(tv) == "single_name" and len(shown) == 1
+            self._tradability_verifier is not None
+            and _reader_market_scope(tv) == "single_name"
+            and (len(shown) == 1 or (not shown and title_identity_confident))
         )
         base_presentation = ReaderDeliveryPresentation(
             news_at_ms=news_at_ms,
@@ -482,6 +486,7 @@ class DelivererConsumer:
             quotes, progression_review, tradability_review = await asyncio.gather(
                 quotes_task, review_task, tradability_task
             )
+            resolved_shown = tuple(context.shown)
             if (
                 tradability_review is not None
                 and tradability_review.state == "matched"
@@ -492,12 +497,18 @@ class DelivererConsumer:
                     context.receipt.pushed_at_ms,
                     news_at_ms=context.presentation.news_at_ms,
                 )
+                if not resolved_shown:
+                    resolved_shown = tuple(
+                        dict.fromkeys(
+                            match.requested_symbol for match in tradability_review.matches if match.requested_symbol
+                        )
+                    )
             card_payload = render_first_card(
                 event=context.event,
                 verdict=context.verdict,
                 decision=context.decision,
                 grounded_assets=list(context.grounded_assets),
-                assets=context.shown,
+                assets=resolved_shown,
                 degraded=context.degraded,
                 quotes=quotes,
             )
@@ -508,6 +519,7 @@ class DelivererConsumer:
             if (
                 tradability_review is not None
                 and tradability_review.state == "absent"
+                and tradability_review.deletion_safe
                 and not reader_trade_targets(quotes)
                 and isinstance(context.sender, DeletableNewsPushSender)
             ):
@@ -516,7 +528,7 @@ class DelivererConsumer:
             presentation = replace(
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
-                market_movements=reader_market_movements(context.shown, quotes),
+                market_movements=reader_market_movements(resolved_shown, quotes),
                 progression_from_headline=(
                     progression_review.candidate_headline_zh
                     if progression_review is not None and progression_review.state == "confirmed"
@@ -949,7 +961,7 @@ class DelivererConsumer:
         stamp: int,
         news_target_ms: int | None,
     ) -> dict[str, Any]:
-        targets = [stamp, stamp - _ONE_HOUR_MS]
+        targets = [stamp, stamp - _ONE_HOUR_MS, stamp - 24 * _ONE_HOUR_MS]
         if news_target_ms is not None:
             targets.append(news_target_ms)
         expected_class = str(instruments[0].instrument_class) if instruments else ""
@@ -1051,6 +1063,13 @@ class DelivererConsumer:
         if hour is not None:
             quote["price_one_hour_before_push"] = str(hour.price)
             quote["price_one_hour_before_push_basis"] = hour.basis
+        day = points.get(stamp - 24 * _ONE_HOUR_MS)
+        if day is not None:
+            day_bps = return_bps(day.price, current.price)
+            if day_bps is not None:
+                quote["change_pct"] = float(day_bps) / 100.0
+                quote["change_basis"] = "rolling_24h"
+                quote["change_basis_zh"] = "24 小时"
         if news_target_ms is not None:
             news = points.get(news_target_ms)
             if news is not None:

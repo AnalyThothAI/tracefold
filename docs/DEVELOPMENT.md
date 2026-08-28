@@ -106,8 +106,9 @@ the two Predictor instructions — what a human editing
 `src/tracefold/news/program/seed.py` or GEPA proposing a replacement may write.
 `envelope_sha256` (`compute_execution_identity()` in
 `src/tracefold/news/program/identity.py`) covers what the code decides about a
-model call: the golden render of each Predictor's chat request in both
-structured-output modes, the output contracts and schemas, the model-visible
+model call: the golden render of each Predictor's chat request in all three
+structured-output modes (`json_schema`, `json_object`, and prompt-only JSON),
+the output contracts and schemas, the model-visible
 input shapes, the endpoint capability table, the model binding slots, the route
 deadline, the token ceilings and the breaker.
 `tests/contract/test_program_release_identity.py` pins both, plus the policy,
@@ -324,8 +325,9 @@ and explicit: they cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
-`20260818_0275` current-schema baseline plus the linear revisions through
-`20260824_0302`; schema tests also run against that migrated head. The e2e lane
+`20260818_0275` current-schema baseline plus the linear revisions through the
+current `20260828_0323` head; schema tests also run against that migrated head.
+The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, `/api/status` and `/api/news/status`; it runs no Workers

@@ -67,7 +67,7 @@ _RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({408, 409, 425, 429, 500, 5
 # genuine `vendor/model` identifier — is sent through unchanged.
 _WIRE_MODEL_PREFIX: Final[str] = "openai/"
 
-StructuredOutputMode = Literal["json_schema", "json_object"]
+StructuredOutputMode = Literal["json_schema", "json_object", "prompt_json"]
 
 # Endpoints that reject the `json_schema` response_format outright. DeepSeek answers it with HTTP 400
 # "This response_format type is unavailable now" (#310), which killed the whole fallback route and the
@@ -250,7 +250,7 @@ def chat_request_body(
     output_field: str,
     output_model: type[BaseModel],
     max_tokens: int,
-    temperature: float = 0,
+    temperature: float | None = 0,
     extras: Mapping[str, Any] | None = None,
     extra_body: Mapping[str, Any] | None = None,
     structured_output: StructuredOutputMode | None = None,
@@ -266,7 +266,7 @@ def chat_request_body(
     """
 
     mode = structured_output or structured_output_mode(model)
-    return {
+    body: dict[str, Any] = {
         "model": wire_model_name(model),
         "messages": [
             {
@@ -277,15 +277,18 @@ def chat_request_body(
             },
             {"role": "user", "content": user_message(field_order, values)},
         ],
-        "temperature": temperature,
         "max_tokens": int(max_tokens),
         "stream": False,
-        "response_format": (
-            response_format(output_field, output_model) if mode == "json_schema" else {"type": "json_object"}
-        ),
         **dict(extras or {}),
         **dict(extra_body or {}),
     }
+    if temperature is not None:
+        body["temperature"] = float(temperature)
+    if mode == "json_schema":
+        body["response_format"] = response_format(output_field, output_model)
+    elif mode == "json_object":
+        body["response_format"] = {"type": "json_object"}
+    return body
 
 
 def wire_model_name(model_name: str) -> str:
@@ -427,6 +430,8 @@ class ChatCompletionsPredictorAdapter:
         model_sha256: str | None = None,
         provider: str | None = None,
         model_kwargs: Mapping[str, Any] | None = None,
+        temperature: float | None = 0,
+        structured_output: StructuredOutputMode | None = None,
         transport: Any = None,
     ) -> None:
         extras = dict(model_kwargs or {})
@@ -456,6 +461,8 @@ class ChatCompletionsPredictorAdapter:
         self._url = chat_completions_url(api_base)
         self._timeout = float(timeout)
         self._max_tokens = int(max_tokens)
+        self._temperature = temperature
+        self._structured_output = structured_output
         self._transport = transport
         # `extra_body` is the OpenAI-compatible escape hatch the application already configures per model
         # family (`app/llm.py`), and its contents belong in the request body itself. Everything else is a
@@ -483,6 +490,8 @@ class ChatCompletionsPredictorAdapter:
         model_sha256: str | None = None,
         provider: str | None = None,
         model_kwargs: Mapping[str, Any] | None = None,
+        temperature: float | None = 0,
+        structured_output: StructuredOutputMode | None = None,
     ) -> ChatCompletionsPredictorAdapter:
         """Compose the only supported production adapter. Kept as a named constructor because the
         application seam builds four of these and names the arguments rather than the class."""
@@ -496,6 +505,8 @@ class ChatCompletionsPredictorAdapter:
             model_sha256=model_sha256,
             provider=provider,
             model_kwargs=model_kwargs,
+            temperature=temperature,
+            structured_output=structured_output,
         )
 
     def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
@@ -513,8 +524,10 @@ class ChatCompletionsPredictorAdapter:
             output_field=spec.output_field,
             output_model=spec.output_model,
             max_tokens=min(self._max_tokens, spec.max_tokens),
+            temperature=self._temperature,
             extras=self._extras,
             extra_body=self._extra_body,
+            structured_output=self._structured_output,
         )
 
     async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:

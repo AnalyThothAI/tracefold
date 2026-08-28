@@ -102,7 +102,6 @@ def get_news_status(request: Request) -> Response:
             for row in occupancy
         ],
     }
-    state = _derive_state(ingest=ingest, broker=broker_data, workers_state=workers_state, settings=settings)
     health = status_health(
         ingest=ingest,
         broker=broker_data,
@@ -112,6 +111,13 @@ def get_news_status(request: Request) -> Response:
         now_ms=now_ms,
         enabled=bool(settings.news.enabled),
         model_configured=models.program_configured,
+    )
+    state = _derive_state(
+        ingest=ingest,
+        broker=broker_data,
+        workers_state=workers_state,
+        settings=settings,
+        overall_level=str(health["health"]["overall"]),
     )
     data = {
         "state": state,
@@ -138,7 +144,14 @@ def get_news_status(request: Request) -> Response:
     )
 
 
-def _derive_state(*, ingest: dict[str, Any], broker: dict[str, Any], workers_state: str | None, settings: Any) -> str:
+def _derive_state(
+    *,
+    ingest: dict[str, Any],
+    broker: dict[str, Any],
+    workers_state: str | None,
+    settings: Any,
+    overall_level: str,
+) -> str:
     if not settings.news.enabled or not settings.news.opennews_token or not settings.news.broker.url:
         return "unavailable"
     if workers_state != "running":
@@ -147,6 +160,8 @@ def _derive_state(*, ingest: dict[str, Any], broker: dict[str, Any], workers_sta
         return "degraded"
     if not ingest.get("connected"):
         return "warming"
+    if overall_level in {"warn", "bad"}:
+        return "degraded"
     return "ready"
 
 

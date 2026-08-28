@@ -949,7 +949,7 @@ three values. The stable root is
 `envelope_sha256` — `compute_execution_identity()` in
 `tracefold/news/program/identity.py` — addresses everything the code decides
 about a model call: the golden render of each Predictor's complete chat request
-in both structured-output modes, the two output contracts and their JSON
+in all three structured-output modes, the two output contracts and their JSON
 schemas, the model-visible input shapes and their delimiters, the endpoint
 capability table, the model binding slots, the route deadline, the token
 ceilings and the breaker. It is computed from those values rather than declared
@@ -1017,18 +1017,16 @@ path by which a demo could reach a provider at all.
 
 The factory owns route topology, slot roles, token ceilings, deadlines and
 breaker policy. The concrete model bound to each slot has a separate
-secret-free `configured_endpoint_model_v2` identity over provider, model,
-endpoint fingerprint, code-selected request profile and normalized LM kwargs.
+secret-free `configured_endpoint_model_v3` identity over provider, model,
+endpoint fingerprint, temperature behavior, structured-output mode and normalized LM kwargs.
 That boundary makes provider execution semantics auditable without pretending
-an endpoint change rewrote the Program graph. On the exact Kimi Coding endpoint,
-the `news_event` profile drops the unsupported explicit temperature and binds
-K3 `reasoning_effort=low`; the `news_reader` profile drops temperature but does
-not give `kimi-for-coding` a K3 effort override. The profile and kwargs change
-the runtime-model binding SHA and therefore the exact evidence cohort. Default,
-Trading and non-News endpoints never inherit these News profiles. The learning
-experiment student arm inherits the production `news_event` profile when it
-rebinds a model name, so an experiment cannot silently compare default-effort
-requests with the K3-low production route.
+an endpoint change rewrote the Program graph. Every endpoint can explicitly omit
+temperature, choose JSON Schema, JSON-object, or prompt-only JSON, and add guarded
+OpenAI-compatible body fields. There is no Kimi URL/model special case. Known
+provider defaults remain narrow (including MiniMax M3's valid sampling and JSON
+prompt envelope), while local and other models are configured through the same
+request block. The learning experiment student arm inherits the production
+endpoint request contract when it rebinds a model name.
 
 The production registry resolves an image-carried SHA, never arbitrary database
 instructions, and the document is one `<program_sha256>.json` file. Loading
@@ -1311,9 +1309,10 @@ not `reaction_v1`: they do not wait for a future horizon and are never persisted
 as review evidence. For every anchor the adapter first selects the latest trade
 at or before the millisecond timestamp when it is at most 60 seconds old, then
 falls back to the last closed one-minute candle within 90 seconds. Binance is
-tried first, Hyperliquid second, OKX third, Lighter fourth, and Bitget fifth; one row always retains the same
-venue and contract for all its anchors. `24h` is retained only from a fresh
-same-contract quote that explicitly declares `rolling_24h`. A missing value is
+tried first, Hyperliquid second, and OKX third for an already grounded asset; a newly discovered exact contract
+may also use Lighter or Bitget. One row always retains the same venue and contract for its current, news,
+push-minus-1h, and push-minus-24h anchors. `24h` is calculated from the current and minus-24h anchors on that
+same contract; a fresh same-contract snapshot is only a fallback when the on-demand point path is unavailable. A missing value is
 shown as `暂无`, never borrowed from another window. Telegram renders each asset as a separate four-line block:
 `🎯 标的 BTC`, `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%`; multiple assets repeat the complete block with
 a blank line between them. Impact and polarity share one direction row, such as `🧭 方向 明显利空`, while
@@ -1341,8 +1340,9 @@ and keyed target digest, and a canonical receipt admits no extra provider fields
 a new process is changed to `ambiguous` at startup rather than guessed successful or retried. The consumer does not
 start until that reconciliation commits. A 30-second runtime sweep also terminalizes an `editing` intent older than
 60 seconds, so a temporary failure of both edit settlement and ambiguity recording cannot strand it forever.
-For a `single_name` card with one candidate ticker, a second post-send task derives exact ticker aliases (including
-market-coded forms such as `02605.HK`) and queries fresh Binance, Hyperliquid, OKX, Lighter, and Bitget catalogues.
+For a `single_name` card with one candidate ticker, or with no grounded ticker but a confident code-like identity
+in its title, a second post-send task derives exact ticker aliases (including market-coded forms such as
+`02605.HK`) and queries fresh Binance, Hyperliquid, OKX, Lighter, and Bitget catalogues.
 An exact hit keeps the message, adds the typed target link, and prices that contract without waiting for the
 periodic universe snapshot. Only five successful empty catalogue answers authorize deletion. Any missing identity,
 timeout, blocked response, malformed catalogue, or partial venue fan-out keeps the message. Before `deleteMessage`,
@@ -1715,8 +1715,13 @@ factory evidence is audit-only and the factory-v7 cohort starts with zero
 eligible evidence.
 `20260828_0316` adds the one-table Trading Intent handoff, its Nautilus
 execution projection, and the least-privilege grants for that separate runtime.
-`20260828_0317` adds the durable desired/edited/ambiguous lifecycle for in-place News delivery edits.
-`20260828_0318` adds the durable deleting/deleted/ambiguous lifecycle and five-venue evidence for confirmed
+`20260828_0317` makes Nautilus the sole execution authority.
+`20260828_0318` starts the single-instruction Program-v8 evidence epoch.
+`20260828_0319` starts the endpoint-capable-envelope Program-v9 evidence epoch.
+`20260828_0320` adds capability-governed TradeIntentV2 and immutable replay receipts.
+`20260828_0321` lets the running deployment open its computed-identity evidence epoch.
+`20260828_0322` adds the durable desired/edited/ambiguous lifecycle for in-place News delivery edits.
+`20260828_0323` adds the durable deleting/deleted/ambiguous lifecycle and five-venue evidence for confirmed
 untradeable single-name Telegram messages.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema

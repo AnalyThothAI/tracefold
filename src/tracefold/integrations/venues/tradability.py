@@ -11,7 +11,7 @@ from tracefold.news.tradability import (
     REQUIRED_TRADABILITY_VENUES,
     TradabilityMatch,
     TradabilityReview,
-    tradability_candidates,
+    tradability_candidate_identity,
 )
 
 from .binance import fetch_binance_instruments_for_candidates
@@ -45,14 +45,16 @@ class VenueCatalogTradabilityVerifier:
         verdict: Mapping[str, Any],
         symbols: Sequence[str],
     ) -> TradabilityReview:
-        candidates, confident = tradability_candidates(event=event, verdict=verdict, symbols=symbols)
-        if not candidates or not confident:
+        identity = tradability_candidate_identity(event=event, verdict=verdict, symbols=symbols)
+        candidates = identity.candidates
+        if not candidates or not identity.searchable:
             return TradabilityReview(
                 state="incomplete",
                 candidates=candidates,
                 checked_venues=(),
                 failed_venues=(),
                 matches=(),
+                deletion_safe=False,
                 reason_zh="缺少可唯一核验的交易所代码，保留消息等待人工确认。",
             )
         tasks = [self._fetchers[venue](candidates) for venue in REQUIRED_TRADABILITY_VENUES]
@@ -60,7 +62,7 @@ class VenueCatalogTradabilityVerifier:
         checked: list[str] = []
         failed: list[str] = []
         matches: list[TradabilityMatch] = []
-        requested = next((str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()), candidates[0])
+        requested = next((str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()), "")
         candidate_set = {_catalogue_key(value) for value in candidates}
         for venue_family, result in zip(REQUIRED_TRADABILITY_VENUES, results, strict=True):
             if isinstance(result, BaseException):
@@ -72,7 +74,7 @@ class VenueCatalogTradabilityVerifier:
                     continue
                 matches.append(
                     TradabilityMatch(
-                        requested_symbol=requested,
+                        requested_symbol=requested or instrument.base_symbol,
                         venue_family=venue_family,
                         venue=instrument.venue,
                         venue_symbol=_reader_venue_symbol(instrument),
@@ -90,6 +92,7 @@ class VenueCatalogTradabilityVerifier:
                 checked_venues=tuple(checked),
                 failed_venues=tuple(failed),
                 matches=ordered,
+                deletion_safe=identity.deletion_safe,
                 reason_zh=f"已在 {ordered[0].venue} 官方市场目录命中可交易合约。",
             )
         if failed:
@@ -99,6 +102,7 @@ class VenueCatalogTradabilityVerifier:
                 checked_venues=tuple(checked),
                 failed_venues=tuple(failed),
                 matches=(),
+                deletion_safe=identity.deletion_safe,
                 reason_zh="部分交易所目录查询失败，按安全规则保留消息。",
             )
         return TradabilityReview(
@@ -107,7 +111,12 @@ class VenueCatalogTradabilityVerifier:
             checked_venues=tuple(checked),
             failed_venues=(),
             matches=(),
-            reason_zh="Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
+            deletion_safe=identity.deletion_safe,
+            reason_zh=(
+                "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。"
+                if identity.deletion_safe
+                else "五个交易所均未命中，但标题代码缺少交易所前缀，保留消息等待人工确认。"
+            ),
         )
 
 

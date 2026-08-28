@@ -26,7 +26,7 @@ class _Connection:
     def execute(self, query: str, _params: tuple[Any, ...] = ()) -> _Cursor:
         statement = " ".join(query.split())
         self.statements.append(statement)
-        if "pg_has_role(current_user, 'tracefold_owner', 'MEMBER')" in statement:
+        if "SELECT current_user = 'tracefold_migrate'" in statement:
             return _Cursor(True)
         if statement == "SET ROLE tracefold_owner":
             return _Cursor(None)
@@ -41,8 +41,8 @@ def test_legacy_lineage_assumes_owner_before_reading_alembic_tables(monkeypatch:
 
     assert legacy_reconciliation.reconcile_colliding_telegram_lineage("postgresql://migrate@db/tracefold") is False
     assert connection.statements[:2] == [
-        "SELECT CASE WHEN current_user = 'tracefold_migrate' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
-        "'tracefold_owner') THEN pg_has_role(current_user, 'tracefold_owner', 'MEMBER') ELSE false END",
+        "SELECT current_user = 'tracefold_migrate' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = "
+        "'tracefold_owner')",
         "SET ROLE tracefold_owner",
     ]
     assert all("alembic_version" not in statement for statement in connection.statements[:2])

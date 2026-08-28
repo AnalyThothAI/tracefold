@@ -77,7 +77,11 @@ EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelo
 # `response_format` — so a change to any of them moves the hash without anyone deciding that it should.
 _GOLDEN_MODEL: Final[str] = f"{_WIRE_MODEL_PREFIX}tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
-_STRUCTURED_OUTPUT_MODES: Final[tuple[StructuredOutputMode, ...]] = ("json_schema", "json_object")
+_STRUCTURED_OUTPUT_MODES: Final[tuple[StructuredOutputMode, ...]] = (
+    "json_schema",
+    "json_object",
+    "prompt_json",
+)
 
 
 def _golden_request(predictor: PredictorName, mode: StructuredOutputMode) -> dict[str, Any]:

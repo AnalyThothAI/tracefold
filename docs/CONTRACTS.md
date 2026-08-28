@@ -60,7 +60,12 @@ before startup.
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
 OpenAI-compatible configuration (DeepSeek, or a LAN llama.cpp / vLLM server).
 They are all absent or all present; a partial triple fails validation, and
-Tracefold never supplies an implicit endpoint or model. `qwen*` models are
+Tracefold never supplies an implicit endpoint or model. Every primary, Reader,
+fallback, and compiler endpoint also accepts a provider-neutral `request` block:
+`send_temperature` (`true|false|null`), `temperature`, `structured_output`
+(`auto|json_schema|json_object|prompt_json`), and bounded `extra_body` fields.
+Transport-owned fields cannot be overridden. `auto` keeps known provider defaults;
+there is no URL-specific or Kimi-for-Coding compatibility branch. `qwen*` models are
 called with `chat_template_kwargs.enable_thinking=false` (code-owned): Qwen3
 otherwise spends the Triage token budget on reasoning before the tool call.
 `llm.news_reader_card` (`api_key`, `base_url`, `model`; all-or-nothing and only
@@ -148,8 +153,9 @@ insecure credentials fail closed: Serve remains credential-free, while an
 explicitly enabled invalid provider configuration makes Workers fail startup.
 On Telegram, a reader ticker is clickable only when an official venue catalogue proves an exact contract.
 Destinations are built from typed Binance, Hyperliquid, OKX, Lighter, or Bitget identities; untyped URLs and
-inconsistent metadata remain plain text. A pushed `single_name` card with exactly one candidate ticker is checked
-after the initial send against fresh catalogues from all five venue families. Any exact match keeps the message and
+inconsistent metadata remain plain text. A pushed `single_name` card with exactly one candidate ticker, or no
+grounded ticker but a confident code-like title identity, is checked after the initial send against fresh catalogues
+from all five venue families. Any exact match keeps the message and
 is added through one in-place edit; its delivery prices use trade-first anchors and closed one-minute candles as
 fallback. An absent result authorizes `deleteMessage` only when all five catalogues answered successfully and none
 matched. A timeout, blocked endpoint, malformed catalogue, incomplete issuer identity, or any other partial result
@@ -182,13 +188,14 @@ currently shows. Startup converts every inherited `editing` intent to the same e
 capability and retains its single enriched send. Startup reconciliation must succeed before the delivery consumer
 starts; while running, a 30-second sweep converts any edit still unsettled after 60 seconds to ambiguity and retries
 after transient database failures.
-Current-vs-anchor and fixed 1 h returns come only from the
+Current-vs-anchor, fixed 1 h, and fixed 24 h returns come only from the
 same request-time venue and contract: Binance is tried first, Hyperliquid second and OKX third. At each news,
-push-minus-1H and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
+push-minus-1H, push-minus-24H, and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
 at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
 The calculation never mixes venues or contracts, needs no continuously collected tick history, and does not
-write these presentation returns into `reaction_v1`. The 24 h value appears only from that asset's fresh,
-same-contract `rolling_24h` quote. An unavailable value is labelled rather than replaced with another window.
+write these presentation returns into `reaction_v1`. The 24 h value is calculated from the current and
+push-minus-24H anchors on that same contract; a fresh same-contract `rolling_24h` snapshot is only a fallback when
+the on-demand point path is unavailable. An unavailable value is labelled rather than replaced with another window.
 Direction renders impact and polarity together on one line, such as `🧭 方向 明显利空`; novelty remains its
 own line. The footer has no time heading: it lists news publication time, send-start time, and then the
 normalized source words carrying the original HTTPS link, with no separate source button. Times use
@@ -996,7 +1003,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260824_0302`). Since
+append without rewrite access (current at migration `20260828_0323`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
@@ -1377,7 +1384,7 @@ what "better" means; both observed ceilings are printed in the row. A judge that
 went `unavailable` is reported separately under `judge_availability`, because it
 makes its leg a lower bound rather than a different population. The endpoint check compares each report against the
 digest of the route this run composed rather than the two reports against each
-other, because the baseline fingerprints it as `configured_endpoint_model_v2`
+other, because the baseline fingerprints it as `configured_endpoint_model_v3`
 and the optimizer as `model_execution_identity.v1`. Any `mismatch` makes
 `same_population` false and exits `2` with
 `news_learning_run_population_identity_mismatch`; the summary is still written,

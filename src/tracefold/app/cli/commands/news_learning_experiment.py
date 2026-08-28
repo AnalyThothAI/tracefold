@@ -124,6 +124,8 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
                     timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
                     max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
                     model_kwargs=endpoint.model_kwargs,
+                    temperature=endpoint.temperature,
+                    structured_output=endpoint.structured_output,
                 ),
             ),
             judge=judge,
@@ -221,6 +223,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         model_name=str(configured_reflection.model),
         api_key=str(configured_reflection.api_key),
         base_url=str(configured_reflection.base_url),
+        request_config=configured_reflection.request,
     )
     task_adapter = build_task_adapter(
         model_name=task.model_name,
@@ -229,6 +232,8 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
         max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
         model_kwargs=task.model_kwargs,
+        temperature=0 if task.temperature is None else task.temperature,
+        structured_output=task.structured_output,
     )
     reflection_lm = build_reflection_lm(
         model_name=reflection.model_name,
@@ -241,6 +246,8 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         api_key=reflection.api_key,
         api_base=reflection.api_base,
         model_kwargs=reflection.model_kwargs,
+        temperature=0 if reflection.temperature is None else reflection.temperature,
+        structured_output=reflection.structured_output,
         # Bound to the declared budget, because `optimize` refuses a judge whose own ceiling is larger:
         # the metric calls the judge directly, so this admission check is the only pre-call bound there is.
         max_model_calls=int(args.max_metric_judge_model_calls),
@@ -335,6 +342,8 @@ def _semantic_judge(settings: Any, *, model: str) -> Any:
         api_key=endpoint.api_key,
         api_base=endpoint.api_base,
         model_kwargs=endpoint.model_kwargs,
+        temperature=0 if endpoint.temperature is None else endpoint.temperature,
+        structured_output=endpoint.structured_output,
     )
 
 
@@ -360,7 +369,7 @@ def _arm_endpoint(settings: Any, *, arm: str, model: str) -> Any:
             model_name=str(model or primary.model_name),
             api_key=str(primary.api_key),
             base_url=str(primary.api_base),
-            request_profile=primary.request_profile,
+            request_config=settings.llm.request,
         )
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     if reflection is None or not bool(getattr(reflection, "configured", False)):
@@ -370,6 +379,7 @@ def _arm_endpoint(settings: Any, *, arm: str, model: str) -> Any:
         model_name=str(model or reflection.model),
         api_key=str(reflection.api_key),
         base_url=str(reflection.base_url),
+        request_config=reflection.request,
     )
 
 

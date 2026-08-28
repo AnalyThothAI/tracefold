@@ -56,7 +56,8 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at Alembic head `20260828_0317`. Both
+5. Deploy the exact reviewed image at the current Alembic head (`20260828_0323`
+   at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
    repeats the three database drain predicates in its transaction before
@@ -527,7 +528,9 @@ running; broker is `warn` at 50 and `bad` at 200 queued messages on a business
 queue, `bad` when a business queue has no consumer, `warn` with dead letters;
 model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
 names the error codes); delivery is `warn` when 10 % of 24 h attempts
-are terminal, `bad` at 30 %. The five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
+are terminal, `bad` at 30 %. A `warn` or `bad` level from any enabled health
+lane makes top-level `state` `degraded`; the API no longer reports a green
+`ready` state beside a failing health item. The five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
 in the rolling 24 h window, tested for parsed/admitted/Triage/sent durable facts. The independent Triage and
 delivery rolling ledgers remain throughput/health facts, so late work does not make a later funnel stage exceed
 its intake cohort. `reasons_24h` (Chinese labels
@@ -988,8 +991,9 @@ settings schema rejects them and Serve/Workers fail to start with them
 present. Verify after restart: `tracefold db audit` reports
 `migration_status` `ready`, current News table counts, `news_schema.exact`, and
 `runtime_roles.ok`; `tracefold news bus-check` shows one consumer on
-`news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` once
-the WSS connects; `/api/macro/overview` answers `404`; and the first candidate
+`news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` only
+after the WSS, broker, model, delivery, and Workers health checks are all green;
+`/api/macro/overview` answers `404`; and the first candidate
 Event receives a Triage verdict within seconds.
 
 ## Operator actions and retention

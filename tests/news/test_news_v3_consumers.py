@@ -1647,6 +1647,115 @@ def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 
 
+def test_single_name_without_a_grounded_asset_is_edited_when_the_title_resolves_to_a_contract() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(
+                leader_title="MetaLight (02605.HK) announces interim results",
+                grounded_assets=[],
+            ),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "new_fact",
+                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
+                    "assets": [],
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "matched",
+                "candidates": ["02605.HK", "2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [
+                    {
+                        "requested_symbol": "METALIGHT",
+                        "venue_family": "bitget",
+                        "venue": "bitget.perp",
+                        "venue_symbol": "METALIGHTUSDT",
+                        "price_symbol": "METALIGHTUSDT",
+                        "base_symbol": "METALIGHT",
+                        "quote_asset": "USDT",
+                        "instrument_class": "equity",
+                    }
+                ],
+                "reason_zh": "已在 bitget.perp 官方市场目录命中可交易合约。",
+            },
+            order,
+        )
+
+        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
+            return {target: PricePoint(at_ms=target, price=Decimal("10"), basis="trade") for target in targets_ms}
+
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            sender=sender,
+            tradability_verifier=verifier,
+            price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return news, sender, order
+
+    news, sender, order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "market-search", "edit"]
+    assert sender.deleted_receipts == []
+    assert sender.edited_presentations[0].trade_targets == (
+        ReaderTradeTarget("METALIGHT", "bitget.perp", "METALIGHTUSDT", "METALIGHT", "USDT"),
+    )
+    assert sender.edited_presentations[0].market_movements[0].ticker == "METALIGHT"
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+
+
+def test_single_name_without_a_grounded_asset_is_deleted_after_authoritative_absence() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
+        news = _delivery_news(
+            event_card=_card(leader_title="MetaLight (02605.HK) announces interim results", grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "new_fact",
+                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
+                    "assets": [],
+                },
+            },
+        )
+        sender = RecordingEditableSender([])
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "absent",
+                "candidates": ["02605.HK", "2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [],
+                "deletion_safe": True,
+                "reason_zh": "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
+            }
+        )
+        consumer = _deliverer(news, FakeBus(), sender=sender, tradability_verifier=verifier)
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return news, sender
+
+    news, sender = asyncio.run(scenario())
+
+    assert sender.edited_cards == []
+    assert len(sender.deleted_receipts) == 1
+    assert news.kwargs_of("begin_delivery_delete")["evidence"]["tradability_review"]["state"] == "absent"
+
+
 def test_single_name_is_deleted_only_after_all_five_catalogues_confirm_absence() -> None:
     async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
         order: list[str] = []
@@ -1675,6 +1784,7 @@ def test_single_name_is_deleted_only_after_all_five_catalogues_confirm_absence()
                 "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
                 "failed_venues": [],
                 "matches": [],
+                "deletion_safe": True,
                 "reason_zh": "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
             },
             order,
@@ -1691,6 +1801,46 @@ def test_single_name_is_deleted_only_after_all_five_catalogues_confirm_absence()
     assert len(sender.deleted_receipts) == 1
     assert news.kwargs_of("begin_delivery_delete")["evidence"]["tradability_review"]["state"] == "absent"
     assert news.kwargs_of("settle_delivery_delete")["receipt"]["deleted_at_ms"] == NOW_MS + 2_000
+
+
+def test_title_only_acronym_is_kept_when_five_venue_absence_is_not_deletion_safe() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
+        news = _delivery_news(
+            event_card=_card(leader_title="OpenAI (GPT) announces a research update", grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "neutral",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "new_fact",
+                    "headline_zh": "OpenAI 发布研究更新",
+                    "assets": [],
+                },
+            },
+        )
+        sender = RecordingEditableSender([])
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "absent",
+                "candidates": ["GPT", "OPENAI"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [],
+                "deletion_safe": False,
+                "reason_zh": "五个交易所均未命中，但标题代码缺少交易所前缀，保留消息等待人工确认。",
+            }
+        )
+        consumer = _deliverer(news, FakeBus(), sender=sender, tradability_verifier=verifier)
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return news, sender
+
+    news, sender = asyncio.run(scenario())
+
+    assert sender.deleted_receipts == []
+    assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
+    assert "begin_delivery_delete" not in news.names()
 
 
 def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> None:
@@ -1938,16 +2088,18 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
     def price_fetcher_for(venue: str) -> Any:
         async def fetch(venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
             calls.append((venue, venue_symbol))
-            current, hour, event = targets
+            current, hour, day, event = targets
             if venue == "binance.perp":
                 return {
                     current: PricePoint(current - 50, Decimal("101"), "trade"),
                     hour: PricePoint(hour - 50, Decimal("100"), "trade"),
+                    day: PricePoint(day - 50, Decimal("90"), "trade"),
                 }
             if venue == "hl.xyz":
                 return {
                     current: PricePoint(current - 40, Decimal("101"), "trade"),
                     hour: PricePoint(hour, Decimal("100"), "candle_1m"),
+                    day: PricePoint(day, Decimal("80"), "candle_1m"),
                     event: PricePoint(event - 10, Decimal("99"), "trade"),
                 }
             return {}
@@ -1965,7 +2117,7 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
     )
 
     assert calls == [("binance.perp", "MSFTUSDT"), ("hl.xyz", "xyz:MSFT")]
-    assert sender.presentations[0].market_movements == (ReaderMarketMovement("MSFT", 202, 100, None, "available"),)
+    assert sender.presentations[0].market_movements == (ReaderMarketMovement("MSFT", 202, 100, 2625, "available"),)
     assert sender.presentations[0].trade_targets == (
         ReaderTradeTarget(
             ticker="MSFT",
@@ -2023,10 +2175,11 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
                 order.append("price")
                 price_started.set()
                 await allow_prices.wait()
-                current, hour, event = targets
+                current, hour, day, event = targets
                 return {
                     current: PricePoint(current, Decimal("101"), "trade"),
                     hour: PricePoint(hour, Decimal("100"), "trade"),
+                    day: PricePoint(day, Decimal("90"), "candle_1m"),
                     event: PricePoint(event, Decimal("99"), "trade"),
                 }
 
@@ -2059,7 +2212,7 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
     assert order == ["prepare", "send", "price", "edit"]
     assert sender.edited_presentations[0].market_data_state == "ready"
     assert sender.edited_presentations[0].market_movements == (
-        ReaderMarketMovement("MSFT", 202, 100, None, "available"),
+        ReaderMarketMovement("MSFT", 202, 100, 1222, "available"),
     )
     assert sender.edited_cards[0]["elements"][0]["content"].splitlines()[-1].startswith("行情 MSFT $101")
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
@@ -2088,10 +2241,11 @@ def test_telegram_delivery_keeps_the_initial_message_when_enrichment_edit_fails(
         def price_fetcher_for(_venue: str) -> Any:
             async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
                 order.append("price")
-                current, hour, event = targets
+                current, hour, day, event = targets
                 return {
                     current: PricePoint(current, Decimal("101"), "trade"),
                     hour: PricePoint(hour, Decimal("100"), "trade"),
+                    day: PricePoint(day, Decimal("90"), "candle_1m"),
                     event: PricePoint(event, Decimal("99"), "trade"),
                 }
 

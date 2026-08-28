@@ -64,18 +64,38 @@ llm:
   api_key:
   base_url:
   news_triage_model:
+  request:
+    send_temperature:
+    temperature: 0
+    structured_output: "auto"
+    extra_body: {{}}
   news_reader_card:
     api_key:
     base_url:
     model:
+    request:
+      send_temperature:
+      temperature: 0
+      structured_output: "auto"
+      extra_body: {{}}
   news_triage_fallback:
     api_key:
     base_url:
     model:
+    request:
+      send_temperature:
+      temperature: 0
+      structured_output: "auto"
+      extra_body: {{}}
   news_reader_card_fallback:
     api_key:
     base_url:
     model:
+    request:
+      send_temperature:
+      temperature: 0
+      structured_output: "auto"
+      extra_body: {{}}
 
 news:
   enabled: true

@@ -223,20 +223,18 @@ def _lineage_fingerprint(conn: Any) -> str:
 
 
 def _set_owner_role_if_available(conn: Any) -> None:
-    owns_through_role = bool(
+    should_assume_owner = bool(
         _scalar(
             conn,
             """
-            SELECT CASE
-              WHEN current_user = 'tracefold_migrate'
-                AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_owner')
-              THEN pg_has_role(current_user, 'tracefold_owner', 'MEMBER')
-              ELSE false
-            END
+            SELECT current_user = 'tracefold_migrate'
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_owner')
             """,
         )
     )
-    if owns_through_role:
+    if should_assume_owner:
+        # A deployment that created tracefold_migrate without SET membership is not compatible with the runtime
+        # role contract. Let SET ROLE fail loudly instead of silently continuing with partial privileges.
         conn.execute("SET ROLE tracefold_owner")
 
 

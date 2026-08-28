@@ -69,7 +69,11 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # #310 rebinds it to factory v9 (endpoint-capable structured-output envelope). Recorded mode composes no
 # request, so the corpus, every score (`case_macro` 0.660714 / `cluster_macro` 0.71645) and every case
 # result are byte-identical again; only the identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "97e1f6d4133f893e533efe74cfac7f0f37516626d3280849a85b688c26ce4d7d"
+# The configurable request-envelope cut adds prompt-only JSON and records temperature/structured-output
+# behavior in the computed execution identity. Replacing only the new envelope digest with the preceding
+# digest reproduces the preceding report hash exactly, so the corpus, metric, scores and case results did
+# not move.
+_EXPECTED_REPORT_SHA256 = "6bb6329d5d4142195ee0664a8440f11dbd34b25196f3dd3f2be7c4cfa198414f"
 
 
 @pytest.fixture(scope="module")

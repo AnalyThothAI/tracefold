@@ -64,6 +64,35 @@ class StorageConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
 
 
+class LlmRequestConfig(BaseModel):
+    """Provider-neutral controls for one OpenAI-compatible request envelope."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    send_temperature: bool | None = None
+    temperature: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt_json"] = "auto"
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_transport_owned_fields(self) -> LlmRequestConfig:
+        owned = {
+            "api_key",
+            "api_base",
+            "base_url",
+            "max_tokens",
+            "messages",
+            "model",
+            "response_format",
+            "stream",
+            "temperature",
+        }
+        overlap = owned.intersection(self.extra_body)
+        if overlap:
+            raise ValueError(f"llm_request_extra_body_owned:{','.join(sorted(overlap))}")
+        return self
+
+
 class _LlmEndpointConfig(BaseModel):
     """One complete direct model endpoint."""
 
@@ -72,6 +101,7 @@ class _LlmEndpointConfig(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = Field(default=None, repr=False)
     model: str | None = None
+    request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
 
     @field_validator("api_key", "model", mode="before")
     @classmethod
@@ -145,6 +175,7 @@ class LlmConfig(BaseModel):
     base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
     trading_decision_model: str | None = None
+    request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
     news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
