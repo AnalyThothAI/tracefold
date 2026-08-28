@@ -3032,9 +3032,9 @@ def test_corpus_migration_carries_only_replay_equivalent_cases_under_the_new_arm
         )
     store_b = CandidateEvaluator(conn, stable=arm_b, judges={})._datasets
 
-    # Every non-migration reader dies at the contract hash before it can even reach the cohort check:
-    # the sealed agent_bundle_sha no longer matches the active arm.
-    with pytest.raises(ValueError, match="news_learning_dataset_contract_hash_mismatch"):
+    # Every non-migration reader refuses with the honest name: the seal's cohort is not the active arm.
+    # (The validator itself no longer folds the active arm in — authorization is each reader's check.)
+    with pytest.raises(ValueError, match="news_learning_dataset_agent_cohort_mismatch"):
         store_b.development_compile_export(development.artifact_sha)
 
     export = store_b.development_migration_export(development.artifact_sha)

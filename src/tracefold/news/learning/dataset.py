@@ -108,6 +108,12 @@ def _text_sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+# The two named extraction seals a dataset may carry: the freeze query and the migration carry (#300).
+_EXTRACTION_LINEAGE_SHAS = frozenset(
+    (_text_sha("news_learning_freeze_query_v1"), _text_sha("news_learning_migration_freeze_v1"))
+)
+
+
 @dataclass(frozen=True)
 class AdmittedCandidate:
     """A candidate the release plane has already admitted, and the instant it was registered.
@@ -221,7 +227,7 @@ class DevelopmentDatasetStore:
 
         self._ledger.assert_active_stable()
         dataset_payload = self._load_dataset_payload(dataset_sha)
-        dataset = self._validate_dataset_payload(dataset_sha, dataset_payload, stale_arm_ok=True)
+        dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
         if dataset.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
         episodes = self._project_episodes(
@@ -252,7 +258,7 @@ class DevelopmentDatasetStore:
         if str(receipt.get("from_dataset_sha")) != from_dataset_sha:
             raise ValueError("news_learning_migration_receipt_dataset_mismatch")
         old_payload = self._load_dataset_payload(from_dataset_sha)
-        old = self._validate_dataset_payload(from_dataset_sha, old_payload, stale_arm_ok=True)
+        old = self._validate_dataset_payload(from_dataset_sha, old_payload)
         if old.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
         per_case = {str(row.get("case_id")): str(row.get("verdict")) for row in receipt.get("per_case") or ()}
@@ -854,9 +860,16 @@ class DevelopmentDatasetStore:
             raise ValueError("news_learning_dataset_artifact_hash_mismatch")
         return payload
 
-    def _validate_dataset_payload(
-        self, artifact_sha: str, payload: Mapping[str, Any], *, stale_arm_ok: bool = False
-    ) -> DatasetManifest:
+    def _validate_dataset_payload(self, artifact_sha: str, payload: Mapping[str, Any]) -> DatasetManifest:
+        """Integrity and contract of one sealed dataset — deliberately not authorization.
+
+        Whether the *reader* may use this corpus against the active arm is each reader's own check with
+        its own honest error — the compile export and the evaluator compare `agent_cohort`, candidate
+        admission compares the parent chain, and the migration readers (#300) accept a stale seal on
+        purpose. Folding the active arm into this validator made every stale dataset die here as
+        `contract_hash_mismatch` before the real refusal could name itself.
+        """
+
         exact_payload = dict(payload)
         if exact_payload.get("learning_epoch") != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
@@ -874,21 +887,16 @@ class DevelopmentDatasetStore:
             "learning_epoch_sha": expected_epoch_sha,
             "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
             "reader_contract_sha": READER_CONTRACT_SHA256,
-            "agent_bundle_sha": self._stable.bundle_sha,
-            "extraction_sha": _text_sha("news_learning_freeze_query_v1"),
+            # The seal names the arm that made it and must agree with itself; which arm is *acceptable*
+            # is the reader's question, not the payload's.
+            "agent_bundle_sha": str((dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha") or ""),
         }
-        if stale_arm_ok:
-            # The migration readers (#300) accept a seal from a retired arm; every other contract fact is
-            # still exact, and the seal must at least agree with itself about which arm that was.
-            sealed_bundle = str((dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha") or "")
-            if hashes.get("agent_bundle_sha") != sealed_bundle:
-                raise ValueError("news_learning_dataset_contract_hash_mismatch")
-            expected_hashes["agent_bundle_sha"] = sealed_bundle
-        # Two extraction paths seal datasets: the freeze query and the migration carry (#300). Which one a
-        # seal used is part of its lineage, not a degree of freedom, so only the two named values pass.
-        if hashes.get("extraction_sha") == _text_sha("news_learning_migration_freeze_v1"):
-            expected_hashes["extraction_sha"] = _text_sha("news_learning_migration_freeze_v1")
-        if hashes != expected_hashes:
+        if {name: hashes.get(name) for name in expected_hashes} != expected_hashes:
+            raise ValueError("news_learning_dataset_contract_hash_mismatch")
+        # Two named seals exist: the freeze query and the migration carry (#300). Lineage, not freedom.
+        if hashes.get("extraction_sha") not in _EXTRACTION_LINEAGE_SHAS:
+            raise ValueError("news_learning_dataset_contract_hash_mismatch")
+        if set(hashes) != {*expected_hashes, "extraction_sha"}:
             raise ValueError("news_learning_dataset_contract_hash_mismatch")
         if exact_payload.get("reader_contract_version") != READER_CONTRACT_VERSION:
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
