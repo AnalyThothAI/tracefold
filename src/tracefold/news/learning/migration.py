@@ -24,10 +24,12 @@ from .objective import DevelopmentEpisode
 
 MIGRATION_RECEIPT_SCHEMA = "tracefold.news.corpus_migration_receipt.v1"
 
-# The judge's semantic fields decide whether two cards say the same thing; `decision` and `novelty` decide
-# what the pipeline does with them. A carried case must hold on both, or the recorded delivery truth and
-# restatement handling stop describing the current arm.
-_PIPELINE_FIELDS = ("decision", "novelty")
+# The judge's semantic fields decide whether two cards say the same thing; the pipeline fields decide what
+# production does with them: `decision` drives delivery, `novelty` and `restates` drive the restatement
+# rules (`decide()` reads the pointed-at told entry, so the same judgment against a different entry is a
+# different outcome), and `audience` is reader-visible routing. A carried case must hold on all of them,
+# or the recorded delivery truth stops describing the current arm.
+_PIPELINE_FIELDS = ("decision", "novelty", "restates", "audience")
 
 
 def verdict_field_diffs(recorded: Mapping[str, Any], replayed: Mapping[str, Any]) -> tuple[str, ...]:
@@ -114,7 +116,10 @@ def run_corpus_migration(
                     entry.update(verdict="error", field_diffs=[], judge_status=f"replay_error:{type(exc).__name__}")
                     replayed = None
                 if replayed is not None:
-                    entry.update(assess_replayed_case(recorded.model_dump(mode="json"), dict(replayed), judge))
+                    try:
+                        entry.update(assess_replayed_case(recorded.model_dump(mode="json"), dict(replayed), judge))
+                    except Exception as exc:  # a malformed historical verdict must cost one case, not the run
+                        entry.update(verdict="error", field_diffs=[], judge_status=f"assess_error:{type(exc).__name__}")
                 elif "verdict" not in entry:
                     entry.update(verdict="error", field_diffs=[], judge_status="replay_verdict_missing")
             counts[str(entry["verdict"])] += 1

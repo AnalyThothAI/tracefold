@@ -345,6 +345,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="hard bound on replayed cases; must cover the whole dataset",
     )
+    learning_migrate.add_argument(
+        "--from-receipt",
+        default="",
+        help="freeze from an already-written migration receipt instead of replaying again",
+    )
     learning_migrate.add_argument("--out", required=True, help="directory for the receipt and dataset manifest")
     learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
     learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)

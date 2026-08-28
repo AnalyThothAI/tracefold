@@ -225,11 +225,16 @@ class DevelopmentDatasetStore:
         ordinary check. Using it for anything else recreates the ghost-cohort comparison the assert stops.
         """
 
+        return self._development_export(dataset_sha, enforce_active_cohort=False)
+
+    def _development_export(self, dataset_sha: str, *, enforce_active_cohort: bool) -> DevelopmentCompileExport:
         self._ledger.assert_active_stable()
         dataset_payload = self._load_dataset_payload(dataset_sha)
         dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
         if dataset.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
+        if enforce_active_cohort and dataset.agent_cohort != self._ledger.agent_cohort():
+            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
         episodes = self._project_episodes(
             sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)),
             dataset.seed_receipts,
@@ -257,6 +262,15 @@ class DevelopmentDatasetStore:
             raise ValueError("news_learning_migration_receipt_schema_invalid")
         if str(receipt.get("from_dataset_sha")) != from_dataset_sha:
             raise ValueError("news_learning_migration_receipt_dataset_mismatch")
+        # The receipt must be the one its hash names, and the replay it describes must be of *this* arm —
+        # a receipt proven against a previous stable is exactly the ghost-cohort evidence this seal exists
+        # to prevent.
+        recomputed = _sha({key: receipt[key] for key in receipt if key != "receipt_sha256"})
+        if str(receipt.get("receipt_sha256")) != recomputed:
+            raise ValueError("news_learning_migration_receipt_sha_mismatch")
+        replay_identity = dict(receipt.get("replay_identity") or {})
+        if str(replay_identity.get("program_sha256")) != self._stable.program_sha256:
+            raise ValueError("news_learning_migration_receipt_arm_mismatch")
         old_payload = self._load_dataset_payload(from_dataset_sha)
         old = self._validate_dataset_payload(from_dataset_sha, old_payload)
         if old.role != "development":
@@ -271,6 +285,12 @@ class DevelopmentDatasetStore:
             raise ValueError("news_learning_migration_carries_no_cases")
         spec = DatasetSpec(role="development", window=ClosedWindow(**dict(old_payload["window"])))
         counts = self._dataset_counts(spec, carried)
+        # Eligibility is a fact about the window's *production* arm — the one that lived it. Recomputing it
+        # under the current arm over that window reads zero by construction and would publish a false
+        # lineage into every coverage block downstream.
+        old_counts = dict(old_payload.get("counts") or {})
+        counts["eligible_event_n"] = old_counts.get("eligible_event_n")
+        counts["eligibility"] = old_counts.get("eligibility")
         freeze_as_of_ms = self._ledger.now_ms()
         payload = {
             "dataset_version": DATASET_VERSION,
@@ -311,26 +331,7 @@ class DevelopmentDatasetStore:
     def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
         """Seal the sole read-only development export for the cold compiler."""
 
-        self._ledger.assert_active_stable()
-        dataset_payload = self._load_dataset_payload(dataset_sha)
-        dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
-        if dataset.role != "development":
-            raise ValueError("news_learning_compile_requires_development_dataset")
-        if dataset.agent_cohort != self._ledger.agent_cohort():
-            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
-
-        episodes = self._project_episodes(
-            sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)),
-            dataset.seed_receipts,
-        )
-        frozen_episodes = tuple(episodes)
-        return DevelopmentCompileExport(
-            dataset_sha=dataset_sha,
-            dataset_payload=dataset_payload,
-            episodes=frozen_episodes,
-            episode_projection_root_sha256=_sha(list(frozen_episodes)),
-            learning_epoch_started_at_ms=self._ledger.epoch_started_at_ms(),
-        )
+        return self._development_export(dataset_sha, enforce_active_cohort=True)
 
     def baseline_episodes(
         self,

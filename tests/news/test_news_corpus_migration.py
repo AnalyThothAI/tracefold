@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from tracefold.news.learning.judge import CardEquivalence, CardEquivalenceAssessment
 from tracefold.news.learning.migration import assess_replayed_case, verdict_field_diffs
 
@@ -48,6 +50,12 @@ def test_pipeline_and_semantic_fields_both_gate_the_diff() -> None:
     # the comparator must catch them itself.
     assert verdict_field_diffs(_VERDICT, {**_VERDICT, "decision": "drop"}) == ("decision",)
     assert verdict_field_diffs(_VERDICT, {**_VERDICT, "novelty": "restatement"}) == ("novelty",)
+    # `decide()` reads the pointed-at told entry: the same restatement against a different entry is a
+    # different production outcome, and `audience` is reader-visible routing.
+    assert verdict_field_diffs({**_VERDICT, "restates": 0}, {**_VERDICT, "restates": 2}) == ("restates",)
+    assert verdict_field_diffs({**_VERDICT, "audience": "crypto"}, {**_VERDICT, "audience": "us_equity"}) == (
+        "audience",
+    )
 
 
 def test_asset_comparison_ignores_order_but_not_content() -> None:
@@ -72,6 +80,13 @@ def test_judge_unavailability_is_an_error_not_a_carry() -> None:
     )
     outcome = assess_replayed_case(_VERDICT, dict(_VERDICT), judge)  # type: ignore[arg-type]
     assert outcome["verdict"] == "error"
+
+
+def test_malformed_verdicts_surface_as_comparator_errors_not_crashes() -> None:
+    # run_corpus_migration wraps the comparator per case; the contract here is just that comparison of a
+    # malformed historical entry raises (so the wrapper can file one error) rather than mis-comparing.
+    with pytest.raises(TypeError):
+        verdict_field_diffs({**_VERDICT, "assets": [object()]}, dict(_VERDICT))
 
 
 def test_text_divergence_is_divergent_and_equivalence_carries() -> None:

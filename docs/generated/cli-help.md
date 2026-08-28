@@ -554,6 +554,7 @@ options:
 usage: tracefold news learning migrate-corpus [-h] --from-dataset FROM_DATASET
                                               --semantic-judge SEMANTIC_JUDGE
                                               --max-model-cases MAX_MODEL_CASES
+                                              [--from-receipt FROM_RECEIPT]
                                               --out OUT
 
 options:
@@ -565,6 +566,9 @@ options:
   --max-model-cases MAX_MODEL_CASES
                         hard bound on replayed cases; must cover the whole
                         dataset
+  --from-receipt FROM_RECEIPT
+                        freeze from an already-written migration receipt
+                        instead of replaying again
   --out OUT             directory for the receipt and dataset manifest
 
 ```
