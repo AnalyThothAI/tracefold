@@ -9,7 +9,7 @@ import {
 import {
   TRADING_NOW_MS,
   tradingGateFixture,
-  tradingOrdersForUnderlying,
+  tradingIntentsForUnderlying,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -53,8 +53,8 @@ export function mockAppRoutes(apiMock: ApiMock) {
     if (path === "/api/trading/status") return ok(tradingStatusFixture());
     // #282: the endpoint filters both halves by `underlying`, and the token page depends on it — a case
     // for a different name carries an `event_id` no loaded frame matches.
-    if (path.startsWith("/api/trading/orders")) {
-      return ok(tradingOrdersForUnderlying(param("underlying")));
+    if (path.startsWith("/api/trading/intents")) {
+      return ok(tradingIntentsForUnderlying(param("underlying")));
     }
     // #269: the durable admission ledger, read by the OI audit's capital column.
     if (path === "/api/trading/gate") return ok(tradingGateFixture());

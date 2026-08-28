@@ -178,7 +178,9 @@ class LiquidationShadowRunner:
                 displacement_window_ms=_WINDOW_MS,
             )
             context = FrozenStrategyContext(
-                mode=self._config.mode,
+                # The research-only liquidation lane keeps the historical frozen-manifest
+                # vocabulary. It is not an execution backend or an operator switch.
+                mode="paper",
                 liquidation=trigger,
                 liquidation_aggregate=aggregate,
                 regime=assess(oi_direction=None, move=move, policy=self._config.regime),

@@ -6,11 +6,10 @@ import "./AppSidebar.css";
 
 export type AppNavigationCounts = { cases?: number; events?: number; oiFrames?: number };
 /**
- * The words a destination can carry instead of a number (#207 PR-W4). `tradingMode` is the capital
- * lane's ledger mode — `PAPER` today — because "is anything on that page real money" is the question a
- * reader has before opening it, and a volume would not answer it.
+ * The words a destination can carry instead of a number. `tradingEnvironment` names the sole execution
+ * venue so the navigation cannot imply a selectable backend.
  */
-export type AppNavigationBadges = { tradingMode?: string };
+export type AppNavigationBadges = { tradingEnvironment?: string };
 
 /**
  * The console's navigation, in the frame at desktop width and inside the tablet drawer below it. One
@@ -132,12 +131,11 @@ function AppSidebarItem({
         </span>
       )}
       {/*
-       * `aria-hidden` for the same reason the count is: the destination is 交易 whether the ledger is on
-       * paper or not, and folding the mode into the link's name would rename it when configuration changed.
-       * The page itself states the mode in a labelled figure.
+       * `aria-hidden` for the same reason the count is: the destination remains 交易, while the page itself
+       * states the code-owned execution environment in a labelled figure.
        */}
       {badge ? (
-        <span aria-hidden className="cockpit-app-sidebar-badge" title="资本通道当前模式">
+        <span aria-hidden className="cockpit-app-sidebar-badge" title="资本通道执行环境">
           {badge}
         </span>
       ) : null}

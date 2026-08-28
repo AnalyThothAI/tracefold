@@ -447,66 +447,21 @@ class TradingRegimeSettings(BaseModel):
 class TradingPolicySettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    allow_short: bool = False
-    live_min_surprise: int = 2
-    live_max_price_in: int = 1
     min_whale_long_profit_bps: int = 9_500
 
     @model_validator(mode="after")
     def validate_bounds(self) -> TradingPolicySettings:
-        if not 0 <= self.live_min_surprise <= 3:
-            raise ValueError("trading_policy_surprise_invalid")
-        if not 0 <= self.live_max_price_in <= 3:
-            raise ValueError("trading_policy_price_in_invalid")
         if not 0 <= self.min_whale_long_profit_bps <= 100_000:
             raise ValueError("trading_policy_whale_profit_invalid")
         return self
 
 
-class TradingVenueSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    priority: tuple[str, ...] = ("binance", "hyperliquid")
-    binance_enabled: bool = True
-    hyperliquid_enabled: bool = True
-
-    @field_validator("priority", mode="before")
-    @classmethod
-    def parse_priority(cls, value: Any) -> tuple[str, ...]:
-        if value is None:
-            return ("binance", "hyperliquid")
-        if not isinstance(value, list | tuple):
-            raise ValueError("trading_venue_priority_invalid")
-        return tuple(str(item).strip().lower() for item in value)
-
-    @model_validator(mode="after")
-    def validate_priority(self) -> TradingVenueSettings:
-        allowed = {"binance", "hyperliquid"}
-        if not self.priority or set(self.priority) - allowed:
-            raise ValueError("trading_venue_priority_invalid")
-        if len(set(self.priority)) != len(self.priority):
-            raise ValueError("trading_venue_priority_duplicate")
-        return self
-
-    @property
-    def enabled(self) -> tuple[str, ...]:
-        flags = {"binance": self.binance_enabled, "hyperliquid": self.hyperliquid_enabled}
-        return tuple(venue for venue in self.priority if flags.get(venue, False))
-
-
 class TradingOrderSettings(BaseModel):
-    """Deterministic order parameters. Nothing here is ever chosen by a model."""
+    """The sole operator execution value left after the #283 authority hard cut."""
 
     model_config = ConfigDict(extra="forbid")
 
-    fixed_notional_usd: Decimal = Decimal("50")
-    leverage: int = 1
-    fixed_stop_bps: int = 200
-    take_profit_bps: int = 0
-    max_holding_seconds: int = 1_800
-    max_spread_bps: int = 30
-    max_open_underlyings: int = 2
-    max_orders_per_day: int = 4
+    fixed_notional_usd: Decimal = Decimal("10")
 
     @field_validator("fixed_notional_usd", mode="before")
     @classmethod
@@ -518,67 +473,16 @@ class TradingOrderSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> TradingOrderSettings:
-        if not Decimal("1") <= self.fixed_notional_usd <= Decimal("10000"):
+        if not Decimal("0") < self.fixed_notional_usd <= Decimal("10"):
             raise ValueError("trading_order_notional_invalid")
-        if self.leverage != 1:
-            raise ValueError("trading_order_leverage_must_be_one")
-        if not 20 <= self.fixed_stop_bps <= 2_000:
-            raise ValueError("trading_order_stop_invalid")
-        if self.take_profit_bps and self.take_profit_bps <= self.fixed_stop_bps:
-            raise ValueError("trading_order_take_profit_invalid")
-        if not 60 <= self.max_holding_seconds <= 86_400:
-            raise ValueError("trading_order_max_holding_invalid")
-        if not 1 <= self.max_open_underlyings <= 10:
-            raise ValueError("trading_order_open_underlyings_invalid")
-        if not 1 <= self.max_orders_per_day <= 100:
-            raise ValueError("trading_order_daily_cap_invalid")
         return self
-
-    @property
-    def nominal_daily_stop_loss_usd(self) -> Decimal:
-        """Planned stop loss: `fixed_notional x fixed_stop_bps x max_orders_per_day`."""
-
-        return (
-            self.fixed_notional_usd * Decimal(self.fixed_stop_bps) / Decimal(10_000) * Decimal(self.max_orders_per_day)
-        )
-
-
-class TradingOpenTradeSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    base_url: str | None = None
-    token_file: str | None = "opentrade_token"
-    request_timeout_seconds: float = 8.0
-
-    @field_validator("base_url", mode="before")
-    @classmethod
-    def parse_base_url(cls, value: Any) -> str | None:
-        normalized = str(value or "").strip().rstrip("/")
-        if not normalized:
-            return None
-        parsed = urlsplit(normalized)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("trading_opentrade_base_url_invalid")
-        return normalized
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.base_url and self.token_file)
 
 
 class TradingNautilusSettings(BaseModel):
-    """The single dark/demo execution process introduced by #283."""
+    """Credential paths for the sole Binance USD-M Demo execution authority."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    accept_intents: bool = False
     api_key_file: str | None = "binance_demo_api_key"
     api_secret_file: str | None = "binance_demo_api_secret"
 
@@ -592,61 +496,16 @@ class TradingNautilusSettings(BaseModel):
 
 
 class TradingSettings(BaseModel):
-    """`tracefold.trading`. Disabled by default; paper never reads the OpenTrade token."""
+    """`tracefold.trading`: decision plane plus one Binance USD-M Demo Intent sink."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
-    mode: Literal["paper", "live_reviewed", "live_bounded"] = "paper"
-    live_symbol: str | None = None
-    poll_seconds: float = 2.0
-    account_ref: str = "default"
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
     regime: TradingRegimeSettings = Field(default_factory=TradingRegimeSettings)
     policy: TradingPolicySettings = Field(default_factory=TradingPolicySettings)
-    venues: TradingVenueSettings = Field(default_factory=TradingVenueSettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
-    opentrade: TradingOpenTradeSettings = Field(default_factory=TradingOpenTradeSettings)
     nautilus: TradingNautilusSettings = Field(default_factory=TradingNautilusSettings)
-
-    @field_validator("live_symbol", mode="before")
-    @classmethod
-    def parse_live_symbol(cls, value: Any) -> str | None:
-        normalized = str(value or "").strip().upper()
-        if normalized and not re.fullmatch(r"[A-Z0-9]{1,24}", normalized):
-            raise ValueError("trading_live_symbol_invalid")
-        return normalized or None
-
-    @model_validator(mode="after")
-    def validate_mode(self) -> TradingSettings:
-        if not 0.5 <= self.poll_seconds <= 60.0:
-            raise ValueError("trading_poll_seconds_invalid")
-        if self.mode != "paper" and not self.opentrade.configured:
-            # Startup, not first order: a live mode with no provider contract would discover it only
-            # once a case had already been decided.
-            raise ValueError("trading_live_mode_requires_opentrade")
-        if self.mode != "paper" and not self.venues.enabled:
-            raise ValueError("trading_live_mode_requires_enabled_venue")
-        if self.mode == "live_bounded":
-            raise ValueError("trading_live_bounded_not_supported")
-        if self.mode == "live_reviewed":
-            if self.live_symbol is None:
-                raise ValueError("trading_live_reviewed_requires_one_symbol")
-            if len(self.venues.enabled) != 1:
-                raise ValueError("trading_live_reviewed_requires_one_venue")
-            if self.order.fixed_notional_usd > Decimal("10"):
-                raise ValueError("trading_live_reviewed_notional_above_canary")
-            if self.order.max_open_underlyings != 1:
-                raise ValueError("trading_live_reviewed_requires_one_position")
-            if self.order.max_orders_per_day != 1:
-                raise ValueError("trading_live_reviewed_requires_one_order_per_day")
-            if self.order.take_profit_bps != 0:
-                raise ValueError("trading_live_reviewed_take_profit_not_supported")
-        return self
-
-    @property
-    def is_live(self) -> bool:
-        return self.mode in ("live_reviewed", "live_bounded")
 
 
 class Settings(BaseModel):
@@ -676,15 +535,6 @@ class Settings(BaseModel):
         role: Literal["serve", "workers", "migrate", "nautilus"],
     ) -> Path | None:
         value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
-        if not value:
-            return None
-        configured = Path(value).expanduser()
-        if configured.is_absolute():
-            return configured
-        return self._config_dir / configured
-
-    def trading_opentrade_token_file(self) -> Path | None:
-        value = self.trading.opentrade.token_file
         if not value:
             return None
         configured = Path(value).expanduser()

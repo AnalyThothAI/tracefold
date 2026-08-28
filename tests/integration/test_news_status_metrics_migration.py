@@ -151,7 +151,7 @@ def test_0311_backfills_metrics_and_preserves_the_pipeline_percentile_bytes() ->
         snapshot = repositories_for_connection(conn).news.status_snapshot(now_ms=NOW + 1)["pipeline"]
         after = {key: snapshot[key] for key in before}
 
-        assert revision == "20260828_0316"
+        assert revision == "20260828_0317"
         assert generated == {
             "latency_ms": "ALWAYS",
             "queue_lag_ms": "ALWAYS",

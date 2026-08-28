@@ -167,9 +167,7 @@
   }
 
   /*
-   * A mode word rather than a volume (#207 PR-W4). Neutral grey on purpose: `PAPER` is a statement of what
-   * the lane is, not an alarm, and the moment it becomes something else the page — not this chip — is where
-   * a reader should be reading it.
+   * An environment word rather than a volume. Neutral grey on purpose: `Demo` is a venue fact, not an alarm.
    */
   .cockpit-app-sidebar-badge {
     flex: 0 0 auto;

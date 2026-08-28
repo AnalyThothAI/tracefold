@@ -429,13 +429,13 @@ def build_parser() -> argparse.ArgumentParser:
     news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
     news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")
 
-    trading = subcommands.add_parser("trading", help="Trading cases, orders, deny-list, and control (#104)")
+    trading = subcommands.add_parser("trading", help="Trading Case -> Intent -> Outcome and safety controls")
     trading_subcommands = trading.add_subparsers(dest="trading_command", required=True)
-    trading_subcommands.add_parser("status", help="mode, control, daily counters, and the 24 h funnel")
+    trading_subcommands.add_parser("status", help="Nautilus readiness, intent outcomes, and the daily funnel")
     trading_cases = trading_subcommands.add_parser("cases", help="list Trading cases newest first")
     trading_cases.add_argument(
         "--state",
-        choices=("PENDING", "RUNNING", "NO_TRADE", "POLICY_REJECTED", "ORDER_PREPARED", "BLOCKED"),
+        choices=("PENDING", "RUNNING", "NO_TRADE", "POLICY_REJECTED", "INTENT_EMITTED", "BLOCKED"),
         default=None,
     )
     trading_cases.add_argument("--limit", type=_positive_int, default=20)
@@ -449,7 +449,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=7,
         help="how far back to replay; the OI ledger holds 30 days of parsed frames",
     )
-    trading_show = trading_subcommands.add_parser("show", help="one case with its order and remote observations")
+    trading_show = trading_subcommands.add_parser("show", help="one case with its intent and current outcome")
     trading_show.add_argument("case_id")
     trading_blacklist = trading_subcommands.add_parser(
         "blacklist",
@@ -458,25 +458,6 @@ def build_parser() -> argparse.ArgumentParser:
     trading_blacklist.add_argument("blacklist_action", choices=("list", "add", "remove"))
     trading_blacklist.add_argument("symbol", nargs="?", default="")
     trading_blacklist.add_argument("--reason", default="operator")
-    trading_approve = trading_subcommands.add_parser("approve", help="approve one order by its exact payload digest")
-    trading_approve.add_argument("order_id")
-    trading_approve.add_argument("--digest", required=True)
-    trading_reject = trading_subcommands.add_parser("reject", help="reject one order by its exact payload digest")
-    trading_reject.add_argument("order_id")
-    trading_reject.add_argument("--digest", required=True)
-    trading_reject.add_argument("--reason", default="operator_rejected")
-    trading_resolve = trading_subcommands.add_parser(
-        "resolve",
-        help="drain one MANUAL_REVIEW_REQUIRED order after checking the venue yourself",
-    )
-    trading_resolve.add_argument("order_id")
-    trading_resolve.add_argument("outcome", choices=("closed", "open"))
-    trading_resolve.add_argument("--reason", default="operator_checked_venue")
-    trading_resolve.add_argument(
-        "--remote-order-id",
-        default="",
-        help="provider entry order identity; required for open recovery when the ledger has none",
-    )
     trading_control = trading_subcommands.add_parser("control", help="set the runtime control state")
     trading_control.add_argument("state", choices=("running", "close-only", "paused"))
 

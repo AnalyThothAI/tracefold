@@ -1,89 +1,46 @@
+import { Card } from "@shared/ui/Card";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 
 import {
-  useTradingGateWithToken,
-  useTradingOrdersWithToken,
+  useTradingIntentsWithToken,
   useTradingStatusWithToken,
+  type TradingIntent,
 } from "../api/tradingQueries";
-import { holdCeiling, isActiveOrder } from "../model/tradingLabels";
+import { CASE_STATE_ZH, INTENT_STATE_NOTE, isActiveIntent } from "../model/tradingLabels";
 
-import { TradingShell } from "./TradingChrome";
-import { TradingClosed } from "./TradingClosed";
-import { TradingExposure } from "./TradingExposure";
-import { TradingAdmission, TradingEvidence } from "./TradingFunnel";
-import { TradingDecisions, TradingHeadline, TradingLadder } from "./TradingReadout";
+import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChrome";
 
 import "./trading.css";
 
-/**
- * 模拟仓 — a real ledger against a fake exchange (#207 PR-W4, #104, #185).
- *
- * What paper proves is the execution kernel: that one source fact becomes at most one case, that a case
- * authors at most one intent, that an entry is attempted exactly once, and that an ambiguous write goes to
- * read-only reconciliation instead of a blind resend. It does not prove a return, so no number here becomes
- * an equity curve and the unrealised column says 纸面 outright.
- *
- * Every row states only the step it has proven. `ACKNOWLEDGED` is the venue answering; `OPEN` is the only
- * state with both a position and a native stop behind it; `AMBIGUOUS` carries no action at all, because the
- * one thing that must never happen from a screen is a human resending an order nobody has reconciled.
- *
- * There is no live switch on this page and no field that could become one. `live_ready` is reported as the
- * ledger's own word — `not_proven` until PR-C3's venue canary — and the surface has no write endpoint to
- * offer even if someone drew a button.
- */
+/** Read-only Case → Intent → Outcome workbench for the sole execution authority. */
 export function TradingPage({ token }: { token: string }) {
   const statusQuery = useTradingStatusWithToken(token);
   const status = statusQuery.data;
-  const ordersQuery = useTradingOrdersWithToken(
+  const intentsQuery = useTradingIntentsWithToken(
     token,
     undefined,
     status?.counts.funnel_day_key ?? null,
   );
-  // The admission ledger, read for the frame's own four numbers. A case knows which rule it stopped
-  // on; only the gate row kept what the measurement was, and `case_id` is what joins them (#273).
-  const gateQuery = useTradingGateWithToken(token);
-  const orders = ordersQuery.data?.orders ?? [];
-  const cases = ordersQuery.data?.cases_without_orders ?? [];
-  const decisions = gateQuery.data?.decisions ?? [];
-  const active = orders.filter(isActiveOrder);
-  const closed = orders.filter((order) => order.state === "CLOSED");
-  const disabled = status != null && !status.readiness.enabled;
+  const intents = intentsQuery.data?.intents ?? [];
+  const active = intents.filter(isActiveIntent);
+  const terminal = intents.filter((intent) => intent.execution_state === "TERMINAL");
+  const cases = intentsQuery.data?.cases_without_intents ?? [];
 
   return (
-    <TradingShell label="交易 · 模拟仓">
+    <TradingShell label="交易 · Binance USD-M Demo">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
-          <h1>模拟仓</h1>
-          <p>真实账本、假交易所：paper 证明的是执行内核，不是收益</p>
+          <h1>Case → Intent → Outcome</h1>
+          <p>唯一执行权威：Nautilus · Binance USD-M Demo · SOLUSDT-PERP.BINANCE</p>
         </div>
         {status ? (
-          <div
-            aria-label={`MODE ${status.readiness.mode} · LIVE READY ${status.readiness.live_readiness}`}
-            className="trading-heading-aside"
-            data-tone={disabled ? "caution" : undefined}
-          >
+          <div className="trading-heading-aside" data-tone={readinessTone(status.readiness)}>
             <span>{status.counts.funnel_day_key || "日期未知"} · UTC 预算日</span>
-            {disabled ? <small>资本通道未启用（trading.enabled=false）</small> : null}
-            {!disabled && status.readiness.control !== "RUNNING" ? (
-              <small>控制态 {status.readiness.control} · 不接受新入场</small>
-            ) : null}
-            <span aria-hidden className="trading-mobile-safety">
-              <span>
-                <small>MODE</small>
-                <b>{status.readiness.mode}</b>
-              </span>
-              <span>
-                <small>LIVE READY</small>
-                <b>{status.readiness.live_readiness}</b>
-              </span>
-              <span>
-                <small>今日订单</small>
-                <b>
-                  {status.budget.orders_today} / {status.budget.max_orders_per_day}
-                </b>
-              </span>
-            </span>
+            <small>
+              {status.readiness.control} ·{" "}
+              {status.readiness.engine_ready ? "ENGINE READY" : "ENGINE NOT READY"}
+            </small>
           </div>
         ) : null}
       </header>
@@ -96,79 +53,108 @@ export function TradingPage({ token }: { token: string }) {
       ) : null}
 
       {status ? (
-        <PageState.Stale updating={statusQuery.isFetching || ordersQuery.isFetching}>
+        <PageState.Stale updating={statusQuery.isFetching || intentsQuery.isFetching}>
           <div className="trading-body">
-            {/*
-             * The mandate opens the page, as the artifact draws it (#280). These five are the standing
-             * rules — what one order is allowed to be — and they are the same five whether the lane placed
-             * three orders today or none; opening on today's narrative instead pushed the artifact's first
-             * block below the fold on every day, to explain a thing the reader had not seen yet.
-             */}
-            <MetricRow className="trading-mandate" columns={5} label="固定交易预算">
+            <MetricRow className="trading-mandate" columns={5} label="冻结执行契约">
+              <Metric eyebrow="VENUE" value="Binance" caption="USD-M Demo" />
+              <Metric eyebrow="SYMBOL" value="SOL" caption={status.readiness.instrument_id} />
               <Metric
-                caption="每单一样大，无加仓"
-                eyebrow="固定名义"
-                value={`${status.budget.notional_usd} USDT`}
+                eyebrow="NOTIONAL"
+                value={`$${status.budget.target_notional_usd}`}
+                caption="每次固定名义"
               />
               <Metric
-                caption="交易所原生 stop"
-                eyebrow="固定止损"
-                value={`${status.budget.stop_loss_bps} bps`}
+                eyebrow="ENTRIES"
+                value={`${status.counts.entries_today} / 1`}
+                caption="每 UTC 日最多一次"
               />
               <Metric
-                caption="从首笔成交起算"
-                eyebrow="最长持有"
-                value={holdCeiling(status.budget.max_hold_ms)}
-              />
-              <Metric
-                caption="不含跳空滑点"
-                eyebrow="名义日止损上限"
-                value={`$${status.budget.nominal_daily_stop_loss_usd}`}
-              />
-              <Metric
-                caption="active 期间同标的封锁"
-                eyebrow="一标的一仓"
-                tone="accent"
-                value="1 / 1"
+                eyebrow="ACTIVE"
+                value={status.counts.active_intents}
+                caption="非终态 Intent"
+                tone={status.readiness.unexpected_exposure ? "caution" : "accent"}
               />
             </MetricRow>
 
-            {/*
-             * Then today: whether the lane is quiet, broken, or working exactly as configured. Every panel
-             * below this one is a number about something that did not happen, and without a sentence
-             * naming the rule they stopped on they all read as an outage (#273). It sits directly above
-             * the first of those zeroes rather than above the mandate that does not change (#280).
-             */}
-            <TradingHeadline
-              cases={cases}
-              counts={status.counts}
-              decisions={decisions}
-              status={status}
-            />
-
-            <TradingExposure
-              count={status.counts.active_orders}
-              error={ordersQuery.isError && !ordersQuery.data ? ordersQuery.error : null}
-              loading={ordersQuery.isPending}
-              mode={status.readiness.mode}
-              onRetry={() => void ordersQuery.refetch()}
+            <IntentList
+              empty="当前没有非终态 Intent；Nautilus 不持有待执行工作。"
               rows={active}
+              title="Fresh / Active Intent"
+            />
+            <IntentList
+              empty="当前窗口没有终态 Outcome。"
+              rows={terminal}
+              title="Terminal Outcome"
             />
 
-            <div className="trading-columns">
-              <TradingClosed count={status.counts.closed_orders_today} rows={closed} />
-              <TradingLadder counts={status.counts} />
-            </div>
-            {/* What the next order is waiting for, one case at a time, each stating its own
-                measurement against its own threshold. */}
-            <TradingDecisions cases={cases} decisions={decisions} status={status} />
-            {/* Source admission sits beside the funnel rather than inside the technical disclosure:
-                with the lane at zero orders it is the only panel on the page with an answer (#264). */}
-            <TradingAdmission counts={status.counts} />
-            <TradingEvidence counts={status.counts} floors={status.floors} />
+            <Card
+              flush
+              hint="已决但未形成 Intent 的案例保留明确终态与规则"
+              title="Cases without Intent"
+            >
+              {cases.length ? (
+                <div className="trading-table">
+                  {cases.map((record) => (
+                    <article className="trading-case-row" key={record.case_id}>
+                      <code>{record.case_id}</code>
+                      <b>{record.base_symbol}</b>
+                      <span>{CASE_STATE_ZH[record.state] ?? record.state}</span>
+                      <span>{record.policy_reason ?? "—"}</span>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <TradingEmptyNote>当前窗口的案例均已形成 Intent，或尚无案例。</TradingEmptyNote>
+              )}
+              <TradingSourceLine path="GET /api/trading/intents → cases_without_intents[]" />
+            </Card>
           </div>
         </PageState.Stale>
       ) : null}
     </TradingShell>
   );
+}
+
+function IntentList({
+  empty,
+  rows,
+  title,
+}: {
+  empty: string;
+  rows: readonly TradingIntent[];
+  title: string;
+}) {
+  return (
+    <Card flush hint="同一行只陈述账本已证明的 Case、Intent 与 Outcome" title={title}>
+      {rows.length ? (
+        <div className="trading-table">
+          {rows.map((intent) => (
+            <article className="trading-exposure-row" key={intent.intent_id}>
+              <b>{intent.base_symbol}</b>
+              <code>{intent.intent_id}</code>
+              <span>{intent.execution_state}</span>
+              <span>{intent.execution_phase ?? "等待领取"}</span>
+              <span>{intent.terminal_outcome ?? INTENT_STATE_NOTE[intent.execution_state]}</span>
+              <span>{outcome(intent)}</span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <TradingEmptyNote>{empty}</TradingEmptyNote>
+      )}
+      <TradingSourceLine path="GET /api/trading/intents → intents[]" />
+    </Card>
+  );
+}
+
+function outcome(intent: TradingIntent): string {
+  if (intent.realized_pnl_amount == null) return intent.reason_code ?? "—";
+  return `${intent.realized_pnl_amount} ${intent.realized_pnl_currency ?? ""}`.trim();
+}
+
+function readinessTone(readiness: {
+  engine_ready: boolean;
+  unexpected_exposure: boolean;
+}): "caution" | undefined {
+  return readiness.engine_ready && !readiness.unexpected_exposure ? undefined : "caution";
 }

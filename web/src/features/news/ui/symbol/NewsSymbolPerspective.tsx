@@ -197,7 +197,7 @@ export function NewsSymbolPerspective({
          * every figure in 地板对照 comes off the frame. A line naming only the first pointed a reader
          * auditing 鲸鱼盈利 at a response that does not carry it.
          */
-        path="GET /api/trading/orders?underlying={base} → regime · pre_move_bps · strategy_config ＋ GET /api/news/feed?symbol={base} → events[].oi"
+        path="GET /api/trading/intents?underlying={base} → regime · pre_move_bps · strategy_config ＋ GET /api/news/feed?symbol={base} → events[].oi"
       />
     </Card>
   );

@@ -29,7 +29,7 @@ describe("route-aware shell figures", () => {
     const today = Date.parse("2026-08-25T12:00:00Z");
     expect(topbarFigures("/news/oi", news, trading, today)).toEqual([
       { label: "PUSHED 24H", tone: "accent", value: 3 },
-      { label: "今日成案 · 放行", text: "9 · 3" },
+      { label: "今日成案 · 放行", text: "5 · 1" },
     ]);
 
     expect(
@@ -41,14 +41,14 @@ describe("route-aware shell figures", () => {
         }),
         today,
       )[1],
-    ).toEqual({ label: "今日成案 · 放行", text: "0 · 3" });
+    ).toEqual({ label: "今日成案 · 放行", text: "0 · 1" });
   });
 
   it("dates an OI case count when the capital ledger stopped before today", () => {
     expect(topbarFigures("/news/oi", news, trading, Date.parse("2026-08-26T00:01:00Z"))[1]).toEqual(
       {
         label: "成案 · 放行 · 08-25",
-        text: "9 · 3",
+        text: "5 · 1",
         title: "UTC 2026-08-25",
         tone: "caution",
       },
@@ -62,15 +62,15 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("keeps paper/live safety facts visible on the trading surface", () => {
+  it("keeps the sole authority and entry budget visible on the trading surface", () => {
     expect(topbarFigures("/trading", news, trading)).toEqual([
-      { label: "MODE", text: "paper" },
+      { label: "AUTHORITY", text: "nautilus" },
       {
-        label: "LIVE READY",
-        text: "not_applicable",
-        tone: "caution",
+        label: "ENGINE",
+        text: "READY",
+        tone: undefined,
       },
-      { label: "今日订单", text: "3 / 4" },
+      { label: "今日入场", text: "1 / 1" },
     ]);
   });
 });

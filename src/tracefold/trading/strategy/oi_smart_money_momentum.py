@@ -145,11 +145,6 @@ class OiSmartMoneyMomentumStrategy:
         oi = context.oi
         if oi is None:
             return _no_trade("oi_context_missing")
-        if context.mode != "paper":
-            # This strategy is paper-only by identity, not by configuration. A `live_reviewed` lane
-            # must reach a named refusal here rather than have the permission check catch it later.
-            return _no_trade("strategy_permission_paper_only")
-
         # The window first. Without it "10%" is a number with no interval attached, and every replay of
         # the Case would be a claim about a measurement nobody checked.
         if oi.measurement_window_ms != self.config.measurement_window_ms:

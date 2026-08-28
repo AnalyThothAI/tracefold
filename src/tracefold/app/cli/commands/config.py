@@ -46,7 +46,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
     model_availability = news_model_availability(settings)
-    opentrade_token_file = settings.trading_opentrade_token_file()
     nautilus_api_key_file = settings.trading_nautilus_api_key_file()
     nautilus_api_secret_file = settings.trading_nautilus_api_secret_file()
     return (
@@ -112,19 +111,10 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 },
                 "trading": {
                     "enabled": settings.trading.enabled,
-                    "mode": settings.trading.mode,
-                    "account_ref": settings.trading.account_ref,
-                    "live_symbol": settings.trading.live_symbol,
-                    "venues": list(settings.trading.venues.enabled),
-                    "nominal_daily_stop_loss_usd": str(settings.trading.order.nominal_daily_stop_loss_usd),
-                    "opentrade": {
-                        "base_url_configured": bool(settings.trading.opentrade.base_url),
-                        "token_file": None if opentrade_token_file is None else str(opentrade_token_file),
-                        "token_file_configured": secret_file_configured(opentrade_token_file),
-                    },
+                    "execution_environment": "BINANCE_USDM_DEMO",
+                    "instrument_id": "SOLUSDT-PERP.BINANCE",
+                    "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     "nautilus": {
-                        "accept_intents": settings.trading.nautilus.accept_intents,
-                        "instrument_id": "SOLUSDT-PERP.BINANCE",
                         "api_key_file": None if nautilus_api_key_file is None else str(nautilus_api_key_file),
                         "api_secret_file": (
                             None if nautilus_api_secret_file is None else str(nautilus_api_secret_file)

@@ -9,7 +9,6 @@ from .control import ControlStorage
 from .evaluations import EvaluationStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
-from .orders import OrderStorage
 from .queries import QueryStorage
 
 
@@ -19,7 +18,6 @@ class TradingRepository(
     CaseStorage,
     EvaluationStorage,
     IntentStorage,
-    OrderStorage,
     QueryStorage,
 ):
     """Connection-bound persistence facade; callers continue to own transactions."""

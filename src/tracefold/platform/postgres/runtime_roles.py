@@ -171,6 +171,38 @@ def runtime_role_contract(
                 'UPDATE'
               ) AS workers_intents_execution_update,
               has_table_privilege(
+                'tracefold_workers',
+                'public.trading_orders',
+                'SELECT'
+              ) AS workers_legacy_orders_select,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_orders',
+                'INSERT, UPDATE, DELETE'
+              ) AS workers_legacy_orders_write,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_order_observations',
+                'SELECT'
+              ) AS workers_legacy_observations_select,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_order_observations',
+                'INSERT, UPDATE, DELETE'
+              ) AS workers_legacy_observations_write,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_runtime_state',
+                'control',
+                'UPDATE'
+              ) AS workers_runtime_control_update,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_runtime_state',
+                'orders_today',
+                'UPDATE'
+              ) AS workers_runtime_legacy_counter_update,
+              has_table_privilege(
                 'tracefold_serve',
                 'public.trading_intents',
                 'SELECT'
@@ -264,6 +296,12 @@ def runtime_role_contract(
         and bool(privileges["workers_intents_identity_insert"])
         and not bool(privileges["workers_intents_execution_insert"])
         and not bool(privileges["workers_intents_execution_update"]),
+        "workers_legacy_execution_read_only": bool(privileges["workers_legacy_orders_select"])
+        and bool(privileges["workers_legacy_observations_select"])
+        and not bool(privileges["workers_legacy_orders_write"])
+        and not bool(privileges["workers_legacy_observations_write"]),
+        "workers_runtime_current_columns_only": bool(privileges["workers_runtime_control_update"])
+        and not bool(privileges["workers_runtime_legacy_counter_update"]),
         "serve_intents_read_only": bool(privileges["serve_intents_select"])
         and not bool(privileges["serve_intents_insert"]),
         "nautilus_intents_projection_only": bool(privileges["nautilus_intents_select"])

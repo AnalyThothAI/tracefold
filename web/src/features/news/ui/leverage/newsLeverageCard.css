@@ -172,12 +172,11 @@
     font-weight: 600;
   }
 
-  .news-leverage-card-foot small[data-capital="OPEN"] {
+  .news-leverage-card-foot small[data-capital="OPEN_PROTECTED"] {
     color: var(--signal-done);
   }
 
-  .news-leverage-card-foot small[data-capital="AMBIGUOUS"],
-  .news-leverage-card-foot small[data-capital="UNPROTECTED"] {
+  .news-leverage-card-foot small[data-capital="MANUAL_REVIEW"] {
     color: var(--signal-alert);
   }
 }

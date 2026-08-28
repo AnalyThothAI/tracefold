@@ -112,6 +112,14 @@ news:
     us_reference: true
     snapshot_period_hours: 6.0
   watchlist: []
+
+trading:
+  enabled: false
+  order:
+    fixed_notional_usd: 10
+  nautilus:
+    api_key_file: "binance_demo_api_key"
+    api_secret_file: "binance_demo_api_secret"
 """
 
 

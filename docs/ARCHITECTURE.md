@@ -30,27 +30,19 @@ price reaches the Gate, Triage, `decide()` or a delivery card. Its failure is
 local by construction; News ingestion, judgment, delivery and readiness do not
 depend on it.
 
-Beside both runs the Trading core (#104), disabled by default. Two more cold
-polling loops in the same Workers root read persisted Triage verdicts through
-two **public News projections**, freeze one content-addressed case, decide it —
-arithmetic for an open-interest case, one `dspy.Predict` call for a News one —
-and, when the pure policy says so, write one durable order through the paper
-adapter. Issue #185 PR-C2 wires the same typed OpenTrade seam through the
-reviewed entry, provider observation, native-protection verification and
-full-close lifecycle. Every live write remains behind a fresh provider proof,
-an exact operator-approved digest and a durable one-attempt fence. It shares the price plane's one-slot cold database
-admission rather than the four News lane slots, holds no agent framework, and
-its failure is local the same way the price plane's is.
+Beside both runs the Trading core (#104), disabled by default. One cold
+CandidateRunner in Workers reads persisted Triage/OI facts through two
+**public News projections**, freezes one content-addressed Case, decides it —
+arithmetic for an OI case, one `dspy.Predict` call for a News one — and, only
+for the exact frozen Demo contract, atomically inserts one TradeIntent while
+advancing the Case. It shares the price plane's one-slot cold database
+admission rather than the four News lane slots.
 
-Issue #283 also ships one **dark** Binance USD-M Demo execution process. It is
-not the current Trading writer: Workers keep their existing paper/OpenTrade
-path until the later atomic hard cut. The dark process polls the single
-`trading_intents` table once per second and may accept rows only when
-`trading.nautilus.accept_intents=true`; the default is false. PostgreSQL is the
-handoff, entry fence, restart checkpoint, execution projection, and audit
-truth. RabbitMQ remains News-only. This avoids a second capital queue plus the
-outbox/confirm/ack/retry/DLQ machinery that would still need the same database
-ledger.
+One separate Nautilus process is the sole execution authority. It polls
+`trading_intents`, fences each economic entry before a provider write, owns
+native protection/full close and venue reconciliation, and writes the Outcome
+onto the same row. PostgreSQL is the handoff, restart checkpoint, current
+projection, and audit truth; RabbitMQ remains News-only.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -62,8 +54,8 @@ dependency. Provider raw frames remain inputs until normalized and persisted
 as material facts.
 
 The deployment composition has four required boundaries: PostgreSQL, one
-successful migration job, Serve, and Workers, plus the optional dark Nautilus
-process. `make up` is only their
+successful migration job, Serve, and Workers, plus exactly one Nautilus process
+when Trading is enabled. `make up` is only their
 fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
 On an empty PostgreSQL volume, the image's `initdb` hook creates the
 non-login owner plus least-privilege Serve, Workers, Nautilus, and migrate roles from
@@ -78,7 +70,8 @@ production React build. Migration, Serve, and Workers use that exact image and
 build revision with different commands and credentials; an enabled
 Nautilus process uses it too.
 `make up` builds the image once and recreates migration, Serve, Workers, and
-Nautilus when the effective config reports Demo credentials configured; it
+Nautilus when Trading is enabled; missing Demo credentials or a replica count
+other than one fails closed. It
 starts PostgreSQL when absent but does not recreate a running PostgreSQL
 container. Serve owns the static console and public HTTP
 boundary; Workers exposes only its loopback operational boundary. Image
@@ -151,9 +144,8 @@ evidence rather than executable configuration.
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
 | Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
-| Trading intent preparation / entry | Trading | `capital_truth` | accepted frozen case plus execution adapter | PostgreSQL transaction + provider write | `trading-candidate`; after an accepted decision | prepared `trading_orders`, attempt fence and execution receipt; Trading/operator |
-| Trading execution reconciliation | Trading | `capital_truth` | Trading ledger plus execution-provider truth | PostgreSQL planner + provider read/write | `trading-reconcile`; 30 s | `trading_orders`, observations, fills and positions; Trading/operator |
-| Nautilus Binance Demo dark slice | Trading | `capital_truth` | one immutable `trading_intents` row plus Binance Demo truth | PostgreSQL poll + Nautilus adapter | `tracefold nautilus run`; 1 s while explicitly enabled | the same `trading_intents` row; operator and later hard-cut writer |
+| Trading Intent handoff | Trading | `capital_truth` | accepted frozen Case | one PostgreSQL transaction | `trading-candidate`; after an accepted decision | immutable Intent plus guarded `INTENT_EMITTED` Case; Trading/operator |
+| Nautilus Binance Demo execution | Trading | `capital_truth` | one immutable `trading_intents` row plus Binance Demo truth | PostgreSQL poll + Nautilus adapter | `tracefold nautilus run`; 1 s while Trading is enabled | entry fence and execution Outcome on the same Intent row; operator |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
 means one turn-wide cap is divided among the named rows. `adapter-owned` names a
@@ -178,9 +170,8 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
-| Trading intent preparation / entry | accepted decision | immediate within decision TTL | case / underlying | one prepared order/case; one active order/underlying | one provider write behind the attempt fence | one | adapter-owned | reconcile only / durable order state / no | exception becomes `AMBIGUOUS`; the write is never blindly repeated |
-| Trading execution reconciliation | 30 s | ledger/provider current truth | order ID | 32 due orders/turn | provider reads/writes serial | one | adapter-owned | yes / durable state machine / no | ambiguous entry/exit is read back; unknown truth fails closed or escalates |
-| Nautilus Binance Demo dark slice | 1 s PostgreSQL poll | 60 s Intent TTL | globally single active Intent | one active row | one entry, stop, or close operation at a time | one TradingNode | adapter-owned | restart reconciliation / database uniqueness / no | entry is fenced before send; exposure is protected or closing; terminal flat requires a targeted venue-zero proof |
+| Trading Intent handoff | accepted decision | immediate within 60 s Intent TTL | Case / global active fence | one nonterminal Intent globally | no provider call in the transaction | one | PostgreSQL deadline | bounded rescan / content identity / no | Intent insert and Case transition commit or roll back together |
+| Nautilus Binance Demo execution | 1 s PostgreSQL poll | 60 s Intent TTL | globally single active Intent | one active row | one entry, stop, or close operation at a time | one TradingNode | adapter-owned | restart reconciliation / database uniqueness / no | entry is fenced before send; exposure is protected or closing; terminal flat requires targeted venue-zero proof |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -224,7 +215,7 @@ provider plugin registry, `BaseCollector`, `BaseWorker`, generic task engine or
 new top-level package.
 
 NautilusTrader `1.231.0` is a pinned dependency and the execution authority only
-inside the #283 dark Binance Demo process. It is not a new business truth,
+inside the #283 Binance Demo process. It is not a new business truth,
 scheduler, News transport, or provider registry. The adapter receives frozen
 capital policy from `TradeIntent`, verifies the dedicated account once at
 startup, and projects venue outcomes back onto the same row. PostgreSQL remains
@@ -378,16 +369,16 @@ tracefold.news
   eval/               provider-hits Deduper+Gate replay only
 
 tracefold.trading
-  contracts.py        App-facing values/ports plus Case/Order/Manifest vocabulary
+  contracts.py        App-facing values/ports plus Case/Manifest vocabulary
+  intent.py           immutable TradeIntent and current Outcome contract
   candidate/          deny-list, eligibility/funnel, News/OI fusion, venue routing
   decision/           measured OI/price regime, one-call DSPy Program, pure trade policy
-  execution/          fixed-notional order contract, paper adapter, durable one-attempt submission
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
-  pipeline/           candidate and reconcile runners plus their two-runner composition root
+  pipeline/           CandidateRunner and its one-runner composition root
 
 tracefold.integrations
-  provider and external-system adapters: OpenNews, OpenTrade, RabbitMQ, Feishu,
-  and the pinned Nautilus/Binance Demo strategy adapter
+  provider and external-system adapters: OpenNews, RabbitMQ, Feishu, public
+  market data, and the pinned Nautilus/Binance Demo strategy adapter
 
 tracefold.platform
   config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
@@ -463,9 +454,9 @@ in `tests/architecture/test_backend_boundaries.py`.
 A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
-Strategy WSS plus the official Strategy list/hits endpoints), OpenTrade (the
-reviewed REST execution seam), RabbitMQ (`aio-pika`), and Feishu (the custom-bot
-webhook). No provider owns a durable
+Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
+(`aio-pika`), Feishu (the custom-bot webhook), and the isolated Nautilus
+Binance Demo boundary. No provider owns a durable
 queue. Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -487,7 +478,9 @@ Important atomic units are:
 
 - one accepted OpenNews frame: NewsItem upsert with provenance union plus its
   Event assignment (new Event, bands, assets, or membership);
-- one Triage verdict insert; one delivery begin or settle.
+- one Triage verdict insert; one delivery begin or settle;
+- one TradeIntent insert plus the guarded Case `RUNNING -> INTENT_EMITTED`
+  transition.
 
 Provider, model, filesystem, and network I/O occurs outside database
 transactions.
@@ -525,11 +518,11 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
 `news-deliverer`, `news-janitor`), the bounded cold loops
 (`news-instruments`, and with venues enabled `news-quotes`,
-`news-reactions`), the two Trading loops when Trading is enabled
-(`trading-candidate`, `trading-reconcile`), and `workers-control` (singleton
+`news-reactions`), the one Trading loop when Trading is enabled
+(`trading-candidate`), and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
-sync task. The five cold loops poll public catalogues, prices and their own
+sync task. The four cold loops poll public catalogues, prices and their own
 PostgreSQL work on code-owned cadences and admit their database work through a
 separate one-slot lane, never the four News hot-path slots.
 
@@ -1513,500 +1506,165 @@ See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 
 ## Trading core (#104)
 
-`tracefold.trading` is the second business capability and is disabled by
-default. It exists to turn a persisted market trigger plus frozen context into
-at most one small, recoverable, auditable order — not to claim an edge.
-
-The #283 dark slice adds one future hard-cut seam without changing that current
-writer: Workers may insert one immutable `trade_intent_v1` row, and the separate
-Nautilus process is the only role allowed to advance its execution columns.
-The row fixes `SOLUSDT-PERP.BINANCE`, long-only, at most 10 USDT notional, 1x,
-a 60 s entry TTL, fixed stop, at most 180 s holding, and bounded spread/drift.
-Database uniqueness permits at most one active Intent and one fenced entry per
-UTC day. The only capital invariants are entry-at-most-once,
-protected-or-closing after fill, and venue-proven flat before terminal close.
-No Trading RabbitMQ exchange, event table, outbox, generic workflow engine, or
-parallel executor exists.
+`tracefold.trading` is the disabled-by-default capital capability. It turns
+persisted News/OI evidence into one frozen research decision and, only for the
+single production-shaped Demo contract below, hands one immutable Intent to
+Nautilus. It does not claim Alpha.
 
 ```text
-persisted market trigger (News, OI, or typed liquidation)
-  -> three public News projections      owned by tracefold.news
-  -> canonical symbol + deny-list + freshness + active/cooldown
-  -> exact native perp on one venue     binance.perp | hl.perp
-  -> point-in-time context              OI + News + market + forced flow
-  -> one dspy.Predict                   News-bearing capital cases only
-  -> one pure versioned strategy        no_trade | long | short, always a named rule
-  -> fixed notional / 1x / fixed stop / max holding
-  -> reviewed order: AWAITING_APPROVAL -> re-preflight -> SUBMITTING -> one write
-  -> ACK | AMBIGUOUS -> read-only provider reconciliation
-  -> WORKING | PARTIAL | OPEN | UNPROTECTED | CLOSED | MANUAL_REVIEW_REQUIRED
+public News projections + public closed bars
+  -> Candidate Gate
+  -> immutable TradingCase
+  -> strategy decision
+  -> one transaction:
+       INSERT immutable TradeIntent
+       guarded Case RUNNING -> INTENT_EMITTED
+  -> Nautilus bounded PostgreSQL poll
+  -> Binance USD-M Demo execution and reconciliation
+  -> execution projection on the same TradeIntent row
+  -> Case -> Intent -> Outcome API / CLI / console
 ```
 
-**Trigger and context are different types.** A trigger is the one persisted
-fact that starts an evaluation and fixes its cutoff. Context may enrich that
-evaluation only when it existed no later than the cutoff. Feishu `sent` is
-notification transport success, not a trigger; capital must not depend on a
-notification channel being reachable. The frozen manifest names exactly one
-`primary_trigger`, one `strategy_id` / `strategy_version` /
-exact typed `strategy_config` / `strategy_config_digest`, and a point-in-time
-`contexts` object. `contexts.market` is the sole market truth; the manifest does
-not serialize a second market copy. A restart rebuilds the exact strategy from
-the frozen values instead of comparing the Case with today's thresholds. This prevents
-a later News, OI, or market observation from leaking backwards into the case.
+News and Trading remain sibling contexts. Trading reads only the two public News
+projections supplied by the app composition root; neither package imports the
+other or reads the other's tables directly. RabbitMQ remains News-only. No
+Trading exchange, queue, outbox, LISTEN/NOTIFY channel, Redis, second database,
+or in-memory correctness ledger exists.
 
-**The News input is one hard-cut generation.** The public projections emit
-only post-epoch `program_v7` / policy-v10 judgments with the complete Program,
-editorial, scored-judgment and runtime-manifest identity. Model judgments must
-come from executable v5; deterministic OI keeps its arithmetic Program v1.
-`trading_manifest_v4` freezes those identities and the selected strategy with
-the case. A manifest frozen
-under any earlier version that is still `PENDING`, or whose `RUNNING` lease
-expires, is blocked as `news_generation_retired` before a model call or order;
-prepared orders keep their immutable payload and continue through
-reconciliation. The version is a Python constant in `tracefold.trading.contracts`
-and is owned by the deployed image, never by the schema — rolling the image back
-retires every case frozen since the deploy, and no migration reverses that.
+### Frozen execution contract
 
-**Strategies own decisions; triggers do not.** `oi_momentum_v1` is the
-paper-only arithmetic execution-kernel lane and never calls a model.
-`news_oi_alignment_v1` requires OI context and owns the only capital hypothesis
-that may eventually reach `live_reviewed`; in paper it uses the same immutable
-order kernel without real funds. A News trigger without OI context is evaluated
-by that strategy but fails closed. `liquidation_continuation_shadow_v1` and
-`liquidation_exhaustion_shadow_v1` are opposite, independently versioned
-hypotheses over the same forced-flow trigger. Both have `shadow` permission and
-can write only `trading_strategy_evaluations`: no Case and no Order exists for
-them. Continuation requires a same-venue one-sided burst, count/notional and
-acceleration floors, aligned price momentum below a pre-move ceiling, OI and
-funding context, healthy spread/depth and bounded source latency. Exhaustion
-requires a large one-sided burst and aligned extreme displacement before the
-separate deceleration, OI-collapse, stopped-extreme and liquidity-recovery facts.
-The aggregate's threshold fields count/notional/acceleration only for its
-dominant side; opposite flow remains in total audit fields but cannot satisfy a
-one-sided floor. One-hour pre-move, burst-window momentum and matching-window
-displacement are three distinct frozen fields. The current 5-minute source
-cannot measure the latter two for a 1-minute burst, so they remain null and
-return named `no_trade` rather than inheriting the one-hour move. Every missing
-prerequisite returns a named `no_trade`.
+Only a Case whose frozen decision is `long`, whose strategy permission is not
+`shadow`, and whose complete instrument identity is exactly
+`SOLUSDT-PERP.BINANCE` may emit an Intent. The identity check covers Binance
+USD-M native perp venue, `SOLUSDT`, canonical base `SOL`, crypto class, and
+`USDT` quote; there is no reroute or fallback venue.
 
-**Liquidation is a typed fact, not prose sentiment.** At News admission,
-Strategy 2000's exact wire template is parsed into
-`news_market_liquidations`. The ledger records the liquidated position side and
-the forced order side separately: a short liquidation is forced buying, while
-a long liquidation is forced selling. Venue is restricted to Binance or
-Hyperliquid, money uses decimal arithmetic, malformed units or timestamps fail
-closed, and recovery-origin facts remain in audit but cannot trigger Trading.
-The normalized fact deliberately has no cascading Item foreign key and freezes
-its live/recovery ingest provenance: ordinary raw-Item retention may remove its
-provider envelope, but cannot erase or make ambiguous the immutable
-liquidation replay dataset.
-The reader verdict is deliberately direction-neutral because an observed
-forced trade is not by itself a forecast.
+`trading.order.fixed_notional_usd` is the only operator execution value and is
+validated as `0 < value <= 10`. The deployed image owns every other execution
+value:
 
-The current source contract supplies provider-record identity, event time,
-receive time, venue, side, notional, and price, while explicitly recording an
-unresolved exact contract, no quantity, unspecified price semantics, selected-
-event completeness and unknown throttle. It does not independently verify
-funding, spread, depth, sequence, coverage or deceleration. The typed fact
-therefore carries `source_contract.complete=false`. Both liquidation strategies deterministically
-return `no_trade/source_contract_incomplete`; this is an executable promotion
-gate, not an operator warning that can be clicked through.
+- Binance USD-M Demo, NETTING/one-way, long-only, 1x, market entry;
+- 60-second Intent TTL;
+- fixed-quantity native `STOP_MARKET`, 200 bps below entry and
+  `reduce_only=true`;
+- 180-second maximum holding from authoritative first fill;
+- 25 bps maximum entry drift and 30 bps maximum spread;
+- globally at most one nonterminal Intent and one entry fence per UTC day;
+- quantity equal to
+  `floor_to_venue_precision(target_notional_usd / fresh_price)`.
 
-**Open-interest direction is not price direction.** The reader card maps
-`OI rise -> bullish` to fit the News delivery vocabulary; Trading pairs the
-frame with the realised price move over a fixed 1 h lookback and only the pair
-suggests a side. The pre-move filter is a **band**, not a floor
-(`trading.regime.min_price_move_bps` / `max_price_move_bps`, default
-100–600 bps): `docs/research/oi-agent-design-2026-08-22.md` §1.6 measured an
-inverted U over 630 aligned frames, with every losing bucket *above* the band,
-so a floor-only rule would keep exactly the chasing trades the measurement
-rejects. The settings model refuses a band with no ceiling.
+A quantity below venue minimum, insufficient balance, unacceptable quote, an
+identity mismatch, or any inability to prove the contract is a refusal. Nothing
+silently changes size, venue, side, leverage, or account.
 
-**The model cannot act.** A DSPy Predictor returns a value; it holds no tool,
-no filesystem, no shell and no account. There is no DeepAgents, LangGraph or
-ReAct anywhere in the tree, and an architecture test keeps it that way. Every
-model failure — timeout, schema violation, unconfigured endpoint, identity
-mismatch — resolves to `no_trade` with a named reason. The three input
-documents are screened by `assert_model_input_safe`, which refuses to build a
-prompt carrying an account, credential, quantity, stop or provider payload.
+CandidateRunner owns the handoff transaction. It first inserts the content-
+addressed `trade_intent_v1` row, then guards the already-claimed Case from
+`RUNNING` to `INTENT_EMITTED` in the same caller-owned transaction. A failed
+insert or failed Case transition rolls both writes back. There is no prepared
+order, provider payload, approval state, backend selector, dual-write, or
+fallback writer.
 
-**Research truth and execution truth are separate.** The immutable Case mark
-answers why the signal qualified; it is never a live execution reference. A
-live-reviewed prepare first completes an account-wide startup inventory, then
-reads fresh server time, venue health, exact CCXT swap symbol, mark/bid/ask,
-spread, explicit quantity step and minimums, contract size, account balance,
-position mode, leverage and margin mode, then account-wide open orders followed
-by positions. That order makes an external order transitioning into a position
-between reads visible in at least one snapshot. Missing or conflicting truth
-fails closed. Composite reconciliation uses the same open-orders-before-positions
-order for the tracked entry. The exact fresh payload and a balance-redacted
-preflight observation are frozen together. OpenTrade's published `amountMin`
-is a minimum, not a quantity step, so it is never guessed into precision.
+### Nautilus execution authority
 
-**Sizing is notional-first.** `quantity = floor_to_step(fixed_notional /
-fresh_mark / contract_size)`, stop at a fixed distance, no take-profit (a measured
-stop/TP grid found every fixed take-profit negative because the return
-distribution is right-tailed). The nominal planned-stop envelope is a
-multiplication the operator can read off the config:
-`fixed_notional x fixed_stop_bps x max_orders_per_day`. It is not a worst-case
-claim under gaps, slippage, stop failure or provider outage.
-Stop-distance sizing is deliberately absent: it makes the notional cap and the
-stop bounds silently unreachable in combination.
+The separate `tracefold nautilus run` process is the only execution authority.
+It polls PostgreSQL once per second and claims a fresh `PENDING` Intent only
+when `trading_runtime_state.control = RUNNING`, startup reconciliation has
+proved the exact Demo account/instrument is one-way, 1x, and free of unexpected
+exposure, and its projection writes are healthy. `PAUSED` and `CLOSE_ONLY`
+block new entry fences but never stop query, protection, or exit work for an
+already-fenced lifecycle.
 
-**ACK is not a fill.** A submit acknowledgement records provider acceptance and
-never writes `position_opened_at_ms` or `must_close_at_ms`. Only a composite
-provider observation may establish a position. The first empty composite read
-after ACK keeps the order active for one more read; a second empty read
-escalates to manual review and still does not free the underlying. Its explicit
-vocabulary is
-`ABSENT_CONFIRMED | WORKING | PARTIAL | OPEN_PROTECTED | OPEN_UNPROTECTED |
-CLOSED | REJECTED | UNKNOWN`; Python `None`, malformed output, or a partial read
-cannot free the underlying. When exact fill time is unavailable, submission
-time is the conservative lower bound, never the later reconcile time.
+The one `trading_intents` row is simultaneously the durable inbox, immutable
+instruction, entry fence, restart checkpoint, current execution projection, and
+audit identity. Workers may insert its immutable columns; the Nautilus role may
+read the row and update only the execution projection; Serve is read-only.
+Database constraints enforce exact Demo constants, immutable Intent columns,
+Case-to-Intent one-to-one identity, one nonterminal row globally, and one
+fenced entry per UTC day.
 
-**Reviewed approval is short-lived execution authority.** The operator approves
-the exact immutable payload digest, not a symbol or a general permission. The
-database accepts that approval only during the code-owned 60 s window from row
-creation. A valid approval near the end of the window gets one 30 s reconcile
-cadence to reach submission; a second preflight must still prove the same
-account, exact execution contract,
-position mode, 1x leverage and margin mode, no remote exposure, acceptable
-spread and balance, and at most 25 bps mark drift. Any mismatch terminally
-rejects the old payload before the attempt fence, with zero provider writes.
-The transition stores a C2 marker beside its approval timestamp; an older
-`APPROVED` row without that proof fails closed after upgrade. Every pre-submit
-rejection is conditional on the exact unsubmitted state and zero provider
-attempts, so a stale scan cannot overwrite a concurrent approval or attempt claim.
+The execution state is deliberately small:
 
-**The current live adapter owns the narrow reviewed lifecycle.** It performs
-startup inventory, fresh prepare/re-preflight, one allowlisted OpenTrade market
-entry, composite provider observation, and one full-position close. HTTP/business
-4xx is a proven rejection; timeout, transport failure, 3xx, 5xx, malformed success or
-a missing remote ID is ambiguous and never retried as an entry. The pinned
-public OpenTrade examples still do not themselves prove stable account identity,
-quantity step or price tick. The concrete adapter therefore remains fail-closed
-unless the real configured response supplies every required fact; configuration
-alone never makes `live_ready=true`. `live_bounded` is rejected by both settings
-validation and the composition root. One operator-owned `trading.live_symbol`
-hard-bounds the reviewed canary before any provider call.
+```text
+PENDING
+IN_FLIGHT          phase = ENTRY | PROTECTION | EXIT
+OPEN_PROTECTED
+MANUAL_REVIEW
+TERMINAL           outcome = EXPIRED | REJECTED | CLOSED_FLAT
+```
 
-The execution ticker is not accepted by price shape alone: its response must
-self-identify the exact exchange and provider symbol selected from metadata, and
-its millisecond timestamp must fall within the same 10-second live-preflight
-freshness window. Missing, cross-market, stale, seconds-unit or future ticker
-facts fail closed before sizing or submission.
+Three invariants define the lifecycle:
 
-**OPEN proves both position and protection.** A native stop is matching only
-when its parent order, account, exchange, exact provider symbol, opposite side,
-active state, reduce-only semantics, quantity coverage and trigger within one
-price tick all match this position. A partial or full position without that
-proof becomes `UNPROTECTED` and immediately claims one bounded full-position
-safety close; it does not wait for the ordinary reconcile interval. The one
-exception is a partial fill whose tracked entry still appears in the provider's
-open-order inventory: closing only the filled slice could leave the working
-remainder to fill afterward, so that composite observation is `UNKNOWN`/manual
-and issues no close. A later read must first prove the entry terminal. Every
-same-side or otherwise unclassified opening trade for an active position must
-carry the tracked entry order ID during the current order lifecycle; a provider
-timestamp proven earlier than the frozen instrument/preflight cutoff is prior
-history only after it also passes the composite snapshot's seven-day
-millisecond timestamp bounds and the provider's tolerated 30-second clock
-skew. A missing timestamp remains conservatively current; malformed, seconds,
-too-old or future values invalidate the observation. Unmatched current opening
-evidence is manual, never adopted or closed. A current unmatched reverse-side
-or reduce-only trade likewise proves that the earlier position snapshot may be
-stale after a concurrent reduction; it is manual and never supplies a close
-quantity. The same lifecycle timestamp rules distinguish prior closing history.
-A
-canceled/rejected entry is terminal only with an explicit
-finite zero fill, not a missing or malformed quantity, and only when the same
-snapshot has no current open-order exposure or correlated-but-unattributable
-position history. Contradictory composite evidence remains `UNKNOWN`/manual.
+1. Before a provider write, Nautilus durably commits the deterministic entry
+   client ID and `entry_fenced_at_ms`. A restart seeing that fence queries and
+   reconciles; it never submits a second economic entry. Unknown entry outcome
+   is `MANUAL_REVIEW`, never a fabricated rejection.
+2. A nonzero authoritative Position is either covered by a working native
+   fixed-quantity reduce-only stop or is being fully flattened. Position
+   quantity changes replace protection by deterministic stop generation.
+   Projection failure stops new claims/fences but does not stop protection or
+   exit work.
+3. `TERMINAL/CLOSED_FLAT` requires fresh targeted venue proof that the Position
+   is zero, the owned closing leg is terminal, and sibling stop/close legs are
+   terminal or canceled. Unknown evidence remains `MANUAL_REVIEW`.
 
-**One provider attempt, ever.** OpenTrade publishes no client idempotency key,
-so nothing downstream can deduplicate a resend. The ledger row moves to
-`SUBMITTING` and the transaction **commits before** the network call;
-`provider_attempt_count` is CHECKed at one, so a second attempt cannot even be
-recorded. The same transaction charges `orders_today`, so process death cannot
-make a second same-day entry admissible; only a definitive provider rejection
-in its receipt transaction, or local control flow that proves the provider call
-never started, releases that conservative charge. A timeout, reset, malformed
-answer, crash after the call boundary or restart terminalises as
-`AMBIGUOUS`, whose only legal successor is a read. Never a resend, and never a
-resend routed at the other venue.
+The venue is execution-outcome authority; PostgreSQL becomes durable truth only
+when reconciliation writes the observed result back. The application does not
+copy Nautilus's complete Order/Fill history.
 
-**One underlying, one active order, across both venues.** `underlying_key` is
-venue-independent (`crypto:<canonical base>`), and a partial unique index on
-`trading_orders (underlying_key)` holds for every state that carries — or may
-yet turn out to carry — exposure. The predicate deliberately includes
-`APPROVED`, `RECONCILING`, `MANUAL_REVIEW_REQUIRED` and `UNPROTECTED`: "we do
-not know whether Binance filled it" is exactly when a Hyperliquid entry must be
-blocked.
+### Runtime and cutover
 
-The single `trading_orders` row is an intentional V1 compression: one intent,
-one market entry, one logical position, one native stop and one full close. If
-the first requirement appears for multiple active orders per intent, multiple
-intents per position, scale-in/partial scale-out attribution, order amendment,
-trailing lifecycle or multiple strategy books, stop patching this row and open
-a separate mature execution-engine evaluation.
+A deployment with `trading.enabled=true` must have both secure Binance Demo
+credential files and exactly one healthy Nautilus Compose replica; `make up`,
+`make deploy-image`, and `make status` fail closed otherwise. A disabled
+Trading lane does not start Nautilus.
 
-**Two deterministic exits, and the exit is a capital write like any other.** The
-venue-side protective stop rides with the entry so it survives this process
-dying; `max_holding_seconds` closes the lifecycle without another News event and
-without a model. Before either safety or max-holding close, a provider read must
-prove the current position and its absolute actual quantity; prepared quantity
-is never used as a substitute. A close acknowledgement is not `CLOSED` — only a
-later provider position/order/trade observation may settle it. The close goes
-through the *same* durable one-attempt contract
-as the entry — `claim_attempt("exit")` before the network call, its own
-`exit_attempt_count` CHECKed at one (the entry has already spent its counter by
-the time a position can close), and any exception terminalising as `AMBIGUOUS`.
-An exit ambiguity is not an entry ambiguity: a close that filled with its answer
-lost is a completed round trip, so observing no position escalates to a human
-rather than recording the entry as never having landed. A venue that *refuses*
-the close leaves the position open and escalates; it never books a result.
+The one-time PR 2 cutover is run only while control is `PAUSED`.
+`make trading-hard-cut-preflight` proves one ready Nautilus replica (whose
+readiness includes authoritative flat/no unexpected exposure) and checks that
+legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy active/unknown
+Orders are all zero. Migration `20260828_0317` repeats the database predicates
+inside the authority-changing transaction, adds `INTENT_EMITTED`, and revokes
+legacy order/observation and retired runtime-counter mutations from Workers.
+After migration, the operator proves Nautilus readiness and changes control to
+`RUNNING`. There is no `accept_intents` rollout flag.
 
-The two legs also need different retry contracts, and giving the exit the
-entry's made a position unclosable. An entry gets one attempt ever — a resend
-doubles it, and no read makes that safe. An exit gets one attempt *per known
-state*: `exit_attempt_count` is released only when the exact attempt-scoped close
-identity is terminal rejected/canceled with an explicit zero fill and no open or
-trade evidence. A position snapshot alone may lag the close and never makes a
-retry safe. `exit_attempt_total` caps automatic attempts at three, and an
-operator `open` resolution writes a durable generation fence so a later attempt
-cannot reuse pre-resolution close evidence. `SAFETY_CLOSING` is the exit's
-analogue of `SUBMITTING` and terminalises the same way after a restart.
+Rollback is allowed only with venue-proven flat and a schema-compatible image.
+When exposure exists, the only safe direction is roll-forward: Nautilus retains
+sole authority until it protects or closes the position.
 
-`MANUAL_REVIEW_REQUIRED` is where every unprovable outcome lands, and it sits
-inside the active-underlying index on purpose — unknown exposure must block. It
-therefore needs a drain, and `tracefold trading resolve <order-id> closed|open`
-is it. If an accepted entry lost its response and therefore has no durable
-provider identity, `open` additionally requires `--remote-order-id`; that exact
-ID is persisted before the row returns to automated protection and max-holding
-reconciliation. Once known, that provider identity is immutable, and a
-conflicting operator-supplied ID fails closed in manual review. Without one,
-escalating correctly would still halt the lane. An operator `closed` resolution
-always terminalises the row, but records a material `position_closed_at_ms` —
-and therefore a symbol cooldown — only when `position_opened_at_ms` had already
-established that a position existed. Confirming a timed-out entry never filled
-does not fabricate an exit.
+### Research, admission, and durable data
 
-**The exit policy is frozen on the order row, not read from configuration.**
-`stop_price` and `take_profit_price` were always absolute prices on the row. The
-other two numbers were not: `must_close_at_ms` is first written when
-reconciliation promotes an acknowledged order to `OPEN`, and that promotion can
-be a restart and a redeploy after the intent was approved — so before #209 an
-already-approved order took its holding deadline from whatever
-`max_holding_seconds` said at promotion time, and its realised return from
-whatever taker fee was in force at close time. `trading_orders.max_holding_ms`
-and `trading_orders.taker_fee_bps` are written in the same transaction as the
-intent they govern, and the reconciler reads the row. A configuration edit
-changes the next order and never an approved one.
+The Candidate Gate still owns deterministic eligibility, source-aligned
+research routing, freshness, deny-list, rank/liquidity, cooldown, and capacity
+answers. It records one
+`(source_key, gate_version, gate_config_digest)` decision so the console can
+explain why a source did not become a Case. The scanner re-reads a bounded
+overlap and relies on durable source identity rather than an in-memory cursor.
 
-Both columns are nullable, and what fills them for a pre-#209 row is decided by
-what the database can prove rather than by what is convenient. `taker_fee_bps`
-is backfilled to 5 on every active row: it is not and has never been a
-configuration key, so that is the only value any `realized_bps` was ever charged
-at. `max_holding_ms` is backfilled to `must_close_at_ms -
-position_opened_at_ms` wherever both exist, because `promote_acknowledged`
-writes that pair in one statement and their difference *is* the budget that
-governed the row. Terminal history is not backfilled at all. What is left is an
-active order that never opened a position: nothing records what
-`max_holding_seconds` was when it was approved, so the reconciler refuses to
-manage it and sends it to `MANUAL_REVIEW_REQUIRED` as
-`legacy_execution_snapshot_missing` — the same drain every other unprovable
-outcome uses — rather than quietly applying whatever the deploy left in place.
+Cases freeze source identity, cutoff, attached context, exact strategy/version/
+config digest, regime, price evidence, and instrument. OI-triggered Cases use
+the arithmetic `oi_smart_money_momentum_v1`; News-triggered Cases may use the
+single bounded Trading decision Program before the same pure strategy policy
+returns the final decision. Shadow liquidation strategies remain research-only:
+they can write immutable strategy evaluations and outcomes, never Cases or
+Intents.
 
-**What a paper exit proves, and what it does not.** Paper prices its exits off
-**closed bars, and only their close**. It does not simulate the intrabar path, so
-a stop is not the venue's native stop and a wick through the level is not a fill;
-it does not simulate spread, contract precision, partial fills, position mode or
-externally-created orders. `take_profit_bps` defaults to `0`, which disables that
-exit entirely — a default paper run demonstrates the stop and the clock, and
-calling it a take-profit proof would describe a branch the deployed configuration
-never enters. `make trading-smoke` selects the `test_paper_exit_acceptance_*`
-cases. Three of them drive one exit each — stop, explicitly enabled take-profit,
-max-holding — end to end on real PostgreSQL to `CLOSED` and flat with exactly
-one entry write and one close write. The rest cover the snapshot itself: that an
-approved order keeps its deadline and its fee across a restart under a new
-configuration, and that an active pre-#209 row is refused rather than
-re-governed. What
-that establishes is the execution kernel, the durable ledger and the state
-machine. It is a focused lane, not a substitute for `make test-evidence`; it is
-not a backtest, not a profitability claim, and not evidence about a real venue or
-real funds.
+Current product reads are Case -> Intent -> Outcome only.
+`trading_cases`, `trading_intents`, the candidate-gate ledger, runtime
+control, blacklist, and strategy research ledgers are current inputs.
+`trading_orders` and `trading_order_observations` remain read-only historical
+audit after the hard cut and are excluded from status, cooldown, active/daily
+admission, milestones, API, CLI, and UI. They have no production writer.
 
-**Two capital strategies, one order kernel.** `oi_momentum_v1` takes its side
-from the OI/price quadrant and is paper-only. `news_oi_alignment_v1` requires
-the model read and that same quadrant to agree; without OI context it returns a
-named no-trade. The strategy permission is checked before an Order can be
-authored. Strategy selection never changes sizing, approval, submission,
-reconciliation, or exit behavior: those remain the single execution kernel.
+Stage latency is computed from the durable source, Case, Intent fence, open,
+protection, and close timestamps. No report reconstructs an Order or treats an
+HTTP response, process cache, model output, or provider response as alternate
+truth.
 
-**One trigger, one cutoff, at most one prior counterpart.** A new OI frame at
-`T` attaches the newest eligible News in `[T - news_lookback, T]`; a new News
-verdict at `T` attaches the newest eligible OI in `[T - oi_lookback, T]`. Three
-rules make that hold, and each closes a specific defect (#211).
-
-*Freshness gates the trigger only.* `max_age_seconds` says whether a row is a
-reason to act **now**; `news_lookback_seconds` and `oi_lookback_seconds` say how
-far back of that row's own cutoff the other lane may be read for **context**.
-Applying the trigger budget to both sides is what made the configured 60 m / 30 m
-windows unreachable: nothing older than five minutes could attach, so combined
-News/OI context was all but impossible at any configuration. An hour-old verdict is now perfectly
-good context and still cannot start a case on its own.
-
-*The query has to reach what fusion is allowed to use.* The scan reads
-`max_age + max(news_lookback, oi_lookback)` of history, floored at the recovery
-overlap, and takes the newest rows in that window at its limit. Reading
-`max_age x overlap` made the lookbacks dead at the query, before the rules ever
-saw them; taking the *oldest* rows of the wider window would have spent the whole
-budget on context and returned none of the triggers.
-
-*The counterpart is chosen from the whole eligible set.* Reducing each lane to
-its newest row and validating afterwards let one row written a millisecond after
-the frame answer for the entire lane, hiding an older row that was legal.
-Nothing later than the trigger ever enters a manifest — a manifest that can see
-the future is a backtest that proves nothing.
-
-Two triggers for one underlying in one turn coalesce onto the newest, with an OI
-frame winning a dead heat and the source key settling the rest, and the losers
-are counted as `superseded_by_newer_trigger` rather than disappearing. Nothing
-durable records a loser, so what gives it a turn later is that the winner stops
-being offered once it has produced a case: the scan reads back the trigger
-identities already turned into cases over its own horizon and drops them before
-choosing. Without that the same newest trigger would win every scan for the rest
-of its freshness window and be refused at the freeze each time, while the trigger
-it beat went stale untried. A partial
-unique index over `trading_cases (underlying_key)` while the case is
-`PENDING`/`RUNNING` is the durable half of the same rule: one frozen research
-decision per issuer at a time, so a second trigger cannot buy a second model
-answer to the same question. It holds only while a case is undecided, so a
-settled or no-trade case never blocks a later genuinely new trigger.
-
-**An OI frame names its own venue, and the static priority may not answer for
-it.** `trading.venues.enabled` is the operator's *permission* list, not a
-routing rule. Open interest is a claim about one venue's book — the measured
-split is Hyperliquid +1.35% vs Binance -0.26% at 4 h — so an OI-bearing case
-resolves its instrument at the venue the frame itself tagged, and only there. A
-tag naming nothing executable is `venue_unresolved` and a venue the operator has
-not enabled is `venue_not_enabled`; both are decided at the scan, before fusion,
-so an unroutable frame can neither win coalescing from an older frame that *is*
-routable nor be attached as context to a News trigger it would then take down
-with it. An issuer not listed at the signal venue is `no_perp_at_signal_venue`
-and is only knowable at the freeze. None of the three is a reason to pick a
-different book. A News trigger with no OI frame has no signal venue and uses
-the static priority for its frozen research context, but its strategy still
-fails closed before it can author an Order.
-
-Measured before shipping it: of the pushed OI frames in the last seven days,
-every one carried a venue tag and 36 of 38 named Hyperliquid. So the practical
-effect of this rule is not refusals — it is that the OI lane stops executing on
-Binance, which is where the static priority had been sending frames about
-Hyperliquid's book. That is also the venue the research favours (+1.35% vs
--0.26% at 4 h).
-
-The live lane inherits source-aligned routing and nothing more: there is no read
-of the chosen venue's own OI or funding, so the "confirm the trigger at the venue
-that will execute it" half of #211 is **not** implemented and `live_bounded`
-stays disabled.
-
-**Deterministic gates run before the model call.** The selected pure strategy
-evaluates the frozen context before any provider call. Quadrant, long-only,
-whale, OI, permission, and missing-context refusals therefore do not spend the
-daily model budget. Since #265 an OI trigger is answered by
-`oi_smart_money_momentum_v1` — three conditions on the frame's own numbers over
-a *proven* five-minute window, a confirmed price direction and a chasing
-ceiling — whatever News happened to attach, so the OI lane spends no model
-budget at all. Its OI floor and chasing ceiling were set to 500 bps and
-1000 bps by operator decision in #273 to give the paper lane enough throughput
-to produce receipts; the strategy module records what that traded away, since
-the corpus measurement behind the older 600 bps ceiling still stands. The
-lane-wide `trading.regime.*` band is a different owner and keeps its own
-numbers, so an OI Case may record `move_above_band_chasing` and still be a
-long. `news_oi_alignment_v1` is reached only by a News
-trigger and remains the one live-capable strategy; `oi_momentum_v1` is kept as
-a decoder so Cases frozen under it stay replayable and is routed no new Case. For an eligible News-bearing case the runner freezes the
-single model result into a new context and evaluates the same strategy again;
-the strategy, never the model adapter, returns the final named decision.
-
-**Eight tables**, all `trading_*`: `trading_symbol_blacklist`,
-`trading_runtime_state` (control, daily counters, the day's funnel),
-`trading_candidate_gate_decisions`, `trading_cases`, `trading_orders`,
-`trading_order_observations`, and
-`trading_strategy_registrations` plus `trading_strategy_evaluations`.
-`trading_candidate_gate_decisions` is the admission ledger: one row per
-`(source_key, gate_version, gate_config_digest)` recording whether an OI fact
-became a trigger and, when it did not, the stage and the named reason. It is not
-an event log — a scanner re-reading its overlap window bumps `attempt_count`, the
-monotonic `DEFERRED -> REJECTED | CASE_CREATED | EXPIRED` transition lives in the
-`ON CONFLICT` clause, and `CASE_CREATED` commits inside the case insert's own
-transaction. Its config digest is what keeps a threshold edit from rewriting the
-record of what the previous threshold decided.
-`trading_cases` is the immutable capital
-research decision and freezes trigger plus strategy identity;
-`trading_strategy_registrations` freezes the first durable instant and typed
-configuration for an exact strategy identity;
-`trading_strategy_evaluations` is the immutable shadow-decision ledger and may
-gain exactly one separately versioned market outcome after its horizon. It has
-no transition into Cases or Orders. `closed_at_ms`
-says a row is terminal and four paths write it; `position_closed_at_ms` is a
-real exit and is the only thing the symbol cooldown and the realised-PnL
-denominator read. The scanner keeps no cursor — it re-reads a bounded overlap window and lets
-`trading_cases.primary_source_key` reject what it has already seen, which is
-what makes a crash or a redeploy idempotent without a checkpoint to corrupt.
-
-For liquidation shadow research the idempotency key is the complete strategy
-identity `(trigger_source_key, strategy_id, strategy_version,
-strategy_config_digest)`. The first worker turn registers that identity; an
-event whose cutoff precedes `registered_at_ms` is refused as
-`holdout_precedes_strategy_registration`. A later typed trigger produces
-exactly two immutable holdout evaluations and zero orders. Once the longest
-horizon and the next close have matured, the outcome worker may attach
-`liquidation_event_study_v3`. Its stop/TP/holding/fee/slippage policy is a
-constant owned by that version, not current Order configuration. The first
-closed 5-minute bar at or after the trigger is the entry origin; every forward
-horizon starts there, so a mid-bar event never imports pre-trigger price action.
-Fixed horizons and the holding deadline require the exact normalized candle
-timestamp; a later candle never substitutes for a missing observation. A
-successful history response with no usable entry becomes a terminal,
-versioned missing-data outcome so it cannot block the bounded pending queue;
-provider errors or a temporarily unavailable venue fetcher remain pending with
-durable exponential backoff, so repeated failures cannot starve newer rows.
-An invalid frozen manifest is terminalized as named missing evidence rather
-than occupying the pending queue forever.
-Coverage counts only rows with every supported 5m/15m/1h horizon and a proven
-terminal exit and complete 5-minute path; a missing path candle invalidates
-MFE/MAE and any later exit, while a missing holding-deadline bar is not called
-max-holding. It also
-reports MFE/MAE, fees/slippage, funding availability, deterministic bootstrap
-intervals and failure/missing counts. The current 5-minute public candle
-contract marks 5s/30s/1m and funding missing. The provider does not expose a durable duplicate
-denominator, so duplicate rate remains null and is itself a named evidence gap.
-API cohorts remain separate by strategy, venue and liquidity bucket, and
-promotion stays false until source, coverage, cost, holdout and diversity
-evidence all pass.
-
-`trading_cases` also carries the two upstream instants Trading does not own:
-`source_observed_at_ms` (when the provider fact was observed) and
-`trigger_persisted_at_ms` (when the verdict naming it became durable). With
-`created_at_ms`, `decided_at_ms` and the order's own timestamps, every stage from
-`source_observed` to `position_opened` is a difference between two durable
-numbers, and `trading status` reports p50/p95 per stage with an `n` beside each.
-The two middle stages are both measured from `case_created` rather than chained,
-because the runner commits the order and only then settles the case: `case_created
--> order_prepared` is nested inside `case_created -> case_decided`, and the model
-call — the one step with a daily budget — is inside both. The report is read off
-the same rows the audit reads: there is no second store to disagree with it, and
-no symbol, event or order id anywhere in it.
-
-**What it is not.** No separate service, database, queue or UI. No agent
-framework, subagent, tool loop or model-visible filesystem. No portfolio
-optimizer, VaR or correlation framework. No scale-in, pyramiding, flip or
-multi-leg order. No model-selected account, venue, quantity, leverage, stop or
-payload. No HIP-3 builder venue. No exactly-once claim. And no profitability
-claim from a paper trial: production-grade here means recoverable, auditable,
-duplicate-safe and loss-bounded.
+What this capability does not contain: mainnet or real money, multiple venues
+or accounts, shorting, take profit, scale-in/out, partial-exit attribution,
+smart routing, a general workflow engine, a second execution backend, or an
+operator command that places/amends/cancels an order.
 
 ## Open-interest telemetry (#137)
 

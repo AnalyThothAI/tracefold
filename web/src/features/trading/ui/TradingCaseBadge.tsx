@@ -58,7 +58,7 @@ export function TradingCaseBadge({
     <span className="trading-case-badge" data-state={caseRow.state}>
       {CASE_STATE_ZH[caseRow.state] ?? caseRow.state}
       {caseRow.policy_reason ? <code>{caseRow.policy_reason}</code> : null}
-      {data.order_state ? <code>{data.order_state}</code> : null}
+      {data.intent ? <code>{data.intent.execution_state}</code> : null}
     </span>
   );
 }

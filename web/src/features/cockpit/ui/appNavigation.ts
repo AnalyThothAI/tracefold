@@ -8,8 +8,8 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
-  /** A short word beside the label rather than a number: the capital lane's mode, not a volume (#207). */
-  badge?: "tradingMode";
+  /** A short word beside the label rather than a number: the capital lane's environment. */
+  badge?: "tradingEnvironment";
   children?: AppNavigationItem[];
   /** Which count from `AppNavigationCounts` this destination shows, if any. */
   count?: "cases" | "events" | "oiFrames";
@@ -65,7 +65,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       {
         /*
          * The capital lane's own 24 h case count, from `counts.cases_by_state` on the `/api/trading/status`
-         * the frame is already reading for the `PAPER` badge. It was left blank when the slot landed on the
+         * the frame is already reading for the `Demo` badge. It was left blank when the slot landed on the
          * theory that the honest figure needed a fourth poll; it does not, and an empty right edge beside
          * three numbered siblings reads as "nothing came through here" rather than as "not counted".
          *
@@ -83,7 +83,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         to: newsLeveragePath(),
       },
       {
-        badge: "tradingMode",
+        badge: "tradingEnvironment",
         icon: TradeFlowIcon,
         isActive: (pathname) => pathname === "/trading",
         label: "交易",

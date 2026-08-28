@@ -899,7 +899,7 @@ def test_status_reports_the_oi_lane_with_both_threshold_sets(client) -> None:
     # the answer: a floor from a lane that is switched off is a published band, not a gate.
     assert data["oi"]["trade_floors"] == {
         "enabled": False,
-        "mode": "paper",
+        "execution_environment": "BINANCE_USDM_DEMO",
         "allow_short": False,
         "min_whale_long_profit_bps": 9_500,
         "min_oi_value_usd": 20_000_000,

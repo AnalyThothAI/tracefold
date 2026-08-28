@@ -86,8 +86,7 @@
     box-shadow: inset 0 0 0 1px var(--signal-caution-border);
   }
 
-  /* Neutral on purpose. `PAPER` is a statement of what the lane is, not an alarm; the moment it says
-     something else the words themselves are the alarm and a colour would have pre-empted them. */
+  /* The code-owned Demo environment is a venue fact, not an alarm. */
   .news-leverage-permission {
     display: inline-flex;
     padding: 2px 7px;
@@ -378,14 +377,13 @@
     font-weight: 640;
   }
 
-  .news-leverage-capital-head span[data-state="OPEN"] {
+  .news-leverage-capital-head span[data-state="OPEN_PROTECTED"] {
     color: var(--signal-done);
     background: var(--signal-done-soft);
     box-shadow: inset 0 0 0 1px var(--signal-done-border);
   }
 
-  .news-leverage-capital-head span[data-state="AMBIGUOUS"],
-  .news-leverage-capital-head span[data-state="UNPROTECTED"] {
+  .news-leverage-capital-head span[data-state="MANUAL_REVIEW"] {
     color: var(--signal-alert);
     background: var(--signal-alert-soft);
     box-shadow: inset 0 0 0 1px var(--signal-alert-border);

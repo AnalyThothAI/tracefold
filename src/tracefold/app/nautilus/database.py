@@ -199,8 +199,7 @@ class NautilusDatabaseBridge:
         if outcome.execution_state != "PENDING":
             return True
         return bool(
-            self._settings.trading.nautilus.accept_intents
-            and runtime is not None
+            runtime is not None
             and runtime.get("control") == "RUNNING"
             and self._engine_ready
             and self._projection_healthy

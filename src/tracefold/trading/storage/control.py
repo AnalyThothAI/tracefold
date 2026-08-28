@@ -9,30 +9,13 @@ rather than the caller checking first and hoping.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any
 
 from .sql_values import _dumps
-
-# 'TRDG' — its own advisory-lock namespace, distinct from News' storyline locks and the app's session locks.
-_TRADING_LOCK_NAMESPACE: Final = 0x54524447
 
 
 class ControlStorage:
     conn: Any
-
-    # ------------------------------------------------------------------ locks
-    def lock_account(self, account_ref: str) -> None:
-        """Transaction-scoped advisory lock per account.
-
-        One account may have exactly one write in flight. The lock serialises "read outstanding state ->
-        decide -> insert SUBMITTING" across runners and processes; the partial unique index is what
-        makes the invariant true even if a lock is somehow not taken.
-        """
-
-        self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
-        self.conn.execute(
-            "SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_TRADING_LOCK_NAMESPACE, f"account:{account_ref}")
-        )
 
     # ------------------------------------------------------------------ blacklist
     def blacklist_rows(self) -> list[dict[str, Any]]:
@@ -61,7 +44,7 @@ class ControlStorage:
     # ------------------------------------------------------------------ runtime state
     def runtime_state(self) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT control, day_key, orders_today, dspy_calls_today, funnel, "
+            "SELECT control, day_key, dspy_calls_today, funnel, "
             "nautilus_heartbeat_at_ms, nautilus_ready, nautilus_readiness_reason, "
             "nautilus_unexpected_exposure, updated_at_ms "
             "FROM trading_runtime_state WHERE id = 1"
@@ -118,7 +101,6 @@ class ControlStorage:
             """
             UPDATE trading_runtime_state
                SET dspy_calls_today = CASE WHEN day_key = %(day)s THEN dspy_calls_today + 1 ELSE 1 END,
-                   orders_today = CASE WHEN day_key = %(day)s THEN orders_today ELSE 0 END,
                    funnel = CASE WHEN day_key = %(day)s THEN funnel ELSE '{}'::jsonb END,
                    day_key = %(day)s,
                    updated_at_ms = %(now)s
@@ -138,7 +120,7 @@ class ControlStorage:
     def merge_funnel(self, *, day_key: str, counts: Mapping[str, int], now_ms: int) -> None:
         """Accumulate one turn's named rejections into the day's funnel.
 
-        The funnel is the PR-B deliverable ("OI raw -> ... -> paper order"), and it has to survive a
+        The funnel is the durable OI raw -> Case -> Intent admission trail, and it has to survive a
         deploy: an in-memory counter resets exactly when someone is trying to read it. The day key
         resets the document, so the row stays one bounded object rather than growing forever.
         """
@@ -163,7 +145,6 @@ class ControlStorage:
                           GROUP BY k
                        ) totals
                    ),
-                   orders_today = CASE WHEN day_key = %(day)s THEN orders_today ELSE 0 END,
                    dspy_calls_today = CASE WHEN day_key = %(day)s THEN dspy_calls_today ELSE 0 END,
                    day_key = %(day)s,
                    updated_at_ms = %(now)s
@@ -177,47 +158,6 @@ class ControlStorage:
             "UPDATE trading_runtime_state SET control = %s, updated_at_ms = %s WHERE id = 1",
             (control, int(now_ms)),
         )
-
-    def bump_orders_today(self, *, day_key: str, now_ms: int) -> int:
-        """Increment the daily counter, resetting it when the UTC day rolls. Returns the new count."""
-
-        row = self.conn.execute(
-            """
-            UPDATE trading_runtime_state
-               SET orders_today = CASE WHEN day_key = %(day)s THEN orders_today + 1 ELSE 1 END,
-                   dspy_calls_today = CASE WHEN day_key = %(day)s THEN dspy_calls_today ELSE 0 END,
-                   funnel = CASE WHEN day_key = %(day)s THEN funnel ELSE '{}'::jsonb END,
-                   day_key = %(day)s,
-                   updated_at_ms = %(now)s
-             WHERE id = 1
-         RETURNING orders_today
-            """,
-            {"day": day_key, "now": int(now_ms)},
-        ).fetchone()
-        return int(row["orders_today"]) if row is not None else 0
-
-    def orders_today(self, *, day_key: str) -> int:
-        row = self.conn.execute("SELECT day_key, orders_today FROM trading_runtime_state WHERE id = 1").fetchone()
-        if row is None or str(row["day_key"]) != day_key:
-            return 0
-        return int(row["orders_today"])
-
-    def release_order_day_charge(self, *, day_key: str, now_ms: int) -> int:
-        """Release only after provider rejection or proof that its call never started.
-
-        Crashes after the call boundary, ambiguous answers, and restarts remain charged.
-        """
-
-        row = self.conn.execute(
-            """
-            UPDATE trading_runtime_state
-               SET orders_today = greatest(orders_today - 1, 0), updated_at_ms = %(now)s
-             WHERE id = 1 AND day_key = %(day)s
-         RETURNING orders_today
-            """,
-            {"day": day_key, "now": int(now_ms)},
-        ).fetchone()
-        return int(row["orders_today"]) if row is not None else 0
 
 
 __all__ = ["ControlStorage"]

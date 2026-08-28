@@ -104,11 +104,11 @@ describe("oiSignals", () => {
     const floors: NewsOiTradeFloors = {
       allow_short: false,
       enabled: false,
+      execution_environment: "BINANCE_USDM_DEMO",
       max_price_move_bps: 600,
       min_oi_value_usd: 20_000_000,
       min_price_move_bps: 100,
       min_whale_long_profit_bps: 9_500,
-      mode: "paper",
       pre_move_lookback_ms: 3_600_000,
     };
 

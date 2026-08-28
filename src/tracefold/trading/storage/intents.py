@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -59,6 +60,55 @@ class IntentStorage:
             (intent_id,),
         ).fetchone()
         return None if row is None else IntentOutcome.model_validate(dict(row))
+
+    def intent_for_case(self, *, case_id: str) -> tuple[TradeIntent, IntentOutcome] | None:
+        row = self.conn.execute(
+            f"SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS} FROM trading_intents WHERE case_id = %s",
+            (case_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        values = dict(row)
+        return (
+            TradeIntent.model_validate({name: values[name] for name in TradeIntent.model_fields}),
+            IntentOutcome.model_validate({name: values[name] for name in IntentOutcome.model_fields}),
+        )
+
+    def active_intent_underlyings(self) -> list[str]:
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT c.underlying_key
+              FROM trading_intents i
+              JOIN trading_cases c ON c.case_id = i.case_id
+             WHERE i.execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
+            """
+        ).fetchall()
+        return [str(row["underlying_key"]) for row in rows]
+
+    def entry_fences_today(self, *, day_key: str) -> int:
+        try:
+            start_ms = int(datetime.fromisoformat(day_key).replace(tzinfo=UTC).timestamp() * 1000)
+        except ValueError:
+            return 0
+        row = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_intents WHERE entry_fenced_at_ms >= %s AND entry_fenced_at_ms < %s",
+            (start_ms, start_ms + 86_400_000),
+        ).fetchone()
+        return 0 if row is None else int(row["n"])
+
+    def last_intent_close_at_ms(self, *, underlying_key: str) -> int | None:
+        row = self.conn.execute(
+            """
+            SELECT max(i.closed_at_ms) AS closed_at_ms
+              FROM trading_intents i
+              JOIN trading_cases c ON c.case_id = i.case_id
+             WHERE c.underlying_key = %s
+               AND i.terminal_outcome = 'CLOSED_FLAT'
+            """,
+            (underlying_key,),
+        ).fetchone()
+        value = None if row is None else row["closed_at_ms"]
+        return None if value is None else int(value)
 
     def active_intent(self) -> tuple[TradeIntent, IntentOutcome] | None:
         """Return the single non-terminal handoff, if one exists."""

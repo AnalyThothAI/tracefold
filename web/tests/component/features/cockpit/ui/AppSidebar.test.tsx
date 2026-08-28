@@ -23,7 +23,7 @@ describe("AppSidebar", () => {
 
   it("renders the four supported primary destinations", () => {
     renderSidebar({
-      badges: { tradingMode: "PAPER" },
+      badges: { tradingEnvironment: "Demo" },
       counts: { events: 1463, oiFrames: 188 },
     });
 
@@ -47,7 +47,7 @@ describe("AppSidebar", () => {
     // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before opening
     // it, and a count of orders would not answer that.
     expect(links[2].textContent).toContain("交易");
-    expect(links[2].textContent).toContain("PAPER");
+    expect(links[2].textContent).toContain("Demo");
     expect(links[3].textContent).toContain("OI 遥测审计");
     expect(links[3].textContent).toContain("188");
   });
@@ -63,9 +63,9 @@ describe("AppSidebar", () => {
   });
 
   it("keeps the mode out of the accessible name, as it keeps the counts out", () => {
-    // The destination is 交易 whether the ledger is on paper or not; folding the mode into the link's name
+    // The destination is 交易; folding the environment into the link's accessible name
     // would rename it when configuration changed.
-    renderSidebar({ badges: { tradingMode: "PAPER" } });
+    renderSidebar({ badges: { tradingEnvironment: "Demo" } });
 
     expect(screen.getByRole("link", { name: "交易" })).toHaveAttribute("href", "/trading");
   });
@@ -127,7 +127,7 @@ function renderSidebar({
   counts,
   route = "/",
 }: {
-  badges?: { tradingMode?: string };
+  badges?: { tradingEnvironment?: string };
   counts?: { events?: number; oiFrames?: number };
   route?: string;
 } = {}) {

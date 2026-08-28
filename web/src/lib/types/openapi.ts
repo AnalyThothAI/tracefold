@@ -144,15 +144,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Event Case
-         * @description Whether one News Event became a case — the Event detail's 成案 badge (#207 PR-W4).
-         *
-         *     Answers `joinable: false` for a model-lane Event rather than pretending the lane declined it. The
-         *     deterministic OI lane's source key is `oi:{event_id}:{metric_version}` and can be rebuilt here; the model
-         *     lane's is a content hash of an artifact and a fingerprint (#154), which no Event id reconstructs. Joining
-         *     by symbol and time instead would be the console recording a link the ledger does not have.
-         */
+        /** Get Trading Event Case */
         get: operations["get_trading_event_case_api_trading_events__event_id__get"];
         put?: never;
         post?: never;
@@ -169,20 +161,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Gate
-         * @description Every OI source the lane admitted or refused in the window, one answer each (#269).
-         *
-         *     `/trading/events/{id}` answers this for one Event, which is the Event detail's question. A frame
-         *     *table* asks it for a page of frames at once, and asking it one row at a time would be a hundred
-         *     round trips to render a screen — so the console read this column as "未成案" for every row and the
-         *     durable reason the ledger holds never reached anyone.
-         *
-         *     Keyed on `event_id` for the deterministic lane, recovered from the source key the same way the
-         *     order and case projections recover theirs. A source whose key does not round-trip is still listed,
-         *     with `event_id: null`: the counts above the table include it, and dropping it here would make the
-         *     page's own total disagree with them.
-         */
+        /** Get Trading Gate */
         get: operations["get_trading_gate_api_trading_gate_get"];
         put?: never;
         post?: never;
@@ -192,7 +171,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/orders": {
+    "/api/trading/intents": {
         parameters: {
             query?: never;
             header?: never;
@@ -200,17 +179,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Trading Orders
-         * @description Orders with the case that authored them, plus the cases that never got that far.
-         *
-         *     Both halves are needed to describe the lane honestly. A `POLICY_REJECTED` case is where the capital
-         *     floors actually bite and it has no order to join through, so listing orders alone would make the whole
-         *     rejected population invisible — the funnel would count them and nothing would be able to name them.
-         *
-         *     `underlying` accepts either the base symbol (`WIF`) or the full key (`crypto:WIF`); the response carries
-         *     both so a caller never has to build the key itself.
+         * Get Trading Intents
+         * @description Intent outcomes plus cases that did not emit an intent; legacy orders are excluded.
          */
-        get: operations["get_trading_orders_api_trading_orders_get"];
+        get: operations["get_trading_intents_api_trading_intents_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -226,14 +198,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Status
-         * @description The capital lane's mandate, readiness and 24 h funnel — the same facts as CLI `trading status`.
-         *
-         *     Read-only and configuration-derived. `live_ready` is reported and never offered: a serve process cannot
-         *     observe the Workers process's startup and canary result, so it says `not_proven` rather than guessing,
-         *     and there is no field here a page could render as a switch (#185 P1-2).
-         */
+        /** Get Trading Status */
         get: operations["get_trading_status_api_trading_status_get"];
         put?: never;
         post?: never;
@@ -388,9 +353,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[TradingOrdersData] */
-        ApiEnvelope_TradingOrdersData_: {
-            data?: components["schemas"]["TradingOrdersData"] | null;
+        /** ApiEnvelope[TradingIntentsData] */
+        ApiEnvelope_TradingIntentsData_: {
+            data?: components["schemas"]["TradingIntentsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -1291,6 +1256,12 @@ export interface components {
              */
             enabled: boolean;
             /**
+             * Execution Environment
+             * @default BINANCE_USDM_DEMO
+             * @constant
+             */
+            execution_environment: "BINANCE_USDM_DEMO";
+            /**
              * Max Price Move Bps
              * @default 0
              */
@@ -1310,11 +1281,6 @@ export interface components {
              * @default 0
              */
             min_whale_long_profit_bps: number;
-            /**
-             * Mode
-             * @default paper
-             */
-            mode: string;
             /**
              * Pre Move Lookback Ms
              * @default 0
@@ -2080,28 +2046,18 @@ export interface components {
             /** Upper 95 Bps */
             upper_95_bps: number;
         };
-        /**
-         * TradingBudgetData
-         * @description The mandate, as configured. Fixed size, fixed stop, fixed maximum hold — there is no sizing model.
-         */
+        /** TradingBudgetData */
         TradingBudgetData: {
-            /** Max Hold Ms */
-            max_hold_ms: number;
-            /** Max Orders Per Day */
-            max_orders_per_day: number;
-            /** Nominal Daily Stop Loss Usd */
-            nominal_daily_stop_loss_usd: string;
-            /** Notional Usd */
-            notional_usd: string;
-            /** Orders Today */
-            orders_today: number;
-            /** Stop Loss Bps */
-            stop_loss_bps: number;
+            /**
+             * Max Entries Per Utc Day
+             * @default 1
+             * @constant
+             */
+            max_entries_per_utc_day: 1;
+            /** Target Notional Usd */
+            target_notional_usd: string;
         };
-        /**
-         * TradingCaseData
-         * @description A case that stopped before authoring an intent, and the rule it stopped on.
-         */
+        /** TradingCaseData */
         TradingCaseData: {
             /** Base Symbol */
             base_symbol: string;
@@ -2113,8 +2069,6 @@ export interface components {
             decided_at_ms?: number | null;
             /** Event Id */
             event_id?: string | null;
-            /** Mode */
-            mode: string;
             /** Observed At Ms */
             observed_at_ms: number;
             /** Policy Decision */
@@ -2142,25 +2096,13 @@ export interface components {
             /** Underlying Key */
             underlying_key: string;
         };
-        /**
-         * TradingCountsData
-         * @description The 24 h funnel by the ledger's own grouping keys, plus the realised measure.
-         *
-         *     `closed_realized_bps` sums only orders whose exit was *measured*: an operator-resolved close moved a
-         *     position but nobody computed a return for it, and counting it turned one +150 bps winner beside three
-         *     resolutions into a reported mean of 37.5.
-         *
-         *     Rolling groupings retain their 24 h window. The `*_today` fields, `policy_allowed_today`, and
-         *     `funnel_today` bind to the UTC `funnel_day_key`; an upper bound keeps a stale Workers day from silently
-         *     becoming a multi-day count. `active_orders` is intentionally unbounded because unresolved exposure does
-         *     not stop mattering after 24 h.
-         */
+        /** TradingCountsData */
         TradingCountsData: {
             /**
-             * Active Orders
+             * Active Intents
              * @default 0
              */
-            active_orders: number;
+            active_intents: number;
             /** Candidate Counts 24H */
             candidate_counts_24h?: {
                 [key: string]: number;
@@ -2194,20 +2136,15 @@ export interface components {
                 [key: string]: number;
             };
             /**
-             * Closed Orders
+             * Closed Intents Today
              * @default 0
              */
-            closed_orders: number;
+            closed_intents_today: number;
             /**
-             * Closed Orders Today
+             * Entries Today
              * @default 0
              */
-            closed_orders_today: number;
-            /**
-             * Closed Realized Bps
-             * @default 0
-             */
-            closed_realized_bps: number;
+            entries_today: number;
             /** Event Study Cohorts */
             event_study_cohorts?: components["schemas"]["TradingEventStudyCohortData"][];
             /**
@@ -2219,12 +2156,18 @@ export interface components {
             funnel_today?: {
                 [key: string]: number;
             };
+            /** Intents By State */
+            intents_by_state?: {
+                [key: string]: number;
+            };
             /** Latest Case Created At Ms */
             latest_case_created_at_ms?: number | null;
+            /** Latest Entry Fenced At Ms */
+            latest_entry_fenced_at_ms?: number | null;
             /** Latest Gate Eligible At Ms */
             latest_gate_eligible_at_ms?: number | null;
-            /** Latest Order Prepared At Ms */
-            latest_order_prepared_at_ms?: number | null;
+            /** Latest Intent Emitted At Ms */
+            latest_intent_emitted_at_ms?: number | null;
             /** Latest Position Closed At Ms */
             latest_position_closed_at_ms?: number | null;
             /** Latest Position Opened At Ms */
@@ -2241,8 +2184,8 @@ export interface components {
              * @default
              */
             liquidation_promotion_reason: string;
-            /** Orders By State */
-            orders_by_state?: {
+            /** Outcomes By State */
+            outcomes_by_state?: {
                 [key: string]: number;
             };
             /**
@@ -2268,27 +2211,11 @@ export interface components {
                 [key: string]: components["schemas"]["TradingShadowCohortData"];
             };
         };
-        /**
-         * TradingEventCaseData
-         * @description Whether one News Event became a case, for the Event detail's 成案 badge (#207 PR-W4).
-         *
-         *     `joinable` is the field that keeps this honest. Only the deterministic OI lane's source key is
-         *     reconstructible from an `event_id` (`oi:{event_id}:{metric_version}`); the model lane's is a content hash
-         *     of an artifact and a fingerprint (#154), which no Event id rebuilds. For a model-lane Event the answer is
-         *     `joinable: false` — "this cannot be asked", which is a different fact from `case: null`, "it was asked
-         *     and the answer is no". Rendering them the same would tell a reader the lane declined an Event it never
-         *     saw.
-         */
+        /** TradingEventCaseData */
         TradingEventCaseData: {
             case?: components["schemas"]["TradingCaseData"] | null;
-            /** Entry Reference */
-            entry_reference?: string | null;
             /** Event Id */
             event_id: string;
-            /** Exit Price */
-            exit_price?: string | null;
-            /** Exit Reason */
-            exit_reason?: string | null;
             /** Gate Attempt Count */
             gate_attempt_count?: number | null;
             /** Gate Config Digest */
@@ -2308,26 +2235,9 @@ export interface components {
             gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
             /** Gate Version */
             gate_version?: string | null;
+            intent?: components["schemas"]["TradingIntentData"] | null;
             /** Joinable */
             joinable: boolean;
-            /** Notional Usd */
-            notional_usd?: string | null;
-            /** Order Id */
-            order_id?: string | null;
-            /** Order State */
-            order_state?: string | null;
-            /** Order State Reason */
-            order_state_reason?: string | null;
-            /** Position Closed At Ms */
-            position_closed_at_ms?: number | null;
-            /** Position Opened At Ms */
-            position_opened_at_ms?: number | null;
-            /** Realized Bps */
-            realized_bps?: number | null;
-            /** Side */
-            side?: ("buy" | "sell") | null;
-            /** Stop Price */
-            stop_price?: string | null;
         };
         /** TradingEventStudyCohortData */
         TradingEventStudyCohortData: {
@@ -2389,10 +2299,7 @@ export interface components {
             /** Venue */
             venue: string;
         };
-        /**
-         * TradingFloorsData
-         * @description The capital lane's own thresholds — a different set from the News gates, never merged with them.
-         */
+        /** TradingFloorsData */
         TradingFloorsData: {
             /** Lookback Ms */
             lookback_ms: number;
@@ -2405,15 +2312,7 @@ export interface components {
             /** Min Whale Long Profit Bps */
             min_whale_long_profit_bps: number;
         };
-        /**
-         * TradingGateConfigData
-         * @description The Candidate Gate as the scanner holds it (#269).
-         *
-         *     `floors` is the operator's settings document. This is the rule set that actually admits an OI fact,
-         *     and its `config_digest` is the second half of the key every row in the admission ledger is filed
-         *     under — so a console can say which configuration decided the frame it is showing, rather than
-         *     comparing it against whichever number happens to be in settings now.
-         */
+        /** TradingGateConfigData */
         TradingGateConfigData: {
             /** Config Digest */
             config_digest: string;
@@ -2441,14 +2340,7 @@ export interface components {
             /** Window Hours */
             window_hours: number;
         };
-        /**
-         * TradingGateDecisionData
-         * @description One durable admission answer, for a page showing a whole window of frames at once (#269).
-         *
-         *     `event_id` is null for a source whose key is not the deterministic OI contract. The row is still
-         *     listed: the distributions in `/trading/status` count it, and omitting it here would make a page's
-         *     own total disagree with the number printed above it.
-         */
+        /** TradingGateDecisionData */
         TradingGateDecisionData: {
             /**
              * Base Symbol
@@ -2487,15 +2379,7 @@ export interface components {
             /** Underlying Key */
             underlying_key?: string | null;
         };
-        /**
-         * TradingGateEvidenceData
-         * @description What one admission decision was taken on. Every key is code-owned and named here on purpose.
-         *
-         *     Passing the stored document straight through would put the next evidence key in a browser without
-         *     anyone deciding that it should, which is the same rule the order and case projections follow. The
-         *     four measurements are always present past the source stage; the rest are the threshold or the
-         *     provider detail that the specific rule failed on.
-         */
+        /** TradingGateEvidenceData */
         TradingGateEvidenceData: {
             /** Age Ms */
             age_ms?: number | null;
@@ -2557,13 +2441,14 @@ export interface components {
              */
             missing: number;
         };
-        /**
-         * TradingOrderData
-         * @description One economic intent and the case that authored it. Money is an exact decimal string, never a float.
-         */
-        TradingOrderData: {
-            /** Average Price */
-            average_price?: string | null;
+        /** TradingIntentData */
+        TradingIntentData: {
+            /** Actual Quantity */
+            actual_quantity?: string | null;
+            /** Avg Entry Price */
+            avg_entry_price?: string | null;
+            /** Avg Exit Price */
+            avg_exit_price?: string | null;
             /** Base Symbol */
             base_symbol: string;
             /** Case Id */
@@ -2572,69 +2457,68 @@ export interface components {
             case_observed_at_ms?: number | null;
             /** Case State */
             case_state: string;
+            /** Closed At Ms */
+            closed_at_ms?: number | null;
+            /** Commissions By Currency */
+            commissions_by_currency?: {
+                [key: string]: string;
+            } | null;
             /** Created At Ms */
             created_at_ms: number;
-            /** Entry Reference */
-            entry_reference: string;
             /** Event Id */
             event_id?: string | null;
-            /** Exchange Id */
-            exchange_id: string;
             /**
-             * Exit Attempt Total
-             * @default 0
+             * Execution Environment
+             * @constant
              */
-            exit_attempt_total: number;
-            /** Exit Price */
-            exit_price?: string | null;
-            /** Exit Reason */
-            exit_reason?: string | null;
-            /** Filled Quantity */
-            filled_quantity?: string | null;
-            /** Mode */
-            mode: string;
-            /** Must Close At Ms */
-            must_close_at_ms?: number | null;
-            /** Notional Usd */
-            notional_usd: string;
-            /** Order Id */
-            order_id: string;
+            execution_environment: "BINANCE_USDM_DEMO";
+            /** Execution Phase */
+            execution_phase?: ("ENTRY" | "PROTECTION" | "EXIT") | null;
+            /**
+             * Execution State
+             * @enum {string}
+             */
+            execution_state: "PENDING" | "IN_FLIGHT" | "OPEN_PROTECTED" | "MANUAL_REVIEW" | "TERMINAL";
+            /** Flat Verified At Ms */
+            flat_verified_at_ms?: number | null;
+            /**
+             * Instrument Id
+             * @constant
+             */
+            instrument_id: "SOLUSDT-PERP.BINANCE";
+            /** Intent Id */
+            intent_id: string;
+            /** Opened At Ms */
+            opened_at_ms?: number | null;
             /** Policy Decision */
             policy_decision?: string | null;
             /** Policy Reason */
             policy_reason?: string | null;
-            /** Position Closed At Ms */
-            position_closed_at_ms?: number | null;
-            /** Position Opened At Ms */
-            position_opened_at_ms?: number | null;
             /** Pre Move Bps */
             pre_move_bps?: number | null;
-            /**
-             * Provider Attempt Count
-             * @default 0
-             */
-            provider_attempt_count: number;
-            /** Provider Symbol */
-            provider_symbol: string;
-            /** Quantity */
-            quantity: string;
-            /** Realized Bps */
-            realized_bps?: number | null;
+            /** Protected At Ms */
+            protected_at_ms?: number | null;
+            /** Protected Quantity */
+            protected_quantity?: string | null;
+            /** Realized Pnl Amount */
+            realized_pnl_amount?: string | null;
+            /** Realized Pnl Currency */
+            realized_pnl_currency?: string | null;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Reference Price */
+            reference_price: string;
             /** Regime */
             regime?: string | null;
             /** Regime Reason */
             regime_reason?: string | null;
             /**
              * Side
-             * @enum {string}
+             * @constant
              */
-            side: "buy" | "sell";
-            /** State */
-            state: string;
-            /** State Reason */
-            state_reason?: string | null;
+            side: "long";
             /** Stop Price */
-            stop_price: string;
+            stop_price?: string | null;
             /** Strategy Config */
             strategy_config?: {
                 [key: string]: string;
@@ -2643,57 +2527,69 @@ export interface components {
             strategy_id: string;
             /** Strategy Version */
             strategy_version: string;
-            /** Take Profit Price */
-            take_profit_price?: string | null;
+            /** Target Notional Usd */
+            target_notional_usd: string;
+            /** Terminal Outcome */
+            terminal_outcome?: ("EXPIRED" | "REJECTED" | "CLOSED_FLAT") | null;
             /** Trigger Kind */
             trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
             /** Updated At Ms */
             updated_at_ms: number;
+            /** Valid Until Ms */
+            valid_until_ms: number;
         };
-        /** TradingOrdersData */
-        TradingOrdersData: {
-            /** Cases Without Orders */
-            cases_without_orders?: components["schemas"]["TradingCaseData"][];
+        /** TradingIntentsData */
+        TradingIntentsData: {
+            /** Cases Without Intents */
+            cases_without_intents?: components["schemas"]["TradingCaseData"][];
             /** Complete */
             complete: boolean;
+            /** Intents */
+            intents?: components["schemas"]["TradingIntentData"][];
             /** Measured At Ms */
             measured_at_ms: number;
-            /** Orders */
-            orders?: components["schemas"]["TradingOrderData"][];
             /** Window Hours */
             window_hours: number;
         };
-        /**
-         * TradingReadinessData
-         * @description Whether this deployment could trade for real, and how far that is from proven.
-         *
-         *     `live_ready` is never `true` from a read: a serve process cannot observe another process's startup and
-         *     canary result, so it reports `not_proven` rather than guessing. The console renders the word.
-         */
+        /** TradingReadinessData */
         TradingReadinessData: {
-            /** Control */
-            control: string;
-            /** Enabled */
-            enabled: boolean;
-            /** Execution Backend */
-            execution_backend: string;
-            /** Execution Configured */
-            execution_configured: boolean;
-            /** Live Mode Supported */
-            live_mode_supported: boolean;
-            /** Live Readiness */
-            live_readiness: string;
-            /** Live Ready */
-            live_ready: boolean;
             /**
-             * Mode
+             * Control
              * @enum {string}
              */
-            mode: "paper" | "live_reviewed" | "live_bounded";
-            /** Venues */
-            venues?: string[];
+            control: "RUNNING" | "CLOSE_ONLY" | "PAUSED";
+            /** Credentials Configured */
+            credentials_configured: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Engine Readiness Reason */
+            engine_readiness_reason?: string | null;
+            /** Engine Ready */
+            engine_ready: boolean;
+            /**
+             * Execution Authority
+             * @default nautilus
+             * @constant
+             */
+            execution_authority: "nautilus";
+            /**
+             * Execution Environment
+             * @default BINANCE_USDM_DEMO
+             * @constant
+             */
+            execution_environment: "BINANCE_USDM_DEMO";
+            /** Heartbeat At Ms */
+            heartbeat_at_ms?: number | null;
+            /**
+             * Instrument Id
+             * @default SOLUSDT-PERP.BINANCE
+             * @constant
+             */
+            instrument_id: "SOLUSDT-PERP.BINANCE";
+            /** Unexpected Exposure */
+            unexpected_exposure: boolean;
         };
         /** TradingShadowCohortData */
         TradingShadowCohortData: {
@@ -2761,13 +2657,7 @@ export interface components {
             /** Window Hours */
             window_hours: number;
         };
-        /**
-         * TradingStrategyConfigData
-         * @description One versioned strategy and the numbers it executes.
-         *
-         *     `config` is rendered as text per key on purpose: each strategy owns its own keys, mixing booleans,
-         *     basis points and millisecond windows, and this surface reports them rather than interpreting them.
-         */
+        /** TradingStrategyConfigData */
         TradingStrategyConfigData: {
             /** Config */
             config?: {
@@ -3077,7 +2967,7 @@ export interface operations {
             };
         };
     };
-    get_trading_orders_api_trading_orders_get: {
+    get_trading_intents_api_trading_intents_get: {
         parameters: {
             query?: {
                 day?: string;
@@ -3096,7 +2986,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingOrdersData_"];
+                    "application/json": components["schemas"]["ApiEnvelope_TradingIntentsData_"];
                 };
             };
             /** @description Validation Error */

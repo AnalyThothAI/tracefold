@@ -3,6 +3,7 @@ export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
 READ_NAUTILUS_CREDENTIALS_CONFIGURED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["nautilus"]["credentials_configured"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid credentials_configured")'
+READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -18,7 +19,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -151,12 +152,10 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow and not scheduled"
 
-trading-smoke: ## paper exit acceptance on real PostgreSQL: SL / TP / MAX_HOLDING reach CLOSED + flat (#209)
-	@echo "paper exits are priced off CLOSED bar closes only: no intrabar wick, no venue-native stop,"
-	@echo "no spread, precision, partial fill, position mode or external order. What this proves is the"
-	@echo "execution kernel, the ledger and the state machine - not a backtest and not exchange truth."
-	@echo "A focused lane, not a substitute for test-evidence; SKIP_INTEGRATION=1 makes it prove nothing."
-	@uv run python -m pytest tests/integration/test_trading_ledger.py -m integration -k paper_exit_acceptance
+trading-smoke: ## Case -> Intent atomicity and Nautilus outcome acceptance on real PostgreSQL (#283)
+	@echo "This focused lane proves the native Intent ledger and atomic Case handoff."
+	@echo "It does not contact Binance Demo and is not a substitute for test-evidence."
+	@uv run python -m pytest tests/integration/test_trading_intents.py -m integration
 
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
 	@uv run python -m pytest tests/deploy -m deploy
@@ -208,6 +207,34 @@ _db-provision-nautilus-role-locked:
 		fi; \
 		docker compose run --rm --no-deps --user postgres \
 			--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres
+
+trading-hard-cut-preflight: preflight ## prove the one-time #283 PR 2 cutover prerequisites
+	@set -eu; \
+		nautilus_ids=$$(docker compose ps --all -q nautilus); \
+		nautilus_count=$$(printf '%s\n' "$$nautilus_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
+		if [ "$$nautilus_count" -ne 1 ]; then \
+			echo "Hard cut requires exactly one Nautilus replica; found $$nautilus_count." >&2; \
+			exit 1; \
+		fi; \
+		curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { \
+			echo "Hard cut requires Nautilus readiness to prove the Demo venue is authoritative flat." >&2; \
+			exit 1; \
+		}; \
+		cut_state=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			PGOPTIONS="-c default_transaction_read_only=on"; \
+			export PGPASSWORD PGOPTIONS; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
+			"SELECT concat_ws('|', \
+			  COALESCE((SELECT control FROM trading_runtime_state WHERE id = 1), 'MISSING'), \
+			  (SELECT count(*) FROM trading_cases WHERE state IN ('PENDING', 'RUNNING')), \
+			  (SELECT count(*) FROM trading_intents WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')), \
+			  (SELECT count(*) FROM trading_orders WHERE state IN ('PREPARED', 'AWAITING_APPROVAL', 'APPROVED', 'SUBMITTING', 'AMBIGUOUS', 'RECONCILING', 'MANUAL_REVIEW_REQUIRED', 'ACKNOWLEDGED', 'PARTIAL', 'OPEN', 'UNPROTECTED', 'SAFETY_CLOSING')))"); \
+		if [ "$$cut_state" != "PAUSED|0|0|0" ]; then \
+			echo "Hard cut requires PAUSED|pending_cases=0|nonterminal_intents=0|active_legacy_orders=0; observed $$cut_state." >&2; \
+			exit 1; \
+		fi; \
+		echo "Trading hard-cut preflight passed: venue flat, PAUSED, ledgers drained, one Nautilus replica."
 
 serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve
@@ -268,7 +295,13 @@ _up-locked:
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		nautilus_configured=$$($(TRACEFOLD) config | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
+		runtime_config=$$($(TRACEFOLD) config); \
+		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
+		nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
+		if [ "$$trading_enabled" = true ] && [ "$$nautilus_configured" != true ]; then \
+			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured." >&2; \
+			exit 1; \
+		fi; \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
@@ -280,7 +313,7 @@ _up-locked:
 			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
 		fi; \
 		runtime_services="migrate serve workers"; \
-		if [ "$$nautilus_configured" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -388,13 +421,21 @@ _deploy-image-locked:
 			echo "Target image did not report Nautilus credential availability; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
+		if ! trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); then \
+			echo "Target image did not report whether Trading is enabled; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if [ "$$trading_enabled" = true ] && [ "$$nautilus_configured" != true ]; then \
+			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
 		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
 		runtime_services="migrate serve workers"; \
-		if [ "$$nautilus_configured" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
+		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -467,7 +508,9 @@ _deploy-image-locked:
 status: preflight ## fail closed unless every enabled runtime is ready
 	@docker compose ps --all
 	@set -eu; \
-		nautilus_configured=$$($(TRACEFOLD) config | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
+		runtime_config=$$($(TRACEFOLD) config); \
+		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
+		nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -483,23 +526,29 @@ status: preflight ## fail closed unless every enabled runtime is ready
 				failed=1; \
 			fi; \
 		done; \
-		if [ "$$nautilus_configured" = true ]; then \
-			nautilus_id=$$(docker compose ps --all -q nautilus); \
-			if [ -z "$$nautilus_id" ]; then \
-				echo "nautilus: missing or stopped" >&2; \
+		if [ "$$trading_enabled" = true ]; then \
+			if [ "$$nautilus_configured" != true ]; then \
+				echo "nautilus: Trading enabled but Demo credentials are not configured" >&2; \
 				failed=1; \
 			else \
-			nautilus_state=$$(docker inspect --format '{{.State.Status}}' "$$nautilus_id"); \
-			nautilus_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$nautilus_id"); \
-			if [ "$$nautilus_state" != "running" ] || [ "$$nautilus_health" != "healthy" ]; then \
-				echo "nautilus: state=$$nautilus_state health=$$nautilus_health" >&2; \
-				failed=1; \
-			else \
-				curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
-			fi; \
+				nautilus_ids=$$(docker compose ps --all -q nautilus); \
+				nautilus_count=$$(printf '%s\n' "$$nautilus_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
+				if [ "$$nautilus_count" -ne 1 ]; then \
+					echo "nautilus: expected exactly one replica, found $$nautilus_count" >&2; \
+					failed=1; \
+				else \
+					nautilus_state=$$(docker inspect --format '{{.State.Status}}' "$$nautilus_ids"); \
+					nautilus_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$nautilus_ids"); \
+					if [ "$$nautilus_state" != "running" ] || [ "$$nautilus_health" != "healthy" ]; then \
+						echo "nautilus: state=$$nautilus_state health=$$nautilus_health" >&2; \
+						failed=1; \
+					else \
+						curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
+					fi; \
+				fi; \
 			fi; \
 		else \
-			echo "nautilus: not configured (dark slice)"; \
+			echo "nautilus: not required (Trading disabled)"; \
 		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \

@@ -1,6 +1,6 @@
 import {
   tradingLedgerEntries,
-  useTradingOrdersWithToken,
+  useTradingIntentsWithToken,
   useTradingStatusWithToken,
 } from "@features/trading";
 import { newsOiPath, newsSymbolPath, tradingPath } from "@shared/routing/paths";
@@ -42,7 +42,7 @@ import "./newsLeverage.css";
  * thresholds, so merging them would let a reader carry a push decision into a trading one.
  *
  * Three bounded reads, all of them already served and all of them shared with pages that were reading them
- * anyway: `/api/news/feed` filtered to the deterministic lane, one `/api/trading/orders` batch, and
+ * anyway: `/api/news/feed` filtered to the deterministic lane, one `/api/trading/intents` batch, and
  * `/api/trading/status` for the durable admission funnel and the rules the evidence matrix compares
  * against. Current quotes are a fourth, on their own 15 s rhythm, and they never write back into a case:
  * the frozen plane and the live one sit side by side and are labelled as such.
@@ -80,7 +80,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
    * needed here, because a `POLICY_REJECTED` case is exactly where the capital floors bite and it has no
    * order to be found through.
    */
-  const tradingQuery = useTradingOrdersWithToken(token);
+  const tradingQuery = useTradingIntentsWithToken(token);
   /*
    * The capital lane's own status, not News' (#269). Two things live only here: the durable 24 h
    * admission funnel — the only description of a day the lane produced no case in — and the rules the
@@ -267,7 +267,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
               /* This case's own forced-close window when the ledger froze one, and the mandate's — named
                  as such — when it did not. The permission beside it is not passed at all: that is the
                  case's frozen `mode`, read from the item. */
-              horizon={leverageHorizon(selected, statusQuery.data?.budget?.max_hold_ms)}
+              horizon={leverageHorizon(selected)}
               item={selected}
               quote={quote?.requested_symbol === selected.base ? quote : undefined}
               symbolHref={newsSymbolPath(selected.base)}
@@ -301,7 +301,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
 
       <p className="news-leverage-source">
         {/*
-         * The frames arrive one bounded page at a time and the ledger as its own batch, so the join is
+         * The frames arrive one bounded page at a time and the capital read model as its own batch, so the join is
          * lossy in one direction. Saying how many by name beats a page that quietly reports a busy day as
          * a quiet one.
          */}
@@ -311,15 +311,15 @@ export function NewsLeveragePage({ token }: { token: string }) {
               ? `其中 ${frameless} 条案例没有配套的遥测帧——或是非 OI 触发，或是原帧不在本页（帧按页取）；这些行没有原始线与 OI 测量。`
               : ""}
             {tradingQuery.data?.complete === false
-              ? "账本批次已截断，可能还有本页未列出的案例。"
+              ? "资本读模型已截断，可能还有本页未列出的案例。"
               : ""}
             完整的帧在 <Link to={newsOiPath()}>OI 遥测审计</Link>，完整的账本在{" "}
-            <Link to={tradingPath()}>交易 · 模拟仓</Link>。
+            <Link to={tradingPath()}>交易 · Demo</Link>。
           </b>
         ) : (
           <>
             帧与闸门在 <Link to={newsOiPath()}>OI 遥测审计</Link>；账本与预算在{" "}
-            <Link to={tradingPath()}>交易 · 模拟仓</Link>。
+            <Link to={tradingPath()}>交易 · Demo</Link>。
           </>
         )}
       </p>

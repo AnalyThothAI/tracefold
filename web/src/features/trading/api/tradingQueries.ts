@@ -10,8 +10,8 @@ export type TradingBudget = TradingSchemas["TradingBudgetData"];
 export type TradingReadiness = TradingSchemas["TradingReadinessData"];
 export type TradingFloors = TradingSchemas["TradingFloorsData"];
 export type TradingCounts = TradingSchemas["TradingCountsData"];
-export type TradingOrders = TradingSchemas["TradingOrdersData"];
-export type TradingOrder = TradingSchemas["TradingOrderData"];
+export type TradingIntents = TradingSchemas["TradingIntentsData"];
+export type TradingIntent = TradingSchemas["TradingIntentData"];
 export type TradingCase = TradingSchemas["TradingCaseData"];
 export type TradingEventCase = TradingSchemas["TradingEventCaseData"];
 export type TradingGate = TradingSchemas["TradingGateData"];
@@ -21,7 +21,7 @@ export type TradingStrategyConfig = TradingSchemas["TradingStrategyConfigData"];
 
 /**
  * The capital lane moves at the speed of a frame, not of a price feed. 15 s is the same rhythm the status
- * route uses, and there is nothing on this surface that changes faster than an order does.
+ * route uses, and there is nothing on this surface that changes faster than an intent does.
  */
 export const TRADING_REFETCH_MS = 15_000;
 
@@ -40,18 +40,18 @@ export const useTradingStatusWithToken = (token: string) =>
     staleTime: 5_000,
   });
 
-export const useTradingOrdersWithToken = (
+export const useTradingIntentsWithToken = (
   token: string,
   underlying?: string,
   budgetDay?: string | null,
 ) =>
   useQuery({
     enabled: Boolean(token) && budgetDay !== null,
-    queryKey: queryKeys.tradingOrders(underlying ?? "", budgetDay ?? ""),
+    queryKey: queryKeys.tradingIntents(underlying ?? "", budgetDay ?? ""),
     queryFn: async () =>
       (
-        await getApi<TradingOrders>("/api/trading/orders", {
-          etagKey: `trading-orders:${underlying ?? "all"}`,
+        await getApi<TradingIntents>("/api/trading/intents", {
+          etagKey: `trading-intents:${underlying ?? "all"}`,
           params:
             underlying || budgetDay
               ? {

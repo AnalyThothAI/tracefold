@@ -10,8 +10,10 @@ import {
   newsStatusFixture,
 } from "@tests/fixtures/newsFixture";
 import {
+  gateEvidence,
+  tradingGateDecisionFixture,
   tradingGateFixture,
-  tradingOrdersFixture,
+  tradingIntentsFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
@@ -36,8 +38,8 @@ describe("NewsOiPage", () => {
       http.get(/.*\/api\/news\/quotes$/, () =>
         HttpResponse.json({ ok: true, data: { measured_at_ms: NEWS_NOW_MS, quotes: [] } }),
       ),
-      http.get(/.*\/api\/trading\/orders$/, () =>
-        HttpResponse.json({ ok: true, data: tradingOrdersFixture() }),
+      http.get(/.*\/api\/trading\/intents$/, () =>
+        HttpResponse.json({ ok: true, data: tradingIntentsFixture() }),
       ),
       // #269: the admission ledger the capital column reads for the frames that authored no case, and
       // the rules those rows are filed under — the Candidate Gate's own, not the settings document.
@@ -100,7 +102,7 @@ describe("NewsOiPage", () => {
   it("shows whether Trading is running and reads direction from its policy", async () => {
     renderOi();
     expect(
-      await screen.findByText("PAPER · 资本通道关闭 · Alpha 地板在 3 条策略各自"),
+      await screen.findByText("BINANCE_USDM_DEMO · 资本通道关闭 · Alpha 地板在 1 条策略各自"),
     ).toBeInTheDocument();
 
     cleanup();
@@ -118,7 +120,7 @@ describe("NewsOiPage", () => {
                 ...baseFloors,
                 allow_short: true,
                 enabled: true,
-                mode: "live_reviewed",
+                execution_environment: "BINANCE_USDM_DEMO",
               },
             },
           }),
@@ -127,7 +129,7 @@ describe("NewsOiPage", () => {
     );
     renderOi();
     expect(
-      await screen.findByText("LIVE_REVIEWED · 已启用 · Alpha 地板在 3 条策略各自"),
+      await screen.findByText("BINANCE_USDM_DEMO · 已启用 · Alpha 地板在 1 条策略各自"),
     ).toBeInTheDocument();
   });
 
@@ -174,11 +176,11 @@ describe("NewsOiPage", () => {
               trade_floors: {
                 allow_short: false,
                 enabled: false,
+                execution_environment: "BINANCE_USDM_DEMO",
                 max_price_move_bps: 0,
                 min_oi_value_usd: 0,
                 min_price_move_bps: 0,
                 min_whale_long_profit_bps: 0,
-                mode: "paper",
                 pre_move_lookback_ms: 0,
               },
             },
@@ -332,7 +334,7 @@ describe("NewsOiPage", () => {
     // The price is the fixed Event mark, never a current quote.
     expect(row).toHaveTextContent("0.8412");
     // The one batched trading read joins this row by its published Event identity.
-    expect(row).toHaveTextContent("多 · OPEN");
+    expect(row).toHaveTextContent("未评估");
   });
 
   it("shows one batched current quote beside the fixed Event anchor price", async () => {
@@ -590,7 +592,7 @@ describe("NewsOiPage", () => {
     expect(admissionCard).toHaveTextContent("5m");
     // Where the Alpha floors live is said; none of them is printed here. They are per-strategy, and a
     // single figure over a table of every frame is the comparison this panel just stopped making.
-    expect(admissionCard).toHaveTextContent("Alpha 地板在 3 条策略各自");
+    expect(admissionCard).toHaveTextContent("Alpha 地板在 1 条策略各自");
     expect(admissionCard).not.toHaveTextContent("≥95%");
     expect(screen.queryByRole("heading", { name: "交易地板 · TRADING" })).toBeNull();
   });
@@ -609,7 +611,8 @@ describe("NewsOiPage", () => {
     );
     expect(screen.getByText("判定痕迹 · OI_JUDGMENT_TRACE")).toBeInTheDocument();
     expect(screen.getByText("交易判定 · ?LANE=OI")).toBeInTheDocument();
-    expect(screen.getByText("order-wif")).toBeInTheDocument();
+    expect(screen.getByText("未评估")).toBeInTheDocument();
+    expect(screen.queryByText(/order-wif/)).toBeNull();
   });
 
   it("names which capital read failed, and offers a retry, even on a cold failure", async () => {
@@ -630,7 +633,7 @@ describe("NewsOiPage", () => {
     expect(alert).toHaveTextContent("准入规则读取失败");
     expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
     // And the panel says the same thing where the missing numbers are.
-    expect(screen.getByText("PAPER · 准入规则未读到")).toBeInTheDocument();
+    expect(screen.getByText("BINANCE_USDM_DEMO · 准入规则未读到")).toBeInTheDocument();
   });
 
   it("names why a frame has no case, instead of one 未成案 for four different facts", async () => {
@@ -653,10 +656,30 @@ describe("NewsOiPage", () => {
           }),
         }),
       ),
-      http.get(/.*\/api\/trading\/orders$/, () =>
+      http.get(/.*\/api\/trading\/intents$/, () =>
         HttpResponse.json({
           ok: true,
-          data: tradingOrdersFixture({ cases_without_orders: [], orders: [] }),
+          data: tradingIntentsFixture({ cases_without_intents: [], intents: [] }),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/gate$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingGateFixture({
+            decisions: [
+              tradingGateDecisionFixture(),
+              tradingGateDecisionFixture({
+                base_symbol: "NVDA",
+                event_id: "evt-oi-nvda",
+                gate_evidence: gateEvidence({ venue: "binance" }),
+                gate_reason: "no_native_perp",
+                gate_stage: "routing",
+                gate_status: "EXPIRED",
+                source_key: "oi:evt-oi-nvda:oi_signal_v1",
+                underlying_key: "stock:NVDA",
+              }),
+            ],
+          }),
         }),
       ),
     );

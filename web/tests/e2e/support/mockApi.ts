@@ -16,7 +16,7 @@ import {
 import {
   TRADING_NOW_MS,
   tradingGateFixture,
-  tradingOrdersForUnderlying,
+  tradingIntentsForUnderlying,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -89,8 +89,8 @@ export async function installMockApi(
     // #282: the token page asks for one underlying, and the case it gets back has to belong to that name
     // and to a frame the page actually loaded — otherwise 交易视角 renders its "no frame" path on every
     // baseline and the panel is frozen in the one state it is least useful in.
-    if (path === "/api/trading/orders") {
-      return fulfill(route, tradingOrdersForUnderlying(url.searchParams.get("underlying")));
+    if (path === "/api/trading/intents") {
+      return fulfill(route, tradingIntentsForUnderlying(url.searchParams.get("underlying")));
     }
     // #269: the admission ledger the OI audit's capital column reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());

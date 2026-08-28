@@ -81,8 +81,8 @@ def get_news_status(request: Request) -> Response:
         # gates without either pretending to be the other (#207). Nothing here is applied by News.
         "trade_floors": {
             "enabled": bool(trading.enabled),
-            "mode": str(trading.mode),
-            "allow_short": bool(trading.policy.allow_short),
+            "execution_environment": "BINANCE_USDM_DEMO",
+            "allow_short": False,
             "min_whale_long_profit_bps": int(trading.policy.min_whale_long_profit_bps),
             "min_oi_value_usd": int(trading.candidates.min_oi_value_usd),
             "min_price_move_bps": int(trading.regime.min_price_move_bps),

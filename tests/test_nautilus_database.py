@@ -32,14 +32,8 @@ from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_o
 NOW_MS = 1_900_000_000_000
 
 
-def _settings(*, accept_intents: bool = True) -> Any:
-    return SimpleNamespace(
-        trading=SimpleNamespace(
-            nautilus=SimpleNamespace(
-                accept_intents=accept_intents,
-            )
-        )
-    )
+def _settings() -> Any:
+    return SimpleNamespace(trading=SimpleNamespace(nautilus=SimpleNamespace()))
 
 
 def _intent() -> TradeIntent:
@@ -101,30 +95,6 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
     assert queues.commands.get_nowait() == AdoptIntent(intent=intent, outcome=outcome)
     assert queues.commands.empty()
     assert repos.trading.set_nautilus_runtime.call_count == 3
-
-
-def test_dark_default_recovers_fenced_work_but_never_adopts_pending_work() -> None:
-    intent = _intent()
-    queues = strategy_queues()
-    bridge = NautilusDatabaseBridge(_settings(accept_intents=False), queues, now_ms=lambda: NOW_MS)
-    repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
-    _ready(bridge, repos)
-
-    repos.trading.active_intent.return_value = (intent, _outcome(intent))
-    bridge._cycle(repos)
-    assert queues.commands.empty()
-
-    fenced = _outcome(
-        intent,
-        execution_state="IN_FLIGHT",
-        execution_phase="ENTRY",
-        entry_client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
-        entry_fenced_at_ms=NOW_MS,
-    )
-    repos.trading.active_intent.return_value = (intent, fenced)
-    bridge._cycle(repos)
-    assert queues.commands.get_nowait() == AdoptIntent(intent=intent, outcome=fenced)
 
 
 def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> None:

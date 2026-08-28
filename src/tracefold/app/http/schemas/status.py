@@ -150,7 +150,7 @@ class NewsOiTradeFloorsData(ExactApiSchema):
     """
 
     enabled: bool = False
-    mode: str = "paper"
+    execution_environment: Literal["BINANCE_USDM_DEMO"] = "BINANCE_USDM_DEMO"
     allow_short: bool = False
     min_whale_long_profit_bps: int = 0
     min_oi_value_usd: int = 0

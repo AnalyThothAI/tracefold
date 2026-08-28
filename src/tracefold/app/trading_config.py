@@ -33,7 +33,7 @@ def trading_settings_gate(settings: Any) -> GateConfig:
             min_oi_value_usd=candidates.min_oi_value_usd,
             symbol_cooldown_ms=candidates.symbol_cooldown_seconds * 1000,
         ),
-        venue_priority=settings.trading.venues.enabled,
+        venue_priority=("binance", "hyperliquid"),
     )
 
 
@@ -46,10 +46,7 @@ def trading_settings_strategies(settings: Any) -> list[TradingStrategy]:
 
     policy = settings.trading.policy
     configured = strategies(
-        allow_short=policy.allow_short,
         min_whale_long_profit_bps=policy.min_whale_long_profit_bps,
-        live_min_surprise=policy.live_min_surprise,
-        live_max_price_in=policy.live_max_price_in,
     )
     return sorted(configured.values(), key=lambda strategy: strategy.strategy_id)
 

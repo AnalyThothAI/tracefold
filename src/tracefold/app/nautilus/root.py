@@ -191,7 +191,6 @@ def _engine_identity(settings: Settings) -> str:
         "version": "nautilus_binance_demo_config_v1",
         "release": NAUTILUS_RELEASE.version,
         "instrument_id": SOLUSDT_PERP.value,
-        "accept_intents": settings.trading.nautilus.accept_intents,
         "poll_seconds": str(NAUTILUS_POLL_SECONDS),
         "environment": "BINANCE_DEMO_USDT_FUTURES",
         "cache": "memory",

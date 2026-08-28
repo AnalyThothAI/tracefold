@@ -9,7 +9,11 @@ import {
   newsStatusFixture,
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
-import { tradingOrdersFixture, tradingOrdersForUnderlying } from "@tests/fixtures/tradingFixture";
+import {
+  tradingCaseFixture,
+  tradingIntentsFixture,
+  tradingIntentsForUnderlying,
+} from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -46,10 +50,10 @@ describe("NewsSymbolPage", () => {
        * read had failed — silently, because the failure surfaced only as `data === undefined` and both
        * sections rendered their empty copy. A test that means to see that state now says so.
        */
-      http.get(/.*\/api\/trading\/orders.*/, ({ request }) =>
+      http.get(/.*\/api\/trading\/intents.*/, ({ request }) =>
         HttpResponse.json({
           ok: true,
-          data: tradingOrdersForUnderlying(new URL(request.url).searchParams.get("underlying")),
+          data: tradingIntentsForUnderlying(new URL(request.url).searchParams.get("underlying")),
         }),
       ),
     );
@@ -236,7 +240,19 @@ describe("NewsSymbolPage", () => {
    * *not* on screen as much as on what is.
    */
   it("measures the newest case's own frame against the floors that case froze", async () => {
-    useTradingOrders();
+    useTradingIntents(
+      tradingIntentsFixture({
+        cases_without_intents: [
+          tradingCaseFixture({
+            base_symbol: "WIF",
+            case_id: "case-wif",
+            event_id: "evt-oi-wif",
+            underlying_key: "crypto:WIF",
+          }),
+        ],
+        intents: [],
+      }),
+    );
     renderSymbol();
 
     expect(await screen.findByText("交易视角 · 最近一帧怎么读")).toBeInTheDocument();
@@ -256,12 +272,15 @@ describe("NewsSymbolPage", () => {
   });
 
   it("says a token the lane never opened a case for was never asked, not answered", async () => {
-    const served = useTradingOrders(tradingOrdersFixture({ cases_without_orders: [], orders: [] }));
+    const served = useTradingIntents(
+      tradingIntentsFixture({ cases_without_intents: [], intents: [] }),
+    );
     renderSymbol();
 
     await waitFor(() => expect(served.count).toBeGreaterThan(0));
-    // Both sections say it, and both say 「没有开过案」 rather than drawing an answerless answer.
-    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(2);
+    // The perspective names the absent case; the unified Case → Intent → Outcome section does not
+    // repeat that legacy order-era explanation.
+    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(1);
     // No quadrant, no band, no floor table: four grey cells would assert a reading that never happened.
     expect(screen.queryByText("buildup_up")).not.toBeInTheDocument();
     expect(screen.queryByText("过地板")).not.toBeInTheDocument();
@@ -283,14 +302,17 @@ describe("NewsSymbolPage", () => {
         }),
       ),
     );
-    const served = useTradingOrders(tradingOrdersFixture({ cases_without_orders: [], orders: [] }));
+    const served = useTradingIntents(
+      tradingIntentsFixture({ cases_without_intents: [], intents: [] }),
+    );
 
     renderSymbol("/news/symbols/SPOT", "SPOT");
 
     expect(await screen.findByText(/标的表里查不到/)).toBeInTheDocument();
     await waitFor(() => expect(served.count).toBeGreaterThan(0));
-    // An unlisted name has no case by construction, and the sections say that rather than nothing at all.
-    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(2);
+    // An unlisted name has no case by construction, and the perspective says that rather than
+    // inventing capital-lane evidence.
+    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(1);
     expect(screen.queryByText("过地板")).not.toBeInTheDocument();
   });
 
@@ -321,15 +343,15 @@ describe("NewsSymbolPage", () => {
  * Returns a served counter, because both capital sections render their empty state while the batch is
  * still in flight: an assertion made before it lands passes whatever the answer turns out to be.
  */
-function useTradingOrders(batch?: ReturnType<typeof tradingOrdersFixture>) {
+function useTradingIntents(batch?: ReturnType<typeof tradingIntentsFixture>) {
   const served = { count: 0 };
   server.use(
-    http.get(/.*\/api\/trading\/orders.*/, ({ request }) => {
+    http.get(/.*\/api\/trading\/intents.*/, ({ request }) => {
       served.count += 1;
       return HttpResponse.json({
         ok: true,
         data:
-          batch ?? tradingOrdersForUnderlying(new URL(request.url).searchParams.get("underlying")),
+          batch ?? tradingIntentsForUnderlying(new URL(request.url).searchParams.get("underlying")),
       });
     }),
   );

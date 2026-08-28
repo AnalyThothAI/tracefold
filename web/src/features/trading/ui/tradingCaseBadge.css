@@ -1,7 +1,7 @@
 @layer app.features {
   /*
    * The 成案 badge lives on the News Event detail, so its CSS is its own file: importing the whole
-   * 模拟仓 stylesheet from a badge would drag the trading page's layout into the News route chunk.
+   * Trading workbench stylesheet from a badge would drag the page layout into the News route chunk.
    */
   .trading-case-badge {
     display: inline-flex;
@@ -16,6 +16,7 @@
     font-size: var(--font-size-mono-meta);
   }
 
+  .trading-case-badge[data-state="INTENT_EMITTED"],
   .trading-case-badge[data-state="ORDER_PREPARED"] {
     border-color: var(--accent-border);
     background: var(--accent-soft);
