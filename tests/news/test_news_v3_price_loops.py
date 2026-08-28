@@ -784,6 +784,25 @@ def test_a_source_absent_for_one_turn_does_not_re_pay_for_the_wide_endpoint() ->
     assert [kind for kind, _, _ in venue.calls if kind] == ["price", "day", "price", "price"]
 
 
+def test_a_symbol_rotated_out_of_an_active_source_must_reacquire_its_reference() -> None:
+    """An old reference cannot reappear when a symbol returns after other members replaced it."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    venue = _BinanceLike()
+    loop = venue.loop(price)
+
+    for symbol in ("BTC", "ETH", "SOL"):
+        price._targets = [_instrument("binance.perp", f"{symbol}USDT", symbol)]
+        asyncio.run(loop.turn())
+
+    price._targets = [_instrument("binance.perp", "BTCUSDT", "BTC")]
+    asyncio.run(loop.turn())
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct is None
+
+    asyncio.run(loop.turn())
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct is not None
+
+
 def test_reference_is_valid_through_360_seconds_then_only_the_change_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

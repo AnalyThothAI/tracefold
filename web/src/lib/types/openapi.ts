@@ -1576,9 +1576,9 @@ export interface components {
             /** Change Pct */
             change_pct?: number | null;
             /** Effective Age Ms */
-            effective_age_ms?: number | null;
+            effective_age_ms: number | null;
             /** Freshness Basis */
-            freshness_basis?: ("source_and_received" | "received_only") | null;
+            freshness_basis: ("source_and_received" | "received_only") | null;
             /** Instrument Class */
             instrument_class?: string | null;
             /** Price */
@@ -1593,17 +1593,17 @@ export interface components {
             /** Quote Asset */
             quote_asset?: string | null;
             /** Received Age Ms */
-            received_age_ms?: number | null;
+            received_age_ms: number | null;
             /** Received At Ms */
             received_at_ms?: number | null;
             /** Reference Age Ms */
-            reference_age_ms?: number | null;
+            reference_age_ms: number | null;
             /** Reference At Ms */
-            reference_at_ms?: number | null;
+            reference_at_ms: number | null;
             /** Requested Symbol */
             requested_symbol: string;
             /** Source Age Ms */
-            source_age_ms?: number | null;
+            source_age_ms: number | null;
             /** Source At Ms */
             source_at_ms?: number | null;
             /**
@@ -1626,17 +1626,17 @@ export interface components {
         /** NewsQuoteVenueData */
         NewsQuoteVenueData: {
             /** Effective Age Ms */
-            effective_age_ms?: number | null;
+            effective_age_ms: number | null;
             /** Freshness Basis */
-            freshness_basis?: ("source_and_received" | "received_only") | null;
+            freshness_basis: ("source_and_received" | "received_only") | null;
             /** Quote Count */
             quote_count: number;
             /** Received Age Ms */
-            received_age_ms?: number | null;
+            received_age_ms: number | null;
             /** Received At Ms */
             received_at_ms: number;
             /** Source Age Ms */
-            source_age_ms?: number | null;
+            source_age_ms: number | null;
             /** Source At Ms */
             source_at_ms?: number | null;
             /** Source Key */

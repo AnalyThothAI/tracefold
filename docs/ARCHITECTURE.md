@@ -698,7 +698,7 @@ rows do:
 |---|---|---|
 | REST `fapi/v1/ticker/price` @ 20 s (whole market) | 45.5 kB/turn | 0.20 GB |
 | REST `fapi/v1/ticker/24hr` @ 20 s (whole market) | 270.1 kB/turn | 1.19 GB |
-| REST after #109 (price @ 20 s + 24hr @ 300 s) | — | **0.26 GB** |
+| REST after #304 (mandatory price @ 20 s + post-store 24hr @ 300 s) | — | **0.27 GB** |
 | WSS `fstream` `!miniTicker@arr` (whole market) | **0 frames in 22 s** | — |
 | WSS spot `<sym>@miniTicker` x 218 | 185 B/frame, ~1 fps | ~3.5 GB |
 | WSS Hyperliquid `allMids` | 3.0 kB/s | 0.27 GB |
@@ -719,8 +719,8 @@ own architecture decision; (2) a product requirement names a freshness SLO
 tighter than the collector cadence, and someone can say what a reader does with
 it; (3) the venue's socket is verified to deliver from the deployment host for a
 sustained window; (4) its steady-state bandwidth measures lower than the
-REST plane it would replace at the accepted cadence — 0.26 GB/day for USD-M
-after #109, not the 1.19 GB/day figure that motivated the question. If it is ever built it
+REST plane it would replace at the accepted cadence — 0.27 GB/day for USD-M
+after #304, not the 1.19 GB/day figure that motivated the question. If it is ever built it
 must meet what the OpenNews receiver already meets — jittered reconnect with
 resubscription, forced reconnect before the venue's connection lifetime,
 ping/pong liveness, **a per-symbol staleness watchdog that degrades a

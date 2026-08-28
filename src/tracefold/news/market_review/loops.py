@@ -293,7 +293,9 @@ class QuoteSnapshotLoop:
         }
         return self.last_result
 
-    def _source_call(self, source: str, members: Sequence[PriceInstrument]) -> Callable[[], Awaitable[Any]]:
+    def _source_call(
+        self, source: str, members: Sequence[PriceInstrument]
+    ) -> Callable[[], Awaitable[tuple[Sequence[ProviderQuote], int]]]:
         """The mandatory current request for one source; day enrichment never enters this deadline."""
 
         fetcher = self.fetcher_for(source)
@@ -301,7 +303,9 @@ class QuoteSnapshotLoop:
 
         return self._provider_call(source, symbols, fetcher)
 
-    def _day_call(self, source: str, members: Sequence[PriceInstrument]) -> Callable[[], Awaitable[Any]]:
+    def _day_call(
+        self, source: str, members: Sequence[PriceInstrument]
+    ) -> Callable[[], Awaitable[tuple[Sequence[ProviderQuote], int]]]:
         fetcher = self.day_fetcher_for(source) if self.day_fetcher_for else None
         symbols = [instrument.venue_symbol for instrument in members]
         return self._provider_call(source, symbols, fetcher)
@@ -421,14 +425,21 @@ class QuoteSnapshotLoop:
         cache.update({symbol: (reference, received_at_ms) for symbol, reference in references.items()})
 
     def _bound_cache(self, groups: Mapping[str, Any]) -> None:
-        """Keep the cache bounded without punishing a one-turn absence.
+        """Keep each active source bounded to its current members without punishing a one-turn absence.
 
         A source can drop out of a single plan (a burst of Events pushes it past `QUOTE_TARGET_MAX`) and be
         back the next turn; evicting on sight would make it re-pay for the wide endpoint every time that
-        happens. Merging only ever reads the symbols in the current members, so a value nobody asks for is
-        already unreachable — this is a memory bound, not a correctness rule.
+        happens. An active source, however, must not retain every symbol that ever rotated through its plan.
         """
 
+        for source, members in groups.items():
+            wanted = {instrument.venue_symbol for instrument in members}
+            if source in self._references:
+                self._references[source] = {
+                    symbol: reference for symbol, reference in self._references[source].items() if symbol in wanted
+                }
+            if source in self._covered:
+                self._covered[source].intersection_update(wanted)
         if len(self._references) <= 2 * QUOTE_SOURCE_GROUP_MAX:
             return
         for source in [key for key in self._references if key not in groups]:

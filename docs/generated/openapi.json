@@ -3373,6 +3373,12 @@
           "requested_symbol",
           "symbol",
           "base_symbol",
+          "received_age_ms",
+          "source_age_ms",
+          "effective_age_ms",
+          "freshness_basis",
+          "reference_at_ms",
+          "reference_age_ms",
           "state"
         ],
         "title": "NewsQuoteData",
@@ -3470,6 +3476,10 @@
           "source_key",
           "target_count",
           "quote_count",
+          "received_age_ms",
+          "source_age_ms",
+          "effective_age_ms",
+          "freshness_basis",
           "state",
           "received_at_ms"
         ],

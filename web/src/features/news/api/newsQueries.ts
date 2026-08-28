@@ -302,6 +302,7 @@ export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]
         })
       ).data,
     refetchInterval: NEWS_QUOTES_REFETCH_MS,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     staleTime: 2_000,
   });

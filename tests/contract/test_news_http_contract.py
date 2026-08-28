@@ -412,6 +412,17 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "source_at_ms",
         "received_at_ms",
     }
+    assert {
+        "received_age_ms",
+        "source_age_ms",
+        "effective_age_ms",
+        "freshness_basis",
+        "reference_at_ms",
+        "reference_age_ms",
+    } <= {name for name, field in event_schemas.NewsQuoteData.model_fields.items() if field.is_required()}
+    assert {"received_age_ms", "source_age_ms", "effective_age_ms", "freshness_basis"} <= {
+        name for name, field in status_schemas.NewsQuoteVenueData.model_fields.items() if field.is_required()
+    }
     assert set(feed_schemas.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters"}
     assert set(feed_schemas.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {

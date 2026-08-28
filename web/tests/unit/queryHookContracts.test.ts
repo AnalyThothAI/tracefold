@@ -116,6 +116,7 @@ describe("query hook category contracts", () => {
 
     expect(selected).toContain("ZZZ");
     expect(options.refetchInterval).toBe(NEWS_QUOTES_REFETCH_MS);
+    expect(options.refetchIntervalInBackground).toBe(false);
     expect(options.refetchOnWindowFocus).toBe(true);
   });
 });
