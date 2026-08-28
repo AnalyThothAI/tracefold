@@ -1107,6 +1107,17 @@ class ReviewDesk:
 
     def _coverage(self, query: DeskQuery) -> dict[str, Any]:
         lower = self._now_ms - int(query.hours) * 3_600_000
+        # Between a migration and the first Workers start there is no appointed Agent and therefore no
+        # current epoch (#314). That is a real, expected, seconds-long state during a deploy, and the
+        # honest answer to "how is coverage" is that there is no evidence yet — not a 500. A database
+        # that has an Agent but no epoch row for it is a different thing, and still raises below.
+        if self._active_agent_cohort_sha() is None:
+            return _empty_coverage(
+                message_zh="尚未任命运行中的 Agent：本次部署还没有开纪元",
+                from_ms=lower,
+                to_ms=self._now_ms,
+                hours=query.hours,
+            )
         statement = _coverage_statement(lower_ms=lower, upper_ms=self._now_ms)
         rows = self._conn.execute(statement.sql, statement.params).fetchall()
         accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
@@ -1873,6 +1884,44 @@ def _pairwise_task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | N
                 "hidden_temporal_holdout" if task.row.get("dataset_role") == "validation" else "development"
             ),
         },
+    }
+
+
+def _empty_coverage(*, message_zh: str, from_ms: int, to_ms: int, hours: int) -> dict[str, Any]:
+    """The coverage view's zero state, in the shape a populated one has.
+
+    A consumer keying on `funnel.total` or `holdout.case_n` must read 0, not fall off the end of the
+    object — the same contract `news learning baseline`'s readiness report already holds itself to.
+    """
+
+    return {
+        "view": "coverage",
+        "status": "insufficient_evidence",
+        "message_zh": message_zh,
+        "window": {"from_ms": int(from_ms), "to_ms": int(to_ms), "hours": hours},
+        "funnel": {
+            "received": 0,
+            "replayable": 0,
+            "reviewed": 0,
+            "accepted": 0,
+            "holdout_ready": 0,
+            "total": 0,
+            "external_misses": 0,
+        },
+        "cohorts": [],
+        "strata": [],
+        "holdout": {
+            "status": "insufficient_evidence",
+            "case_n": 0,
+            "cluster_n": 0,
+            "accepted_case_n": 0,
+            "accepted_cluster_n": 0,
+            "coverage_pct": _pct(0, 0),
+            "coverage_interval_95": _wilson(0, 0),
+        },
+        "reader_contract_version": READER_CONTRACT_VERSION,
+        "reader_contract_sha256": READER_CONTRACT_SHA256,
+        "rubric_version": REVIEW_RUBRIC_VERSION,
     }
 
 

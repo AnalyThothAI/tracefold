@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION
@@ -74,3 +78,85 @@ def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> Non
     }
 
     assert canonical_sha(bound) == NEWS_PREDICTOR_INSTRUCTION_SHA256
+
+
+def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> None:
+    """The material list, in one readable place, because a pin is only as good as what it hashes.
+
+    A pin cannot catch material that was never included: dropping a surface fails the hash loudly, but
+    forgetting to add one in the first place is silent forever. So the list is asserted rather than left
+    implicit, and adding a knob to the route or a mode to the request table has to be a visible edit here.
+    """
+
+    envelope = execution_envelope()
+
+    assert set(envelope) == {"identity_schema", "requests", "model_visible_input", "route"}
+    assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == {"event_semantics", "reader_card"}
+    for predictor, modes in envelope["requests"].items():
+        assert set(modes) == {"json_schema", "json_object"}, predictor
+        for mode, request in modes.items():
+            # The whole wire envelope, not a summary of it: the system message carries the output
+            # contract, the user message carries the field order and headings, and `response_format`
+            # carries the schema the provider is held to.
+            assert set(request) == {
+                "model",
+                "messages",
+                "temperature",
+                "max_tokens",
+                "stream",
+                "response_format",
+            }, (predictor, mode)
+            assert [message["role"] for message in request["messages"]] == ["system", "user"]
+    assert set(envelope["route"]) == {
+        "model_binding_slots",
+        "wire_model_prefix",
+        "json_object_only_model_prefixes",
+        "deadline_seconds",
+        "primary_breaker_failures",
+        "primary_breaker_open_seconds",
+        "truncated_finish_reasons",
+        "retryable_status",
+        "retryable_markers",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda e: e["route"].__setitem__("deadline_seconds", 999), id="route_deadline"),
+        pytest.param(lambda e: e["route"].__setitem__("primary_breaker_failures", 999), id="breaker"),
+        pytest.param(lambda e: e["route"]["json_object_only_model_prefixes"].append("qwen"), id="capability_table"),
+        pytest.param(lambda e: e["route"]["model_binding_slots"].pop(), id="binding_slots"),
+        pytest.param(
+            lambda e: e["requests"]["event_semantics"]["json_schema"].__setitem__("max_tokens", 999),
+            id="predictor_token_ceiling",
+        ),
+        pytest.param(
+            lambda e: e["requests"]["reader_card"]["json_schema"]["messages"][0].__setitem__("content", "rewritten"),
+            id="output_contract_text",
+        ),
+        pytest.param(
+            lambda e: e["requests"]["reader_card"]["json_schema"]["messages"][1].__setitem__("content", "reordered"),
+            id="user_message_field_order",
+        ),
+        pytest.param(
+            lambda e: e["requests"]["event_semantics"]["json_schema"]["response_format"].__setitem__("type", "other"),
+            id="response_format",
+        ),
+        pytest.param(
+            lambda e: e["model_visible_input"]["event_semantics"].__setitem__("open", "<other>"),
+            id="untrusted_delimiters",
+        ),
+        pytest.param(
+            lambda e: e["model_visible_input"]["reader_card"]["schema"].__setitem__("title", "Other"),
+            id="model_visible_schema",
+        ),
+    ],
+)
+def test_every_material_surface_actually_moves_the_identity(mutate: Any) -> None:
+    """Sensitivity, one surface at a time: a pin nothing can move is decoration."""
+
+    mutated = execution_envelope()
+    mutate(mutated)
+
+    assert canonical_sha(mutated) != NEWS_EXECUTION_ENVELOPE_SHA256
