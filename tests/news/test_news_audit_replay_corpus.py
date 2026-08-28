@@ -59,6 +59,10 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # artifact lost that field. Nothing the metric reads changed — every assertion in this file except this one
 # content address passes unedited, which is the evidence that claim rests on.
 #
+# #315 moves it once more and for the same kind of reason: the envelope hash in that identity block follows
+# the unified OUTPUT CONTRACT. `recorded` mode makes no provider call, so the prompt change cannot reach a
+# score, and every score pin below is again untouched.
+#
 # #259 moves it once more, and this time nothing about the *plan* moved either: the readiness report gained
 # the frozen dataset's `coverage` block and its schema went to v2, both inside `learning/objective.py`, which
 # the metric receipt commits to whole. Diffing the report against `main@f56f9a67` changes exactly two lines —

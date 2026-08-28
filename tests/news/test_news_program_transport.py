@@ -21,7 +21,7 @@ from tests.news.test_news_semantic_program import _card, _context, _semantics
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.graph import NewsSemanticProgram, predictor_spec
-from tracefold.news.program.signatures import EventSemantics, ReaderCard
+from tracefold.news.program.signatures import PREDICTOR_OUTPUT, EventSemantics, ReaderCard
 from tracefold.news.program.transport import (
     ChatCompletionsPredictorAdapter,
     PredictorAdapterError,
@@ -408,14 +408,28 @@ def test_the_structured_output_mode_follows_the_wire_model_name() -> None:
     assert structured_output_mode("scripted/test") == "json_schema"
 
 
-def test_a_json_object_only_endpoint_gets_the_schema_inside_the_message_instead() -> None:
-    """DeepSeek rejects `json_schema` outright (HTTP 400, #310), so its constraint is `json_object` and the
-    same envelope schema rides the system message — decided from the model name at composition time, never
-    as a fallback after a failure."""
+@pytest.mark.parametrize(
+    ("model", "expected_response_format"),
+    [
+        pytest.param("deepseek-v4-flash", {"type": "json_object"}, id="json_object_endpoint"),
+        pytest.param("openai/qwen3-30b", None, id="json_schema_endpoint"),
+    ],
+)
+def test_every_endpoint_gets_the_schema_in_the_message_and_only_the_constraint_differs(
+    model: str, expected_response_format: dict[str, Any] | None
+) -> None:
+    """Both modes carry the schema; only `response_format` follows the endpoint (#315).
+
+    This inverts a #313 guard that asserted a `json_schema` endpoint carried *no* inline copy. That guard
+    was a migration-period invariant — #313's claim was that the `json_schema` request stayed byte-identical
+    to #307's — and its mission ended when #313 merged. It was also, in hindsight, pinning the defect:
+    the "redundant" copy is the only channel the schema's field descriptions have, and the endpoint that
+    kept it was the one answering correctly.
+    """
 
     spec = _spec()
     body = chat_request_body(
-        model="deepseek-v4-flash",
+        model=model,
         instruction=spec.instruction,
         field_order=("evidence_json",),
         values={"evidence_json": "{}"},
@@ -423,16 +437,21 @@ def test_a_json_object_only_endpoint_gets_the_schema_inside_the_message_instead(
         output_model=spec.output_model,
         max_tokens=64,
     )
-
-    assert body["response_format"] == {"type": "json_object"}
     schema = response_format(spec.output_field, spec.output_model)["json_schema"]["schema"]
+
     assert canonical_json(schema) in body["messages"][0]["content"]
+    assert body["response_format"] == (
+        expected_response_format
+        if expected_response_format is not None
+        else response_format(spec.output_field, spec.output_model)
+    )
 
 
-def test_a_json_schema_endpoint_keeps_the_riding_schema_and_carries_no_inline_copy() -> None:
+def test_the_two_modes_differ_in_exactly_one_value() -> None:
+    """The messages are identical, so a future edit cannot reintroduce a per-mode prompt by accident."""
+
     spec = _spec()
     kwargs: dict[str, Any] = dict(
-        model="openai/qwen3-30b",
         instruction=spec.instruction,
         field_order=("evidence_json",),
         values={"evidence_json": "{}"},
@@ -440,12 +459,58 @@ def test_a_json_schema_endpoint_keeps_the_riding_schema_and_carries_no_inline_co
         output_model=spec.output_model,
         max_tokens=64,
     )
+    schema_mode = chat_request_body(model="m", **kwargs, structured_output="json_schema")
+    object_mode = chat_request_body(model="m", **kwargs, structured_output="json_object")
 
-    assert chat_request_body(**kwargs) == chat_request_body(**kwargs, structured_output="json_schema")
-    body = chat_request_body(**kwargs)
-    assert body["response_format"]["type"] == "json_schema"
-    schema = response_format(spec.output_field, spec.output_model)["json_schema"]["schema"]
-    assert canonical_json(schema) not in body["messages"][0]["content"]
+    assert {key: value for key, value in schema_mode.items() if key != "response_format"} == {
+        key: value for key, value in object_mode.items() if key != "response_format"
+    }
+    assert schema_mode["response_format"] != object_mode["response_format"]
+
+
+# The sentence #307 lost and production broke on. `restates` is a cross-field constraint — a visible
+# `event_status.told` index if and only if novelty is restatement — which no structured-output format can
+# express: llama.cpp compiles `response_format` into a GBNF grammar, and a grammar constrains shape, not
+# meaning. With the description out of the model's view the primary route emitted out-of-range indices on
+# roughly a third of judgments (`restatement_index_invalid`: 0 before #307, the dominant failure class
+# after). Named here so that deleting a Field description fails with a reason instead of silently.
+_RESTATES_DESCRIPTION_SENTENCE = "Visible event_status.told index"
+
+
+@pytest.mark.parametrize("mode", ["json_schema", "json_object"])
+def test_the_rendered_contract_carries_the_field_descriptions_a_grammar_cannot(mode: str) -> None:
+    spec = _spec()
+    body = chat_request_body(
+        model="m",
+        instruction=spec.instruction,
+        field_order=("evidence_json",),
+        values={"evidence_json": "{}"},
+        output_field=spec.output_field,
+        output_model=spec.output_model,
+        max_tokens=64,
+        structured_output=mode,
+    )
+
+    assert _RESTATES_DESCRIPTION_SENTENCE in body["messages"][0]["content"]
+
+
+# Every `event_semantics` call pays for this block, on every route, forever. The bound is ~1.6x the
+# measured size, which absorbs an ordinary field addition and refuses the two edits that would quietly
+# tax every judgment: an enum grown to hundreds of members, or a description written as prose. It is a
+# ceiling, not a pin — the exact bytes are already covered by NEWS_EXECUTION_ENVELOPE_SHA256, and a second
+# hash of the same thing would only mean two lines to re-pin. Sized against the offline optimizer's release
+# gate, which rejects a candidate whose per-case tokens grow more than 10%.
+_OUTPUT_CONTRACT_MAX_BYTES = 6144
+
+
+@pytest.mark.parametrize("predictor", ["event_semantics", "reader_card"])
+def test_the_inlined_contract_stays_within_its_token_budget(predictor: str) -> None:
+    output_field, output_model = PREDICTOR_OUTPUT[predictor]
+    instruction = "<instruction>"
+    rendered = system_message(instruction, output_field=output_field, output_model=output_model)
+    contract = rendered[len(instruction) :]
+
+    assert len(contract.encode("utf-8")) <= _OUTPUT_CONTRACT_MAX_BYTES
 
 
 def test_provider_error_detail_is_bounded_and_secret_scrubbed() -> None:

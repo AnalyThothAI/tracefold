@@ -107,7 +107,7 @@ the two Predictor instructions — what a human editing
 `envelope_sha256` (`compute_execution_identity()` in
 `src/tracefold/news/program/identity.py`) covers what the code decides about a
 model call: the golden render of each Predictor's chat request in both
-structured-output modes, the output contracts and schemas, the model-visible
+structured-output modes, the output contract and schema, the model-visible
 input shapes, the endpoint capability table, the model binding slots, the route
 deadline, the token ceilings and the breaker.
 `tests/contract/test_program_release_identity.py` pins both, plus the policy,
