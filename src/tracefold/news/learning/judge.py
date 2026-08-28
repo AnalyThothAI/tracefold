@@ -172,14 +172,19 @@ class MetricJudgeEndpoint:
             "stream",
             "temperature",
         }
-        overlap = owned.intersection(extras)
+        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
+        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
+        overlap = owned.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
         if overlap:
             raise ValueError(f"news_program_compile_metric_judge_kwargs_owned:{','.join(sorted(overlap))}")
         self.model = str(model_name)
         self.api_base = str(api_base)
         self.max_tokens = int(max_tokens)
         self.timeout = float(timeout)
-        self.model_kwargs = extras
+        # A copy, taken before the pop below: `identity` publishes `model_kwargs` when no role binding is
+        # stamped, and aliasing the dict that `pop` mutates would publish a receipt missing the very
+        # `extra_body.thinking = disabled` setting this endpoint depends on for `deepseek-v4-*`.
+        self.model_kwargs = dict(extras)
         self._extra_body = dict(extras.pop("extra_body", {}) or {})
         self._extras = extras
         self._api_key = str(api_key)

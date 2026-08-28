@@ -3403,7 +3403,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18.0" },
     { name = "dspy", specifier = ">=3.3.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "gepa", specifier = ">=0.1.1" },
+    { name = "gepa", specifier = "==0.1.1" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "nautilus-trader", specifier = "==1.231.0" },

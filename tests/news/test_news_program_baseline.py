@@ -275,9 +275,9 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
         "trade_relevance": 7,
         "semantics_novelty": 4,
         "reader_card": 4,
-        # Six of the seven deterministic card checks; number retention does not apply because this
+        # Seven of the eight deterministic card checks; the number count does not apply because this
         # episode's source headline carries no standalone number to preserve.
-        "reader_card_lint": 6,
+        "reader_card_lint": 7,
     }
     assert case.effective_weight_mass == 1.1
     assert case.gold_scored_n == 1 and case.labelled_n == 15

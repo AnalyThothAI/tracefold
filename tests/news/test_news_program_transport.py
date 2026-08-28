@@ -339,3 +339,57 @@ def test_the_two_predictors_are_asked_in_order_each_with_its_own_instruction() -
     assert "## semantics_json" in bodies[1]["messages"][1]["content"]
     assert judgment.usage.physical_call_count == 2
     assert judgment.trace.answering_route == "primary"
+
+
+def test_extra_body_cannot_override_a_field_the_transport_composes() -> None:
+    """The escape hatch is spread into the body last, so it has to pass the same guard.
+
+    `extra_body` exists for the per-model-family switches `app/llm.py` sets (`thinking`,
+    `chat_template_kwargs`). Validated only against the top-level keys, it would silently override the
+    JSON-schema constraint or the token ceiling the role identity attests — through the very guard whose
+    comment says it prevents that.
+    """
+
+    for smuggled in ({"response_format": None}, {"max_tokens": 1}, {"messages": []}):
+        with pytest.raises(ValueError, match="runtime_model_kwargs_owned"):
+            ChatCompletionsPredictorAdapter(
+                model_name="openai/test",
+                api_key="k",
+                api_base="https://provider.invalid/v1",
+                timeout=5,
+                max_tokens=100,
+                model_kwargs={"extra_body": smuggled},
+            )
+
+    # The switches it exists for still pass.
+    adapter = ChatCompletionsPredictorAdapter(
+        model_name="openai/test",
+        api_key="k",
+        api_base="https://provider.invalid/v1",
+        timeout=5,
+        max_tokens=100,
+        model_kwargs={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    )
+    assert adapter.request_body(_spec(), {"evidence_json": "{}"})["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_an_injected_transport_survives_more_than_one_request() -> None:
+    """`build_task_adapter(transport=...)` advertises a reusable seam, so the client must not close it.
+
+    `httpx.AsyncClient.aclose()` closes the transport it holds. Used as a context manager around one
+    request, it would close a transport its caller owns, and the second call would fail.
+    """
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=_completion(json.dumps({"semantics": _semantics()})))
+
+    transport = httpx.MockTransport(handler)
+    adapter = _adapter(handler)
+    adapter._transport = transport
+
+    for _ in range(3):
+        assert asyncio.run(adapter.invoke(_request(adapter), _spec())).output == {"semantics": _semantics()}
+    assert len(calls) == 3

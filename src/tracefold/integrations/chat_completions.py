@@ -24,13 +24,14 @@ from typing import Any, Final
 
 import httpx
 
-_RETRYABLE_MARKERS: Final[tuple[str, ...]] = (
-    "timeout",
-    "connect",
-    "read",
-    "network",
-    "pool",
-    "remoteprotocol",
+# "The provider did not answer, and asking again might work." Deliberately narrower than
+# `httpx.TransportError`: a `LocalProtocolError`, an `UnsupportedProtocol` or an `InvalidURL` is a
+# malformed request, and retrying one spends two more attempts on a request that cannot succeed.
+_RETRYABLE_TRANSPORT: Final[tuple[type[Exception], ...]] = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.ProxyError,
+    httpx.RemoteProtocolError,
 )
 
 
@@ -75,11 +76,9 @@ def _reply(response: httpx.Response) -> ChatCompletionReply:
 
 
 def _transport_error(exc: httpx.HTTPError) -> ChatTransportError:
-    name = type(exc).__name__.casefold()
     return ChatTransportError(
-        f"news_program_transport_{name}",
-        retryable=isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
-        or any(marker in name for marker in _RETRYABLE_MARKERS),
+        f"news_program_transport_{type(exc).__name__.casefold()}",
+        retryable=isinstance(exc, _RETRYABLE_TRANSPORT),
     )
 
 
@@ -102,11 +101,17 @@ async def post_chat_completion(
     and "we stopped listening".
     """
 
+    client = httpx.AsyncClient(timeout=timeout, transport=transport)
     try:
-        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
-            response = await client.post(url, json=dict(body), headers=_headers(api_key))
+        response = await client.post(url, json=dict(body), headers=_headers(api_key))
     except httpx.HTTPError as exc:
         raise _transport_error(exc) from exc
+    finally:
+        # Closing the client closes the transport it holds, and an injected one belongs to the caller that
+        # handed it over — `build_task_adapter(transport=...)` advertises a reusable seam, and closing it
+        # after one request would make the second call fail. When we made the transport, we close it.
+        if transport is None:
+            await client.aclose()
     return _reply(response)
 
 
@@ -120,11 +125,14 @@ def post_chat_completion_sync(
 ) -> ChatCompletionReply:
     """The same call for the two synchronous callers: the metric judge and the reflection role."""
 
+    client = httpx.Client(timeout=timeout, transport=transport)
     try:
-        with httpx.Client(timeout=timeout, transport=transport) as client:
-            response = client.post(url, json=dict(body), headers=_headers(api_key))
+        response = client.post(url, json=dict(body), headers=_headers(api_key))
     except httpx.HTTPError as exc:
         raise _transport_error(exc) from exc
+    finally:
+        if transport is None:
+            client.close()
     return _reply(response)
 
 

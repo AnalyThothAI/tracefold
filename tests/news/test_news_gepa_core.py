@@ -20,6 +20,7 @@ from tracefold.news.learning.metric import (
     CandidatePrediction,
     CompileExample,
     MetricOutcome,
+    _compile_example,
     _metric_receipt,
     accepted_review_metric,
 )
@@ -1127,3 +1128,63 @@ def test_retrieval_is_reported_separately_so_a_scalar_score_cannot_hide_a_recall
         }
     )
     assert _retrieval_receipt([outside])["accepted_restatements_in_window"] == 0
+
+
+def test_an_open_primary_circuit_stops_the_run_rather_than_scoring_every_case_zero() -> None:
+    """The compile route has one slot and no fallback, so an open breaker means the endpoint is down.
+
+    `graph.judge` opens the primary breaker after three retryable failures and then refuses every call for
+    60 seconds without touching a provider. Caught like any other per-example failure that would score
+    `0.0` — indistinguishable on the Pareto front from a candidate that genuinely answered badly, and for
+    every case in the window. Neither predecessor student had a breaker at all, so this is new surface.
+    """
+
+    from tracefold.news.learning.metric import bind_metric
+    from tracefold.news.learning.optimizer import NewsGepaAdapter
+    from tracefold.news.program.transport import PredictorAdapterError
+
+    class _DownAdapter(_MeteredTaskAdapter):
+        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+            raise PredictorAdapterError("news_program_provider_http_503", retryable=True)
+
+    stable = load_stable_program_artifact()
+    adapter = NewsGepaAdapter(
+        adapter=_DownAdapter(),
+        metric=bind_metric(_NoopJudge()),
+        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
+    )
+    examples = [_compile_example(episode) for episode in _episodes()]
+    seed = {name: stable.instruction_for(name) for name in ("event_semantics", "reader_card")}
+
+    with pytest.raises(Exception, match="primary_circuit_open"):
+        adapter.evaluate(examples, seed, capture_traces=True)
+
+
+def test_the_reflection_role_keeps_its_metered_transport_retry() -> None:
+    """One transient reset must not abort a multi-hour run.
+
+    `raise_on_exception` is on, so a reflection failure propagates out of the engine. The predecessor
+    routed both roles through the same retry; keeping only the task side would have been a silent
+    regression rather than a decision.
+    """
+
+    class _FlakyReflectionLM(_MeteredFakeReflectionLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def __call__(self, prompt: Any) -> str:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ConnectionError("peer reset the connection")
+            return super().__call__(prompt)
+
+    inner = _FlakyReflectionLM()
+    meter = _BudgetMeter(_budget(max_reflection_model_calls=4), imputed_call_cost_microusd=5)
+    lm = _MeteredReflectionLM(inner, meter=meter)
+
+    assert "A proposed replacement instruction." in lm(prompt="probe")
+    assert inner.attempts == 2
+    assert lm.transport_retries == 1
+    # Both physical attempts are charged: a retry the budget could not see would not be a budget.
+    assert meter.reflection_model_calls == 2

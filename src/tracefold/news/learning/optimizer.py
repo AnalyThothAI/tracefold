@@ -34,11 +34,12 @@ from typing import Any, Literal, Protocol, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...integrations.chat_completions import chat_completions_url, post_chat_completion_sync
-from ..artifact_identity import canonical_json, canonical_sha
+from ..artifact_identity import canonical_sha
 from ..program.artifact import (
     ProgramStrategyArtifactV1,
     ProgramStrategyPatchV1,
     load_stable_program_artifact,
+    render_model_evidence_json,
     validate_program_instruction,
 )
 from ..program.graph import NewsSemanticProgram
@@ -434,9 +435,15 @@ class NewsGepaAdapter:
             try:
                 judgment = await program.judge(example.context)
             except Exception as exc:
-                # Never raise for one example: the engine would log it and skip the whole iteration, which
-                # turns one unlucky provider answer into a lost reflection round.
                 code = str(getattr(exc, "code", "") or type(exc).__name__)
+                if code == "primary_circuit_open":
+                    # There is one route here and no fallback, so an open breaker means the endpoint is
+                    # down, not that this candidate answered badly. Scored as a zero it would be
+                    # indistinguishable on the Pareto front from a genuinely bad answer — and it would
+                    # stay that way for every case in the 60-second window. The run stops instead.
+                    raise
+                # Never raise for one example otherwise: the engine would log it and skip the whole
+                # iteration, which turns one unlucky provider answer into a lost reflection round.
                 prediction = CandidatePrediction()
                 rollouts.append(_Rollout(example, prediction, self._metric(example, prediction), error=code))
                 self._budget_guard()
@@ -484,9 +491,16 @@ class NewsGepaAdapter:
 
     @staticmethod
     def _inputs(rollout: _Rollout, component: str) -> dict[str, Any]:
-        context = rollout.example.context
+        """Exactly what that Predictor was shown, delimiters included.
+
+        Rendered rather than dumped: the instruction being rewritten talks about the
+        `<tracefold-untrusted-event-json-v1>` boundary, so a reflective record that showed a bare payload
+        would describe an input the model never received and an instruction clause with no referent.
+        """
+
         if component == "event_semantics":
-            return {"evidence_json": canonical_json(context.event_semantics_payload())}
+            payload = rollout.example.context.event_semantics_payload()
+            return {"evidence_json": render_model_evidence_json(payload, predictor="event_semantics")}
         return {"evidence_json": rollout.example.card_evidence_json}
 
     @staticmethod
@@ -721,7 +735,9 @@ class ReflectionLM:
         transport: Any = None,
     ) -> None:
         extras = dict(model_kwargs or {})
-        overlap = _OWNED_LM_KWARGS.intersection(extras)
+        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
+        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
+        overlap = _OWNED_LM_KWARGS.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
         if overlap:
             raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
         self.model_name = str(model_name)
@@ -1141,15 +1157,30 @@ class _MeteredReflectionLM:
         return getattr(self._lm, name)
 
     def __call__(self, prompt: Any) -> str:
-        self._meter.before("reflection")
-        try:
-            answer = self._lm(prompt)
-        except BaseException:
-            self.transport_failures += 1
-            raise
-        metrics = getattr(self._lm, "last_metrics", None)
-        self._meter.after(metrics if isinstance(metrics, ProviderCallMetrics) else ProviderCallMetrics())
-        return str(answer)
+        """One metered attempt, retried only on transport-class failures.
+
+        The retry is not decoration. `raise_on_exception` is on, so one transient connection reset during
+        a reflection call would otherwise abort a multi-hour run — and the predecessor `_BudgetedLM`
+        routed *both* roles through the same retry, so dropping it here would have been a silent
+        regression rather than a decision.
+        """
+
+        last: BaseException | None = None
+        for attempt in range(_NUM_RETRIES + 1):
+            self._meter.before("reflection")
+            try:
+                answer = self._lm(prompt)
+            except BaseException as exc:
+                if not _is_transport_failure(exc) or attempt == _NUM_RETRIES:
+                    self.transport_failures += 1
+                    raise
+                self.transport_retries += 1
+                last = exc
+                continue
+            metrics = getattr(self._lm, "last_metrics", None)
+            self._meter.after(metrics if isinstance(metrics, ProviderCallMetrics) else ProviderCallMetrics())
+            return str(answer)
+        raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
 
 
 @dataclass(frozen=True)
@@ -1600,7 +1631,6 @@ __all__ = [
     "FrozenDevelopmentDataset",
     "GepaNoProgramChange",
     "GepaRunResult",
-    "InstructionProposer",
     "InstructionProposer",
     "ModelExecutionIdentity",
     "NewsGepaAdapter",

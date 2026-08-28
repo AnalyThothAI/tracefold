@@ -492,3 +492,44 @@ def test_sealed_replay_keeps_canonical_recording_identity_tamper_fail_closed(
         _load(rows)
 
     assert not isinstance(caught.value, RecordingReplayMiss)
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected"),
+    [
+        # The self-owned transport's status family (#306 Phase 3). None of these existed before, and a
+        # code with no branch does not degrade — it raises `RecordingReplayError` and takes the whole
+        # replay corpus down rather than replaying one failed call.
+        ("news_program_provider_http_503", (True, False)),
+        ("news_program_provider_http_429", (True, False)),
+        ("news_program_provider_http_500", (True, False)),
+        ("news_program_provider_http_400", (False, False)),
+        ("news_program_provider_http_401", (False, False)),
+        ("news_program_provider_choice_missing", (False, True)),
+        ("news_program_provider_body_not_json", (False, False)),
+        ("news_program_provider_output_not_json", (False, True)),
+        ("news_program_transport_connecttimeout", (True, False)),
+        ("news_program_transport_readerror", (True, False)),
+        ("news_program_output_truncated", (False, True)),
+    ],
+)
+def test_every_recordable_transport_failure_has_a_replay_behaviour(
+    error_code: str, expected: tuple[bool, bool]
+) -> None:
+    """A recorded run in which the local single-slot server returned a 503 has to replay, not explode.
+
+    `_error_behavior` is a closed classification: anything it does not recognise raises, which is right
+    for a code the Program cannot produce and catastrophic for one it produces routinely. #306 added a
+    whole family, so this pins each of them rather than the one rename that was noticed.
+    """
+
+    from tracefold.news.learning.replay import _error_behavior
+
+    assert _error_behavior(error_code) == expected
+
+
+def test_an_unknown_error_code_still_refuses_rather_than_guessing() -> None:
+    from tracefold.news.learning.replay import _error_behavior
+
+    with pytest.raises(RecordingReplayError, match="outcome_unreplayable:news_program_invented_code"):
+        _error_behavior("news_program_invented_code")

@@ -27,8 +27,8 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 
 _EXPECTED_N = 4
-_EXPECTED_CASE_MACRO = 0.659091
-_EXPECTED_CLUSTER_MACRO = 0.714646
+_EXPECTED_CASE_MACRO = 0.660714
+_EXPECTED_CLUSTER_MACRO = 0.71645
 _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
@@ -61,7 +61,7 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # result and dimension outcome below is byte-identical, which is the whole claim this pin exists to check.
 # #288 rebinds the same report to factory v7 for the exact source-contract route. The corpus and every
 # score remain unchanged; only the release-identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "c480591582944a175b875f5c4e4f70a86bc177294d42d3d18089a072ab04aeb6"
+_EXPECTED_REPORT_SHA256 = "7f2f24572b59cd5d7b13f099e59269555c338c3ab49bd7261b105a2f05553213"
 
 
 @pytest.fixture(scope="module")

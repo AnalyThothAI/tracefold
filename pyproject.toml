@@ -13,8 +13,11 @@ dependencies = [
     "dspy>=3.3.0",
     # Declared directly since #306 Phase 3: `news/learning/optimizer.py` calls `gepa.optimize` through its
     # own `GEPAAdapter` rather than through `dspy.GEPA`, so it is a first-party dependency and not one this
-    # project happens to inherit.
-    "gepa>=0.1.1",
+    # project happens to inherit. Pinned exactly, and for the reason `dspy` used to be: the adapter reaches
+    # `gepa.core.adapter.EvaluationBatch` and `gepa.strategies.instruction_proposal`, and passes kwargs
+    # `gepa.optimize` has already renamed once. A minor bump breaks `run_gepa` at the first optimization,
+    # not at import.
+    "gepa==0.1.1",
     "fastapi>=0.115.0",
     "httpx>=0.27.0",
     "loguru>=0.7.2",

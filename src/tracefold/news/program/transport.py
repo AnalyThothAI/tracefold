@@ -376,7 +376,9 @@ class ChatCompletionsPredictorAdapter:
             "stream",
             "temperature",
         }
-        overlap = owned.intersection(extras)
+        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
+        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
+        overlap = owned.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
         if overlap:
             raise ValueError(f"news_program_runtime_model_kwargs_owned:{','.join(sorted(overlap))}")
         self._model_name = str(model_name)

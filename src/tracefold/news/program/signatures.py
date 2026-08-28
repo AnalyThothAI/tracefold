@@ -1,8 +1,10 @@
 """The two Predictor output shapes.
 
 `EventSemantics` is what the interpreting Predictor must return; `ReaderCard` is what the writing one must.
-They are code-owned schemas, versioned by `factory_id` along with the rest of the graph, and the DSPy
-signature objects bound to them live in `dspy_adapter.py` — the only module allowed to import DSPy.
+They are code-owned schemas, versioned by `factory_id` along with the rest of the graph. Since #306 Phase 3
+they are also what the provider is constrained by: `transport.response_format` builds the request's
+`json_schema` from `model_json_schema()`, so the schema the code validates against and the schema the model
+is handed cannot drift.
 """
 
 from __future__ import annotations

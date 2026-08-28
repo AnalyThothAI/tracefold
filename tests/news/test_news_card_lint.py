@@ -75,7 +75,7 @@ def test_the_gate_set_is_exactly_two_entries_and_language_is_not_one_of_them() -
     assert 0.0 < (english.score or 0.0) < 1.0
 
 
-def test_a_headline_that_drops_the_originals_numbers_fails_the_retention_check() -> None:
+def test_a_headline_that_drops_the_originals_numbers_fails_the_number_check() -> None:
     source = "Santos guides 2026 production of 99-105 MMBOE at a unit cost of $6.95-7.45"
     kept = lint_reader_card(
         headline_zh="Santos 2026 年产量指引 99-105 MMBOE，单位成本 6.95-7.45 美元",
@@ -84,16 +84,42 @@ def test_a_headline_that_drops_the_originals_numbers_fails_the_retention_check()
     )
     dropped = lint_reader_card(headline_zh="Santos 发布本年度的产量与成本指引", why_zh=_GOOD_WHY, source_title=source)
 
-    assert _outcome(kept, "headline_number_retention") == "lint_pass"
-    assert _outcome(dropped, "headline_number_retention") == "lint_fail"
-    assert any("99" in line for line in dropped.feedback)
+    assert _outcome(kept, "headline_number_count") == "lint_pass"
+    assert _outcome(dropped, "headline_number_count") == "lint_fail"
+    assert any("0 of the 5" in line for line in dropped.feedback)
 
 
-def test_number_retention_reads_standalone_numbers_and_not_digits_inside_identifiers() -> None:
+@pytest.mark.parametrize(
+    ("source", "headline"),
+    [
+        # A scale word converted into 亿/万 keeps the figure and changes every digit in it.
+        ("Company reports Q3 revenue of $1.5B, up 20%", "公司三季度营收 15 亿美元，同比增长 20%"),
+        ("Bitcoin spot ETFs see $520M net inflow", "比特币现货 ETF 单日净流入 5.2 亿美元，创近月新高"),
+        ("JAPAN'S LIFE INSURERS' BOND LOSSES NEAR $200BN", "利率飙升令日本寿险债券浮亏逼近 2000 亿美元"),
+        # A trailing zero the Chinese rendering drops.
+        ("Fed holds rates at 5.25%-5.50%", "美联储维持利率 5.25%-5.5% 区间不变，暗示年内不再加息"),
+    ],
+)
+def test_a_faithful_unit_conversion_keeps_the_number_check(source: str, headline: str) -> None:
+    """The check counts numbers; it does not compare them, and that is the whole design.
+
+    A faithful Chinese rendering routinely restates a figure in another notation — `$1.5B` becomes
+    `15亿美元`, `5.50%` becomes `5.5%`. A literal-identity test fails exactly the conversions the card
+    contract asks for, and worse, its feedback reaches the reflective dataset: the optimizer would be
+    taught to copy the source's ASCII digits instead of rendering the number a reader can use.
+    """
+
+    result = lint_reader_card(headline_zh=headline, why_zh=_GOOD_WHY, source_title=source)
+
+    assert _outcome(result, "headline_number_count") == "lint_pass"
+    assert result.score == 1.0
+
+
+def test_the_number_check_reads_standalone_numbers_and_not_digits_inside_identifiers() -> None:
     """A digit that continues a word is not a number the headline promised to carry.
 
     Without this the check fails on the thing it is meant to protect: an identifier, a hex digest or a
-    model name in the source headline would each become a required literal, and a faithful Chinese
+    model name in the source headline would each become a required figure, and a faithful Chinese
     rendering that carried every real number would still be marked as having dropped one.
     """
 
@@ -103,17 +129,26 @@ def test_number_retention_reads_standalone_numbers_and_not_digits_inside_identif
         source_title="Advisory COVID19 patch shipped for build a1b2c3d4e5f6a7b8",
     )
 
-    assert _outcome(result, "headline_number_retention") == "lint_not_applicable"
+    assert _outcome(result, "headline_number_count") == "lint_not_applicable"
 
 
-def test_number_retention_survives_thousands_separators_and_full_width_digits() -> None:
+def test_the_number_check_survives_thousands_separators_and_full_width_digits() -> None:
     result = lint_reader_card(
         headline_zh="现货钯金上涨近 3%，报 1328.68 美元/盎司",
         why_zh=_GOOD_WHY,
         source_title="Spot Palladium Rises Nearly 3% to $1,328.68/Oz",
     )
 
-    assert _outcome(result, "headline_number_retention") == "lint_pass"
+    assert _outcome(result, "headline_number_count") == "lint_pass"
+
+
+def test_an_over_long_why_costs_a_point_the_receipt_already_promised() -> None:
+    """`why_chars_max` is published as part of the code-owned contract, so something has to check it."""
+
+    result = lint_reader_card(headline_zh=_GOOD_HEADLINE, why_zh="机构客户多了一条合规持币通道" * 20, source_title="")
+
+    assert _outcome(result, "why_length") == "lint_fail"
+    assert any("characters" in line for line in result.feedback)
 
 
 @pytest.mark.parametrize(

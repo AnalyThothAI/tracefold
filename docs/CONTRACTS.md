@@ -745,10 +745,16 @@ eligibility makes prior-factory judgments audit-only and starts the factory-v7
 cohort at zero.
 `20260828_0316` then adds the #283 immutable `trading_intents` handoff and its
 least-privilege Workers, Serve, and Nautilus grants.
-`20260828_0318` performs the atomic authority cut: it refuses unresolved legacy
+`20260828_0317` performs the atomic authority cut: it refuses unresolved legacy
 Cases, nonterminal Intents, or active/unknown legacy Orders, admits
 `INTENT_EMITTED`, and revokes legacy execution mutations from Workers. It has no
 downgrade because restoring a second writer is not a safe rollback.
+`20260828_0318` is #306's prompt-layer hard cut: it appends the `program_v8`
+epoch for `factory_v8`, trips every armed or active canary, adds no column, and
+is irreversible. Two byte changes land under that one identity migration —
+the kernel/RulePack/advisory/seal layering collapsing into one seed instruction
+per Predictor, and the Program's self-owned chat transport composing the request
+envelope — deliberately paid once rather than twice.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -936,7 +942,7 @@ judge's work, which is the bound that exists.
 (`news_program_baseline_dataset_requires_semantic_judge`,
 `..._requires_compiler_reflection_judge`). `subsets.development_selection` is
 published as the formal *before* value a Candidate is picked against, so it has
-to measure what the optimizer measures — `DspyCompileProgram` on one task
+to measure what the optimizer measures — the production graph on one task
 endpoint, judged by the ruler `run_gepa` refuses to run without. `recorded`
 scores the action that actually shipped while the Objective Plan classifies under
 a replayed `decide()`, so the two disagree on any case whose ledger state
@@ -958,8 +964,8 @@ The three modes answer three different questions and are never interchangeable
 | Mode | Executes | Question |
 | --- | --- | --- |
 | `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is metric wiring reproducible over history? |
-| `compile_live` | `DspyCompileProgram` on one task endpoint | what baseline does GEPA optimize against? |
-| `runtime_live` | the configured four-slot `DspyNewsSemanticProgram` | does the production Program route answer these cases? |
+| `compile_live` | the production `NewsSemanticProgram` on one task endpoint, no fallback slot | what baseline does GEPA optimize against? |
+| `runtime_live` | the configured four-slot `NewsSemanticProgram` | does the production Program route answer these cases? |
 
 `compile_live` is exactly the graph GEPA maximizes and deliberately has no
 fallback route, no fast retry, no per-route deadline and no circuit breaker, so
@@ -1020,10 +1026,14 @@ Metric `tracefold.news.production_action_trade_relevance_v5` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
 semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
 ReaderCard copy lint, normalized over the components a case carries. The lint
-publishes seven scored checks (`headline_language`, `headline_length`,
-`headline_number_retention`, `banned_filler`, `meta_opening`,
+publishes eight scored checks (`headline_language`, `headline_length`,
+`headline_number_count`, `banned_filler`, `meta_opening`, `why_length`,
 `why_single_sentence`, `no_emoji`) and its two gates in the metric receipt under
-`card_lint`, tables included. Reports expose each component's effective
+`card_lint`, tables included. `headline_number_count` compares how many
+decision-relevant numbers the headline carries against how many the source
+stated, never which: a faithful rendering restates `$1.5B` as `15亿美元` and
+`5.50%` as `5.5%`, so a literal-identity test would fail exactly the conversions
+the card contract asks for and teach the optimizer to copy ASCII digits instead. Reports expose each component's effective
 denominator, effective weight mass, gold coverage and field count. The score is
 identical with or without `pred_name`; that argument filters feedback only. EventSemantics receives relevance, semantics, novelty and its owned action
 feedback; ReaderCard receives headline/why/factual feedback and action feedback

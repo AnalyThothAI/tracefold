@@ -841,11 +841,11 @@ Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
 consumer does not know Predictor instructions, output schemas, model
 routing, retry state, or artifact layout. That **Interface** lives at the
-semantic-judgment **Seam**, and `DspyNewsSemanticProgram` is the production
+semantic-judgment **Seam**, and `NewsSemanticProgram` is the production
 **Adapter** there. Cold strict replay is an evaluator-side sealed-corpus
 verification composition seam, not a second production generation Interface:
 it scopes one persisted run's physical calls to the requested arm/case/trial,
-then re-executes the real arm-scoped `DspyNewsSemanticProgram` graph. The graph
+then re-executes the real arm-scoped `NewsSemanticProgram` graph. The graph
 still enters through `judge(TriageContext)`. A missing corpus or recording makes
 the verification evaluation `incomplete`/`UNKNOWN` without falling through to a
 live provider; an identity or tamper mismatch fails closed. This shape gives
@@ -1426,9 +1426,9 @@ the ReaderCard side scorable at all without a reviewer label. Before it, the
 only card dimension the ruler could measure was `factual_fidelity`, through the
 sealed equivalence judge; the rest of the card contract — banned evaluative
 filler, meta openings, self-description, emoji, URLs, the Chinese language
-boundary, the 15-60 character headline band, the numbers the original headline
-carried, a single-sentence `why_zh` — lived only as prose inside a RulePack, and
-prose cannot score a candidate. The lint is pure, framework-neutral code with no
+boundary, the 15-60 character headline band, the count of decision-relevant
+numbers the original headline stated, a single-sentence `why_zh` — lived only as
+prose inside a RulePack, and prose cannot score a candidate. The lint is pure, framework-neutral code with no
 model call and no Gold dependency, so the metric, the Objective Plan's mirrored
 gate ladder and any offline report read the same answer, and its tables are
 hashed into the metric receipt like the rest of the ruler.
@@ -1444,8 +1444,12 @@ rest of the card measurable and is the check most likely to fire on copy that is
 otherwise fine. Number retention reads only standalone numeric literals: a digit
 that continues a word (an identifier, a build hash, `COVID19`) is not a number
 the headline promised to keep, and treating one as such would fail faithful
-cards. A gated card publishes its gate and no per-check outcomes, so the
-component denominator never disagrees with the zero.
+cards, and the number check counts figures rather than matching them, because a
+faithful rendering converts the unit (`$1.5B` -> `15亿美元`) and a
+literal-identity test would fail the conversions the contract asks for — and
+feed that failure back to the optimizer as a repair instruction. A gated card
+publishes its gate and no per-check outcomes, so the component denominator never
+disagrees with the zero.
 
 Promotion is monotonic: development screen -> future temporal validation ->
 blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.
@@ -1673,7 +1677,7 @@ The one-time PR 2 cutover is run only while control is `PAUSED`.
 `make trading-hard-cut-preflight` proves one ready Nautilus replica (whose
 readiness includes authoritative flat/no unexpected exposure) and checks that
 legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy active/unknown
-Orders are all zero. Migration `20260828_0318` repeats the database predicates
+Orders are all zero. Migration `20260828_0317` repeats the database predicates
 inside the authority-changing transaction, adds `INTENT_EMITTED`, and revokes
 legacy order/observation and retired runtime-counter mutations from Workers.
 After migration, the operator proves Nautilus readiness and changes control to

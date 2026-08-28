@@ -18,7 +18,7 @@ Two severities, and the split is deliberate (#306 Phase 1, last checklist item):
            Neither can occur in legitimate reader copy under any reading of the contract, so they zero the
            case the way `must_hold_send` does rather than being averaged against copy quality.
 ``score``  Everything else, the Chinese-language boundary included. Each applicable check is one point in
-           the `reader_card_lint` component, so a candidate that keeps five of seven is measurably better
+           the `reader_card_lint` component, so a candidate that keeps six of eight is measurably better
            than one that keeps two — the property a gate cannot express, and the reason the gate set is
            exactly two entries long rather than the whole contract.
 """
@@ -35,10 +35,6 @@ CARD_LINT_ID: Final[str] = "tracefold.news.reader_card_lint_v1"
 HEADLINE_MIN_CHARS: Final[int] = 15
 HEADLINE_MAX_CHARS: Final[int] = 60
 WHY_MAX_CHARS: Final[int] = 140
-# Enough numbers to catch a dropped amount, price level or deadline; bounded so a list-shaped source
-# headline cannot turn one check into forty.
-SOURCE_NUMBER_MAX: Final[int] = 8
-
 # The evaluative/meta filler the card contract forbids, moved out of RulePack prose into a code table.
 # Matched against a whitespace-stripped, casefolded, NFC-normalized copy of the text, so `RWA 叙事` and
 # `RWA叙事` are the same hit.
@@ -124,14 +120,16 @@ _FULLWIDTH_DIGITS: Final[dict[int, str]] = {ord("０") + offset: str(offset) for
 
 GateCode = Literal["card_lint_url", "card_lint_self_description"]
 
-# Every scored check this module can report, in the fixed order the metric publishes them. Code-owned and
-# content-addressed with the rest of the ruler: a check that appears or disappears changes the receipt.
+# Code-owned and content-addressed with the rest of the ruler: a check that appears or disappears changes
+# the receipt.
+# Every check this module can report, in the fixed order the metric publishes them.
 SCORED_CHECKS: Final[tuple[str, ...]] = (
     "headline_language",
     "headline_length",
-    "headline_number_retention",
+    "headline_number_count",
     "banned_filler",
     "meta_opening",
+    "why_length",
     "why_single_sentence",
     "no_emoji",
 )
@@ -192,8 +190,6 @@ def _numbers(value: str) -> tuple[str, ...]:
         token = match.group(0)
         if token not in seen:
             seen.append(token)
-        if len(seen) >= SOURCE_NUMBER_MAX:
-            break
     return tuple(seen)
 
 
@@ -243,8 +239,8 @@ def lint_reader_card(*, headline_zh: str, why_zh: str, source_title: str = "") -
     """Apply the code-owned card copy contract to one candidate card.
 
     ``source_title`` is the immutable Event headline the card was written from. Without it the number
-    retention check has nothing to compare against and reports ``lint_not_applicable`` rather than a pass:
-    an absent input must not look like a satisfied requirement.
+    check has nothing to compare against and reports ``lint_not_applicable`` rather than a pass: an absent
+    input must not look like a satisfied requirement.
     """
 
     headline = str(headline_zh or "").strip()
@@ -280,16 +276,23 @@ def lint_reader_card(*, headline_zh: str, why_zh: str, source_title: str = "") -
             f"{HEADLINE_MAX_CHARS}, and never drop a number or a critical clause to get there."
         )
 
+    # How many, not which. A faithful Chinese rendering routinely restates a number in a different
+    # notation — `$1.5B` becomes `15亿美元`, `$520M` becomes `5.2亿`, `$200BN` becomes `2000亿`, `5.50%`
+    # becomes `5.5%` — so a literal-identity test fails exactly the conversions the contract asks for, and
+    # its feedback would teach the optimizer to copy the source's ASCII digits instead. Counting is the
+    # deterministic shadow of "every decision-relevant number survives" that survives that rewrite, and it
+    # still catches the failure the contract names by example: a headline that drops them.
     source_numbers = _numbers(source_title)
     if not source_numbers:
-        outcomes.append(("headline_number_retention", "lint_not_applicable"))
+        outcomes.append(("headline_number_count", "lint_not_applicable"))
     else:
-        candidate = _normalized(headline)
-        missing = tuple(number for number in source_numbers if number not in candidate)
-        outcomes.append(("headline_number_retention", "lint_fail" if missing else "lint_pass"))
-        if missing:
+        kept = len(_numbers(headline))
+        outcomes.append(("headline_number_count", "lint_fail" if kept < len(source_numbers) else "lint_pass"))
+        if kept < len(source_numbers):
             feedback.append(
-                f"headline_zh dropped decision-relevant numbers the original headline carried: {', '.join(missing)}."
+                f"headline_zh carries {kept} of the {len(source_numbers)} decision-relevant numbers the "
+                "original headline stated; keep every amount, percentage, price level, deadline and count, "
+                "converting the unit rather than dropping the figure."
             )
 
     filler = _banned_filler_hits(normalized_combined, combined)
@@ -304,6 +307,11 @@ def lint_reader_card(*, headline_zh: str, why_zh: str, source_title: str = "") -
     outcomes.append(("meta_opening", "lint_fail" if meta else "lint_pass"))
     if meta:
         feedback.append(f"Reader copy must not open with a meta phrase; it opened with {meta!r}.")
+
+    why_length = len(why)
+    outcomes.append(("why_length", "lint_pass" if why_length <= WHY_MAX_CHARS else "lint_fail"))
+    if why_length > WHY_MAX_CHARS:
+        feedback.append(f"why_zh is {why_length} characters; keep it within {WHY_MAX_CHARS}.")
 
     extra = _extra_sentences(why)
     outcomes.append(("why_single_sentence", "lint_fail" if extra else "lint_pass"))
@@ -342,7 +350,7 @@ def card_lint_receipt() -> dict[str, object]:
         "self_description": list(SELF_DESCRIPTION),
         "headline_chars": {"min": HEADLINE_MIN_CHARS, "max": HEADLINE_MAX_CHARS},
         "why_chars_max": WHY_MAX_CHARS,
-        "source_number_max": SOURCE_NUMBER_MAX,
+        "headline_number_rule": "count_preserved_not_literal_identity",
     }
 
 
