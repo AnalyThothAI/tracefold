@@ -17,9 +17,11 @@ def _secure_secret(path: Path, value: str) -> None:
     path.chmod(0o600)
 
 
+@pytest.mark.parametrize("bootstrap", [False, True])
 def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    bootstrap: bool,
 ) -> None:
     from tracefold.app.nautilus import root
 
@@ -69,10 +71,17 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     class FakeBridge:
         error = None
 
-        def __init__(self, supplied_settings: Settings, queues: object) -> None:
+        def __init__(
+            self,
+            supplied_settings: Settings,
+            queues: object,
+            *,
+            capability_snapshot_sha256: str | None = "not-passed",
+        ) -> None:
             calls.append("database")
             captured["bridge_settings"] = supplied_settings
             captured["queues"] = queues
+            captured["bridge_capability_snapshot_sha256"] = capability_snapshot_sha256
 
         def start(self) -> None:
             calls.append("database-start")
@@ -125,10 +134,11 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         lambda: "cp313-cp313-manylinux_2_35_aarch64@sha256:e536",
     )
     monkeypatch.setattr(root, "_install_signal_handlers", install_signal_handlers)
-    capability_snapshot = SimpleNamespace(
+    frozen_snapshot = SimpleNamespace(
         included={"SOLUSDT-PERP.BINANCE": object(), "BTCUSDT-PERP.BINANCE": object()},
         snapshot_sha256="c" * 64,
     )
+    capability_snapshot = None if bootstrap else frozen_snapshot
 
     @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):
@@ -143,22 +153,28 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
 
     root.run_nautilus(settings)
 
+    expected_instruments = (
+        []
+        if bootstrap
+        else [
+            root.InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
+            root.InstrumentId.from_str("SOLUSDT-PERP.BINANCE"),
+        ]
+    )
     assert captured["node_config_args"] == {
         "api_key": "demo-key",
         "api_secret": "demo-secret",
-        "instrument_ids": [
-            root.InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
-            root.InstrumentId.from_str("SOLUSDT-PERP.BINANCE"),
-        ],
+        "instrument_ids": expected_instruments,
     }
     assert captured["bridge_settings"] is settings
+    assert captured["bridge_capability_snapshot_sha256"] == (None if bootstrap else "c" * 64)
     assert captured["data_factory"] == (root.BINANCE, root.BinanceLiveDataClientFactory)
     assert captured["exec_factory"] == (root.BINANCE, root.BinanceLiveExecClientFactory)
     strategy_args = captured["strategy_args"]
     assert isinstance(strategy_args, dict)
     assert strategy_args["queues"] is captured["queues"]
     assert strategy_args["instrument_ids"] == captured["node_config_args"]["instrument_ids"]
-    assert strategy_args["capabilities"] is capability_snapshot.included
+    assert strategy_args["capabilities"] == ({} if bootstrap else frozen_snapshot.included)
     assert callable(strategy_args["request_venue_flat"])
     assert captured["readiness"].__self__.__class__ is FakeBridge  # type: ignore[union-attr]
     assert "demo-key" not in str(strategy_args["engine_identity"])

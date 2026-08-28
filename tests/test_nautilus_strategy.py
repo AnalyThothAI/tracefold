@@ -284,6 +284,13 @@ def test_strategy_config_claims_exact_snapshot_netting_instruments() -> None:
     assert InstrumentId.from_str("SOLUSDT-PERP.BINANCE") == SOLUSDT_PERP
 
 
+def test_strategy_config_allows_zero_claim_bootstrap() -> None:
+    config = tracefold_strategy_config([])
+
+    assert config.oms_type == "NETTING"
+    assert config.external_order_claims == []
+
+
 def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -> None:
     strategy, queues = _registered_strategy()
     intent = _intent()

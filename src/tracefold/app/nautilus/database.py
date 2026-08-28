@@ -47,11 +47,13 @@ class NautilusDatabaseBridge:
         settings: Settings,
         queues: StrategyQueues,
         *,
+        capability_snapshot_sha256: str | None = None,
         repository_factory: _RepositoryFactory = repositories,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._settings = settings
         self._queues = queues
+        self._capability_snapshot_sha256 = capability_snapshot_sha256
         self._repository_factory = repository_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
         self._stop_event = Event()
@@ -166,6 +168,8 @@ class NautilusDatabaseBridge:
         command: AdoptIntent | IntentReleased | None = None
         with repos.transaction():
             runtime = repos.trading.nautilus_runtime_state()
+            if runtime is None or runtime.get("active_capability_snapshot_sha256") != self._capability_snapshot_sha256:
+                raise RuntimeError("nautilus_capability_snapshot_changed")
             active = repos.trading.active_intent()
             if active is None:
                 self._dispatched_intent_id = None

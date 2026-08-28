@@ -114,3 +114,31 @@ def test_bar_episode_runs_through_the_real_engine_and_closes(
     assert outcome.quantity == Decimal("100")
     assert outcome.fees is not None
     assert outcome.net_excluding_funding is not None
+
+
+def test_bar_episode_accepts_a_decision_inside_the_five_minute_bar() -> None:
+    capability = _capability()
+    intent = _intent().model_copy(update={"ts_event": 310_000, "ts_init": 310_000})
+    bars = [
+        ReplayBarV1(
+            venue="binance.perp",
+            instrument_id=capability.instrument_id,
+            open_at_ms=close_at_ms - 300_000,
+            close_at_ms=close_at_ms,
+            open="100.00",
+            high="101.00",
+            low="99.00",
+            close="100.00",
+            volume="100",
+        )
+        for close_at_ms in (300_000, 600_000, 900_000, 1_200_000, 1_500_000, 1_800_000)
+    ]
+
+    outcome = replay.run_bar_episode(
+        intent=intent,
+        capability=capability,
+        bars=bars,
+        reference_price=Decimal("100.00"),
+    )
+
+    assert (outcome.execution, outcome.reason) == ("CLOSED", "max_holding")

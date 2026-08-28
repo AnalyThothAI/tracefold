@@ -49,6 +49,7 @@ from .probe import create_nautilus_probe_app
 _INTERNAL_PORT = 8767
 _SHUTDOWN_TIMEOUT_SECONDS = 15.0
 _COMMAND_ENQUEUE_TIMEOUT_SECONDS = 5.0
+_BOOTSTRAP_CAPABILITY_IDENTITY = "bootstrap-zero-claims-v1"
 
 
 def run_nautilus(settings: Settings) -> None:
@@ -57,9 +58,9 @@ def run_nautilus(settings: Settings) -> None:
     api_key, api_secret = _read_credentials(settings)
     with repositories(settings, role="nautilus") as repos:
         capability_snapshot = repos.trading.active_execution_capability_snapshot()
-    if capability_snapshot is None:
-        raise RuntimeError("nautilus_active_capability_snapshot_missing")
-    instrument_ids = [InstrumentId.from_str(value) for value in sorted(capability_snapshot.included)]
+    capability_snapshot_sha256 = None if capability_snapshot is None else capability_snapshot.snapshot_sha256
+    capabilities = {} if capability_snapshot is None else capability_snapshot.included
+    instrument_ids = [InstrumentId.from_str(value) for value in sorted(capabilities)]
     loop = asyncio.new_event_loop()
     node: TradingNode | None = None
     try:
@@ -72,11 +73,18 @@ def run_nautilus(settings: Settings) -> None:
             loop=loop,
         )
         queues = strategy_queues()
-        bridge = NautilusDatabaseBridge(settings, queues)
+        bridge = NautilusDatabaseBridge(
+            settings,
+            queues,
+            capability_snapshot_sha256=capability_snapshot_sha256,
+        )
         strategy = TracefoldNautilusStrategy(
-            engine_identity=_engine_identity(settings, capability_snapshot.snapshot_sha256),
+            engine_identity=_engine_identity(
+                settings,
+                capability_snapshot_sha256 or _BOOTSTRAP_CAPABILITY_IDENTITY,
+            ),
             instrument_ids=instrument_ids,
-            capabilities=capability_snapshot.included,
+            capabilities=capabilities,
             queues=queues,
             request_venue_flat=lambda request: _schedule_venue_flat_proof(
                 node=node,

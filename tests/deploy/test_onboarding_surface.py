@@ -52,6 +52,7 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
   if [ -n "${TRACEFOLD_TEST_ROLE_PROVISION:-}" ]; then printf '%s\\n' "$*" > "$TRACEFOLD_TEST_ROLE_PROVISION"; fi
   case "$*" in
+    *"workers trading refresh-capabilities"*) : > "$TRACEFOLD_TEST_CAPABILITY_REFRESH" ;;
     *"--entrypoint tracefold migrate config"*)
       printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
       printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
@@ -65,10 +66,15 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
+    *active_capability_snapshot_sha256*) printf '%s\\n' "$TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA" ;;
     *to_regclass*) printf '%s\\n' "$TRACEFOLD_TEST_SCHEMA_STATE" ;;
     *alembic_version*trading_cases_state_check*) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATION_STATE" ;;
     *) printf '%s\\n' "$TRACEFOLD_TEST_DB_HEAD" ;;
   esac
+  exit 0
+fi
+if [ "$1" = "compose" ] && [ "$2" = "restart" ]; then
+  : > "$TRACEFOLD_TEST_NAUTILUS_RESTARTED"
   exit 0
 fi
 if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
@@ -208,6 +214,9 @@ esac
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_NAUTILUS_RESTARTED": str(tmp_path / "nautilus-restarted"),
+        "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
+        "TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA": "a" * 64,
         "TRACEFOLD_TEST_ROLE_PROVISION": str(tmp_path / "role-provision"),
     }
     return repo, external_activity, services_stopped, env
@@ -231,6 +240,26 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
         "docker-logs",
         "docker-down",
     }.isdisjoint(targets)
+
+
+def test_up_bootstraps_a_missing_capability_before_final_nautilus_restart(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"] = ""
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RESTARTED"]).exists()
 
 
 @pytest.mark.parametrize("auth_state", ["missing-cli", "unauthenticated", "authenticated"])

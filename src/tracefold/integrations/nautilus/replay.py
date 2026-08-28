@@ -142,16 +142,19 @@ def run_bar_episode(
     )
     try:
         ordered = sorted(bars, key=lambda bar: (bar.close_at_ms, bar.open_at_ms))
-        entry_bar = next((bar for bar in ordered if bar.close_at_ms >= intent.ts_init), None)
-        if entry_bar is None:
+        policy_bar = next(
+            (bar for bar in ordered if bar.open_at_ms <= intent.ts_init < bar.close_at_ms),
+            None,
+        )
+        if policy_bar is None:
             return BarEpisodeResult("MISSING_MARKET_DATA", "outside_bar_coverage")
         entry_policy = evaluate_entry(
-            now_ms=entry_bar.close_at_ms,
+            now_ms=intent.ts_init,
             created_at_ms=intent.ts_init,
             valid_until_ms=intent.ts_init + ENTRY_TTL_MS,
-            quote_at_ms=entry_bar.close_at_ms,
-            bid=entry_bar.close,
-            ask=entry_bar.close,
+            quote_at_ms=intent.ts_init,
+            bid=policy_bar.open,
+            ask=policy_bar.open,
             reference_price=reference_price,
             target_notional=target_notional,
             size_increment=capability.size_increment,
@@ -173,7 +176,7 @@ def run_bar_episode(
                 bar_type=bar_type,
                 intent_id=intent.replay_intent_id,
                 quantity=entry_policy.quantity,
-                entry_after_ms=entry_bar.close_at_ms,
+                entry_after_ms=intent.ts_init,
                 stop_loss_bps=STOP_LOSS_BPS,
                 max_holding_ms=MAX_HOLDING_MS,
                 price_increment=capability.price_increment,

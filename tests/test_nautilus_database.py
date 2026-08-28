@@ -101,6 +101,27 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
     assert repos.trading.set_nautilus_runtime.call_count == 3
 
 
+def test_capability_pointer_change_stops_the_old_engine_before_dispatch() -> None:
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(
+        _settings(),
+        queues,
+        capability_snapshot_sha256="2" * 64,
+        now_ms=lambda: NOW_MS,
+    )
+    repos = _Repositories()
+    repos.trading.nautilus_runtime_state.return_value = {
+        "control": "PAUSED",
+        "active_capability_snapshot_sha256": "3" * 64,
+    }
+
+    with pytest.raises(RuntimeError, match="nautilus_capability_snapshot_changed"):
+        bridge._cycle(repos)
+
+    repos.trading.active_intent.assert_not_called()
+    repos.trading.set_nautilus_runtime.assert_not_called()
+
+
 def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> None:
     intent = _intent()
     quantity = Decimal("0.001")

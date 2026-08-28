@@ -167,7 +167,8 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
         fee_model={"version": "maker_taker_v1", "maker_bps": "5", "taker_bps": "5"},
         funding_model={"version": "unavailable_v1", "funding": "null"},
         fill_model={
-            "version": "nautilus_bar_ohlcv_v1",
+            "version": "nautilus_bar_ohlcv_v2",
+            "entry_policy_quote": "containing_bar_open_at_decision_proxy",
             "entry": "first_bar_close_after_decision_then_engine_market_fill",
             "stop_touch": "bar_low_then_engine_market_fill",
             "gap": "engine_bar_execution",

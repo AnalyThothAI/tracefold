@@ -84,8 +84,6 @@ def build_node_config(
     """Build the exact public-v1 Demo node configuration from one frozen snapshot."""
 
     ids = frozenset(instrument_ids)
-    if not ids:
-        raise ValueError("nautilus_instrument_ids_empty")
     provider = BinanceInstrumentProviderConfig(
         load_ids=ids,
         query_commission_rates=True,

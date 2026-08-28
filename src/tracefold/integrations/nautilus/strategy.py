@@ -57,8 +57,6 @@ def tracefold_strategy_config(instrument_ids: Sequence[InstrumentId]) -> Strateg
     """Return the one supported strategy ownership configuration."""
 
     claims = sorted(set(instrument_ids), key=lambda item: item.value)
-    if not claims:
-        raise ValueError("nautilus_external_order_claims_empty")
     return StrategyConfig(
         strategy_id="TRACEFOLD",
         order_id_tag="001",
