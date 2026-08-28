@@ -1201,15 +1201,45 @@ def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
 def test_deliverer_omits_a_stale_oi_quote_after_requesting_the_verified_symbol() -> None:
     price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "stale"}])
     sender = RecordingSender()
+    news = _oi_delivery_news()
 
     asyncio.run(
-        _deliverer(_oi_delivery_news(), FakeBus(), price=price, sender=sender).handle(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
             _message("verdict", {"event_id": "ev-strong", "kind": "first"})
         )
     )
 
     assert price.requested == [["DOGE"]]
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"  # quote state never changes eligibility
+
+
+def test_deliverer_keeps_a_fresh_price_after_its_reference_change_expires() -> None:
+    price = RecordingPrice(
+        quotes=[
+            {
+                "symbol": "DOGE",
+                "price": "0.2143",
+                "change_pct": None,
+                "change_basis": "rolling_24h",
+                "reference_age_ms": 360_001,
+                "instrument_class": "crypto",
+                "state": "fresh",
+            }
+        ]
+    )
+    news = _oi_delivery_news()
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    lines = sender.cards[0]["elements"][0]["content"].splitlines()
+    assert lines[-1] == "行情 DOGE $0.2143"
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"
 
 
 def test_deliverer_does_not_upgrade_a_queued_pre_v2_oi_verdict() -> None:

@@ -102,11 +102,32 @@ class WorkerNewsColdDatabase:
             raise TransientError(f"db_overrun:{name}") from exc
 
 
-class WorkerMarketReviewDatabase:
-    """`MarketReviewDatabasePort` (#88): the price plane's own one-slot cold admission.
+class WorkerQuoteDatabase:
+    """`QuoteDatabasePort` (#304): latest-state quote plan/store on the ordinary business lane."""
 
-    Its error codes are distinct from the News lane's on purpose — a `cold_db_*` failure in a log names
-    the plane that was refused, and the two loops that read them are not broker consumers.
+    def __init__(self, database: WorkerDatabase) -> None:
+        self._database = database
+
+    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+        return await self._run(name, _read_in_session(self._database, name, fn, timeout_seconds), timeout_seconds)
+
+    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+        return await self._run(name, _write_in_session(self._database, name, fn, timeout_seconds), timeout_seconds)
+
+    async def _run[T](self, name: str, run: Callable[[], T], timeout_seconds: float) -> T:
+        try:
+            return await self._database.run_business(name, run, operation_timeout_seconds=timeout_seconds)
+        except ResourceAdmissionTimeout as exc:
+            raise DeferError(f"quote_db_admission_timeout:{name}") from exc
+        except ResourceOperationOverrun as exc:
+            raise TransientError(f"quote_db_overrun:{name}") from exc
+
+
+class WorkerReactionDatabase:
+    """`ReactionDatabasePort` (#304): deterministic candle review on the one-slot heavy admission.
+
+    Quote collection is intentionally absent from this adapter: a slow Reaction backlog must not hold the
+    ordinary permit that keeps current display quotes moving.
     """
 
     def __init__(self, database: WorkerDatabase) -> None:
@@ -123,13 +144,13 @@ class WorkerMarketReviewDatabase:
         try:
             return await self._lane.run_business(name, run, operation_timeout_seconds=timeout_seconds)
         except ResourceAdmissionTimeout as exc:
-            raise DeferError(f"cold_db_admission_timeout:{name}") from exc
+            raise DeferError(f"reaction_db_admission_timeout:{name}") from exc
         except ResourceOperationOverrun as exc:
-            raise TransientError(f"cold_db_overrun:{name}") from exc
+            raise TransientError(f"reaction_db_overrun:{name}") from exc
 
 
 class WorkerTradingDatabase:
-    """`TradingDatabasePort` (#104): the same one-slot cold admission the price plane uses.
+    """`TradingDatabasePort` (#104): the same one-slot heavy admission Event Reaction uses.
 
     Deliberately no error translation. Trading has no broker to requeue into and no retry vocabulary of
     its own: a refused or overrun operation surfaces as the platform error it is, the runner's turn logs
@@ -156,8 +177,9 @@ class WorkerTradingDatabase:
 
 
 __all__ = [
-    "WorkerMarketReviewDatabase",
     "WorkerNewsColdDatabase",
     "WorkerNewsDatabase",
+    "WorkerQuoteDatabase",
+    "WorkerReactionDatabase",
     "WorkerTradingDatabase",
 ]

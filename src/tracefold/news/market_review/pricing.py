@@ -25,6 +25,7 @@ from typing import Any, Final, Literal
 # which is the one place resolution happens. There is deliberately no second Python copy of that rule.
 PriceKind = Literal["last", "mark", "mid"]
 QuoteState = Literal["fresh", "stale", "unavailable", "unlisted"]
+FreshnessBasis = Literal["source_and_received", "received_only"]
 ReactionState = Literal["pending", "partial", "complete", "unavailable"]
 
 # ---------------------------------------------------------------------------- metric contract
@@ -47,20 +48,20 @@ HORIZON_MS: Final[Mapping[str, int]] = {"1h": 3_600_000, "4h": 14_400_000}
 # = 276,517 bytes), and at 5 s that measured 6.8 MB/min ≈ 9.8 GB/day in production. Quartering the cadence
 # quarters that while leaving the console's actual refresh behaviour unchanged.
 QUOTE_PERIOD_SECONDS: Final = 20.0
-# How often a Binance source pays for the wider `ticker/24hr` (270 kB) instead of `ticker/price` (45.5 kB for
-# the same market, weight 2 against 42). It is still exactly one request per source per turn — the day read
-# *is* that turn's price read — so the split costs no extra call, no extra deadline and no extra failure mode
-# (#109). What ages between day reads is the 24 h window's open, not the percentage: the percentage is
+# How often a Binance source pays for the wider `ticker/24hr` (270 kB), after the mandatory current response
+# has been stored. At most the spot and perpetual sources add one optional call each; they never enter the
+# current phase's deadline. What ages between day reads is the 24 h window's open, not the percentage: it is
 # recomputed from every turn's own price, so it never disagrees with the number beside it, and a window open
 # moves 0.023% per turn. Five minutes of that is 0.35%, against the 6x payload it would cost to chase.
 QUOTE_DAY_PERIOD_SECONDS: Final = 300.0
 QUOTE_TURN_DEADLINE_SECONDS: Final = 10.0
+QUOTE_REFERENCE_MAX_AGE_MS: Final = 360_000
+QUOTE_MAX_FUTURE_SKEW_MS: Final = 5_000
 QUOTE_LOOKBACK_MS: Final = 72 * 3_600_000
 QUOTE_TARGET_MAX: Final = 256
 QUOTE_SOURCE_GROUP_MAX: Final = 12
-# Three turns' worth of slack, so `stale` keeps meaning "the loop stopped keeping up" rather than "a turn
-# ran long". Freshness is a statement about the collector, not a promise of sub-second market data.
-QUOTE_FRESH_MAX_AGE_MS: Final = 60_000
+# A healthy 20 s start-based collector has one full missed-turn allowance before the display says so.
+QUOTE_FRESH_MAX_AGE_MS: Final = 45_000
 QUOTE_REQUEST_SYMBOL_MAX: Final = 100
 
 REACTION_PERIOD_SECONDS: Final = 60.0
@@ -161,11 +162,9 @@ class ProviderQuote:
 
     venue_symbol: str
     price: Decimal
-    change_pct: float | None = None
     change_basis: str | None = None
-    # What the day change is measured against, when the venue publishes it. The loop caches this rather than
-    # the percentage, because a reference ages honestly (0.023% per 20 s turn) where a percentage does not:
-    # it is a ratio against a price the next turn is about to replace.
+    # What the day change is measured against, when the venue publishes it. The loop owns the only percentage
+    # calculation so current and reference freshness cannot diverge behind a cached provider percentage.
     reference_price: Decimal | None = None
     source_at_ms: int | None = None
 
@@ -184,6 +183,7 @@ class Quote:
     change_pct: float | None = None
     change_basis: str | None = None
     source_at_ms: int | None = None
+    reference_at_ms: int | None = None
 
     def as_entry(self) -> dict[str, Any]:
         return {
@@ -197,15 +197,50 @@ class Quote:
             "change_pct": self.change_pct,
             "change_basis": self.change_basis,
             "source_at_ms": self.source_at_ms,
+            "reference_at_ms": self.reference_at_ms,
         }
 
 
-def quote_state(age_ms: int | None) -> QuoteState:
-    """Freshness is derived when read, never maintained by a timer write."""
+@dataclass(frozen=True, slots=True)
+class QuoteFreshness:
+    """Read-time current freshness, preserving exposed ages separately from raw clock validity."""
 
-    if age_ms is None or age_ms < 0:
-        return "unavailable"
-    return "fresh" if age_ms <= QUOTE_FRESH_MAX_AGE_MS else "stale"
+    received_age_ms: int
+    source_age_ms: int | None
+    effective_age_ms: int
+    freshness_basis: FreshnessBasis
+    state: Literal["fresh", "stale"]
+
+
+def quote_freshness(*, measured_at_ms: int, received_at_ms: int, source_at_ms: int | None) -> QuoteFreshness:
+    """Use the oldest applicable current clock; a far-future timestamp is stale rather than clamped fresh."""
+
+    received_raw_age = int(measured_at_ms) - int(received_at_ms)
+    source_raw_age = None if source_at_ms is None else int(measured_at_ms) - int(source_at_ms)
+    received_age_ms = max(0, received_raw_age)
+    source_age_ms = None if source_raw_age is None else max(0, source_raw_age)
+    effective_age_ms = max(received_age_ms, source_age_ms or 0)
+    clocks_valid = received_raw_age >= -QUOTE_MAX_FUTURE_SKEW_MS and (
+        source_raw_age is None or source_raw_age >= -QUOTE_MAX_FUTURE_SKEW_MS
+    )
+    return QuoteFreshness(
+        received_age_ms=received_age_ms,
+        source_age_ms=source_age_ms,
+        effective_age_ms=effective_age_ms,
+        freshness_basis="received_only" if source_at_ms is None else "source_and_received",
+        state="fresh" if clocks_valid and effective_age_ms <= QUOTE_FRESH_MAX_AGE_MS else "stale",
+    )
+
+
+def reference_freshness(*, measured_at_ms: int, reference_at_ms: int | None) -> tuple[int | None, bool]:
+    """Return the exposed reference age and whether the 24H reference may still author a percentage."""
+
+    if reference_at_ms is None:
+        return None, False
+    raw_age = int(measured_at_ms) - int(reference_at_ms)
+    age_ms = max(0, raw_age)
+    valid = -QUOTE_MAX_FUTURE_SKEW_MS <= raw_age <= QUOTE_REFERENCE_MAX_AGE_MS
+    return age_ms, valid
 
 
 def parse_price(value: Any) -> Decimal | None:
@@ -305,8 +340,8 @@ def hit_pct(hits: int, priced: int) -> float | None:
 # Event Reaction are different time semantics, so their words are deliberately different too — nothing here
 # calls either one "变动" on its own.
 QUOTE_STATE_ZH: Final[Mapping[str, str]] = {
-    "fresh": "实时",
-    "stale": "报价已陈旧",
+    "fresh": "报价正常",
+    "stale": "报价陈旧",
     "unavailable": "暂无报价",
     "unlisted": "无可交易合约",
 }
@@ -367,7 +402,9 @@ __all__ = [
     "QUOTE_DAY_PERIOD_SECONDS",
     "QUOTE_FRESH_MAX_AGE_MS",
     "QUOTE_LOOKBACK_MS",
+    "QUOTE_MAX_FUTURE_SKEW_MS",
     "QUOTE_PERIOD_SECONDS",
+    "QUOTE_REFERENCE_MAX_AGE_MS",
     "QUOTE_REQUEST_SYMBOL_MAX",
     "QUOTE_SOURCE_GROUP_MAX",
     "QUOTE_STATE_ZH",
@@ -388,6 +425,7 @@ __all__ = [
     "PriceKind",
     "ProviderQuote",
     "Quote",
+    "QuoteFreshness",
     "QuoteState",
     "ReactionState",
     "change_basis_zh",
@@ -401,10 +439,11 @@ __all__ = [
     "price_kind_zh",
     "quote_asset_rank",
     "quote_asset_rank_sql",
-    "quote_state",
+    "quote_freshness",
     "quote_state_zh",
     "reaction_reason_zh",
     "reaction_state_zh",
+    "reference_freshness",
     "return_bps",
     "select_candle",
     "source_rank",

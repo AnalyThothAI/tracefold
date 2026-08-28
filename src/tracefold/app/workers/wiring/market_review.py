@@ -16,7 +16,12 @@ from tracefold.integrations.venues import (
     fetch_hyperliquid_quotes,
     fetch_us_reference_instruments,
 )
-from tracefold.news.market_review.loops import EventReactionLoop, MarketReviewDatabasePort, QuoteSnapshotLoop
+from tracefold.news.market_review.loops import (
+    EventReactionLoop,
+    QuoteDatabasePort,
+    QuoteSnapshotLoop,
+    ReactionDatabasePort,
+)
 from tracefold.news.pipeline.maintenance import InstrumentSnapshotLoop
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.platform.observability import TelemetryRegistry
@@ -38,7 +43,7 @@ def _price_venue_enabled(settings: Any, source_key: str) -> bool:
 def _quote_snapshot_loop(
     settings: Any,
     *,
-    db: MarketReviewDatabasePort,
+    db: QuoteDatabasePort,
     watchlist: Sequence[str],
     telemetry: TelemetryRegistry | None = None,
 ) -> QuoteSnapshotLoop | None:
@@ -85,7 +90,7 @@ def _quote_snapshot_loop(
 def _event_reaction_loop(
     settings: Any,
     *,
-    db: MarketReviewDatabasePort,
+    db: ReactionDatabasePort,
     telemetry: TelemetryRegistry | None = None,
 ) -> EventReactionLoop | None:
     def fetcher_for(venue: str) -> Any | None:

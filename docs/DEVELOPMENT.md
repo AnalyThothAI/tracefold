@@ -68,8 +68,8 @@ News → Trading handoff is exactly that — but it may not `INSERT`, `UPDATE` o
 package's storage module, behind a named repository method.
 
 **Ports.** A business package states what it needs from the process as a narrow
-`Protocol` it owns (`NewsDatabasePort`, `MarketReviewDatabasePort`,
-`TradingDatabasePort`), and `tracefold.app` implements it. A business module may
+`Protocol` it owns (`NewsDatabasePort`, `QuoteDatabasePort`,
+`ReactionDatabasePort`, `TradingDatabasePort`), and `tracefold.app` implements it. A business module may
 not call an App-specific method — `worker_session`, `run_news`,
 `heavy_business` — even through an untyped parameter: no import edge is not the
 same as no dependency. Ports that look alike stay separate when their answers

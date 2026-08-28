@@ -20,6 +20,7 @@ import {
 import { formatCount } from "../../model/newsLabels";
 import { oiTabCount, parseOiTab } from "../../model/oiSignals";
 import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
+import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsOiFrameTable } from "./NewsOiFrameTable";
 import { NewsOiGates } from "./NewsOiGates";
@@ -119,7 +120,6 @@ export function NewsOiPage({ token }: { token: string }) {
    * there is a message to attach it to.
    */
   const supportingReadFailures = [
-    quotesQuery.isError ? "当前行情" : "",
     tradingQuery.isError ? "交易账本" : "",
     gateQuery.isError ? "准入台账" : "",
     tradingStatusQuery.isError ? "准入规则" : "",
@@ -166,7 +166,6 @@ export function NewsOiPage({ token }: { token: string }) {
           updating={
             statusQuery.isFetching ||
             feedQuery.isFetching ||
-            quotesQuery.isFetching ||
             tradingQuery.isFetching ||
             gateQuery.isFetching ||
             tradingStatusQuery.isFetching
@@ -216,32 +215,34 @@ export function NewsOiPage({ token }: { token: string }) {
              * The failed request replaces the rows, never the tabs: a reader whose 未达阈值 page 5xx'd has to
              * be able to click back to 全部 without editing the URL.
              */}
-            <NewsOiFrameTable
-              counts={counts}
-              error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
-              floors={oi?.trade_floors ?? EMPTY_FLOORS}
-              gate={gateQuery.data}
-              hasMore={hasMore}
-              loadingMore={
-                historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
-              }
-              onLoadMore={() => {
-                if (!moreRequested) setMoreRequested(true);
-                else void historyQuery.fetchNextPage();
-              }}
-              onRetry={() => void feedQuery.refetch()}
-              onTabChange={(next) => setSearchParams(nextOiParams(next), { replace: true })}
-              rows={rows}
-              quotes={quotes}
-              tab={tab}
-              trading={tradingQuery.data}
-              /*
-               * Only the order batch failing makes the whole column unanswerable. A failed admission
-               * read costs the *reason* a frame has no case, which the cell reports on its own — a row
-               * that does have an order or a case can still be answered exactly.
-               */
-              tradingError={tradingQuery.isError && !tradingQuery.data}
-            />
+            <NewsQuoteReadState query={quotesQuery}>
+              <NewsOiFrameTable
+                counts={counts}
+                error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
+                floors={oi?.trade_floors ?? EMPTY_FLOORS}
+                gate={gateQuery.data}
+                hasMore={hasMore}
+                loadingMore={
+                  historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
+                }
+                onLoadMore={() => {
+                  if (!moreRequested) setMoreRequested(true);
+                  else void historyQuery.fetchNextPage();
+                }}
+                onRetry={() => void feedQuery.refetch()}
+                onTabChange={(next) => setSearchParams(nextOiParams(next), { replace: true })}
+                rows={rows}
+                quotes={quotes}
+                tab={tab}
+                trading={tradingQuery.data}
+                /*
+                 * Only the order batch failing makes the whole column unanswerable. A failed admission
+                 * read costs the *reason* a frame has no case, which the cell reports on its own — a row
+                 * that does have an order or a case can still be answered exactly.
+                 */
+                tradingError={tradingQuery.isError && !tradingQuery.data}
+              />
+            </NewsQuoteReadState>
           </div>
         </PageState.Stale>
       ) : null}

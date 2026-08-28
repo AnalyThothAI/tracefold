@@ -64,7 +64,7 @@ def _wire_trading_pipeline(
 ) -> TradingPipeline | None:
     """#104. Disabled by default; a disabled Trading context constructs no program and no adapter.
 
-    The runners share the price plane's one-slot cold admission rather than the four News lane slots,
+    The runners share Event Reaction's one-slot heavy admission rather than the four News lane slots,
     for the same reason #88 gave: a trading backlog must not compete with the Deduper, Triage and the
     Deliverer for the lane they were budgeted.
     """

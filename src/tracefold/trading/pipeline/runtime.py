@@ -33,8 +33,9 @@ class TradingDatabasePort(Protocol):
 
     Capital safety is why this is a port and not a shared client. A runner may not open a session, pick a
     pool, choose a lane, or hold a connection across a provider call; it names an operation and a deadline
-    and gets a repository session back. The composition root satisfies it on the price plane's one-slot
-    cold admission (#88, #104) so a trading backlog can never compete for the four News lane slots.
+    and gets a repository session back. The composition root satisfies it on the one-slot heavy admission
+    shared with Event Reaction and Janitor (#88, #104), so a trading backlog can never compete for the four
+    News lane slots or ordinary Quote admission.
     """
 
     async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...

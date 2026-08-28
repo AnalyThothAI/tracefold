@@ -1,10 +1,12 @@
 import { useCockpitStatusQuery } from "@features/cockpit/api/useCockpitStatusQuery";
 import {
   NEWS_FEED_REFETCH_MS,
+  NEWS_QUOTES_REFETCH_MS,
   type NewsFeedFilters,
   useNewsEventWithToken,
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
+  useNewsQuotesWithToken,
 } from "@features/news/api/newsQueries";
 import {
   TRADING_REFETCH_MS,
@@ -99,6 +101,23 @@ describe("query hook category contracts", () => {
     expect(options.enabled).toBe(false);
     expect(options.refetchInterval).toBeUndefined();
     expect(options.staleTime).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("keeps the first-seen quote top 100, then sorts only that selected query identity", () => {
+    const symbols = [
+      "ZZZ",
+      ...Array.from({ length: 100 }, (_, index) => `A${String(index).padStart(3, "0")}`),
+    ];
+    const selected = symbols.slice(0, 100).sort();
+    const options = captureQueryOptions(
+      () => useNewsQuotesWithToken("", symbols),
+      queryKeys.newsQuotes(selected),
+    );
+
+    expect(selected).toContain("ZZZ");
+    expect(options.refetchInterval).toBe(NEWS_QUOTES_REFETCH_MS);
+    expect(options.refetchIntervalInBackground).toBe(false);
+    expect(options.refetchOnWindowFocus).toBe(true);
   });
 });
 

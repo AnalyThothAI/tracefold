@@ -466,7 +466,7 @@ describe("NewsOiPage", () => {
     renderOi();
     const row = await screen.findByRole("button", { name: /WIF/ });
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("当前行情读取失败");
+    expect(alert).toHaveTextContent("行情读取失败");
     await waitFor(() =>
       expect(document.querySelector(".news-oi-current-price")).toHaveTextContent("—"),
     );
