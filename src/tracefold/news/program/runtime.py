@@ -36,19 +36,6 @@ def _estimated_tokens(value: str) -> int:
     return (len(value.encode("utf-8")) + 3) // 4
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"news_program_duplicate_key:{key}")
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"news_program_json_nonfinite:{value}")
-
-
 def _reject_nonfinite_json(value: Any, *, path: str = "artifact") -> None:
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError(f"news_program_json_nonfinite:{path}")

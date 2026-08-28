@@ -99,7 +99,7 @@ class ExperimentCase(_ExactModel):
     """
 
     # Constrained because it is used as a filename. Left as `min_length=1` it accepted `../../../pwned`,
-    # and `write_compared` would have written outside the run root the safe-directory check guards.
+    # and `write_compared` would have written outside the run root the run-directory check guards.
     case_sha256: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     cluster_id: str = Field(min_length=1)
     stratum: str = Field(min_length=1)
@@ -213,7 +213,10 @@ def _run_directory(root: Path, *, create: bool) -> Path:
         requested.mkdir(parents=True, exist_ok=True)
     elif not requested.is_dir():
         raise ValueError("news_experiment_run_directory_missing")
-    return requested
+    # Resolved, though no longer *armoured*: the snapshot manifest takes its name from `root.name`, and
+    # `--run .` or `--run some/path/..` would otherwise yield "" or ".." and fail a pydantic pattern at
+    # the end of a full window freeze. Resolution is about naming the directory, not about refusing one.
+    return requested.resolve()
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:

@@ -296,7 +296,15 @@ class ProgramStrategyArtifactCodec:
     def load(cls, path: str | None = None) -> ProgramStrategyArtifactV1:
         if path is None:
             return load_stable_program_artifact()
-        return cls.decode(Path(path).read_text(encoding="utf-8"))
+        # The path armouring went, but its error *contract* has to stay: the CLI catches
+        # `(ValueError, PermissionError, RuntimeError)` and turns a coded failure into exit 2 with a named
+        # error. A bare `read_text` on a candidate whose artifact root was cleaned out would escape as
+        # `FileNotFoundError` and surface as a traceback instead.
+        try:
+            document = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError("news_program_artifact_path_invalid") from exc
+        return cls.decode(document)
 
 
 def load_stable_program_artifact() -> ProgramStrategyArtifactV1:
@@ -319,7 +327,11 @@ def _programs_resource_root() -> Any:
 
 def _load_program_registry() -> dict[str, Any]:
     registry_resource = _programs_resource_root().joinpath("registry.json")
-    raw = ProgramStrategyArtifactCodec._json_object(registry_resource.read_text(encoding="utf-8"), kind="registry")
+    try:
+        document = registry_resource.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("news_program_registry_path_invalid") from exc
+    raw = ProgramStrategyArtifactCodec._json_object(document, kind="registry")
     if set(raw) != {"stable", "images"} or not isinstance(raw["images"], list):
         raise ValueError("news_program_registry_schema_invalid")
     images = [str(value) for value in raw["images"]]
@@ -338,7 +350,11 @@ def load_program_artifact(program_sha256: str) -> ProgramStrategyArtifactV1:
     if identity not in registry["images"]:
         raise ValueError("news_program_artifact_not_registered")
     image = _programs_resource_root().joinpath(f"{identity}.json")
-    artifact = ProgramStrategyArtifactCodec.decode(image.read_text(encoding="utf-8"))
+    try:
+        document = image.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("news_program_artifact_path_invalid") from exc
+    artifact = ProgramStrategyArtifactCodec.decode(document)
     if artifact.program_sha256 != identity:
         raise ValueError("news_program_artifact_file_identity_mismatch")
     return artifact
@@ -352,6 +368,12 @@ def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, art
     document = ProgramStrategyArtifactCodec.encode(artifact)
     destination = root / f"{artifact.program_sha256}.json"
     if destination.exists():
+        # Write verification, not tamper defence, and #319's own criterion keeps it: a truncated or
+        # older-encoder `<sha>.json` already in the artifact root would otherwise be reported as a
+        # successful write and stamped into the candidate manifest, surfacing much later as an opaque
+        # schema error against a file this run believed it had produced.
+        if destination.read_text(encoding="utf-8") != document:
+            raise ValueError("news_program_compile_artifact_collision")
         return str(destination)
     temporary = root / f".{artifact.program_sha256}.{uuid.uuid4().hex}.tmp"
     try:
@@ -360,16 +382,23 @@ def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, art
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+    if destination.read_text(encoding="utf-8") != document:
+        raise ValueError("news_program_compile_artifact_write_verification_failed")
     return str(destination)
 
 
 def _write_exclusive(path: Path, document: str) -> None:
-    """Create and write one file, failing loudly if it already exists.
+    """Create and write one file, refusing to open an existing one.
 
-    `O_EXCL` stays and `O_NOFOLLOW` goes (#319). They looked like one guard and are two: the anti-symlink
-    half is threat-model armour, while exclusive creation is what makes two compilers writing the same
-    artifact path fail rather than interleave into a corrupt document. The second is business
-    correctness under this issue's own criterion, so it survives the same cut that removes the first.
+    `O_NOFOLLOW` went with #319; `O_EXCL` stays, but not for the reason an earlier version of this
+    docstring gave. It claimed exclusive creation is what stops two concurrent compilers corrupting one
+    artifact — that was wrong, and review caught it. Every caller passes a uuid-unique temporary that
+    cannot collide, and the destination is published by `os.rename`, which overwrites silently. The
+    property that actually protects the destination is the content verification in
+    `write_program_candidate_artifact`, which this commit restores.
+
+    What `O_EXCL` does here is narrower and still worth its one flag: it refuses to write into a
+    temporary that somehow already exists rather than truncating it.
     """
 
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

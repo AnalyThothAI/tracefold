@@ -26,6 +26,7 @@ from tracefold.news.program.artifact import (
     load_program_artifact,
     load_stable_program_artifact,
     render_model_evidence_json,
+    write_program_candidate_artifact,
 )
 from tracefold.news.program.contracts import (
     EditorialEnvelope,
@@ -1408,3 +1409,31 @@ def test_a_refused_providers_own_reason_reaches_the_audit_trace() -> None:
     call = excinfo.value.partial_trace.calls[0]
     assert call.error_code == "news_program_provider_http_400"
     assert call.error_detail == "invalid_request_error: This response_format type is unavailable now"
+
+
+def test_a_missing_artifact_path_is_a_coded_error_not_a_traceback(tmp_path: Path) -> None:
+    """The path armouring went; its error contract did not (#319 review).
+
+    `news learning evaluate` catches `(ValueError, PermissionError, RuntimeError)` and turns a coded
+    failure into exit 2 with a named error. A candidate whose artifact root has been cleaned out is an
+    ordinary operational state, and it has to arrive as that rather than as an unhandled
+    `FileNotFoundError`.
+    """
+
+    with pytest.raises(ValueError, match="news_program_artifact_path_invalid"):
+        ProgramStrategyArtifactCodec.load(str(tmp_path / "absent.json"))
+
+
+def test_writing_over_a_different_document_at_the_same_identity_fails_loudly(tmp_path: Path) -> None:
+    """Write verification, kept because it is write correctness rather than tamper defence.
+
+    A truncated or older-encoder `<sha>.json` already in the artifact root would otherwise be reported as
+    a successful write and stamped into a candidate manifest, surfacing much later as an opaque schema
+    error against a file the run believed it had produced.
+    """
+
+    artifact = load_stable_program_artifact()
+    (tmp_path / f"{artifact.program_sha256}.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="news_program_compile_artifact_collision"):
+        write_program_candidate_artifact(artifact, artifact_root=tmp_path)
